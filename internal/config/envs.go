@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/aiseeq/graft/internal/dotenv"
 )
 
 // DefaultDotEnv is the project .env file graft reads single keys from.
@@ -105,4 +107,27 @@ func (c *Config) EnvNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// checkRemoteArgv refuses ${KEY} in an argv command bound to an ssh
+// environment. Over ssh argv is sent shell-quoted, so ${KEY} would reach the
+// server as literal text; expanding it here would put local values, secrets
+// included, into the ssh command line and the process lists on both sides,
+// while the keys of that environment live on the server.
+func (c *Config) checkRemoteArgv(where, envName string, cmd EnvCommand) error {
+	env, ok := c.Envs[envName]
+	if !ok || env.SSH == nil {
+		return nil
+	}
+	for _, w := range cmd.Argv {
+		refs, err := dotenv.Refs(w)
+		if err != nil {
+			return fmt.Errorf("%s: %w", where, err)
+		}
+		if len(refs) > 0 {
+			return fmt.Errorf("%s: ${%s} in an argv command is not supported in the ssh environment %s: write the command as a string, the shell on the server expands it from its own environment",
+				where, refs[0], envName)
+		}
+	}
+	return nil
 }

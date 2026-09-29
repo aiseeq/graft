@@ -50,7 +50,8 @@ func (e *Env) Destination() string {
 
 // Command builds the process for c in this environment. A shell command line
 // runs through sh -c locally or the remote login shell over ssh; argv runs
-// directly locally (after ${KEY} expansion) or shell-quoted over ssh.
+// directly locally (after ${KEY} expansion) or shell-quoted over ssh, where
+// the config refuses ${KEY}.
 func (e *Env) Command(ctx context.Context, c config.EnvCommand) (*exec.Cmd, error) {
 	return e.CommandArgs(ctx, c, nil)
 }

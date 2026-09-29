@@ -144,7 +144,7 @@ func (c *Config) validateFlagsSQL(s *FlagsSQL) error {
 		if !s.Psql[env].IsSet() {
 			return fmt.Errorf("flags.sql.psql.%s: empty command", env)
 		}
-		return nil
+		return c.checkRemoteArgv("flags.sql.psql."+env, env, s.Psql[env])
 	})
 }
 

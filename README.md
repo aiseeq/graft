@@ -350,7 +350,10 @@ run as argv. In a list run on this machine, `${KEY}` is replaced by KEY from the
 process environment or, failing that, from the `.env` file; a key found in
 neither is an error. `$$` is a literal `$`. Commands graft runs on a remote
 host never see local `${KEY}` expansion: `$VAR` there belongs to the remote
-shell.
+shell. A list bound to an ssh environment with `${KEY}` in it is a config
+error: local values, secrets included, would land in the ssh command line;
+write that command as a string, and the server's shell expands it from its
+own environment.
 
 The `.env` parser accepts `KEY=value`, `export KEY=value`, `'literal'` and
 `"escaped \" \\ \n \$"` values, blank lines and `#` comment lines. A `#` after

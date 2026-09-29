@@ -131,6 +131,11 @@ func (c *Config) validateTarget(name string, t *DeployTarget) error {
 	if err := checkArgsPlaceholder(Step{Argv: t.Status.Argv}); err != nil {
 		return fmt.Errorf("%s.status: %w", where, err)
 	}
+	for field, cmd := range map[string]EnvCommand{"version": t.Version, "status": t.Status} {
+		if err := c.checkRemoteArgv(where+"."+field, t.Env, cmd); err != nil {
+			return err
+		}
+	}
 	keys, err := c.resolveKeys(where, t.DotEnv, t.DotEnvSets)
 	if err != nil {
 		return err

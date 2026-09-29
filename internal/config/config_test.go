@@ -321,3 +321,40 @@ deploy:
 		}
 	}
 }
+
+func TestRemoteArgvRefusesKeys(t *testing.T) {
+	base := `schema: 1
+version: {mode: file}
+envs:
+  local: {}
+  prod: {ssh: {host: 10.0.0.2}}
+flags:
+  default_env: prod
+  exceptions: tools/flags-exceptions.conf
+  sql:
+    table: notices
+    columns: {id: id, class: kind, subject: subject, status: status, last_seen: last_seen_at, note: note}
+    open_statuses: [open]
+    resolved_status: resolved
+    psql:
+      prod: PSQL
+      local: [psql, '${DB_URL}']
+deploy:
+  remote: origin
+  targets:
+    prod: {env: prod, run: [sh, deploy.sh], status: STATUS, version: 'cat /opt/app/VERSION'}
+`
+	ok := strings.NewReplacer("PSQL", `"psql \"$DB_URL\""`, "STATUS", `"systemctl status app-$APP"`).Replace(base)
+	if _, err := Parse([]byte(ok)); err != nil {
+		t.Fatalf("strings over ssh and ${KEY} in local argv must parse: %v", err)
+	}
+	for name, data := range map[string]string{
+		"psql argv over ssh":   strings.NewReplacer("PSQL", `[psql, '${DB_URL}']`, "STATUS", "x").Replace(base),
+		"status argv over ssh": strings.NewReplacer("PSQL", "psql", "STATUS", `[systemctl, status, 'app-${APP}']`).Replace(base),
+	} {
+		_, err := Parse([]byte(data))
+		if err == nil || !strings.Contains(err.Error(), "in an argv command is not supported in the ssh environment prod: write the command as a string") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+}
