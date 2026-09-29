@@ -87,50 +87,21 @@ type Change struct {
 // hooks directory: both hold somebody's hooks that would silently stop running.
 func Install(repo *gitx.Repo, dir string) ([]Change, error) {
 	hooksDir := filepath.Join(repo.Root, filepath.FromSlash(dir))
-	var changes []Change
-
 	current, err := hooksPath(repo)
 	if err != nil {
 		return nil, err
 	}
-	if current != "" && current != dir {
-		resolved := current
-		if !filepath.IsAbs(resolved) {
-			resolved = filepath.Join(repo.Root, filepath.FromSlash(resolved))
-		}
-		if !samePath(resolved, hooksDir) {
-			return nil, fmt.Errorf("core.hooksPath is %q, not %q: move those hooks or unset it (git config --unset core.hooksPath) first", current, dir)
-		}
+	if err := checkHooksPath(repo, current, dir, hooksDir); err != nil {
+		return nil, err
 	}
-
-	if current == "" {
-		active, err := activeDefaultHooks(repo)
-		if err != nil {
-			return nil, err
-		}
-		if len(active) > 0 {
-			return nil, fmt.Errorf("setting core.hooksPath would stop these hooks from running: %s; move their checks into the gate in .graft.yaml and delete them", strings.Join(active, ", "))
-		}
-	}
-
-	var foreign []string
-	for _, name := range Names {
-		existing, err := os.ReadFile(filepath.Join(hooksDir, name))
-		// A shim that only differs by CRLF line endings (autocrlf checkout)
-		// is ours and gets rewritten: sh would choke on the carriage returns.
-		if err == nil && !bytes.Equal(bytes.ReplaceAll(existing, []byte("\r\n"), []byte("\n")), Shim(name)) {
-			foreign = append(foreign, filepath.ToSlash(filepath.Join(dir, name)))
-		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-	}
-	if len(foreign) > 0 {
-		return nil, fmt.Errorf("hooks not written by graft are in the way: %s; move their checks into the gate in .graft.yaml and delete them", strings.Join(foreign, ", "))
+	if err := checkForeignShims(dir, hooksDir); err != nil {
+		return nil, err
 	}
 
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		return nil, err
 	}
+	var changes []Change
 	for _, name := range Names {
 		changed, err := writeShim(filepath.Join(hooksDir, name), Shim(name))
 		if err != nil {
@@ -141,17 +112,65 @@ func Install(repo *gitx.Repo, dir string) ([]Change, error) {
 		}
 	}
 
-	if current != dir {
-		if _, err := repo.Git("config", "core.hooksPath", dir); err != nil {
-			return nil, err
+	if current == dir {
+		return changes, nil
+	}
+	if _, err := repo.Git("config", "core.hooksPath", dir); err != nil {
+		return nil, err
+	}
+	if current == "" {
+		return append(changes, Change{What: "set core.hooksPath to " + dir}), nil
+	}
+	return append(changes, Change{What: fmt.Sprintf("rewrote core.hooksPath from %q to %q", current, dir)}), nil
+}
+
+// checkHooksPath refuses to repoint core.hooksPath away from another hooks
+// directory, and to set it while the default directory holds live hooks.
+func checkHooksPath(repo *gitx.Repo, current, dir, hooksDir string) error {
+	if current == "" {
+		active, err := activeDefaultHooks(repo)
+		if err != nil {
+			return err
 		}
-		if current == "" {
-			changes = append(changes, Change{What: "set core.hooksPath to " + dir})
-		} else {
-			changes = append(changes, Change{What: fmt.Sprintf("rewrote core.hooksPath from %q to %q", current, dir)})
+		if len(active) > 0 {
+			return fmt.Errorf("setting core.hooksPath would stop these hooks from running: %s; move their checks into the gate in .graft.yaml and delete them", strings.Join(active, ", "))
+		}
+		return nil
+	}
+	if current == dir {
+		return nil
+	}
+	resolved := current
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(repo.Root, filepath.FromSlash(resolved))
+	}
+	if !samePath(resolved, hooksDir) {
+		return fmt.Errorf("core.hooksPath is %q, not %q: move those hooks or unset it (git config --unset core.hooksPath) first", current, dir)
+	}
+	return nil
+}
+
+// checkForeignShims refuses to overwrite hooks graft did not write.
+func checkForeignShims(dir, hooksDir string) error {
+	var foreign []string
+	for _, name := range Names {
+		existing, err := os.ReadFile(filepath.Join(hooksDir, name))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		// A shim that only differs by CRLF line endings (autocrlf checkout)
+		// is ours and gets rewritten: sh would choke on the carriage returns.
+		if !bytes.Equal(bytes.ReplaceAll(existing, []byte("\r\n"), []byte("\n")), Shim(name)) {
+			foreign = append(foreign, filepath.ToSlash(filepath.Join(dir, name)))
 		}
 	}
-	return changes, nil
+	if len(foreign) > 0 {
+		return fmt.Errorf("hooks not written by graft are in the way: %s; move their checks into the gate in .graft.yaml and delete them", strings.Join(foreign, ", "))
+	}
+	return nil
 }
 
 // writeShim writes the shim unless it is already in place with the executable
