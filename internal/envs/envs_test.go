@@ -78,3 +78,40 @@ func TestCommand(t *testing.T) {
 		t.Errorf("ssh args = %q", cmd.Args)
 	}
 }
+
+func TestShellArgs(t *testing.T) {
+	cases := []struct {
+		line string
+		args []string
+		want string
+	}{
+		{"logs {args}", []string{"a b", "c"}, "logs 'a b' c"},
+		{"logs {args}", nil, "logs "},
+		{"{args} x", []string{"a$b"}, "'a$b' x"},
+		{"docker logs app-{args} -n 5", []string{"blue"}, "docker logs app-blue -n 5"},
+		{"x --name={args}", []string{"it's"}, `x --name='it'\''s'`},
+	}
+	for _, c := range cases {
+		got, err := ShellArgs(c.line, c.args, nil)
+		if err != nil || got != c.want {
+			t.Errorf("ShellArgs(%q, %q) = %q, %v; want %q", c.line, c.args, got, err, c.want)
+		}
+	}
+	if _, err := ShellArgs("app-{args}", []string{"a", "b"}, nil); err == nil {
+		t.Error("two arguments inside a word must fail")
+	}
+	// The fill function sees the configured text, never the arguments.
+	got, err := ShellArgs("tail -n {lines} {args}", []string{"{lines}"}, func(s string) (string, error) {
+		return strings.ReplaceAll(s, "{lines}", "5"), nil
+	})
+	if err != nil || got != "tail -n 5 '{lines}'" {
+		t.Errorf("fill: %q, %v", got, err)
+	}
+}
+
+func TestExpandArgvKeepsArgumentsVerbatim(t *testing.T) {
+	got, err := ExpandArgv([]string{"tar", "{args}", "--to={args}"}, []string{"a$$b${X}"}, nil)
+	if err != nil || strings.Join(got, "|") != "tar|a$$b${X}|--to=a$$b${X}" {
+		t.Errorf("got %q, %v", got, err)
+	}
+}

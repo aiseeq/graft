@@ -312,6 +312,8 @@ deploy:
 		"reserved target name": strings.Replace(base, "    prod:", "    status:", 1),
 		"no run":               strings.Replace(base, "run: [sh, deploy.sh], requires", "requires", 1),
 		"requires without ver": strings.Replace(base, "mode: file", "mode: none", 1),
+		"unknown dotenv set":   strings.Replace(base, "confirm: sudo}", "confirm: sudo, dotenv_sets: [nope]}", 1),
+		"placeholder twice":    strings.Replace(base, "requires: test, confirm", "status: [x, '{args}{args}'], requires: test, confirm", 1),
 	}
 	for name, data := range cases {
 		if _, err := Parse([]byte(data)); err == nil {

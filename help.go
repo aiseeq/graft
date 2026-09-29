@@ -45,8 +45,8 @@ var commands = []command{
 		applies: func(c *config.Config) bool { return c.Flags != nil }},
 	{name: "deploy", syntax: fixed(
 		"graft deploy <target> [-- script args]",
-		"graft deploy status <target>",
-		"graft deploy logs <target> [--lines N] [--grep RE]",
+		"graft deploy status <target> [-- args]",
+		"graft deploy logs <target> [--lines N] [--grep RE] [-- args]",
 		"graft deploy check-head",
 	), summary: text("run the project's deploy script between graft's checks; status, logs"),
 		applies: func(c *config.Config) bool { return c.Deploy != nil }},

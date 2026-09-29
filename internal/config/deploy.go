@@ -37,9 +37,17 @@ type DeployTarget struct {
 	Confirm      string       `yaml:"confirm"`
 	DeployedSHA  *DeployedSHA `yaml:"deployed_sha"`
 	ReleaseNotes *TargetNotes `yaml:"release_notes"`
-	Status       EnvCommand   `yaml:"status"`
-	// Logs runs in Env; {lines} is filled in.
+	// Status runs in Env; {args} receives what follows --.
+	Status EnvCommand `yaml:"status"`
+	// Logs runs in Env; {lines} is filled in, {args} receives what
+	// follows --.
 	Logs string `yaml:"logs"`
+	// DotEnv and DotEnvSets are the .env keys the deploy script gets, as
+	// for tasks.
+	DotEnv     []DotEnvKey `yaml:"dotenv"`
+	DotEnvSets []string    `yaml:"dotenv_sets"`
+	// Keys is DotEnv with the sets merged in.
+	Keys []DotEnvKey `yaml:"-"`
 }
 
 // DeployedSHA is a file in the target environment recording the deployed
@@ -120,6 +128,14 @@ func (c *Config) validateTarget(name string, t *DeployTarget) error {
 	if t.DeployedSHA != nil && (t.DeployedSHA.Path == "" || strings.ContainsAny(t.DeployedSHA.Path, "\n\r")) {
 		return fmt.Errorf("%s.deployed_sha.path: required, one line", where)
 	}
+	if err := checkArgsPlaceholder(Step{Argv: t.Status.Argv}); err != nil {
+		return fmt.Errorf("%s.status: %w", where, err)
+	}
+	keys, err := c.resolveKeys(where, t.DotEnv, t.DotEnvSets)
+	if err != nil {
+		return err
+	}
+	t.Keys = keys
 	return c.validateTargetNotes(where, t)
 }
 

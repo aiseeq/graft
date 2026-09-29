@@ -408,24 +408,24 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	if err != nil {
 		return err
 	}
-	usage := fmt.Errorf("%w: graft deploy <target> [-- args] | status <target> | logs <target> [--lines N] [--grep RE] | check-head", errUsage)
+	usage := fmt.Errorf("%w: graft deploy <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | check-head", errUsage)
 	if len(pos) == 0 {
 		return usage
 	}
 	logFlags := *lines != 200 || *grep != ""
-	if scriptArgs != nil && isDeploySubcommand(pos[0]) || logFlags && pos[0] != "logs" {
+	if scriptArgs != nil && pos[0] == "check-head" || logFlags && pos[0] != "logs" {
 		return usage
 	}
 	switch {
 	case pos[0] == "check-head" && len(pos) == 1:
 		return a.DeployCheckHead()
 	case pos[0] == "status" && len(pos) == 2:
-		return a.DeployStatus(ctx, pos[1])
+		return a.DeployStatus(ctx, pos[1], scriptArgs)
 	case pos[0] == "logs" && len(pos) == 2:
 		if *lines <= 0 {
 			return fmt.Errorf("%w: --lines must be positive", errUsage)
 		}
-		return a.DeployLogs(ctx, pos[1], *lines, *grep)
+		return a.DeployLogs(ctx, pos[1], *lines, *grep, scriptArgs)
 	case !isDeploySubcommand(pos[0]) && len(pos) == 1:
 		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs})
 	default:

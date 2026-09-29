@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -51,8 +52,17 @@ func (e *Env) Destination() string {
 // runs through sh -c locally or the remote login shell over ssh; argv runs
 // directly locally (after ${KEY} expansion) or shell-quoted over ssh.
 func (e *Env) Command(ctx context.Context, c config.EnvCommand) (*exec.Cmd, error) {
+	return e.CommandArgs(ctx, c, nil)
+}
+
+// CommandArgs is Command with the user's arguments put in at {args},
+// verbatim (see ExpandArgv and ShellArgs).
+func (e *Env) CommandArgs(ctx context.Context, c config.EnvCommand, args []string) (*exec.Cmd, error) {
+	if len(args) > 0 && !TakesArgs(c) {
+		return nil, fmt.Errorf("%q takes no arguments (no %s in it)", c.Source, config.ArgsPlaceholder)
+	}
 	if len(c.Argv) > 0 && !e.IsRemote() {
-		argv, err := dotenv.ExpandAll(c.Argv, e.Lookup)
+		argv, err := ExpandArgv(c.Argv, args, e.Lookup)
 		if err != nil {
 			return nil, err
 		}
@@ -60,12 +70,98 @@ func (e *Env) Command(ctx context.Context, c config.EnvCommand) (*exec.Cmd, erro
 		cmd.Dir = e.Root
 		return cmd, nil
 	}
-	line := c.Shell
 	if len(c.Argv) > 0 {
-		line = QuoteArgs(c.Argv)
+		argv, err := ExpandArgv(c.Argv, args, nil)
+		if err != nil {
+			return nil, err
+		}
+		return e.Shell(ctx, QuoteArgs(argv)), nil
+	}
+	line, err := ShellArgs(c.Shell, args, nil)
+	if err != nil {
+		return nil, err
 	}
 	return e.Shell(ctx, line), nil
 }
+
+// TakesArgs reports whether a command has an {args} placeholder.
+func TakesArgs(c config.EnvCommand) bool {
+	return strings.Contains(c.Shell, config.ArgsPlaceholder) ||
+		slices.ContainsFunc(c.Argv, func(w string) bool { return strings.Contains(w, config.ArgsPlaceholder) })
+}
+
+// ExpandArgv expands ${KEY} in the configured words (when l is not nil) and
+// then puts the user's arguments in verbatim: what follows -- is never
+// expanded. {args} as a word becomes all the arguments; inside a word it
+// takes exactly one.
+func ExpandArgv(argv, args []string, l *dotenv.Lookup) ([]string, error) {
+	expand := func(s string) (string, error) {
+		if l == nil {
+			return s, nil
+		}
+		return dotenv.Expand(s, l)
+	}
+	out := make([]string, 0, len(argv)+len(args))
+	for _, w := range argv {
+		if w == config.ArgsPlaceholder {
+			out = append(out, args...)
+			continue
+		}
+		before, after, found := strings.Cut(w, config.ArgsPlaceholder)
+		before, err := expand(before)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			out = append(out, before)
+			continue
+		}
+		if len(args) != 1 {
+			return nil, fmt.Errorf("%q takes exactly one argument, got %d", w, len(args))
+		}
+		if after, err = expand(after); err != nil {
+			return nil, err
+		}
+		out = append(out, before+args[0]+after)
+	}
+	return out, nil
+}
+
+// ShellArgs puts the user's arguments into a shell command line at {args},
+// shell-quoted: a whole word takes all of them, {args} inside a word exactly
+// one. fill, when not nil, is applied to the configured text around it only,
+// so nothing the user passed is ever filled in or expanded.
+func ShellArgs(line string, args []string, fill func(string) (string, error)) (string, error) {
+	if fill == nil {
+		fill = func(s string) (string, error) { return s, nil }
+	}
+	parts := strings.Split(line, config.ArgsPlaceholder)
+	var b strings.Builder
+	for i, part := range parts {
+		filled, err := fill(part)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(filled)
+		if i == len(parts)-1 {
+			break
+		}
+		next := parts[i+1]
+		startsWord := (i == 0 && part == "") || (part != "" && isBlank(part[len(part)-1]))
+		endsWord := (i+1 == len(parts)-1 && next == "") || (next != "" && isBlank(next[0]))
+		switch wholeWord := startsWord && endsWord; {
+		case wholeWord:
+			b.WriteString(QuoteArgs(args))
+		case len(args) == 1:
+			b.WriteString(Quote(args[0]))
+		default:
+			return "", fmt.Errorf("%s inside a word in %q takes exactly one argument, got %d", config.ArgsPlaceholder, line, len(args))
+		}
+	}
+	return b.String(), nil
+}
+
+func isBlank(c byte) bool { return c == ' ' || c == '\t' || c == '\n' }
 
 // Shell builds the process running a shell command line in this environment.
 func (e *Env) Shell(ctx context.Context, line string) *exec.Cmd {

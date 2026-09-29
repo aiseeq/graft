@@ -458,8 +458,10 @@ deploy:
       version: "cat /opt/app/VERSION"              # prints what the target runs
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
       release_notes: {transition: Testing}
+      dotenv: [REGISTRY_TOKEN, 'SMTP_HOST?']        # .env keys the script gets, as for tasks
+      dotenv_sets: [db]
       status: "cat /opt/app/state.json"
-      logs: "docker logs --tail {lines} app 2>&1"
+      logs: "docker logs --tail {lines} app-{args} 2>&1"   # graft deploy logs test -- blue
     prod:
       env: prod
       run: [bash, deploy/deploy.sh, --env, prod]
@@ -477,6 +479,9 @@ release_notes:
 
 `graft deploy <target> [-- args]`:
 
+0. Check that every required key of `dotenv` and `dotenv_sets` and every
+   `${KEY}` in `run` is set, listing all that are not; nothing else happens
+   before this passes.
 1. With `confirm: sudo`, refuse unless stdin is a terminal: a password prompt in
    a background job waits where nobody sees it.
 2. The work tree must be clean; `git fetch <remote>`; HEAD must equal the remote
@@ -487,7 +492,8 @@ release_notes:
 5. Read the previously deployed commit (`deployed_sha`).
 6. Run `run` plus `args` in the foreground, with `GRAFT_DEPLOY_TARGET`,
    `GRAFT_DEPLOY_ENV`, `GRAFT_DEPLOY_SHA`, `GRAFT_DEPLOY_VERSION` and
-   `GRAFT_DEPLOY_PREVIOUS_SHA` in its environment. Between building and
+   `GRAFT_DEPLOY_PREVIOUS_SHA` in its environment, plus the listed `.env`
+   keys (an optional `KEY?` set nowhere is left out). Between building and
    shipping, the script can call `graft deploy check-head`.
 7. Check again that the tree is clean and HEAD has not moved.
 8. Record the deployed commit and post release notes: a comment on every
@@ -497,6 +503,13 @@ release_notes:
 
 graft exits with the deploy script's exit status. Two deploys to the same
 target from one repository wait for each other.
+
+`graft deploy status <target> [-- args]` and `graft deploy logs <target>
+[--lines N] [--grep RE] [-- args]` run the target's `status` and `logs` in
+its environment. `{args}` receives the arguments as in tasks: verbatim,
+shell-quoted by graft, all of them as a whole word, exactly one inside a word;
+do not put it inside quotes of your own. `{lines}` is filled in `logs`. A
+command without `{args}` refuses arguments.
 
 Jira credentials are the user's, not the project's: `jira.env_file` in the
 user config (see Install).

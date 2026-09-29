@@ -308,3 +308,60 @@ func TestDeployStatusAndLogs(t *testing.T) {
 		t.Errorf("unknown target: %d\n%s", code, out)
 	}
 }
+
+func TestDeployKeysAndCommandArguments(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("deploy scripts use sh")
+	}
+	state := t.TempDir()
+	f := newRepo(t, map[string]string{
+		".graft.yaml": `schema: 1
+version: {mode: none}
+envs:
+  local: {}
+dotenv_sets:
+  ship: [SHIP_HOST, 'SHIP_PORT?']
+deploy:
+  remote: origin
+  targets:
+    box:
+      env: local
+      run: [sh, deploy.sh]
+      dotenv_sets: [ship]
+      dotenv: [SHIP_TOKEN]
+      status: [sh, -c, 'echo "status $*"', sh, '{args}']
+      logs: echo logs {lines} app-{args}
+`,
+		".gitignore": ".env\n",
+		"deploy.sh":  `echo "host=$SHIP_HOST port=${SHIP_PORT-unset} token=$SHIP_TOKEN other=${OTHER-unset}" > ` + filepath.Join(state, "out") + "\n",
+	}, "origin")
+	f.mustGraft("commit", "-m", "feat: base")
+
+	f.write(".env", "SHIP_HOST=h\nOTHER=o\n")
+	out, code := f.graft("", "deploy", "box")
+	if code != 1 || !strings.Contains(out, "deploy box: nothing was done, missing:") || !strings.Contains(out, "SHIP_TOKEN is not set") {
+		t.Errorf("missing key: exit %d\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(state, "out")); !os.IsNotExist(err) {
+		t.Errorf("the script ran: %v", err)
+	}
+
+	f.write(".env", "SHIP_HOST=h\nSHIP_TOKEN=t\nOTHER=o\n")
+	f.mustGraft("deploy", "box")
+	if got, _ := os.ReadFile(filepath.Join(state, "out")); string(got) != "host=h port=unset token=t other=unset\n" {
+		t.Errorf("script env: %q", got)
+	}
+
+	if out := f.mustGraft("deploy", "status", "box", "--", "a b", "c$d"); out != "status a b c$d\n" {
+		t.Errorf("status: %q", out)
+	}
+	if out := f.mustGraft("deploy", "logs", "box", "--lines", "7", "--", "blue"); out != "logs 7 app-blue\n" {
+		t.Errorf("logs: %q", out)
+	}
+	if out, code := f.graft("", "deploy", "logs", "box", "--", "blue", "green"); code != 1 || !strings.Contains(out, "takes exactly one argument, got 2") {
+		t.Errorf("two args in a word: exit %d\n%s", code, out)
+	}
+	if out, code := f.graft("", "deploy", "check-head", "--", "x"); code != 2 {
+		t.Errorf("check-head with args: exit %d\n%s", code, out)
+	}
+}

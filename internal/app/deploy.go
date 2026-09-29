@@ -21,6 +21,7 @@ import (
 	"github.com/aiseeq/graft/internal/gitx"
 	"github.com/aiseeq/graft/internal/jira"
 	"github.com/aiseeq/graft/internal/lock"
+	"github.com/aiseeq/graft/internal/tasks"
 	"github.com/aiseeq/graft/internal/userconfig"
 )
 
@@ -68,6 +69,9 @@ type deployRun struct {
 func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 	r, err := a.deployTarget(o.Target)
 	if err != nil {
+		return err
+	}
+	if err := deployPreflight(r); err != nil {
 		return err
 	}
 	if r.target.Confirm == "sudo" {
@@ -174,16 +178,58 @@ func (a *App) requireDeployed(ctx context.Context, r *deployRun) error {
 	return nil
 }
 
+// deployPreflight checks, before the fetch, the sudo prompt and anything
+// else, that every required .env key and ${KEY} of the deploy script is set,
+// and lists all that are not.
+func deployPreflight(r *deployRun) error {
+	lookup := dotenv.NewLookup(filepath.Join(r.repo.Root, r.cfg.DotEnv))
+	var problems []string
+	seen := map[string]bool{}
+	check := func(key string) {
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		if _, err := lookup.Value(key); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
+	for _, k := range r.target.Keys {
+		if !k.Optional {
+			check(k.Name)
+		}
+	}
+	for _, w := range r.target.Run.Argv {
+		refs, err := dotenv.Refs(w)
+		if err != nil {
+			problems = append(problems, err.Error())
+			continue
+		}
+		for _, key := range refs {
+			check(key)
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("deploy %s: nothing was done, missing:\n  %s", r.name, strings.Join(problems, "\n  "))
+	}
+	return nil
+}
+
 func (a *App) runDeployScript(ctx context.Context, r *deployRun, args []string) error {
-	argv, err := dotenv.ExpandAll(r.target.Run.Argv, dotenv.NewLookup(filepath.Join(r.repo.Root, r.cfg.DotEnv)))
+	lookup := dotenv.NewLookup(filepath.Join(r.repo.Root, r.cfg.DotEnv))
+	argv, err := dotenv.ExpandAll(r.target.Run.Argv, lookup)
 	if err != nil {
 		return err
 	}
 	argv = append(argv, args...)
+	keys, err := tasks.KeyValues(lookup, r.target.Keys)
+	if err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = r.repo.Root
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, a.Stdout, a.Stderr
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(append(os.Environ(), keys...),
 		EnvDeployTarget+"="+r.name,
 		EnvDeployEnv+"="+r.env.Name,
 		EnvDeploySHA+"="+r.head,
@@ -320,8 +366,8 @@ func (a *App) DeployCheckHead() error {
 	return nil
 }
 
-// DeployStatus runs the target's status command.
-func (a *App) DeployStatus(ctx context.Context, target string) error {
+// DeployStatus runs the target's status command; args go to its {args}.
+func (a *App) DeployStatus(ctx context.Context, target string, args []string) error {
 	r, err := a.deployTarget(target)
 	if err != nil {
 		return err
@@ -329,7 +375,7 @@ func (a *App) DeployStatus(ctx context.Context, target string) error {
 	if !r.target.Status.IsSet() {
 		return fmt.Errorf("deploy.targets.%s.status is not configured", target)
 	}
-	cmd, err := r.env.Command(ctx, r.target.Status)
+	cmd, err := r.env.CommandArgs(ctx, r.target.Status, args)
 	if err != nil {
 		return err
 	}
@@ -337,8 +383,9 @@ func (a *App) DeployStatus(ctx context.Context, target string) error {
 	return runPassthrough(cmd, "status")
 }
 
-// DeployLogs runs the target's logs command, keeping the lines matching grep.
-func (a *App) DeployLogs(ctx context.Context, target string, lines int, grep string) error {
+// DeployLogs runs the target's logs command, keeping the lines matching
+// grep; args go to its {args}.
+func (a *App) DeployLogs(ctx context.Context, target string, lines int, grep string, args []string) error {
 	r, err := a.deployTarget(target)
 	if err != nil {
 		return err
@@ -352,7 +399,12 @@ func (a *App) DeployLogs(ctx context.Context, target string, lines int, grep str
 			return fmt.Errorf("--grep: %w", err)
 		}
 	}
-	line, err := envs.Fill(r.target.Logs, map[string]string{"lines": strconv.Itoa(lines)}, envs.Quote)
+	if len(args) > 0 && !strings.Contains(r.target.Logs, config.ArgsPlaceholder) {
+		return fmt.Errorf("deploy.targets.%s.logs takes no arguments (no %s in it)", target, config.ArgsPlaceholder)
+	}
+	line, err := envs.ShellArgs(r.target.Logs, args, func(s string) (string, error) {
+		return envs.Fill(s, map[string]string{"lines": strconv.Itoa(lines)}, envs.Quote)
+	})
 	if err != nil {
 		return err
 	}

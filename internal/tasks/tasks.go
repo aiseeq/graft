@@ -236,10 +236,13 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	}
 	var cmd *exec.Cmd
 	if s.Shell != "" {
-		line := strings.ReplaceAll(s.Shell, ArgsPlaceholder, envs.QuoteArgs(args))
+		line, err := envs.ShellArgs(s.Shell, args, nil)
+		if err != nil {
+			return err
+		}
 		cmd = exec.CommandContext(ctx, "sh", "-c", line)
 	} else {
-		argv, err := argvWithArgs(s.Argv, args, r.lookup.With(vars))
+		argv, err := envs.ExpandArgv(s.Argv, args, r.lookup.With(vars))
 		if err != nil {
 			return err
 		}
@@ -252,37 +255,6 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
 	return cmd.Run()
-}
-
-// argvWithArgs expands ${KEY} in the configured words, then puts the user's
-// arguments in verbatim: what follows -- is never expanded. {args} as a word
-// becomes all the arguments; inside a word it takes exactly one.
-func argvWithArgs(argv, args []string, l *dotenv.Lookup) ([]string, error) {
-	out := make([]string, 0, len(argv)+len(args))
-	for _, w := range argv {
-		if w == ArgsPlaceholder {
-			out = append(out, args...)
-			continue
-		}
-		before, after, found := strings.Cut(w, ArgsPlaceholder)
-		before, err := dotenv.Expand(before, l)
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			out = append(out, before)
-			continue
-		}
-		if len(args) != 1 {
-			return nil, fmt.Errorf("%q takes exactly one argument, got %d", w, len(args))
-		}
-		after, err = dotenv.Expand(after, l)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, before+args[0]+after)
-	}
-	return out, nil
 }
 
 // vars are the variables graft sets for a task's steps: its env values, the
