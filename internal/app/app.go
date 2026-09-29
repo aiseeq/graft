@@ -17,14 +17,18 @@ import (
 	"github.com/aiseeq/graft/internal/hooks"
 	"github.com/aiseeq/graft/internal/lock"
 	"github.com/aiseeq/graft/internal/tasks"
+	"github.com/aiseeq/graft/internal/version"
 )
 
 // App carries the process context the commands run in.
 type App struct {
-	Dir    string // directory graft was started in
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
+	Dir string // directory graft was started in
+	// ToolVersion is this graft build's version, checked against the
+	// project's graft: key.
+	ToolVersion string
+	Stdin       io.Reader
+	Stdout      io.Writer
+	Stderr      io.Writer
 }
 
 // lockFile is the lock's name inside the common git directory, shared by all
@@ -40,7 +44,31 @@ func (a *App) open() (*gitx.Repo, *config.Config, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := a.requireGraft(cfg); err != nil {
+		return nil, nil, err
+	}
 	return repo, cfg, nil
+}
+
+// requireGraft refuses to work on a project that needs a newer graft: an
+// older one would reject or, worse, ignore what the config asks for.
+func (a *App) requireGraft(cfg *config.Config) error {
+	if cfg.MinGraft == "" {
+		return nil
+	}
+	need, err := version.Parse(cfg.MinGraft)
+	if err != nil {
+		return fmt.Errorf("graft: %w", err)
+	}
+	have, err := version.ParseBuild(a.ToolVersion)
+	if err != nil {
+		return fmt.Errorf("this project needs graft >= %s and this build cannot tell its version (%w); install a release: %s",
+			need, err, hooks.InstallHint(cfg.MinGraft))
+	}
+	if have.Less(need) {
+		return fmt.Errorf("this project needs graft >= %s, this is graft %s; install it: %s", need, a.ToolVersion, hooks.InstallHint(cfg.MinGraft))
+	}
+	return nil
 }
 
 func (a *App) printf(format string, args ...any) {
@@ -67,6 +95,16 @@ func (a *App) runner(repo *gitx.Repo, cfg *config.Config) *tasks.Runner {
 	r.LockDir = lockDir(repo)
 	if cfg.TestDB != nil {
 		r.TestDSN = func(ctx context.Context) (string, error) { return a.testDSN(ctx, repo, cfg) }
+	}
+	r.Version = func() (string, bool, error) {
+		v, err := describeVersion(repo, cfg)
+		if errors.Is(err, errNoCommits) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		return v, true, nil
 	}
 	return r
 }

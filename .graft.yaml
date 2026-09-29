@@ -25,7 +25,7 @@ tasks:
   build:
     desc: build the binary into bin/
     run:
-      - sh: go build -ldflags "-X main.buildVersion=$(git describe --tags --always --dirty)" -o bin/graft .
+      - [go, build, -ldflags, '-X main.buildVersion=${GRAFT_VERSION}', -o, bin/graft, .]
   install:
     desc: install to ~/bin atomically (a running graft keeps its file)
     deps: [build]
@@ -55,6 +55,7 @@ tasks:
     run: [go vet ./...]
   test:
     desc: all tests, the PostgreSQL and docker ones included
+    usage: <go test flags>
     test_db: true
     env: {GRAFT_TEST_DOCKER: '1'}
     run: ['go test -count=1 {args} ./...']

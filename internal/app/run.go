@@ -7,13 +7,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/aiseeq/graft/internal/config"
 	"github.com/aiseeq/graft/internal/gitx"
 	"github.com/aiseeq/graft/internal/lock"
 	"github.com/aiseeq/graft/internal/services"
 	"github.com/aiseeq/graft/internal/tools"
+	"github.com/aiseeq/graft/internal/userconfig"
 )
 
 // Run runs a task from .graft.yaml.
@@ -28,44 +28,12 @@ func (a *App) Run(ctx context.Context, task string, args []string) error {
 // IsTask reports whether name is a task of the project in the current
 // directory; outside a project nothing is.
 func (a *App) IsTask(name string) (bool, error) {
-	_, cfg, err := a.open()
-	if errors.Is(err, gitx.ErrNotRepo) || errors.Is(err, config.ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
+	cfg, found, err := a.ProjectConfig()
+	if err != nil || !found {
 		return false, err
 	}
 	_, ok := cfg.Tasks[name]
 	return ok, nil
-}
-
-// ProjectHelp lists the project's tasks and services. Outside a project it
-// prints nothing: the built-in usage is all there is.
-func (a *App) ProjectHelp() error {
-	_, cfg, err := a.open()
-	if errors.Is(err, gitx.ErrNotRepo) || errors.Is(err, config.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	w := tabwriter.NewWriter(a.Stdout, 0, 0, 2, ' ', 0)
-	if len(cfg.Tasks) > 0 {
-		fmt.Fprintln(w, "\nTasks (graft <task> or graft run <task> [-- args]):")
-		for _, name := range sortedNames(cfg.Tasks) {
-			// A task without desc is a building block of others.
-			if desc := cfg.Tasks[name].Desc; desc != "" {
-				fmt.Fprintf(w, "  %s\t%s\n", name, desc)
-			}
-		}
-	}
-	if len(cfg.Services) > 0 {
-		fmt.Fprintln(w, "\nServices (graft start|stop|restart [service]):")
-		for _, name := range sortedNames(cfg.Services) {
-			fmt.Fprintf(w, "  %s\t%s\n", name, cfg.Services[name].Desc)
-		}
-	}
-	return w.Flush()
 }
 
 func sortedNames[V any](m map[string]V) []string {
@@ -120,6 +88,19 @@ func (a *App) Service(ctx context.Context, action ServiceAction, name string) er
 	return nil
 }
 
+// ServiceLogs prints the last lines of a service's log.
+func (a *App) ServiceLogs(ctx context.Context, name string, lines int) error {
+	repo, cfg, err := a.open()
+	if err != nil {
+		return err
+	}
+	m := services.New(repo.Root, cfg, a.runner(repo, cfg), a.Stdout)
+	if _, err := m.Names(name); err != nil {
+		return err
+	}
+	return m.Logs(ctx, name, lines, a.Stdout)
+}
+
 // Status shows the services, the test database and who holds graft's locks.
 func (a *App) Status(ctx context.Context) error {
 	repo, cfg, err := a.open()
@@ -129,7 +110,7 @@ func (a *App) Status(ctx context.Context) error {
 	if len(cfg.Services) > 0 {
 		m := services.New(repo.Root, cfg, a.runner(repo, cfg), a.Stdout)
 		for _, name := range sortedNames(cfg.Services) {
-			st, err := m.State(name)
+			st, err := m.State(ctx, name)
 			if err != nil {
 				return err
 			}
@@ -205,6 +186,10 @@ func (a *App) Tools(ctx context.Context, install bool) error {
 }
 
 func (a *App) checkTools(ctx context.Context, cfg *config.Config, install bool) error {
+	binDir, err := toolsBinDir()
+	if err != nil {
+		return err
+	}
 	var failed []string
 	for _, name := range sortedNames(cfg.Tools) {
 		t := cfg.Tools[name]
@@ -222,7 +207,7 @@ func (a *App) checkTools(ctx context.Context, cfg *config.Config, install bool) 
 			continue
 		}
 		a.printf("%s: %s, installing", name, r.Problem)
-		if err := tools.Install(ctx, name, t, a.Stderr); err != nil {
+		if err := tools.Install(ctx, name, t, binDir, a.Stderr); err != nil {
 			fmt.Fprintln(a.Stderr, "graft:", err)
 			failed = append(failed, name)
 			continue
@@ -233,4 +218,16 @@ func (a *App) checkTools(ctx context.Context, cfg *config.Config, install bool) 
 		return fmt.Errorf("tools not ready: %s", strings.Join(failed, ", "))
 	}
 	return nil
+}
+
+// toolsBinDir is tools.bin_dir from the user config; empty without one.
+func toolsBinDir() (string, error) {
+	ucfg, _, err := userconfig.Load()
+	if errors.Is(err, userconfig.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return ucfg.Tools.BinDir, nil
 }

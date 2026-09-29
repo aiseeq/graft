@@ -17,6 +17,9 @@ import (
 // The integration tests drive the built graft binary against throwaway
 // repositories with bare remotes, the way a user's shell would.
 
+// testGraftVersion is the version the graft under test reports.
+const testGraftVersion = "v1.2.3-4-gabcdef0"
+
 var (
 	binDir    string
 	graftBin  string
@@ -47,7 +50,8 @@ func setup(m *testing.M) (int, error) {
 	graftBin = filepath.Join(binDir, "graft"+exe)
 	helperBin = filepath.Join(binDir, "gatehelper"+exe)
 	for target, pkg := range map[string]string{graftBin: ".", helperBin: "./testdata/gatehelper"} {
-		out, err := exec.Command("go", "build", "-o", target, pkg).CombinedOutput()
+		// A fixed version, so the graft: minimum version tests know it.
+		out, err := exec.Command("go", "build", "-ldflags", "-X main.buildVersion="+testGraftVersion, "-o", target, pkg).CombinedOutput()
 		if err != nil {
 			return 0, fmt.Errorf("go build %s: %v\n%s", pkg, err, out)
 		}
@@ -56,7 +60,7 @@ func setup(m *testing.M) (int, error) {
 	if err := os.WriteFile(gitconfig, []byte("[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n[protocol \"file\"]\n\tallow = always\n"), 0o644); err != nil {
 		return 0, err
 	}
-	testEnv, err = isolatedEnv(gitconfig)
+	testEnv, err = isolatedEnv(gitconfig, filepath.Join(dir, "userconfig"))
 	if err != nil {
 		return 0, err
 	}
@@ -65,12 +69,12 @@ func setup(m *testing.M) (int, error) {
 
 // isolatedEnv keeps the tests away from the user's git config and from the
 // variables git sets when these tests run inside a hook (graft's own gate).
-func isolatedEnv(gitconfig string) ([]string, error) {
+func isolatedEnv(gitconfig, userConfig string) ([]string, error) {
 	out, err := exec.Command("git", "rev-parse", "--local-env-vars").Output()
 	if err != nil {
 		return nil, err
 	}
-	drop := append(strings.Fields(string(out)), "GRAFT_COMMIT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "PATH")
+	drop := append(strings.Fields(string(out)), "GRAFT_COMMIT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "PATH", "XDG_CONFIG_HOME", "APPDATA")
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
@@ -81,6 +85,9 @@ func isolatedEnv(gitconfig string) ([]string, error) {
 	return append(env,
 		"GIT_CONFIG_GLOBAL="+gitconfig,
 		"GIT_CONFIG_NOSYSTEM=1",
+		// The user's own graft config (Jira, tools.bin_dir) stays out.
+		"XDG_CONFIG_HOME="+userConfig,
+		"APPDATA="+userConfig,
 		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 	), nil
 }

@@ -5,10 +5,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -18,60 +20,13 @@ import (
 	"github.com/aiseeq/graft/internal/app"
 	"github.com/aiseeq/graft/internal/hooks"
 	"github.com/aiseeq/graft/internal/message"
+	"github.com/aiseeq/graft/internal/tasks"
 	"github.com/aiseeq/graft/internal/version"
 )
 
 // buildVersion is set by the build task through -ldflags; go install builds fall
 // back to the module version recorded in the binary.
 var buildVersion string
-
-const usage = `graft - the development workflow of a git repository, as .graft.yaml describes
-
-Usage:
-  graft commit [--minor|--major] (-m <msg>... | -F <file> | -F -)
-  graft amend
-  graft release [--minor|--major|--version X.Y.Z]
-  graft version
-  graft init
-  graft check
-  graft gate
-  graft hook (pre-commit|post-merge)
-  graft flags [status] [--env E]
-  graft flags show <id> [--env E]
-  graft flags ack <id> --reason R [--env E]
-  graft flags mute <id> --reason R [--match S] [--all-envs] [--env E]
-  graft deploy <target> [-- script args]
-  graft deploy status <target>
-  graft deploy logs <target> [--lines N] [--grep RE]
-  graft deploy check-head
-  graft run <task> [-- args]     (or graft <task> [-- args])
-  graft start|stop|restart [service]
-  graft status
-  graft locks
-  graft testdb (up|down|status|recreate)
-  graft tools [install]
-  graft help
-  graft --version
-
-Commands:
-  commit   gate, bump the version, stage all, check, commit, push to every remote
-  amend    gate, stage all, check, fold into the last unpushed commit
-  release  tag the pushed HEAD with the version and push the tag
-  version  print the project version
-  init     install the git hooks (core.hooksPath) and the pinned tools
-  check    scan the staged changes for secrets, binaries, large files, version drift
-  gate     run the gate commands
-  hook     entry point of the installed hooks
-  flags    review the project's event journal: status, show, ack, mute
-  deploy   run the project's deploy script between graft's checks; status, logs
-  run      run a task from .graft.yaml with its deps
-  start    start services in the background; stop and restart them
-  status   show services, the test database and held locks
-  locks    show who holds graft's locks
-  testdb   manage the disposable test PostgreSQL in docker
-  tools    check the pinned tools; install installs the failing ones
-  help     this text plus the project's tasks and services
-`
 
 // errUsage marks command line mistakes; they exit with status 2.
 var errUsage = errors.New("usage")
@@ -82,7 +37,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "graft:", err)
 		os.Exit(1)
 	}
-	a := &app.App{Dir: wd, Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}
+	// GRAFT_VERSION is graft's to set for the project it runs in; a value
+	// inherited from an outer graft (a task that runs graft) describes
+	// another project, or the same one at another moment.
+	if err := os.Unsetenv(tasks.VersionEnv); err != nil {
+		fmt.Fprintln(os.Stderr, "graft:", err)
+		os.Exit(1)
+	}
+	a := &app.App{Dir: wd, ToolVersion: toolVersion(), Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}
 	// Ctrl-C stops a lock wait or a gate command instead of leaving them
 	// running behind the user's back.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -103,8 +65,7 @@ func run(ctx context.Context, a *app.App, args []string) int {
 		fmt.Fprintln(a.Stderr, "graft:", err)
 		return exitCode.Code
 	case errors.Is(err, errUsage):
-		fmt.Fprintln(a.Stderr, "graft:", err)
-		fmt.Fprint(a.Stderr, "\n"+usage)
+		fmt.Fprintln(a.Stderr, "graft:", strings.TrimPrefix(err.Error(), errUsage.Error()+": ")+" (see graft help)")
 		return 2
 	default:
 		fmt.Fprintln(a.Stderr, "graft:", err)
@@ -114,8 +75,7 @@ func run(ctx context.Context, a *app.App, args []string) int {
 
 func dispatch(ctx context.Context, a *app.App, args []string) error {
 	if len(args) == 0 {
-		fmt.Fprint(a.Stdout, usage)
-		return nil
+		return help(a)
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
@@ -126,7 +86,7 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 	case "release":
 		return releaseCmd(ctx, a, rest)
 	case "version":
-		return noArgs(a, cmd, rest, a.Version)
+		return versionCmd(a, rest)
 	case "init":
 		return noArgs(a, cmd, rest, func() error { return a.Init(ctx) })
 	case "check":
@@ -159,13 +119,16 @@ func projectCmd(ctx context.Context, a *app.App, cmd string, rest []string) erro
 		return noArgs(a, cmd, rest, func() error { return a.Status(ctx) })
 	case "locks":
 		return noArgs(a, cmd, rest, a.Locks)
+	case "logs":
+		return logsCmd(ctx, a, rest)
 	case "testdb":
 		return testDBCmd(ctx, a, rest)
 	case "tools":
 		return toolsCmd(ctx, a, rest)
 	case "help", "-h", "--help":
-		fmt.Fprint(a.Stdout, usage)
-		return a.ProjectHelp()
+		return noArgs(a, cmd, rest, func() error { return help(a) })
+	case "tasks":
+		return noArgs(a, cmd, rest, a.Tasks)
 	case "--version", "-v":
 		fmt.Fprintln(a.Stdout, "graft", toolVersion())
 		return nil
@@ -181,7 +144,7 @@ func taskShortcut(ctx context.Context, a *app.App, name string, args []string) e
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("%w: unknown command or task %q (see graft help)", errUsage, name)
+		return fmt.Errorf("%w: unknown command or task %q", errUsage, name)
 	}
 	return runTask(ctx, a, name, args)
 }
@@ -209,6 +172,19 @@ func serviceCmd(ctx context.Context, a *app.App, action app.ServiceAction, args 
 	return a.Service(ctx, action, name)
 }
 
+func logsCmd(ctx context.Context, a *app.App, args []string) error {
+	fs := newFlags(a, "logs")
+	lines := fs.Int("lines", 100, "how many of the last lines to show")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 || *lines <= 0 {
+		return fmt.Errorf("%w: graft logs <service> [--lines N]", errUsage)
+	}
+	return a.ServiceLogs(ctx, pos[0], *lines)
+}
+
 func testDBCmd(ctx context.Context, a *app.App, args []string) error {
 	if len(args) != 1 || !slices.Contains([]string{"up", "down", "status", "recreate"}, args[0]) {
 		return fmt.Errorf("%w: graft testdb up|down|status|recreate", errUsage)
@@ -227,18 +203,36 @@ func toolsCmd(ctx context.Context, a *app.App, args []string) error {
 	}
 }
 
+// heldOutput keeps what the flag package prints until parsing is over: its
+// usage is wanted for -h, not after every mistake, which gets one line.
+type heldOutput struct {
+	bytes.Buffer
+	w io.Writer
+}
+
 func newFlags(a *app.App, name string) *flag.FlagSet {
 	fs := flag.NewFlagSet("graft "+name, flag.ContinueOnError)
-	fs.SetOutput(a.Stderr)
+	fs.SetOutput(&heldOutput{w: a.Stderr})
 	return fs
+}
+
+// parseError turns a flag parse error into graft's: -h shows the held
+// usage, anything else is a usage error.
+func parseError(fs *flag.FlagSet, err error) error {
+	if errors.Is(err, flag.ErrHelp) {
+		if out, ok := fs.Output().(*heldOutput); ok {
+			if _, werr := out.WriteTo(out.w); werr != nil {
+				return werr
+			}
+		}
+		return err
+	}
+	return fmt.Errorf("%w: %w", errUsage, err)
 }
 
 func parse(fs *flag.FlagSet, args []string) error {
 	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return err
-		}
-		return fmt.Errorf("%w: %w", errUsage, err)
+		return parseError(fs, err)
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("%w: %s: unexpected argument %q", errUsage, fs.Name(), fs.Arg(0))
@@ -315,6 +309,15 @@ func releaseCmd(ctx context.Context, a *app.App, args []string) error {
 	return a.Release(ctx, app.ReleaseOptions{Level: lvl, Version: *exact})
 }
 
+func versionCmd(a *app.App, args []string) error {
+	fs := newFlags(a, "version")
+	describe := fs.Bool("describe", false, "print the build identity: works without tags, marks uncommitted changes")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	return a.Version(*describe)
+}
+
 func hookCmd(ctx context.Context, a *app.App, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("%w: hook needs a name: %s", errUsage, strings.Join(hooks.Names, " or "))
@@ -347,10 +350,7 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 	var positional []string
 	for {
 		if err := fs.Parse(args); err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				return nil, err
-			}
-			return nil, fmt.Errorf("%w: %w", errUsage, err)
+			return nil, parseError(fs, err)
 		}
 		if fs.NArg() == 0 {
 			return positional, nil

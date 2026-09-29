@@ -27,7 +27,7 @@ import (
 const MarkerEnv = "GRAFT_COMMIT"
 
 // ArgsPlaceholder in a step receives the arguments given after --.
-const ArgsPlaceholder = "{args}"
+const ArgsPlaceholder = config.ArgsPlaceholder
 
 // Runner runs tasks of one project.
 type Runner struct {
@@ -42,12 +42,20 @@ type Runner struct {
 	LockDir string
 	// TestDSN returns the checked test database DSN for test_db tasks.
 	TestDSN func(context.Context) (string, error)
+	// Version returns the project version (graft version --describe) and
+	// whether there is one: a repository without commits has none.
+	Version func() (string, bool, error)
 
-	lookup *dotenv.Lookup
-	base   []string
-	done   map[string]bool
-	held   map[string]lock.Mode
+	lookup  *dotenv.Lookup
+	base    []string
+	version *string
+	dsn     *string
+	done    map[string]bool
+	held    map[string]lock.Mode
 }
+
+// VersionEnv carries the project version into every step.
+const VersionEnv = "GRAFT_VERSION"
 
 // NewRunner prepares a runner.
 func NewRunner(root string, cfg *config.Config, stdout, stderr io.Writer) *Runner {
@@ -66,6 +74,9 @@ func (r *Runner) Gate(ctx context.Context) error {
 		return nil
 	}
 	r.Stdin = nil
+	if err := r.preflight(r.Config.Gate, &config.Task{}, "gate"); err != nil {
+		return err
+	}
 	for i, s := range r.Config.Gate {
 		fmt.Fprintf(r.Stdout, "graft: gate %d/%d: %s\n", i+1, len(r.Config.Gate), s.Source)
 		if err := r.step(ctx, s, &config.Task{}, nil); err != nil {
@@ -81,19 +92,92 @@ func (r *Runner) Run(ctx context.Context, name string, args []string) error {
 	if !ok {
 		return fmt.Errorf("unknown task %q (see graft help)", name)
 	}
-	if len(args) > 0 && !takesArgs(t) {
+	if len(args) > 0 && !t.TakesArgs() {
 		return fmt.Errorf("task %s takes no arguments (no %s in its steps)", name, ArgsPlaceholder)
+	}
+	if len(args) == 0 && t.Args == config.ArgsRequired {
+		return fmt.Errorf("task %s needs arguments: graft %s -- %s", name, name, t.UsageText())
+	}
+	if err := r.preflight(t.Run, t, name); err != nil {
+		return err
 	}
 	return r.run(ctx, name, args)
 }
 
-func takesArgs(t *config.Task) bool {
-	for _, s := range t.Run {
-		if slices.Contains(s.Argv, ArgsPlaceholder) || strings.Contains(s.Shell, ArgsPlaceholder) {
-			return true
+// preflight checks, before any step runs, that every .env key and ${KEY}
+// the steps need, through deps and task steps, is set: a missing key found
+// after the build has run wastes the build and hides the next missing key.
+func (r *Runner) preflight(steps []config.Step, owner *config.Task, name string) error {
+	var problems []string
+	seen := map[string]bool{}
+	var visit func(name string, t *config.Task, steps []config.Step)
+	visit = func(name string, t *config.Task, steps []config.Step) {
+		for _, d := range t.Deps {
+			if !seen[d] {
+				seen[d] = true
+				visit(d, r.Config.Tasks[d], r.Config.Tasks[d].Run)
+			}
+		}
+		for _, s := range steps {
+			if s.Task != "" && !seen[s.Task] {
+				seen[s.Task] = true
+				visit(s.Task, r.Config.Tasks[s.Task], r.Config.Tasks[s.Task].Run)
+			}
+		}
+		for _, p := range r.missing(t, steps) {
+			problems = append(problems, name+": "+p)
 		}
 	}
-	return false
+	visit(name, owner, steps)
+	if len(problems) > 0 {
+		return fmt.Errorf("nothing was run, missing:\n  %s", strings.Join(problems, "\n  "))
+	}
+	return nil
+}
+
+// missing lists what a task's steps need from the environment and .env but
+// do not find.
+func (r *Runner) missing(t *config.Task, steps []config.Step) []string {
+	provided := map[string]bool{VersionEnv: true}
+	for k := range t.Env {
+		provided[k] = true
+	}
+	if t.TestDB {
+		provided[r.Config.TestDB.DSNVar] = true
+	}
+	var problems []string
+	check := func(key string) {
+		if provided[key] {
+			return
+		}
+		provided[key] = true // report once
+		if _, err := r.lookup.Value(key); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
+	for _, k := range t.Keys {
+		if !k.Optional {
+			check(k.Name)
+		}
+	}
+	var texts []string
+	for _, k := range sortedKeys(t.Env) {
+		texts = append(texts, t.Env[k])
+	}
+	for _, s := range steps {
+		texts = append(texts, s.Argv...)
+	}
+	for _, text := range texts {
+		refs, err := dotenv.Refs(text)
+		if err != nil {
+			problems = append(problems, err.Error())
+			continue
+		}
+		for _, key := range refs {
+			check(key)
+		}
+	}
+	return problems
 }
 
 func (r *Runner) run(ctx context.Context, name string, args []string) error {
@@ -142,7 +226,11 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	if s.Task != "" {
 		return r.run(ctx, s.Task, nil)
 	}
-	env, err := r.env(ctx, t)
+	vars, err := r.vars(ctx, t)
+	if err != nil {
+		return err
+	}
+	env, err := r.env(t, vars)
 	if err != nil {
 		return err
 	}
@@ -151,7 +239,7 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		line := strings.ReplaceAll(s.Shell, ArgsPlaceholder, envs.QuoteArgs(args))
 		cmd = exec.CommandContext(ctx, "sh", "-c", line)
 	} else {
-		argv, err := dotenv.ExpandAll(expandArgs(s.Argv, args), r.lookup)
+		argv, err := argvWithArgs(s.Argv, args, r.lookup.With(vars))
 		if err != nil {
 			return err
 		}
@@ -166,21 +254,79 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	return cmd.Run()
 }
 
-func expandArgs(argv, args []string) []string {
+// argvWithArgs expands ${KEY} in the configured words, then puts the user's
+// arguments in verbatim: what follows -- is never expanded. {args} as a word
+// becomes all the arguments; inside a word it takes exactly one.
+func argvWithArgs(argv, args []string, l *dotenv.Lookup) ([]string, error) {
 	out := make([]string, 0, len(argv)+len(args))
-	for _, a := range argv {
-		if a == ArgsPlaceholder {
+	for _, w := range argv {
+		if w == ArgsPlaceholder {
 			out = append(out, args...)
 			continue
 		}
-		out = append(out, a)
+		before, after, found := strings.Cut(w, ArgsPlaceholder)
+		before, err := dotenv.Expand(before, l)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			out = append(out, before)
+			continue
+		}
+		if len(args) != 1 {
+			return nil, fmt.Errorf("%q takes exactly one argument, got %d", w, len(args))
+		}
+		after, err = dotenv.Expand(after, l)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, before+args[0]+after)
 	}
-	return out
+	return out, nil
+}
+
+// vars are the variables graft sets for a task's steps: its env values, the
+// project version and the test database DSN. ${KEY} in argv sees them too.
+func (r *Runner) vars(ctx context.Context, t *config.Task) (map[string]string, error) {
+	vars := map[string]string{}
+	for _, k := range sortedKeys(t.Env) {
+		v, err := dotenv.Expand(t.Env[k], r.lookup)
+		if err != nil {
+			return nil, fmt.Errorf("env %s: %w", k, err)
+		}
+		vars[k] = v
+	}
+	if r.version == nil && r.Version != nil {
+		v, ok, err := r.Version()
+		if err != nil {
+			return nil, fmt.Errorf("project version: %w", err)
+		}
+		if ok {
+			r.version = &v
+		}
+	}
+	if r.version != nil {
+		vars[VersionEnv] = *r.version
+	}
+	if t.TestDB {
+		if r.TestDSN == nil {
+			return nil, errors.New("test_db is set but no test database is configured")
+		}
+		if r.dsn == nil {
+			dsn, err := r.TestDSN(ctx)
+			if err != nil {
+				return nil, err
+			}
+			r.dsn = &dsn
+		}
+		vars[r.Config.TestDB.DSNVar] = *r.dsn
+	}
+	return vars, nil
 }
 
 // env is the base environment (without graft's marker and git's hook
-// variables) plus the task's .env keys, variables and test database DSN.
-func (r *Runner) env(ctx context.Context, t *config.Task) ([]string, error) {
+// variables) plus the task's .env keys and vars.
+func (r *Runner) env(t *config.Task, vars map[string]string) ([]string, error) {
 	if r.base == nil {
 		base, err := BaseEnv()
 		if err != nil {
@@ -189,27 +335,37 @@ func (r *Runner) env(ctx context.Context, t *config.Task) ([]string, error) {
 		r.base = base
 	}
 	env := slices.Clone(r.base)
-	keys, err := r.lookup.Values(t.DotEnv)
+	keys, err := KeyValues(r.lookup, t.Keys)
 	if err != nil {
 		return nil, err
 	}
 	env = append(env, keys...)
-	for _, k := range sortedKeys(t.Env) {
-		v, err := dotenv.Expand(t.Env[k], r.lookup)
-		if err != nil {
-			return nil, fmt.Errorf("env %s: %w", k, err)
-		}
-		env = append(env, k+"="+v)
+	for _, k := range sortedKeys(vars) {
+		env = append(env, k+"="+vars[k])
 	}
-	if t.TestDB {
-		if r.TestDSN == nil {
-			return nil, errors.New("test_db is set but no test database is configured")
+	return env, nil
+}
+
+// KeyValues resolves .env keys into KEY=VALUE entries; optional keys set
+// nowhere are left out.
+func KeyValues(l *dotenv.Lookup, keys []config.DotEnvKey) ([]string, error) {
+	var env []string
+	for _, k := range keys {
+		if !k.Optional {
+			v, err := l.Value(k.Name)
+			if err != nil {
+				return nil, err
+			}
+			env = append(env, k.Name+"="+v)
+			continue
 		}
-		dsn, err := r.TestDSN(ctx)
+		v, ok, err := l.Optional(k.Name)
 		if err != nil {
 			return nil, err
 		}
-		env = append(env, r.Config.TestDB.DSNVar+"="+dsn)
+		if ok {
+			env = append(env, k.Name+"="+v)
+		}
 	}
 	return env, nil
 }

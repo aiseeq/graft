@@ -16,7 +16,14 @@ import (
 
 // Config is the user's graft settings.
 type Config struct {
-	Jira Jira `yaml:"jira"`
+	Jira  Jira  `yaml:"jira"`
+	Tools Tools `yaml:"tools"`
+}
+
+// Tools says where graft installs pinned tools. Empty BinDir leaves it to go
+// install (GOBIN, else GOPATH/bin).
+type Tools struct {
+	BinDir string `yaml:"bin_dir"`
 }
 
 // Jira says where the Jira credentials are: an env file with JIRA_BASE_URL,
@@ -53,6 +60,14 @@ func Load() (*Config, string, error) {
 	var cfg Config
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, path, fmt.Errorf("%s: %w", path, err)
+	}
+	if cfg.Tools.BinDir != "" {
+		if cfg.Tools.BinDir, err = expandHome(cfg.Tools.BinDir); err != nil {
+			return nil, path, err
+		}
+		if !filepath.IsAbs(cfg.Tools.BinDir) {
+			return nil, path, fmt.Errorf("%s: tools.bin_dir must be absolute or start with ~/", path)
+		}
 	}
 	if cfg.Jira.EnvFile != "" {
 		if cfg.Jira.EnvFile, err = expandHome(cfg.Jira.EnvFile); err != nil {

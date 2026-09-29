@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -71,11 +73,28 @@ func firstLine(s string) string {
 	return line
 }
 
-// Install runs go install for one tool and checks it again. When the check
-// still fails because PATH finds another copy first, the error says so.
-func Install(ctx context.Context, name string, t *config.Tool, log io.Writer) error {
+// Install runs go install for one tool into binDir (empty: where go install
+// puts binaries) and checks it again. It warns before installing a copy that
+// PATH will find ahead of another one, and fails when the check still finds
+// another copy first.
+func Install(ctx context.Context, name string, t *config.Tool, binDir string, log io.Writer) error {
 	if _, err := exec.LookPath("go"); err != nil {
 		return fmt.Errorf("tools are installed with go install: %w", err)
+	}
+	if binDir == "" {
+		dir, err := goBin(ctx)
+		if err != nil {
+			return err
+		}
+		binDir = dir
+	}
+	shadowed, err := shadows(binDir, filepath.Base(t.Check[0]))
+	if err != nil {
+		return err
+	}
+	if len(shadowed) > 0 {
+		fmt.Fprintf(log, "graft: warning: %s: installing into %s puts it on PATH ahead of %s, which will no longer run; set tools.bin_dir in the graft user config to install elsewhere\n",
+			name, binDir, strings.Join(shadowed, ", "))
 	}
 	args := []string{"install"}
 	if len(t.Tags) > 0 {
@@ -84,6 +103,7 @@ func Install(ctx context.Context, name string, t *config.Tool, log io.Writer) er
 	args = append(args, t.GoInstall)
 	fmt.Fprintf(log, "graft: go %s\n", strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd.Env = append(os.Environ(), "GOBIN="+binDir)
 	cmd.Stdout, cmd.Stderr = log, log
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s: go install: %w", name, err)
@@ -95,10 +115,6 @@ func Install(ctx context.Context, name string, t *config.Tool, log io.Writer) er
 	if r.OK {
 		return nil
 	}
-	binDir, err := goBin(ctx)
-	if err != nil {
-		return err
-	}
 	if r.Path != "" && filepath.Dir(r.Path) != binDir {
 		return fmt.Errorf("%s: installed into %s, but PATH finds %s first: %s", name, binDir, r.Path, r.Problem)
 	}
@@ -106,6 +122,34 @@ func Install(ctx context.Context, name string, t *config.Tool, log io.Writer) er
 		return fmt.Errorf("%s: installed into %s, which is not on PATH", name, binDir)
 	}
 	return fmt.Errorf("%s: still failing after install: %s", name, r.Problem)
+}
+
+// shadows lists the copies of program that PATH finds in directories after
+// dir, which a copy installed into dir would hide.
+func shadows(dir, program string) ([]string, error) {
+	var found []string
+	seen := false
+	for _, d := range filepath.SplitList(os.Getenv("PATH")) {
+		if d == "" {
+			continue
+		}
+		if filepath.Clean(d) == filepath.Clean(dir) {
+			seen = true
+			continue
+		}
+		if !seen {
+			continue
+		}
+		p, err := exec.LookPath(filepath.Join(d, program))
+		switch {
+		case errors.Is(err, fs.ErrNotExist), errors.Is(err, fs.ErrPermission):
+			continue // no copy there that runs
+		case err != nil:
+			return nil, fmt.Errorf("looking for %s in %s: %w", program, d, err)
+		}
+		found = append(found, p)
+	}
+	return found, nil
 }
 
 // goBin is where go install puts binaries.

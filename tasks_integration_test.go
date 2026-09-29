@@ -384,7 +384,7 @@ func TestTools(t *testing.T) {
 	// A go that installs nothing: the check still fails and graft says PATH
 	// finds another copy before the install directory.
 	fakeBin, gobin := t.TempDir(), t.TempDir()
-	script := "#!/bin/sh\ncase \"$1\" in\ninstall) echo \"$@\" >> " + f.path("go.txt") + " ;;\nenv) echo " + gobin + "; echo /nowhere ;;\nesac\n"
+	script := "#!/bin/sh\ncase \"$1\" in\ninstall) echo \"$GOBIN $*\" >> " + f.path("go.txt") + " ;;\nenv) echo " + gobin + "; echo /nowhere ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -393,8 +393,27 @@ func TestTools(t *testing.T) {
 	if code != 1 || !strings.Contains(out, "installed into "+gobin+", but PATH finds "+helperBin+" first") {
 		t.Errorf("tools install: exit %d\n%s", code, out)
 	}
-	if got := f.read("go.txt"); got != "install example.com/old@v2.0.0\n" {
+	if got := f.read("go.txt"); got != gobin+" install example.com/old@v2.0.0\n" {
 		t.Errorf("go install calls:\n%s", got)
+	}
+
+	// tools.bin_dir from the user config, on PATH ahead of the copy in use:
+	// graft warns that the install would shadow it.
+	userBin, cfgHome := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cfgHome, "graft"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgHome, "graft", "config.yaml"), []byte("tools:\n  bin_dir: "+userBin+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	list := string(os.PathListSeparator)
+	f.env = []string{"XDG_CONFIG_HOME=" + cfgHome, "PATH=" + fakeBin + list + userBin + list + binDir + list + os.Getenv("PATH")}
+	out, _ = f.graft("", "tools", "install")
+	if !strings.Contains(out, "installing into "+userBin+" puts it on PATH ahead of "+helperBin) {
+		t.Errorf("no shadowing warning:\n%s", out)
+	}
+	if got := f.lines("go.txt"); got[len(got)-1] != userBin+" install example.com/old@v2.0.0" {
+		t.Errorf("GOBIN not set to bin_dir: %q", got)
 	}
 }
 

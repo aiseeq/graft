@@ -104,3 +104,70 @@ func TestParseTasksErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestShellLabel(t *testing.T) {
+	for in, want := range map[string]string{
+		"echo hi": "echo hi",
+		"set -eu\n# make room\n\nmkdir x\nmv a b\n": "mkdir x ...",
+		"  go build  ": "go build",
+	} {
+		if got := shellLabel(in); got != want {
+			t.Errorf("shellLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseKeysArgsAndUnits(t *testing.T) {
+	base := `schema: 1
+version: {mode: git-tag}
+dotenv_sets:
+  db: [DB_URL, 'DB_POOL?']
+tasks:
+  t:
+    dotenv_sets: [db]
+    dotenv:
+      - DB_POOL
+      - EXTRA?
+    args: required
+    usage: <file>
+    run: [[cp, '{args}', '--to={args}']]
+services:
+  web:
+    systemd_unit: web.service
+    addr: ':8080'
+`
+	cfg, err := Parse([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []DotEnvKey{{Name: "DB_URL"}, {Name: "DB_POOL"}, {Name: "EXTRA", Optional: true}}
+	if !slices.Equal(cfg.Tasks["t"].Keys, want) {
+		t.Errorf("keys = %+v", cfg.Tasks["t"].Keys)
+	}
+	cases := map[string]string{
+		"unknown set":         strings.Replace(base, "dotenv_sets: [db]", "dotenv_sets: [cache]", 1),
+		"bad key":             strings.Replace(base, "EXTRA?", "EXTRA??", 1),
+		"unquoted flow KEY?":  strings.Replace(base, "'DB_POOL?'", "DB_POOL?", 1),
+		"args w/o {args}":     strings.Replace(base, "[[cp, '{args}', '--to={args}']]", "[[cp, a, b]]", 1),
+		"bad args value":      strings.Replace(base, "args: required", "args: many", 1),
+		"placeholder twice":   strings.Replace(base, "'--to={args}'", "'{args}{args}'", 1),
+		"unit with run":       strings.Replace(base, "    systemd_unit: web.service\n", "    systemd_unit: web.service\n    run: [x]\n", 1),
+		"bad unit":            strings.Replace(base, "web.service", "web", 1),
+		"service without run": strings.Replace(base, "    systemd_unit: web.service\n", "", 1),
+	}
+	for name, data := range cases {
+		if data == base {
+			t.Fatalf("%s: replacement did not apply", name)
+		}
+		if _, err := Parse([]byte(data)); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}
+
+func TestUnquotedOptionalKeyHint(t *testing.T) {
+	_, err := Parse([]byte("schema: 1\nversion: {mode: none}\ndotenv_sets: {db: [A, B?]}\n"))
+	if err == nil || !strings.Contains(err.Error(), "must be quoted") {
+		t.Errorf("err = %v", err)
+	}
+}

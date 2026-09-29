@@ -42,6 +42,19 @@ var semverRe = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0
 // the shape of.
 func IsPlain(s string) bool { return semverRe.MatchString(s) }
 
+var buildRe = regexp.MustCompile(`^v?([0-9]+\.[0-9]+\.[0-9]+)(?:[-+].*)?$`)
+
+// ParseBuild returns the release a build's version string starts from:
+// v0.4.0, v0.4.0-3-gabc1234-dirty (git describe) and Go pseudo-versions all
+// carry one. Builds without one (a bare commit hash, "(devel)") are errors.
+func ParseBuild(s string) (Semver, error) {
+	m := buildRe.FindStringSubmatch(s)
+	if m == nil {
+		return Semver{}, fmt.Errorf("%q does not start with a MAJOR.MINOR.PATCH version", s)
+	}
+	return Parse(m[1])
+}
+
 // Parse accepts exactly MAJOR.MINOR.PATCH: no prefix, no pre-release suffix,
 // no leading zeros.
 func Parse(s string) (Semver, error) {

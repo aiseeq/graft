@@ -30,12 +30,7 @@ func (a *App) HookPreCommit(ctx context.Context) error {
 		return err
 	}
 	if kind == hooks.Normal {
-		return errors.New(`plain git commit is not used in this repository; commit with graft:
-  graft commit -m "fix: ..."           patch version
-  graft commit --minor -m "feat: ..."  minor version
-  graft commit --major -m "feat!: ..." major version
-  graft amend                          fold the work tree into the last, unpushed commit
-graft runs the gate, bumps the version, adds the work item key and pushes to every remote`)
+		return errors.New(commitHowTo(cfg))
 	}
 	a.printf("%s commit: running the checks and the gate", kind)
 	if err := runChecks(repo, cfg); err != nil {

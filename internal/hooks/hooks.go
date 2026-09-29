@@ -22,22 +22,38 @@ const (
 // Names lists every hook graft installs.
 var Names = []string{PreCommit, PostMerge}
 
-// InstallHint tells how to get graft onto PATH.
-const InstallHint = "go install github.com/aiseeq/graft@latest (or go run . install in a graft checkout)"
+// InstallHint tells how to get graft onto PATH: the version the project
+// needs (X.Y.Z from its graft: key), or the latest one when it names none.
+func InstallHint(minVersion string) string {
+	if minVersion == "" {
+		return "go install github.com/aiseeq/graft@latest"
+	}
+	return "go install github.com/aiseeq/graft@v" + minVersion
+}
+
+// shimMarker is the line that tells graft's shims from somebody else's hooks.
+const shimMarker = "# Installed by graft init. The hook logic lives in graft itself."
 
 // Shim is the hook file content: a POSIX sh stub that hands over to graft.
 // Git for Windows runs hooks through its own sh, so the same file works there.
 // A missing graft fails the hook rather than letting the commit through.
-func Shim(name string) []byte {
+func Shim(name, minVersion string) []byte {
 	return []byte(`#!/bin/sh
-# Installed by graft init. The hook logic lives in graft itself.
+` + shimMarker + `
 if ! command -v graft >/dev/null 2>&1; then
 	echo "graft: not found in PATH, the ` + name + ` hook cannot run." >&2
-	echo "Install it: ` + InstallHint + `" >&2
+	echo "Install it: ` + InstallHint(minVersion) + `" >&2
 	exit 1
 fi
 exec graft hook ` + name + ` "$@"
 `)
+}
+
+// isShim reports whether a hook file is one graft wrote, of any version.
+func isShim(content []byte, name string) bool {
+	text := string(bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n")))
+	return strings.HasPrefix(text, "#!/bin/sh\n"+shimMarker+"\n") &&
+		strings.HasSuffix(text, "\nexec graft hook "+name+` "$@"`+"\n")
 }
 
 // Context is the kind of commit git is about to create.
@@ -85,7 +101,7 @@ type Change struct {
 // points core.hooksPath at it. It is idempotent. It refuses to overwrite a hook
 // that is not a graft shim and to repoint core.hooksPath away from a different
 // hooks directory: both hold somebody's hooks that would silently stop running.
-func Install(repo *gitx.Repo, dir string) ([]Change, error) {
+func Install(repo *gitx.Repo, dir, minVersion string) ([]Change, error) {
 	hooksDir := filepath.Join(repo.Root, filepath.FromSlash(dir))
 	current, err := hooksPath(repo)
 	if err != nil {
@@ -103,7 +119,7 @@ func Install(repo *gitx.Repo, dir string) ([]Change, error) {
 	}
 	var changes []Change
 	for _, name := range Names {
-		changed, err := writeShim(filepath.Join(hooksDir, name), Shim(name))
+		changed, err := writeShim(filepath.Join(hooksDir, name), Shim(name, minVersion))
 		if err != nil {
 			return nil, err
 		}
@@ -161,9 +177,9 @@ func checkForeignShims(dir, hooksDir string) error {
 		if err != nil {
 			return err
 		}
-		// A shim that only differs by CRLF line endings (autocrlf checkout)
-		// is ours and gets rewritten: sh would choke on the carriage returns.
-		if !bytes.Equal(bytes.ReplaceAll(existing, []byte("\r\n"), []byte("\n")), Shim(name)) {
+		// A shim of another graft version, or with CRLF line endings (an
+		// autocrlf checkout), is ours and gets rewritten.
+		if !isShim(existing, name) {
 			foreign = append(foreign, filepath.ToSlash(filepath.Join(dir, name)))
 		}
 	}
@@ -183,7 +199,7 @@ func writeShim(path string, content []byte) (string, error) {
 	case err != nil:
 		return "", err
 	case !bytes.Equal(existing, content):
-		return "rewrote (line endings)", os.WriteFile(path, content, 0o755)
+		return "rewrote", os.WriteFile(path, content, 0o755)
 	}
 	info, err := os.Stat(path)
 	switch {

@@ -21,19 +21,33 @@ go install github.com/aiseeq/graft@latest
 ```
 
 or, from a checkout, `go run . install` (atomically replaces `~/bin/graft`).
-Requires git 2.31 or newer.
+Requires git 2.31 or newer. A project can require a graft version with
+`graft: ">=X.Y.Z"` in `.graft.yaml`: an older graft refuses to work on it and
+the hooks' install hint names that version.
+
+Settings that belong to the person rather than to a project live in
+`<user config dir>/graft/config.yaml` (`~/.config/graft/config.yaml` on
+Linux):
+
+```yaml
+jira:
+  env_file: ~/secrets/jira.env   # deploy release notes: JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN
+tools:
+  bin_dir: ~/bin                 # where graft tools install puts binaries; default: go install's GOBIN
+```
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `graft commit -m "fix: ..."` | lock, gate, bump patch, `git add -A`, checks, commit, push to every remote |
+| `graft commit -m "fix: ..."` | lock, gate, bump patch (version mode `file`), `git add -A`, checks, commit, push to every remote |
 | `graft commit --minor` / `--major` | same with a minor / major bump (version mode `file` only) |
 | `graft commit -F msg.txt` / `-F -` | message from a file / from stdin, byte for byte |
 | `graft amend` | lock, gate, `git add -A`, checks, `git commit --amend --no-edit`; refuses a commit that is already on a remote |
 | `graft release` | tag the pushed HEAD with the version, push the tag to every remote |
 | `graft release --minor` / `--major` / `--version X.Y.Z` | choose the next tag (version mode `git-tag` only) |
 | `graft version` | print the project version |
+| `graft version --describe` | the build identity for stamping binaries: `v1.4.0-3-gabc1234[-dirty]`, `1.4.0[-dirty]` in mode `file`, `v0.0.0-<commits>-g<hash>` without a tag |
 | `graft init` | install the hooks and set `core.hooksPath`, install pinned tools that fail their check; safe to repeat |
 | `graft check` | run the content checks on the index |
 | `graft gate` | run the gate commands |
@@ -46,12 +60,14 @@ Requires git 2.31 or newer.
 | `graft deploy status <target>` / `logs <target> [--lines N] [--grep RE]` | the target's status and logs commands |
 | `graft deploy check-head` | for deploy scripts: HEAD is still the commit being deployed |
 | `graft <task> [-- args]` / `graft run <task> [-- args]` | run a task with its deps |
+| `graft tasks` | every task, building blocks and deps included |
 | `graft start` / `stop` / `restart [service]` | background services, all of them without a name |
+| `graft logs <service> [--lines N]` | the end of a service's log, or its journal |
 | `graft status` | services, the test database, held locks |
 | `graft locks` | who holds graft's locks |
 | `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |
 | `graft tools [install]` | check the pinned tools; install the failing ones |
-| `graft help` | this list plus the project's tasks (those with `desc`) and services |
+| `graft help` | the commands the project's `.graft.yaml` uses, its tasks (those with `desc`, with their arguments) and services |
 | `graft --version` | print graft's own version |
 
 ### graft commit, step by step
@@ -88,12 +104,14 @@ commit through unchecked.
 - **pre-commit**: lets graft's own commits through (graft already ran
   everything). For a commit git's machinery drives (merge, rebase, cherry-pick,
   revert) it runs the checks and the gate. A hand-written `git commit` is
-  refused with the graft command to use instead.
+  refused with the graft commands this project's config allows.
 - **post-merge**: after a real merge commit (one with a second parent) it runs
   the gate. A merge without text conflicts can still break the build; the hook
   says so and points at `graft amend`. Fast-forwards are not gated.
 
-`graft init` refuses to overwrite hooks it did not write and to repoint a
+`graft init` rewrites shims an older graft wrote (the install hint follows
+the project's `graft:` version). It refuses to overwrite hooks it did not
+write and to repoint a
 `core.hooksPath` that leads elsewhere. An absolute `core.hooksPath` to the same
 directory is rewritten as relative. On Windows, keep the shims LF:
 add `.githooks/* text eol=lf` to `.gitattributes`.
@@ -102,6 +120,7 @@ add `.githooks/* text eol=lf` to `.gitattributes`.
 
 ```yaml
 schema: 1                       # required
+graft: '>=0.5.0'                # optional: the oldest graft this config works with
 
 # Commands run before every commit, in order, stopping at the first failure.
 # A string is split into words by shell quoting rules but is NOT run by a
@@ -180,7 +199,8 @@ tasks:
     desc: all tests
     deps: [build]              # run first, each task at most once per invocation
     test_db: true              # pass the test database DSN (see below)
-    dotenv: [API_KEY]          # only these .env keys reach the steps
+    dotenv: [API_KEY, 'LOG_DIR?']   # only these .env keys reach the steps; KEY? is optional
+    dotenv_sets: [db]          # plus the keys of named sets
     env: {LOG_LEVEL: debug, API_URL: 'http://${HOST}:8080'}   # ${KEY}: environment, then .env
     run:
       - go test -count=1 {args} ./...      # graft test -- -run TestX
@@ -191,20 +211,40 @@ tasks:
       - go vet ./...
       - sh: gofmt -l . | tee fmt.txt       # a shell step, when a pipe is the point
       - task: build                        # another task, inline
+  restore:
+    desc: load a dump
+    args: required             # refuse to run without arguments
+    usage: <dump.sql.gz>       # shown in help and in that refusal
+    run:
+      - [sh, scripts/restore.sh, '--from={args}']   # inside a word: exactly one argument
+  release-build:
+    run:
+      - [go, build, -ldflags, '-X main.version=${GRAFT_VERSION}', -o, bin/app, ./cmd/app]
   migrate:
     lock: {name: db, mode: write}          # exclusive: waits for readers, blocks them
     dir: migrations                        # steps run here; default the repository root
     run: [[sh, apply.sh]]
+
+dotenv_sets:                   # key lists several tasks and services share
+  db: [DB_HOST, DB_NAME, 'DB_POOL?']
 ```
 
 - A step is a string (split into words, no shell; pipes, `$VAR` and
   redirects are errors), a list (argv as is), `{sh: "..."}` or `{task: name}`.
-- `{args}` receives the arguments after `--`, as separate words in argv
-  steps and shell-quoted in `sh` steps. A task without `{args}` refuses
-  arguments.
+- `{args}` receives the arguments after `--` verbatim: as separate words
+  when it is a whole argv word, as the one argument inside a word, and
+  shell-quoted in `sh` steps. `${KEY}` is expanded in the configured words
+  only, never in what the user passed. A task without `{args}` refuses
+  arguments; `graft help` shows which tasks take them.
 - Steps get graft's environment without git's hook variables and without
-  the `.env` file: only the keys listed in `dotenv`, the `env` values and the
-  test database DSN are added.
+  the `.env` file: only the keys listed in `dotenv` and `dotenv_sets`, the
+  `env` values, the test database DSN and `GRAFT_VERSION` are added.
+  `GRAFT_VERSION` is `graft version --describe`; before the first commit
+  there is none. Argv words see all of them as `${KEY}`.
+- Before the first step, graft checks every required key and `${KEY}` the
+  task and all its deps need, and lists everything missing at once. An
+  optional `KEY?` set nowhere is left out. Inside `[...]` it must be quoted:
+  YAML does not take `KEY?` unquoted in a flow list.
 - Locks are named read/write locks shared by all worktrees of the
   repository; a task inside a task under the same lock reuses it, and asking
   for write inside read is an error. Unknown deps and cycles are config
@@ -229,6 +269,10 @@ services:
     start_timeout: 30s           # default 30s
     stop_timeout: 10s            # default 10s, then SIGKILL
     lock: work-tree              # held for writing while starting or stopping
+  worker:
+    systemd_unit: worker.service # a systemd --user unit: start, stop, status and logs go through
+                                 # systemctl and journalctl; run, pidfile, log, dotenv, env belong to the unit
+    addr: ':9090'                # still waited for, if given
 ```
 
 `graft start` refuses an address something else already listens on, waits
@@ -237,7 +281,8 @@ end of the log when it dies instead. `graft stop` sends SIGTERM to the
 process group, so wrappers like `go run` do not leave the server behind, and
 SIGKILL after `stop_timeout`. A pid file whose process is gone, or on Linux
 now runs another program, is removed. On Windows stop terminates the process
-itself, not its children: run the program, not a wrapper.
+itself, not its children: run the program, not a wrapper. `graft logs`
+prints the end of the log file, or `journalctl --user -u` for a unit.
 
 ## Test database
 
@@ -277,8 +322,11 @@ tools:
 A binary on PATH says nothing about its version, so a tool counts as present
 only when `check` prints `expect`: a version, or a capability such as a rule
 the project relies on. `graft tools` reports, `graft tools install` and
-`graft init` run `go install` for the failing ones and check again; when PATH
-still finds another copy first, graft says where both are.
+`graft init` run `go install` for the failing ones into `tools.bin_dir` from
+the user config (by default where go install puts binaries) and check again.
+Before installing, graft warns when the new copy will come ahead of another
+one on PATH, such as a development build; when PATH still finds another copy
+first after the install, graft says where both are.
 
 ## Environments and .env
 
@@ -450,13 +498,8 @@ release_notes:
 graft exits with the deploy script's exit status. Two deploys to the same
 target from one repository wait for each other.
 
-Jira credentials are the user's, not the project's:
-`<user config dir>/graft/config.yaml` (`~/.config/graft/config.yaml` on Linux):
-
-```yaml
-jira:
-  env_file: ~/secrets/jira.env   # JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN
-```
+Jira credentials are the user's, not the project's: `jira.env_file` in the
+user config (see Install).
 
 ### Version modes
 

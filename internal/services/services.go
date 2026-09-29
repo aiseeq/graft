@@ -65,14 +65,22 @@ type State struct {
 	Addr string
 	// Listening is whether Addr accepts connections.
 	Listening bool
-	Log       string
+	// Log is the log file, or the journalctl command of a systemd unit.
+	Log string
 }
 
 // State reports the state of a service, clearing a stale pid file.
-func (m *Manager) State(name string) (State, error) {
+func (m *Manager) State(ctx context.Context, name string) (State, error) {
 	s := m.Config.Services[name]
 	st := State{Name: name, Log: s.Log}
-	pid, err := m.running(name)
+	var pid int
+	var err error
+	if s.SystemdUnit != "" {
+		st.Log = "journalctl --user -u " + s.SystemdUnit
+		pid, _, err = unitState(ctx, s.SystemdUnit)
+	} else {
+		pid, err = m.running(name)
+	}
 	if err != nil {
 		return st, err
 	}
@@ -139,6 +147,9 @@ func (m *Manager) locked(ctx context.Context, name string, fn func() error) erro
 
 func (m *Manager) start(ctx context.Context, name string) error {
 	s := m.Config.Services[name]
+	if s.SystemdUnit != "" {
+		return m.startUnit(ctx, name, s)
+	}
 	pid, err := m.running(name)
 	if err != nil {
 		return err
@@ -147,23 +158,9 @@ func (m *Manager) start(ctx context.Context, name string) error {
 		fmt.Fprintf(m.Log, "graft: %s is already running (pid %d)\n", name, pid)
 		return nil
 	}
-	var addr string
-	if s.Addr != "" {
-		if addr, err = m.addr(s); err != nil {
-			return err
-		}
-		busy, err := listening(addr)
-		if err != nil {
-			return err
-		}
-		if busy {
-			return fmt.Errorf("%s: %s is already in use by a process graft did not start", name, addr)
-		}
-	}
-	if s.Build != "" {
-		if err := m.Runner.Run(ctx, s.Build, nil); err != nil {
-			return fmt.Errorf("%s: build: %w", name, err)
-		}
+	addr, err := m.prepareStart(ctx, name, s)
+	if err != nil {
+		return err
 	}
 	cmd, logFile, err := m.command(name, s)
 	if err != nil {
@@ -185,6 +182,31 @@ func (m *Manager) start(ctx context.Context, name string) error {
 	}
 	fmt.Fprintf(m.Log, "graft: started %s (pid %d), log %s\n", name, pid, s.Log)
 	return nil
+}
+
+// prepareStart refuses an address something else listens on and runs the
+// build task; it returns the address to wait for, empty without one.
+func (m *Manager) prepareStart(ctx context.Context, name string, s *config.Service) (string, error) {
+	var addr string
+	if s.Addr != "" {
+		var err error
+		if addr, err = m.addr(s); err != nil {
+			return "", err
+		}
+		busy, err := listening(addr)
+		if err != nil {
+			return "", err
+		}
+		if busy {
+			return "", fmt.Errorf("%s: %s is already in use by a process graft did not start", name, addr)
+		}
+	}
+	if s.Build != "" {
+		if err := m.Runner.Run(ctx, s.Build, nil); err != nil {
+			return "", fmt.Errorf("%s: build: %w", name, err)
+		}
+	}
+	return addr, nil
 }
 
 // command prepares the detached process with its log and environment.
@@ -250,6 +272,9 @@ func (m *Manager) waitStarted(ctx context.Context, s *config.Service, addr strin
 
 func (m *Manager) stop(ctx context.Context, name string) error {
 	s := m.Config.Services[name]
+	if s.SystemdUnit != "" {
+		return m.stopUnit(ctx, name, s)
+	}
 	pid, err := m.running(name)
 	if err != nil {
 		return err
@@ -280,6 +305,11 @@ func (m *Manager) stop(ctx context.Context, name string) error {
 	if err := removePID(m.path(s.PIDFile)); err != nil {
 		return err
 	}
+	return m.stopped(ctx, name, s)
+}
+
+// stopped waits for the service's address to be released and reports.
+func (m *Manager) stopped(ctx context.Context, name string, s *config.Service) error {
 	if s.Addr != "" {
 		addr, err := m.addr(s)
 		if err != nil {
@@ -298,6 +328,25 @@ func (m *Manager) stop(ctx context.Context, name string) error {
 	}
 	fmt.Fprintf(m.Log, "graft: stopped %s\n", name)
 	return nil
+}
+
+// Logs prints the last lines of a service's log.
+func (m *Manager) Logs(ctx context.Context, name string, lines int, w io.Writer) error {
+	s := m.Config.Services[name]
+	if s.SystemdUnit != "" {
+		cmd := exec.CommandContext(ctx, "journalctl", "--user", "-u", s.SystemdUnit, "-n", strconv.Itoa(lines), "--no-pager")
+		cmd.Stdout, cmd.Stderr = w, w
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("journalctl --user -u %s: %w", s.SystemdUnit, err)
+		}
+		return nil
+	}
+	text, err := lastLines(m.path(s.Log), lines)
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(w, text)
+	return err
 }
 
 // running returns the pid of the running service or 0. A pid file naming a
@@ -366,15 +415,18 @@ func (m *Manager) env(s *config.Service) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	keys := s.DotEnv.Keys
+	keys := s.Keys
 	if s.DotEnv.All {
 		f, err := dotenv.Load(filepath.Join(m.Root, m.Config.DotEnv))
 		if err != nil {
 			return nil, fmt.Errorf("dotenv: all: %w", err)
 		}
-		keys = f.Keys()
+		keys = nil
+		for _, k := range f.Keys() {
+			keys = append(keys, config.DotEnvKey{Name: k})
+		}
 	}
-	values, err := m.lookup.Values(keys)
+	values, err := tasks.KeyValues(m.lookup, keys)
 	if err != nil {
 		return nil, err
 	}
@@ -462,9 +514,18 @@ func removePID(path string) error {
 
 // tail returns the last n lines of a log for an error message.
 func tail(path string, n int) string {
-	f, err := os.Open(path)
+	text, err := lastLines(path, n)
 	if err != nil {
 		return "(log unreadable: " + err.Error() + ")"
+	}
+	return "last lines of " + path + ":\n" + text
+}
+
+// lastLines returns the last n lines of a file.
+func lastLines(path string, n int) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
 	}
 	defer f.Close()
 	var lines []string
@@ -476,5 +537,11 @@ func tail(path string, n int) string {
 			lines = lines[1:]
 		}
 	}
-	return "last lines of " + path + ":\n" + strings.Join(lines, "\n")
+	if err := sc.Err(); err != nil {
+		return "", err
+	}
+	if len(lines) == 0 {
+		return "", nil
+	}
+	return strings.Join(lines, "\n") + "\n", nil
 }

@@ -216,10 +216,18 @@ func latestTag(repo *gitx.Repo, prefix string) (version.Semver, bool, error) {
 }
 
 // Version prints the project version.
-func (a *App) Version() error {
+func (a *App) Version(describe bool) error {
 	repo, cfg, err := a.open()
 	if err != nil {
 		return err
+	}
+	if describe {
+		v, err := describeVersion(repo, cfg)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(a.Stdout, v)
+		return nil
 	}
 	v, err := projectVersion(repo, cfg)
 	if errors.Is(err, errNoVersionTags) {
@@ -237,7 +245,61 @@ func (a *App) Version() error {
 	return nil
 }
 
-var errNoVersionTags = errors.New("no version tags yet")
+var (
+	errNoVersionTags = errors.New("no version tags yet")
+	errNoCommits     = errors.New("the repository has no commits yet")
+)
+
+// describeVersion identifies the build of the work tree for stamping into
+// binaries: the version file, or git describe from the highest version tag,
+// with -dirty for uncommitted changes to tracked files. Without a version
+// (mode none, or no tag yet) it reads like a describe of a v0.0.0 tag at the
+// root: v0.0.0-<commits>-g<hash>.
+func describeVersion(repo *gitx.Repo, cfg *config.Config) (string, error) {
+	hasHead, err := repo.HasHead()
+	if err != nil {
+		return "", err
+	}
+	if !hasHead {
+		return "", errNoCommits
+	}
+	dirty, err := trackedChanges(repo)
+	if err != nil {
+		return "", err
+	}
+	suffix := ""
+	if dirty {
+		suffix = "-dirty"
+	}
+	v, err := projectVersion(repo, cfg)
+	switch {
+	case err == nil && cfg.Version.Mode == config.ModeFile:
+		return v + suffix, nil
+	case err == nil:
+		return v, nil // git describe --dirty has added the suffix
+	case !errors.Is(err, errNoVersionTags) && cfg.Version.Mode != config.ModeNone:
+		return "", err
+	}
+	count, err := repo.Git("rev-list", "--count", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	short, err := repo.Git("rev-parse", "--short=7", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s0.0.0-%s-g%s%s", cfg.Version.TagPrefix, strings.TrimSpace(count), strings.TrimSpace(short), suffix), nil
+}
+
+// trackedChanges reports uncommitted changes to tracked files, the way git
+// describe --dirty sees them.
+func trackedChanges(repo *gitx.Repo) (bool, error) {
+	out, err := repo.Git("status", "--porcelain", "--untracked-files=no")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
+}
 
 // projectVersion is the version of the work tree: the version file, or git
 // describe from the highest version tag.
@@ -275,7 +337,7 @@ func (a *App) Init(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	changes, err := hooks.Install(repo, cfg.Hooks.Dir)
+	changes, err := hooks.Install(repo, cfg.Hooks.Dir, cfg.MinGraft)
 	if err != nil {
 		return err
 	}

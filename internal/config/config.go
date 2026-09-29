@@ -55,7 +55,12 @@ var DefaultBinaryExtensions = []string{
 
 // Config is a validated .graft.yaml with defaults applied.
 type Config struct {
-	Schema  int     `yaml:"schema"`
+	Schema int `yaml:"schema"`
+	// Graft is the graft version the project needs, as ">=X.Y.Z".
+	Graft string `yaml:"graft"`
+	// MinGraft is the X.Y.Z from Graft, empty when the project sets none.
+	MinGraft string `yaml:"-"`
+
 	Gate    []Step  `yaml:"gate"`
 	Version Version `yaml:"version"`
 	Ticket  *Ticket `yaml:"ticket"`
@@ -66,7 +71,9 @@ type Config struct {
 
 	Envs   map[string]*Env `yaml:"envs"`
 	DotEnv string          `yaml:"dotenv"`
-	Flags  *Flags          `yaml:"flags"`
+	// DotEnvSets are named lists of .env keys tasks and services share.
+	DotEnvSets map[string][]DotEnvKey `yaml:"dotenv_sets"`
+	Flags      *Flags                 `yaml:"flags"`
 
 	Deploy       *Deploy       `yaml:"deploy"`
 	ReleaseNotes *ReleaseNotes `yaml:"release_notes"`
@@ -184,6 +191,9 @@ func Parse(data []byte) (*Config, error) {
 	dec.KnownFields(true)
 	var cfg Config
 	if err := dec.Decode(&cfg); err != nil {
+		if flowOptionalKey.Match(data) {
+			return nil, fmt.Errorf("%w (an optional KEY? inside [...] must be quoted, 'KEY?', or written as a block list)", err)
+		}
 		return nil, err
 	}
 	if err := cfg.validate(); err != nil {
@@ -197,6 +207,7 @@ func (c *Config) validate() error {
 		return fmt.Errorf("schema: must be %d, got %d", SchemaVersion, c.Schema)
 	}
 	validators := []func() error{
+		c.validateGraft,
 		c.validateVersion,
 		c.validateTicket,
 		c.validatePush,
@@ -208,6 +219,7 @@ func (c *Config) validate() error {
 		c.validateFlags,
 		c.validateDeploy,
 		c.validateTestDB,
+		c.validateDotEnvSets,
 		c.validateTasks,
 		c.validateServices,
 		c.validateTools,
@@ -217,6 +229,23 @@ func (c *Config) validate() error {
 			return err
 		}
 	}
+	return nil
+}
+
+// flowOptionalKey finds KEY? in a flow list, which YAML cannot parse unquoted.
+var flowOptionalKey = regexp.MustCompile(`[A-Za-z0-9_]\?\s*[,\]]`)
+
+var minGraftRe = regexp.MustCompile(`^>=\s*v?([0-9]+\.[0-9]+\.[0-9]+)$`)
+
+func (c *Config) validateGraft() error {
+	if c.Graft == "" {
+		return nil
+	}
+	m := minGraftRe.FindStringSubmatch(strings.TrimSpace(c.Graft))
+	if m == nil {
+		return fmt.Errorf("graft: %q is not a minimum version like \">=0.5.0\"", c.Graft)
+	}
+	c.MinGraft = m[1]
 	return nil
 }
 

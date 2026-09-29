@@ -45,10 +45,7 @@ func (s *Step) UnmarshalYAML(node *yaml.Node) error {
 			return fmt.Errorf("line %d: a step map is {sh: \"...\"} or {task: name}", node.Line)
 		}
 		s.Shell, s.Task = m.Sh, m.Task
-		s.Source = strings.TrimSpace(m.Sh)
-		if first, _, multi := strings.Cut(s.Source, "\n"); multi {
-			s.Source = first + " ..."
-		}
+		s.Source = shellLabel(m.Sh)
 		if m.Task != "" {
 			s.Source = "task " + m.Task
 		}
@@ -56,6 +53,24 @@ func (s *Step) UnmarshalYAML(node *yaml.Node) error {
 	default:
 		return fmt.Errorf("line %d: a step is a string, a list, {sh: ...} or {task: ...}", node.Line)
 	}
+}
+
+// shellLabel names a shell step in graft's output: the script itself when it
+// is one line, else its first line that does something (not blank, a
+// comment or a set option) followed by "...".
+func shellLabel(script string) string {
+	script = strings.TrimSpace(script)
+	if !strings.Contains(script, "\n") {
+		return script
+	}
+	for line := range strings.SplitSeq(script, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "set ") {
+			continue
+		}
+		return line + " ..."
+	}
+	return script
 }
 
 // Task is a named project command.
@@ -66,9 +81,17 @@ type Task struct {
 	// Dir is where the steps run, relative to the work tree root.
 	Dir string `yaml:"dir"`
 	// DotEnv lists .env keys passed to the steps; the rest of .env is not.
-	DotEnv []string `yaml:"dotenv"`
+	DotEnv []DotEnvKey `yaml:"dotenv"`
+	// DotEnvSets names sets from the top-level dotenv_sets to pass as well.
+	DotEnvSets []string `yaml:"dotenv_sets"`
+	// Keys is DotEnv with the sets merged in.
+	Keys []DotEnvKey `yaml:"-"`
 	// Env sets variables; ${KEY} in values is expanded.
 	Env map[string]string `yaml:"env"`
+	// Args is required when the task refuses to run without arguments.
+	Args string `yaml:"args"`
+	// Usage describes the arguments, for help and errors.
+	Usage string `yaml:"usage"`
 	// KeepGoing runs every step and fails at the end, listing what failed.
 	KeepGoing bool      `yaml:"keep_going"`
 	Lock      *TaskLock `yaml:"lock"`
@@ -110,7 +133,10 @@ type Service struct {
 	Run   Command `yaml:"run"`
 	// DotEnv lists the .env keys the process gets; "all" passes the whole
 	// file, as an application reading its config from the environment needs.
-	DotEnv  DotEnvKeys        `yaml:"dotenv"`
+	DotEnv     DotEnvKeys `yaml:"dotenv"`
+	DotEnvSets []string   `yaml:"dotenv_sets"`
+	// Keys is the DotEnv list with the sets merged in (unused with all).
+	Keys    []DotEnvKey       `yaml:"-"`
 	Env     map[string]string `yaml:"env"`
 	Log     string            `yaml:"log"`
 	PIDFile string            `yaml:"pidfile"`
@@ -122,12 +148,69 @@ type Service struct {
 	StopTimeout  time.Duration `yaml:"stop_timeout"`
 	// Lock is taken for writing while the service starts or stops.
 	Lock string `yaml:"lock"`
+	// SystemdUnit hands the service to systemd --user: start, stop, status
+	// and logs go through systemctl and journalctl, and run, pidfile, log,
+	// dotenv and env belong to the unit instead.
+	SystemdUnit string `yaml:"systemd_unit"`
+}
+
+// DotEnvKey is a .env key passed to a task or service. "KEY?" marks it
+// optional: when it is set nowhere it is left out instead of failing, for
+// programs that have their own default.
+type DotEnvKey struct {
+	Name     string
+	Optional bool
+}
+
+var envKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// UnmarshalYAML accepts KEY or KEY?.
+func (k *DotEnvKey) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.ScalarNode {
+		return fmt.Errorf("line %d: a .env key is a string", node.Line)
+	}
+	name, optional := strings.CutSuffix(node.Value, "?")
+	if !envKeyRe.MatchString(name) {
+		return fmt.Errorf("line %d: %q is not a .env key (KEY or KEY?)", node.Line, node.Value)
+	}
+	k.Name, k.Optional = name, optional
+	return nil
+}
+
+// mergeKeys joins key lists; a key required anywhere is required.
+func mergeKeys(lists ...[]DotEnvKey) []DotEnvKey {
+	var out []DotEnvKey
+	index := map[string]int{}
+	for _, list := range lists {
+		for _, k := range list {
+			if i, ok := index[k.Name]; ok {
+				out[i].Optional = out[i].Optional && k.Optional
+				continue
+			}
+			index[k.Name] = len(out)
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// resolveKeys merges a task's or service's own keys with the named sets.
+func (c *Config) resolveKeys(where string, own []DotEnvKey, sets []string) ([]DotEnvKey, error) {
+	lists := [][]DotEnvKey{}
+	for _, name := range sets {
+		set, ok := c.DotEnvSets[name]
+		if !ok {
+			return nil, fmt.Errorf("%s.dotenv_sets: unknown set %q", where, name)
+		}
+		lists = append(lists, set)
+	}
+	return mergeKeys(append(lists, own)...), nil
 }
 
 // DotEnvKeys is a list of keys, or all of them.
 type DotEnvKeys struct {
 	All  bool
-	Keys []string
+	Keys []DotEnvKey
 }
 
 // UnmarshalYAML accepts "all" or a list of keys.
@@ -186,7 +269,7 @@ type Tool struct {
 // Builtin command names a task cannot take.
 var builtinNames = []string{
 	"commit", "amend", "release", "version", "init", "check", "gate", "hook", "flags", "deploy",
-	"run", "help", "start", "stop", "restart", "status", "locks", "testdb", "tools", "tasks",
+	"run", "help", "start", "stop", "restart", "status", "locks", "testdb", "tools", "tasks", "logs",
 }
 
 var (
@@ -228,16 +311,19 @@ func (c *Config) validateTask(name string, t *Task) error {
 			return err
 		}
 	}
-	if t.Lock != nil {
-		if t.Lock.Mode != "read" && t.Lock.Mode != "write" {
-			return fmt.Errorf("%s.lock: mode read or write, got %q", where, t.Lock.Mode)
-		}
-		if !taskNameRe.MatchString(t.Lock.Name) {
-			return fmt.Errorf("%s.lock.name: invalid %q", where, t.Lock.Name)
-		}
+	if err := t.Lock.validate(where + ".lock"); err != nil {
+		return err
 	}
 	if t.TestDB && c.TestDB == nil {
 		return fmt.Errorf("%s.test_db: needs a test_db section", where)
+	}
+	keys, err := c.resolveKeys(where, t.DotEnv, t.DotEnvSets)
+	if err != nil {
+		return err
+	}
+	t.Keys = keys
+	if err := t.validateArgs(where); err != nil {
+		return err
 	}
 	refs := slices.Clone(t.Deps)
 	for _, s := range t.Run {
@@ -299,14 +385,17 @@ func (c *Config) validateServices() error {
 		if !taskNameRe.MatchString(name) {
 			return fmt.Errorf("%s: invalid name", where)
 		}
-		if s == nil || len(s.Run.Argv) == 0 || s.PIDFile == "" || s.Log == "" {
-			return fmt.Errorf("%s: run, pidfile and log are required", where)
+		if err := s.validateRunner(where); err != nil {
+			return err
 		}
-		for field, p := range map[string]string{"pidfile": s.PIDFile, "log": s.Log} {
-			if err := checkRelPath(where+"."+field, p); err != nil {
-				return err
-			}
+		if s.DotEnv.All && len(s.DotEnvSets) > 0 {
+			return fmt.Errorf("%s: dotenv: all already passes every key, dotenv_sets adds nothing", where)
 		}
+		keys, err := c.resolveKeys(where, s.DotEnv.Keys, s.DotEnvSets)
+		if err != nil {
+			return err
+		}
+		s.Keys = keys
 		if s.Build != "" {
 			if _, ok := c.Tasks[s.Build]; !ok {
 				return fmt.Errorf("%s.build: unknown task %q", where, s.Build)
@@ -320,6 +409,110 @@ func (c *Config) validateServices() error {
 		}
 		if s.Lock != "" && !taskNameRe.MatchString(s.Lock) {
 			return fmt.Errorf("%s.lock: invalid name %q", where, s.Lock)
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateDotEnvSets() error {
+	for _, name := range keysOf(c.DotEnvSets) {
+		if !taskNameRe.MatchString(name) {
+			return fmt.Errorf("dotenv_sets.%s: invalid name", name)
+		}
+		if len(c.DotEnvSets[name]) == 0 {
+			return fmt.Errorf("dotenv_sets.%s: empty", name)
+		}
+	}
+	return nil
+}
+
+// ArgsPlaceholder in a step receives the arguments given after --.
+const ArgsPlaceholder = "{args}"
+
+// checkArgsPlaceholder allows {args} as a whole argv word (any number of
+// arguments) or once inside a word (exactly one argument, checked when the
+// task runs).
+func checkArgsPlaceholder(s Step) error {
+	for _, w := range s.Argv {
+		if strings.Count(w, ArgsPlaceholder) > 1 {
+			return fmt.Errorf("%q: %s at most once per word", w, ArgsPlaceholder)
+		}
+	}
+	return nil
+}
+
+func (l *TaskLock) validate(where string) error {
+	if l == nil {
+		return nil
+	}
+	if l.Mode != "read" && l.Mode != "write" {
+		return fmt.Errorf("%s: mode read or write, got %q", where, l.Mode)
+	}
+	if !taskNameRe.MatchString(l.Name) {
+		return fmt.Errorf("%s.name: invalid %q", where, l.Name)
+	}
+	return nil
+}
+
+func (t *Task) validateArgs(where string) error {
+	for i, s := range t.Run {
+		if err := checkArgsPlaceholder(s); err != nil {
+			return fmt.Errorf("%s.run[%d]: %w", where, i, err)
+		}
+	}
+	if t.Args != "" && t.Args != ArgsRequired {
+		return fmt.Errorf("%s.args: only %q, got %q", where, ArgsRequired, t.Args)
+	}
+	if (t.Args != "" || t.Usage != "") && !t.TakesArgs() {
+		return fmt.Errorf("%s: args and usage need %s in a step", where, ArgsPlaceholder)
+	}
+	return nil
+}
+
+// ArgsRequired is the args value of a task that needs arguments.
+const ArgsRequired = "required"
+
+// UsageText is what the task takes after --.
+func (t *Task) UsageText() string {
+	if t.Usage != "" {
+		return t.Usage
+	}
+	return "args..."
+}
+
+// TakesArgs reports whether any step of the task receives {args}.
+func (t *Task) TakesArgs() bool {
+	for _, s := range t.Run {
+		if strings.Contains(s.Shell, ArgsPlaceholder) || slices.ContainsFunc(s.Argv, func(w string) bool { return strings.Contains(w, ArgsPlaceholder) }) {
+			return true
+		}
+	}
+	return false
+}
+
+var unitRe = regexp.MustCompile(`^[A-Za-z0-9@._-]+\.service$`)
+
+// validateRunner checks the fields of the way the service runs: a systemd
+// unit, or a process graft starts with a pid file and a log.
+func (s *Service) validateRunner(where string) error {
+	if s == nil {
+		return fmt.Errorf("%s: empty", where)
+	}
+	if s.SystemdUnit != "" {
+		if !unitRe.MatchString(s.SystemdUnit) {
+			return fmt.Errorf("%s.systemd_unit: %q is not a name.service unit", where, s.SystemdUnit)
+		}
+		if len(s.Run.Argv) > 0 || s.PIDFile != "" || s.Log != "" || s.DotEnv.All || len(s.DotEnv.Keys) > 0 || len(s.DotEnvSets) > 0 || len(s.Env) > 0 {
+			return fmt.Errorf("%s: with systemd_unit, run, pidfile, log, dotenv and env belong to the unit", where)
+		}
+		return nil
+	}
+	if len(s.Run.Argv) == 0 || s.PIDFile == "" || s.Log == "" {
+		return fmt.Errorf("%s: run, pidfile and log are required (or systemd_unit)", where)
+	}
+	for field, p := range map[string]string{"pidfile": s.PIDFile, "log": s.Log} {
+		if err := checkRelPath(where+"."+field, p); err != nil {
+			return err
 		}
 	}
 	return nil
