@@ -103,6 +103,16 @@ func Install(repo *gitx.Repo, dir string) ([]Change, error) {
 		}
 	}
 
+	if current == "" {
+		active, err := activeDefaultHooks(repo)
+		if err != nil {
+			return nil, err
+		}
+		if len(active) > 0 {
+			return nil, fmt.Errorf("setting core.hooksPath would stop these hooks from running: %s; move their checks into the gate in .graft.yaml and delete them", strings.Join(active, ", "))
+		}
+	}
+
 	var foreign []string
 	for _, name := range Names {
 		existing, err := os.ReadFile(filepath.Join(hooksDir, name))
@@ -165,6 +175,27 @@ func writeShim(path string, content []byte) (string, error) {
 	default:
 		return "made executable", os.Chmod(path, info.Mode().Perm()|0o755)
 	}
+}
+
+// activeDefaultHooks lists the hooks git runs from the default hooks directory
+// while core.hooksPath is unset; the .sample files git creates do not run.
+func activeDefaultHooks(repo *gitx.Repo) ([]string, error) {
+	dir := filepath.Join(repo.CommonDir, "hooks")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	active := []string{}
+	for _, e := range entries {
+		if e.IsDir() || strings.HasSuffix(e.Name(), ".sample") {
+			continue
+		}
+		active = append(active, filepath.Join(dir, e.Name()))
+	}
+	return active, nil
 }
 
 func hooksPath(repo *gitx.Repo) (string, error) {

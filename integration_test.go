@@ -737,6 +737,21 @@ func TestInitRefusesForeignHooks(t *testing.T) {
 	}
 }
 
+func TestInitRefusesToDisableDefaultHooks(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion:\n  mode: none\n"})
+	hook := filepath.Join(f.work, ".git", "hooks", "pre-push")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := f.graft("", "init")
+	if code == 0 || !strings.Contains(out, "pre-push") {
+		t.Errorf("exit %d:\n%s", code, out)
+	}
+	if got, code := f.tryGit("config", "core.hooksPath"); code == 0 {
+		t.Errorf("core.hooksPath set anyway: %q", got)
+	}
+}
+
 func TestShimFailsClosedWithoutGraft(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("PATH manipulation for sh differs on Windows")
