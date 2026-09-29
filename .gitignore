@@ -1,0 +1,7 @@
+/bin/
+/graft
+*.exe
+*.test
+*.out
+coverage.html
+go.work
