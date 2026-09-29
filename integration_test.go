@@ -89,6 +89,8 @@ type fixture struct {
 	t    *testing.T
 	base string
 	work string
+	// env is added to the environment of every process the fixture runs.
+	env []string
 }
 
 // newRepo makes a work tree on branch feature/PROJ-42-thing with bare remotes
@@ -157,7 +159,7 @@ func (f *fixture) exec(dir, stdin, name string, args ...string) (string, int) {
 	f.t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	cmd.Env = testEnv
+	cmd.Env = append(slices.Clone(testEnv), f.env...)
 	cmd.Stdin = strings.NewReader(stdin)
 	var out bytes.Buffer
 	cmd.Stdout = &out

@@ -39,6 +39,9 @@ Requires git 2.31 or newer.
 | `graft flags show <id>` | one event in full |
 | `graft flags ack <id> --reason R` | close an open event with a reason |
 | `graft flags mute <id> --reason R [--match S] [--all-envs]` | add an exception for it, then close it |
+| `graft deploy <target> [-- args]` | run the project's deploy script between graft's checks |
+| `graft deploy status <target>` / `logs <target> [--lines N] [--grep RE]` | the target's status and logs commands |
+| `graft deploy check-head` | for deploy scripts: HEAD is still the commit being deployed |
 | `graft --version` | print graft's own version |
 
 ### graft commit, step by step
@@ -263,6 +266,71 @@ flags:
 Listing follows `limit`/`offset` pages until `total`. Fields are dotted paths
 into the response; times are RFC 3339. A direct request that fails shows the
 response body; a command transport returns the response on stdout.
+
+## Deploy
+
+graft does not know how to deploy your project; your script does. graft runs
+it in the foreground and wraps it with the steps every deploy needs.
+
+```yaml
+deploy:
+  remote: origin                # HEAD must equal this remote's branch
+  branch: main                  # optional: deploy only main; default: the current branch
+  untracked: [backend, web]     # optional: where untracked files block; default: anywhere
+  targets:
+    test:
+      env: test                 # see envs
+      run: [bash, deploy/deploy.sh, --env, test]   # argv, run here in the foreground
+      version: "cat /opt/app/VERSION"              # prints what the target runs
+      deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
+      release_notes: {transition: Testing}
+      status: "cat /opt/app/state.json"
+      logs: "docker logs --tail {lines} app 2>&1"
+    prod:
+      env: prod
+      run: [bash, deploy/deploy.sh, --env, prod]
+      requires: test            # prod only gets the version test already runs
+      confirm: sudo             # sudo -v in the foreground, repeated until confirmed
+      deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
+      release_notes: {}
+
+release_notes:
+  jira:
+    project_keys: [PROJ]        # required: SHA-256 is shaped like a key too
+    comment: "Deployed to {target}, version {version}, commit {short}"   # default
+    skip_statuses: [Done]       # never move items out of these
+```
+
+`graft deploy <target> [-- args]`:
+
+1. With `confirm: sudo`, refuse unless stdin is a terminal: a password prompt in
+   a background job waits where nobody sees it.
+2. The work tree must be clean; `git fetch <remote>`; HEAD must equal the remote
+   branch.
+3. Ask for sudo until it is confirmed (Ctrl-C stops).
+4. With `requires`, the required target's `version` must print the version
+   being deployed.
+5. Read the previously deployed commit (`deployed_sha`).
+6. Run `run` plus `args` in the foreground, with `GRAFT_DEPLOY_TARGET`,
+   `GRAFT_DEPLOY_ENV`, `GRAFT_DEPLOY_SHA`, `GRAFT_DEPLOY_VERSION` and
+   `GRAFT_DEPLOY_PREVIOUS_SHA` in its environment. Between building and
+   shipping, the script can call `graft deploy check-head`.
+7. Check again that the tree is clean and HEAD has not moved.
+8. Record the deployed commit and post release notes: a comment on every
+   `project_keys` item mentioned in the delivered commits (subjects and bodies),
+   and with `transition`, a move to that status. Release notes never fail a
+   deploy; problems are printed as warnings.
+
+graft exits with the deploy script's exit status. Two deploys to the same
+target from one repository wait for each other.
+
+Jira credentials are the user's, not the project's:
+`<user config dir>/graft/config.yaml` (`~/.config/graft/config.yaml` on Linux):
+
+```yaml
+jira:
+  env_file: ~/secrets/jira.env   # JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN
+```
 
 ### Version modes
 

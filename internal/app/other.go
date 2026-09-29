@@ -221,37 +221,51 @@ func (a *App) Version() error {
 	if err != nil {
 		return err
 	}
+	v, err := projectVersion(repo, cfg)
+	if errors.Is(err, errNoVersionTags) {
+		head, headErr := repo.Git("rev-parse", "--short", "HEAD")
+		if headErr != nil {
+			return fmt.Errorf("no version tags and no commits yet: %w", headErr)
+		}
+		fmt.Fprintf(a.Stdout, "no version tags yet (HEAD %s)\n", strings.TrimSpace(head))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(a.Stdout, v)
+	return nil
+}
+
+var errNoVersionTags = errors.New("no version tags yet")
+
+// projectVersion is the version of the work tree: the version file, or git
+// describe from the highest version tag.
+func projectVersion(repo *gitx.Repo, cfg *config.Config) (string, error) {
 	switch cfg.Version.Mode {
 	case config.ModeFile:
 		v, err := version.Current(repo.Root, cfg.Version)
 		if err != nil {
-			return err
+			return "", err
 		}
-		fmt.Fprintln(a.Stdout, v)
-		return nil
+		return v.String(), nil
 	case config.ModeGitTag:
 		latest, found, err := latestTag(repo, cfg.Version.TagPrefix)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if !found {
-			head, err := repo.Git("rev-parse", "--short", "HEAD")
-			if err != nil {
-				return fmt.Errorf("no version tags and no commits yet: %w", err)
-			}
-			fmt.Fprintf(a.Stdout, "no version tags yet (HEAD %s)\n", strings.TrimSpace(head))
-			return nil
+			return "", errNoVersionTags
 		}
 		// Describe from the highest version tag by name: with several tags on
 		// one commit, git describe alone may pick a lower one.
 		out, err := repo.Git("describe", "--tags", "--match", cfg.Version.TagPrefix+latest.String(), "--dirty")
 		if err != nil {
-			return err
+			return "", err
 		}
-		fmt.Fprintln(a.Stdout, strings.TrimSpace(out))
-		return nil
+		return strings.TrimSpace(out), nil
 	default:
-		return fmt.Errorf("version.mode is %s: the project has no version", cfg.Version.Mode)
+		return "", fmt.Errorf("version.mode is %s: the project has no version", cfg.Version.Mode)
 	}
 }
 

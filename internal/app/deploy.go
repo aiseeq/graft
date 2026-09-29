@@ -1,0 +1,402 @@
+package app
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/aiseeq/graft/internal/config"
+	"github.com/aiseeq/graft/internal/deploy"
+	"github.com/aiseeq/graft/internal/dotenv"
+	"github.com/aiseeq/graft/internal/envs"
+	"github.com/aiseeq/graft/internal/gitx"
+	"github.com/aiseeq/graft/internal/jira"
+	"github.com/aiseeq/graft/internal/lock"
+	"github.com/aiseeq/graft/internal/userconfig"
+)
+
+// Environment variables graft passes to the deploy script.
+const (
+	EnvDeployTarget   = "GRAFT_DEPLOY_TARGET"
+	EnvDeployEnv      = "GRAFT_DEPLOY_ENV"
+	EnvDeploySHA      = "GRAFT_DEPLOY_SHA"
+	EnvDeployVersion  = "GRAFT_DEPLOY_VERSION"
+	EnvDeployPrevious = "GRAFT_DEPLOY_PREVIOUS_SHA"
+)
+
+// ExitCodeError carries the exit status of a child process graft stands in
+// for, so graft exits with the same status.
+type ExitCodeError struct {
+	Code int
+	Err  error
+}
+
+func (e *ExitCodeError) Error() string { return e.Err.Error() }
+
+func (e *ExitCodeError) Unwrap() error { return e.Err }
+
+// DeployOptions are the arguments of graft deploy.
+type DeployOptions struct {
+	Target string
+	// Args are passed to the deploy script after its configured arguments.
+	Args []string
+}
+
+type deployRun struct {
+	repo    *gitx.Repo
+	cfg     *config.Config
+	name    string
+	target  *config.DeployTarget
+	env     *envs.Env
+	head    string
+	version string
+	prev    string
+}
+
+// Deploy runs the project's deploy script for a target between graft's
+// checks: published HEAD, confirmation, the version already on the required
+// target; afterwards the deployed commit and the release notes.
+func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
+	r, err := a.deployTarget(o.Target)
+	if err != nil {
+		return err
+	}
+	if r.target.Confirm == "sudo" {
+		if err := deploy.RequireTerminal(o.Target); err != nil {
+			return err
+		}
+	}
+	path := filepath.Join(r.repo.CommonDir, "graft-locks", "deploy-"+o.Target+".lock")
+	lk, err := lock.AcquireMode(ctx, path, lock.Exclusive, r.cfg.Lock.Timeout, "graft deploy "+o.Target, a.Stderr)
+	if err != nil {
+		return err
+	}
+	err = a.deploy(ctx, r, o.Args)
+	if releaseErr := lk.Release(); releaseErr != nil {
+		err = errors.Join(err, fmt.Errorf("releasing the deploy lock: %w", releaseErr))
+	}
+	return err
+}
+
+func (a *App) deployTarget(name string) (*deployRun, error) {
+	repo, cfg, err := a.open()
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Deploy == nil {
+		return nil, errors.New("deploy is not configured: add a deploy section to .graft.yaml")
+	}
+	t, ok := cfg.Deploy.Targets[name]
+	if !ok {
+		names := slices.Sorted(func(yield func(string) bool) {
+			for n := range cfg.Deploy.Targets {
+				if !yield(n) {
+					return
+				}
+			}
+		})
+		return nil, fmt.Errorf("unknown deploy target %q (configured: %s)", name, strings.Join(names, ", "))
+	}
+	env, err := envs.Get(cfg, repo.Root, t.Env)
+	if err != nil {
+		return nil, err
+	}
+	return &deployRun{repo: repo, cfg: cfg, name: name, target: t, env: env}, nil
+}
+
+func (a *App) deploy(ctx context.Context, r *deployRun, args []string) error {
+	if err := deploy.CheckTree(r.repo, r.cfg.Deploy); err != nil {
+		return err
+	}
+	head, err := deploy.PublishedHead(r.repo, r.cfg.Deploy)
+	if err != nil {
+		return err
+	}
+	r.head = head
+	if r.cfg.Version.Mode != config.ModeNone {
+		if r.version, err = projectVersion(r.repo, r.cfg); err != nil {
+			return err
+		}
+	}
+	a.printf("deploying %s (version %s, commit %s) to %s", r.name, r.version, head[:12], r.env.Destination())
+	if r.target.Confirm == "sudo" {
+		if err := deploy.ConfirmSudo(ctx, r.name, a.Stderr); err != nil {
+			return err
+		}
+	}
+	if err := a.requireDeployed(ctx, r); err != nil {
+		return err
+	}
+	if r.target.DeployedSHA != nil {
+		if r.prev, err = deploy.ReadDeployedSHA(ctx, r.env, r.target.DeployedSHA); err != nil {
+			return err
+		}
+	}
+	if err := a.runDeployScript(ctx, r, args); err != nil {
+		return err
+	}
+	if err := deploy.CheckHead(r.repo, r.cfg.Deploy, r.head); err != nil {
+		return fmt.Errorf("the deploy script finished, but %w; the deployed commit is not recorded", err)
+	}
+	a.printf("deployed %s to %s", r.head[:12], r.name)
+	a.recordDeployment(ctx, r)
+	return nil
+}
+
+// requireDeployed enforces requires: the required target must already run
+// the version being deployed.
+func (a *App) requireDeployed(ctx context.Context, r *deployRun) error {
+	if r.target.Requires == "" {
+		return nil
+	}
+	req := r.cfg.Deploy.Targets[r.target.Requires]
+	env, err := envs.Get(r.cfg, r.repo.Root, req.Env)
+	if err != nil {
+		return err
+	}
+	got, err := deploy.DeployedVersion(ctx, env, req.Version)
+	if err != nil {
+		return err
+	}
+	if got != r.version {
+		return fmt.Errorf("%s runs version %s, not %s: deploy there first (graft deploy %s)", r.target.Requires, got, r.version, r.target.Requires)
+	}
+	a.printf("%s already runs version %s", r.target.Requires, got)
+	return nil
+}
+
+func (a *App) runDeployScript(ctx context.Context, r *deployRun, args []string) error {
+	argv, err := dotenv.ExpandAll(r.target.Run.Argv, dotenv.NewLookup(filepath.Join(r.repo.Root, r.cfg.DotEnv)))
+	if err != nil {
+		return err
+	}
+	argv = append(argv, args...)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Dir = r.repo.Root
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, a.Stdout, a.Stderr
+	cmd.Env = append(os.Environ(),
+		EnvDeployTarget+"="+r.name,
+		EnvDeployEnv+"="+r.env.Name,
+		EnvDeploySHA+"="+r.head,
+		EnvDeployVersion+"="+r.version,
+		EnvDeployPrevious+"="+r.prev,
+	)
+	err = cmd.Run()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return &ExitCodeError{Code: exitErr.ExitCode(), Err: fmt.Errorf("the deploy script failed with exit status %d; nothing recorded", exitErr.ExitCode())}
+	}
+	if err != nil {
+		return fmt.Errorf("running the deploy script: %w", err)
+	}
+	return nil
+}
+
+// recordDeployment writes the deployed commit and posts release notes. The
+// release is live by now, so a failure here is reported, not returned.
+func (a *App) recordDeployment(ctx context.Context, r *deployRun) {
+	if r.target.DeployedSHA == nil {
+		return
+	}
+	if err := deploy.WriteDeployedSHA(ctx, r.env, r.target.DeployedSHA, r.head); err != nil {
+		a.warn("the deployed commit is not recorded: %v", err)
+	}
+	if r.target.ReleaseNotes != nil {
+		a.releaseNotes(ctx, r)
+	}
+}
+
+func (a *App) warn(format string, args ...any) {
+	fmt.Fprintf(a.Stderr, "graft: warning: "+format+"\n", args...)
+}
+
+func (a *App) releaseNotes(ctx context.Context, r *deployRun) {
+	notes := r.cfg.ReleaseNotes.Jira
+	if r.prev == "" {
+		a.warn("release notes skipped: no previously deployed commit recorded (the next deploy will have one)")
+		return
+	}
+	if ok, err := r.repo.RevExists(r.prev); err != nil || !ok {
+		a.warn("release notes skipped: the previously deployed commit %s is unknown here (git fetch?)", r.prev)
+		return
+	}
+	keys, err := deliveredKeys(r.repo, r.prev, r.head, notes.ProjectKeys)
+	if err != nil {
+		a.warn("release notes skipped: %v", err)
+		return
+	}
+	if len(keys) == 0 {
+		a.printf("release notes: no work item keys in %s..%s", r.prev[:12], r.head[:12])
+		return
+	}
+	client, err := jiraClient()
+	if err != nil {
+		a.warn("release notes skipped: %v", err)
+		return
+	}
+	text, err := envs.Fill(notes.Comment, map[string]string{"target": r.name, "version": r.version, "short": r.head[:12], "sha": r.head}, func(s string) string { return s })
+	if err != nil {
+		a.warn("release notes skipped: %v", err)
+		return
+	}
+	for _, key := range keys {
+		if err := client.Comment(ctx, key, text); err != nil {
+			a.warn("release note for %s not posted: %v", key, err)
+			continue
+		}
+		a.printf("release note posted to %s", key)
+		if to := r.target.ReleaseNotes.Transition; to != "" {
+			moved, err := client.Transition(ctx, key, to, notes.SkipStatuses)
+			switch {
+			case err != nil:
+				a.warn("%s not moved to %s: %v", key, to, err)
+			case moved:
+				a.printf("%s moved to %s", key, to)
+			}
+		}
+	}
+}
+
+// deliveredKeys lists the project's work item keys mentioned in the subjects
+// and bodies of the delivered commits, once each, sorted.
+func deliveredKeys(repo *gitx.Repo, prev, head string, projectKeys []string) ([]string, error) {
+	out, err := repo.Git("log", "--format=%s%n%b", prev+".."+head)
+	if err != nil {
+		return nil, err
+	}
+	re := regexp.MustCompile(`\b(` + strings.Join(projectKeys, "|") + `)-[0-9]+\b`)
+	var keys []string
+	for _, k := range re.FindAllString(out, -1) {
+		if !slices.Contains(keys, k) {
+			keys = append(keys, k)
+		}
+	}
+	slices.Sort(keys)
+	return keys, nil
+}
+
+func jiraClient() (*jira.Client, error) {
+	ucfg, path, err := userconfig.Load()
+	if err != nil {
+		return nil, err
+	}
+	if ucfg.Jira.EnvFile == "" {
+		return nil, fmt.Errorf("jira.env_file is not set in %s", path)
+	}
+	creds, err := jira.LoadCredentials(ucfg.Jira.EnvFile)
+	if err != nil {
+		return nil, err
+	}
+	return jira.New(creds), nil
+}
+
+// DeployCheckHead is graft deploy check-head: the deploy script calls it
+// between building and shipping.
+func (a *App) DeployCheckHead() error {
+	repo, cfg, err := a.open()
+	if err != nil {
+		return err
+	}
+	if cfg.Deploy == nil {
+		return errors.New("deploy is not configured")
+	}
+	want := os.Getenv(EnvDeploySHA)
+	if want == "" {
+		return fmt.Errorf("%s is not set: check-head runs inside graft deploy", EnvDeploySHA)
+	}
+	if err := deploy.CheckHead(repo, cfg.Deploy, want); err != nil {
+		return err
+	}
+	a.printf("HEAD is still %s and the tree is clean", want[:12])
+	return nil
+}
+
+// DeployStatus runs the target's status command.
+func (a *App) DeployStatus(ctx context.Context, target string) error {
+	r, err := a.deployTarget(target)
+	if err != nil {
+		return err
+	}
+	if !r.target.Status.IsSet() {
+		return fmt.Errorf("deploy.targets.%s.status is not configured", target)
+	}
+	cmd, err := r.env.Command(ctx, r.target.Status)
+	if err != nil {
+		return err
+	}
+	cmd.Stdout, cmd.Stderr = a.Stdout, a.Stderr
+	return runPassthrough(cmd, "status")
+}
+
+// DeployLogs runs the target's logs command, keeping the lines matching grep.
+func (a *App) DeployLogs(ctx context.Context, target string, lines int, grep string) error {
+	r, err := a.deployTarget(target)
+	if err != nil {
+		return err
+	}
+	if r.target.Logs == "" {
+		return fmt.Errorf("deploy.targets.%s.logs is not configured", target)
+	}
+	var filter *regexp.Regexp
+	if grep != "" {
+		if filter, err = regexp.Compile(grep); err != nil {
+			return fmt.Errorf("--grep: %w", err)
+		}
+	}
+	line, err := envs.Fill(r.target.Logs, map[string]string{"lines": strconv.Itoa(lines)}, envs.Quote)
+	if err != nil {
+		return err
+	}
+	cmd := r.env.Shell(ctx, line)
+	cmd.Stderr = a.Stderr
+	if filter == nil {
+		cmd.Stdout = a.Stdout
+		return runPassthrough(cmd, "logs")
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	matched, scanErr := copyMatching(stdout, a.Stdout, filter)
+	if err := errors.Join(scanErr, cmd.Wait()); err != nil {
+		return fmt.Errorf("logs: %w", err)
+	}
+	if matched == 0 {
+		a.printf("no lines match %q", grep)
+	}
+	return nil
+}
+
+func copyMatching(r io.Reader, w io.Writer, re *regexp.Regexp) (int, error) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	matched := 0
+	for sc.Scan() {
+		if re.MatchString(sc.Text()) {
+			matched++
+			fmt.Fprintln(w, sc.Text())
+		}
+	}
+	return matched, sc.Err()
+}
+
+func runPassthrough(cmd *exec.Cmd, what string) error {
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return &ExitCodeError{Code: exitErr.ExitCode(), Err: fmt.Errorf("%s command failed with exit status %d", what, exitErr.ExitCode())}
+	}
+	return err
+}

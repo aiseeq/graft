@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"slices"
 	"strings"
 
 	"github.com/aiseeq/graft/internal/app"
@@ -38,6 +39,10 @@ Usage:
   graft flags show <id> [--env E]
   graft flags ack <id> --reason R [--env E]
   graft flags mute <id> --reason R [--match S] [--all-envs] [--env E]
+  graft deploy <target> [-- script args]
+  graft deploy status <target>
+  graft deploy logs <target> [--lines N] [--grep RE]
+  graft deploy check-head
   graft --version
 
 Commands:
@@ -50,6 +55,7 @@ Commands:
   gate     run the gate commands
   hook     entry point of the installed hooks
   flags    review the project's event journal: status, show, ack, mute
+  deploy   run the project's deploy script between graft's checks; status, logs
 `
 
 // errUsage marks command line mistakes; they exit with status 2.
@@ -72,11 +78,15 @@ func main() {
 
 func run(ctx context.Context, a *app.App, args []string) int {
 	err := dispatch(ctx, a, args)
+	var exitCode *app.ExitCodeError
 	switch {
 	case err == nil:
 		return 0
 	case errors.Is(err, flag.ErrHelp):
 		return 0
+	case errors.As(err, &exitCode):
+		fmt.Fprintln(a.Stderr, "graft:", err)
+		return exitCode.Code
 	case errors.Is(err, errUsage):
 		fmt.Fprintln(a.Stderr, "graft:", err)
 		fmt.Fprint(a.Stderr, "\n"+usage)
@@ -112,6 +122,8 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		return hookCmd(ctx, a, rest)
 	case "flags":
 		return flagsCmd(ctx, a, rest)
+	case "deploy":
+		return deployCmd(ctx, a, rest)
 	case "help", "-h", "--help":
 		fmt.Fprint(a.Stdout, usage)
 		return nil
@@ -289,4 +301,46 @@ func flagsCmd(ctx context.Context, a *app.App, args []string) error {
 		return fmt.Errorf("%w: --match and --all-envs apply to mute only", errUsage)
 	}
 	return a.Flags(ctx, o)
+}
+
+func deployCmd(ctx context.Context, a *app.App, args []string) error {
+	// Everything after -- belongs to the deploy script.
+	var scriptArgs []string
+	if i := slices.Index(args, "--"); i >= 0 {
+		args, scriptArgs = args[:i], args[i+1:]
+	}
+	fs := newFlags(a, "deploy")
+	lines := fs.Int("lines", 200, "logs: how many lines")
+	grep := fs.String("grep", "", "logs: keep lines matching this regexp")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	usage := fmt.Errorf("%w: graft deploy <target> [-- args] | status <target> | logs <target> [--lines N] [--grep RE] | check-head", errUsage)
+	if len(pos) == 0 {
+		return usage
+	}
+	logFlags := *lines != 200 || *grep != ""
+	if scriptArgs != nil && isDeploySubcommand(pos[0]) || logFlags && pos[0] != "logs" {
+		return usage
+	}
+	switch {
+	case pos[0] == "check-head" && len(pos) == 1:
+		return a.DeployCheckHead()
+	case pos[0] == "status" && len(pos) == 2:
+		return a.DeployStatus(ctx, pos[1])
+	case pos[0] == "logs" && len(pos) == 2:
+		if *lines <= 0 {
+			return fmt.Errorf("%w: --lines must be positive", errUsage)
+		}
+		return a.DeployLogs(ctx, pos[1], *lines, *grep)
+	case !isDeploySubcommand(pos[0]) && len(pos) == 1:
+		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs})
+	default:
+		return usage
+	}
+}
+
+func isDeploySubcommand(s string) bool {
+	return s == "status" || s == "logs" || s == "check-head"
 }

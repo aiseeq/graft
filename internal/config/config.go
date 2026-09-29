@@ -67,6 +67,9 @@ type Config struct {
 	Envs   map[string]*Env `yaml:"envs"`
 	DotEnv string          `yaml:"dotenv"`
 	Flags  *Flags          `yaml:"flags"`
+
+	Deploy       *Deploy       `yaml:"deploy"`
+	ReleaseNotes *ReleaseNotes `yaml:"release_notes"`
 }
 
 // Version describes where the project version lives.
@@ -198,6 +201,7 @@ func (c *Config) validate() error {
 		c.validateLock,
 		c.validateEnvs,
 		c.validateFlags,
+		c.validateDeploy,
 	}
 	for _, validate := range validators {
 		if err := validate(); err != nil {

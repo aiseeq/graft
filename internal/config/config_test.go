@@ -279,3 +279,43 @@ flags:
 		}
 	}
 }
+
+func TestParseDeployErrors(t *testing.T) {
+	base := `schema: 1
+version: {mode: file}
+envs: {local: {}, prod: {ssh: {host: 10.0.0.2}}}
+release_notes: {jira: {project_keys: [PROJ]}}
+deploy:
+  remote: origin
+  targets:
+    test: {env: local, run: [sh, deploy.sh], version: 'cat /opt/app/VERSION', deployed_sha: {path: /opt/app/DEPLOYED_SHA}, release_notes: {}}
+    prod: {env: prod, run: [sh, deploy.sh], requires: test, confirm: sudo}
+`
+	cfg, err := Parse([]byte(base))
+	if err != nil {
+		t.Fatalf("base must parse: %v", err)
+	}
+	if cfg.ReleaseNotes.Jira.Comment != DefaultNoteComment {
+		t.Errorf("default comment: %q", cfg.ReleaseNotes.Jira.Comment)
+	}
+	cases := map[string]string{
+		"no remote":            strings.Replace(base, "remote: origin", "remote: ''", 1),
+		"unknown env":          strings.Replace(base, "env: prod,", "env: staging,", 1),
+		"unknown requires":     strings.Replace(base, "requires: test", "requires: uat", 1),
+		"requires self":        strings.Replace(base, "requires: test", "requires: prod", 1),
+		"requires w/o version": strings.Replace(base, "version: 'cat /opt/app/VERSION', ", "", 1),
+		"bad confirm":          strings.Replace(base, "confirm: sudo", "confirm: yes", 1),
+		"notes w/o sha":        strings.Replace(base, "deployed_sha: {path: /opt/app/DEPLOYED_SHA}, ", "", 1),
+		"notes w/o jira":       strings.Replace(base, "release_notes: {jira: {project_keys: [PROJ]}}\n", "", 1),
+		"bad project key":      strings.Replace(base, "[PROJ]", "[proj]", 1),
+		"no project keys":      strings.Replace(base, "{project_keys: [PROJ]}", "{comment: x}", 1),
+		"reserved target name": strings.Replace(base, "    prod:", "    status:", 1),
+		"no run":               strings.Replace(base, "run: [sh, deploy.sh], requires", "requires", 1),
+		"requires without ver": strings.Replace(base, "mode: file", "mode: none", 1),
+	}
+	for name, data := range cases {
+		if _, err := Parse([]byte(data)); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}

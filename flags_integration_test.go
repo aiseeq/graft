@@ -91,8 +91,11 @@ func TestFlagsCommands(t *testing.T) {
 	}
 	// A reason that happens to be an env name stays a reason.
 	f.mustGraft("flags", "ack", "ev1", "--reason", "prod")
-	if api.events["ev1"]["note"] != "prod" {
-		t.Errorf("note = %v", api.events["ev1"]["note"])
+	api.mu.Lock()
+	note := api.events["ev1"]["note"]
+	api.mu.Unlock()
+	if note != "prod" {
+		t.Errorf("note = %v", note)
 	}
 
 	out = f.mustGraft("flags", "mute", "ev2", "--match", "disk almost full", "--reason", "alerting covers disks")
