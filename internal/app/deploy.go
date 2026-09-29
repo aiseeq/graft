@@ -195,7 +195,15 @@ func deployPreflight(r *deployRun) error {
 		}
 	}
 	for _, k := range r.target.Keys {
-		if !k.Optional {
+		switch {
+		case k.NonEmpty:
+			seen[k.Name] = true
+			if v, err := lookup.Value(k.Name); err != nil {
+				problems = append(problems, err.Error())
+			} else if v == "" {
+				problems = append(problems, k.Name+" is empty")
+			}
+		case !k.Optional:
 			check(k.Name)
 		}
 	}

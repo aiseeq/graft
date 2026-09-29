@@ -3,8 +3,8 @@ package app
 import (
 	"errors"
 	"fmt"
+	"io"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/aiseeq/graft/internal/config"
 	"github.com/aiseeq/graft/internal/gitx"
@@ -80,31 +80,67 @@ func commitHowTo(cfg *config.Config) string {
 
 // ProjectHelp lists the project's tasks that have a desc, and its services.
 func (a *App) ProjectHelp(cfg *config.Config) error {
-	w := tabwriter.NewWriter(a.Stdout, 0, 0, 2, ' ', 0)
+	var b strings.Builder
 	if len(cfg.Tasks) > 0 {
-		fmt.Fprintln(w, "\nTasks (graft <task> [-- args]; graft tasks lists all):")
+		var rows [][2]string
 		for _, name := range sortedNames(cfg.Tasks) {
 			// A task without desc is a building block of others.
 			if t := cfg.Tasks[name]; t.Desc != "" {
-				fmt.Fprintf(w, "  %s\t%s\n", taskSyntax(name, t), t.Desc)
+				rows = append(rows, [2]string{taskSyntax(name, t), t.Desc})
 			}
 		}
+		b.WriteString("\nTasks (graft <task> [-- args]; graft tasks lists all):\n")
+		writeRows(&b, "  ", rows)
 	}
 	if len(cfg.Services) > 0 {
-		fmt.Fprintln(w, "\nServices (graft start|stop|restart [service]):")
+		var rows [][2]string
 		for _, name := range sortedNames(cfg.Services) {
-			fmt.Fprintf(w, "  %s\t%s\n", name, cfg.Services[name].Desc)
+			s := cfg.Services[name]
+			desc := s.Desc
+			if s.SystemdUnit != "" {
+				desc = strings.TrimSpace(desc + " [systemd --user " + s.SystemdUnit + "]")
+			}
+			rows = append(rows, [2]string{name, desc})
+		}
+		b.WriteString("\nServices (graft start|stop|restart [service]; graft status; graft logs <service> [-f]):\n")
+		writeRows(&b, "  ", rows)
+	}
+	_, err := io.WriteString(a.Stdout, b.String())
+	return err
+}
+
+// nameColumn caps the width of the name column: one long task syntax must not
+// push every description to the right edge.
+const nameColumn = 24
+
+// writeRows prints name and description columns. A name wider than the
+// column gets its description on the next line.
+func writeRows(b *strings.Builder, indent string, rows [][2]string) {
+	width := 0
+	for _, r := range rows {
+		if n := len(r[0]); n <= nameColumn {
+			width = max(width, n)
 		}
 	}
-	return w.Flush()
+	for _, r := range rows {
+		switch {
+		case r[1] == "":
+			fmt.Fprintf(b, "%s%s\n", indent, r[0])
+		case len(r[0]) <= width:
+			fmt.Fprintf(b, "%s%-*s  %s\n", indent, width, r[0], r[1])
+		default:
+			fmt.Fprintf(b, "%s%s\n%s%*s  %s\n", indent, r[0], indent, width, "", r[1])
+		}
+	}
 }
 
 // taskSyntax is the task's command line: name, and what it takes after --.
+// A usage that already brackets its optional parts is not bracketed again.
 func taskSyntax(name string, t *config.Task) string {
 	switch {
 	case !t.TakesArgs():
 		return name
-	case t.Args == config.ArgsRequired:
+	case t.Args == config.ArgsRequired, strings.HasPrefix(t.Usage, "["):
 		return name + " -- " + t.UsageText()
 	default:
 		return name + " [-- " + t.UsageText() + "]"
@@ -121,14 +157,17 @@ func (a *App) Tasks() error {
 		a.printf("no tasks in .graft.yaml")
 		return nil
 	}
-	w := tabwriter.NewWriter(a.Stdout, 0, 0, 2, ' ', 0)
+	var rows [][2]string
 	for _, name := range sortedNames(cfg.Tasks) {
 		t := cfg.Tasks[name]
 		line := t.Desc
 		if len(t.Deps) > 0 {
 			line = strings.TrimSpace(line + " (deps: " + strings.Join(t.Deps, ", ") + ")")
 		}
-		fmt.Fprintf(w, "%s\t%s\n", taskSyntax(name, t), line)
+		rows = append(rows, [2]string{taskSyntax(name, t), line})
 	}
-	return w.Flush()
+	var b strings.Builder
+	writeRows(&b, "", rows)
+	_, err = io.WriteString(a.Stdout, b.String())
+	return err
 }

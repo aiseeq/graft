@@ -62,7 +62,7 @@ tools:
 | `graft <task> [-- args]` / `graft run <task> [-- args]` | run a task with its deps |
 | `graft tasks` | every task, building blocks and deps included |
 | `graft start` / `stop` / `restart [service]` | background services, all of them without a name |
-| `graft logs <service> [--lines N]` | the end of a service's log, or its journal |
+| `graft logs <service> [--lines N] [-f]` | the end of a service's log, or its journal; `-f` follows until Ctrl-C |
 | `graft status` | services, the test database, held locks |
 | `graft locks` | who holds graft's locks |
 | `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |
@@ -199,7 +199,7 @@ tasks:
     desc: all tests
     deps: [build]              # run first, each task at most once per invocation
     test_db: true              # pass the test database DSN (see below)
-    dotenv: [API_KEY, 'LOG_DIR?']   # only these .env keys reach the steps; KEY? is optional
+    dotenv: [API_KEY!, 'LOG_DIR?']  # only these .env keys reach the steps; KEY? optional, KEY! must not be empty
     dotenv_sets: [db]          # plus the keys of named sets
     env: {LOG_LEVEL: debug, API_URL: 'http://${HOST}:8080'}   # ${KEY}: environment, then .env
     run:
@@ -211,6 +211,7 @@ tasks:
       - go vet ./...
       - sh: gofmt -l . | tee fmt.txt       # a shell step, when a pipe is the point
       - task: build                        # another task, inline
+      - service: restart api               # start|stop|restart [service], all services without a name
   restore:
     desc: load a dump
     args: required             # refuse to run without arguments
@@ -230,7 +231,9 @@ dotenv_sets:                   # key lists several tasks and services share
 ```
 
 - A step is a string (split into words, no shell; pipes, `$VAR` and
-  redirects are errors), a list (argv as is), `{sh: "..."}` or `{task: name}`.
+  redirects are errors), a list (argv as is), `{sh: "..."}`, `{task: name}`
+  or `{service: action [name]}`. A string with `: ` in it is a map to YAML:
+  quote the whole step.
 - `{args}` receives the arguments after `--` verbatim: as separate words
   when it is a whole argv word, as the one argument inside a word, and
   shell-quoted in `sh` steps. `${KEY}` is expanded in the configured words
@@ -241,9 +244,10 @@ dotenv_sets:                   # key lists several tasks and services share
   `env` values, the test database DSN and `GRAFT_VERSION` are added.
   `GRAFT_VERSION` is `graft version --describe`; before the first commit
   there is none. Argv words see all of them as `${KEY}`.
-- Before the first step, graft checks every required key and `${KEY}` the
-  task and all its deps need, and lists everything missing at once. An
-  optional `KEY?` set nowhere is left out. Inside `[...]` it must be quoted:
+- Before the first step, deps included, graft fits the arguments into the
+  steps and checks every required key and `${KEY}` the task and all its deps
+  need, listing everything missing at once. An optional `KEY?` set nowhere is
+  left out; a `KEY!` set but empty is an error. Inside `[...]` it must be quoted:
   YAML does not take `KEY?` unquoted in a flow list.
 - Locks are named read/write locks shared by all worktrees of the
   repository; a task inside a task under the same lock reuses it, and asking
@@ -271,7 +275,8 @@ services:
     lock: work-tree              # held for writing while starting or stopping
   worker:
     systemd_unit: worker.service # a systemd --user unit: start, stop, status and logs go through
-                                 # systemctl and journalctl; run, pidfile, log, dotenv, env belong to the unit
+                                 # systemctl and journalctl (daemon-reload first when the unit file
+                                 # changed); run, pidfile, log, dotenv, env belong to the unit
     addr: ':9090'                # still waited for, if given
 ```
 
@@ -282,7 +287,8 @@ process group, so wrappers like `go run` do not leave the server behind, and
 SIGKILL after `stop_timeout`. A pid file whose process is gone, or on Linux
 now runs another program, is removed. On Windows stop terminates the process
 itself, not its children: run the program, not a wrapper. `graft logs`
-prints the end of the log file, or `journalctl --user -u` for a unit.
+prints the end of the log file, or `journalctl --user -u` for a unit; with
+`-f` it follows until Ctrl-C.
 
 ## Test database
 

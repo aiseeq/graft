@@ -330,23 +330,78 @@ func (m *Manager) stopped(ctx context.Context, name string, s *config.Service) e
 	return nil
 }
 
-// Logs prints the last lines of a service's log.
-func (m *Manager) Logs(ctx context.Context, name string, lines int, w io.Writer) error {
+// Logs prints the last lines of a service's log; with follow it goes on
+// printing what is appended until ctx ends (Ctrl-C).
+func (m *Manager) Logs(ctx context.Context, name string, lines int, follow bool, w io.Writer) error {
 	s := m.Config.Services[name]
 	if s.SystemdUnit != "" {
-		cmd := exec.CommandContext(ctx, "journalctl", "--user", "-u", s.SystemdUnit, "-n", strconv.Itoa(lines), "--no-pager")
+		args := []string{"--user", "-u", s.SystemdUnit, "-n", strconv.Itoa(lines), "--no-pager"}
+		if follow {
+			args = append(args, "-f")
+		}
+		cmd := exec.CommandContext(ctx, "journalctl", args...)
 		cmd.Stdout, cmd.Stderr = w, w
-		if err := cmd.Run(); err != nil {
+		if err := cmd.Run(); err != nil && ctx.Err() == nil {
 			return fmt.Errorf("journalctl --user -u %s: %w", s.SystemdUnit, err)
 		}
 		return nil
 	}
-	text, err := lastLines(m.path(s.Log), lines)
+	path := m.path(s.Log)
+	info, err := os.Stat(path)
 	if err != nil {
 		return err
 	}
-	_, err = io.WriteString(w, text)
-	return err
+	text, err := lastLines(path, lines)
+	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, text); err != nil {
+		return err
+	}
+	if !follow {
+		return nil
+	}
+	return followFile(ctx, path, info.Size(), w)
+}
+
+// followFile copies what is appended to path after offset until ctx ends.
+// A file that shrank was truncated or replaced: it is read from the start.
+func followFile(ctx context.Context, path string, offset int64, w io.Writer) error {
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if info.Size() < offset {
+			offset = 0
+		}
+		if info.Size() > offset {
+			n, err := copyFrom(path, offset, w)
+			if err != nil {
+				return err
+			}
+			offset += n
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-tick.C:
+		}
+	}
+}
+
+func copyFrom(path string, offset int64, w io.Writer) (int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return 0, err
+	}
+	return io.Copy(w, f)
 }
 
 // running returns the pid of the running service or 0. A pid file naming a

@@ -62,7 +62,12 @@ func (a *App) Service(ctx context.Context, action ServiceAction, name string) er
 	if err != nil {
 		return err
 	}
-	m := services.New(repo.Root, cfg, a.runner(repo, cfg), a.Stdout)
+	return a.serviceAction(ctx, services.New(repo.Root, cfg, a.runner(repo, cfg), a.Stdout), action, name)
+}
+
+// serviceAction acts on one service, or on all of them when name is empty
+// (stopping in reverse order).
+func (a *App) serviceAction(ctx context.Context, m *services.Manager, action ServiceAction, name string) error {
 	names, err := m.Names(name)
 	if err != nil {
 		return err
@@ -89,7 +94,7 @@ func (a *App) Service(ctx context.Context, action ServiceAction, name string) er
 }
 
 // ServiceLogs prints the last lines of a service's log.
-func (a *App) ServiceLogs(ctx context.Context, name string, lines int) error {
+func (a *App) ServiceLogs(ctx context.Context, name string, lines int, follow bool) error {
 	repo, cfg, err := a.open()
 	if err != nil {
 		return err
@@ -98,7 +103,7 @@ func (a *App) ServiceLogs(ctx context.Context, name string, lines int) error {
 	if _, err := m.Names(name); err != nil {
 		return err
 	}
-	return m.Logs(ctx, name, lines, a.Stdout)
+	return m.Logs(ctx, name, lines, follow, a.Stdout)
 }
 
 // Status shows the services, the test database and who holds graft's locks.

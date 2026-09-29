@@ -171,3 +171,29 @@ func TestUnquotedOptionalKeyHint(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestStepMaps(t *testing.T) {
+	base := "schema: 1\nversion: {mode: none}\nservices:\n  web: {systemd_unit: web.service}\ntasks:\n  t:\n    run:\n      - STEP\n"
+	for step, want := range map[string]string{
+		"echo a: b":             "was read as a map",
+		"{service: start nope}": `unknown service "nope"`,
+		"{service: fly web}":    "is not start|stop|restart",
+		"{sh: ''}":              "empty",
+	} {
+		_, err := Parse([]byte(strings.Replace(base, "STEP", step, 1)))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v, want %q", step, err, want)
+		}
+	}
+	cfg, err := Parse([]byte(strings.Replace(base, "STEP", "{service: restart web}", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := cfg.Tasks["t"].Run[0]; s.ServiceAction != "restart" || s.ServiceName != "web" {
+		t.Errorf("step = %+v", s)
+	}
+	_, err = Parse([]byte("schema: 1\nversion: {mode: none}\ndotenv_sets: {db: [A!, B]}\n"))
+	if err != nil {
+		t.Errorf("KEY! in a flow list: %v", err)
+	}
+}

@@ -42,6 +42,9 @@ type Runner struct {
 	LockDir string
 	// TestDSN returns the checked test database DSN for test_db tasks.
 	TestDSN func(context.Context) (string, error)
+	// Service starts, stops or restarts a service (every service when name
+	// is empty) for {service: ...} steps.
+	Service func(ctx context.Context, action, name string) error
 	// Version returns the project version (graft version --describe) and
 	// whether there is one: a repository without commits has none.
 	Version func() (string, bool, error)
@@ -98,10 +101,31 @@ func (r *Runner) Run(ctx context.Context, name string, args []string) error {
 	if len(args) == 0 && t.Args == config.ArgsRequired {
 		return fmt.Errorf("task %s needs arguments: graft %s -- %s", name, name, t.UsageText())
 	}
+	if err := checkArgs(name, t, args); err != nil {
+		return err
+	}
 	if err := r.preflight(t.Run, t, name); err != nil {
 		return err
 	}
 	return r.run(ctx, name, args)
+}
+
+// checkArgs fits the arguments into the task's steps before anything runs,
+// deps included: {args} inside a word takes exactly one.
+func checkArgs(name string, t *config.Task, args []string) error {
+	for _, s := range t.Run {
+		var err error
+		switch {
+		case s.Shell != "":
+			_, err = envs.ShellArgs(s.Shell, args, nil)
+		case len(s.Argv) > 0:
+			_, err = envs.ExpandArgv(s.Argv, args, nil)
+		}
+		if err != nil {
+			return fmt.Errorf("task %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // preflight checks, before any step runs, that every .env key and ${KEY}
@@ -156,7 +180,15 @@ func (r *Runner) missing(t *config.Task, steps []config.Step) []string {
 		}
 	}
 	for _, k := range t.Keys {
-		if !k.Optional {
+		switch {
+		case k.NonEmpty:
+			provided[k.Name] = true
+			if v, err := r.lookup.Value(k.Name); err != nil {
+				problems = append(problems, err.Error())
+			} else if v == "" {
+				problems = append(problems, k.Name+" is empty")
+			}
+		case !k.Optional:
 			check(k.Name)
 		}
 	}
@@ -225,6 +257,12 @@ func (r *Runner) steps(ctx context.Context, name string, t *config.Task, args []
 func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args []string) error {
 	if s.Task != "" {
 		return r.run(ctx, s.Task, nil)
+	}
+	if s.ServiceAction != "" {
+		if r.Service == nil {
+			return errors.New("service steps are not available here")
+		}
+		return r.Service(ctx, s.ServiceAction, s.ServiceName)
 	}
 	vars, err := r.vars(ctx, t)
 	if err != nil {
@@ -327,6 +365,9 @@ func KeyValues(l *dotenv.Lookup, keys []config.DotEnvKey) ([]string, error) {
 			v, err := l.Value(k.Name)
 			if err != nil {
 				return nil, err
+			}
+			if k.NonEmpty && v == "" {
+				return nil, fmt.Errorf("%s is empty", k.Name)
 			}
 			env = append(env, k.Name+"="+v)
 			continue

@@ -54,7 +54,7 @@ var commands = []command{
 		applies: func(c *config.Config) bool { return len(c.Tasks) > 0 }},
 	{name: "tasks", syntax: fixed("graft tasks"), summary: text("list every task, building blocks included"),
 		applies: func(c *config.Config) bool { return len(c.Tasks) > 0 }},
-	{name: "start", syntax: fixed("graft start|stop|restart [service]", "graft logs <service> [--lines N]"), summary: text("start services in the background or through systemd --user; stop, restart, logs"),
+	{name: "start", syntax: fixed("graft start|stop|restart [service]", "graft logs <service> [--lines N] [-f]"), summary: text("start services in the background or through systemd --user; stop, restart, logs"),
 		applies: func(c *config.Config) bool { return len(c.Services) > 0 }},
 	{name: "status", syntax: fixed("graft status"), summary: text("show services, the test database and held locks")},
 	{name: "locks", syntax: fixed("graft locks"), summary: text("show who holds graft's locks")},

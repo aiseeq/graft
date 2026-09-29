@@ -1,11 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestOptionalKeysAndSets(t *testing.T) {
@@ -98,7 +104,8 @@ func fakeSystemd(t *testing.T, f *fixture, startState string) string {
 	systemctl := `#!/bin/sh
 echo "$*" >> ` + calls + `
 case "$2" in
-show) s=$(cat ` + state + `); pid=0; [ "$s" = active ] && pid=4242; echo "MainPID=$pid"; echo "ActiveState=$s" ;;
+show) if [ "$3" = --property=NeedDaemonReload ]; then echo NeedDaemonReload=yes; exit 0; fi
+  s=$(cat ` + state + `); pid=0; [ "$s" = active ] && pid=4242; echo "MainPID=$pid"; echo "ActiveState=$s" ;;
 start) echo ` + startState + ` > ` + state + ` ;;
 stop) echo inactive > ` + state + ` ;;
 esac
@@ -122,6 +129,9 @@ func TestSystemdServices(t *testing.T) {
     systemd_unit: web.service
 `, nil)
 	calls := fakeSystemd(t, f, "active")
+	if out := f.mustGraft("help"); !strings.Contains(out, "web  web through systemd [systemd --user web.service]") {
+		t.Errorf("help:\n%s", out)
+	}
 	if out := f.mustGraft("status"); !strings.Contains(out, "web: stopped, log journalctl --user -u web.service") {
 		t.Errorf("status:\n%s", out)
 	}
@@ -137,6 +147,9 @@ func TestSystemdServices(t *testing.T) {
 	if out := f.mustGraft("logs", "web", "--lines", "5"); !strings.Contains(out, "journal --user -u web.service -n 5 --no-pager") {
 		t.Errorf("logs:\n%s", out)
 	}
+	if out := f.mustGraft("logs", "web", "-f"); !strings.Contains(out, "journal --user -u web.service -n 100 --no-pager -f") {
+		t.Errorf("logs -f:\n%s", out)
+	}
 	if out := f.mustGraft("stop"); !strings.Contains(out, "stopped web") {
 		t.Errorf("stop:\n%s", out)
 	}
@@ -144,7 +157,7 @@ func TestSystemdServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "--user start web.service") || !strings.Contains(string(data), "--user stop web.service") {
+	if !strings.Contains(string(data), "--user daemon-reload\n--user start web.service") || !strings.Contains(string(data), "--user stop web.service") {
 		t.Errorf("systemctl calls:\n%s", data)
 	}
 
@@ -168,5 +181,112 @@ func TestServiceLogsFromFile(t *testing.T) {
 	}
 	if res, code := f.graft("", "logs", "nosuch"); code != 1 || !strings.Contains(res, `unknown service "nosuch"`) {
 		t.Errorf("unknown service: exit %d\n%s", code, res)
+	}
+}
+
+func TestArgumentsAndKeysAreCheckedBeforeDeps(t *testing.T) {
+	f := tasksRepo(t, "", map[string]string{".env": "EMPTY=\nFULL=x\n"})
+	built := f.path("built.txt")
+	f.write(".graft.yaml", f.read(".graft.yaml")+`tasks:
+  build:
+    run: [`+helperStep("append", built, "built")+`]
+  one:
+    deps: [build]
+    usage: '[--limit=N]'
+    run: [`+helperStep("append", built, "--x={args}")+`]
+  keys:
+    deps: [build]
+    dotenv: [FULL!, EMPTY!]
+    run: [`+helperStep("ok")+`]
+  a-task-with-a-long-name:
+    desc: long
+    args: required
+    usage: <first> <second>
+    run: [`+helperStep("ok", "{args}")+`]
+`)
+	if out, code := f.graft("", "one", "--", "1", "2"); code != 1 || !strings.Contains(out, "takes exactly one argument, got 2") {
+		t.Errorf("args: exit %d\n%s", code, out)
+	}
+	if out, code := f.graft("", "keys"); code != 1 || !strings.Contains(out, "EMPTY is empty") || strings.Contains(out, "FULL") {
+		t.Errorf("non-empty keys: exit %d\n%s", code, out)
+	}
+	if _, err := os.Stat(built); !os.IsNotExist(err) {
+		t.Errorf("a dep ran: %v", err)
+	}
+	tasks := f.mustGraft("tasks")
+	for _, want := range []string{"one -- [--limit=N]", "a-task-with-a-long-name -- <first> <second>\n", "\n" + strings.Repeat(" ", 20) + "long"} {
+		if !strings.Contains(tasks, want) {
+			t.Errorf("tasks lacks %q:\n%s", want, tasks)
+		}
+	}
+}
+
+func TestServiceSteps(t *testing.T) {
+	f, port := serviceRepo(t, "serve", "")
+	f.write(".graft.yaml", strings.Replace(f.read(".graft.yaml"), "tasks:\n", "tasks:\n  up:\n    run: [{service: start web}]\n  down:\n    run: [{service: stop}]\n", 1))
+	f.mustGraft("up")
+	if !listeningOn(port) {
+		t.Error("up did not start web")
+	}
+	f.mustGraft("down")
+	if listeningOn(port) {
+		t.Error("down did not stop web")
+	}
+}
+
+func TestServiceLogsFollow(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stops graft with SIGINT")
+	}
+	f, _ := serviceRepo(t, "serve", "")
+	f.write("tmp/web.log", "old\n")
+	cmd := exec.Command(graftBin, "logs", "web", "-f", "--lines", "1")
+	cmd.Dir, cmd.Env = f.work, append(slices.Clone(testEnv), f.env...)
+	var out syncBuffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return strings.Contains(out.String(), "old") })
+	logFile, err := os.OpenFile(f.path("tmp/web.log"), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintln(logFile, "new line")
+	logFile.Close()
+	waitFor(t, func() bool { return strings.Contains(out.String(), "new line") })
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Errorf("graft logs -f after Ctrl-C: %v\n%s", err, out.String())
+	}
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

@@ -13,13 +13,20 @@ import (
 )
 
 // Step is one thing a task (or the gate) does: a program run as argv, a
-// shell command line run by sh, or another task.
+// shell command line run by sh, another task, or a service action.
 type Step struct {
-	Argv   []string
-	Shell  string
-	Task   string
-	Source string
+	Argv  []string
+	Shell string
+	Task  string
+	// ServiceAction (start, stop, restart) acts on ServiceName, or on every
+	// service when it is empty.
+	ServiceAction string
+	ServiceName   string
+	Source        string
 }
+
+// Service actions a step can take.
+var serviceActions = []string{"start", "stop", "restart"}
 
 // UnmarshalYAML accepts a string (argv by shell quoting rules, no shell), a
 // list (argv as is), {sh: "..."} or {task: name}.
@@ -33,26 +40,41 @@ func (s *Step) UnmarshalYAML(node *yaml.Node) error {
 		s.Argv, s.Source = c.Argv, c.Source
 		return nil
 	case yaml.MappingNode:
-		var m struct {
-			Sh   string `yaml:"sh"`
-			Task string `yaml:"task"`
-		}
-		dec := node
-		if err := dec.Decode(&m); err != nil {
-			return fmt.Errorf("line %d: %w", node.Line, err)
-		}
-		if len(node.Content) != 2 || (m.Sh == "") == (m.Task == "") {
-			return fmt.Errorf("line %d: a step map is {sh: \"...\"} or {task: name}", node.Line)
-		}
-		s.Shell, s.Task = m.Sh, m.Task
-		s.Source = shellLabel(m.Sh)
-		if m.Task != "" {
-			s.Source = "task " + m.Task
-		}
-		return nil
+		return s.unmarshalMap(node)
 	default:
-		return fmt.Errorf("line %d: a step is a string, a list, {sh: ...} or {task: ...}", node.Line)
+		return fmt.Errorf("line %d: a step is a string, a list, {sh: ...}, {task: ...} or {service: ...}", node.Line)
 	}
+}
+
+func (s *Step) unmarshalMap(node *yaml.Node) error {
+	if len(node.Content) != 2 || node.Content[1].Kind != yaml.ScalarNode {
+		return fmt.Errorf("line %d: a step map is {sh: \"...\"}, {task: name} or {service: action [name]}", node.Line)
+	}
+	key, value := node.Content[0].Value, node.Content[1].Value
+	switch key {
+	case "sh":
+		s.Shell, s.Source = value, shellLabel(value)
+	case "task":
+		s.Task, s.Source = value, "task "+value
+	case "service":
+		fields := strings.Fields(value)
+		if len(fields) == 0 || len(fields) > 2 || !slices.Contains(serviceActions, fields[0]) {
+			return fmt.Errorf("line %d: service: %q is not start|stop|restart [name]", node.Line, value)
+		}
+		s.ServiceAction = fields[0]
+		if len(fields) == 2 {
+			s.ServiceName = fields[1]
+		}
+		s.Source = "service " + value
+	default:
+		// "echo a: b" unquoted is a map to YAML.
+		return fmt.Errorf("line %d: %q was read as a map (\": \" in a plain string); quote the whole step, or use {sh: ...}, {task: ...} or {service: ...}",
+			node.Line, key+": "+value)
+	}
+	if value == "" {
+		return fmt.Errorf("line %d: %s: empty", node.Line, key)
+	}
+	return nil
 }
 
 // shellLabel names a shell step in graft's output: the script itself when it
@@ -160,24 +182,31 @@ type Service struct {
 type DotEnvKey struct {
 	Name     string
 	Optional bool
+	// NonEmpty ("KEY!") refuses a key that is set but empty.
+	NonEmpty bool
 }
 
 var envKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// UnmarshalYAML accepts KEY or KEY?.
+// UnmarshalYAML accepts KEY, KEY? (optional) or KEY! (must not be empty).
 func (k *DotEnvKey) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind != yaml.ScalarNode {
 		return fmt.Errorf("line %d: a .env key is a string", node.Line)
 	}
-	name, optional := strings.CutSuffix(node.Value, "?")
-	if !envKeyRe.MatchString(name) {
-		return fmt.Errorf("line %d: %q is not a .env key (KEY or KEY?)", node.Line, node.Value)
+	name := node.Value
+	name, k.Optional = strings.CutSuffix(name, "?")
+	if !k.Optional {
+		name, k.NonEmpty = strings.CutSuffix(name, "!")
 	}
-	k.Name, k.Optional = name, optional
+	if !envKeyRe.MatchString(name) {
+		return fmt.Errorf("line %d: %q is not a .env key (KEY, KEY? or KEY!)", node.Line, node.Value)
+	}
+	k.Name = name
 	return nil
 }
 
-// mergeKeys joins key lists; a key required anywhere is required.
+// mergeKeys joins key lists; a key required anywhere is required, and one
+// that must not be empty anywhere must not be empty.
 func mergeKeys(lists ...[]DotEnvKey) []DotEnvKey {
 	var out []DotEnvKey
 	index := map[string]int{}
@@ -185,6 +214,7 @@ func mergeKeys(lists ...[]DotEnvKey) []DotEnvKey {
 		for _, k := range list {
 			if i, ok := index[k.Name]; ok {
 				out[i].Optional = out[i].Optional && k.Optional
+				out[i].NonEmpty = out[i].NonEmpty || k.NonEmpty
 				continue
 			}
 			index[k.Name] = len(out)
@@ -291,6 +321,9 @@ func (c *Config) validateTasks() error {
 				return fmt.Errorf("gate: unknown task %q", s.Task)
 			}
 		}
+		if s.ServiceAction != "" {
+			return errors.New("gate: service steps belong in tasks; the gate only checks")
+		}
 	}
 	return c.checkTaskCycles()
 }
@@ -325,10 +358,21 @@ func (c *Config) validateTask(name string, t *Task) error {
 	if err := t.validateArgs(where); err != nil {
 		return err
 	}
+	return c.validateTaskRefs(where, t)
+}
+
+// validateTaskRefs checks the tasks and services a task names.
+func (c *Config) validateTaskRefs(where string, t *Task) error {
 	refs := slices.Clone(t.Deps)
 	for _, s := range t.Run {
 		if s.Task != "" {
 			refs = append(refs, s.Task)
+		}
+		if s.ServiceAction != "" && len(c.Services) == 0 {
+			return fmt.Errorf("%s.run: a service step needs a services section", where)
+		}
+		if _, ok := c.Services[s.ServiceName]; s.ServiceName != "" && !ok {
+			return fmt.Errorf("%s.run: unknown service %q", where, s.ServiceName)
 		}
 	}
 	for _, ref := range refs {

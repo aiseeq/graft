@@ -16,6 +16,7 @@ import (
 	"github.com/aiseeq/graft/internal/gitx"
 	"github.com/aiseeq/graft/internal/hooks"
 	"github.com/aiseeq/graft/internal/lock"
+	"github.com/aiseeq/graft/internal/services"
 	"github.com/aiseeq/graft/internal/tasks"
 	"github.com/aiseeq/graft/internal/version"
 )
@@ -95,6 +96,9 @@ func (a *App) runner(repo *gitx.Repo, cfg *config.Config) *tasks.Runner {
 	r.LockDir = lockDir(repo)
 	if cfg.TestDB != nil {
 		r.TestDSN = func(ctx context.Context) (string, error) { return a.testDSN(ctx, repo, cfg) }
+	}
+	r.Service = func(ctx context.Context, action, name string) error {
+		return a.serviceAction(ctx, services.New(repo.Root, cfg, r, a.Stdout), ServiceAction(action), name)
 	}
 	r.Version = func() (string, bool, error) {
 		v, err := describeVersion(repo, cfg)

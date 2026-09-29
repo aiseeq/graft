@@ -175,14 +175,15 @@ func serviceCmd(ctx context.Context, a *app.App, action app.ServiceAction, args 
 func logsCmd(ctx context.Context, a *app.App, args []string) error {
 	fs := newFlags(a, "logs")
 	lines := fs.Int("lines", 100, "how many of the last lines to show")
+	follow := fs.Bool("f", false, "go on printing new lines until Ctrl-C")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 1 || *lines <= 0 {
-		return fmt.Errorf("%w: graft logs <service> [--lines N]", errUsage)
+		return fmt.Errorf("%w: graft logs <service> [--lines N] [-f]", errUsage)
 	}
-	return a.ServiceLogs(ctx, pos[0], *lines)
+	return a.ServiceLogs(ctx, pos[0], *lines, *follow)
 }
 
 func testDBCmd(ctx context.Context, a *app.App, args []string) error {

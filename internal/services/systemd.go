@@ -61,6 +61,9 @@ func (m *Manager) startUnit(ctx context.Context, name string, s *config.Service)
 	if err != nil {
 		return err
 	}
+	if err := m.reloadIfChanged(ctx, s.SystemdUnit); err != nil {
+		return err
+	}
 	if _, err := systemctl(ctx, "start", s.SystemdUnit); err != nil {
 		return fmt.Errorf("%s: %w (see graft logs %s)", name, err, name)
 	}
@@ -102,4 +105,23 @@ func (m *Manager) stopUnit(ctx context.Context, name string, s *config.Service) 
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	return m.stopped(ctx, name, s)
+}
+
+// reloadIfChanged runs daemon-reload when the unit file changed since
+// systemd read it: starting it otherwise runs the old definition.
+func (m *Manager) reloadIfChanged(ctx context.Context, unit string) error {
+	out, err := systemctl(ctx, "show", "--property=NeedDaemonReload", unit)
+	if err != nil {
+		return err
+	}
+	switch strings.TrimSpace(out) {
+	case "NeedDaemonReload=no":
+		return nil
+	case "NeedDaemonReload=yes":
+		fmt.Fprintf(m.Log, "graft: %s changed on disk, systemctl --user daemon-reload\n", unit)
+		_, err := systemctl(ctx, "daemon-reload")
+		return err
+	default:
+		return fmt.Errorf("systemctl show %s: unexpected %q", unit, strings.TrimSpace(out))
+	}
 }
