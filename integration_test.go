@@ -454,7 +454,7 @@ func TestConcurrentCommitsTakeTurns(t *testing.T) {
 	if !slices.Equal(events, []string{"start", "end", "start", "end"}) {
 		t.Errorf("gates overlapped: %v\n%s", events, data)
 	}
-	if !strings.Contains(results[0]+results[1], "waiting for the repository lock") {
+	if !strings.Contains(results[0]+results[1], "waiting for the write lock graft.lock") {
 		t.Errorf("no process waited for the lock:\n%s\n%s", results[0], results[1])
 	}
 }

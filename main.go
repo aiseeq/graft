@@ -34,6 +34,10 @@ Usage:
   graft check
   graft gate
   graft hook (pre-commit|post-merge)
+  graft flags [status] [--env E]
+  graft flags show <id> [--env E]
+  graft flags ack <id> --reason R [--env E]
+  graft flags mute <id> --reason R [--match S] [--all-envs] [--env E]
   graft --version
 
 Commands:
@@ -45,6 +49,7 @@ Commands:
   check    scan the staged changes for secrets, binaries, large files, version drift
   gate     run the gate commands
   hook     entry point of the installed hooks
+  flags    review the project's event journal: status, show, ack, mute
 `
 
 // errUsage marks command line mistakes; they exit with status 2.
@@ -105,6 +110,8 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		return noArgs(a, cmd, rest, func() error { return a.Gate(ctx) })
 	case "hook":
 		return hookCmd(ctx, a, rest)
+	case "flags":
+		return flagsCmd(ctx, a, rest)
 	case "help", "-h", "--help":
 		fmt.Fprint(a.Stdout, usage)
 		return nil
@@ -228,4 +235,58 @@ func toolVersion() string {
 		return info.Main.Version
 	}
 	return "unknown"
+}
+
+// parseInterspersed parses flags wherever they appear among positional
+// arguments, which the flag package alone stops at.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil, err
+			}
+			return nil, fmt.Errorf("%w: %w", errUsage, err)
+		}
+		if fs.NArg() == 0 {
+			return positional, nil
+		}
+		positional = append(positional, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+}
+
+func flagsCmd(ctx context.Context, a *app.App, args []string) error {
+	fs := newFlags(a, "flags")
+	var o app.FlagsOptions
+	fs.StringVar(&o.Env, "env", "", "environment (default: flags.default_env)")
+	fs.StringVar(&o.Reason, "reason", "", "why the event is closed (ack, mute)")
+	fs.StringVar(&o.Match, "match", "", "mute: the part of the subject the rule matches (default: all of it, * for the whole class)")
+	fs.BoolVar(&o.AllEnvs, "all-envs", false, "mute: write the rule for every environment")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	o.Command = "status"
+	if len(pos) > 0 {
+		o.Command = pos[0]
+		pos = pos[1:]
+	}
+	switch o.Command {
+	case "status":
+		if len(pos) != 0 {
+			return fmt.Errorf("%w: flags status takes no arguments", errUsage)
+		}
+	case "show", "ack", "mute":
+		if len(pos) != 1 {
+			return fmt.Errorf("%w: flags %s takes one event id", errUsage, o.Command)
+		}
+		o.ID = pos[0]
+	default:
+		return fmt.Errorf("%w: unknown flags command %q (status, show, ack, mute)", errUsage, o.Command)
+	}
+	if (o.Match != "" || o.AllEnvs) && o.Command != "mute" {
+		return fmt.Errorf("%w: --match and --all-envs apply to mute only", errUsage)
+	}
+	return a.Flags(ctx, o)
 }

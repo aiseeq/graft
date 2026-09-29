@@ -200,3 +200,82 @@ func TestCompileGlob(t *testing.T) {
 		t.Errorf("escaping glob: %v", err)
 	}
 }
+
+const flagsBase = `schema: 1
+version:
+  mode: none
+envs:
+  local: {}
+  prod: {ssh: {host: 10.0.0.2, user: deploy}}
+`
+
+func TestParseFlags(t *testing.T) {
+	cfg, err := Parse([]byte(flagsBase + `
+flags:
+  default_env: prod
+  exceptions: tools/flags-exceptions.conf
+  sql:
+    table: public.app_events
+    columns: {id: id, class: kind, subject: subject, status: status, last_seen: last_seen_at, note: note}
+    open_statuses: [open]
+    resolved_status: resolved
+    psql:
+      local: [psql, '${DB_DSN}', -X, -q, -t, -A, -v, ON_ERROR_STOP=1]
+      prod: "exec psql -X -q -t -A -v ON_ERROR_STOP=1"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Flags.SQL.Actor != "graft" || cfg.Flags.SQL.Psql["prod"].Shell == "" || len(cfg.Flags.SQL.Psql["local"].Argv) != 8 {
+		t.Errorf("flags: %+v", cfg.Flags.SQL)
+	}
+	if cfg.DotEnv != ".env" || cfg.Envs["prod"].SSH.User != "deploy" {
+		t.Errorf("envs: %+v", cfg.Envs)
+	}
+}
+
+func TestParseFlagsErrors(t *testing.T) {
+	sql := func(extra string) string {
+		return flagsBase + `
+flags:
+  default_env: prod
+  exceptions: x.conf
+  sql:
+    table: events
+    columns: {id: id, class: kind, subject: subject, status: status, last_seen: seen, note: note}
+    open_statuses: [open]
+    resolved_status: resolved
+    psql: {prod: "psql"}
+` + extra
+	}
+	if _, err := Parse([]byte(sql(""))); err != nil {
+		t.Fatalf("base must parse: %v", err)
+	}
+	cases := map[string]string{
+		"unknown default env": strings.Replace(sql(""), "default_env: prod", "default_env: staging", 1),
+		"unknown psql env":    strings.Replace(sql(""), "psql: {prod:", "psql: {uat:", 1),
+		"injection in column": strings.Replace(sql(""), "class: kind", "class: 'kind; drop'", 1),
+		"bad table":           strings.Replace(sql(""), "table: events", "table: 'ev ents'", 1),
+		"missing note":        strings.Replace(sql(""), ", note: note", "", 1),
+		"no adapter":          flagsBase + "flags: {default_env: prod, exceptions: x.conf}\n",
+		"bad env name":        "schema: 1\nversion: {mode: none}\nenvs: {Prod: {}}\n",
+		"ssh without host":    "schema: 1\nversion: {mode: none}\nenvs: {prod: {ssh: {user: x}}}\n",
+		"http both transports": flagsBase + `
+flags:
+  default_env: local
+  exceptions: x.conf
+  http:
+    list: {path: /l, items: data, page_size: 10}
+    get: {path: '/l/{id}'}
+    ack: {method: PUT, path: '/l/{id}'}
+    fields: {id: id, class: c, subject: s, status: st, last_seen: ls}
+    open_statuses: [new]
+    transport: {local: {base_url: 'http://x', command: 'y'}}
+`,
+	}
+	for name, data := range cases {
+		if _, err := Parse([]byte(data)); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}

@@ -1,4 +1,4 @@
-.PHONY: build install test test-race smoke fmt fmt-check vet glint check commit help
+.PHONY: build install test test-race smoke fmt fmt-check vet glint check commit help pg-up pg-down
 
 BINARY_NAME=graft
 BUILD_DIR=bin
@@ -20,10 +20,28 @@ install: build ## Install to ~/bin atomically (a running graft keeps its file)
 	mv -f "$$tmp" $(HOME)/bin/$(BINARY_NAME)
 	@echo "Installed to $(HOME)/bin/$(BINARY_NAME)"
 
-test: ## Run all tests (unit and integration)
+# Tests that need PostgreSQL use this disposable container; without
+# GRAFT_TEST_PG_DSN they skip and say so.
+PG_CONTAINER=graft-test-pg
+PG_PORT=55432
+export GRAFT_TEST_PG_DSN=postgres://graft:graft@127.0.0.1:$(PG_PORT)/graft?sslmode=disable
+
+pg-up: ## Start the disposable PostgreSQL for tests (docker)
+	@if docker ps --format '{{.Names}}' | grep -qx $(PG_CONTAINER); then :; \
+	elif docker ps -a --format '{{.Names}}' | grep -qx $(PG_CONTAINER); then docker start $(PG_CONTAINER) >/dev/null; \
+	else docker run -d --name $(PG_CONTAINER) -p 127.0.0.1:$(PG_PORT):5432 \
+		-e POSTGRES_USER=graft -e POSTGRES_PASSWORD=graft -e POSTGRES_DB=graft \
+		postgres:18-alpine -c fsync=off -c synchronous_commit=off -c full_page_writes=off >/dev/null; fi
+	@for i in $$(seq 1 60); do docker exec $(PG_CONTAINER) pg_isready -U graft -d graft >/dev/null 2>&1 && exit 0; sleep 1; done; \
+		echo "$(PG_CONTAINER) not ready after 60s: docker logs $(PG_CONTAINER)"; exit 1
+
+pg-down: ## Remove the test PostgreSQL container
+	docker rm -f $(PG_CONTAINER)
+
+test: pg-up ## Run all tests (unit, integration, PostgreSQL)
 	go test -count=1 ./...
 
-test-race: ## Run all tests with the race detector
+test-race: pg-up ## Run all tests with the race detector
 	go test -race -count=1 ./...
 
 smoke: fmt-check vet test ## The commit gate

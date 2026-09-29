@@ -102,6 +102,11 @@ func runChecks(repo *gitx.Repo, cfg *config.Config) error {
 		return err
 	}
 	findings = append(findings, drift...)
+	ruleFindings, err := flagRuleFindings(repo, cfg)
+	if err != nil {
+		return err
+	}
+	findings = append(findings, ruleFindings...)
 	if len(findings) > 0 {
 		return &ChecksError{Findings: findings}
 	}

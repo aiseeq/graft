@@ -7,19 +7,3 @@ settings:
     - "**/*_test.go"
   min_severity: medium
   output: console
-
-categories:
-  security:
-    enabled: true
-    rules:
-      hardcoded-secret:
-        exceptions:
-          - files: "internal/checks/checks.go"
-            reason: "the secret scanner's own regex patterns describe credential shapes; they are not credentials"
-  patterns:
-    enabled: true
-    rules:
-      query-in-loop:
-        exceptions:
-          - files: "internal/app/app.go"
-            reason: "git push takes one remote per invocation; pushing each remote in turn is the design, not an N+1 query"

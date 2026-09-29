@@ -35,6 +35,10 @@ Requires git 2.31 or newer.
 | `graft check` | run the content checks on the index |
 | `graft gate` | run the gate commands |
 | `graft hook pre-commit` / `post-merge` | what the installed hooks call |
+| `graft flags [status]` | is the flag raised: open journal events no exception mutes |
+| `graft flags show <id>` | one event in full |
+| `graft flags ack <id> --reason R` | close an open event with a reason |
+| `graft flags mute <id> --reason R [--match S] [--all-envs]` | add an exception for it, then close it |
 | `graft --version` | print graft's own version |
 
 ### graft commit, step by step
@@ -147,6 +151,119 @@ paths are relative to the repository root and use forward slashes.
 Exception paths are globs: `*` and `?` stay within one directory, `**` spans
 directories.
 
+## Environments and .env
+
+```yaml
+dotenv: .env                    # default; read key by key, never sourced or exported whole
+envs:
+  local: {}                     # this machine
+  test: {ssh: {host: 10.0.0.1, user: deploy}}
+  prod: {ssh: {host: 10.0.0.2, port: 2222, key: ~/.ssh/deploy, options: [ConnectTimeout=10]}}
+```
+
+Commands bound to an environment are either a **string**, run by that
+environment's shell (`sh -c` here, the login shell over ssh), or a **list**,
+run as argv. In a list run on this machine, `${KEY}` is replaced by KEY from the
+process environment or, failing that, from the `.env` file; a key found in
+neither is an error. `$$` is a literal `$`. Commands graft runs on a remote
+host never see local `${KEY}` expansion: `$VAR` there belongs to the remote
+shell.
+
+The `.env` parser accepts `KEY=value`, `export KEY=value`, `'literal'` and
+`"escaped \" \\ \n \$"` values, blank lines and `#` comment lines. A `#` after
+an unquoted value is part of the value. Anything else is an error naming the
+line.
+
+## Flags
+
+A project keeps a journal of events that need a human look (failed requests,
+stalled jobs, unexpected log errors). `graft flags` shows whether the flag is
+raised, that is, whether any open event is not muted by an exception, and closes
+events with a reason. Every command takes `--env` (default
+`flags.default_env`).
+
+The exceptions file has one rule per line:
+
+```
+# env|class|substring|reason
+*|http_failure|timeout calling provider|provider retries on its own
+prod,test|log_error|disk almost full|disk alerts come from monitoring
+local|job_stalled|*|jobs stall while the laptop sleeps
+```
+
+`env` is `*` or a comma-separated list of configured environments; `class` is
+the event class; `substring` is matched literally and case-sensitively against
+the subject (`*` mutes the whole class); the reason is required and may contain
+`|`. A malformed line is an error, and `graft check` validates the staged file.
+`graft flags mute` appends a rule for the current environment (`--all-envs`
+for `*`), using the whole subject unless `--match` narrows it, and then closes
+the event. Closing refuses an event that is not open, so another person's note
+is never overwritten.
+
+The journal is read through one adapter.
+
+**sql**: a PostgreSQL table read with psql. graft builds the SQL from the
+column mapping and sends it on psql's stdin; every answer is one JSON value.
+The psql command must be `-X -q -t -A -v ON_ERROR_STOP=1`, reading SQL from
+stdin; output that is not JSON is reported as an error.
+
+```yaml
+flags:
+  default_env: prod
+  exceptions: tools/flags-exceptions.conf
+  sql:
+    table: app_events
+    columns:                    # id, class, subject, status, last_seen, note required
+      id: id
+      class: kind
+      subject: subject
+      body: body
+      status: status
+      severity: severity
+      key: object_key
+      times: times_seen
+      first_seen: first_seen_at
+      last_seen: last_seen_at
+      note: note
+      noted_by: noted_by
+      noted_at: noted_at
+    open_statuses: [open]
+    resolved_status: resolved
+    actor: agent                # written to noted_by; default graft
+    psql:
+      local: [psql, '${DB_DSN}', -X, -q, -t, -A, -v, ON_ERROR_STOP=1]
+      prod: "sudo -u app sh -c 'exec psql \"$DB_DSN\" -X -q -t -A -v ON_ERROR_STOP=1'"
+```
+
+If the table does not exist yet, `graft flags` reports the flag down and says so.
+
+**http**: a JSON API.
+
+```yaml
+flags:
+  default_env: prod
+  exceptions: tools/flags-exceptions.conf
+  http:
+    list: {path: /api/journal, query: {status: open}, items: data.items, total: data.total, page_size: 500}
+    get: {path: '/api/journal/{id}', item: data}
+    ack: {method: PUT, path: '/api/journal/{id}/status', body: {status: resolved, note: '{reason}'}}
+    fields: {id: id, class: type, subject: subject, body: body, status: status, times: timesSeen, first_seen: firstSeenAt, last_seen: lastSeenAt, note: note}
+    open_statuses: [new, in_progress]
+    transport:
+      local:
+        base_url: http://localhost:8090
+        headers: {Cookie: 'session={token}'}
+        token: [./scripts/dev-token]          # run here; its output fills {token}
+      prod:
+        # run in the environment (over ssh); {method}, {path}, {body_b64} are shell-quoted
+        command: "API_METHOD={method} API_PATH={path} API_BODY_B64={body_b64} sh -s"
+        stdin_file: scripts/api-request.sh    # fed to the command
+```
+
+Listing follows `limit`/`offset` pages until `total`. Fields are dotted paths
+into the response; times are RFC 3339. A direct request that fails shows the
+response body; a command transport returns the response on stdout.
+
 ### Version modes
 
 - **file**: the version lives in `version.file`. `graft commit` bumps it
@@ -184,6 +301,10 @@ make smoke    # gofmt check, vet (host and windows), all tests
 make check    # smoke + race + glint
 make install  # ~/bin/graft
 ```
+
+Tests of the SQL adapter need PostgreSQL and psql: `make test` starts a
+disposable container (`make pg-up`, docker) and passes its DSN in
+`GRAFT_TEST_PG_DSN`. Without it, `go test` skips those tests and says so.
 
 graft commits itself: `go run . commit -m "..."`.
 

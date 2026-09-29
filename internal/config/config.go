@@ -63,6 +63,10 @@ type Config struct {
 	Checks  Checks    `yaml:"checks"`
 	Hooks   Hooks     `yaml:"hooks"`
 	Lock    Lock      `yaml:"lock"`
+
+	Envs   map[string]*Env `yaml:"envs"`
+	DotEnv string          `yaml:"dotenv"`
+	Flags  *Flags          `yaml:"flags"`
 }
 
 // Version describes where the project version lives.
@@ -192,6 +196,8 @@ func (c *Config) validate() error {
 		c.validateLargeFiles,
 		c.validateHooks,
 		c.validateLock,
+		c.validateEnvs,
+		c.validateFlags,
 	}
 	for _, validate := range validators {
 		if err := validate(); err != nil {
