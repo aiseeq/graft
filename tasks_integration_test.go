@@ -438,7 +438,7 @@ tasks:
 	}
 }
 
-// TestTestDB needs docker and the postgres image; make test enables it.
+// TestTestDB needs docker and the postgres image; graft test enables it.
 func TestTestDB(t *testing.T) {
 	if os.Getenv("GRAFT_TEST_DOCKER") != "1" {
 		t.Skip("set GRAFT_TEST_DOCKER=1 to run against docker")

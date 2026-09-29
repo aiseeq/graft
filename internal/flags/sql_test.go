@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -19,12 +20,12 @@ import (
 )
 
 // These tests run the SQL adapter against a real PostgreSQL: the queries are
-// the product. make pg-up starts one and exports GRAFT_TEST_PG_DSN.
+// the product. graft test starts one and exports GRAFT_TEST_PG_DSN.
 func pgDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("GRAFT_TEST_PG_DSN")
 	if dsn == "" {
-		t.Skip("GRAFT_TEST_PG_DSN is not set: run make pg-up, or make test")
+		t.Skip("GRAFT_TEST_PG_DSN is not set: run graft test")
 	}
 	if _, err := exec.LookPath("psql"); err != nil {
 		t.Skip("psql is not installed")
@@ -97,6 +98,9 @@ func TestSQLSourceOpsJournal(t *testing.T) {
 	open, err := src.Open(ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$`).MatchString(open[0].LastSeen) {
+		t.Errorf("last seen %q is not a UTC time with its zone", open[0].LastSeen)
 	}
 	if len(open) != 2 || open[0].ID != "00000000-0000-0000-0000-000000000002" {
 		t.Fatalf("open events, newest first: %+v", open)

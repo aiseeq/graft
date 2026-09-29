@@ -29,9 +29,9 @@ func (c *Command) UnmarshalYAML(node *yaml.Node) error {
 		c.Argv, c.Source = argv, node.Value
 		return nil
 	case yaml.SequenceNode:
-		var argv []string
-		if err := node.Decode(&argv); err != nil {
-			return fmt.Errorf("line %d: %w", node.Line, err)
+		argv, err := decodeArgv(node)
+		if err != nil {
+			return err
 		}
 		if len(argv) == 0 || argv[0] == "" {
 			return fmt.Errorf("line %d: empty command", node.Line)
@@ -144,4 +144,41 @@ func readDoubleQuoted(runes []rune, from int, out *strings.Builder, source strin
 		}
 	}
 	return 0, fmt.Errorf("unterminated double quote in %q", source)
+}
+
+// decodeArgv decodes a list of strings. An unquoted {args} in a [...] list is
+// a map to YAML; that gets its own error instead of "cannot unmarshal".
+func decodeArgv(node *yaml.Node) ([]string, error) {
+	for _, item := range node.Content {
+		if item.Kind == yaml.MappingNode && len(item.Content) == 2 && item.Content[0].Value == "args" {
+			return nil, fmt.Errorf("line %d: quote {args} in a [...] list: '{args}' (unquoted, YAML reads it as a map)", item.Line)
+		}
+	}
+	var argv []string
+	if err := node.Decode(&argv); err != nil {
+		return nil, fmt.Errorf("line %d: %w", node.Line, err)
+	}
+	return argv, nil
+}
+
+// unquotedArgsInFlow reports a {args} inside a word of a [...] list without
+// quotes, which YAML cannot parse: it stops with "did not find expected ','".
+func unquotedArgsInFlow(data []byte) bool {
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if !strings.Contains(line, "[") || !strings.Contains(line, "{args}") {
+			continue
+		}
+		var quote byte
+		for i := 0; i < len(line); i++ {
+			switch c := line[i]; {
+			case quote != 0 && c == quote:
+				quote = 0
+			case quote == 0 && (c == '\'' || c == '"'):
+				quote = c
+			case quote == 0 && strings.HasPrefix(line[i:], "{args}"):
+				return true
+			}
+		}
+	}
+	return false
 }

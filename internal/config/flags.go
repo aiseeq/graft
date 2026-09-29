@@ -86,6 +86,12 @@ type HTTPTransport struct {
 	Headers map[string]string `yaml:"headers"`
 	// Token is run on this machine; its trimmed output fills {token} in headers.
 	Token EnvCommand `yaml:"token"`
+	// DotEnv and DotEnvSets are the .env keys the token command gets, as
+	// for tasks.
+	DotEnv     []DotEnvKey `yaml:"dotenv"`
+	DotEnvSets []string    `yaml:"dotenv_sets"`
+	// Keys is DotEnv with the sets merged in.
+	Keys []DotEnvKey `yaml:"-"`
 	// Command runs in the environment with {method}, {path} and {body_b64}
 	// filled in, shell-quoted.
 	Command string `yaml:"command"`
@@ -168,17 +174,30 @@ func (c *Config) validateFlagsHTTP(h *FlagsHTTP) error {
 		return errors.New("flags.http.open_statuses: required")
 	}
 	return c.validatePerEnv("flags.http.transport", keysOf(h.Transport), func(env string) error {
-		t := h.Transport[env]
-		switch {
-		case t == nil || (t.BaseURL == "") == (t.Command == ""):
-			return fmt.Errorf("flags.http.transport.%s: set exactly one of base_url and command", env)
-		case t.Command != "" && (len(t.Headers) > 0 || t.Token.IsSet()):
-			return fmt.Errorf("flags.http.transport.%s: headers and token apply to base_url only", env)
-		case t.StdinFile != "":
-			return checkRelPath(fmt.Sprintf("flags.http.transport.%s.stdin_file", env), t.StdinFile)
-		}
-		return nil
+		return c.validateTransport(env, h.Transport[env])
 	})
+}
+
+func (c *Config) validateTransport(env string, t *HTTPTransport) error {
+	where := "flags.http.transport." + env
+	switch {
+	case t == nil || (t.BaseURL == "") == (t.Command == ""):
+		return fmt.Errorf("%s: set exactly one of base_url and command", where)
+	case t.Command != "" && (len(t.Headers) > 0 || t.Token.IsSet()):
+		return fmt.Errorf("%s: headers and token apply to base_url only", where)
+	case !t.Token.IsSet() && (len(t.DotEnv) > 0 || len(t.DotEnvSets) > 0):
+		return fmt.Errorf("%s: dotenv and dotenv_sets are for the token command", where)
+	case t.StdinFile != "":
+		if err := checkRelPath(where+".stdin_file", t.StdinFile); err != nil {
+			return err
+		}
+	}
+	keys, err := c.resolveKeys(where, t.DotEnv, t.DotEnvSets)
+	if err != nil {
+		return err
+	}
+	t.Keys = keys
+	return nil
 }
 
 // validatePerEnv checks a per-environment map: every key is a configured env,

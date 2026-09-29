@@ -197,3 +197,20 @@ func TestStepMaps(t *testing.T) {
 		t.Errorf("KEY! in a flow list: %v", err)
 	}
 }
+
+func TestUnquotedArgsHints(t *testing.T) {
+	base := "schema: 1\nversion: {mode: none}\ntasks:\n  t:\n    run: [STEP]\n"
+	for step, want := range map[string]string{
+		"[go, test, {args}]":           "quote {args} in a [...] list",
+		"[go, --run={args}]":           "{args} inside [...] must be quoted",
+		"[go, '--run={args}', {args}]": "quote {args} in a [...] list",
+	} {
+		_, err := Parse([]byte(strings.Replace(base, "STEP", step, 1)))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v, want %q", step, err, want)
+		}
+	}
+	if _, err := Parse([]byte(strings.Replace(base, "STEP", "[go, '--run={args}', '{args}']", 1))); err != nil {
+		t.Errorf("quoted: %v", err)
+	}
+}

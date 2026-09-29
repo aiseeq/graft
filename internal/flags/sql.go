@@ -58,7 +58,9 @@ func (s *SQLSource) eventJSON(withBody bool) string {
 	}
 	stamp := func(key, col string) {
 		if col != "" {
-			add(key, "to_char("+ident(col)+", "+literal(timeFormat)+")")
+			// Shown in UTC with the zone named. A timestamp without time
+			// zone is read in the session's zone, as PostgreSQL itself does.
+			add(key, "to_char("+ident(col)+"::timestamptz AT TIME ZONE 'UTC', "+literal(timeFormat)+") || ' UTC'")
 		}
 	}
 	text("id", c.ID)

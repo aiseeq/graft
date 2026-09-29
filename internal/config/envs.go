@@ -51,9 +51,11 @@ func (c *EnvCommand) UnmarshalYAML(node *yaml.Node) error {
 		c.Shell, c.Source = node.Value, node.Value
 		return nil
 	case yaml.SequenceNode:
-		if err := node.Decode(&c.Argv); err != nil {
-			return fmt.Errorf("line %d: %w", node.Line, err)
+		argv, err := decodeArgv(node)
+		if err != nil {
+			return err
 		}
+		c.Argv = argv
 		if len(c.Argv) == 0 || c.Argv[0] == "" {
 			return fmt.Errorf("line %d: empty command", node.Line)
 		}

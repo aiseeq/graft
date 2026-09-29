@@ -106,11 +106,17 @@ func TestHTTPSourceDirect(t *testing.T) {
 	api := newFakeAPI()
 	srv := httptest.NewServer(api)
 	defer srv.Close()
+	// The token command gets the listed .env keys and no others.
 	cfg := httpConfig(&config.HTTPTransport{
 		BaseURL: srv.URL, Headers: map[string]string{"Cookie": "admin_token={token}"},
-		Token: config.EnvCommand{Argv: []string{"echo", "tok123"}},
+		Token: config.EnvCommand{Shell: `echo "$ADMIN_TOKEN${OTHER:-}"`},
+		Keys:  []config.DotEnvKey{{Name: "ADMIN_TOKEN", NonEmpty: true}},
 	})
-	src, err := NewHTTPSource(cfg, localEnv(t))
+	env := localEnv(t)
+	if err := os.WriteFile(filepath.Join(env.Root, ".env"), []byte("ADMIN_TOKEN=tok123\nOTHER=leaked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src, err := NewHTTPSource(cfg, env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,5 +184,17 @@ esac
 	body, _ := os.ReadFile(out)
 	if string(body) != `{"note":"it's \"fine\"","status":"resolved"}` {
 		t.Errorf("request body = %s", body)
+	}
+}
+
+func TestStampIsUTCWithZone(t *testing.T) {
+	for in, want := range map[string]string{
+		"2026-09-02T12:00:00+02:00": "2026-09-02 10:00 UTC",
+		"2026-09-02T10:00:00.5Z":    "2026-09-02 10:00 UTC",
+		"":                          "",
+	} {
+		if got, err := stamp("t", in); err != nil || got != want {
+			t.Errorf("stamp(%q) = %q, %v; want %q", in, got, err, want)
+		}
 	}
 }

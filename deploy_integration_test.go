@@ -291,17 +291,26 @@ func TestDeployConfirmNeedsTerminal(t *testing.T) {
 func TestDeployStatusAndLogs(t *testing.T) {
 	d := deployRepo(t)
 	d.mustGraft("deploy", "test")
-	if out := d.mustGraft("deploy", "status", "test"); !strings.Contains(out, "test runs\n1.0.1") {
+	out := d.mustGraft("deploy", "status", "test")
+	subject := d.git("log", "-1", "--format=%h %s (%cs)")
+	if !strings.Contains(out, "graft: deployed "+subject+"\ntest runs\n1.0.1") {
 		t.Errorf("status:\n%s", out)
 	}
-	out := d.mustGraft("deploy", "logs", "test", "--lines", "3", "--grep", "error")
+	// A recorded commit the local repository does not have.
+	if err := os.WriteFile(filepath.Join(d.state, "test-sha"), []byte(strings.Repeat("ab", 20)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := d.mustGraft("deploy", "status", "test"); !strings.Contains(out, "deployed abababababab, not in the local repository") {
+		t.Errorf("status with an unknown commit:\n%s", out)
+	}
+	out = d.mustGraft("deploy", "logs", "test", "--lines", "3", "--grep", "error")
 	if out != "error one\nerror two\n" {
 		t.Errorf("logs: %q", out)
 	}
 	if out := d.mustGraft("deploy", "logs", "test", "--grep", "nothing-like-this"); !strings.Contains(out, "no lines match") {
 		t.Errorf("no match:\n%s", out)
 	}
-	if out, code := d.graft("", "deploy", "status", "stage"); code == 0 || !strings.Contains(out, "status is not configured") {
+	if out, code := d.graft("", "deploy", "status", "stage"); code == 0 || !strings.Contains(out, "neither status nor deployed_sha is configured") {
 		t.Errorf("unconfigured status: %d\n%s", code, out)
 	}
 	if out, code := d.graft("", "deploy", "nowhere"); code == 0 || !strings.Contains(out, "unknown deploy target") {

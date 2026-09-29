@@ -380,8 +380,17 @@ func (a *App) DeployStatus(ctx context.Context, target string, args []string) er
 	if err != nil {
 		return err
 	}
+	if !r.target.Status.IsSet() && r.target.DeployedSHA == nil {
+		return fmt.Errorf("deploy.targets.%s: neither status nor deployed_sha is configured", target)
+	}
+	if r.target.DeployedSHA != nil {
+		a.printDeployedCommit(ctx, r)
+	}
 	if !r.target.Status.IsSet() {
-		return fmt.Errorf("deploy.targets.%s.status is not configured", target)
+		if len(args) > 0 {
+			return fmt.Errorf("deploy.targets.%s.status is not configured, it takes no arguments", target)
+		}
+		return nil
 	}
 	cmd, err := r.env.CommandArgs(ctx, r.target.Status, args)
 	if err != nil {
@@ -389,6 +398,35 @@ func (a *App) DeployStatus(ctx context.Context, target string, args []string) er
 	}
 	cmd.Stdout, cmd.Stderr = a.Stdout, a.Stderr
 	return runPassthrough(cmd, "status")
+}
+
+// printDeployedCommit names the commit the target runs, with its subject from
+// the local repository. It only informs: status goes on whatever happens.
+func (a *App) printDeployedCommit(ctx context.Context, r *deployRun) {
+	sha, err := deploy.PeekDeployedSHA(ctx, r.env, r.target.DeployedSHA)
+	switch {
+	case err != nil:
+		a.warn("deployed commit unknown: %v", err)
+		return
+	case sha == "":
+		a.printf("no deployed commit recorded in %s", r.target.DeployedSHA.Path)
+		return
+	}
+	known, err := r.repo.RevExists(sha)
+	if err != nil {
+		a.warn("deployed %s: %v", sha, err)
+		return
+	}
+	if !known {
+		a.printf("deployed %s, not in the local repository (git fetch?)", sha[:min(12, len(sha))])
+		return
+	}
+	line, err := r.repo.Git("log", "-1", "--format=%h %s (%cs)", sha)
+	if err != nil {
+		a.warn("deployed %s: %v", sha, err)
+		return
+	}
+	a.printf("deployed %s", strings.TrimSpace(line))
 }
 
 // DeployLogs runs the target's logs command, keeping the lines matching

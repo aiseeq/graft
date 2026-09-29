@@ -241,7 +241,9 @@ dotenv_sets:                   # key lists several tasks and services share
   when it is a whole argv word, as the one argument inside a word, and
   shell-quoted in `sh` steps. `${KEY}` is expanded in the configured words
   only, never in what the user passed. A task without `{args}` refuses
-  arguments; `graft help` shows which tasks take them.
+  arguments; `graft help` shows which tasks take them. Inside `[...]`,
+  quote it: `'{args}'`, `'--run={args}'`. Unquoted, YAML reads `{args}` as a
+  map and cannot parse `--run={args}`; graft says so.
 - Steps get graft's environment without git's hook variables and without
   the `.env` file: only the keys listed in `dotenv` and `dotenv_sets`, the
   `env` values, the test database DSN and `GRAFT_VERSION` are added.
@@ -369,7 +371,9 @@ A project keeps a journal of events that need a human look (failed requests,
 stalled jobs, unexpected log errors). `graft flags` shows whether the flag is
 raised, that is, whether any open event is not muted by an exception, and closes
 events with a reason. Every command takes `--env` (default
-`flags.default_env`).
+`flags.default_env`). Times are shown in UTC, with the zone named; a SQL
+`timestamp` column without a time zone is read in the database session's
+zone, as PostgreSQL itself reads it.
 
 The exceptions file has one rule per line:
 
@@ -443,6 +447,7 @@ flags:
         base_url: http://localhost:8090
         headers: {Cookie: 'session={token}'}
         token: [./scripts/dev-token]          # run here; its output fills {token}
+        dotenv: [ADMIN_PASSWORD!]             # .env keys the token command gets, as for tasks
       prod:
         # run in the environment (over ssh); {method}, {path}, {body_b64} are shell-quoted
         command: "API_METHOD={method} API_PATH={path} API_BODY_B64={body_b64} sh -s"
@@ -521,7 +526,9 @@ target from one repository wait for each other.
 its environment. `{args}` receives the arguments as in tasks: verbatim,
 shell-quoted by graft, all of them as a whole word, exactly one inside a word;
 do not put it inside quotes of your own. `{lines}` is filled in `logs`. A
-command without `{args}` refuses arguments.
+command without `{args}` refuses arguments. With `deployed_sha`, status first
+names the deployed commit with its subject from the local repository, reading
+the file with `sudo -n` so that it never waits on a password prompt.
 
 Jira credentials are the user's, not the project's: `jira.env_file` in the
 user config (see Install).

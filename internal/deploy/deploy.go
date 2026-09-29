@@ -128,7 +128,21 @@ func ConfirmSudo(ctx context.Context, target string, log io.Writer) error {
 // ReadDeployedSHA returns the commit recorded in the environment, or "" when
 // nothing was recorded yet.
 func ReadDeployedSHA(ctx context.Context, env *envs.Env, rec *config.DeployedSHA) (string, error) {
-	line := "if [ -e " + envs.Quote(rec.Path) + " ]; then " + sudo(rec) + "cat " + envs.Quote(rec.Path) + "; fi"
+	return readDeployedSHA(ctx, env, rec, sudo(rec))
+}
+
+// PeekDeployedSHA reads the deployed commit without ever asking for a sudo
+// password (sudo -n): for status, which must not wait on a prompt.
+func PeekDeployedSHA(ctx context.Context, env *envs.Env, rec *config.DeployedSHA) (string, error) {
+	prefix := ""
+	if rec.Sudo {
+		prefix = "sudo -n "
+	}
+	return readDeployedSHA(ctx, env, rec, prefix)
+}
+
+func readDeployedSHA(ctx context.Context, env *envs.Env, rec *config.DeployedSHA, sudoPrefix string) (string, error) {
+	line := "if [ -e " + envs.Quote(rec.Path) + " ]; then " + sudoPrefix + "cat " + envs.Quote(rec.Path) + "; fi"
 	cmd := env.Shell(ctx, line)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr

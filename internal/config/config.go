@@ -194,6 +194,9 @@ func Parse(data []byte) (*Config, error) {
 		if flowOptionalKey.Match(data) {
 			return nil, fmt.Errorf("%w (an optional KEY? inside [...] must be quoted, 'KEY?', or written as a block list)", err)
 		}
+		if unquotedArgsInFlow(data) {
+			return nil, fmt.Errorf("%w ({args} inside [...] must be quoted: '--x={args}', '{args}')", err)
+		}
 		return nil, err
 	}
 	if err := cfg.validate(); err != nil {
@@ -216,8 +219,8 @@ func (c *Config) validate() error {
 		c.validateHooks,
 		c.validateLock,
 		c.validateEnvs,
-		c.validateFlags,
 		c.validateDotEnvSets,
+		c.validateFlags,
 		c.validateDeploy,
 		c.validateTestDB,
 		c.validateTasks,

@@ -19,6 +19,7 @@ import (
 	"github.com/aiseeq/graft/internal/config"
 	"github.com/aiseeq/graft/internal/dotenv"
 	"github.com/aiseeq/graft/internal/envs"
+	"github.com/aiseeq/graft/internal/tasks"
 )
 
 // maxPages bounds the listing loop against an API that never reports the end.
@@ -228,6 +229,11 @@ func (s *HTTPSource) readToken(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	keys, err := tasks.KeyValues(s.env.Lookup, s.transport.Keys)
+	if err != nil {
+		return "", fmt.Errorf("token command: %w", err)
+	}
+	cmd.Env = append(os.Environ(), keys...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -337,8 +343,9 @@ func (s *HTTPSource) event(item any) (Event, error) {
 	return e, nil
 }
 
-// stamp renders an RFC 3339 time the way the SQL adapter does. An absent
-// field stays empty; anything else that is not RFC 3339 is an error.
+// stamp renders an RFC 3339 time the way the SQL adapter does: in UTC, with
+// the zone named. An absent field stays empty; anything else that is not
+// RFC 3339 is an error.
 func stamp(field, s string) (string, error) {
 	if s == "" {
 		return "", nil
@@ -347,5 +354,5 @@ func stamp(field, s string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("field %s: %q is not an RFC 3339 time", field, s)
 	}
-	return t.Local().Format("2006-01-02 15:04"), nil
+	return t.UTC().Format("2006-01-02 15:04") + " UTC", nil
 }
