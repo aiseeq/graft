@@ -810,3 +810,24 @@ func TestMissingConfig(t *testing.T) {
 		t.Errorf("exit %d:\n%s", code, out)
 	}
 }
+
+func TestCommitBumpsTwoKeysInOneFile(t *testing.T) {
+	lock := "{\n  \"version\": \"1.2.3\",\n  \"packages\": {\n    \"\": {\n      \"version\": \"1.2.3\"\n    }\n  }\n}\n"
+	f := newRepo(t, map[string]string{
+		".graft.yaml": `schema: 1
+version:
+  mode: file
+  sync:
+    - {path: web/package-lock.json, format: json, key: [version]}
+    - {path: web/package-lock.json, format: json, key: [packages, "", version]}
+gate:
+` + gateStep("ok"),
+		"VERSION":               "1.2.3\n",
+		"web/package-lock.json": lock,
+	}, "origin")
+	f.mustGraft("commit", "-m", "feat: first")
+	if got, want := f.read("web/package-lock.json"), strings.ReplaceAll(lock, "1.2.3", "1.2.4"); got != want {
+		t.Errorf("package-lock.json:\n%s", got)
+	}
+	f.mustGraft("check")
+}

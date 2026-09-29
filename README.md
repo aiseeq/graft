@@ -140,6 +140,9 @@ version:
     - path: web/package.json
       format: json              # value at the key path; formatting is preserved
       key: [version]
+    - path: web/package-lock.json   # npm keeps the version twice in the lock:
+      format: json                   # several targets in one file are applied
+      key: [version]                 # together and the file is written once
     - path: web/package-lock.json
       format: json
       key: [packages, "", version]

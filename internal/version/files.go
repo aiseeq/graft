@@ -351,18 +351,27 @@ func Write(root string, v config.Version, next Semver) (*Backup, error) {
 		original []byte
 		updated  []byte
 	}
-	var plan []pending
+	// Several targets may share a file (package-lock.json keeps the version
+	// twice): each file is read once, every target's replacement applies to
+	// the same buffer in turn, and the file is written once.
+	var plan []*pending
+	byPath := map[string]*pending{}
 	for _, t := range Targets(v) {
-		full := filepath.Join(root, filepath.FromSlash(t.Path))
-		content, err := os.ReadFile(full)
+		p, ok := byPath[t.Path]
+		if !ok {
+			content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(t.Path)))
+			if err != nil {
+				return nil, err
+			}
+			p = &pending{path: t.Path, original: content, updated: content}
+			byPath[t.Path] = p
+			plan = append(plan, p)
+		}
+		updated, err := t.Replace(p.updated, next.String())
 		if err != nil {
 			return nil, err
 		}
-		updated, err := t.Replace(content, next.String())
-		if err != nil {
-			return nil, err
-		}
-		plan = append(plan, pending{t.Path, content, updated})
+		p.updated = updated
 	}
 	backup := &Backup{root: root}
 	for _, p := range plan {

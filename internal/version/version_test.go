@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/aiseeq/graft/internal/config"
@@ -204,5 +205,39 @@ func TestWriteTouchesNothingWhenATargetIsBroken(t *testing.T) {
 	}
 	if v, _ := os.ReadFile(filepath.Join(root, "VERSION")); string(v) != "1.2.3\n" {
 		t.Errorf("VERSION changed to %q", v)
+	}
+}
+
+func TestWriteSeveralTargetsInOneFile(t *testing.T) {
+	root := t.TempDir()
+	lock := "{\n  \"name\": \"web\",\n  \"version\": \"1.2.3\",\n  \"packages\": {\n    \"\": {\n      \"name\": \"web\",\n      \"version\": \"1.2.3\"\n    }\n  }\n}\n"
+	for name, content := range map[string]string{"VERSION": "1.2.3\n", "package-lock.json": lock} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := config.Parse([]byte(`schema: 1
+version:
+  mode: file
+  sync:
+    - {path: package-lock.json, format: json, key: [version]}
+    - {path: package-lock.json, format: json, key: [packages, "", version]}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup, err := Write(root, cfg.Version, Semver{1, 2, 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(root, "package-lock.json"))
+	if want := strings.ReplaceAll(lock, "1.2.3", "1.2.4"); string(got) != want {
+		t.Errorf("package-lock.json:\n%s\nwant:\n%s", got, want)
+	}
+	if err := backup.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "package-lock.json")); string(got) != lock {
+		t.Errorf("restore:\n%s", got)
 	}
 }
