@@ -1,6 +1,6 @@
 //go:build !windows
 
-package lock
+package proc
 
 import (
 	"errors"
@@ -9,9 +9,9 @@ import (
 	"syscall"
 )
 
-// processAlive reports whether a process with pid exists. EPERM means it
+// Alive reports whether a process with pid exists. EPERM means it
 // exists under another user.
-func processAlive(pid int) (bool, error) {
+func Alive(pid int) (bool, error) {
 	p, err := os.FindProcess(pid)
 	if err != nil {
 		return false, fmt.Errorf("finding process %d: %w", pid, err)

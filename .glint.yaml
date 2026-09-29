@@ -7,3 +7,12 @@ settings:
     - "**/*_test.go"
   min_severity: medium
   output: console
+
+categories:
+  security:
+    enabled: true
+    rules:
+      hardcoded-secret:
+        exceptions:
+          - files: "internal/testdb/testdb.go"
+            reason: "\"POSTGRES_PASSWORD=\"+d.Cfg.Password builds an env entry from config, no literal secret; false positive reported for a glint fix"

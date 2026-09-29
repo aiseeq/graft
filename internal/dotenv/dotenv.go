@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -55,6 +56,16 @@ func Load(path string) (*File, error) {
 func (f *File) Get(key string) (string, bool) {
 	v, ok := f.values[key]
 	return v, ok
+}
+
+// Keys returns the keys the file defines, sorted.
+func (f *File) Keys() []string {
+	keys := make([]string, 0, len(f.values))
+	for k := range f.values {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // parseLine returns ok=false for blank and comment lines.
@@ -128,4 +139,61 @@ func parseDoubleQuoted(raw string) (string, error) {
 		}
 	}
 	return "", errors.New("unterminated double quote")
+}
+
+// Set writes key=value into an existing file: the first line defining key is
+// replaced, later duplicates are dropped, every other line and the file mode
+// are kept. A missing file is an error, not a new file: .env files carry
+// secrets and their permissions are the owner's decision.
+func Set(path, key, value string) error {
+	if !keyRe.MatchString(key) {
+		return fmt.Errorf("invalid key %q", key)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	newLine := key + "=" + quote(value)
+	lines := strings.SplitAfter(string(data), "\n")
+	var out strings.Builder
+	replaced := false
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		k, _, ok, err := parseLine(strings.TrimSuffix(line, "\n"))
+		if err != nil || !ok || k != key {
+			out.WriteString(line)
+			continue
+		}
+		if !replaced {
+			out.WriteString(newLine + "\n")
+			replaced = true
+		}
+	}
+	if !replaced {
+		if out.Len() > 0 && !strings.HasSuffix(out.String(), "\n") {
+			out.WriteString("\n")
+		}
+		out.WriteString(newLine + "\n")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(out.String()), info.Mode().Perm())
+}
+
+var plainValue = regexp.MustCompile(`^[A-Za-z0-9_./:@?=&%+,~-]*$`)
+
+// quote writes value so that Load reads it back unchanged.
+func quote(value string) string {
+	if plainValue.MatchString(value) {
+		return value
+	}
+	if !strings.ContainsAny(value, "'\n") {
+		return "'" + value + "'"
+	}
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "$", `\$`, "`", "\\`")
+	return `"` + r.Replace(value) + `"`
 }

@@ -1,6 +1,7 @@
 // Command graft is a development workflow tool for git repositories: one
 // commit command with a gate, version bump, content checks and push to every
-// remote, plus the hooks that keep plain git commit out.
+// remote, the hooks that keep plain git commit out, and the project's tasks,
+// services, test database, tools, event journal and deploy wrapper.
 package main
 
 import (
@@ -20,11 +21,11 @@ import (
 	"github.com/aiseeq/graft/internal/version"
 )
 
-// buildVersion is set by the Makefile through -ldflags; go install builds fall
+// buildVersion is set by the build task through -ldflags; go install builds fall
 // back to the module version recorded in the binary.
 var buildVersion string
 
-const usage = `graft - commit, version and guard a git repository as .graft.yaml describes
+const usage = `graft - the development workflow of a git repository, as .graft.yaml describes
 
 Usage:
   graft commit [--minor|--major] (-m <msg>... | -F <file> | -F -)
@@ -43,6 +44,13 @@ Usage:
   graft deploy status <target>
   graft deploy logs <target> [--lines N] [--grep RE]
   graft deploy check-head
+  graft run <task> [-- args]     (or graft <task> [-- args])
+  graft start|stop|restart [service]
+  graft status
+  graft locks
+  graft testdb (up|down|status|recreate)
+  graft tools [install]
+  graft help
   graft --version
 
 Commands:
@@ -50,12 +58,19 @@ Commands:
   amend    gate, stage all, check, fold into the last unpushed commit
   release  tag the pushed HEAD with the version and push the tag
   version  print the project version
-  init     install the git hooks (core.hooksPath)
+  init     install the git hooks (core.hooksPath) and the pinned tools
   check    scan the staged changes for secrets, binaries, large files, version drift
   gate     run the gate commands
   hook     entry point of the installed hooks
   flags    review the project's event journal: status, show, ack, mute
   deploy   run the project's deploy script between graft's checks; status, logs
+  run      run a task from .graft.yaml with its deps
+  start    start services in the background; stop and restart them
+  status   show services, the test database and held locks
+  locks    show who holds graft's locks
+  testdb   manage the disposable test PostgreSQL in docker
+  tools    check the pinned tools; install installs the failing ones
+  help     this text plus the project's tasks and services
 `
 
 // errUsage marks command line mistakes; they exit with status 2.
@@ -113,7 +128,7 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 	case "version":
 		return noArgs(a, cmd, rest, a.Version)
 	case "init":
-		return noArgs(a, cmd, rest, a.Init)
+		return noArgs(a, cmd, rest, func() error { return a.Init(ctx) })
 	case "check":
 		return noArgs(a, cmd, rest, a.Check)
 	case "gate":
@@ -124,14 +139,91 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		return flagsCmd(ctx, a, rest)
 	case "deploy":
 		return deployCmd(ctx, a, rest)
+	default:
+		return projectCmd(ctx, a, cmd, rest)
+	}
+}
+
+// projectCmd runs the commands that act on the project's tasks, services,
+// test database and tools, and graft <task>.
+func projectCmd(ctx context.Context, a *app.App, cmd string, rest []string) error {
+	switch cmd {
+	case "run":
+		if len(rest) == 0 {
+			return fmt.Errorf("%w: graft run <task> [-- args]", errUsage)
+		}
+		return runTask(ctx, a, rest[0], rest[1:])
+	case "start", "stop", "restart":
+		return serviceCmd(ctx, a, app.ServiceAction(cmd), rest)
+	case "status":
+		return noArgs(a, cmd, rest, func() error { return a.Status(ctx) })
+	case "locks":
+		return noArgs(a, cmd, rest, a.Locks)
+	case "testdb":
+		return testDBCmd(ctx, a, rest)
+	case "tools":
+		return toolsCmd(ctx, a, rest)
 	case "help", "-h", "--help":
 		fmt.Fprint(a.Stdout, usage)
-		return nil
+		return a.ProjectHelp()
 	case "--version", "-v":
 		fmt.Fprintln(a.Stdout, "graft", toolVersion())
 		return nil
 	default:
-		return fmt.Errorf("%w: unknown command %q", errUsage, cmd)
+		return taskShortcut(ctx, a, cmd, rest)
+	}
+}
+
+// taskShortcut runs graft <task> as graft run <task>.
+func taskShortcut(ctx context.Context, a *app.App, name string, args []string) error {
+	ok, err := a.IsTask(name)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: unknown command or task %q (see graft help)", errUsage, name)
+	}
+	return runTask(ctx, a, name, args)
+}
+
+// runTask takes the task arguments after --, so a task argument is never
+// mistaken for one of graft's.
+func runTask(ctx context.Context, a *app.App, name string, args []string) error {
+	if len(args) > 0 {
+		if args[0] != "--" {
+			return fmt.Errorf("%w: task arguments go after --: graft %s -- %s", errUsage, name, strings.Join(args, " "))
+		}
+		args = args[1:]
+	}
+	return a.Run(ctx, name, args)
+}
+
+func serviceCmd(ctx context.Context, a *app.App, action app.ServiceAction, args []string) error {
+	if len(args) > 1 {
+		return fmt.Errorf("%w: graft %s [service]", errUsage, action)
+	}
+	name := ""
+	if len(args) == 1 {
+		name = args[0]
+	}
+	return a.Service(ctx, action, name)
+}
+
+func testDBCmd(ctx context.Context, a *app.App, args []string) error {
+	if len(args) != 1 || !slices.Contains([]string{"up", "down", "status", "recreate"}, args[0]) {
+		return fmt.Errorf("%w: graft testdb up|down|status|recreate", errUsage)
+	}
+	return a.TestDB(ctx, args[0])
+}
+
+func toolsCmd(ctx context.Context, a *app.App, args []string) error {
+	switch {
+	case len(args) == 0:
+		return a.Tools(ctx, false)
+	case len(args) == 1 && args[0] == "install":
+		return a.Tools(ctx, true)
+	default:
+		return fmt.Errorf("%w: graft tools [install]", errUsage)
 	}
 }
 

@@ -3,6 +3,7 @@ package dotenv
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 )
@@ -86,5 +87,41 @@ func TestLookupAndExpand(t *testing.T) {
 	}
 	if _, err := NewLookup(filepath.Join(t.TempDir(), "none")).Value("NOPE_NOT_SET"); err == nil {
 		t.Error("missing file and key must fail")
+	}
+}
+
+func TestSetRoundTrip(t *testing.T) {
+	p := writeEnv(t, "# keep me\nA=1\nB=old\n\nB=dup\nC=3")
+	values := []string{"new", "postgres://x:y@h:1/db?sslmode=disable", "has space", "it's", "multi\nline $x \"q\"", ""}
+	for _, v := range values {
+		if err := Set(p, "B", v); err != nil {
+			t.Fatal(err)
+		}
+		f, err := Load(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := f.Get("B"); got != v {
+			t.Errorf("round trip of %q gave %q", v, got)
+		}
+		if a, _ := f.Get("A"); a != "1" {
+			t.Errorf("A changed: %q", a)
+		}
+	}
+	if err := Set(p, "NEW", "v"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(p)
+	if want := "# keep me\nA=1\nB=\n\nC=3\nNEW=v\n"; string(data) != want {
+		t.Errorf("file:\n%s", data)
+	}
+	if runtime.GOOS != "windows" {
+		info, _ := os.Stat(p)
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("mode changed to %v", info.Mode())
+		}
+	}
+	if err := Set(filepath.Join(t.TempDir(), "missing"), "K", "v"); err == nil {
+		t.Error("Set on a missing file must fail")
 	}
 }

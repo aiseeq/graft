@@ -13,10 +13,10 @@ import (
 
 	"github.com/aiseeq/graft/internal/checks"
 	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/gate"
 	"github.com/aiseeq/graft/internal/gitx"
 	"github.com/aiseeq/graft/internal/hooks"
 	"github.com/aiseeq/graft/internal/lock"
+	"github.com/aiseeq/graft/internal/tasks"
 )
 
 // App carries the process context the commands run in.
@@ -60,12 +60,23 @@ func (a *App) withLock(ctx context.Context, repo *gitx.Repo, cfg *config.Config,
 	return err
 }
 
+// runner prepares the task runner for the repository.
+func (a *App) runner(repo *gitx.Repo, cfg *config.Config) *tasks.Runner {
+	r := tasks.NewRunner(repo.Root, cfg, a.Stdout, a.Stderr)
+	r.Stdin = a.Stdin
+	r.LockDir = lockDir(repo)
+	if cfg.TestDB != nil {
+		r.TestDSN = func(ctx context.Context) (string, error) { return a.testDSN(ctx, repo, cfg) }
+	}
+	return r
+}
+
 func (a *App) gate(ctx context.Context, repo *gitx.Repo, cfg *config.Config) error {
-	return gate.Run(ctx, repo.Root, cfg.Gate, a.Stdout)
+	return a.runner(repo, cfg).Gate(ctx)
 }
 
 // markerEnv lets graft's own git commit through the pre-commit hook.
-var markerEnv = []string{gate.MarkerEnv + "=1"}
+var markerEnv = []string{tasks.MarkerEnv + "=1"}
 
 // ChecksError lists what the staged content checks found.
 type ChecksError struct {

@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+
+	"github.com/aiseeq/graft/internal/proc"
 )
 
 // retryDelay is how often a waiting process retries the lock.
@@ -121,7 +123,7 @@ func Holders(path string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("unexpected file %s next to the lock: %w", m, err)
 		}
-		alive, err := processAlive(pid)
+		alive, err := proc.Alive(pid)
 		if err != nil {
 			return nil, err
 		}

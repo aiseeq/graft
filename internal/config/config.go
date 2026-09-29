@@ -55,14 +55,14 @@ var DefaultBinaryExtensions = []string{
 
 // Config is a validated .graft.yaml with defaults applied.
 type Config struct {
-	Schema  int       `yaml:"schema"`
-	Gate    []Command `yaml:"gate"`
-	Version Version   `yaml:"version"`
-	Ticket  *Ticket   `yaml:"ticket"`
-	Push    Push      `yaml:"push"`
-	Checks  Checks    `yaml:"checks"`
-	Hooks   Hooks     `yaml:"hooks"`
-	Lock    Lock      `yaml:"lock"`
+	Schema  int     `yaml:"schema"`
+	Gate    []Step  `yaml:"gate"`
+	Version Version `yaml:"version"`
+	Ticket  *Ticket `yaml:"ticket"`
+	Push    Push    `yaml:"push"`
+	Checks  Checks  `yaml:"checks"`
+	Hooks   Hooks   `yaml:"hooks"`
+	Lock    Lock    `yaml:"lock"`
 
 	Envs   map[string]*Env `yaml:"envs"`
 	DotEnv string          `yaml:"dotenv"`
@@ -70,6 +70,11 @@ type Config struct {
 
 	Deploy       *Deploy       `yaml:"deploy"`
 	ReleaseNotes *ReleaseNotes `yaml:"release_notes"`
+
+	Tasks    map[string]*Task    `yaml:"tasks"`
+	Services map[string]*Service `yaml:"services"`
+	TestDB   *TestDB             `yaml:"test_db"`
+	Tools    map[string]*Tool    `yaml:"tools"`
 }
 
 // Version describes where the project version lives.
@@ -202,6 +207,10 @@ func (c *Config) validate() error {
 		c.validateEnvs,
 		c.validateFlags,
 		c.validateDeploy,
+		c.validateTestDB,
+		c.validateTasks,
+		c.validateServices,
+		c.validateTools,
 	}
 	for _, validate := range validators {
 		if err := validate(); err != nil {

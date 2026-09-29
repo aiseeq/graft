@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/aiseeq/graft/internal/gate"
 	"github.com/aiseeq/graft/internal/hooks"
+	"github.com/aiseeq/graft/internal/tasks"
 )
 
 // HookPreCommit decides whether git may create a commit.
@@ -18,7 +18,7 @@ import (
 // resolution. A hand-written git commit is refused: it skips the version bump,
 // the work item key and the push.
 func (a *App) HookPreCommit(ctx context.Context) error {
-	if os.Getenv(gate.MarkerEnv) == "1" {
+	if os.Getenv(tasks.MarkerEnv) == "1" {
 		return nil
 	}
 	repo, cfg, err := a.open()

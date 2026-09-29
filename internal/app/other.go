@@ -269,8 +269,8 @@ func projectVersion(repo *gitx.Repo, cfg *config.Config) (string, error) {
 	}
 }
 
-// Init installs the hooks.
-func (a *App) Init() error {
+// Init installs the hooks and the pinned tools that fail their check.
+func (a *App) Init(ctx context.Context) error {
 	repo, cfg, err := a.open()
 	if err != nil {
 		return err
@@ -281,12 +281,14 @@ func (a *App) Init() error {
 	}
 	if len(changes) == 0 {
 		a.printf("hooks already installed in %s, nothing changed", cfg.Hooks.Dir)
-		return nil
 	}
 	for _, c := range changes {
 		a.printf("%s", c.What)
 	}
-	return nil
+	if len(cfg.Tools) == 0 {
+		return nil
+	}
+	return a.checkTools(ctx, cfg, true)
 }
 
 // Check runs the staged content checks on demand.

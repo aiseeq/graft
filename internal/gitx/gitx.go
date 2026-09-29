@@ -24,11 +24,14 @@ type Repo struct {
 	CommonDir string
 }
 
+// ErrNotRepo is returned by Open outside a git work tree.
+var ErrNotRepo = errors.New("not inside a git work tree")
+
 // Open resolves the repository that contains dir.
 func Open(dir string) (*Repo, error) {
 	out, err := run(dir, nil, nil, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir")
 	if err != nil {
-		return nil, fmt.Errorf("not inside a git work tree: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrNotRepo, err)
 	}
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	if len(lines) != 3 {

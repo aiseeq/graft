@@ -1,11 +1,14 @@
 # graft
 
-One commit command for every repository you work in. `graft commit` runs the
+One command line for the development workflow of every repository you work
+in, in place of a Makefile and shell glue. `graft commit` runs the
 project's gate, bumps the version, stages everything, scans the staged changes
 for secrets and oversized files, commits with the work item key taken from the
 branch name, and pushes to every remote. Hooks installed by `graft init` keep
 plain `git commit` out while letting git's own merges, rebases and
-cherry-picks through the same gate.
+cherry-picks through the same gate. Around the commit: project tasks with
+dependencies and locks, background services, a disposable test database,
+pinned tools, the event journal (flags) and a deploy wrapper.
 
 What differs between projects lives in `.graft.yaml` at the repository root.
 graft is a single Go binary with no shell dependency in its core, so it works the
@@ -17,7 +20,7 @@ same on Linux, macOS and Windows (Git for Windows).
 go install github.com/aiseeq/graft@latest
 ```
 
-or, from a checkout, `make install` (atomically replaces `~/bin/graft`).
+or, from a checkout, `go run . install` (atomically replaces `~/bin/graft`).
 Requires git 2.31 or newer.
 
 ## Commands
@@ -31,7 +34,7 @@ Requires git 2.31 or newer.
 | `graft release` | tag the pushed HEAD with the version, push the tag to every remote |
 | `graft release --minor` / `--major` / `--version X.Y.Z` | choose the next tag (version mode `git-tag` only) |
 | `graft version` | print the project version |
-| `graft init` | install the hooks and set `core.hooksPath`; safe to repeat |
+| `graft init` | install the hooks and set `core.hooksPath`, install pinned tools that fail their check; safe to repeat |
 | `graft check` | run the content checks on the index |
 | `graft gate` | run the gate commands |
 | `graft hook pre-commit` / `post-merge` | what the installed hooks call |
@@ -42,6 +45,13 @@ Requires git 2.31 or newer.
 | `graft deploy <target> [-- args]` | run the project's deploy script between graft's checks |
 | `graft deploy status <target>` / `logs <target> [--lines N] [--grep RE]` | the target's status and logs commands |
 | `graft deploy check-head` | for deploy scripts: HEAD is still the commit being deployed |
+| `graft <task> [-- args]` / `graft run <task> [-- args]` | run a task with its deps |
+| `graft start` / `stop` / `restart [service]` | background services, all of them without a name |
+| `graft status` | services, the test database, held locks |
+| `graft locks` | who holds graft's locks |
+| `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |
+| `graft tools [install]` | check the pinned tools; install the failing ones |
+| `graft help` | this list plus the project's tasks (those with `desc`) and services |
 | `graft --version` | print graft's own version |
 
 ### graft commit, step by step
@@ -98,9 +108,9 @@ schema: 1                       # required
 # shell: pipes, &&, redirects, $VAR, globs and VAR=value prefixes are
 # rejected. Use the list form for exact argv, or call a script.
 gate:
-  - make smoke
+  - task: smoke                 # a task from the tasks section
   - [go, test, -short, ./...]
-  - [sh, -c, 'go vet ./... && go test ./...']
+  - sh: go vet ./... && go test ./...   # run by sh -c
 
 version:
   mode: file                    # required: file | git-tag | none
@@ -153,6 +163,122 @@ Unknown keys are errors, so a typo cannot silently switch a check off. All
 paths are relative to the repository root and use forward slashes.
 Exception paths are globs: `*` and `?` stay within one directory, `**` spans
 directories.
+
+## Tasks
+
+Tasks replace Makefile targets. `graft smoke` runs the task `smoke` (a task
+cannot take the name of a graft command); `graft help` lists tasks that have
+a `desc`, the rest are building blocks.
+
+```yaml
+tasks:
+  build:
+    desc: build the binary
+    run:
+      - go build -o bin/app ./cmd/app          # argv, no shell
+  test:
+    desc: all tests
+    deps: [build]              # run first, each task at most once per invocation
+    test_db: true              # pass the test database DSN (see below)
+    dotenv: [API_KEY]          # only these .env keys reach the steps
+    env: {LOG_LEVEL: debug, API_URL: 'http://${HOST}:8080'}   # ${KEY}: environment, then .env
+    run:
+      - go test -count=1 {args} ./...      # graft test -- -run TestX
+  lint:
+    keep_going: true           # run every step, fail at the end listing what failed
+    lock: read                 # shared lock "work-tree": lints run side by side
+    run:
+      - go vet ./...
+      - sh: gofmt -l . | tee fmt.txt       # a shell step, when a pipe is the point
+      - task: build                        # another task, inline
+  migrate:
+    lock: {name: db, mode: write}          # exclusive: waits for readers, blocks them
+    dir: migrations                        # steps run here; default the repository root
+    run: [[sh, apply.sh]]
+```
+
+- A step is a string (split into words, no shell; pipes, `$VAR` and
+  redirects are errors), a list (argv as is), `{sh: "..."}` or `{task: name}`.
+- `{args}` receives the arguments after `--`, as separate words in argv
+  steps and shell-quoted in `sh` steps. A task without `{args}` refuses
+  arguments.
+- Steps get graft's environment without git's hook variables and without
+  the `.env` file: only the keys listed in `dotenv`, the `env` values and the
+  test database DSN are added.
+- Locks are named read/write locks shared by all worktrees of the
+  repository; a task inside a task under the same lock reuses it, and asking
+  for write inside read is an error. Unknown deps and cycles are config
+  errors.
+
+## Services
+
+Long-running local processes started in the background, the native
+counterpart of a dev container.
+
+```yaml
+services:
+  api:
+    desc: the API server
+    build: build                 # a task run before start
+    run: [bin/app, serve]
+    dotenv: all                  # the whole .env, or a list of keys
+    env: {LOG_FORMAT: json}
+    addr: ':${API_PORT}'         # ${KEY} from the environment or .env; start waits until it accepts connections, stop until it is free
+    pidfile: tmp/api.pid
+    log: tmp/api.log             # appended to, one header line per start
+    start_timeout: 30s           # default 30s
+    stop_timeout: 10s            # default 10s, then SIGKILL
+    lock: work-tree              # held for writing while starting or stopping
+```
+
+`graft start` refuses an address something else already listens on, waits
+for the process to listen (without `addr`: to survive a second) and shows the
+end of the log when it dies instead. `graft stop` sends SIGTERM to the
+process group, so wrappers like `go run` do not leave the server behind, and
+SIGKILL after `stop_timeout`. A pid file whose process is gone, or on Linux
+now runs another program, is removed. On Windows stop terminates the process
+itself, not its children: run the program, not a wrapper.
+
+## Test database
+
+```yaml
+test_db:
+  image: postgres:18-alpine
+  container: app-test-pg
+  port: 55432                    # published on 127.0.0.1 only
+  database: app_test
+  user: app
+  password: app                  # a throwaway local database
+  settings: [fsync=off, synchronous_commit=off, full_page_writes=off]   # the default
+  migrate: [go, run, ./cmd/migrate, up]   # run after up with the DSN in dsn_var
+  dsn_var: TEST_DB_DSN           # default
+  ready_timeout: 60s             # default
+```
+
+A task with `test_db: true` gets the DSN in `dsn_var`. If that variable is
+already set (a CI service container) graft uses it, after checking that it
+names `database`; a DSN left over from real work never reaches the tests.
+Otherwise graft starts the container (creating it if needed), waits for
+`pg_isready`, runs `migrate` and, when `.env` exists, keeps `dsn_var` there
+in step for tests started from an IDE. A container created with other
+settings gets a warning; `graft testdb recreate` applies the config.
+
+## Tools
+
+```yaml
+tools:
+  linter:
+    go_install: example.com/linter/cmd/linter@v1.4.2   # pinned; @latest is refused
+    tags: [netgo]
+    check: [linter, rules]       # its output must contain expect
+    expect: some-rule
+```
+
+A binary on PATH says nothing about its version, so a tool counts as present
+only when `check` prints `expect`: a version, or a capability such as a rule
+the project relies on. `graft tools` reports, `graft tools install` and
+`graft init` run `go install` for the failing ones and check again; when PATH
+still finds another copy first, graft says where both are.
 
 ## Environments and .env
 
@@ -364,17 +490,18 @@ jira:
 
 ## Development
 
+graft builds, tests and commits itself through its own `.graft.yaml`:
+
 ```sh
-make smoke    # gofmt check, vet (host and windows), all tests
-make check    # smoke + race + glint
-make install  # ~/bin/graft
+go run . smoke     # the gate: gofmt check, vet (host and windows), all tests
+go run . all       # smoke + race + glint
+go run . install   # ~/bin/graft
+go run . commit -m "..."
 ```
 
-Tests of the SQL adapter need PostgreSQL and psql: `make test` starts a
-disposable container (`make pg-up`, docker) and passes its DSN in
-`GRAFT_TEST_PG_DSN`. Without it, `go test` skips those tests and says so.
-
-graft commits itself: `go run . commit -m "..."`.
+Tests of the SQL adapter need PostgreSQL and psql, the test database tests
+need docker: the `test` task brings up the test database and passes its DSN
+in `GRAFT_TEST_PG_DSN`. Plain `go test` skips those tests and says so.
 
 ## License
 

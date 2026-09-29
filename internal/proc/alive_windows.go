@@ -1,6 +1,6 @@
 //go:build windows
 
-package lock
+package proc
 
 import (
 	"errors"
@@ -9,8 +9,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// processAlive reports whether a process with pid exists and has not exited.
-func processAlive(pid int) (bool, error) {
+// Alive reports whether a process with pid exists and has not exited.
+func Alive(pid int) (bool, error) {
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	switch {
 	case errors.Is(err, windows.ERROR_INVALID_PARAMETER):

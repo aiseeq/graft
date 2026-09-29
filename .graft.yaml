@@ -1,5 +1,74 @@
 schema: 1
-gate:
-  - make smoke
 version:
   mode: git-tag
+gate:
+  - task: smoke
+
+# Tests of the flags SQL adapter run against this container; graft passes
+# its DSN to test_db tasks.
+test_db:
+  image: postgres:18-alpine
+  container: graft-test-pg
+  port: 55432
+  database: graft
+  user: graft
+  password: graft
+  dsn_var: GRAFT_TEST_PG_DSN
+
+tools:
+  glint:
+    go_install: github.com/aiseeq/glint@v1.4.2
+    check: [glint, rules]
+    expect: fallback-return
+
+tasks:
+  build:
+    desc: build the binary into bin/
+    run:
+      - sh: go build -ldflags "-X main.buildVersion=$(git describe --tags --always --dirty)" -o bin/graft .
+  install:
+    desc: install to ~/bin atomically (a running graft keeps its file)
+    deps: [build]
+    run:
+      - sh: |
+          set -eu
+          mkdir -p "$HOME/bin"
+          tmp=$(mktemp "$HOME/bin/.graft.XXXXXX")
+          trap 'rm -f "$tmp"' EXIT
+          install -m 0755 bin/graft "$tmp"
+          mv -f "$tmp" "$HOME/bin/graft"
+          echo "installed to $HOME/bin/graft"
+  fmt:
+    desc: format the code
+    run: [gofmt -w .]
+  fmt-check:
+    desc: fail on unformatted code
+    run:
+      - sh: 'out=$(gofmt -l .); test -z "$out" || { echo "not formatted, run graft fmt:"; echo "$out"; exit 1; }'
+  vet:
+    desc: go vet for the host and Windows
+    run:
+      - go vet ./...
+      - task: vet-windows
+  vet-windows:
+    env: {GOOS: windows}
+    run: [go vet ./...]
+  test:
+    desc: all tests, the PostgreSQL and docker ones included
+    test_db: true
+    env: {GRAFT_TEST_DOCKER: '1'}
+    run: ['go test -count=1 {args} ./...']
+  test-race:
+    desc: all tests with the race detector
+    test_db: true
+    env: {GRAFT_TEST_DOCKER: '1'}
+    run: [go test -race -count=1 ./...]
+  smoke:
+    desc: the commit gate
+    run: [{task: fmt-check}, {task: vet}, {task: test}]
+  glint:
+    desc: static analysis
+    run: [glint check ./...]
+  all:
+    desc: everything, before install
+    run: [{task: smoke}, {task: test-race}, {task: glint}]

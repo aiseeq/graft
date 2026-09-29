@@ -23,7 +23,7 @@ const (
 var Names = []string{PreCommit, PostMerge}
 
 // InstallHint tells how to get graft onto PATH.
-const InstallHint = "go install github.com/aiseeq/graft@latest (or make install in a graft checkout)"
+const InstallHint = "go install github.com/aiseeq/graft@latest (or go run . install in a graft checkout)"
 
 // Shim is the hook file content: a POSIX sh stub that hands over to graft.
 // Git for Windows runs hooks through its own sh, so the same file works there.

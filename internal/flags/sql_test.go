@@ -136,7 +136,7 @@ func TestSQLSourceOpsJournal(t *testing.T) {
 }
 
 // notice-style journal: several open statuses, no severity, id text.
-func TestSQLSourceAlertJournalThroughShell(t *testing.T) {
+func TestSQLSourceNoticesThroughShell(t *testing.T) {
 	dsn := pgDSN(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("uses sh")
