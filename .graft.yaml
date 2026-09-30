@@ -17,9 +17,9 @@ test_db:
 
 tools:
   glint:
-    go_install: github.com/aiseeq/glint@v1.5.1
+    go_install: github.com/aiseeq/glint@v1.8.0
     check: [glint, rules]
-    expect: config-value-fallback
+    expect: fail-open
 
 tasks:
   build:
