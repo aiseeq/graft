@@ -113,13 +113,13 @@ func (c *Client) do(ctx context.Context, method, path string, body any, want int
 	if body != nil {
 		payload, err := json.Marshal(body)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("encoding the %s %s body: %w", method, path, err)
 		}
 		reader = bytes.NewReader(payload)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.creds.BaseURL+path, reader)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("building %s %s: %w", method, path, err)
 	}
 	req.SetBasicAuth(c.creds.Email, c.creds.Token)
 	req.Header.Set("Accept", "application/json")
@@ -128,12 +128,12 @@ func (c *Client) do(ctx context.Context, method, path string, body any, want int
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("jira %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("jira %s %s: reading the response: %w", method, path, err)
 	}
 	if resp.StatusCode != want {
 		return nil, fmt.Errorf("%s %s: http %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(data[:min(len(data), 300)])))

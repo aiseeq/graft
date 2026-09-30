@@ -42,7 +42,7 @@ func Check(ctx context.Context, name string, t *config.Tool) (Result, error) {
 		return r, nil
 	}
 	if err != nil {
-		return r, err
+		return r, fmt.Errorf("%s: looking up %s: %w", name, t.Check[0], err)
 	}
 	r.Path = path
 	checkCtx, cancel := context.WithTimeout(ctx, checkTimeout)

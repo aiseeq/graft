@@ -175,7 +175,7 @@ func Load(root string) (*Config, error) {
 		return nil, fmt.Errorf("%w in %s: create it (see README)", ErrNotFound, root)
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading the config: %w", err)
 	}
 	cfg, err := Parse(data)
 	if err != nil {
@@ -197,7 +197,7 @@ func Parse(data []byte) (*Config, error) {
 		if unquotedArgsInFlow(data) {
 			return nil, fmt.Errorf("%w ({args} inside [...] must be quoted: '--x={args}', '{args}')", err)
 		}
-		return nil, err
+		return nil, fmt.Errorf("parsing %s: %w", FileName, err)
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err

@@ -32,7 +32,7 @@ type File struct {
 func Load(path string) (*File, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("loading the env file: %w", err)
 	}
 	values := map[string]string{}
 	sc := bufio.NewScanner(bytes.NewReader(data))
@@ -151,7 +151,7 @@ func Set(path, key, value string) error {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("setting %s: %w", key, err)
 	}
 	newLine := key + "=" + quote(value)
 	lines := strings.SplitAfter(string(data), "\n")
@@ -179,7 +179,7 @@ func Set(path, key, value string) error {
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("setting %s: %w", key, err)
 	}
 	return os.WriteFile(path, []byte(out.String()), info.Mode().Perm())
 }

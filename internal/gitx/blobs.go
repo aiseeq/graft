@@ -46,7 +46,7 @@ func (r *Repo) ReadBlobs(specs []string, maxContent int64) ([]Blob, error) {
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("git cat-file stdout pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting git cat-file: %w", err)

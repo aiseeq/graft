@@ -457,10 +457,10 @@ func (a *App) DeployLogs(ctx context.Context, target string, lines int, grep str
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return err
+		return fmt.Errorf("logs: stdout pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("logs: starting the command: %w", err)
 	}
 	matched, scanErr := copyMatching(stdout, a.Stdout, filter)
 	if err := errors.Join(scanErr, cmd.Wait()); err != nil {

@@ -329,7 +329,7 @@ func Current(root string, v config.Version) (Semver, error) {
 	target := Targets(v)[0]
 	content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(target.Path)))
 	if err != nil {
-		return Semver{}, err
+		return Semver{}, fmt.Errorf("reading the version file: %w", err)
 	}
 	raw, err := target.Extract(content)
 	if err != nil {
@@ -361,7 +361,7 @@ func Write(root string, v config.Version, next Semver) (*Backup, error) {
 		if !ok {
 			content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(t.Path)))
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("reading a version target: %w", err)
 			}
 			p = &pending{path: t.Path, original: content, updated: content}
 			byPath[t.Path] = p
@@ -392,12 +392,12 @@ func Write(root string, v config.Version, next Semver) (*Backup, error) {
 func writeKeepingMode(path string, content []byte) error {
 	info, err := os.Stat(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("rewriting a version target: %w", err)
 	}
 	mode := info.Mode().Perm()
 	if mode&0o200 == 0 {
 		if err := os.Chmod(path, mode|0o200); err != nil {
-			return err
+			return fmt.Errorf("making a version target writable: %w", err)
 		}
 	}
 	writeErr := os.WriteFile(path, content, mode)

@@ -221,12 +221,12 @@ func (m *Manager) command(name string, s *config.Service) (*exec.Cmd, *os.File, 
 	}
 	for _, p := range []string{s.Log, s.PIDFile} {
 		if err := os.MkdirAll(filepath.Dir(m.path(p)), 0o755); err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("%s: creating the directory of %s: %w", name, p, err)
 		}
 	}
 	logFile, err := os.OpenFile(m.path(s.Log), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("%s: opening the log: %w", name, err)
 	}
 	fmt.Fprintf(logFile, "--- graft start %s at %s ---\n", name, time.Now().Format(time.RFC3339))
 	cmd := exec.Command(argv[0], argv[1:]...)
@@ -349,14 +349,14 @@ func (m *Manager) Logs(ctx context.Context, name string, lines int, follow bool,
 	path := m.path(s.Log)
 	info, err := os.Stat(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("service log: %w", err)
 	}
 	text, err := lastLines(path, lines)
 	if err != nil {
 		return err
 	}
 	if _, err := io.WriteString(w, text); err != nil {
-		return err
+		return fmt.Errorf("printing the service log: %w", err)
 	}
 	if !follow {
 		return nil
@@ -372,7 +372,7 @@ func followFile(ctx context.Context, path string, offset int64, w io.Writer) err
 	for {
 		info, err := os.Stat(path)
 		if err != nil {
-			return err
+			return fmt.Errorf("following the log: %w", err)
 		}
 		if info.Size() < offset {
 			offset = 0
@@ -395,11 +395,11 @@ func followFile(ctx context.Context, path string, offset int64, w io.Writer) err
 func copyFrom(path string, offset int64, w io.Writer) (int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("reading the log: %w", err)
 	}
 	defer f.Close()
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("reading the log: %w", err)
 	}
 	return io.Copy(w, f)
 }
@@ -414,7 +414,7 @@ func (m *Manager) running(name string) (int, error) {
 		return 0, nil
 	}
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%s: reading the pid file: %w", name, err)
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil || pid <= 0 {
@@ -555,7 +555,7 @@ func waitFor(ctx context.Context, timeout time.Duration, done func() (bool, erro
 func writePID(path string, pid int) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
-		return err
+		return fmt.Errorf("writing the pid file: %w", err)
 	}
 	return os.Rename(tmp, path)
 }
@@ -580,7 +580,7 @@ func tail(path string, n int) string {
 func lastLines(path string, n int) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("reading the log: %w", err)
 	}
 	defer f.Close()
 	var lines []string
@@ -593,7 +593,7 @@ func lastLines(path string, n int) (string, error) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return "", err
+		return "", fmt.Errorf("reading the log %s: %w", path, err)
 	}
 	if len(lines) == 0 {
 		return "", nil

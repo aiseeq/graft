@@ -162,7 +162,7 @@ func (s *HTTPSource) Resolve(ctx context.Context, id, reason string) error {
 	}
 	payload, err := json.Marshal(fields)
 	if err != nil {
-		return err
+		return fmt.Errorf("encoding the ack body of %s: %w", id, err)
 	}
 	_, err = s.request(ctx, s.cfg.Ack.Method, path, payload)
 	return err
@@ -178,7 +178,7 @@ func (s *HTTPSource) request(ctx context.Context, method, path string, body []by
 func (s *HTTPSource) direct(ctx context.Context, method, path string, body []byte) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(s.transport.BaseURL, "/")+path, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("building %s %s: %w", method, path, err)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -192,12 +192,12 @@ func (s *HTTPSource) direct(ctx context.Context, method, path string, body []byt
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s %s: reading the response: %w", method, path, err)
 	}
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("%s %s: http %d: %s", method, path, resp.StatusCode, truncate(strings.TrimSpace(string(data)), 500))
@@ -260,7 +260,7 @@ func (s *HTTPSource) viaCommand(ctx context.Context, method, path string, body [
 	if s.transport.StdinFile != "" {
 		f, err := os.Open(filepath.Join(s.env.Root, filepath.FromSlash(s.transport.StdinFile)))
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("flags.http.transport.%s.stdin_file: %w", s.env.Name, err)
 		}
 		defer f.Close()
 		cmd.Stdin = f

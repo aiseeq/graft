@@ -76,7 +76,7 @@ func ParseRules(data []byte, knownEnvs []string) ([]Rule, error) {
 		rules = append(rules, r)
 	}
 	if err := sc.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading the rules: %w", err)
 	}
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
@@ -145,7 +145,7 @@ func AppendRule(path string, r Rule, knownEnvs []string) (bool, error) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("appending a rule: %w", err)
 	}
 	if len(data) > 0 && !bytes.HasSuffix(data, []byte("\n")) {
 		data = append(data, '\n')
@@ -153,7 +153,7 @@ func AppendRule(path string, r Rule, knownEnvs []string) (bool, error) {
 	data = append(data, []byte(r.String()+"\n")...)
 	info, err := os.Stat(path)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("appending a rule: %w", err)
 	}
 	return true, os.WriteFile(path, data, info.Mode().Perm())
 }

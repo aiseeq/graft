@@ -59,7 +59,7 @@ func Acquire(ctx context.Context, path string, timeout time.Duration, holder str
 // describes this process and is shown to anyone who has to wait.
 func AcquireMode(ctx context.Context, path string, mode Mode, timeout time.Duration, holder string, log io.Writer) (*Lock, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating the lock directory: %w", err)
 	}
 	fl := flock.New(path)
 	try, tryCtx := fl.TryLock, fl.TryLockContext
@@ -113,7 +113,7 @@ func notePath(path string, pid int) string {
 func Holders(path string) ([]string, error) {
 	matches, err := filepath.Glob(path + ".*.holder")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing lock holders: %w", err)
 	}
 	sort.Strings(matches)
 	holders := []string{}
@@ -138,7 +138,7 @@ func Holders(path string) ([]string, error) {
 			continue // released meanwhile
 		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("reading a lock holder: %w", err)
 		}
 		holders = append(holders, strings.TrimSpace(string(data)))
 	}

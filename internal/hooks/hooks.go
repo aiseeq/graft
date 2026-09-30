@@ -115,7 +115,7 @@ func Install(repo *gitx.Repo, dir, minVersion string) ([]Change, error) {
 	}
 
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating the hooks directory: %w", err)
 	}
 	var changes []Change
 	for _, name := range Names {
@@ -175,7 +175,7 @@ func checkForeignShims(dir, hooksDir string) error {
 			continue
 		}
 		if err != nil {
-			return err
+			return fmt.Errorf("checking existing hooks: %w", err)
 		}
 		// A shim of another graft version, or with CRLF line endings (an
 		// autocrlf checkout), is ours and gets rewritten.
@@ -221,7 +221,7 @@ func activeDefaultHooks(repo *gitx.Repo) ([]string, error) {
 		return []string{}, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing default hooks: %w", err)
 	}
 	active := []string{}
 	for _, e := range entries {

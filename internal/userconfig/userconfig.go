@@ -36,7 +36,7 @@ type Jira struct {
 func Path() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("locating the user config: %w", err)
 	}
 	return filepath.Join(dir, "graft", "config.yaml"), nil
 }
@@ -53,7 +53,7 @@ func Load() (*Config, string, error) {
 		return nil, path, fmt.Errorf("%w: %s", ErrNotFound, path)
 	}
 	if err != nil {
-		return nil, path, err
+		return nil, path, fmt.Errorf("reading the user config: %w", err)
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -86,7 +86,7 @@ func expandHome(p string) (string, error) {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("expanding %s: %w", p, err)
 	}
 	return filepath.Join(home, strings.TrimPrefix(p, "~")), nil
 }

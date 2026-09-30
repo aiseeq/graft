@@ -52,7 +52,7 @@ func run(args []string) error {
 	case "log":
 		ms, err := strconv.Atoi(args[2])
 		if err != nil {
-			return err
+			return fmt.Errorf("log: delay %q: %w", args[2], err)
 		}
 		if err := appendLine(args[1], stamp("start")); err != nil {
 			return err
@@ -78,7 +78,7 @@ func run(args []string) error {
 		}
 		l, err := net.Listen("tcp", args[1])
 		if err != nil {
-			return err
+			return fmt.Errorf("%s: %w", args[0], err)
 		}
 		fmt.Println("listening on", l.Addr())
 		for {
@@ -107,7 +107,7 @@ func stamp(event string) string {
 func appendLine(path, line string) error {
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return err
+		return fmt.Errorf("appending to %s: %w", path, err)
 	}
 	_, err = fmt.Fprintln(f, line)
 	return errors.Join(err, f.Close())

@@ -138,7 +138,11 @@ func (d *DB) waitReady(ctx context.Context) error {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("%s is not ready after %s: see docker logs %s", d.Cfg.Container, d.Cfg.ReadyTimeout, d.Cfg.Container)
 		}
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 }
 

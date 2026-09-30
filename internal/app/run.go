@@ -157,7 +157,7 @@ func (a *App) Locks() error {
 	paths := []string{filepath.Join(repo.CommonDir, lockFile)}
 	named, err := filepath.Glob(filepath.Join(lockDir(repo), "*.lock"))
 	if err != nil {
-		return err
+		return fmt.Errorf("listing named locks: %w", err)
 	}
 	paths = append(paths, named...)
 	held := 0

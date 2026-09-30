@@ -98,7 +98,7 @@ func help(a *app.App) error {
 		fmt.Fprintf(w, "  %s\t%s\n", c.name, c.summary(cfg))
 	}
 	if err := w.Flush(); err != nil {
-		return err
+		return fmt.Errorf("formatting the command list: %w", err)
 	}
 	if !found {
 		b.WriteString("\nOutside a project every command is listed; in one, only those its .graft.yaml uses.\n")
