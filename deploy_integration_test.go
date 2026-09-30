@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -156,6 +157,15 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
 func (d *deployFixture) stateFile(name string) string {
 	data, err := os.ReadFile(filepath.Join(d.state, name))
 	if err != nil {
@@ -276,15 +286,53 @@ func TestDeployRequiresVersionOnRequiredTarget(t *testing.T) {
 	}
 }
 
-func TestDeployConfirmNeedsTerminal(t *testing.T) {
+// fakeSudo puts a sudo stand-in first on PATH: it records every call and
+// exits with FAKE_SUDO_EXIT, as a fingerprint accepted or refused would.
+func (d *deployFixture) fakeSudo(t *testing.T, exit int) string {
+	t.Helper()
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	writeFile(t, filepath.Join(dir, "sudo"), "#!/bin/sh\necho \"$*\" >> "+yamlQuote(calls)+"\nexit "+strconv.Itoa(exit)+"\n")
+	if err := os.Chmod(filepath.Join(dir, "sudo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d.env = append(d.env, "PATH="+dir+string(os.PathListSeparator)+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return calls
+}
+
+// Without a terminal sudo can still confirm without typing (a fingerprint,
+// cached credentials): the deploy goes on.
+func TestDeployConfirmWithoutTerminalBySudo(t *testing.T) {
 	d := deployRepo(t)
 	d.mustGraft("deploy", "test")
+	calls := d.fakeSudo(t, 0)
+	out := d.mustGraft("deploy", "prod")
+	if !strings.Contains(out, "no terminal, confirm the deploy to prod") {
+		t.Errorf("no hint about the confirmation:\n%s", out)
+	}
+	if d.stateFile("prod-run") == "" {
+		t.Error("prod deploy did not run after sudo confirmed it")
+	}
+	if got := readFile(t, calls); !strings.HasPrefix(got, "-v -p ") {
+		t.Errorf("sudo calls: %q", got)
+	}
+}
+
+// A refused sudo without a terminal ends the deploy after one attempt: asking
+// again where nobody can type would wait forever.
+func TestDeployConfirmWithoutTerminalRefused(t *testing.T) {
+	d := deployRepo(t)
+	d.mustGraft("deploy", "test")
+	calls := d.fakeSudo(t, 1)
 	out, code := d.graft("", "deploy", "prod")
-	if code == 0 || !strings.Contains(out, "foreground of a terminal") {
+	if code == 0 || !strings.Contains(out, "deploying to prod was not confirmed") {
 		t.Errorf("exit %d:\n%s", code, out)
 	}
 	if d.stateFile("prod-run") != "" {
 		t.Error("prod deploy ran without confirmation")
+	}
+	if got := strings.Count(readFile(t, calls), "\n"); got != 1 {
+		t.Errorf("sudo asked %d times, want 1", got)
 	}
 }
 

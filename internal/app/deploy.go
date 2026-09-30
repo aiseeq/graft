@@ -74,11 +74,6 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 	if err := deployPreflight(r); err != nil {
 		return err
 	}
-	if r.target.Confirm == "sudo" {
-		if err := deploy.RequireTerminal(o.Target); err != nil {
-			return err
-		}
-	}
 	path := filepath.Join(r.repo.CommonDir, "graft-locks", "deploy-"+o.Target+".lock")
 	lk, err := lock.AcquireMode(ctx, path, lock.Exclusive, r.cfg.Lock.Timeout, "graft deploy "+o.Target, a.Stderr)
 	if err != nil {

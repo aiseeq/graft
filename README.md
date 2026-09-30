@@ -483,7 +483,7 @@ deploy:
       env: prod
       run: [bash, deploy/deploy.sh, --env, prod]
       requires: test            # prod only gets the version test already runs
-      confirm: sudo             # sudo -v in the foreground, repeated until confirmed
+      confirm: sudo             # sudo -v before the run: repeated in a terminal, one try without
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
       release_notes: {}
 
@@ -499,21 +499,23 @@ release_notes:
 0. Check that every required key of `dotenv` and `dotenv_sets` and every
    `${KEY}` in `run` is set, listing all that are not; nothing else happens
    before this passes.
-1. With `confirm: sudo`, refuse unless stdin is a terminal: a password prompt in
-   a background job waits where nobody sees it.
-2. The work tree must be clean; `git fetch <remote>`; HEAD must equal the remote
+1. The work tree must be clean; `git fetch <remote>`; HEAD must equal the remote
    branch.
-3. Ask for sudo until it is confirmed (Ctrl-C stops).
-4. With `requires`, the required target's `version` must print the version
+2. With `confirm: sudo`, run `sudo -v`. In a terminal it asks until the password
+   is given (Ctrl-C stops). Without a terminal it makes one attempt, which
+   passes on cached sudo credentials or a PAM method that types nothing (a
+   fingerprint reader); a refusal ends the deploy, since nobody can type a
+   password there.
+3. With `requires`, the required target's `version` must print the version
    being deployed.
-5. Read the previously deployed commit (`deployed_sha`).
-6. Run `run` plus `args` in the foreground, with `GRAFT_DEPLOY_TARGET`,
+4. Read the previously deployed commit (`deployed_sha`).
+5. Run `run` plus `args` in the foreground, with `GRAFT_DEPLOY_TARGET`,
    `GRAFT_DEPLOY_ENV`, `GRAFT_DEPLOY_SHA`, `GRAFT_DEPLOY_VERSION` and
    `GRAFT_DEPLOY_PREVIOUS_SHA` in its environment, plus the listed `.env`
    keys (an optional `KEY?` set nowhere is left out). Between building and
    shipping, the script can call `graft deploy check-head`.
-7. Check again that the tree is clean and HEAD has not moved.
-8. Record the deployed commit and post release notes: a comment on every
+6. Check again that the tree is clean and HEAD has not moved.
+7. Record the deployed commit and post release notes: a comment on every
    `project_keys` item mentioned in the delivered commits (subjects and bodies),
    and with `transition`, a move to that status. Release notes never fail a
    deploy; problems are printed as warnings.

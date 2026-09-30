@@ -95,21 +95,23 @@ func CheckHead(repo *gitx.Repo, d *config.Deploy, want string) error {
 	return nil
 }
 
-// RequireTerminal refuses to go on without an interactive stdin: a sudo
-// prompt in a background job waits forever where nobody sees it.
-func RequireTerminal(target string) error {
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return fmt.Errorf("deploying to %s asks for confirmation: run graft deploy in the foreground of a terminal", target)
-	}
-	return nil
-}
-
-// ConfirmSudo asks for the sudo password until it is given; Ctrl-C stops.
+// ConfirmSudo confirms the deploy with sudo. In a terminal it asks until the
+// password is given; Ctrl-C stops. Without a terminal it makes one attempt:
+// sudo can still succeed there on credentials it has cached or on a PAM
+// method that reads nothing from stdin (a fingerprint reader), and a refusal
+// ends the deploy instead of asking again where nobody can answer.
 func ConfirmSudo(ctx context.Context, target string, log io.Writer) error {
 	prompt := fmt.Sprintf("[sudo] password to confirm the deploy to %s: ", target)
+	interactive := term.IsTerminal(int(os.Stdin.Fd()))
+	if !interactive {
+		fmt.Fprintf(log, "graft: no terminal, confirm the deploy to %s with sudo credentials that need no typing (fingerprint)\n", target)
+	}
 	for {
 		cmd := exec.CommandContext(ctx, "sudo", "-v", "-p", prompt)
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		if interactive {
+			cmd.Stdin = os.Stdin
+		}
 		err := cmd.Run()
 		if err == nil {
 			return nil
@@ -120,6 +122,9 @@ func ConfirmSudo(ctx context.Context, target string, log io.Writer) error {
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) {
 			return fmt.Errorf("sudo: %w", err)
+		}
+		if !interactive {
+			return fmt.Errorf("deploying to %s was not confirmed: without a terminal sudo takes only cached credentials or a fingerprint; run graft deploy in a terminal to type the password", target)
 		}
 		fmt.Fprintln(log, "graft: not confirmed, asking again (Ctrl-C to stop)")
 	}
