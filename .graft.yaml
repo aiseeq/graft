@@ -17,7 +17,7 @@ test_db:
 
 tools:
   glint:
-    go_install: github.com/aiseeq/glint@v1.11.0
+    go_install: github.com/aiseeq/glint@v1.13.1
     check: [glint, rules]
     expect: fail-open
 

@@ -290,3 +290,11 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+func TestTestDBUnknownActionIsUsageError(t *testing.T) {
+	f := tasksRepo(t, "", nil)
+	out, code := f.graft("", "testdb", "bogus")
+	if code != 2 || !strings.Contains(out, "graft testdb up|down|status|recreate") {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+}

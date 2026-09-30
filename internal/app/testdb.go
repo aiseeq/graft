@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/aiseeq/graft/internal/config"
 	"github.com/aiseeq/graft/internal/dotenv"
@@ -19,8 +21,51 @@ import (
 // testDBLock serializes container changes between worktrees and sessions.
 const testDBLock = "test-db"
 
-// TestDB runs graft testdb up|down|status|recreate.
-func (a *App) TestDB(ctx context.Context, action string) error {
+// ErrUnknownTestDBAction marks a graft testdb action that testDBActions does not name.
+var ErrUnknownTestDBAction = errors.New("unknown testdb action")
+
+// testDBAction is one graft testdb subcommand; locked ones run under testDBLock.
+type testDBAction struct {
+	name   string
+	locked bool
+	run    func(a *App, ctx context.Context, repo *gitx.Repo, cfg *config.Config, db *testdb.DB) error
+}
+
+// testDBActions is the one list of graft testdb actions, in the order the usage line shows them.
+var testDBActions = []testDBAction{
+	{name: "up", locked: true, run: func(a *App, ctx context.Context, repo *gitx.Repo, cfg *config.Config, db *testdb.DB) error {
+		return a.testDBUp(ctx, repo, cfg, db)
+	}},
+	{name: "down", locked: true, run: func(_ *App, ctx context.Context, _ *gitx.Repo, _ *config.Config, db *testdb.DB) error {
+		return db.Down(ctx)
+	}},
+	{name: "status", run: func(a *App, ctx context.Context, _ *gitx.Repo, _ *config.Config, db *testdb.DB) error {
+		return a.testDBStatus(ctx, db)
+	}},
+	{name: "recreate", locked: true, run: func(a *App, ctx context.Context, repo *gitx.Repo, cfg *config.Config, db *testdb.DB) error {
+		if err := db.Down(ctx); err != nil {
+			return err
+		}
+		return a.testDBUp(ctx, repo, cfg, db)
+	}},
+}
+
+// TestDBUsage is the usage line of graft testdb, built from testDBActions.
+func TestDBUsage() string {
+	names := make([]string, len(testDBActions))
+	for i, action := range testDBActions {
+		names[i] = action.name
+	}
+	return "graft testdb " + strings.Join(names, "|")
+}
+
+// TestDB runs one of testDBActions.
+func (a *App) TestDB(ctx context.Context, name string) error {
+	i := slices.IndexFunc(testDBActions, func(action testDBAction) bool { return action.name == name })
+	if i < 0 {
+		return fmt.Errorf("%w %q", ErrUnknownTestDBAction, name)
+	}
+	action := testDBActions[i]
 	repo, cfg, err := a.open()
 	if err != nil {
 		return err
@@ -29,23 +74,10 @@ func (a *App) TestDB(ctx context.Context, action string) error {
 		return errors.New("no test_db section in .graft.yaml")
 	}
 	db := &testdb.DB{Cfg: cfg.TestDB, Log: a.Stdout}
-	switch action {
-	case "status":
-		return a.testDBStatus(ctx, db)
-	case "up":
-		return a.withTestDBLock(ctx, repo, cfg, func() error { return a.testDBUp(ctx, repo, cfg, db) })
-	case "down":
-		return a.withTestDBLock(ctx, repo, cfg, func() error { return db.Down(ctx) })
-	case "recreate":
-		return a.withTestDBLock(ctx, repo, cfg, func() error {
-			if err := db.Down(ctx); err != nil {
-				return err
-			}
-			return a.testDBUp(ctx, repo, cfg, db)
-		})
-	default:
-		return fmt.Errorf("unknown testdb action %q", action)
+	if !action.locked {
+		return action.run(a, ctx, repo, cfg, db)
 	}
+	return a.withTestDBLock(ctx, repo, cfg, func() error { return action.run(a, ctx, repo, cfg, db) })
 }
 
 func (a *App) withTestDBLock(ctx context.Context, repo *gitx.Repo, cfg *config.Config, fn func() error) error {

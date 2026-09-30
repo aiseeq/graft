@@ -187,10 +187,14 @@ func logsCmd(ctx context.Context, a *app.App, args []string) error {
 }
 
 func testDBCmd(ctx context.Context, a *app.App, args []string) error {
-	if len(args) != 1 || !slices.Contains([]string{"up", "down", "status", "recreate"}, args[0]) {
-		return fmt.Errorf("%w: graft testdb up|down|status|recreate", errUsage)
+	if len(args) != 1 {
+		return fmt.Errorf("%w: %s", errUsage, app.TestDBUsage())
 	}
-	return a.TestDB(ctx, args[0])
+	err := a.TestDB(ctx, args[0])
+	if errors.Is(err, app.ErrUnknownTestDBAction) {
+		return fmt.Errorf("%w: %s", errUsage, app.TestDBUsage())
+	}
+	return err
 }
 
 func toolsCmd(ctx context.Context, a *app.App, args []string) error {
