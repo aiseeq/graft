@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aiseeq/graft/internal/config"
 	"github.com/aiseeq/graft/internal/dotenv"
@@ -188,5 +189,30 @@ func TestSQLSourceRejectsNonJSONOutput(t *testing.T) {
 	src, _ := NewSQLSource(cfg, localEnv(t))
 	if _, err := src.Open(context.Background()); err == nil || !strings.Contains(err.Error(), "did not return JSON") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// A byte limit inside a multi-byte character steps back to the rune
+// boundary: the error text stays valid UTF-8.
+func TestTruncateKeepsRunes(t *testing.T) {
+	cases := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"short", 10, "short"},
+		{"abcdef", 3, "abc..."},
+		{"ab€cd", 3, "ab..."},
+		{"ab€cd", 5, "ab€..."},
+		{"€€", 1, "..."},
+	}
+	for _, c := range cases {
+		got := truncate(c.in, c.n)
+		if got != c.want {
+			t.Errorf("truncate(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("truncate(%q, %d) = %q is not valid UTF-8", c.in, c.n, got)
+		}
 	}
 }

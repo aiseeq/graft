@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/aiseeq/graft/internal/config"
 	"github.com/aiseeq/graft/internal/envs"
@@ -210,9 +211,14 @@ func toEvents(rows []jsonEvent) []Event {
 	return events
 }
 
+// truncate cuts s to at most n bytes, stepping back to a rune boundary so the
+// result stays valid UTF-8.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "..."
 }
