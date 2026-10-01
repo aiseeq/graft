@@ -74,7 +74,7 @@ func PublishedHead(repo *gitx.Repo, d *config.Deploy) (string, error) {
 		return "", fmt.Errorf("%s/%s does not exist: publish the branch first (graft commit pushes it)", d.Remote, branch)
 	}
 	if remote = strings.TrimSpace(remote); remote != head {
-		return "", fmt.Errorf("HEAD %s is not %s/%s %s: push local commits or pull (git pull --ff-only)", head[:12], d.Remote, branch, remote[:min(12, len(remote))])
+		return "", fmt.Errorf("HEAD %s is not %s/%s %s: push local commits or pull (git pull --ff-only)", gitx.Short(head), d.Remote, branch, gitx.Short(remote))
 	}
 	return head, nil
 }
@@ -90,7 +90,7 @@ func CheckHead(repo *gitx.Repo, d *config.Deploy, want string) error {
 		return err
 	}
 	if head = strings.TrimSpace(head); head != want {
-		return fmt.Errorf("HEAD moved during the deploy (%s -> %s): what was built is not the checked commit", want[:12], head[:12])
+		return fmt.Errorf("HEAD moved during the deploy (%s -> %s): what was built is not the checked commit", gitx.Short(want), gitx.Short(head))
 	}
 	return nil
 }

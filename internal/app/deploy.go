@@ -126,7 +126,7 @@ func (a *App) deploy(ctx context.Context, r *deployRun, args []string) error {
 			return err
 		}
 	}
-	a.printf("deploying %s (version %s, commit %s) to %s", r.name, r.version, head[:12], r.env.Destination())
+	a.printf("deploying %s (version %s, commit %s) to %s", r.name, r.version, gitx.Short(head), r.env.Destination())
 	if r.target.Confirm == "sudo" {
 		if err := deploy.ConfirmSudo(ctx, r.name, a.Stderr); err != nil {
 			return err
@@ -146,7 +146,7 @@ func (a *App) deploy(ctx context.Context, r *deployRun, args []string) error {
 	if err := deploy.CheckHead(r.repo, r.cfg.Deploy, r.head); err != nil {
 		return fmt.Errorf("the deploy script finished, but %w; the deployed commit is not recorded", err)
 	}
-	a.printf("deployed %s to %s", r.head[:12], r.name)
+	a.printf("deployed %s to %s", gitx.Short(r.head), r.name)
 	a.recordDeployment(ctx, r)
 	return nil
 }
@@ -284,7 +284,7 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) {
 		return
 	}
 	if len(keys) == 0 {
-		a.printf("release notes: no work item keys in %s..%s", r.prev[:12], r.head[:12])
+		a.printf("release notes: no work item keys in %s..%s", gitx.Short(r.prev), gitx.Short(r.head))
 		return
 	}
 	client, err := jiraClient()
@@ -292,7 +292,7 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) {
 		a.warn("release notes skipped: %v", err)
 		return
 	}
-	text, err := envs.Fill(notes.Comment, map[string]string{"target": r.name, "version": r.version, "short": r.head[:12], "sha": r.head}, func(s string) string { return s })
+	text, err := envs.Fill(notes.Comment, map[string]string{"target": r.name, "version": r.version, "short": gitx.Short(r.head), "sha": r.head}, func(s string) string { return s })
 	if err != nil {
 		a.warn("release notes skipped: %v", err)
 		return
@@ -365,7 +365,7 @@ func (a *App) DeployCheckHead() error {
 	if err := deploy.CheckHead(repo, cfg.Deploy, want); err != nil {
 		return err
 	}
-	a.printf("HEAD is still %s and the tree is clean", want[:12])
+	a.printf("HEAD is still %s and the tree is clean", gitx.Short(want))
 	return nil
 }
 
@@ -413,7 +413,7 @@ func (a *App) printDeployedCommit(ctx context.Context, r *deployRun) {
 		return
 	}
 	if !known {
-		a.printf("deployed %s, not in the local repository (git fetch?)", sha[:min(12, len(sha))])
+		a.printf("deployed %s, not in the local repository (git fetch?)", gitx.Short(sha))
 		return
 	}
 	line, err := r.repo.Git("log", "-1", "--format=%h %s (%cs)", sha)
