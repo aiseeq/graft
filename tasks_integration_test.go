@@ -417,6 +417,39 @@ func TestTools(t *testing.T) {
 	}
 }
 
+// A tool go install cannot provide (a system package) is checked the same
+// way; graft prints how to install it and never runs that command.
+func TestToolsManual(t *testing.T) {
+	f := tasksRepo(t, `tools:
+  shellcheck:
+    manual: sudo dnf install ShellCheck
+    check: `+helperStep("print", "version: 0.10.0")+`
+    expect: 'version: 0.11.0'
+`, nil)
+	out, code := f.graft("", "tools")
+	if code != 1 || !strings.Contains(out, `does not print "version: 0.11.0"`) ||
+		!strings.Contains(out, "install it yourself: sudo dnf install ShellCheck") {
+		t.Errorf("tools: exit %d\n%s", code, out)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	fakeBin := t.TempDir()
+	script := "#!/bin/sh\necho \"$*\" >> " + f.path("go.txt") + "\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = []string{"PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH")}
+	out, code = f.graft("", "tools", "install")
+	if code != 1 || !strings.Contains(out, "install it yourself: sudo dnf install ShellCheck") ||
+		!strings.Contains(out, "tools not ready: shellcheck") {
+		t.Errorf("tools install: exit %d\n%s", code, out)
+	}
+	if _, err := os.Stat(f.path("go.txt")); !os.IsNotExist(err) {
+		t.Errorf("go called for a manual tool: %v", err)
+	}
+}
+
 func TestTestDBRefusesForeignDSN(t *testing.T) {
 	f := tasksRepo(t, "", nil)
 	f.write(".graft.yaml", f.read(".graft.yaml")+`test_db:

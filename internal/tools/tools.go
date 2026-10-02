@@ -78,6 +78,9 @@ func firstLine(s string) string {
 // PATH will find ahead of another one, and fails when the check still finds
 // another copy first.
 func Install(ctx context.Context, name string, t *config.Tool, binDir string, log io.Writer) error {
+	if t.GoInstall == "" {
+		return fmt.Errorf("%s: not installed with go install; install it yourself: %s", name, t.Manual)
+	}
 	if _, err := exec.LookPath("go"); err != nil {
 		return fmt.Errorf("tools are installed with go install: %w", err)
 	}

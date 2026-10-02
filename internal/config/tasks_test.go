@@ -94,6 +94,8 @@ func TestParseTasksErrors(t *testing.T) {
 		"no password":       strings.Replace(tasksBase, "  password: app\n", "", 1),
 		"tool latest":       strings.Replace(tasksBase, "@v1.2.0", "@latest", 1),
 		"tool w/o expect":   strings.Replace(tasksBase, "    expect: v1.2.0\n", "", 1),
+		"tool w/o install":  strings.Replace(tasksBase, "    go_install: example.com/linter/cmd/linter@v1.2.0\n", "", 1),
+		"tool two installs": strings.Replace(tasksBase, "    go_install: example.com/linter/cmd/linter@v1.2.0\n", "    go_install: example.com/linter/cmd/linter@v1.2.0\n    manual: sudo dnf install linter\n", 1),
 	}
 	for name, data := range cases {
 		if data == tasksBase {

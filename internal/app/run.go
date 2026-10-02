@@ -206,6 +206,11 @@ func (a *App) checkTools(ctx context.Context, cfg *config.Config, install bool) 
 			a.printf("%s: ok (%s)", name, r.Path)
 			continue
 		}
+		if t.Manual != "" {
+			a.printf("%s: %s (install it yourself: %s)", name, r.Problem, t.Manual)
+			failed = append(failed, name)
+			continue
+		}
 		if !install {
 			a.printf("%s: %s (graft tools install installs %s)", name, r.Problem, t.GoInstall)
 			failed = append(failed, name)

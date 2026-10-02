@@ -328,6 +328,10 @@ tools:
     tags: [netgo]
     check: [linter, rules]       # its output must contain expect
     expect: some-rule
+  shellcheck:
+    manual: sudo dnf install ShellCheck   # not a Go module: installed by hand
+    check: [shellcheck, --version]
+    expect: 'version: 0.11'
 ```
 
 A binary on PATH says nothing about its version, so a tool counts as present
@@ -338,6 +342,10 @@ the user config (by default where go install puts binaries) and check again.
 Before installing, graft warns when the new copy will come ahead of another
 one on PATH, such as a development build; when PATH still finds another copy
 first after the install, graft says where both are.
+
+A tool that go install cannot provide, such as a system package, takes
+`manual` instead of `go_install`: it is checked the same way, and when the
+check fails graft prints that command and never runs it.
 
 ## Environments and .env
 

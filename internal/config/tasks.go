@@ -286,10 +286,14 @@ func (t *TestDB) DSN() string {
 	return u.String()
 }
 
-// Tool is a pinned development tool installed with go install.
+// Tool is a pinned development tool: installed with go install, or by hand
+// when go install cannot provide it (a system package).
 type Tool struct {
 	GoInstall string   `yaml:"go_install"`
 	Tags      []string `yaml:"tags"`
+	// Manual says how to install the tool by hand; graft prints it and never
+	// runs it (it usually needs sudo or a package manager).
+	Manual string `yaml:"manual"`
 	// Check runs the tool; its output must contain Expect (a version, or a
 	// capability such as a rule name).
 	Check  []string `yaml:"check"`
@@ -594,8 +598,15 @@ func (c *Config) validateTools() error {
 	for _, name := range keysOf(c.Tools) {
 		t := c.Tools[name]
 		where := "tools." + name
-		if t == nil || !pinnedRe.MatchString(t.GoInstall) {
+		switch {
+		case t == nil || (t.GoInstall == "" && t.Manual == ""):
+			return fmt.Errorf("%s: go_install or manual is required: how the tool gets installed", where)
+		case t.GoInstall != "" && t.Manual != "":
+			return fmt.Errorf("%s: go_install and manual are exclusive", where)
+		case t.GoInstall != "" && !pinnedRe.MatchString(t.GoInstall):
 			return fmt.Errorf("%s.go_install: a module path pinned to a version (path@vX.Y.Z), not @latest", where)
+		case t.Manual != "" && len(t.Tags) > 0:
+			return fmt.Errorf("%s.tags: build tags apply to go_install only", where)
 		}
 		if len(t.Check) == 0 || t.Expect == "" {
 			return fmt.Errorf("%s: check and expect are required: presence on PATH says nothing about the version", where)
