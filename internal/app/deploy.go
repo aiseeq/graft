@@ -50,6 +50,8 @@ type DeployOptions struct {
 	Target string
 	// Args are passed to the deploy script after its configured arguments.
 	Args []string
+	// Redeploy deploys the commit the target already runs (deployed_sha).
+	Redeploy bool
 }
 
 type deployRun struct {
@@ -81,7 +83,7 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 	if err != nil {
 		return err
 	}
-	err = a.deploy(ctx, r, o.Args)
+	err = a.deploy(ctx, r, o)
 	if releaseErr := lk.Release(); releaseErr != nil {
 		err = errors.Join(err, fmt.Errorf("releasing the deploy lock: %w", releaseErr))
 	}
@@ -114,7 +116,7 @@ func (a *App) deployTarget(name string) (*deployRun, error) {
 	return &deployRun{repo: repo, cfg: cfg, name: name, target: t, env: env, tasks: a.runner(repo, cfg)}, nil
 }
 
-func (a *App) deploy(ctx context.Context, r *deployRun, args []string) error {
+func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	if err := deploy.CheckTree(r.repo, r.cfg.Deploy); err != nil {
 		return err
 	}
@@ -133,6 +135,16 @@ func (a *App) deploy(ctx context.Context, r *deployRun, args []string) error {
 	if err := a.requireDeployed(ctx, r); err != nil {
 		return err
 	}
+	// The deployed commit is read before deps, sudo and the script: a target
+	// that already runs HEAD has nothing to gain from them.
+	if r.target.DeployedSHA != nil {
+		if r.prev, err = deploy.ReadDeployedSHA(ctx, r.env, r.target.DeployedSHA); err != nil {
+			return err
+		}
+		if err := a.refuseSameCommit(r, o.Redeploy); err != nil {
+			return err
+		}
+	}
 	if len(r.target.Deps) > 0 {
 		a.printf("deploy %s: running %s first", r.name, strings.Join(r.target.Deps, ", "))
 		if err := r.tasks.RunDeps(ctx, r.target.Deps); err != nil {
@@ -144,12 +156,7 @@ func (a *App) deploy(ctx context.Context, r *deployRun, args []string) error {
 			return err
 		}
 	}
-	if r.target.DeployedSHA != nil {
-		if r.prev, err = deploy.ReadDeployedSHA(ctx, r.env, r.target.DeployedSHA); err != nil {
-			return err
-		}
-	}
-	if err := a.runDeployScript(ctx, r, args); err != nil {
+	if err := a.runDeployScript(ctx, r, o.Args); err != nil {
 		return err
 	}
 	if err := deploy.CheckHead(r.repo, r.cfg.Deploy, r.head); err != nil {
@@ -158,6 +165,23 @@ func (a *App) deploy(ctx context.Context, r *deployRun, args []string) error {
 	a.printf("deployed %s to %s", gitx.Short(r.head), r.name)
 	a.recordDeployment(ctx, r)
 	return nil
+}
+
+// refuseSameCommit refuses to deploy the commit the target already runs,
+// unless redeploy asks for exactly that.
+func (a *App) refuseSameCommit(r *deployRun, redeploy bool) error {
+	if r.prev != r.head {
+		return nil
+	}
+	if redeploy {
+		a.printf("%s already runs %s, deploying it again (--redeploy)", r.name, gitx.Short(r.head))
+		return nil
+	}
+	subject, err := r.repo.Git("log", "-1", "--format=%s", r.head)
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%s already runs %s %s; pass --redeploy to deploy it again", r.name, gitx.Short(r.head), strings.TrimSpace(subject))
 }
 
 // requireDeployed enforces requires: the required target must already run

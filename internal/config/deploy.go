@@ -35,8 +35,8 @@ type DeployTarget struct {
 	// Requires names a target that must already run the version being
 	// deployed (prod after test).
 	Requires string `yaml:"requires"`
-	// Confirm is "sudo": a sudo prompt in the foreground before anything
-	// happens.
+	// Confirm is "sudo": a sudo prompt in the foreground after the checks
+	// and deps, before the deploy script runs.
 	Confirm      string       `yaml:"confirm"`
 	DeployedSHA  *DeployedSHA `yaml:"deployed_sha"`
 	ReleaseNotes *TargetNotes `yaml:"release_notes"`

@@ -546,3 +546,91 @@ deploy:
 		t.Errorf("a dep ran before the requires check failed: %v", err)
 	}
 }
+
+// A deploy of the commit the target already runs (deployed_sha) is refused
+// before deps, sudo and the script, unless --redeploy asks for it.
+func TestDeployRefusesSameCommit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("deploy scripts use sh")
+	}
+	state := t.TempDir()
+	out := filepath.Join(state, "out")
+	sudoDir := t.TempDir()
+	calls := filepath.Join(sudoDir, "calls")
+	writeFile(t, filepath.Join(sudoDir, "sudo"), "#!/bin/sh\necho \"$*\" >> "+yamlQuote(calls)+"\n")
+	if err := os.Chmod(filepath.Join(sudoDir, "sudo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := newRepo(t, map[string]string{
+		".graft.yaml": `schema: 1
+version: {mode: none}
+envs:
+  local: {}
+tasks:
+  lint:
+    run: [` + helperStep("append", out, "lint") + `]
+deploy:
+  remote: origin
+  targets:
+    box:
+      env: local
+      deps: [lint]
+      confirm: sudo
+      deployed_sha: {path: ` + yamlQuote(filepath.Join(state, "sha")) + `}
+      run: [sh, deploy.sh]
+    plain:
+      env: local
+      run: [sh, deploy.sh]
+`,
+		"deploy.sh": `echo "deploy $GRAFT_DEPLOY_TARGET" >> ` + out + "\n",
+	}, "origin")
+	f.mustGraft("commit", "-m", "feat: base")
+	f.env = append(f.env, "PATH="+sudoDir+string(os.PathListSeparator)+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	reset := func() {
+		t.Helper()
+		for _, p := range []string{out, calls} {
+			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	f.mustGraft("deploy", "box")
+	if got := readFile(t, out); got != "lint\ndeploy box\n" {
+		t.Errorf("first deploy ran:\n%s", got)
+	}
+
+	reset()
+	short := f.git("rev-parse", "--short=12", "HEAD")
+	got, code := f.graft("", "deploy", "box")
+	if code != 1 || !strings.Contains(got, "box already runs "+short+" feat: base; pass --redeploy to deploy it again") {
+		t.Errorf("same commit: exit %d\n%s", code, got)
+	}
+	for _, p := range []string{out, calls} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s exists: deps, sudo or the script ran for the same commit", filepath.Base(p))
+		}
+	}
+
+	reset()
+	f.mustGraft("deploy", "--redeploy", "box")
+	if got := readFile(t, out); got != "lint\ndeploy box\n" {
+		t.Errorf("--redeploy ran:\n%s", got)
+	}
+
+	reset()
+	f.write("a.txt", "a\n")
+	f.mustGraft("commit", "-m", "fix: next")
+	f.mustGraft("deploy", "box")
+	if got := readFile(t, out); got != "lint\ndeploy box\n" {
+		t.Errorf("a new commit ran:\n%s", got)
+	}
+
+	// Without deployed_sha nothing is known about the target: deploys repeat.
+	reset()
+	f.mustGraft("deploy", "plain")
+	f.mustGraft("deploy", "plain")
+	if got := readFile(t, out); got != "deploy plain\ndeploy plain\n" {
+		t.Errorf("plain ran:\n%s", got)
+	}
+}

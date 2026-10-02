@@ -409,16 +409,17 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	fs := newFlags(a, "deploy")
 	lines := fs.Int("lines", 200, "logs: how many lines")
 	grep := fs.String("grep", "", "logs: keep lines matching this regexp")
+	redeploy := fs.Bool("redeploy", false, "deploy the commit the target already runs")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
 	}
-	usage := fmt.Errorf("%w: graft deploy <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | check-head", errUsage)
+	usage := fmt.Errorf("%w: graft deploy [--redeploy] <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | check-head", errUsage)
 	if len(pos) == 0 {
 		return usage
 	}
 	logFlags := *lines != 200 || *grep != ""
-	if scriptArgs != nil && pos[0] == "check-head" || logFlags && pos[0] != "logs" {
+	if scriptArgs != nil && pos[0] == "check-head" || logFlags && pos[0] != "logs" || *redeploy && isDeploySubcommand(pos[0]) {
 		return usage
 	}
 	switch {
@@ -432,7 +433,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 		}
 		return a.DeployLogs(ctx, pos[1], *lines, *grep, scriptArgs)
 	case !isDeploySubcommand(pos[0]) && len(pos) == 1:
-		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs})
+		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs, Redeploy: *redeploy})
 	default:
 		return usage
 	}

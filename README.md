@@ -56,7 +56,7 @@ tools:
 | `graft flags show <id>` | one event in full |
 | `graft flags ack <id> --reason R` | close an open event with a reason |
 | `graft flags mute <id> --reason R [--match S] [--all-envs]` | add an exception for it, then close it |
-| `graft deploy <target> [-- args]` | run the project's deploy script between graft's checks |
+| `graft deploy [--redeploy] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs |
 | `graft deploy status <target>` / `logs <target> [--lines N] [--grep RE]` | the target's status and logs commands |
 | `graft deploy check-head` | for deploy scripts: HEAD is still the commit being deployed |
 | `graft <task> [-- args]` / `graft run <task> [-- args]` | run a task with its deps |
@@ -526,7 +526,7 @@ release_notes:
     skip_statuses: [Done]       # never move items out of these
 ```
 
-`graft deploy <target> [-- args]`:
+`graft deploy [--redeploy] <target> [-- args]`:
 
 0. Check that every required key of `dotenv` and `dotenv_sets` and every
    `${KEY}` in `run` is set, and everything the `deps` tasks need, listing all
@@ -535,17 +535,23 @@ release_notes:
    branch.
 2. With `requires`, the required target's `version` must print the version
    being deployed: a quick read-only check, so it fails before a long deps run.
-3. Run the `deps` tasks, exactly as a task's deps run: in order, each at most
+3. With `deployed_sha`, read the commit the target runs. When it is the one
+   being deployed, the deploy is refused (`test already runs <sha> <subject>;
+   pass --redeploy to deploy it again`) before deps, sudo and the script;
+   `--redeploy` deploys it again. With `deployed_sha.sudo`, this read runs
+   `sudo` in the target environment before the confirmation prompt: on this
+   machine it may ask for its own password there. A target without
+   `deployed_sha` is deployed whatever it runs.
+4. Run the `deps` tasks, exactly as a task's deps run: in order, each at most
    once (deps of deps included), a `test_db: true` task with the test database
    up and its DSN. A failure ends the deploy before the deploy script runs or
    anything is written in the target environment. A `deps` entry that is not
    a task is a config error.
-4. With `confirm: sudo`, run `sudo -v`. In a terminal it asks until the password
+5. With `confirm: sudo`, run `sudo -v`. In a terminal it asks until the password
    is given (Ctrl-C stops). Without a terminal it makes one attempt, which
    passes on cached sudo credentials or a PAM method that types nothing (a
    fingerprint reader); a refusal ends the deploy, since nobody can type a
    password there.
-5. Read the previously deployed commit (`deployed_sha`).
 6. Run `run` plus `args` in the foreground, with `GRAFT_DEPLOY_TARGET`,
    `GRAFT_DEPLOY_ENV`, `GRAFT_DEPLOY_SHA`, `GRAFT_DEPLOY_VERSION` and
    `GRAFT_DEPLOY_PREVIOUS_SHA` in its environment, plus the listed `.env`
