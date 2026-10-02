@@ -24,8 +24,8 @@ type Deploy struct {
 // DeployTarget is one place the project deploys to.
 type DeployTarget struct {
 	Env string `yaml:"env"`
-	// Deps are tasks run before anything else of the deploy happens in the
-	// target environment, the way a task's deps run.
+	// Deps are tasks run after the requires check and before the sudo
+	// prompt and the deploy script, the way a task's deps run.
 	Deps []string `yaml:"deps"`
 	// Run is the project's deploy script, run on this machine in the
 	// foreground.

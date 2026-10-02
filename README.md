@@ -518,17 +518,18 @@ release_notes:
    that are not; nothing else happens before this passes.
 1. The work tree must be clean; `git fetch <remote>`; HEAD must equal the remote
    branch.
-2. Run the `deps` tasks, exactly as a task's deps run: in order, each at most
+2. With `requires`, the required target's `version` must print the version
+   being deployed: a quick read-only check, so it fails before a long deps run.
+3. Run the `deps` tasks, exactly as a task's deps run: in order, each at most
    once (deps of deps included), a `test_db: true` task with the test database
-   up and its DSN. A failure ends the deploy before anything happens in the
-   target environment. A `deps` entry that is not a task is a config error.
-3. With `confirm: sudo`, run `sudo -v`. In a terminal it asks until the password
+   up and its DSN. A failure ends the deploy before the deploy script runs or
+   anything is written in the target environment. A `deps` entry that is not
+   a task is a config error.
+4. With `confirm: sudo`, run `sudo -v`. In a terminal it asks until the password
    is given (Ctrl-C stops). Without a terminal it makes one attempt, which
    passes on cached sudo credentials or a PAM method that types nothing (a
    fingerprint reader); a refusal ends the deploy, since nobody can type a
    password there.
-4. With `requires`, the required target's `version` must print the version
-   being deployed.
 5. Read the previously deployed commit (`deployed_sha`).
 6. Run `run` plus `args` in the foreground, with `GRAFT_DEPLOY_TARGET`,
    `GRAFT_DEPLOY_ENV`, `GRAFT_DEPLOY_SHA`, `GRAFT_DEPLOY_VERSION` and

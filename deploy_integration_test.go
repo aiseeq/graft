@@ -504,3 +504,45 @@ deploy:
 		t.Errorf("something ran before the missing key was reported: %v", err)
 	}
 }
+
+func TestDeployRequiresBeforeDeps(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("deploy scripts use sh")
+	}
+	state := t.TempDir()
+	out := filepath.Join(state, "out")
+	f := newRepo(t, map[string]string{
+		".graft.yaml": `schema: 1
+version: {mode: file}
+envs:
+  local: {}
+tasks:
+  lint:
+    run: [` + helperStep("append", out, "lint") + `]
+deploy:
+  remote: origin
+  targets:
+    staging:
+      env: local
+      run: [sh, deploy.sh]
+      version: 'cat ` + filepath.Join(state, "staging-version") + `'
+    production:
+      env: local
+      requires: staging
+      deps: [lint]
+      run: [sh, deploy.sh]
+`,
+		"VERSION":   "1.0.0\n",
+		"deploy.sh": `echo "deploy $GRAFT_DEPLOY_TARGET" >> ` + out + "\n",
+	}, "origin")
+	f.mustGraft("commit", "-m", "feat: base")
+	writeFile(t, filepath.Join(state, "staging-version"), "0.9.0\n")
+
+	got, code := f.graft("", "deploy", "production")
+	if code == 0 || !strings.Contains(got, "staging runs version 0.9.0, not 1.0.1") {
+		t.Errorf("requires: exit %d\n%s", code, got)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("a dep ran before the requires check failed: %v", err)
+	}
+}

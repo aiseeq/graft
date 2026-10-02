@@ -129,6 +129,10 @@ func (a *App) deploy(ctx context.Context, r *deployRun, args []string) error {
 		}
 	}
 	a.printf("deploying %s (version %s, commit %s) to %s", r.name, r.version, gitx.Short(head), r.env.Destination())
+	// requires is a quick read-only check: it fails before a long deps run.
+	if err := a.requireDeployed(ctx, r); err != nil {
+		return err
+	}
 	if len(r.target.Deps) > 0 {
 		a.printf("deploy %s: running %s first", r.name, strings.Join(r.target.Deps, ", "))
 		if err := r.tasks.RunDeps(ctx, r.target.Deps); err != nil {
@@ -139,9 +143,6 @@ func (a *App) deploy(ctx context.Context, r *deployRun, args []string) error {
 		if err := deploy.ConfirmSudo(ctx, r.name, a.Stderr); err != nil {
 			return err
 		}
-	}
-	if err := a.requireDeployed(ctx, r); err != nil {
-		return err
 	}
 	if r.target.DeployedSHA != nil {
 		if r.prev, err = deploy.ReadDeployedSHA(ctx, r.env, r.target.DeployedSHA); err != nil {
