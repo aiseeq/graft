@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -295,9 +296,54 @@ type Tool struct {
 	// runs it (it usually needs sudo or a package manager).
 	Manual string `yaml:"manual"`
 	// Check runs the tool; its output must contain Expect (a version, or a
-	// capability such as a rule name).
+	// capability such as a rule name). A go_install tool may leave both out:
+	// its Go build info is checked against the pin instead.
 	Check  []string `yaml:"check"`
 	Expect string   `yaml:"expect"`
+	// Binary names the program on PATH whose build info is checked, when it
+	// is not the name go install gives it.
+	Binary string `yaml:"binary"`
+}
+
+// UsesBuildInfo reports whether the tool is checked by its Go build info
+// rather than by running a check command.
+func (t *Tool) UsesBuildInfo() bool { return t.GoInstall != "" && len(t.Check) == 0 }
+
+// Pin splits go_install into the package path and the pinned version.
+func (t *Tool) Pin() (pkg, version string) {
+	pkg, version, _ = strings.Cut(t.GoInstall, "@")
+	return pkg, version
+}
+
+// Program is the program the check looks up on PATH: the check command, the
+// binary override, or the name go install gives the package.
+func (t *Tool) Program() string {
+	switch {
+	case len(t.Check) > 0:
+		return t.Check[0]
+	case t.Binary != "":
+		return t.Binary
+	}
+	pkg, _ := t.Pin()
+	elem := path.Base(pkg)
+	// go install drops a major version suffix: example.com/tool/v2 is "tool".
+	if elem != pkg && isMajorVersion(elem) {
+		elem = path.Base(path.Dir(pkg))
+	}
+	return elem
+}
+
+// isMajorVersion is go's own test for a /vN path element (v2 and up).
+func isMajorVersion(s string) bool {
+	if len(s) < 2 || s[0] != 'v' || s[1] == '0' || s[1] == '1' && len(s) == 2 {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] < '0' || '9' < s[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Builtin command names a task cannot take.
@@ -608,9 +654,27 @@ func (c *Config) validateTools() error {
 		case t.Manual != "" && len(t.Tags) > 0:
 			return fmt.Errorf("%s.tags: build tags apply to go_install only", where)
 		}
-		if len(t.Check) == 0 || t.Expect == "" {
-			return fmt.Errorf("%s: check and expect are required: presence on PATH says nothing about the version", where)
+		if err := t.validateCheck(where); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// validateCheck: a manual tool needs check and expect, a go_install tool
+// both or neither (then its build info is checked, on Binary if given).
+func (t *Tool) validateCheck(where string) error {
+	switch {
+	case t.Manual != "" && (len(t.Check) == 0 || t.Expect == ""):
+		return fmt.Errorf("%s: check and expect are required: presence on PATH says nothing about the version", where)
+	case t.Manual != "" && t.Binary != "":
+		return fmt.Errorf("%s.binary: names the program whose Go build info is checked, go_install tools only", where)
+	case (len(t.Check) == 0) != (t.Expect == ""):
+		return fmt.Errorf("%s: check and expect go together; leave both out to check the Go build info against the pin", where)
+	case t.Binary != "" && len(t.Check) > 0:
+		return fmt.Errorf("%s.binary: with check, check names the program", where)
+	case strings.ContainsAny(t.Binary, `/\`):
+		return fmt.Errorf("%s.binary: %q is a program name looked up on PATH, not a path", where, t.Binary)
 	}
 	return nil
 }

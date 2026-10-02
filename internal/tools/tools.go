@@ -1,11 +1,13 @@
 // Package tools checks and installs the project's pinned development tools.
 // A tool counts as present only when its check command prints what the
-// config expects: a binary on PATH says nothing about its version or rules.
+// config expects, or, for a go_install tool without one, when its Go build
+// info matches the pin: a binary on PATH says nothing about its version.
 package tools
 
 import (
 	"bytes"
 	"context"
+	"debug/buildinfo"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +15,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,18 +37,30 @@ type Result struct {
 	Path string
 }
 
-// Check runs the check of one tool.
+// Check runs the check of one tool: its check command, or without one, a
+// look at the Go build info of the program.
 func Check(ctx context.Context, name string, t *config.Tool) (Result, error) {
 	r := Result{Name: name}
-	path, err := exec.LookPath(t.Check[0])
+	program := t.Program()
+	path, err := exec.LookPath(program)
 	if errors.Is(err, exec.ErrNotFound) {
-		r.Problem = t.Check[0] + " is not on PATH"
+		r.Problem = program + " is not on PATH"
 		return r, nil
 	}
 	if err != nil {
-		return r, fmt.Errorf("%s: looking up %s: %w", name, t.Check[0], err)
+		return r, fmt.Errorf("%s: looking up %s: %w", name, program, err)
 	}
 	r.Path = path
+	if t.UsesBuildInfo() {
+		bi, err := buildinfo.ReadFile(path)
+		if err != nil {
+			r.Problem = fmt.Sprintf("%s has no Go build info (%v)", path, err)
+		} else {
+			r.Problem = buildProblem(bi, t)
+		}
+		r.OK = r.Problem == ""
+		return r, nil
+	}
 	checkCtx, cancel := context.WithTimeout(ctx, checkTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, path, t.Check[1:]...)
@@ -63,6 +79,43 @@ func Check(ctx context.Context, name string, t *config.Tool) (Result, error) {
 		r.OK = true
 	}
 	return r, nil
+}
+
+// buildProblem compares a program's build info with the tool's pin: the
+// main package, the main module version and, when the tool sets tags, the
+// build tags. It returns what differs, empty when nothing does.
+func buildProblem(bi *debug.BuildInfo, t *config.Tool) string {
+	pkg, version := t.Pin()
+	built := bi.Path + "@" + bi.Main.Version
+	switch {
+	case bi.Path != pkg:
+		return fmt.Sprintf("built from %s, pinned %s", built, t.GoInstall)
+	case bi.Main.Version != version:
+		return fmt.Sprintf("built from %s, pinned %s", built, version)
+	case len(t.Tags) == 0:
+		return ""
+	}
+	want := sortedTags(t.Tags)
+	var got []string
+	for _, s := range bi.Settings {
+		if s.Key == "-tags" {
+			got = sortedTags(strings.Split(s.Value, ","))
+		}
+	}
+	switch {
+	case len(got) == 0:
+		return "built without tags " + strings.Join(want, ",")
+	case !slices.Equal(got, want):
+		return fmt.Sprintf("built with tags %s, pinned %s", strings.Join(got, ","), strings.Join(want, ","))
+	}
+	return ""
+}
+
+// sortedTags is a tag list sorted, without empty and repeated tags.
+func sortedTags(tags []string) []string {
+	out := slices.DeleteFunc(slices.Clone(tags), func(s string) bool { return s == "" })
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 func firstLine(s string) string {
@@ -91,7 +144,7 @@ func Install(ctx context.Context, name string, t *config.Tool, binDir string, lo
 		}
 		binDir = dir
 	}
-	shadowed, err := shadows(binDir, filepath.Base(t.Check[0]))
+	shadowed, err := shadows(binDir, filepath.Base(t.Program()))
 	if err != nil {
 		return err
 	}

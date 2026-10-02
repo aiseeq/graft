@@ -96,6 +96,11 @@ func TestParseTasksErrors(t *testing.T) {
 		"tool w/o expect":   strings.Replace(tasksBase, "    expect: v1.2.0\n", "", 1),
 		"tool w/o install":  strings.Replace(tasksBase, "    go_install: example.com/linter/cmd/linter@v1.2.0\n", "", 1),
 		"tool two installs": strings.Replace(tasksBase, "    go_install: example.com/linter/cmd/linter@v1.2.0\n", "    go_install: example.com/linter/cmd/linter@v1.2.0\n    manual: sudo dnf install linter\n", 1),
+		"tool w/o check":    strings.Replace(tasksBase, "    check: [linter, --version]\n", "", 1),
+		"manual w/o check":  strings.Replace(tasksBase, "    go_install: example.com/linter/cmd/linter@v1.2.0\n    check: [linter, --version]\n    expect: v1.2.0\n", "    manual: sudo dnf install linter\n", 1),
+		"binary with check": strings.Replace(tasksBase, "    expect: v1.2.0\n", "    expect: v1.2.0\n    binary: lint\n", 1),
+		"binary a path":     strings.Replace(tasksBase, "    check: [linter, --version]\n    expect: v1.2.0\n", "    binary: bin/linter\n", 1),
+		"binary manual":     strings.Replace(tasksBase, "    go_install: example.com/linter/cmd/linter@v1.2.0\n", "    manual: sudo dnf install linter\n    binary: linter\n", 1),
 	}
 	for name, data := range cases {
 		if data == tasksBase {
@@ -104,6 +109,43 @@ func TestParseTasksErrors(t *testing.T) {
 		if _, err := Parse([]byte(data)); err == nil {
 			t.Errorf("%s: want an error", name)
 		}
+	}
+}
+
+// A go_install tool without check and expect is verified by its Go build
+// info; the program is named as go install names it.
+func TestToolBuildInfoMode(t *testing.T) {
+	data := strings.Replace(tasksBase, "    check: [linter, --version]\n    expect: v1.2.0\n", "", 1) + `  pg:
+    go_install: example.com/pg/v3/cmd/pg-tool@v3.1.0
+    tags: [postgres]
+    binary: pgtool
+  versioned:
+    go_install: example.com/versioned/v2@v2.0.1
+  first:
+    go_install: example.com/first/v1@v1.0.0
+`
+	cfg, err := Parse([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string][3]string{
+		"linter":    {"linter", "example.com/linter/cmd/linter", "v1.2.0"},
+		"pg":        {"pgtool", "example.com/pg/v3/cmd/pg-tool", "v3.1.0"},
+		"versioned": {"versioned", "example.com/versioned/v2", "v2.0.1"},
+		"first":     {"v1", "example.com/first/v1", "v1.0.0"},
+	} {
+		tool := cfg.Tools[name]
+		pkg, version := tool.Pin()
+		if got := [3]string{tool.Program(), pkg, version}; got != want || tool.UsesBuildInfo() == false {
+			t.Errorf("%s: program, package, version = %q, build info %v; want %q", name, got, tool.UsesBuildInfo(), want)
+		}
+	}
+	base, err := Parse([]byte(tasksBase))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := base.Tools["linter"]; l.UsesBuildInfo() || l.Program() != "linter" {
+		t.Errorf("check mode: build info %v, program %q", l.UsesBuildInfo(), l.Program())
 	}
 }
 

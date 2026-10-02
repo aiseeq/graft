@@ -417,6 +417,101 @@ func TestTools(t *testing.T) {
 	}
 }
 
+// buildGoTool builds the package example.com/tool/cmd/tool from a throwaway
+// git module tagged v1.2.0 into out: go build stamps that tag as the main
+// module version, as go install stamps the version it fetched.
+func (f *fixture) buildGoTool(out string, tags ...string) {
+	f.t.Helper()
+	mod := f.t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mod, "cmd", "tool"), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	writeFile(f.t, filepath.Join(mod, "go.mod"), "module example.com/tool\n\ngo 1.22\n")
+	writeFile(f.t, filepath.Join(mod, "cmd", "tool", "main.go"), "package main\n\nfunc main() { println(\"dev\") }\n")
+	f.run(mod, "git", "init", "-q")
+	f.run(mod, "git", "add", "-A")
+	f.run(mod, "git", "commit", "-q", "-m", "tool")
+	f.run(mod, "git", "tag", "v1.2.0")
+	args := []string{"build", "-o", out}
+	if len(tags) > 0 {
+		args = append(args, "-tags", strings.Join(tags, ","))
+	}
+	f.run(mod, "go", append(args, "./cmd/tool")...)
+}
+
+// A go_install tool without check and expect is verified by the Go build
+// info of the program PATH finds.
+func TestToolsBuildInfo(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake go and the non-Go program are sh scripts")
+	}
+	f := tasksRepo(t, `tools:
+  tool:
+    go_install: example.com/tool/cmd/tool@v1.2.0
+    tags: [postgres]
+  newer:
+    go_install: example.com/tool/cmd/tool@v1.3.0
+    binary: tool
+  foreign:
+    go_install: example.com/other/cmd/tool@v1.2.0
+    binary: tool
+  untagged:
+    go_install: example.com/tool/cmd/tool@v1.2.0
+    tags: [postgres]
+    binary: plain
+  script:
+    go_install: example.com/script/cmd/script@v1.0.0
+  absent:
+    go_install: example.com/absent@v1.0.0
+`, nil)
+	bin := t.TempDir()
+	f.buildGoTool(filepath.Join(bin, "tool"), "postgres")
+	f.buildGoTool(filepath.Join(bin, "plain"))
+	if err := os.WriteFile(filepath.Join(bin, "script"), []byte("#!/bin/sh\necho dev\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")}
+	out, code := f.graft("", "tools")
+	for _, want := range []string{
+		"tool: ok (" + filepath.Join(bin, "tool") + ")",
+		"newer: built from example.com/tool/cmd/tool@v1.2.0, pinned v1.3.0",
+		"foreign: built from example.com/tool/cmd/tool@v1.2.0, pinned example.com/other/cmd/tool@v1.2.0",
+		"untagged: built without tags postgres",
+		"script: " + filepath.Join(bin, "script") + " has no Go build info",
+		"absent: absent is not on PATH",
+		"tools not ready: absent, foreign, newer, script, untagged",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("tools lacks %q: exit %d\n%s", want, code, out)
+		}
+	}
+
+	// install runs go install as before, then checks the build info again.
+	g := tasksRepo(t, `tools:
+  tool:
+    go_install: example.com/tool/cmd/tool@v1.2.0
+    tags: [postgres]
+`, nil)
+	built := filepath.Join(t.TempDir(), "tool")
+	g.buildGoTool(built, "postgres")
+	fakeBin, gobin := t.TempDir(), t.TempDir()
+	script := "#!/bin/sh\ncase \"$1\" in\ninstall) echo \"$*\" >> " + g.path("go.txt") + "; cp " + built + " \"$GOBIN/tool\" ;;\nenv) echo " + gobin + "; echo /nowhere ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	list := string(os.PathListSeparator)
+	g.env = []string{"PATH=" + fakeBin + list + gobin + list + os.Getenv("PATH")}
+	if out, code := g.graft("", "tools"); code != 1 || !strings.Contains(out, "tool: tool is not on PATH") {
+		t.Errorf("before install: exit %d\n%s", code, out)
+	}
+	if out := g.mustGraft("tools", "install"); !strings.Contains(out, "tool: installed") {
+		t.Errorf("install:\n%s", out)
+	}
+	if got := g.read("go.txt"); got != "install -tags postgres example.com/tool/cmd/tool@v1.2.0\n" {
+		t.Errorf("go install calls:\n%s", got)
+	}
+}
+
 // A tool go install cannot provide (a system package) is checked the same
 // way; graft prints how to install it and never runs that command.
 func TestToolsManual(t *testing.T) {

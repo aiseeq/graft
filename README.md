@@ -330,6 +330,10 @@ tools:
     tags: [netgo]
     check: [linter, rules]       # its output must contain expect
     expect: some-rule
+  migrator:
+    go_install: example.com/migrator/cmd/migrator@v2.3.0   # its --version prints "dev"
+    tags: [postgres]             # without check/expect: the Go build info is checked
+    binary: migrate              # optional: the program on PATH, default the go install name
   shellcheck:
     manual: sudo dnf install ShellCheck   # not a Go module: installed by hand
     check: [shellcheck, --version]
@@ -348,6 +352,17 @@ first after the install, graft says where both are.
 A tool that go install cannot provide, such as a system package, takes
 `manual` instead of `go_install`: it is checked the same way, and when the
 check fails graft prints that command and never runs it.
+
+Some Go tools print no real version (`dev`). A `go_install` tool may then
+leave out `check` and `expect`: graft finds the program on PATH (`binary`, or
+the name go install gives it: the last element of the package path, a `/vN`
+suffix skipped) and reads its Go build info. The main package must be the
+`go_install` path, the main module version the pinned one and, with `tags`,
+the build tags exactly those. A mismatch is reported as such (`built from
+example.com/migrator/cmd/migrator@v2.2.0, pinned v2.3.0`, `built without tags
+postgres`), and so is a program with no Go build info. A copy built from a
+local checkout carries `(devel)` or a `+dirty` version and never matches a
+pin. `check` and `expect` go together; a `manual` tool needs both.
 
 ## Environments and .env
 
