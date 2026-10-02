@@ -422,3 +422,85 @@ deploy:
 		t.Errorf("check-head with args: exit %d\n%s", code, out)
 	}
 }
+
+func TestDeployRunsDepsFirst(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("deploy scripts use sh")
+	}
+	state := t.TempDir()
+	out := filepath.Join(state, "out")
+	f := newRepo(t, map[string]string{
+		".graft.yaml": `schema: 1
+version: {mode: none}
+envs:
+  local: {}
+test_db:
+  image: postgres:18-alpine
+  container: graft-never-created
+  port: 1
+  database: app_test
+  user: app
+  password: app
+tasks:
+  lint:
+    run: [` + helperStep("append", out, "lint") + `]
+  dbsmoke:
+    deps: [lint]
+    test_db: true
+    run: [` + helperStep("env", out, "TEST_DB_DSN") + `]
+  broken:
+    run: [` + helperStep("fail") + `]
+  keyed:
+    dotenv: [NEED_KEY]
+    run: [` + helperStep("append", out, "keyed") + `]
+deploy:
+  remote: origin
+  targets:
+    staging:
+      env: local
+      deps: [lint, dbsmoke]
+      run: [sh, deploy.sh]
+    production:
+      env: local
+      deps: [lint, broken]
+      run: [sh, deploy.sh]
+    keyed:
+      env: local
+      deps: [lint, keyed]
+      run: [sh, deploy.sh]
+`,
+		"deploy.sh": `echo "deploy $GRAFT_DEPLOY_TARGET" >> ` + out + "\n",
+	}, "origin")
+	f.mustGraft("commit", "-m", "feat: base")
+	// A DSN already in the environment (a CI service container) spares the
+	// docker container; the dep must still receive it.
+	dsn := "postgres://app:app@127.0.0.1:5432/app_test"
+	f.env = append(f.env, "TEST_DB_DSN="+dsn)
+
+	f.mustGraft("deploy", "staging")
+	if got := readFile(t, out); got != "lint\nTEST_DB_DSN="+dsn+"\ndeploy staging\n" {
+		t.Errorf("staging ran:\n%s", got)
+	}
+
+	if err := os.Remove(out); err != nil {
+		t.Fatal(err)
+	}
+	got, code := f.graft("", "deploy", "production")
+	if code == 0 || !strings.Contains(got, "task broken failed") {
+		t.Errorf("failing dep: exit %d\n%s", code, got)
+	}
+	if ran := readFile(t, out); ran != "lint\n" {
+		t.Errorf("after a failing dep ran:\n%s", ran)
+	}
+
+	if err := os.Remove(out); err != nil {
+		t.Fatal(err)
+	}
+	got, code = f.graft("", "deploy", "keyed")
+	if code == 0 || !strings.Contains(got, "nothing was done, missing:") || !strings.Contains(got, "NEED_KEY is not set") {
+		t.Errorf("missing dep key: exit %d\n%s", code, got)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("something ran before the missing key was reported: %v", err)
+	}
+}

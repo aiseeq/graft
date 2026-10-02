@@ -127,7 +127,9 @@ func (a *App) migrate(ctx context.Context, repo *gitx.Repo, cfg *config.Config, 
 		return nil
 	}
 	a.printf("migrating: %s", m.Source)
-	lookup := dotenv.NewLookup(filepath.Join(repo.Root, cfg.DotEnv))
+	// ${dsn_var} is the database just brought up, not what .env (or the
+	// environment) held before: that one is stale, or absent in a fresh clone.
+	lookup := dotenv.NewLookup(filepath.Join(repo.Root, cfg.DotEnv)).With(map[string]string{cfg.TestDB.DSNVar: dsn})
 	argv, err := dotenv.ExpandAll(m.Argv, lookup)
 	if err != nil {
 		return fmt.Errorf("test_db.migrate: %w", err)

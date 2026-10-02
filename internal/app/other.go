@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -347,10 +349,42 @@ func (a *App) Init(ctx context.Context) error {
 	for _, c := range changes {
 		a.printf("%s", c.What)
 	}
+	if err := a.initDotEnv(repo, cfg); err != nil {
+		return err
+	}
 	if len(cfg.Tools) == 0 {
 		return nil
 	}
 	return a.checkTools(ctx, cfg, true)
+}
+
+// initDotEnv copies dotenv_template to the dotenv file, readable by the owner
+// only, when the dotenv file does not exist; an existing one is never touched.
+func (a *App) initDotEnv(repo *gitx.Repo, cfg *config.Config) error {
+	if cfg.DotEnvTemplate == "" {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(repo.Root, filepath.FromSlash(cfg.DotEnvTemplate)))
+	if err != nil {
+		return fmt.Errorf("dotenv_template: %w", err)
+	}
+	path := filepath.Join(repo.Root, filepath.FromSlash(cfg.DotEnv))
+	// O_EXCL: a file that appears meanwhile is not overwritten either.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		a.printf("%s exists, %s not copied", cfg.DotEnv, cfg.DotEnvTemplate)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", cfg.DotEnv, err)
+	}
+	_, err = f.Write(data)
+	if err = errors.Join(err, f.Close()); err != nil {
+		// A partial file would keep the next init from copying again.
+		return errors.Join(fmt.Errorf("writing %s: %w", cfg.DotEnv, err), os.Remove(path))
+	}
+	a.printf("created %s from %s: fill in its values", cfg.DotEnv, cfg.DotEnvTemplate)
+	return nil
 }
 
 // Check runs the staged content checks on demand.

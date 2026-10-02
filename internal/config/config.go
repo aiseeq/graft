@@ -71,6 +71,9 @@ type Config struct {
 
 	Envs   map[string]*Env `yaml:"envs"`
 	DotEnv string          `yaml:"dotenv"`
+	// DotEnvTemplate is copied to DotEnv by graft init when DotEnv does not
+	// exist yet.
+	DotEnvTemplate string `yaml:"dotenv_template"`
 	// DotEnvSets are named lists of .env keys tasks and services share.
 	DotEnvSets map[string][]DotEnvKey `yaml:"dotenv_sets"`
 	Flags      *Flags                 `yaml:"flags"`

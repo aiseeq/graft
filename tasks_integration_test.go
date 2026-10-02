@@ -494,10 +494,11 @@ tasks:
   test:
     test_db: true
     run: [%s]
-`, container, port, helperStep("append", out, "migrate"), helperStep("env", out, "APP_DSN")))
+`, container, port, helperStep("append", out, "migrate", "${APP_DSN}"), helperStep("env", out, "APP_DSN")))
 	f.mustGraft("test")
 	dsn := fmt.Sprintf("postgres://app:app@127.0.0.1:%d/app_test?sslmode=disable", port)
-	if got := strings.Join(f.lines("out.txt"), ","); got != "migrate,APP_DSN="+dsn {
+	// ${APP_DSN} in migrate is the fresh DSN, not the stale one in .env.
+	if got := strings.Join(f.lines("out.txt"), ","); got != "migrate "+dsn+",APP_DSN="+dsn {
 		t.Errorf("out = %s", got)
 	}
 	if env := f.read(".env"); env != "OTHER=1\nAPP_DSN="+dsn+"\n" {
@@ -509,5 +510,35 @@ tasks:
 	f.mustGraft("testdb", "down")
 	if st := f.mustGraft("testdb", "status"); !strings.Contains(st, "does not exist") {
 		t.Errorf("status after down:\n%s", st)
+	}
+}
+
+// TestTestDBMigrateOnFreshClone: without a .env file, ${dsn_var} in migrate
+// still resolves to the DSN of the database just brought up.
+func TestTestDBMigrateOnFreshClone(t *testing.T) {
+	if os.Getenv("GRAFT_TEST_DOCKER") != "1" {
+		t.Skip("set GRAFT_TEST_DOCKER=1 to run against docker")
+	}
+	container := fmt.Sprintf("graft-it-testdb-fresh-%d", os.Getpid())
+	port := freePort(t)
+	t.Cleanup(func() { exec.Command("docker", "rm", "-f", "-v", container).Run() })
+	f := tasksRepo(t, "", nil)
+	out := f.path("out.txt")
+	f.write(".graft.yaml", f.read(".graft.yaml")+fmt.Sprintf(`test_db:
+  image: postgres:18-alpine
+  container: %s
+  port: %d
+  database: app_test
+  user: app
+  password: app
+  migrate: %s
+`, container, port, helperStep("append", out, "migrate", "--dsn=${TEST_DB_DSN}")))
+	f.mustGraft("testdb", "up")
+	dsn := fmt.Sprintf("postgres://app:app@127.0.0.1:%d/app_test?sslmode=disable", port)
+	if got := f.read("out.txt"); got != "migrate --dsn="+dsn+"\n" {
+		t.Errorf("migrate got %q", got)
+	}
+	if _, err := os.Stat(f.path(".env")); !os.IsNotExist(err) {
+		t.Errorf("testdb up created .env: %v", err)
 	}
 }

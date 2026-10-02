@@ -48,7 +48,7 @@ tools:
 | `graft release --minor` / `--major` / `--version X.Y.Z` | choose the next tag (version mode `git-tag` only) |
 | `graft version` | print the project version |
 | `graft version --describe` | the build identity for stamping binaries: `v1.4.0-3-gabc1234[-dirty]`, `1.4.0[-dirty]` in mode `file`, `v0.0.0-<commits>-g<hash>` without a tag |
-| `graft init` | install the hooks and set `core.hooksPath`, install pinned tools that fail their check; safe to repeat |
+| `graft init` | install the hooks and set `core.hooksPath`, create the `.env` file from `dotenv_template` when it is missing, install pinned tools that fail their check; safe to repeat |
 | `graft check` | run the content checks on the index |
 | `graft gate` | run the gate commands |
 | `graft hook pre-commit` / `post-merge` | what the installed hooks call |
@@ -316,7 +316,9 @@ already set (a CI service container) graft uses it, after checking that it
 names `database`; a DSN left over from real work never reaches the tests.
 Otherwise graft starts the container (creating it if needed), waits for
 `pg_isready`, runs `migrate` and, when `.env` exists, keeps `dsn_var` there
-in step for tests started from an IDE. A container created with other
+in step for tests started from an IDE. In `migrate`, `${<dsn_var>}` (say
+`${TEST_DB_DSN}`) is the DSN of the database just brought up, whatever `.env`
+holds; other `${KEY}` are looked up as usual. A container created with other
 settings gets a warning; `graft testdb recreate` applies the config.
 
 ## Tools
@@ -351,6 +353,7 @@ check fails graft prints that command and never runs it.
 
 ```yaml
 dotenv: .env                    # default; read key by key, never sourced or exported whole
+dotenv_template: .env.example   # optional: graft init copies it to dotenv when dotenv is missing
 envs:
   local: {}                     # this machine
   test: {ssh: {host: 10.0.0.1, user: deploy}}
@@ -367,6 +370,10 @@ shell. A list bound to an ssh environment with `${KEY}` in it is a config
 error: local values, secrets included, would land in the ssh command line;
 write that command as a string, and the server's shell expands it from its
 own environment.
+
+With `dotenv_template`, `graft init` creates the dotenv file as a copy of the
+template, readable by the owner only (mode 0600), and says so. An existing
+dotenv file is never overwritten. A template that does not exist is an error.
 
 The `.env` parser accepts `KEY=value`, `export KEY=value`, `'literal'` and
 `"escaped \" \\ \n \$"` values, blank lines and `#` comment lines. A `#` after
@@ -479,6 +486,7 @@ deploy:
   targets:
     test:
       env: test                 # see envs
+      deps: [db-smoke]          # tasks run first, as task deps: a quick check here
       run: [bash, deploy/deploy.sh, --env, test]   # argv, run here in the foreground
       version: "cat /opt/app/VERSION"              # prints what the target runs
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
@@ -489,6 +497,7 @@ deploy:
       logs: "docker logs --tail {lines} app-{args} 2>&1"   # graft deploy logs test -- blue
     prod:
       env: prod
+      deps: [test]              # the full test task before production
       run: [bash, deploy/deploy.sh, --env, prod]
       requires: test            # prod only gets the version test already runs
       confirm: sudo             # sudo -v before the run: repeated in a terminal, one try without
@@ -505,25 +514,29 @@ release_notes:
 `graft deploy <target> [-- args]`:
 
 0. Check that every required key of `dotenv` and `dotenv_sets` and every
-   `${KEY}` in `run` is set, listing all that are not; nothing else happens
-   before this passes.
+   `${KEY}` in `run` is set, and everything the `deps` tasks need, listing all
+   that are not; nothing else happens before this passes.
 1. The work tree must be clean; `git fetch <remote>`; HEAD must equal the remote
    branch.
-2. With `confirm: sudo`, run `sudo -v`. In a terminal it asks until the password
+2. Run the `deps` tasks, exactly as a task's deps run: in order, each at most
+   once (deps of deps included), a `test_db: true` task with the test database
+   up and its DSN. A failure ends the deploy before anything happens in the
+   target environment. A `deps` entry that is not a task is a config error.
+3. With `confirm: sudo`, run `sudo -v`. In a terminal it asks until the password
    is given (Ctrl-C stops). Without a terminal it makes one attempt, which
    passes on cached sudo credentials or a PAM method that types nothing (a
    fingerprint reader); a refusal ends the deploy, since nobody can type a
    password there.
-3. With `requires`, the required target's `version` must print the version
+4. With `requires`, the required target's `version` must print the version
    being deployed.
-4. Read the previously deployed commit (`deployed_sha`).
-5. Run `run` plus `args` in the foreground, with `GRAFT_DEPLOY_TARGET`,
+5. Read the previously deployed commit (`deployed_sha`).
+6. Run `run` plus `args` in the foreground, with `GRAFT_DEPLOY_TARGET`,
    `GRAFT_DEPLOY_ENV`, `GRAFT_DEPLOY_SHA`, `GRAFT_DEPLOY_VERSION` and
    `GRAFT_DEPLOY_PREVIOUS_SHA` in its environment, plus the listed `.env`
    keys (an optional `KEY?` set nowhere is left out). Between building and
    shipping, the script can call `graft deploy check-head`.
-6. Check again that the tree is clean and HEAD has not moved.
-7. Record the deployed commit and post release notes: a comment on every
+7. Check again that the tree is clean and HEAD has not moved.
+8. Record the deployed commit and post release notes: a comment on every
    `project_keys` item mentioned in the delivered commits (subjects and bodies),
    and with `transition`, a move to that status. Release notes never fail a
    deploy; problems are printed as warnings.

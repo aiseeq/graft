@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -150,4 +151,44 @@ func TestUsageErrorsAreOneLine(t *testing.T) {
 		t.Errorf("tasks without tasks:\n%s", out)
 	}
 	_ = filepath.Join
+}
+
+func TestInitCopiesDotEnvTemplate(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml":       "schema: 1\nversion:\n  mode: none\ndotenv: local.env\ndotenv_template: local.env.example\n",
+		".gitignore":        "local.env\n",
+		"local.env.example": "API_URL=http://localhost:8080\nAPI_KEY=\n",
+	})
+	out := f.mustGraft("init")
+	if !strings.Contains(out, "created local.env from local.env.example") {
+		t.Errorf("first init:\n%s", out)
+	}
+	if got := f.read("local.env"); got != "API_URL=http://localhost:8080\nAPI_KEY=\n" {
+		t.Errorf("local.env = %q", got)
+	}
+	if runtime.GOOS != "windows" {
+		st, err := os.Stat(f.path("local.env"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mode := st.Mode().Perm(); mode != 0o600 {
+			t.Errorf("local.env mode %o, want 600", mode)
+		}
+	}
+
+	f.write("local.env", "API_KEY=mine\n")
+	out = f.mustGraft("init")
+	if !strings.Contains(out, "local.env exists, local.env.example not copied") {
+		t.Errorf("second init:\n%s", out)
+	}
+	if got := f.read("local.env"); got != "API_KEY=mine\n" {
+		t.Errorf("init overwrote local.env: %q", got)
+	}
+
+	if err := os.Remove(f.path("local.env.example")); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := f.graft("", "init"); code == 0 || !strings.Contains(out, "local.env.example") {
+		t.Errorf("missing template: exit %d\n%s", code, out)
+	}
 }

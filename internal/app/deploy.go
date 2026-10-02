@@ -61,6 +61,8 @@ type deployRun struct {
 	head    string
 	version string
 	prev    string
+	// tasks runs the target's deps.
+	tasks *tasks.Runner
 }
 
 // Deploy runs the project's deploy script for a target between graft's
@@ -109,7 +111,7 @@ func (a *App) deployTarget(name string) (*deployRun, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &deployRun{repo: repo, cfg: cfg, name: name, target: t, env: env}, nil
+	return &deployRun{repo: repo, cfg: cfg, name: name, target: t, env: env, tasks: a.runner(repo, cfg)}, nil
 }
 
 func (a *App) deploy(ctx context.Context, r *deployRun, args []string) error {
@@ -127,6 +129,12 @@ func (a *App) deploy(ctx context.Context, r *deployRun, args []string) error {
 		}
 	}
 	a.printf("deploying %s (version %s, commit %s) to %s", r.name, r.version, gitx.Short(head), r.env.Destination())
+	if len(r.target.Deps) > 0 {
+		a.printf("deploy %s: running %s first", r.name, strings.Join(r.target.Deps, ", "))
+		if err := r.tasks.RunDeps(ctx, r.target.Deps); err != nil {
+			return fmt.Errorf("deploy %s: nothing was deployed: %w", r.name, err)
+		}
+	}
 	if r.target.Confirm == "sudo" {
 		if err := deploy.ConfirmSudo(ctx, r.name, a.Stderr); err != nil {
 			return err
@@ -174,8 +182,8 @@ func (a *App) requireDeployed(ctx context.Context, r *deployRun) error {
 }
 
 // deployPreflight checks, before the fetch, the sudo prompt and anything
-// else, that every required .env key and ${KEY} of the deploy script is set,
-// and lists all that are not.
+// else, that every required .env key and ${KEY} of the deploy script and of
+// the target's deps is set, and lists all that are not.
 func deployPreflight(r *deployRun) error {
 	lookup := dotenv.NewLookup(filepath.Join(r.repo.Root, r.cfg.DotEnv))
 	var problems []string
@@ -212,6 +220,7 @@ func deployPreflight(r *deployRun) error {
 			check(key)
 		}
 	}
+	problems = append(problems, r.tasks.DepsMissing(r.target.Deps)...)
 	if len(problems) > 0 {
 		return fmt.Errorf("deploy %s: nothing was done, missing:\n  %s", r.name, strings.Join(problems, "\n  "))
 	}

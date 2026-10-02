@@ -24,6 +24,9 @@ type Deploy struct {
 // DeployTarget is one place the project deploys to.
 type DeployTarget struct {
 	Env string `yaml:"env"`
+	// Deps are tasks run before anything else of the deploy happens in the
+	// target environment, the way a task's deps run.
+	Deps []string `yaml:"deps"`
 	// Run is the project's deploy script, run on this machine in the
 	// foreground.
 	Run Command `yaml:"run"`
@@ -121,6 +124,11 @@ func (c *Config) validateTarget(name string, t *DeployTarget) error {
 	}
 	if err := c.validateRequires(where, name, t); err != nil {
 		return err
+	}
+	for _, d := range t.Deps {
+		if _, ok := c.Tasks[d]; !ok {
+			return fmt.Errorf("%s.deps: unknown task %q", where, d)
+		}
 	}
 	if t.Confirm != "" && t.Confirm != "sudo" {
 		return fmt.Errorf("%s.confirm: only sudo is supported, got %q", where, t.Confirm)

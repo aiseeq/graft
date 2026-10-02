@@ -160,6 +160,8 @@ func TestParseErrors(t *testing.T) {
 		"duplicate remote":       minimal + "push:\n  remotes: [a, a]\n",
 		"dotted extension":       minimal + "checks:\n  large_files:\n    binary_extensions: [.png]\n",
 		"negative timeout":       minimal + "lock:\n  timeout: -1s\n",
+		"template is dotenv":     minimal + "dotenv_template: .env\n",
+		"template escapes tree":  minimal + "dotenv_template: ../.env.example\n",
 	}
 	for name, data := range cases {
 		if _, err := Parse([]byte(data)); err == nil {
@@ -314,11 +316,36 @@ deploy:
 		"requires without ver": strings.Replace(base, "mode: file", "mode: none", 1),
 		"unknown dotenv set":   strings.Replace(base, "confirm: sudo}", "confirm: sudo, dotenv_sets: [nope]}", 1),
 		"placeholder twice":    strings.Replace(base, "requires: test, confirm", "status: [x, '{args}{args}'], requires: test, confirm", 1),
+		"unknown dep":          strings.Replace(base, "confirm: sudo}", "confirm: sudo, deps: [nope]}", 1),
 	}
 	for name, data := range cases {
 		if _, err := Parse([]byte(data)); err == nil {
 			t.Errorf("%s: want an error", name)
 		}
+	}
+}
+
+func TestParseDeployDeps(t *testing.T) {
+	base := `schema: 1
+version: {mode: none}
+envs: {local: {}}
+tasks:
+  smoke: {run: [go vet ./...]}
+deploy:
+  remote: origin
+  targets:
+    staging: {env: local, run: [sh, deploy.sh], deps: [smoke]}
+`
+	cfg, err := Parse([]byte(base))
+	if err != nil {
+		t.Fatalf("base must parse: %v", err)
+	}
+	if got := cfg.Deploy.Targets["staging"].Deps; !slices.Equal(got, []string{"smoke"}) {
+		t.Errorf("deps = %v", got)
+	}
+	_, err = Parse([]byte(strings.Replace(base, "deps: [smoke]", "deps: [smoke, nope]", 1)))
+	if err == nil || !strings.Contains(err.Error(), `deploy.targets.staging.deps: unknown task "nope"`) {
+		t.Errorf("unknown dep: %v", err)
 	}
 }
 

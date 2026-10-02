@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -74,6 +75,14 @@ func (c *Config) validateEnvs() error {
 	}
 	if err := checkRelPath("dotenv", c.DotEnv); err != nil {
 		return err
+	}
+	if c.DotEnvTemplate != "" {
+		if err := checkRelPath("dotenv_template", c.DotEnvTemplate); err != nil {
+			return err
+		}
+		if path.Clean(c.DotEnvTemplate) == path.Clean(c.DotEnv) {
+			return fmt.Errorf("dotenv_template: %q is the dotenv file itself", c.DotEnvTemplate)
+		}
 	}
 	for name, env := range c.Envs {
 		if !envNameRe.MatchString(name) {

@@ -132,6 +132,32 @@ func checkArgs(name string, t *config.Task, args []string) error {
 // the steps need, through deps and task steps, is set: a missing key found
 // after the build has run wastes the build and hides the next missing key.
 func (r *Runner) preflight(steps []config.Step, owner *config.Task, name string) error {
+	if problems := r.problems(steps, owner, name); len(problems) > 0 {
+		return fmt.Errorf("nothing was run, missing:\n  %s", strings.Join(problems, "\n  "))
+	}
+	return nil
+}
+
+// DepsMissing is the preflight of tasks run as deps of something that is not
+// a task (a deploy target): what they and their own deps need but do not find.
+func (r *Runner) DepsMissing(deps []string) []string {
+	return r.problems(nil, &config.Task{Deps: deps}, "deps")
+}
+
+// RunDeps runs tasks the way a task's deps run: in order, each at most once
+// per runner, stopping at the first failure.
+func (r *Runner) RunDeps(ctx context.Context, deps []string) error {
+	for _, d := range deps {
+		if err := r.run(ctx, d, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// problems lists, for preflight, what the steps of a task and of everything
+// it runs need but do not find, each prefixed with the task's name.
+func (r *Runner) problems(steps []config.Step, owner *config.Task, name string) []string {
 	var problems []string
 	seen := map[string]bool{}
 	var visit func(name string, t *config.Task, steps []config.Step)
@@ -153,10 +179,7 @@ func (r *Runner) preflight(steps []config.Step, owner *config.Task, name string)
 		}
 	}
 	visit(name, owner, steps)
-	if len(problems) > 0 {
-		return fmt.Errorf("nothing was run, missing:\n  %s", strings.Join(problems, "\n  "))
-	}
-	return nil
+	return problems
 }
 
 // missing lists what a task's steps need from the environment and .env but
@@ -217,10 +240,8 @@ func (r *Runner) run(ctx context.Context, name string, args []string) error {
 		return nil
 	}
 	t := r.Config.Tasks[name]
-	for _, d := range t.Deps {
-		if err := r.run(ctx, d, nil); err != nil {
-			return err
-		}
+	if err := r.RunDeps(ctx, t.Deps); err != nil {
+		return err
 	}
 	release, err := r.lock(ctx, name, t.Lock)
 	if err != nil {
