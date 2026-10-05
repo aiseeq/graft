@@ -12,8 +12,6 @@ import (
 
 // Blob is an object read through git cat-file --batch.
 type Blob struct {
-	// Spec is what was asked for: an object id or ":path" for the index.
-	Spec string
 	Size int64
 	// Head holds up to the first SniffLen bytes.
 	Head []byte
@@ -92,7 +90,7 @@ func parseBatch(r *bufio.Reader, specs []string, maxContent int64) ([]Blob, erro
 }
 
 func readBlob(r *bufio.Reader, spec string, size, maxContent int64) (Blob, error) {
-	b := Blob{Spec: spec, Size: size}
+	b := Blob{Size: size}
 	if size <= maxContent {
 		b.Content = make([]byte, size)
 		if _, err := io.ReadFull(r, b.Content); err != nil {
