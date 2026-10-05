@@ -17,9 +17,9 @@ test_db:
 
 tools:
   glint:
-    go_install: github.com/aiseeq/glint/cmd/glint@v1.49.0
+    go_install: github.com/aiseeq/glint/cmd/glint@v1.51.0
     check: [glint, rules]
-    expect: shell-jq-null-passes-as-value
+    expect: test-retries-mask-flakiness
 
 tasks:
   build:
