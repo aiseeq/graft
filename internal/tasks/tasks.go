@@ -414,7 +414,8 @@ func BaseEnv() ([]string, error) {
 		return nil, fmt.Errorf("listing git environment variables: %w", err)
 	}
 	drop := append(gitVars, MarkerEnv)
-	var env []string
+	// Non-nil even when empty: the runner caches it and nil means not read yet.
+	env := []string{}
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
 		// Windows treats variable names case-insensitively.

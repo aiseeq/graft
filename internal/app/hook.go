@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/aiseeq/graft/internal/hooks"
 	"github.com/aiseeq/graft/internal/tasks"
@@ -18,8 +19,14 @@ import (
 // resolution. A hand-written git commit is refused: it skips the version bump,
 // the work item key and the push.
 func (a *App) HookPreCommit(ctx context.Context) error {
-	if os.Getenv(tasks.MarkerEnv) == "1" {
-		return nil
+	if v := os.Getenv(tasks.MarkerEnv); v != "" {
+		marked, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("%s=%q: %w", tasks.MarkerEnv, v, err)
+		}
+		if marked {
+			return nil
+		}
 	}
 	repo, cfg, err := a.open()
 	if err != nil {
@@ -33,7 +40,7 @@ func (a *App) HookPreCommit(ctx context.Context) error {
 		return errors.New(commitHowTo(cfg))
 	}
 	a.printf("%s commit: running the checks and the gate", kind)
-	if err := runChecks(repo, cfg); err != nil {
+	if err := runChecks(repo, cfg, "", a.Stderr); err != nil {
 		return err
 	}
 	if err := a.gate(ctx, repo, cfg); err != nil {

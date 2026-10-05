@@ -16,9 +16,36 @@ import (
 
 // Config is the user's graft settings.
 type Config struct {
-	Jira  Jira  `yaml:"jira"`
-	Tools Tools `yaml:"tools"`
+	Jira  Jira   `yaml:"jira"`
+	Tools Tools  `yaml:"tools"`
+	Leaks *Leaks `yaml:"leaks"`
 }
+
+// Leaks keeps the user's private names out of their public repositories. The
+// lists stay here, outside any repository.
+type Leaks struct {
+	// PublicRemotes are remote URL prefixes, host/path form
+	// (github.com/someone/): a repository pushing to one is public.
+	PublicRemotes []string `yaml:"public_remotes"`
+	// PrivateSources are private project directories; the Go identifiers
+	// they declare are private names.
+	PrivateSources []string `yaml:"private_sources"`
+	// TermsFile lists private terms, "kind: regexp" per line.
+	TermsFile string `yaml:"terms_file"`
+	// MinNameLength drops shorter identifiers; DefaultMinNameLength if 0.
+	MinNameLength int `yaml:"min_name_length"`
+	// Allow exempts a name or a term match everywhere.
+	Allow []LeakAllow `yaml:"allow"`
+}
+
+// LeakAllow exempts one name or term match. The reason is mandatory.
+type LeakAllow struct {
+	Term   string `yaml:"term"`
+	Reason string `yaml:"reason"`
+}
+
+// DefaultMinNameLength keeps camel-case names of two short words and longer.
+const DefaultMinNameLength = 10
 
 // Tools says where graft installs pinned tools. Empty BinDir leaves it to go
 // install (GOBIN, else GOPATH/bin).
@@ -74,7 +101,81 @@ func Load() (*Config, string, error) {
 			return nil, path, err
 		}
 	}
+	if cfg.Leaks != nil {
+		if err := cfg.Leaks.normalize(path); err != nil {
+			return nil, path, err
+		}
+	}
 	return &cfg, path, nil
+}
+
+func (l *Leaks) normalize(path string) error {
+	if len(l.PublicRemotes) == 0 {
+		return fmt.Errorf("%s: leaks.public_remotes: required", path)
+	}
+	for i, p := range l.PublicRemotes {
+		if strings.Contains(p, "://") || strings.Contains(p, "@") {
+			return fmt.Errorf("%s: leaks.public_remotes[%d]: %q must be host/path like github.com/someone/", path, i, p)
+		}
+	}
+	if len(l.PrivateSources) == 0 && l.TermsFile == "" {
+		return fmt.Errorf("%s: leaks: set private_sources, terms_file or both", path)
+	}
+	for i, src := range l.PrivateSources {
+		abs, err := expandHome(src)
+		if err != nil {
+			return err
+		}
+		if !filepath.IsAbs(abs) {
+			return fmt.Errorf("%s: leaks.private_sources[%d] must be absolute or start with ~/", path, i)
+		}
+		l.PrivateSources[i] = abs
+	}
+	if l.TermsFile != "" {
+		abs, err := expandHome(l.TermsFile)
+		if err != nil {
+			return err
+		}
+		if !filepath.IsAbs(abs) {
+			return fmt.Errorf("%s: leaks.terms_file must be absolute or start with ~/", path)
+		}
+		l.TermsFile = abs
+	}
+	if l.MinNameLength == 0 {
+		l.MinNameLength = DefaultMinNameLength
+	}
+	if l.MinNameLength < 0 {
+		return fmt.Errorf("%s: leaks.min_name_length must be positive", path)
+	}
+	for i, a := range l.Allow {
+		if a.Term == "" {
+			return fmt.Errorf("%s: leaks.allow[%d].term: required", path, i)
+		}
+		if strings.TrimSpace(a.Reason) == "" {
+			return fmt.Errorf("%s: leaks.allow[%d] (%s): reason is required", path, i, a.Term)
+		}
+	}
+	return nil
+}
+
+// RemoteIsPublic reports whether a remote URL falls under one of the public
+// prefixes. scp-like (git@host:path) and URL forms compare as host/path.
+func (l *Leaks) RemoteIsPublic(url string) bool {
+	norm := url
+	if _, rest, ok := strings.Cut(norm, "://"); ok {
+		norm = rest
+	} else if host, p, ok := strings.Cut(norm, ":"); ok && !strings.Contains(host, "/") {
+		norm = host + "/" + p
+	}
+	if at := strings.Index(norm, "@"); at >= 0 && at < strings.Index(norm+"/", "/") {
+		norm = norm[at+1:]
+	}
+	for _, p := range l.PublicRemotes {
+		if strings.HasPrefix(norm, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // ErrNotFound means the user has no graft config file.

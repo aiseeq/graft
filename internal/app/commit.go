@@ -95,7 +95,7 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	if _, err := repo.Git("add", "-A"); err != nil {
 		return undo(err)
 	}
-	if err := runChecks(repo, cfg); err != nil {
+	if err := runChecks(repo, cfg, plan.message, a.Stderr); err != nil {
 		return undo(err)
 	}
 	if _, err := repo.GitInput(strings.NewReader(plan.message), markerEnv, "commit", "--cleanup=verbatim", "-F", "-"); err != nil {

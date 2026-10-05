@@ -33,7 +33,7 @@ func (a *App) Amend(ctx context.Context) error {
 		if _, err := repo.Git("add", "-A"); err != nil {
 			return err
 		}
-		if err := runChecks(repo, cfg); err != nil {
+		if err := runChecks(repo, cfg, "", a.Stderr); err != nil {
 			return err
 		}
 		if _, err := repo.GitEnv(markerEnv, "commit", "--amend", "--no-edit"); err != nil {
@@ -393,7 +393,7 @@ func (a *App) Check() error {
 	if err != nil {
 		return err
 	}
-	if err := runChecks(repo, cfg); err != nil {
+	if err := runChecks(repo, cfg, "", a.Stderr); err != nil {
 		return err
 	}
 	a.printf("checks passed")

@@ -34,6 +34,13 @@ jira:
   env_file: ~/secrets/jira.env   # deploy release notes: JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN
 tools:
   bin_dir: ~/bin                 # where graft tools install puts binaries; default: go install's GOBIN
+leaks:                           # keep private names out of public repositories (see Checks)
+  public_remotes: [github.com/someone/]       # a repository with a remote under one of these is public
+  private_sources: [~/work/projectA]          # private projects: their Go declarations are private names
+  terms_file: ~/.config/graft/private-terms   # "kind: regexp" per line: keys, domains, addresses, names
+  min_name_length: 10                         # default 10
+  allow:
+    - {term: SomeName, reason: why this name is fine everywhere}
 ```
 
 ## Commands
@@ -50,6 +57,7 @@ tools:
 | `graft version --describe` | the build identity for stamping binaries: `v1.4.0-3-gabc1234[-dirty]`, `1.4.0[-dirty]` in mode `file`, `v0.0.0-<commits>-g<hash>` without a tag |
 | `graft init` | install the hooks and set `core.hooksPath`, create the `.env` file from `dotenv_template` when it is missing, install pinned tools that fail their check; safe to repeat |
 | `graft check` | run the content checks on the index |
+| `graft leaks <revision range>` | scan commits for the private names and terms of the user config (`leaks`) |
 | `graft gate` | run the gate commands |
 | `graft hook pre-commit` / `post-merge` | what the installed hooks call |
 | `graft flags [status]` | is the flag raised: open journal events no exception mutes |
@@ -82,7 +90,8 @@ tools:
 4. Run the gate. A failure stops here, with the version untouched.
 5. Bump the version file and every file synced with it.
 6. `git add -A`, then check the staged changes (secrets, binaries, sizes,
-   version drift). A failure restores the version files and stops.
+   version drift, and in a public repository private names in the added lines
+   and the message). A failure restores the version files and stops.
 7. Commit. The message is kept verbatim (`--cleanup=verbatim`): `$`, quotes,
    backticks and lines starting with `#` survive. When the branch name contains
    a work item key (`ticket.pattern`) and the message does not mention it yet,
@@ -616,6 +625,25 @@ user config (see Install).
   test) is refused unless its extension is in `binary_extensions`; binary
   files over `max_binary_bytes` and text files over `max_text_bytes` are
   refused.
+- **Leaks**: with `leaks` in the user config, a commit to a repository that
+  has a remote under `public_remotes` is checked for private names in the
+  lines it adds and in its message. The lists live in the user config, never
+  in the public repository:
+  - **names**: camel-case functions, methods and types of at least
+    `min_name_length` characters declared in `private_sources` (parts of test
+    names included, the test's own name not). A name the public Go code in
+    GOROOT and the module cache also uses is common and dropped; modules under
+    `public_remotes` and the private sources' own modules do not count as
+    public code. The first run indexes the module cache, later runs only the
+    new modules (`<user cache dir>/graft/leaks`). A name the repository
+    declares in its own non-test Go code is its vocabulary; a mention in
+    tests, fixtures, comments, docs or the message is a finding.
+  - **terms**: every match of a `terms_file` regexp.
+
+  A finding names the file, line and the name or term. A line containing
+  `graft:leak-ok <reason>` passes; `leaks.allow` passes a name or term
+  everywhere. `graft leaks <revision range>` runs the same scan over existing
+  commits, each against its parent, to audit a history.
 
 ## Development
 

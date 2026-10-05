@@ -131,14 +131,19 @@ func (e *ChecksError) Error() string {
 	for _, f := range e.Findings {
 		b.WriteString("\n  " + f.String())
 	}
+	if slices.ContainsFunc(e.Findings, func(f checks.Finding) bool { return f.Leak }) {
+		b.WriteString("\nprivate names and terms come from the user config (leaks); rewrite them in neutral words, or mark")
+		b.WriteString("\nthe line with graft:leak-ok <reason>, or allow a term everywhere in leaks.allow;")
+	}
 	b.WriteString("\nfix the files, or add an exception with a reason to .graft.yaml (checks.*.exceptions);")
 	b.WriteString("\nto drop a file from the commit: git rm --cached <file> and add it to .gitignore")
 	return b.String()
 }
 
 // runChecks inspects the index: secrets, binaries and sizes in the changed
-// files, and the version files agreeing with each other.
-func runChecks(repo *gitx.Repo, cfg *config.Config) error {
+// files, the version files agreeing with each other, and in a public
+// repository, the user's private names in the added lines and in message.
+func runChecks(repo *gitx.Repo, cfg *config.Config, message string, log io.Writer) error {
 	staged, err := checks.Staged(repo)
 	if err != nil {
 		return err
@@ -160,6 +165,11 @@ func runChecks(repo *gitx.Repo, cfg *config.Config) error {
 		return err
 	}
 	findings = append(findings, ruleFindings...)
+	leakFound, err := leakFindings(repo, message, log)
+	if err != nil {
+		return err
+	}
+	findings = append(findings, leakFound...)
 	if len(findings) > 0 {
 		return &ChecksError{Findings: findings}
 	}

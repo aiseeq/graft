@@ -34,6 +34,7 @@ var commands = []command{
 	{name: "version", syntax: fixed("graft version [--describe]"), summary: text("print the project version; --describe: the build identity, for stamping binaries")},
 	{name: "init", syntax: fixed("graft init"), summary: text("install the git hooks (core.hooksPath) and the pinned tools")},
 	{name: "check", syntax: fixed("graft check"), summary: text("scan the staged changes for secrets, binaries, large files, version drift")},
+	{name: "leaks", syntax: fixed("graft leaks <revision range>"), summary: text("scan commits for the private names and terms of the user config (leaks)")},
 	{name: "gate", syntax: fixed("graft gate"), summary: text("run the gate")},
 	{name: "hook", syntax: fixed("graft hook (pre-commit|post-merge)"), summary: text("entry point of the installed hooks")},
 	{name: "flags", syntax: fixed(

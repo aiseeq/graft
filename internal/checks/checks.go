@@ -16,6 +16,8 @@ type Finding struct {
 	Path   string
 	Line   int // 0 when the finding concerns the whole file
 	Reason string
+	// Leak marks a private name or term headed for a public repository.
+	Leak bool
 }
 
 func (f Finding) String() string {

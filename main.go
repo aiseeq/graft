@@ -91,6 +91,11 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		return noArgs(a, cmd, rest, func() error { return a.Init(ctx) })
 	case "check":
 		return noArgs(a, cmd, rest, a.Check)
+	case "leaks":
+		if len(rest) != 1 || strings.HasPrefix(rest[0], "-") {
+			return fmt.Errorf("%w: graft leaks <revision range>", errUsage)
+		}
+		return a.Leaks(rest[0])
 	case "gate":
 		return noArgs(a, cmd, rest, func() error { return a.Gate(ctx) })
 	case "hook":
