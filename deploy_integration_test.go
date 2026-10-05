@@ -16,15 +16,17 @@ import (
 )
 
 // fakeJira records comments and transitions. The token belongs to the account
-// "me"; assignees maps keys to other accounts, and a key missing there is
-// assigned to "me".
+// "me"; assignees maps keys to other accounts ("" for nobody), and a key
+// missing there is assigned to "me". handedOver lists keys whose history shows
+// them handed over from "me".
 type fakeJira struct {
-	mu        sync.Mutex
-	comments  map[string][]string
-	moved     []string
-	statuses  map[string]string
-	assignees map[string]string
-	failAll   bool
+	mu         sync.Mutex
+	comments   map[string][]string
+	moved      []string
+	statuses   map[string]string
+	assignees  map[string]string
+	handedOver []string
+	failAll    bool
 }
 
 func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +59,12 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(body, &doc)
 		j.comments[key] = append(j.comments[key], doc.Body.Content[0].Content[0].Text)
 		w.WriteHeader(http.StatusCreated)
+	case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "changelog":
+		var values []any
+		if slices.Contains(j.handedOver, key) {
+			values = append(values, map[string]any{"items": []any{map[string]any{"fieldId": "assignee", "from": "me", "to": j.assignees[key]}}})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"isLast": true, "values": values})
 	case r.Method == http.MethodGet && len(parts) == 1:
 		var assignee any = map[string]string{"accountId": "me", "displayName": "Me"}
 		if a, ok := j.assignees[key]; ok {
@@ -65,8 +73,15 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				assignee = map[string]string{"accountId": a, "displayName": "Colleague " + a}
 			}
 		}
+		category := "indeterminate"
+		if j.statuses[key] == "Done" {
+			category = "done"
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"fields":      map[string]any{"status": map[string]string{"name": j.statuses[key]}, "assignee": assignee},
+			"fields": map[string]any{
+				"status":   map[string]any{"name": j.statuses[key], "statusCategory": map[string]string{"key": category}},
+				"assignee": assignee,
+			},
 			"transitions": []any{map[string]any{"id": "31", "to": map[string]string{"name": "Testing"}}},
 		})
 	case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "transitions":
@@ -106,9 +121,10 @@ func deployRepo(t *testing.T) *deployFixture {
 	}
 	state := t.TempDir()
 	jira := &fakeJira{
-		comments:  map[string][]string{},
-		statuses:  map[string]string{"PROJ-1": "In Progress", "PROJ-2": "Done", "PROJ-3": "In Progress", "PROJ-4": "To Do"},
-		assignees: map[string]string{"PROJ-3": "colleague", "PROJ-4": ""},
+		comments:   map[string][]string{},
+		statuses:   map[string]string{"PROJ-1": "In Progress", "PROJ-2": "Done", "PROJ-3": "In Progress", "PROJ-4": "To Do", "PROJ-5": "Testing"},
+		assignees:  map[string]string{"PROJ-3": "colleague", "PROJ-4": "", "PROJ-5": "reviewer"},
+		handedOver: []string{"PROJ-5"},
 	}
 	srv := httptest.NewServer(jira)
 	t.Cleanup(srv.Close)
@@ -231,7 +247,7 @@ func TestDeployRunsScriptAndPostsReleaseNotes(t *testing.T) {
 	d.write("a.txt", "a\n")
 	d.mustGraft("commit", "-m", "feat: PROJ-1 first thing, hashes with SHA-256")
 	d.write("b.txt", "b\n")
-	d.mustGraft("commit", "-m", "fix: second\n\nRefs PROJ-2 and OTHER-5, see also PROJ-3 and PROJ-4")
+	d.mustGraft("commit", "-m", "fix: second\n\nRefs PROJ-2 and OTHER-5, see also PROJ-3, PROJ-4 and PROJ-5")
 	out = d.mustGraft("deploy", "test")
 	if !strings.Contains(d.stateFile("test-run"), "prev="+head) {
 		t.Errorf("previous sha not passed:\n%s", d.stateFile("test-run"))
@@ -244,16 +260,20 @@ func TestDeployRunsScriptAndPostsReleaseNotes(t *testing.T) {
 			}
 		}
 	})
-	if !slices.Equal(keys, []string{"PROJ-1", "PROJ-2"}) {
+	if !slices.Equal(keys, []string{"PROJ-1", "PROJ-5"}) {
 		t.Errorf("commented keys = %v\n%s", keys, out)
 	}
 	if c := comments["PROJ-1"]; len(c) != 1 || !strings.HasPrefix(c[0], "Deployed to test, version 1.0.3, commit ") {
 		t.Errorf("comment = %v", c)
 	}
 	if !slices.Equal(moved, []string{"PROJ-1"}) {
-		t.Errorf("moved = %v (PROJ-2 is Done and stays)", moved)
+		t.Errorf("moved = %v (PROJ-5 is already in Testing)", moved)
 	}
-	for _, want := range []string{"PROJ-3 left alone: assigned to Colleague colleague, not to the owner", "PROJ-4 left alone: unassigned"} {
+	for _, want := range []string{
+		"PROJ-2 left alone: it is already Done",
+		"PROJ-3 left alone: assigned to Colleague colleague and never assigned to the owner",
+		"PROJ-4 left alone: unassigned and never",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q:\n%s", want, out)
 		}

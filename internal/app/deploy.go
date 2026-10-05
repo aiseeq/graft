@@ -342,15 +342,27 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) {
 			a.warn("release note for %s not posted: %v", key, err)
 			continue
 		}
-		// A key can reach a commit by hand, so an item somebody else owns is
-		// left to them.
-		if issue.AssigneeID != me {
-			whose := "unassigned"
-			if issue.AssigneeID != "" {
-				whose = "assigned to " + issue.AssigneeName + ", not to the owner of the Jira token"
-			}
-			a.warn("release note for %s not posted, %s left alone: %s", key, key, whose)
+		// A key can reach a commit by hand, as a reference to an item that is
+		// closed or somebody else's. An item handed over for review stays
+		// yours: its history shows it assigned to you.
+		if issue.Done {
+			a.warn("release note for %s not posted, %s left alone: it is already %s", key, key, issue.Status)
 			continue
+		}
+		if issue.AssigneeID != me {
+			yours, err := client.WasAssignedTo(ctx, key, me)
+			if err != nil {
+				a.warn("release note for %s not posted: %v", key, err)
+				continue
+			}
+			if !yours {
+				whose := "unassigned"
+				if issue.AssigneeID != "" {
+					whose = "assigned to " + issue.AssigneeName
+				}
+				a.warn("release note for %s not posted, %s left alone: %s and never assigned to the owner of the Jira token", key, key, whose)
+				continue
+			}
 		}
 		if err := client.Comment(ctx, key, text); err != nil {
 			a.warn("release note for %s not posted: %v", key, err)

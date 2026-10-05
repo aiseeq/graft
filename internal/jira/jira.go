@@ -1,6 +1,6 @@
 // Package jira posts release notes to Jira work items: a comment on every
-// item a deploy delivered that is assigned to the token's user, and
-// optionally a move to a status. Nothing here can fail a deploy; the release
+// open item a deploy delivered that is or was assigned to the token's user,
+// and optionally a move to a status. Nothing here can fail a deploy; the release
 // is already live when it runs.
 package jira
 
@@ -95,6 +95,8 @@ func (c *Client) Myself(ctx context.Context) (string, error) {
 type Issue struct {
 	Key    string
 	Status string
+	// Done is true in a status of the done category (Done, Won't do).
+	Done bool
 	// AssigneeID and AssigneeName are empty for an unassigned item.
 	AssigneeID   string
 	AssigneeName string
@@ -116,7 +118,10 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 	var raw struct {
 		Fields struct {
 			Status struct {
-				Name string `json:"name"`
+				Name     string `json:"name"`
+				Category struct {
+					Key string `json:"key"`
+				} `json:"statusCategory"`
 			} `json:"status"`
 			Assignee *struct {
 				AccountID   string `json:"accountId"`
@@ -133,7 +138,10 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return Issue{}, fmt.Errorf("%s: unexpected issue JSON: %w", key, err)
 	}
-	issue := Issue{Key: key, Status: raw.Fields.Status.Name}
+	if raw.Fields.Status.Category.Key == "" {
+		return Issue{}, fmt.Errorf("%s: the status has no category", key)
+	}
+	issue := Issue{Key: key, Status: raw.Fields.Status.Name, Done: raw.Fields.Status.Category.Key == "done"}
 	if a := raw.Fields.Assignee; a != nil {
 		if a.AccountID == "" {
 			return Issue{}, fmt.Errorf("%s: the assignee has no accountId", key)
@@ -144,6 +152,50 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 		issue.Transitions = append(issue.Transitions, Transition{ID: t.ID, To: t.To.Name})
 	}
 	return issue, nil
+}
+
+// changelogPage is how many history entries one request reads.
+const changelogPage = 100
+
+// WasAssignedTo reports whether the item's history shows it assigned to the
+// account at some point: handed over from it or to it.
+func (c *Client) WasAssignedTo(ctx context.Context, key, accountID string) (bool, error) {
+	for start := 0; ; {
+		data, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/rest/api/3/issue/%s/changelog?startAt=%d&maxResults=%d", key, start, changelogPage), nil, http.StatusOK)
+		if err != nil {
+			return false, err
+		}
+		var page struct {
+			IsLast bool `json:"isLast"`
+			Values []struct {
+				Items []struct {
+					FieldID string  `json:"fieldId"`
+					From    *string `json:"from"`
+					To      *string `json:"to"`
+				} `json:"items"`
+			} `json:"values"`
+		}
+		if err := json.Unmarshal(data, &page); err != nil {
+			return false, fmt.Errorf("%s: unexpected changelog JSON: %w", key, err)
+		}
+		for _, v := range page.Values {
+			for _, it := range v.Items {
+				if it.FieldID != "assignee" {
+					continue
+				}
+				if (it.From != nil && *it.From == accountID) || (it.To != nil && *it.To == accountID) {
+					return true, nil
+				}
+			}
+		}
+		if page.IsLast {
+			return false, nil
+		}
+		if len(page.Values) == 0 {
+			return false, fmt.Errorf("%s: changelog page at %d is empty but not the last", key, start)
+		}
+		start += len(page.Values)
+	}
 }
 
 // Transition moves an item to the status named to, unless it is already

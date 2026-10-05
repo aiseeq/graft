@@ -564,11 +564,13 @@ release_notes:
 7. Check again that the tree is clean and HEAD has not moved.
 8. Record the deployed commit and post release notes: a comment on every
    `project_keys` item mentioned in the delivered commits (subjects and bodies),
-   and with `transition`, a move to that status. Only items assigned to the
-   owner of the Jira token get them: an item assigned to somebody else or to
-   nobody is left alone with a warning, since a key mentioned in a commit body
-   does not make the item yours. Release notes never fail a deploy; problems
-   are printed as warnings.
+   and with `transition`, a move to that status. A key mentioned in a commit
+   does not make the item yours, so only open items of the owner of the Jira
+   token get them: not in a done-category status (Done, Won't do), and
+   assigned to the owner now or at some point in the item's history (an item
+   handed over for review keeps its notes). Other items are left alone with a
+   warning. Release notes never fail a deploy; problems are printed as
+   warnings.
 
 graft exits with the deploy script's exit status. Two deploys to the same
 target from one repository wait for each other.
