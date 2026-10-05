@@ -1,12 +1,14 @@
 // Package jira posts release notes to Jira work items: a comment on every
-// item a deploy delivered, and optionally a move to a status. Nothing here
-// can fail a deploy; the release is already live when it runs.
+// item a deploy delivered that is assigned to the token's user, and
+// optionally a move to a status. Nothing here can fail a deploy; the release
+// is already live when it runs.
 package jira
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -71,18 +73,55 @@ func (c *Client) Comment(ctx context.Context, key, text string) error {
 	return err
 }
 
-// Transition moves an item to the status named to, unless it is already
-// there or in one of skip. It reports whether the item moved.
-func (c *Client) Transition(ctx context.Context, key, to string, skip []string) (bool, error) {
-	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+key+"?fields=status&expand=transitions", nil, http.StatusOK)
+// Myself returns the account id of the user the token belongs to.
+func (c *Client) Myself(ctx context.Context) (string, error) {
+	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/myself", nil, http.StatusOK)
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	var issue struct {
+	var me struct {
+		AccountID string `json:"accountId"`
+	}
+	if err := json.Unmarshal(data, &me); err != nil {
+		return "", fmt.Errorf("unexpected /myself JSON: %w", err)
+	}
+	if me.AccountID == "" {
+		return "", errors.New("/myself returned no accountId")
+	}
+	return me.AccountID, nil
+}
+
+// Issue is what release notes need to know about an item.
+type Issue struct {
+	Key    string
+	Status string
+	// AssigneeID and AssigneeName are empty for an unassigned item.
+	AssigneeID   string
+	AssigneeName string
+	Transitions  []Transition
+}
+
+// Transition is a move available from the item's current status.
+type Transition struct {
+	ID string
+	To string
+}
+
+// Issue reads an item's status, assignee and available transitions.
+func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
+	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+key+"?fields=status,assignee&expand=transitions", nil, http.StatusOK)
+	if err != nil {
+		return Issue{}, err
+	}
+	var raw struct {
 		Fields struct {
 			Status struct {
 				Name string `json:"name"`
 			} `json:"status"`
+			Assignee *struct {
+				AccountID   string `json:"accountId"`
+				DisplayName string `json:"displayName"`
+			} `json:"assignee"`
 		} `json:"fields"`
 		Transitions []struct {
 			ID string `json:"id"`
@@ -91,21 +130,36 @@ func (c *Client) Transition(ctx context.Context, key, to string, skip []string) 
 			} `json:"to"`
 		} `json:"transitions"`
 	}
-	if err := json.Unmarshal(data, &issue); err != nil {
-		return false, fmt.Errorf("%s: unexpected issue JSON: %w", key, err)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return Issue{}, fmt.Errorf("%s: unexpected issue JSON: %w", key, err)
 	}
-	status := issue.Fields.Status.Name
-	if status == to || slices.Contains(skip, status) {
+	issue := Issue{Key: key, Status: raw.Fields.Status.Name}
+	if a := raw.Fields.Assignee; a != nil {
+		if a.AccountID == "" {
+			return Issue{}, fmt.Errorf("%s: the assignee has no accountId", key)
+		}
+		issue.AssigneeID, issue.AssigneeName = a.AccountID, a.DisplayName
+	}
+	for _, t := range raw.Transitions {
+		issue.Transitions = append(issue.Transitions, Transition{ID: t.ID, To: t.To.Name})
+	}
+	return issue, nil
+}
+
+// Transition moves an item to the status named to, unless it is already
+// there or in one of skip. It reports whether the item moved.
+func (c *Client) Transition(ctx context.Context, issue Issue, to string, skip []string) (bool, error) {
+	if issue.Status == to || slices.Contains(skip, issue.Status) {
 		return false, nil
 	}
 	for _, t := range issue.Transitions {
-		if t.To.Name == to {
+		if t.To == to {
 			body := map[string]any{"transition": map[string]string{"id": t.ID}}
-			_, err := c.do(ctx, http.MethodPost, "/rest/api/3/issue/"+key+"/transitions", body, http.StatusNoContent)
+			_, err := c.do(ctx, http.MethodPost, "/rest/api/3/issue/"+issue.Key+"/transitions", body, http.StatusNoContent)
 			return err == nil, err
 		}
 	}
-	return false, fmt.Errorf("%s: no transition from %q to %q", key, status, to)
+	return false, fmt.Errorf("%s: no transition from %q to %q", issue.Key, issue.Status, to)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any, want int) ([]byte, error) {

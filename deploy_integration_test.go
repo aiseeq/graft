@@ -15,13 +15,16 @@ import (
 	"testing"
 )
 
-// fakeJira records comments and transitions.
+// fakeJira records comments and transitions. The token belongs to the account
+// "me"; assignees maps keys to other accounts, and a key missing there is
+// assigned to "me".
 type fakeJira struct {
-	mu       sync.Mutex
-	comments map[string][]string
-	moved    []string
-	statuses map[string]string
-	failAll  bool
+	mu        sync.Mutex
+	comments  map[string][]string
+	moved     []string
+	statuses  map[string]string
+	assignees map[string]string
+	failAll   bool
 }
 
 func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -33,6 +36,10 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if user, pass, ok := r.BasicAuth(); !ok || user != "me@example.com" || pass != "secret-token" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/myself" {
+		_ = json.NewEncoder(w).Encode(map[string]string{"accountId": "me", "displayName": "Me"})
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/rest/api/3/issue/"), "/")
@@ -51,8 +58,15 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		j.comments[key] = append(j.comments[key], doc.Body.Content[0].Content[0].Text)
 		w.WriteHeader(http.StatusCreated)
 	case r.Method == http.MethodGet && len(parts) == 1:
+		var assignee any = map[string]string{"accountId": "me", "displayName": "Me"}
+		if a, ok := j.assignees[key]; ok {
+			assignee = nil
+			if a != "" {
+				assignee = map[string]string{"accountId": a, "displayName": "Colleague " + a}
+			}
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"fields":      map[string]any{"status": map[string]string{"name": j.statuses[key]}},
+			"fields":      map[string]any{"status": map[string]string{"name": j.statuses[key]}, "assignee": assignee},
 			"transitions": []any{map[string]any{"id": "31", "to": map[string]string{"name": "Testing"}}},
 		})
 	case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "transitions":
@@ -91,7 +105,11 @@ func deployRepo(t *testing.T) *deployFixture {
 		t.Skip("deploy scripts use sh")
 	}
 	state := t.TempDir()
-	jira := &fakeJira{comments: map[string][]string{}, statuses: map[string]string{"PROJ-1": "In Progress", "PROJ-2": "Done"}}
+	jira := &fakeJira{
+		comments:  map[string][]string{},
+		statuses:  map[string]string{"PROJ-1": "In Progress", "PROJ-2": "Done", "PROJ-3": "In Progress", "PROJ-4": "To Do"},
+		assignees: map[string]string{"PROJ-3": "colleague", "PROJ-4": ""},
+	}
 	srv := httptest.NewServer(jira)
 	t.Cleanup(srv.Close)
 
@@ -213,7 +231,7 @@ func TestDeployRunsScriptAndPostsReleaseNotes(t *testing.T) {
 	d.write("a.txt", "a\n")
 	d.mustGraft("commit", "-m", "feat: PROJ-1 first thing, hashes with SHA-256")
 	d.write("b.txt", "b\n")
-	d.mustGraft("commit", "-m", "fix: second\n\nRefs PROJ-2 and OTHER-5")
+	d.mustGraft("commit", "-m", "fix: second\n\nRefs PROJ-2 and OTHER-5, see also PROJ-3 and PROJ-4")
 	out = d.mustGraft("deploy", "test")
 	if !strings.Contains(d.stateFile("test-run"), "prev="+head) {
 		t.Errorf("previous sha not passed:\n%s", d.stateFile("test-run"))
@@ -235,6 +253,11 @@ func TestDeployRunsScriptAndPostsReleaseNotes(t *testing.T) {
 	if !slices.Equal(moved, []string{"PROJ-1"}) {
 		t.Errorf("moved = %v (PROJ-2 is Done and stays)", moved)
 	}
+	for _, want := range []string{"PROJ-3 left alone: assigned to Colleague colleague, not to the owner", "PROJ-4 left alone: unassigned"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
+	}
 }
 
 func TestDeployJiraFailureDoesNotFailTheDeploy(t *testing.T) {
@@ -244,7 +267,7 @@ func TestDeployJiraFailureDoesNotFailTheDeploy(t *testing.T) {
 	d.mustGraft("commit", "-m", "feat: PROJ-1 x")
 	d.jira.setFailing()
 	out, code := d.graft("", "deploy", "test")
-	if code != 0 || !strings.Contains(out, "release note for PROJ-1 not posted") || !strings.Contains(out, "http 500") {
+	if code != 0 || !strings.Contains(out, "release notes skipped") || !strings.Contains(out, "http 500") {
 		t.Errorf("exit %d:\n%s", code, out)
 	}
 }

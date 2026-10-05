@@ -331,14 +331,34 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) {
 		a.warn("release notes skipped: %v", err)
 		return
 	}
+	me, err := client.Myself(ctx)
+	if err != nil {
+		a.warn("release notes skipped: whose items are whose is unknown: %v", err)
+		return
+	}
 	for _, key := range keys {
+		issue, err := client.Issue(ctx, key)
+		if err != nil {
+			a.warn("release note for %s not posted: %v", key, err)
+			continue
+		}
+		// A key can reach a commit by hand, so an item somebody else owns is
+		// left to them.
+		if issue.AssigneeID != me {
+			whose := "unassigned"
+			if issue.AssigneeID != "" {
+				whose = "assigned to " + issue.AssigneeName + ", not to the owner of the Jira token"
+			}
+			a.warn("release note for %s not posted, %s left alone: %s", key, key, whose)
+			continue
+		}
 		if err := client.Comment(ctx, key, text); err != nil {
 			a.warn("release note for %s not posted: %v", key, err)
 			continue
 		}
 		a.printf("release note posted to %s", key)
 		if to := r.target.ReleaseNotes.Transition; to != "" {
-			moved, err := client.Transition(ctx, key, to, notes.SkipStatuses)
+			moved, err := client.Transition(ctx, issue, to, notes.SkipStatuses)
 			switch {
 			case err != nil:
 				a.warn("%s not moved to %s: %v", key, to, err)
