@@ -4,6 +4,7 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"golang.org/x/term"
 
@@ -95,39 +97,100 @@ func CheckHead(repo *gitx.Repo, d *config.Deploy, want string) error {
 	return nil
 }
 
+// fingerprintWait bounds how long a deploy without a terminal waits for a
+// finger on the reader.
+const fingerprintWait = 10 * time.Minute
+
+// fingerprintRefusals are what pam_fprintd prints, in the C locale, when it
+// asked the reader and got no finger in time or one it does not know.
+var fingerprintRefusals = []string{"Verification timed out", "Failed to match fingerprint"}
+
 // ConfirmSudo confirms the deploy with sudo. In a terminal it asks until the
-// password is given; Ctrl-C stops. Without a terminal it makes one attempt:
-// sudo can still succeed there on credentials it has cached or on a PAM
-// method that reads nothing from stdin (a fingerprint reader), and a refusal
-// ends the deploy instead of asking again where nobody can answer.
+// password is given; Ctrl-C stops. Without a terminal sudo passes only on
+// credentials it has cached or on a PAM method that reads nothing from stdin
+// (a fingerprint reader): it asks again while the reader refuses, for at most
+// fingerprintWait, and any other refusal ends the deploy, since nobody can
+// type a password there.
 func ConfirmSudo(ctx context.Context, target string, log io.Writer) error {
 	prompt := fmt.Sprintf("[sudo] password to confirm the deploy to %s: ", target)
-	interactive := term.IsTerminal(int(os.Stdin.Fd()))
-	if !interactive {
-		fmt.Fprintf(log, "graft: no terminal, confirm the deploy to %s with sudo credentials that need no typing (fingerprint)\n", target)
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		return confirmInTerminal(ctx, prompt, log)
 	}
+	fmt.Fprintf(log, "graft: no terminal, touch the fingerprint reader to confirm the deploy to %s (waiting up to %s, Ctrl-C to stop)\n", target, fingerprintWait)
+	return confirmByFingerprint(ctx, target, fingerprintWait, log, func(ctx context.Context) (bool, []byte, error) {
+		cmd := exec.CommandContext(ctx, "sudo", "-v", "-p", prompt)
+		// The reader's messages are matched in English.
+		cmd.Env = append(os.Environ(), "LC_ALL=C")
+		var out bytes.Buffer
+		cmd.Stdout, cmd.Stderr = io.MultiWriter(os.Stdout, &out), os.Stderr
+		return sudoResult(cmd.Run(), out.Bytes())
+	})
+}
+
+func confirmInTerminal(ctx context.Context, prompt string, log io.Writer) error {
 	for {
 		cmd := exec.CommandContext(ctx, "sudo", "-v", "-p", prompt)
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if interactive {
-			cmd.Stdin = os.Stdin
-		}
-		err := cmd.Run()
-		if err == nil {
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		ok, _, err := sudoResult(cmd.Run(), nil)
+		if ok {
 			return nil
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) {
-			return fmt.Errorf("sudo: %w", err)
-		}
-		if !interactive {
-			return fmt.Errorf("deploying to %s was not confirmed: without a terminal sudo takes only cached credentials or a fingerprint; run graft deploy in a terminal to type the password", target)
+		if err != nil {
+			return err
 		}
 		fmt.Fprintln(log, "graft: not confirmed, asking again (Ctrl-C to stop)")
 	}
+}
+
+// sudoResult tells a sudo that refused (false, nil) from one that did not run.
+func sudoResult(runErr error, out []byte) (bool, []byte, error) {
+	if runErr == nil {
+		return true, out, nil
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(runErr, &exitErr) {
+		return false, out, fmt.Errorf("sudo: %w", runErr)
+	}
+	return false, out, nil
+}
+
+// confirmByFingerprint repeats attempt while its output shows the fingerprint
+// reader refusing, until it passes, ctx ends or wait runs out.
+func confirmByFingerprint(ctx context.Context, target string, wait time.Duration, log io.Writer, attempt func(context.Context) (bool, []byte, error)) error {
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	deadline, _ := waitCtx.Deadline()
+	for n := 1; ; n++ {
+		ok, out, err := attempt(waitCtx)
+		if ok {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if waitCtx.Err() != nil {
+			return fmt.Errorf("deploying to %s was not confirmed: no fingerprint within %s", target, wait)
+		}
+		if err != nil {
+			return err
+		}
+		if !fingerprintRefused(out) {
+			return fmt.Errorf("deploying to %s was not confirmed: without a terminal sudo takes only cached credentials or a fingerprint, and the fingerprint reader did not answer; run graft deploy in a terminal to type the password", target)
+		}
+		fmt.Fprintf(log, "graft: fingerprint attempt %d refused, asking again (%s left, Ctrl-C to stop)\n", n, time.Until(deadline).Round(time.Second))
+	}
+}
+
+func fingerprintRefused(out []byte) bool {
+	for _, m := range fingerprintRefusals {
+		if bytes.Contains(out, []byte(m)) {
+			return true
+		}
+	}
+	return false
 }
 
 // ReadDeployedSHA returns the commit recorded in the environment, or "" when

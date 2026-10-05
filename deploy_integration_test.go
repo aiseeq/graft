@@ -287,12 +287,19 @@ func TestDeployRequiresVersionOnRequiredTarget(t *testing.T) {
 }
 
 // fakeSudo puts a sudo stand-in first on PATH: it records every call and
-// exits with FAKE_SUDO_EXIT, as a fingerprint accepted or refused would.
+// exits with exit, as a fingerprint accepted or refused would.
 func (d *deployFixture) fakeSudo(t *testing.T, exit int) string {
+	t.Helper()
+	return d.fakeSudoScript(t, "exit "+strconv.Itoa(exit))
+}
+
+// fakeSudoScript is fakeSudo whose body after recording the call is script;
+// $n there is the number of the call.
+func (d *deployFixture) fakeSudoScript(t *testing.T, script string) string {
 	t.Helper()
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "calls")
-	writeFile(t, filepath.Join(dir, "sudo"), "#!/bin/sh\necho \"$*\" >> "+yamlQuote(calls)+"\nexit "+strconv.Itoa(exit)+"\n")
+	writeFile(t, filepath.Join(dir, "sudo"), "#!/bin/sh\necho \"$*\" >> "+yamlQuote(calls)+"\nn=$(wc -l < "+yamlQuote(calls)+")\n"+script+"\n")
 	if err := os.Chmod(filepath.Join(dir, "sudo"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +314,7 @@ func TestDeployConfirmWithoutTerminalBySudo(t *testing.T) {
 	d.mustGraft("deploy", "test")
 	calls := d.fakeSudo(t, 0)
 	out := d.mustGraft("deploy", "prod")
-	if !strings.Contains(out, "no terminal, confirm the deploy to prod") {
+	if !strings.Contains(out, "no terminal, touch the fingerprint reader to confirm the deploy to prod") {
 		t.Errorf("no hint about the confirmation:\n%s", out)
 	}
 	if d.stateFile("prod-run") == "" {
@@ -318,8 +325,29 @@ func TestDeployConfirmWithoutTerminalBySudo(t *testing.T) {
 	}
 }
 
-// A refused sudo without a terminal ends the deploy after one attempt: asking
-// again where nobody can type would wait forever.
+// Without a terminal a fingerprint reader that refused (no finger in time) is
+// asked again, and the deploy goes on once it accepts.
+func TestDeployConfirmWithoutTerminalAsksTheReaderAgain(t *testing.T) {
+	d := deployRepo(t)
+	d.mustGraft("deploy", "test")
+	calls := d.fakeSudoScript(t, `if [ "$n" -lt 3 ]; then echo "Verification timed out"; exit 1; fi`)
+	out := d.mustGraft("deploy", "prod")
+	for _, want := range []string{"fingerprint attempt 1 refused, asking again", "fingerprint attempt 2 refused, asking again"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
+	}
+	if d.stateFile("prod-run") == "" {
+		t.Error("prod deploy did not run after the reader accepted")
+	}
+	if got := strings.Count(readFile(t, calls), "\n"); got != 3 {
+		t.Errorf("sudo asked %d times, want 3", got)
+	}
+}
+
+// A sudo refusal without a terminal that did not come from the fingerprint
+// reader ends the deploy after one attempt: asking again where nobody can type
+// would wait forever.
 func TestDeployConfirmWithoutTerminalRefused(t *testing.T) {
 	d := deployRepo(t)
 	d.mustGraft("deploy", "test")

@@ -515,7 +515,7 @@ deploy:
       deps: [test]              # the full test task before production
       run: [bash, deploy/deploy.sh, --env, prod]
       requires: test            # prod only gets the version test already runs
-      confirm: sudo             # sudo -v before the run: repeated in a terminal, one try without
+      confirm: sudo             # sudo -v before the run: password in a terminal, fingerprint without
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
       release_notes: {}
 
@@ -548,10 +548,14 @@ release_notes:
    anything is written in the target environment. A `deps` entry that is not
    a task is a config error.
 5. With `confirm: sudo`, run `sudo -v`. In a terminal it asks until the password
-   is given (Ctrl-C stops). Without a terminal it makes one attempt, which
-   passes on cached sudo credentials or a PAM method that types nothing (a
-   fingerprint reader); a refusal ends the deploy, since nobody can type a
-   password there.
+   is given (Ctrl-C stops). Without a terminal it passes only on cached sudo
+   credentials or a PAM method that types nothing (a fingerprint reader): while
+   the reader refuses (no finger in time, an unknown finger) graft prints the
+   attempt and asks again, for at most 10 minutes (Ctrl-C stops). Any other
+   refusal ends the deploy, since nobody can type a password there. The reader
+   is recognized by the messages of pam_fprintd, so sudo runs with `LC_ALL=C`.
+   On a host with `pam_faillock`, every refused attempt counts as a failed
+   login.
 6. Run `run` plus `args` in the foreground, with `GRAFT_DEPLOY_TARGET`,
    `GRAFT_DEPLOY_ENV`, `GRAFT_DEPLOY_SHA`, `GRAFT_DEPLOY_VERSION` and
    `GRAFT_DEPLOY_PREVIOUS_SHA` in its environment, plus the listed `.env`
