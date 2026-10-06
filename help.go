@@ -31,7 +31,7 @@ var commands = []command{
 	{name: "amend", syntax: fixed("graft amend"), summary: text("gate, stage all, check, fold into the last unpushed commit")},
 	{name: "release", syntax: releaseSyntax, summary: text("tag the pushed HEAD with the version and push the tag"),
 		applies: func(c *config.Config) bool { return c.Version.Mode != config.ModeNone }},
-	{name: "version", syntax: fixed("graft version [--describe]"), summary: text("print the project version; --describe: the build identity, for stamping binaries")},
+	{name: "version", syntax: fixed("graft version [--describe]", "graft version bump [--minor|--major]"), summary: text("print the project version; --describe: the build identity, for stamping binaries; bump: raise it in the files without committing (version mode file)")},
 	{name: "init", syntax: fixed("graft init"), summary: text("install the git hooks (core.hooksPath) and the pinned tools")},
 	{name: "check", syntax: fixed("graft check"), summary: text("scan the staged changes for secrets, binaries, large files, version drift")},
 	{name: "leaks", syntax: fixed("graft leaks <revision range>"), summary: text("scan commits for the private names and terms of the user config (leaks)")},

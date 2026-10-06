@@ -41,7 +41,7 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 	if len(stale) > 0 {
 		a.warn("the hooks are out of date (%s); run graft init", strings.Join(stale, "; "))
 	}
-	return a.withLock(ctx, repo, cfg, "graft commit", func() error {
+	return a.withLock(ctx, commitLock(repo, cfg), cfg, "graft commit", func() error {
 		plan, err := prepareCommit(repo, cfg, msg, opts.Level)
 		if err != nil {
 			return err
@@ -79,7 +79,7 @@ func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level versio
 	if clean {
 		return plan, errNothingToCommit
 	}
-	bump, err := planBump(repo, cfg, level)
+	bump, err := planBump(repo, cfg, level, branch)
 	if err != nil {
 		return plan, err
 	}
@@ -119,10 +119,10 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	}
 	head, err := repo.Git("rev-parse", "--short", "HEAD")
 	if err != nil {
-		return errors.Join(fmt.Errorf("commit made, but reading it back failed: %w", err), a.push(repo, plan.remotes, refs))
+		return errors.Join(fmt.Errorf("commit made, but reading it back failed: %w", err), a.push(repo, plan.remotes, refs, config.BranchMatches(cfg.Push.Lease, plan.branch)))
 	}
 	a.printf("committed %s on %s%s", strings.TrimSpace(head), plan.branch, plan.bump.describe())
-	return a.push(repo, plan.remotes, refs)
+	return a.push(repo, plan.remotes, refs, config.BranchMatches(cfg.Push.Lease, plan.branch))
 }
 
 // bumpPlan is the version change a commit will make.
@@ -130,11 +130,20 @@ type bumpPlan struct {
 	cfg  config.Version
 	next *version.Semver
 	tag  string
+	// skipped is the branch whose commits leave the version alone.
+	skipped string
 }
 
-func planBump(repo *gitx.Repo, cfg *config.Config, level version.Level) (bumpPlan, error) {
+func planBump(repo *gitx.Repo, cfg *config.Config, level version.Level, branch string) (bumpPlan, error) {
 	plan := bumpPlan{cfg: cfg.Version}
 	if cfg.Version.Mode != config.ModeFile {
+		return plan, nil
+	}
+	if config.BranchMatches(cfg.Version.Skip, branch) {
+		if level != version.Patch {
+			return plan, fmt.Errorf("--%s on %s: version.skip_branches leaves the version alone there; bump on the branch the work is merged into", level, branch)
+		}
+		plan.skipped = branch
 		return plan, nil
 	}
 	current, err := version.Current(repo.Root, cfg.Version)
@@ -165,6 +174,9 @@ func (p bumpPlan) apply(repo *gitx.Repo) (*version.Backup, error) {
 }
 
 func (p bumpPlan) describe() string {
+	if p.skipped != "" {
+		return ", version untouched on " + p.skipped + " (version.skip_branches)"
+	}
 	if p.next == nil {
 		return ""
 	}

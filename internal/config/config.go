@@ -94,6 +94,12 @@ type Version struct {
 	TagPrefix   string     `yaml:"tag_prefix"`
 	TagOnCommit bool       `yaml:"tag_on_commit"`
 	Sync        []SyncFile `yaml:"sync"`
+	// SkipBranches are branch globs whose commits leave the version alone:
+	// work branches rebased onto the trunk, where the bump happens on merge.
+	SkipBranches []string `yaml:"skip_branches"`
+
+	// Skip is SkipBranches compiled.
+	Skip []*regexp.Regexp `yaml:"-"`
 }
 
 // SyncFile is a file that repeats the version and is rewritten on every bump.
@@ -115,6 +121,11 @@ type Ticket struct {
 
 // Push selects the remotes a commit is published to.
 type Push struct {
+	// ForceWithLease are branch globs pushed with --force-with-lease: work
+	// branches rebased onto the trunk after they were pushed.
+	ForceWithLease []string `yaml:"force_with_lease"`
+	// Lease is ForceWithLease compiled.
+	Lease []*regexp.Regexp `yaml:"-"`
 	// Remotes to push to; empty means every configured remote.
 	Remotes []string `yaml:"remotes"`
 }
@@ -160,7 +171,16 @@ type Hooks struct {
 // Lock configures the per-repository commit lock.
 type Lock struct {
 	Timeout time.Duration `yaml:"timeout"`
+	// Scope of the commit lock: LockRepository (default) or LockWorktree.
+	Scope string `yaml:"scope"`
 }
+
+// Commit lock scopes: one commit at a time in the whole repository, or one
+// per worktree, so agents working in separate worktrees commit in parallel.
+const (
+	LockRepository = "repository"
+	LockWorktree   = "worktree"
+)
 
 // IsEnabled reports whether the secrets check runs; it is on by default.
 func (s Secrets) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
@@ -265,6 +285,11 @@ func (c *Config) validateVersion() error {
 		if v.File == "" {
 			v.File = DefaultVersionFile
 		}
+		skip, err := compileBranchGlobs("version.skip_branches", v.SkipBranches)
+		if err != nil {
+			return err
+		}
+		v.Skip = skip
 		if err := checkRelPath("version.file", v.File); err != nil {
 			return err
 		}
@@ -275,8 +300,8 @@ func (c *Config) validateVersion() error {
 		}
 		return nil
 	case ModeGitTag, ModeNone:
-		if v.File != "" || len(v.Sync) > 0 || v.TagOnCommit {
-			return fmt.Errorf("version: file, sync and tag_on_commit apply only to mode %q", ModeFile)
+		if v.File != "" || len(v.Sync) > 0 || v.TagOnCommit || len(v.SkipBranches) > 0 {
+			return fmt.Errorf("version: file, sync, tag_on_commit and skip_branches apply only to mode %q", ModeFile)
 		}
 		return nil
 	case "":
@@ -333,6 +358,11 @@ func (c *Config) validateTicket() error {
 }
 
 func (c *Config) validatePush() error {
+	lease, err := compileBranchGlobs("push.force_with_lease", c.Push.ForceWithLease)
+	if err != nil {
+		return err
+	}
+	c.Push.Lease = lease
 	seen := map[string]bool{}
 	for _, remote := range c.Push.Remotes {
 		if remote == "" || seen[remote] {
@@ -410,7 +440,42 @@ func (c *Config) validateLock() error {
 	if c.Lock.Timeout < 0 {
 		return errors.New("lock.timeout: must be positive")
 	}
+	switch c.Lock.Scope {
+	case "":
+		c.Lock.Scope = LockRepository
+	case LockRepository:
+	case LockWorktree:
+		// Tags are shared by every worktree: two commits tagging at once
+		// could both pass the check that their tag is free.
+		if c.Version.TagOnCommit {
+			return fmt.Errorf("lock.scope %s: version.tag_on_commit needs the repository lock", LockWorktree)
+		}
+	default:
+		return fmt.Errorf("lock.scope: %q, want %s or %s", c.Lock.Scope, LockRepository, LockWorktree)
+	}
 	return nil
+}
+
+func compileBranchGlobs(where string, globs []string) ([]*regexp.Regexp, error) {
+	var res []*regexp.Regexp
+	for i, g := range globs {
+		re, err := CompileGlob(g)
+		if err != nil {
+			return nil, fmt.Errorf("%s[%d]: %w", where, i, err)
+		}
+		res = append(res, re)
+	}
+	return res, nil
+}
+
+// BranchMatches reports whether branch matches one of the compiled globs.
+func BranchMatches(globs []*regexp.Regexp, branch string) bool {
+	for _, re := range globs {
+		if re.MatchString(branch) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkRelPath accepts slash-separated paths inside the work tree.

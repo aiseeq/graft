@@ -54,6 +54,7 @@ leaks:                           # keep private names out of public repositories
 | `graft release` | tag the pushed HEAD with the version, push the tag to every remote |
 | `graft release --minor` / `--major` / `--version X.Y.Z` | choose the next tag (version mode `git-tag` only) |
 | `graft version` | print the project version |
+| `graft version bump [--minor\|--major]` | raise the version in the version file and its synced files without committing, for a script that folds the bump into its own commit (merging a work branch whose commits skipped it) |
 | `graft version --describe` | the build identity for stamping binaries: `v1.4.0-3-gabc1234[-dirty]`, `1.4.0[-dirty]` in mode `file`, `v0.0.0-<commits>-g<hash>` without a tag |
 | `graft init` | install the hooks and set `core.hooksPath`, create the `.env` file from `dotenv_template` when it is missing, install pinned tools that fail their check; safe to repeat |
 | `graft check` | run the content checks on the index |
@@ -88,10 +89,14 @@ leaks:                           # keep private names out of public repositories
 2. Take the repository lock. A second graft in the same repository (or in
    another worktree of it) waits for the first, up to `lock.timeout`, and says
    who holds the lock. The lock is an OS file lock and dies with its process.
+   With `lock.scope: worktree` each worktree has its own commit lock, so
+   agents in separate worktrees commit in parallel; `graft release` still
+   takes the repository lock, which the main worktree's commits share.
 3. Refuse if a merge, rebase, cherry-pick or revert is in progress, if HEAD is
    detached, or if there is nothing to commit.
 4. Run the gate. A failure stops here, with the version untouched.
-5. Bump the version file and every file synced with it.
+5. Bump the version file and every file synced with it, except on a branch
+   in `version.skip_branches` (`--minor` and `--major` are refused there).
 6. `git add -A`, then check the staged changes (secrets, binaries, sizes,
    version drift, and in a public repository private names in the added lines
    and the message). A failure restores the version files and stops.
@@ -101,7 +106,8 @@ leaks:                           # keep private names out of public repositories
    the key is added as a paragraph of its own, before a closing trailer block
    (`Co-Authored-By: ...`) so git still sees the trailers. graft adds no
    trailers itself.
-8. Push to each remote in turn. A failing remote does not stop the others; the
+8. Push to each remote in turn, with `--force-with-lease` on a branch in
+   `push.force_with_lease`. A failing remote does not stop the others; the
    summary names every failure with the command to retry, and the exit status
    is non-zero.
 
@@ -148,6 +154,8 @@ version:
   file: VERSION                 # file mode; default VERSION, strictly MAJOR.MINOR.PATCH
   tag_prefix: v                 # default v
   tag_on_commit: false          # file mode: tag every commit v<version> and push the tag
+  skip_branches: ['w/*']        # file mode: commits on these branches leave the version alone;
+                                # the branch they are merged into bumps (graft version bump)
   sync:                         # file mode: files that repeat the version
     - path: web/package.json
       format: json              # value at the key path; formatting is preserved
@@ -169,6 +177,7 @@ ticket:                         # omit to never add a key
 
 push:
   remotes: []                   # empty: every configured remote
+  force_with_lease: ['w/*']     # branches rebased after a push: pushed with --force-with-lease
 
 checks:
   secrets:
@@ -191,6 +200,8 @@ hooks:
 
 lock:
   timeout: 15m                  # default 15m
+  scope: repository             # repository (default) | worktree: one commit lock per worktree;
+                                # not with version.tag_on_commit
 ```
 
 Unknown keys are errors, so a typo cannot silently switch a check off. All

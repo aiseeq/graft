@@ -23,7 +23,7 @@ func (a *App) Amend(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return a.withLock(ctx, repo, cfg, "graft amend", func() error {
+	return a.withLock(ctx, commitLock(repo, cfg), cfg, "graft amend", func() error {
 		if err := checkAmendable(repo); err != nil {
 			return err
 		}
@@ -97,7 +97,7 @@ func (a *App) Release(ctx context.Context, opts ReleaseOptions) error {
 	if err != nil {
 		return err
 	}
-	return a.withLock(ctx, repo, cfg, "graft release", func() error {
+	return a.withLock(ctx, repoLock(repo), cfg, "graft release", func() error {
 		next, err := releaseVersion(repo, cfg, opts)
 		if err != nil {
 			return err
@@ -121,7 +121,7 @@ func (a *App) Release(ctx context.Context, opts ReleaseOptions) error {
 			return err
 		}
 		a.printf("tagged %s", tag)
-		return a.push(repo, remotes, []string{"refs/tags/" + tag})
+		return a.push(repo, remotes, []string{"refs/tags/" + tag}, false)
 	})
 }
 
@@ -218,6 +218,42 @@ func latestTag(repo *gitx.Repo, prefix string) (version.Semver, bool, error) {
 }
 
 // Version prints the project version.
+// BumpVersion raises the version in the version file and its synced files
+// without committing: for scripts that fold the bump into a commit they make
+// themselves, such as merging a work branch whose commits skipped it.
+func (a *App) BumpVersion(ctx context.Context, level version.Level) error {
+	repo, cfg, err := a.open()
+	if err != nil {
+		return err
+	}
+	if cfg.Version.Mode != config.ModeFile {
+		return fmt.Errorf("version bump needs version.mode %s; with %s there is no version file", config.ModeFile, cfg.Version.Mode)
+	}
+	branch, err := repo.Branch()
+	if err != nil {
+		return err
+	}
+	return a.withLock(ctx, commitLock(repo, cfg), cfg, "graft version bump", func() error {
+		plan, err := planBump(repo, cfg, level, branch)
+		if err != nil {
+			return err
+		}
+		if plan.skipped != "" {
+			return fmt.Errorf("%s is in version.skip_branches: its commits leave the version alone", branch)
+		}
+		current, err := version.Current(repo.Root, cfg.Version)
+		if err != nil {
+			return err
+		}
+		backup, err := plan.apply(repo)
+		if err != nil {
+			return err
+		}
+		a.printf("version %s -> %s (%s)", current, plan.next, strings.Join(backup.Paths(), ", "))
+		return nil
+	})
+}
+
 func (a *App) Version(describe bool) error {
 	repo, cfg, err := a.open()
 	if err != nil {

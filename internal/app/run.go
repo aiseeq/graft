@@ -154,7 +154,12 @@ func (a *App) Locks() error {
 	if err != nil {
 		return err
 	}
-	paths := []string{filepath.Join(repo.CommonDir, lockFile)}
+	paths := []string{repoLock(repo)}
+	// A worktree's own commit lock (lock.scope worktree); in the main
+	// worktree it is the repository lock itself.
+	if own := filepath.Join(repo.GitDir, lockFile); own != paths[0] {
+		paths = append(paths, own)
+	}
 	named, err := filepath.Glob(filepath.Join(lockDir(repo), "*.lock"))
 	if err != nil {
 		return fmt.Errorf("listing named locks: %w", err)

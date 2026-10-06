@@ -86,7 +86,7 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 	case "release":
 		return releaseCmd(ctx, a, rest)
 	case "version":
-		return versionCmd(a, rest)
+		return versionCmd(ctx, a, rest)
 	case "init":
 		return noArgs(a, cmd, rest, func() error { return a.Init(ctx) })
 	case "check":
@@ -319,7 +319,19 @@ func releaseCmd(ctx context.Context, a *app.App, args []string) error {
 	return a.Release(ctx, app.ReleaseOptions{Level: lvl, Version: *exact})
 }
 
-func versionCmd(a *app.App, args []string) error {
+func versionCmd(ctx context.Context, a *app.App, args []string) error {
+	if len(args) > 0 && args[0] == "bump" {
+		fs := newFlags(a, "version bump")
+		level := levelFlags(fs)
+		if err := parse(fs, args[1:]); err != nil {
+			return err
+		}
+		lvl, err := level()
+		if err != nil {
+			return err
+		}
+		return a.BumpVersion(ctx, lvl)
+	}
 	fs := newFlags(a, "version")
 	describe := fs.Bool("describe", false, "print the build identity: works without tags, marks uncommitted changes")
 	if err := parse(fs, args); err != nil {

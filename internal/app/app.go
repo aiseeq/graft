@@ -77,16 +77,29 @@ func (a *App) printf(format string, args ...any) {
 }
 
 // withLock runs fn holding the repository lock.
-func (a *App) withLock(ctx context.Context, repo *gitx.Repo, cfg *config.Config, holder string, fn func() error) error {
-	lk, err := lock.Acquire(ctx, filepath.Join(repo.CommonDir, lockFile), cfg.Lock.Timeout, holder, a.Stderr)
+func (a *App) withLock(ctx context.Context, path string, cfg *config.Config, holder string, fn func() error) error {
+	lk, err := lock.Acquire(ctx, path, cfg.Lock.Timeout, holder, a.Stderr)
 	if err != nil {
 		return err
 	}
 	err = fn()
 	if releaseErr := lk.Release(); releaseErr != nil {
-		err = errors.Join(err, fmt.Errorf("releasing the repository lock: %w", releaseErr))
+		err = errors.Join(err, fmt.Errorf("releasing the lock %s: %w", filepath.Base(path), releaseErr))
 	}
 	return err
+}
+
+// repoLock is the lock shared by every worktree of the repository.
+func repoLock(repo *gitx.Repo) string { return filepath.Join(repo.CommonDir, lockFile) }
+
+// commitLock is the lock commits and amends take: the repository's, or with
+// lock.scope worktree the worktree's own. The main worktree's git directory is
+// the common one, so its commits still exclude a release.
+func commitLock(repo *gitx.Repo, cfg *config.Config) string {
+	if cfg.Lock.Scope == config.LockWorktree {
+		return filepath.Join(repo.GitDir, lockFile)
+	}
+	return repoLock(repo)
 }
 
 // runner prepares the task runner for the repository.
@@ -199,12 +212,13 @@ type PushError struct {
 	Failed []string
 	Total  int
 	Refs   []string
+	Lease  bool
 }
 
 func (e *PushError) Error() string {
 	var retry []string
 	for _, r := range e.Failed {
-		retry = append(retry, "git push "+r+" "+strings.Join(e.Refs, " "))
+		retry = append(retry, "git "+strings.Join(append(pushArgs(r, e.Lease), e.Refs...), " "))
 	}
 	return fmt.Sprintf("push failed for %d of %d remotes (%s); the commit is made locally, retry with: %s",
 		len(e.Failed), e.Total, strings.Join(e.Failed, ", "), strings.Join(retry, "; "))
@@ -213,14 +227,14 @@ func (e *PushError) Error() string {
 // push publishes refs to every remote, one at a time, and keeps going past a
 // failed remote: the others still get the commit, and the summary names each
 // one that did not.
-func (a *App) push(repo *gitx.Repo, remotes, refs []string) error {
+func (a *App) push(repo *gitx.Repo, remotes, refs []string, lease bool) error {
 	if len(remotes) == 0 {
 		a.printf("no remotes configured, nothing pushed")
 		return nil
 	}
 	var failed []string
 	for _, remote := range remotes {
-		args := append([]string{"push", remote}, refs...)
+		args := append(pushArgs(remote, lease), refs...)
 		if _, err := repo.Git(args...); err != nil {
 			failed = append(failed, remote)
 			fmt.Fprintf(a.Stderr, "graft: push to %s FAILED: %v\n", remote, err)
@@ -229,9 +243,18 @@ func (a *App) push(repo *gitx.Repo, remotes, refs []string) error {
 		a.printf("pushed to %s", remote)
 	}
 	if len(failed) > 0 {
-		return &PushError{Failed: failed, Total: len(remotes), Refs: refs}
+		return &PushError{Failed: failed, Total: len(remotes), Refs: refs, Lease: lease}
 	}
 	return nil
+}
+
+// pushArgs is git push to remote, with --force-with-lease for a branch that is
+// rebased after it was pushed: the push replaces only what this clone last saw.
+func pushArgs(remote string, lease bool) []string {
+	if lease {
+		return []string{"push", "--force-with-lease", remote}
+	}
+	return []string{"push", remote}
 }
 
 // requireNormalContext refuses to start a graft commit on top of an operation
