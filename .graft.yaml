@@ -17,9 +17,9 @@ test_db:
 
 tools:
   glint:
-    go_install: github.com/aiseeq/glint/cmd/glint@v1.51.0
+    go_install: github.com/aiseeq/glint/cmd/glint@v1.67.1
     check: [glint, rules]
-    expect: test-retries-mask-flakiness
+    expect: fixed-temp-name-renamed
 
 tasks:
   build:

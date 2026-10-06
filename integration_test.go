@@ -831,3 +831,25 @@ gate:
 	}
 	f.mustGraft("check")
 }
+
+func TestCommitWarnsAboutOutdatedHooks(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\ngraft: '>=0.1.0'\nversion:\n  mode: none\ngate: []\n",
+		"a.txt":       "a\n",
+	}, "origin")
+	out := f.mustGraft("commit", "-m", "feat: before init")
+	if !strings.Contains(out, `core.hooksPath is "", not ".githooks"`) || !strings.Contains(out, "run graft init") {
+		t.Errorf("no warning without hooks:\n%s", out)
+	}
+	f.mustGraft("init")
+	f.write("a.txt", "b\n")
+	if out := f.mustGraft("commit", "-m", "feat: after init"); strings.Contains(out, "out of date") {
+		t.Errorf("warning after init:\n%s", out)
+	}
+	// A shim of an older pin still runs, but init would rewrite it.
+	f.write(".githooks/pre-commit", strings.Replace(f.read(".githooks/pre-commit"), "@v0.1.0", "@v0.0.9", 1))
+	f.write("a.txt", "c\n")
+	if out := f.mustGraft("commit", "-m", "feat: stale shim"); !strings.Contains(out, ".githooks/pre-commit differs from the shim of this graft") {
+		t.Errorf("stale shim not reported:\n%s", out)
+	}
+}

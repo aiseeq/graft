@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aiseeq/graft/internal/atomicfile"
 	"github.com/aiseeq/graft/internal/config"
 	"github.com/aiseeq/graft/internal/dotenv"
 	"github.com/aiseeq/graft/internal/proc"
@@ -553,11 +554,10 @@ func waitFor(ctx context.Context, timeout time.Duration, done func() (bool, erro
 }
 
 func writePID(path string, pid int) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+	if err := atomicfile.Write(path, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
 		return fmt.Errorf("writing the pid file: %w", err)
 	}
-	return os.Rename(tmp, path)
+	return nil
 }
 
 func removePID(path string) error {

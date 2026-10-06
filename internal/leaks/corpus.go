@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/aiseeq/graft/internal/atomicfile"
 )
 
 // Corpus is the vocabulary of public Go code: the identifiers of the Go
@@ -271,24 +273,12 @@ func readLines(path string) ([]string, error) {
 
 // writeLines replaces path atomically.
 func writeLines(path string, lines []string) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
-	if err != nil {
-		return fmt.Errorf("writing the leak index: %w", err)
-	}
-	w := bufio.NewWriter(tmp)
+	var b bytes.Buffer
 	for _, l := range lines {
-		if _, err := w.WriteString(l + "\n"); err != nil {
-			return errors.Join(fmt.Errorf("writing %s: %w", tmp.Name(), err), tmp.Close(), os.Remove(tmp.Name()))
-		}
+		b.WriteString(l + "\n")
 	}
-	if err := w.Flush(); err != nil {
-		return errors.Join(fmt.Errorf("writing %s: %w", tmp.Name(), err), tmp.Close(), os.Remove(tmp.Name()))
-	}
-	if err := tmp.Close(); err != nil {
-		return errors.Join(fmt.Errorf("writing %s: %w", tmp.Name(), err), os.Remove(tmp.Name()))
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return errors.Join(fmt.Errorf("replacing %s: %w", path, err), os.Remove(tmp.Name()))
+	if err := atomicfile.Write(path, b.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("the leak index: %w", err)
 	}
 	return nil
 }

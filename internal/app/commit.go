@@ -8,6 +8,7 @@ import (
 
 	"github.com/aiseeq/graft/internal/config"
 	"github.com/aiseeq/graft/internal/gitx"
+	"github.com/aiseeq/graft/internal/hooks"
 	"github.com/aiseeq/graft/internal/message"
 	"github.com/aiseeq/graft/internal/version"
 )
@@ -32,6 +33,13 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 	}
 	if opts.Level != version.Patch && cfg.Version.Mode != config.ModeFile {
 		return fmt.Errorf("--%s needs version.mode %s; with %s, versions come from graft release", opts.Level, config.ModeFile, cfg.Version.Mode)
+	}
+	stale, err := hooks.Outdated(repo, cfg.Hooks.Dir, cfg.MinGraft)
+	if err != nil {
+		return err
+	}
+	if len(stale) > 0 {
+		a.warn("the hooks are out of date (%s); run graft init", strings.Join(stale, "; "))
 	}
 	return a.withLock(ctx, repo, cfg, "graft commit", func() error {
 		plan, err := prepareCommit(repo, cfg, msg, opts.Level)

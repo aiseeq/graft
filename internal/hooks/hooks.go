@@ -56,6 +56,34 @@ func isShim(content []byte, name string) bool {
 		strings.HasSuffix(text, "\nexec graft hook "+name+` "$@"`+"\n")
 }
 
+// Outdated lists what graft init would change: core.hooksPath not pointing
+// at dir as written in the config, and shims that are missing or differ from
+// the ones this graft writes for minVersion. Line endings do not count: a
+// Windows checkout may convert them.
+func Outdated(repo *gitx.Repo, dir, minVersion string) ([]string, error) {
+	var stale []string
+	current, err := hooksPath(repo)
+	if err != nil {
+		return nil, err
+	}
+	if current != dir {
+		stale = append(stale, fmt.Sprintf("core.hooksPath is %q, not %q", current, dir))
+	}
+	for _, name := range Names {
+		path := filepath.Join(repo.Root, filepath.FromSlash(dir), name)
+		existing, err := os.ReadFile(path)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			stale = append(stale, filepath.ToSlash(filepath.Join(dir, name))+" is missing")
+		case err != nil:
+			return nil, err
+		case !bytes.Equal(bytes.ReplaceAll(existing, []byte("\r\n"), []byte("\n")), Shim(name, minVersion)):
+			stale = append(stale, filepath.ToSlash(filepath.Join(dir, name))+" differs from the shim of this graft")
+		}
+	}
+	return stale, nil
+}
+
 // Context is the kind of commit git is about to create.
 type Context string
 

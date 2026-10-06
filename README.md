@@ -81,7 +81,10 @@ leaks:                           # keep private names out of public repositories
 ### graft commit, step by step
 
 1. Read the message (`-m`, repeatable, one paragraph each; `-F file`; `-F -`).
-   An empty message is refused: there is no default subject.
+   An empty message is refused: there is no default subject. Warn when the
+   hooks are not what `graft init` would install now: `core.hooksPath` not
+   set to `hooks.dir` as written, or a shim missing or written for another
+   `graft:` pin.
 2. Take the repository lock. A second graft in the same repository (or in
    another worktree of it) waits for the first, up to `lock.timeout`, and says
    who holds the lock. The lock is an OS file lock and dies with its process.
