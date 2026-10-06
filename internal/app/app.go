@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -128,6 +129,29 @@ func (a *App) runner(repo *gitx.Repo, cfg *config.Config) *tasks.Runner {
 
 func (a *App) gate(ctx context.Context, repo *gitx.Repo, cfg *config.Config) error {
 	return a.runner(repo, cfg).Gate(ctx)
+}
+
+// gateForMessage runs the gate of a commit whose message is known: steps find
+// it in the file named by GRAFT_COMMIT_MESSAGE_FILE, removed afterwards.
+func (a *App) gateForMessage(ctx context.Context, repo *gitx.Repo, cfg *config.Config, message string) (err error) {
+	f, err := os.CreateTemp(repo.GitDir, "GRAFT_COMMIT_MESSAGE.*")
+	if err != nil {
+		return fmt.Errorf("writing the commit message for the gate: %w", err)
+	}
+	defer func() {
+		if rmErr := os.Remove(f.Name()); rmErr != nil {
+			err = errors.Join(err, fmt.Errorf("removing %s: %w", f.Name(), rmErr))
+		}
+	}()
+	if _, err := f.WriteString(message); err != nil {
+		return errors.Join(fmt.Errorf("writing %s: %w", f.Name(), err), f.Close())
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("writing %s: %w", f.Name(), err)
+	}
+	r := a.runner(repo, cfg)
+	r.Extra = map[string]string{tasks.MessageFileEnv: f.Name()}
+	return r.Gate(ctx)
 }
 
 // markerEnv lets graft's own git commit through the pre-commit hook.

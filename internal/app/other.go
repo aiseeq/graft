@@ -17,17 +17,23 @@ import (
 
 // Amend folds the work tree into the last commit through the same gate and
 // checks as a new commit, keeping its message. It does not push: the commit it
-// rewrites must not be published yet.
+// rewrites is unpublished, or published only on branches that are rewritten by
+// design (push.force_with_lease).
 func (a *App) Amend(ctx context.Context) error {
 	repo, cfg, err := a.open()
 	if err != nil {
 		return err
 	}
 	return a.withLock(ctx, commitLock(repo, cfg), cfg, "graft amend", func() error {
-		if err := checkAmendable(repo); err != nil {
+		if err := checkAmendable(repo, cfg); err != nil {
 			return err
 		}
-		if err := a.gate(ctx, repo, cfg); err != nil {
+		message, err := repo.Git("log", "-1", "--format=%B", "HEAD")
+		if err != nil {
+			return err
+		}
+		// log appends a newline of its own after the message's.
+		if err := a.gateForMessage(ctx, repo, cfg, strings.TrimRight(message, "\n")+"\n"); err != nil {
 			return err
 		}
 		if _, err := repo.Git("add", "-A"); err != nil {
@@ -48,9 +54,9 @@ func (a *App) Amend(ctx context.Context) error {
 	})
 }
 
-// checkAmendable refuses to amend a published commit, a missing one, or with
-// nothing to fold in.
-func checkAmendable(repo *gitx.Repo) error {
+// checkAmendable refuses to amend a missing commit, one with nothing to fold
+// in, or one published on a branch outside push.force_with_lease.
+func checkAmendable(repo *gitx.Repo, cfg *config.Config) error {
 	if err := requireNormalContext(repo); err != nil {
 		return err
 	}
@@ -61,12 +67,20 @@ func checkAmendable(repo *gitx.Repo) error {
 	if !hasHead {
 		return errors.New("there is no commit to amend yet: use graft commit")
 	}
-	published, err := repo.RemotesContaining("HEAD")
+	published, err := repo.RemoteBranchesContaining("HEAD")
 	if err != nil {
 		return err
 	}
-	if len(published) > 0 {
-		return fmt.Errorf("the last commit is already on %s: amending it would rewrite published history; make a new commit instead: graft commit -m \"fix: ...\"", strings.Join(published, ", "))
+	// Branches in push.force_with_lease are rewritten by design (rebased
+	// work branches); history anywhere else stays as published.
+	var kept []string
+	for _, b := range published {
+		if !config.BranchMatches(cfg.Push.Lease, b.Branch) {
+			kept = append(kept, b.Remote+"/"+b.Branch)
+		}
+	}
+	if len(kept) > 0 {
+		return fmt.Errorf("the last commit is already on %s: amending it would rewrite published history; make a new commit instead: graft commit -m \"fix: ...\"", strings.Join(kept, ", "))
 	}
 	clean, err := repo.IsClean()
 	if err != nil {

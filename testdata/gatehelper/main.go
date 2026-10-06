@@ -92,6 +92,17 @@ func run(args []string) error {
 		for {
 			time.Sleep(time.Hour)
 		}
+	case "copyenv":
+		// copyenv VAR dst: copy the file VAR names to dst.
+		src, ok := os.LookupEnv(args[1])
+		if !ok {
+			return fmt.Errorf("%s is not set", args[1])
+		}
+		data, err := os.ReadFile(src)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(args[2], data, 0o644)
 	case "print":
 		fmt.Println(args[1])
 		return nil

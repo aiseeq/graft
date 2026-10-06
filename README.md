@@ -50,7 +50,7 @@ leaks:                           # keep private names out of public repositories
 | `graft commit -m "fix: ..."` | lock, gate, bump patch (version mode `file`), `git add -A`, checks, commit, push to every remote |
 | `graft commit --minor` / `--major` | same with a minor / major bump (version mode `file` only) |
 | `graft commit -F msg.txt` / `-F -` | message from a file / from stdin, byte for byte |
-| `graft amend` | lock, gate, `git add -A`, checks, `git commit --amend --no-edit`; refuses a commit that is already on a remote |
+| `graft amend` | lock, gate, `git add -A`, checks, `git commit --amend --no-edit`, no push; refuses a commit that is already on a remote, unless only on branches in `push.force_with_lease` |
 | `graft release` | tag the pushed HEAD with the version, push the tag to every remote |
 | `graft release --minor` / `--major` / `--version X.Y.Z` | choose the next tag (version mode `git-tag` only) |
 | `graft version` | print the project version |
@@ -271,7 +271,11 @@ dotenv_sets:                   # key lists several tasks and services share
   the `.env` file: only the keys listed in `dotenv` and `dotenv_sets`, the
   `env` values, the test database DSN and `GRAFT_VERSION` are added.
   `GRAFT_VERSION` is `graft version --describe`; before the first commit
-  there is none. Argv words see all of them as `${KEY}`.
+  there is none. In the gate of `graft commit` and `graft amend`,
+  `GRAFT_COMMIT_MESSAGE_FILE` names a file with the message of the commit
+  being made (the final text, work item key included), for checks that hold
+  the message to what the change does; it is removed after the gate. Argv
+  words see all of them as `${KEY}`.
 - Before the first step, deps included, graft fits the arguments into the
   steps and checks every required key and `${KEY}` the task and all its deps
   need, listing everything missing at once. An optional `KEY?` set nowhere is

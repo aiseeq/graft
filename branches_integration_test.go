@@ -129,3 +129,52 @@ func TestWorktreeLockScopeRefusesTagOnCommit(t *testing.T) {
 		t.Errorf("%d\n%s", code, out)
 	}
 }
+
+func TestGateSeesTheCommitMessage(t *testing.T) {
+	state := t.TempDir()
+	got := filepath.Join(state, "message")
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion:\n  mode: none\nticket:\n  pattern: 'PROJ-[0-9]+'\ngate:\n" +
+			gateStep("copyenv", "GRAFT_COMMIT_MESSAGE_FILE", got),
+	}, "origin")
+	f.mustGraft("commit", "-m", "feat: names the flag", "-m", "anchor 7, frames 10-20")
+	if msg := readFile(t, got); msg != "feat: names the flag\n\nanchor 7, frames 10-20\n\nPROJ-42\n" {
+		t.Errorf("gate saw %q", msg)
+	}
+	if left, _ := filepath.Glob(filepath.Join(f.work, ".git", "GRAFT_COMMIT_MESSAGE.*")); len(left) > 0 {
+		t.Errorf("message file left behind: %v", left)
+	}
+
+	// graft amend keeps the message, and the gate sees that one.
+	f.git("checkout", "-q", "-b", "local-only")
+	f.write("a.txt", "a\n")
+	f.git("-c", "core.hooksPath=/dev/null", "add", "-A")
+	f.git("-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "fix: local\n\nbody")
+	f.write("a.txt", "a2\n")
+	f.mustGraft("amend")
+	if msg := readFile(t, got); msg != "fix: local\n\nbody\n" {
+		t.Errorf("amend gate saw %q", msg)
+	}
+}
+
+func TestAmendRewritesOnlyLeaseBranches(t *testing.T) {
+	f := workBranchRepo(t)
+	f.write("t.txt", "trunk\n")
+	if out, code := f.graft("", "amend"); code == 0 || !strings.Contains(out, "already on origin/main") {
+		t.Errorf("amended a published trunk commit: %d\n%s", code, out)
+	}
+	if err := os.Remove(filepath.Join(f.work, "t.txt")); err != nil {
+		t.Fatal(err)
+	}
+	f.git("checkout", "-q", "-b", "w/one")
+	f.write("a.txt", "a\n")
+	f.mustGraft("commit", "-m", "feat: work")
+	// The work branch is pushed and the trunk has not moved: rebasing it
+	// changes nothing, and the merge folds the version bump in with amend.
+	f.git("checkout", "-q", "-B", "merge", "origin/w/one")
+	f.mustGraft("version", "bump")
+	out := f.mustGraft("amend")
+	if !strings.Contains(out, "amended the last commit") || f.git("show", "HEAD:VERSION") != "1.0.2" {
+		t.Errorf("amend on a pushed work branch commit:\n%s\nVERSION %s", out, f.git("show", "HEAD:VERSION"))
+	}
+}

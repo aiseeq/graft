@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -171,10 +172,40 @@ func (r *Repo) IsClean() (bool, error) {
 	return strings.TrimSpace(out) == "", nil
 }
 
+// RemoteBranch is a branch on a remote, from its remote-tracking ref.
+type RemoteBranch struct {
+	Remote string
+	Branch string
+}
+
+// RemoteBranchesContaining returns the remote-tracking branches that already
+// contain rev, the remotes' HEAD aliases left out.
+func (r *Repo) RemoteBranchesContaining(rev string) ([]RemoteBranch, error) {
+	out, err := r.Git("for-each-ref", "--contains", rev, "--format=%(refname)", "refs/remotes/")
+	if err != nil {
+		return nil, err
+	}
+	remotes, err := r.Remotes()
+	if err != nil {
+		return nil, err
+	}
+	var found []RemoteBranch
+	for _, ref := range splitLines(out) {
+		for _, remote := range remotes {
+			branch, ok := strings.CutPrefix(ref, "refs/remotes/"+remote+"/")
+			if ok && branch != "HEAD" {
+				found = append(found, RemoteBranch{Remote: remote, Branch: branch})
+				break
+			}
+		}
+	}
+	return found, nil
+}
+
 // RemotesContaining returns the remotes whose remote-tracking branches already
 // contain rev.
 func (r *Repo) RemotesContaining(rev string) ([]string, error) {
-	out, err := r.Git("for-each-ref", "--contains", rev, "--format=%(refname)", "refs/remotes/")
+	branches, err := r.RemoteBranchesContaining(rev)
 	if err != nil {
 		return nil, err
 	}
@@ -184,12 +215,8 @@ func (r *Repo) RemotesContaining(rev string) ([]string, error) {
 	}
 	var found []string
 	for _, remote := range remotes {
-		prefix := "refs/remotes/" + remote + "/"
-		for _, ref := range splitLines(out) {
-			if strings.HasPrefix(ref, prefix) && ref != prefix+"HEAD" {
-				found = append(found, remote)
-				break
-			}
+		if slices.ContainsFunc(branches, func(b RemoteBranch) bool { return b.Remote == remote }) {
+			found = append(found, remote)
 		}
 	}
 	return found, nil

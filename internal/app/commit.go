@@ -91,7 +91,7 @@ func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level versio
 }
 
 func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, plan commitPlan) error {
-	if err := a.gate(ctx, repo, cfg); err != nil {
+	if err := a.gateForMessage(ctx, repo, cfg, plan.message); err != nil {
 		return err
 	}
 	backup, err := plan.bump.apply(repo)

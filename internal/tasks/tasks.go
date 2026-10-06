@@ -48,6 +48,9 @@ type Runner struct {
 	// Version returns the project version (graft version --describe) and
 	// whether there is one: a repository without commits has none.
 	Version func() (string, bool, error)
+	// Extra are variables every step gets, such as the message of the commit
+	// the gate guards.
+	Extra map[string]string
 
 	lookup  *dotenv.Lookup
 	base    []string
@@ -59,6 +62,11 @@ type Runner struct {
 
 // VersionEnv carries the project version into every step.
 const VersionEnv = "GRAFT_VERSION"
+
+// MessageFileEnv names, in the gate of graft commit and graft amend, a file
+// holding the message of the commit being made: the final text, work item key
+// included.
+const MessageFileEnv = "GRAFT_COMMIT_MESSAGE_FILE"
 
 // NewRunner prepares a runner.
 func NewRunner(root string, cfg *config.Config, stdout, stderr io.Writer) *Runner {
@@ -338,6 +346,9 @@ func (r *Runner) vars(ctx context.Context, t *config.Task) (map[string]string, e
 	}
 	if r.version != nil {
 		vars[VersionEnv] = *r.version
+	}
+	for k, v := range r.Extra {
+		vars[k] = v
 	}
 	if t.TestDB {
 		if r.TestDSN == nil {
