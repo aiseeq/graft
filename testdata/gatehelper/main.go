@@ -12,6 +12,7 @@
 //	gatehelper stubborn <addr>      listen on addr, ignoring SIGTERM
 //	gatehelper sleep                run until terminated
 //	gatehelper print <text>         print text
+//	gatehelper alloc <mb>           touch mb megabytes of memory, then exit
 package main
 
 import (
@@ -105,6 +106,17 @@ func run(args []string) error {
 		return os.WriteFile(args[2], data, 0o644)
 	case "print":
 		fmt.Println(args[1])
+		return nil
+	case "alloc":
+		mb, err := strconv.Atoi(args[1])
+		if err != nil {
+			return fmt.Errorf("alloc: size %q: %w", args[1], err)
+		}
+		buf := make([]byte, mb<<20)
+		for i := 0; i < len(buf); i += 4096 {
+			buf[i] = 1
+		}
+		fmt.Println("allocated", mb, "MB, last byte", buf[len(buf)-1])
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[0])

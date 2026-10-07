@@ -13,12 +13,14 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/aiseeq/graft/internal/config"
 	"github.com/aiseeq/graft/internal/dotenv"
 	"github.com/aiseeq/graft/internal/envs"
 	"github.com/aiseeq/graft/internal/gitx"
 	"github.com/aiseeq/graft/internal/lock"
+	"github.com/aiseeq/graft/internal/stats"
 )
 
 // MarkerEnv is set for git commands graft itself runs, so the pre-commit hook
@@ -51,6 +53,12 @@ type Runner struct {
 	// Extra are variables every step gets, such as the message of the commit
 	// the gate guards.
 	Extra map[string]string
+	// Stats receives the resource use of every process a step runs and of
+	// every task; nil records nothing.
+	Stats *stats.Recorder
+	// Top names, in the stats, the command the tasks run under (commit,
+	// gate, deploy); empty names the outermost task instead.
+	Top string
 
 	lookup  *dotenv.Lookup
 	base    []string
@@ -58,6 +66,19 @@ type Runner struct {
 	dsn     *string
 	done    map[string]bool
 	held    map[string]lock.Mode
+	// frames are the tasks running now, outermost first; every process a
+	// step runs counts in all of them.
+	frames []*frame
+}
+
+// frame is a running task as the stats see it.
+type frame struct {
+	task  string
+	start time.Time
+	steps int
+	use   stats.Usage
+	// exit is the first non-zero exit status of its processes.
+	exit int
 }
 
 // VersionEnv carries the project version into every step.
@@ -79,7 +100,7 @@ func NewRunner(root string, cfg *config.Config, stdout, stderr io.Writer) *Runne
 }
 
 // Gate runs the commit gate with stdin closed.
-func (r *Runner) Gate(ctx context.Context) error {
+func (r *Runner) Gate(ctx context.Context) (err error) {
 	if len(r.Config.Gate) == 0 {
 		fmt.Fprintln(r.Stdout, "graft: gate is empty, nothing to run")
 		return nil
@@ -88,6 +109,8 @@ func (r *Runner) Gate(ctx context.Context) error {
 	if err := r.preflight(r.Config.Gate, &config.Task{}, "gate"); err != nil {
 		return err
 	}
+	f := r.begin("gate")
+	defer func() { r.end(f, err != nil) }()
 	for i, s := range r.Config.Gate {
 		fmt.Fprintf(r.Stdout, "graft: gate %d/%d: %s\n", i+1, len(r.Config.Gate), s.Source)
 		if err := r.step(ctx, s, &config.Task{}, nil); err != nil {
@@ -243,10 +266,12 @@ func (r *Runner) missing(t *config.Task, steps []config.Step) []string {
 	return problems
 }
 
-func (r *Runner) run(ctx context.Context, name string, args []string) error {
+func (r *Runner) run(ctx context.Context, name string, args []string) (err error) {
 	if r.done[name] {
 		return nil
 	}
+	f := r.begin(name)
+	defer func() { r.end(f, err != nil) }()
 	t := r.Config.Tasks[name]
 	if err := r.RunDeps(ctx, t.Deps); err != nil {
 		return err
@@ -321,7 +346,82 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	}
 	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
-	return cmd.Run()
+	return r.measure(cmd, s.Source)
+}
+
+// Measure runs cmd as the one step of name, a unit of work that is not a
+// task (the deploy script), and records it the way task steps are recorded.
+func (r *Runner) Measure(name, source string, cmd *exec.Cmd) (err error) {
+	f := r.begin(name)
+	defer func() { r.end(f, err != nil) }()
+	return r.measure(cmd, source)
+}
+
+// measure runs cmd and records what it cost against every running task.
+// A command that never started records nothing: no process ran.
+func (r *Runner) measure(cmd *exec.Cmd, source string) error {
+	start := time.Now()
+	err := cmd.Run()
+	if cmd.ProcessState == nil || len(r.frames) == 0 {
+		return err
+	}
+	use := stats.FromProcess(cmd.ProcessState, time.Since(start))
+	code := cmd.ProcessState.ExitCode()
+	for _, f := range r.frames {
+		f.steps++
+		f.use.Add(use)
+		if f.exit == 0 {
+			f.exit = code
+		}
+	}
+	inner := r.frames[len(r.frames)-1]
+	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Step: stats.StepText(source), Exit: code}, use, r.frames[0].task)
+	return err
+}
+
+// begin opens the stats frame of a task.
+func (r *Runner) begin(task string) *frame {
+	f := &frame{task: task, start: time.Now()}
+	r.frames = append(r.frames, f)
+	return f
+}
+
+// end closes the frame of a task and records the task as a whole; the
+// task's error itself goes back to its caller.
+func (r *Runner) end(f *frame, failed bool) {
+	r.frames = r.frames[:len(r.frames)-1]
+	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Steps: f.steps}
+	if failed {
+		// A failure outside the processes (a missing key, a lock timeout)
+		// has no exit status of its own.
+		rec.Exit = f.exit
+		if rec.Exit == 0 {
+			rec.Exit = -1
+		}
+	}
+	use := f.use
+	use.Wall = time.Since(f.start)
+	outermost := f.task // the outermost task's own frame is already closed
+	if len(r.frames) > 0 {
+		outermost = r.frames[0].task
+	}
+	r.write(rec, use, outermost)
+}
+
+// write records rec with its usage; outermost names the top when the runner
+// has no Top of its own.
+func (r *Runner) write(rec stats.Record, use stats.Usage, outermost string) {
+	if r.Stats == nil {
+		return
+	}
+	rec.Time = time.Now()
+	rec.Project = r.Root
+	rec.Top = r.Top
+	if rec.Top == "" {
+		rec.Top = outermost
+	}
+	use.Fill(&rec)
+	r.Stats.Write(rec)
 }
 
 // vars are the variables graft sets for a task's steps: its env values, the

@@ -15,7 +15,9 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aiseeq/graft/internal/app"
 	"github.com/aiseeq/graft/internal/hooks"
@@ -78,6 +80,9 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		return help(a)
 	}
 	cmd, rest := args[0], args[1:]
+	// The stats record tasks as run under the command; runTask clears it,
+	// so a task run directly names itself.
+	a.Command = cmd
 	switch cmd {
 	case "commit":
 		return commitCmd(ctx, a, rest)
@@ -104,6 +109,8 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		return flagsCmd(ctx, a, rest)
 	case "deploy":
 		return deployCmd(ctx, a, rest)
+	case "stats":
+		return statsCmd(a, rest)
 	default:
 		return projectCmd(ctx, a, cmd, rest)
 	}
@@ -163,7 +170,48 @@ func runTask(ctx context.Context, a *app.App, name string, args []string) error 
 		}
 		args = args[1:]
 	}
+	a.Command = ""
 	return a.Run(ctx, name, args)
+}
+
+func statsCmd(a *app.App, args []string) error {
+	fs := newFlags(a, "stats")
+	since := fs.String("since", "7d", "how far back: days (7d), or a duration such as 12h or 30m")
+	project := fs.String("project", "", "`root` of the project to report (default: the current one)")
+	all := fs.Bool("all", false, "report every project")
+	task := fs.String("task", "", "break this `task` down into its steps")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	age, err := parseAge(*since)
+	if err != nil {
+		return fmt.Errorf("%w: --since: %w", errUsage, err)
+	}
+	if *all && *project != "" {
+		return fmt.Errorf("%w: --all and --project exclude each other", errUsage)
+	}
+	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task})
+}
+
+// parseAge reads a positive age: whole days (7d) or a Go duration (12h).
+func parseAge(s string) (time.Duration, error) {
+	var d time.Duration
+	if days, ok := strings.CutSuffix(s, "d"); ok {
+		n, err := strconv.Atoi(days)
+		if err != nil {
+			return 0, fmt.Errorf("%q is not a number of days", s)
+		}
+		d = time.Duration(n) * 24 * time.Hour
+	} else {
+		var err error
+		if d, err = time.ParseDuration(s); err != nil {
+			return 0, fmt.Errorf("%q is neither days (7d) nor a duration (12h)", s)
+		}
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%q is not positive", s)
+	}
+	return d, nil
 }
 
 func serviceCmd(ctx context.Context, a *app.App, action app.ServiceAction, args []string) error {

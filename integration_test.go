@@ -60,21 +60,29 @@ func setup(m *testing.M) (int, error) {
 	if err := os.WriteFile(gitconfig, []byte("[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n[protocol \"file\"]\n\tallow = always\n"), 0o644); err != nil {
 		return 0, err
 	}
-	testEnv, err = isolatedEnv(gitconfig, filepath.Join(dir, "userconfig"))
+	testEnv, err = isolatedEnv(gitconfig, filepath.Join(dir, "userconfig"), filepath.Join(dir, "cache"))
 	if err != nil {
 		return 0, err
 	}
 	return m.Run(), nil
 }
 
-// isolatedEnv keeps the tests away from the user's git config and from the
-// variables git sets when these tests run inside a hook (graft's own gate).
-func isolatedEnv(gitconfig, userConfig string) ([]string, error) {
+// isolatedEnv keeps the tests away from the user's git config, from the
+// user's cache (graft's stats) and from the variables git sets when these
+// tests run inside a hook (graft's own gate).
+func isolatedEnv(gitconfig, userConfig, cache string) ([]string, error) {
 	out, err := exec.Command("git", "rev-parse", "--local-env-vars").Output()
 	if err != nil {
 		return nil, err
 	}
-	drop := append(strings.Fields(string(out)), "GRAFT_COMMIT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "PATH", "XDG_CONFIG_HOME", "APPDATA")
+	// Go's build cache lives in the user cache too; the tests that build
+	// keep the warm one.
+	gocache, err := exec.Command("go", "env", "GOCACHE").Output()
+	if err != nil {
+		return nil, err
+	}
+	drop := append(strings.Fields(string(out)), "GRAFT_COMMIT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "PATH", "XDG_CONFIG_HOME", "APPDATA",
+		"XDG_CACHE_HOME", "LOCALAPPDATA", "GOCACHE")
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
@@ -88,6 +96,9 @@ func isolatedEnv(gitconfig, userConfig string) ([]string, error) {
 		// The user's own graft config (Jira, tools.bin_dir) stays out.
 		"XDG_CONFIG_HOME="+userConfig,
 		"APPDATA="+userConfig,
+		"XDG_CACHE_HOME="+cache,
+		"LOCALAPPDATA="+cache,
+		"GOCACHE="+strings.TrimSpace(string(gocache)),
 		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 	), nil
 }

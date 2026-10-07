@@ -72,6 +72,7 @@ leaks:                           # keep private names out of public repositories
 | `graft tasks` | every task, building blocks and deps included |
 | `graft start` / `stop` / `restart [service]` | background services, all of them without a name |
 | `graft logs <service> [--lines N] [-f]` | the end of a service's log, or its journal; `-f` follows until Ctrl-C |
+| `graft stats [--since 7d] [--project <root>\|--all] [--task <name>]` | recorded resource use of tasks (see [Resource stats](#resource-stats)) |
 | `graft status` | services, the test database, held locks |
 | `graft locks` | who holds graft's locks |
 | `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |
@@ -285,6 +286,45 @@ dotenv_sets:                   # key lists several tasks and services share
   repository; a task inside a task under the same lock reuses it, and asking
   for write inside read is an error. Unknown deps and cycles are config
   errors.
+
+### Resource stats
+
+Every process a step starts (task steps, the gate, a deploy's deps and the
+deploy script) is recorded when it ends: one JSON line in
+`<user cache dir>/graft/stats.jsonl` (`$XDG_CACHE_HOME/graft` where set, else
+`~/.cache/graft`), shared by every project and every graft on the machine.
+A task gets a line of its own when it ends, covering everything it ran,
+deps and inner tasks included.
+
+```json
+{"time":"2026-01-05T10:00:03.1+01:00","kind":"step","project":"/home/me/work/projectA","task":"lint","top":"commit","step":"shellcheck scripts/*.sh","wall_s":41.2,"user_s":38.9,"sys_s":2.4,"max_rss_mb":9123.4,"exit":0}
+{"time":"2026-01-05T10:00:03.1+01:00","kind":"task","project":"/home/me/work/projectA","task":"lint","top":"commit","steps":2,"wall_s":44,"user_s":40.1,"sys_s":2.6,"max_rss_mb":9123.4,"exit":0}
+```
+
+- `top` is the graft command the task ran under (`commit`, `amend`, `gate`,
+  `hook`, `deploy`, `start`), or the outermost task for `graft <task>`. The
+  deploy script is recorded as task `deploy <target>`.
+- `step` is the step as written in `.graft.yaml`, on one line, cut to 200
+  characters. `exit` is -1 when there is no exit status: killed by a signal,
+  or a task that failed outside its processes.
+- `max_rss_mb` is the peak memory of **one** process: the step's own or that
+  of a descendant it waited for, whichever is largest (`ru_maxrss` of
+  `wait4`). It is not the sum over the process tree: eight linters in
+  parallel at 1 GB each show 1 GB. Processes that are never waited for
+  (daemons, detached children) are not counted, in memory or in CPU time.
+  Windows reports no peak memory; the field is left out there.
+- A line is one append-mode write, so concurrent grafts never split each
+  other's lines. At 20 MB the file moves to `stats.jsonl.1`, replacing the
+  older copy.
+- A failure to record is not a failure of the task: graft warns once per run
+  and goes on.
+
+`graft stats` reports the current project for the last 7 days, one row per
+task, the heaviest in memory first: runs, median and maximum wall time,
+median CPU time (user + system), maximum peak memory, the share of failed
+runs. `--since` takes days (`30d`) or a duration (`12h`), `--project` another
+project's root, `--all` every project; `--task <name>` breaks one task down
+into its steps.
 
 ## Services
 

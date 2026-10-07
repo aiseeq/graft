@@ -18,6 +18,7 @@ import (
 	"github.com/aiseeq/graft/internal/hooks"
 	"github.com/aiseeq/graft/internal/lock"
 	"github.com/aiseeq/graft/internal/services"
+	"github.com/aiseeq/graft/internal/stats"
 	"github.com/aiseeq/graft/internal/tasks"
 	"github.com/aiseeq/graft/internal/version"
 )
@@ -31,6 +32,11 @@ type App struct {
 	Stdin       io.Reader
 	Stdout      io.Writer
 	Stderr      io.Writer
+	// Command is the graft command being run (commit, gate, deploy, ...):
+	// the stats record tasks as run under it. Empty for graft <task>.
+	Command string
+
+	stats *stats.Recorder
 }
 
 // lockFile is the lock's name inside the common git directory, shared by all
@@ -107,6 +113,12 @@ func commitLock(repo *gitx.Repo, cfg *config.Config) string {
 func (a *App) runner(repo *gitx.Repo, cfg *config.Config) *tasks.Runner {
 	r := tasks.NewRunner(repo.Root, cfg, a.Stdout, a.Stderr)
 	r.Stdin = a.Stdin
+	// One recorder per run: a failing stats file warns once, however many
+	// runners the command makes.
+	if a.stats == nil {
+		a.stats = stats.NewRecorder(a.Stderr)
+	}
+	r.Stats, r.Top = a.stats, a.Command
 	r.LockDir = lockDir(repo)
 	if cfg.TestDB != nil {
 		r.TestDSN = func(ctx context.Context) (string, error) { return a.testDSN(ctx, repo, cfg) }

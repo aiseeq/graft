@@ -350,6 +350,7 @@ func isMajorVersion(s string) bool {
 var builtinNames = []string{
 	"commit", "amend", "release", "version", "init", "check", "gate", "hook", "flags", "deploy",
 	"run", "help", "start", "stop", "restart", "status", "locks", "testdb", "tools", "tasks", "logs",
+	"stats",
 }
 
 var (
