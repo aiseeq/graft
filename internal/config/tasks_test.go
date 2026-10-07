@@ -38,6 +38,7 @@ test_db:
   database: app_test
   user: app
   password: app
+  tmpfs: 2G
 tools:
   linter:
     go_install: example.com/linter/cmd/linter@v1.2.0
@@ -66,7 +67,7 @@ func TestParseTasks(t *testing.T) {
 		t.Errorf("service defaults = %+v", web)
 	}
 	db := cfg.TestDB
-	if db.DSNVar != "TEST_DB_DSN" || !slices.Equal(db.Settings, DefaultTestDBSettings) || db.ReadyTimeout != time.Minute {
+	if db.DSNVar != "TEST_DB_DSN" || !slices.Equal(db.Settings, DefaultTestDBSettings) || db.ReadyTimeout != time.Minute || db.Tmpfs != "2g" {
 		t.Errorf("test_db defaults = %+v", db)
 	}
 	if got := db.DSN(); got != "postgres://app:app@127.0.0.1:55432/app_test?sslmode=disable" {
@@ -92,6 +93,11 @@ func TestParseTasksErrors(t *testing.T) {
 		"service dotenv":    strings.Replace(tasksBase, "dotenv: all", "dotenv: some", 1),
 		"db name":           strings.Replace(tasksBase, "database: app_test", "database: app-test", 1),
 		"no password":       strings.Replace(tasksBase, "  password: app\n", "", 1),
+		"tmpfs unit":        strings.Replace(tasksBase, "tmpfs: 2G", "tmpfs: 2gb", 1),
+		"tmpfs no unit":     strings.Replace(tasksBase, "tmpfs: 2G", "tmpfs: 2048", 1),
+		"tmpfs zero":        strings.Replace(tasksBase, "tmpfs: 2G", "tmpfs: 0g", 1),
+		"tmpfs too small":   strings.Replace(tasksBase, "tmpfs: 2G", "tmpfs: 32m", 1),
+		"tmpfs options":     strings.Replace(tasksBase, "tmpfs: 2G", "tmpfs: '2g,mode=777'", 1),
 		"tool latest":       strings.Replace(tasksBase, "@v1.2.0", "@latest", 1),
 		"tool w/o expect":   strings.Replace(tasksBase, "    expect: v1.2.0\n", "", 1),
 		"tool w/o install":  strings.Replace(tasksBase, "    go_install: example.com/linter/cmd/linter@v1.2.0\n", "", 1),

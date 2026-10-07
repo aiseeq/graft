@@ -105,8 +105,8 @@ func (a *App) testDBStatus(ctx context.Context, db *testdb.DB) error {
 	default:
 		a.printf("%s is stopped (graft testdb up starts it)", db.Cfg.Container)
 	}
-	if db.Drifted(s) {
-		a.printf("warning: created with other settings; graft testdb recreate applies the config")
+	if drift := db.Drift(s); drift != "" {
+		a.printf("warning: created with other %s; graft testdb recreate applies the config", drift)
 	}
 	return nil
 }

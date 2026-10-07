@@ -373,6 +373,7 @@ test_db:
   user: app
   password: app                  # a throwaway local database
   settings: [fsync=off, synchronous_commit=off, full_page_writes=off]   # the default
+  tmpfs: 2g                      # optional: keep the data in RAM (k, m or g; at least 64m)
   migrate: [go, run, ./cmd/migrate, up]   # run after up with the DSN in dsn_var
   dsn_var: TEST_DB_DSN           # default
   ready_timeout: 60s             # default
@@ -386,7 +387,21 @@ Otherwise graft starts the container (creating it if needed), waits for
 in step for tests started from an IDE. In `migrate`, `${<dsn_var>}` (say
 `${TEST_DB_DSN}`) is the DSN of the database just brought up, whatever `.env`
 holds; other `${KEY}` are looked up as usual. A container created with other
-settings gets a warning; `graft testdb recreate` applies the config.
+settings or another `tmpfs` gets a warning; `graft testdb recreate` applies
+the config.
+
+`tmpfs` mounts a tmpfs of that size in place of the image's data volume
+(`/var/lib/postgresql` for postgres 18 and later, `/var/lib/postgresql/data`
+before), so no volume is created on disk. It pays off when tests write a lot:
+a database per test made with `CREATE DATABASE ... TEMPLATE` copies the whole
+template through the WAL each time, and the settings above do not stop those
+writes. The price: the size is taken from RAM as the data grows (the cap
+must hold the template and every database the tests keep at once), and
+everything is lost whenever the container stops or restarts, a reboot
+included. The image initializes an empty cluster on the next start, and
+since `testdb up` and every `test_db` task run `migrate` each time, not only
+after creating the container, the next test run brings the schema back.
+`migrate` must therefore work on an empty database.
 
 ## Tools
 

@@ -3,10 +3,12 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -265,6 +267,9 @@ type TestDB struct {
 	User      string   `yaml:"user"`
 	Password  string   `yaml:"password"`
 	Settings  []string `yaml:"settings"`
+	// Tmpfs is the size of the tmpfs the data volumes of the image are
+	// mounted in (512m, 2g), lowercased; empty keeps the data on disk.
+	Tmpfs string `yaml:"tmpfs"`
 	// Migrate runs after the database is up, with the DSN in DSNVar.
 	Migrate      Command       `yaml:"migrate"`
 	DSNVar       string        `yaml:"dsn_var"`
@@ -629,6 +634,9 @@ func (c *Config) validateTestDB() error {
 	if t.Password == "" {
 		return errors.New("test_db.password: required (it is a throwaway local database, any value will do)")
 	}
+	if err := t.validateTmpfs(); err != nil {
+		return err
+	}
 	if t.Settings == nil {
 		t.Settings = slices.Clone(DefaultTestDBSettings)
 	}
@@ -638,6 +646,32 @@ func (c *Config) validateTestDB() error {
 	if t.ReadyTimeout == 0 {
 		t.ReadyTimeout = 60 * time.Second
 	}
+	return nil
+}
+
+// minTmpfs is the smallest tmpfs a fresh cluster initializes in, with room
+// left for a database.
+const minTmpfs = 64 << 20
+
+var tmpfsRe = regexp.MustCompile(`^([0-9]+)([kmg])$`)
+
+// validateTmpfs accepts a size docker and the kernel read the same way: a
+// number with a k, m or g suffix.
+func (t *TestDB) validateTmpfs() error {
+	if t.Tmpfs == "" {
+		return nil
+	}
+	size := strings.ToLower(t.Tmpfs)
+	m := tmpfsRe.FindStringSubmatch(size)
+	if m == nil {
+		return fmt.Errorf("test_db.tmpfs: %q is not a size such as 512m or 2g", t.Tmpfs)
+	}
+	n, err := strconv.ParseInt(m[1], 10, 64)
+	shift := map[string]uint{"k": 10, "m": 20, "g": 30}[m[2]]
+	if err != nil || n > math.MaxInt64>>shift || n<<shift < minTmpfs {
+		return fmt.Errorf("test_db.tmpfs: %q is out of range: at least 64m", t.Tmpfs)
+	}
+	t.Tmpfs = size
 	return nil
 }
 

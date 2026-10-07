@@ -637,3 +637,60 @@ func TestTestDBMigrateOnFreshClone(t *testing.T) {
 		t.Errorf("testdb up created .env: %v", err)
 	}
 }
+
+// TestTestDBTmpfs: with tmpfs the data lives in RAM only, and a restarted
+// container (an empty cluster again) is migrated by the next testdb up.
+func TestTestDBTmpfs(t *testing.T) {
+	if os.Getenv("GRAFT_TEST_DOCKER") != "1" {
+		t.Skip("set GRAFT_TEST_DOCKER=1 to run against docker")
+	}
+	container := fmt.Sprintf("graft-it-testdb-tmpfs-%d", os.Getpid())
+	port := freePort(t)
+	t.Cleanup(func() { exec.Command("docker", "rm", "-f", "-v", container).Run() })
+	f := tasksRepo(t, "", nil)
+	base := f.read(".graft.yaml")
+	// migrate connects over TCP, as a real one does, and fails on a table
+	// that survived: it proves both readiness and an empty cluster.
+	conf := func(tmpfs string) string {
+		return base + fmt.Sprintf(`test_db:
+  image: postgres:18-alpine
+  container: %s
+  port: %d
+  database: app_test
+  user: app
+  password: app
+%s  migrate: [docker, exec, %s, psql, -h, 127.0.0.1, -U, app, -d, app_test, -v, ON_ERROR_STOP=1, -c, 'create table marker ()']
+`, container, port, tmpfs, container)
+	}
+	f.write(".graft.yaml", conf("  tmpfs: 256m\n"))
+	f.mustGraft("testdb", "up")
+	inspect := func(format string) string {
+		out, err := exec.Command("docker", "inspect", "--format", format, container).Output()
+		if err != nil {
+			t.Fatalf("docker inspect: %v", err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if got := inspect("{{json .HostConfig.Tmpfs}} {{len .Mounts}}"); got != `{"/var/lib/postgresql":"rw,size=256m"} 0` {
+		t.Errorf("tmpfs and mounts: %s", got)
+	}
+	if out, err := exec.Command("docker", "restart", container).CombinedOutput(); err != nil {
+		t.Fatalf("docker restart: %v\n%s", err, out)
+	}
+	f.mustGraft("testdb", "up")
+	if out, err := exec.Command("docker", "stop", container).CombinedOutput(); err != nil {
+		t.Fatalf("docker stop: %v\n%s", err, out)
+	}
+	if out := f.mustGraft("testdb", "up"); !strings.Contains(out, "starting "+container) {
+		t.Errorf("up after stop:\n%s", out)
+	}
+	for tmpfs, want := range map[string]string{
+		"  tmpfs: 512m\n": "tmpfs (/var/lib/postgresql:rw,size=256m, the config asks for 512m)",
+		"":                "tmpfs (/var/lib/postgresql:rw,size=256m, the config asks for none)",
+	} {
+		f.write(".graft.yaml", conf(tmpfs))
+		if out := f.mustGraft("testdb", "status"); !strings.Contains(out, "warning: created with other "+want+"; graft testdb recreate applies the config") {
+			t.Errorf("status with tmpfs %q:\n%s", tmpfs, out)
+		}
+	}
+}
