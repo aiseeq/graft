@@ -300,7 +300,14 @@ deploy:
 	if cfg.ReleaseNotes.Jira.Comment != DefaultNoteComment {
 		t.Errorf("default comment: %q", cfg.ReleaseNotes.Jira.Comment)
 	}
+	notes := func(n string) string { return strings.Replace(base, "release_notes: {}}", "release_notes: "+n+"}", 1) }
+	if _, err := Parse([]byte(notes("{transition: Testing, from: [In Progress, To Do]}"))); err != nil {
+		t.Errorf("transition with from: %v", err)
+	}
 	cases := map[string]string{
+		"transition w/o from":  notes("{transition: Testing}"),
+		"from w/o transition":  notes("{from: [In Progress]}"),
+		"from has transition":  notes("{transition: Testing, from: [Testing]}"),
 		"no remote":            strings.Replace(base, "remote: origin", "remote: ''", 1),
 		"unknown env":          strings.Replace(base, "env: prod,", "env: staging,", 1),
 		"unknown requires":     strings.Replace(base, "requires: test", "requires: uat", 1),

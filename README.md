@@ -532,7 +532,7 @@ deploy:
       run: [bash, deploy/deploy.sh, --env, test]   # argv, run here in the foreground
       version: "cat /opt/app/VERSION"              # prints what the target runs
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
-      release_notes: {transition: Testing}
+      release_notes: {transition: Testing, from: [In Progress]}
       dotenv: [REGISTRY_TOKEN, 'SMTP_HOST?']        # .env keys the script gets, as for tasks
       dotenv_sets: [db]
       status: "cat /opt/app/state.json"
@@ -550,7 +550,7 @@ release_notes:
   jira:
     project_keys: [PROJ]        # required: SHA-256 is shaped like a key too
     comment: "Deployed to {target}, version {version}, commit {short}"   # default
-    skip_statuses: [Done]       # never move items out of these
+    skip_statuses: [On Hold]    # leave these items alone: no note, no move
 ```
 
 `graft deploy [--redeploy] <target> [-- args]`:
@@ -591,13 +591,15 @@ release_notes:
 7. Check again that the tree is clean and HEAD has not moved.
 8. Record the deployed commit and post release notes: a comment on every
    `project_keys` item mentioned in the delivered commits (subjects and bodies),
-   and with `transition`, a move to that status. A key mentioned in a commit
-   does not make the item yours, so only open items of the owner of the Jira
-   token get them: not in a done-category status (Done, Won't do), and
-   assigned to the owner now or at some point in the item's history (an item
-   handed over for review keeps its notes). Other items are left alone with a
-   warning. Release notes never fail a deploy; problems are printed as
-   warnings.
+   and with `transition`, a move to that status of the items in one of the
+   `from` statuses (required with `transition`); an item elsewhere, paused or
+   not started, gets the comment and keeps its status. A key mentioned in a
+   commit does not make the item yours, so only open items of the owner of
+   the Jira token get notes: not in a done-category status (Done, Won't do)
+   or in `skip_statuses`, and assigned to the owner now or at some point in
+   the item's history (an item handed over for review keeps its notes). Other
+   items are left alone with a warning. Release notes never fail a deploy;
+   problems are printed as warnings.
 
 graft exits with the deploy script's exit status. Two deploys to the same
 target from one repository wait for each other.

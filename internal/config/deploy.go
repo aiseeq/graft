@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -62,8 +63,11 @@ type DeployedSHA struct {
 
 // TargetNotes turns release notes on for a target.
 type TargetNotes struct {
-	// Transition moves every delivered item to this status.
+	// Transition moves the delivered items in one of From to this status.
 	Transition string `yaml:"transition"`
+	// From lists the statuses an item moves from: an item anywhere else,
+	// paused say, keeps its status.
+	From []string `yaml:"from"`
 }
 
 // ReleaseNotes configures the Jira release notes.
@@ -73,8 +77,9 @@ type ReleaseNotes struct {
 
 // JiraNotes says which keys are this project's and what the comment says.
 type JiraNotes struct {
-	ProjectKeys  []string `yaml:"project_keys"`
-	Comment      string   `yaml:"comment"`
+	ProjectKeys []string `yaml:"project_keys"`
+	Comment     string   `yaml:"comment"`
+	// SkipStatuses leaves items in these statuses alone: no note, no move.
 	SkipStatuses []string `yaml:"skip_statuses"`
 }
 
@@ -179,6 +184,15 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 	}
 	if c.ReleaseNotes == nil || c.ReleaseNotes.Jira == nil {
 		return fmt.Errorf("%s.release_notes: needs a top-level release_notes.jira section", where)
+	}
+	n := t.ReleaseNotes
+	switch {
+	case n.Transition == "" && len(n.From) > 0:
+		return fmt.Errorf("%s.release_notes.from: needs a transition", where)
+	case n.Transition != "" && len(n.From) == 0:
+		return fmt.Errorf("%s.release_notes.from: required with a transition: the statuses an item moves from, such as [In Progress] (an item elsewhere, paused or not started, keeps its status)", where)
+	case slices.Contains(n.From, n.Transition):
+		return fmt.Errorf("%s.release_notes.from: lists %q, the transition's own status", where, n.Transition)
 	}
 	return nil
 }

@@ -122,7 +122,7 @@ func deployRepo(t *testing.T) *deployFixture {
 	state := t.TempDir()
 	jira := &fakeJira{
 		comments:   map[string][]string{},
-		statuses:   map[string]string{"PROJ-1": "In Progress", "PROJ-2": "Done", "PROJ-3": "In Progress", "PROJ-4": "To Do", "PROJ-5": "Testing"},
+		statuses:   map[string]string{"PROJ-1": "In Progress", "PROJ-2": "Done", "PROJ-3": "In Progress", "PROJ-4": "To Do", "PROJ-5": "Testing", "PROJ-6": "Paused", "PROJ-7": "Blocked"},
 		assignees:  map[string]string{"PROJ-3": "colleague", "PROJ-4": "", "PROJ-5": "reviewer"},
 		handedOver: []string{"PROJ-5"},
 	}
@@ -148,7 +148,7 @@ deploy:
       run: [sh, deploy.sh]
       version: 'cat ` + filepath.Join(state, "test-version") + `'
       deployed_sha: {path: ` + q("test-sha") + `}
-      release_notes: {transition: Testing}
+      release_notes: {transition: Testing, from: [In Progress]}
       status: 'echo test runs; cat ` + filepath.Join(state, "test-version") + `'
       logs: "printf 'a\nerror one\nb\nerror two\n' | tail -n {lines}"
     stage:
@@ -163,7 +163,7 @@ deploy:
 release_notes:
   jira:
     project_keys: [PROJ]
-    skip_statuses: [Done]
+    skip_statuses: [Blocked]
 `,
 		"VERSION": "1.0.0\n",
 		// The stand-in deploy script records what it was given.
@@ -247,7 +247,7 @@ func TestDeployRunsScriptAndPostsReleaseNotes(t *testing.T) {
 	d.write("a.txt", "a\n")
 	d.mustGraft("commit", "-m", "feat: PROJ-1 first thing, hashes with SHA-256")
 	d.write("b.txt", "b\n")
-	d.mustGraft("commit", "-m", "fix: second\n\nRefs PROJ-2 and OTHER-5, see also PROJ-3, PROJ-4 and PROJ-5")
+	d.mustGraft("commit", "-m", "fix: second\n\nRefs PROJ-2 and OTHER-5, see also PROJ-3, PROJ-4, PROJ-5, PROJ-6 and PROJ-7")
 	out = d.mustGraft("deploy", "test")
 	if !strings.Contains(d.stateFile("test-run"), "prev="+head) {
 		t.Errorf("previous sha not passed:\n%s", d.stateFile("test-run"))
@@ -260,17 +260,19 @@ func TestDeployRunsScriptAndPostsReleaseNotes(t *testing.T) {
 			}
 		}
 	})
-	if !slices.Equal(keys, []string{"PROJ-1", "PROJ-5"}) {
+	if !slices.Equal(keys, []string{"PROJ-1", "PROJ-5", "PROJ-6"}) {
 		t.Errorf("commented keys = %v\n%s", keys, out)
 	}
 	if c := comments["PROJ-1"]; len(c) != 1 || !strings.HasPrefix(c[0], "Deployed to test, version 1.0.3, commit ") {
 		t.Errorf("comment = %v", c)
 	}
 	if !slices.Equal(moved, []string{"PROJ-1"}) {
-		t.Errorf("moved = %v (PROJ-5 is already in Testing)", moved)
+		t.Errorf("moved = %v (PROJ-5 is already in Testing, PROJ-6 is paused)", moved)
 	}
 	for _, want := range []string{
-		"PROJ-2 left alone: it is already Done",
+		"PROJ-2 left alone: it is Done",
+		"PROJ-6 stays Paused: release_notes.from moves only from In Progress",
+		"PROJ-7 left alone: it is Blocked",
 		"PROJ-3 left alone: assigned to Colleague colleague and never assigned to the owner",
 		"PROJ-4 left alone: unassigned and never",
 	} {

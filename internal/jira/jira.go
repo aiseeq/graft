@@ -198,20 +198,16 @@ func (c *Client) WasAssignedTo(ctx context.Context, key, accountID string) (bool
 	}
 }
 
-// Transition moves an item to the status named to, unless it is already
-// there or in one of skip. It reports whether the item moved.
-func (c *Client) Transition(ctx context.Context, issue Issue, to string, skip []string) (bool, error) {
-	if issue.Status == to || slices.Contains(skip, issue.Status) {
-		return false, nil
-	}
+// Transition moves an item to the status named to.
+func (c *Client) Transition(ctx context.Context, issue Issue, to string) error {
 	for _, t := range issue.Transitions {
 		if t.To == to {
 			body := map[string]any{"transition": map[string]string{"id": t.ID}}
 			_, err := c.do(ctx, http.MethodPost, "/rest/api/3/issue/"+issue.Key+"/transitions", body, http.StatusNoContent)
-			return err == nil, err
+			return err
 		}
 	}
-	return false, fmt.Errorf("%s: no transition from %q to %q", issue.Key, issue.Status, to)
+	return fmt.Errorf("%s: no transition from %q to %q", issue.Key, issue.Status, to)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any, want int) ([]byte, error) {

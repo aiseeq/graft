@@ -345,8 +345,8 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) {
 		// A key can reach a commit by hand, as a reference to an item that is
 		// closed or somebody else's. An item handed over for review stays
 		// yours: its history shows it assigned to you.
-		if issue.Done {
-			a.warn("release note for %s not posted, %s left alone: it is already %s", key, key, issue.Status)
+		if issue.Done || slices.Contains(notes.SkipStatuses, issue.Status) {
+			a.warn("release note for %s not posted, %s left alone: it is %s", key, key, issue.Status)
 			continue
 		}
 		if issue.AssigneeID != me {
@@ -369,15 +369,24 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) {
 			continue
 		}
 		a.printf("release note posted to %s", key)
-		if to := r.target.ReleaseNotes.Transition; to != "" {
-			moved, err := client.Transition(ctx, issue, to, notes.SkipStatuses)
-			switch {
-			case err != nil:
-				a.warn("%s not moved to %s: %v", key, to, err)
-			case moved:
-				a.printf("%s moved to %s", key, to)
-			}
+		a.moveDelivered(ctx, client, issue, r.target.ReleaseNotes)
+	}
+}
+
+// moveDelivered moves a delivered item along only from the statuses the
+// target names: a paused item stays paused whatever its commits say.
+func (a *App) moveDelivered(ctx context.Context, client *jira.Client, issue jira.Issue, notes *config.TargetNotes) {
+	to := notes.Transition
+	switch {
+	case to == "" || issue.Status == to:
+	case !slices.Contains(notes.From, issue.Status):
+		a.printf("%s stays %s: release_notes.from moves only from %s", issue.Key, issue.Status, strings.Join(notes.From, ", "))
+	default:
+		if err := client.Transition(ctx, issue, to); err != nil {
+			a.warn("%s not moved to %s: %v", issue.Key, to, err)
+			return
 		}
+		a.printf("%s moved to %s", issue.Key, to)
 	}
 }
 
