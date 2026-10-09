@@ -210,7 +210,13 @@ func PeekDeployedSHA(ctx context.Context, env *envs.Env, rec *config.DeployedSHA
 }
 
 func readDeployedSHA(ctx context.Context, env *envs.Env, rec *config.DeployedSHA, sudoPrefix string) (string, error) {
-	line := "if [ -e " + envs.Quote(rec.Path) + " ]; then " + sudoPrefix + "cat " + envs.Quote(rec.Path) + "; fi"
+	// The existence check runs under sudo too: a file in a directory only
+	// root can enter looks absent to the deploy user.
+	read := "if [ -e " + envs.Quote(rec.Path) + " ]; then cat " + envs.Quote(rec.Path) + "; fi"
+	line := read
+	if sudoPrefix != "" {
+		line = sudoPrefix + "sh -c " + envs.Quote(read)
+	}
 	cmd := env.Shell(ctx, line)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
