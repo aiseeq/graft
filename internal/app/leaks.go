@@ -44,7 +44,10 @@ func loadLeakRules(l *userconfig.Leaks, log io.Writer) (*leaks.Rules, error) {
 	if err != nil {
 		return nil, fmt.Errorf("leak check: locating the cache: %w", err)
 	}
-	corpus, err := leaks.LoadCorpus(filepath.Join(cacheDir, "graft", "leaks"), append(slices.Clone(l.PublicRemotes), rules.Modules()...), log)
+	// The user's own modules, public or private, are not the public code
+	// that makes a name common.
+	own := slices.Concat(l.PublicRemotes, l.PrivateRemotes, rules.Modules())
+	corpus, err := leaks.LoadCorpus(filepath.Join(cacheDir, "graft", "leaks"), own, log)
 	if err != nil {
 		return nil, fmt.Errorf("leak check: %w", err)
 	}

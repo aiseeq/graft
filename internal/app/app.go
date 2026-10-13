@@ -180,12 +180,16 @@ func (e *ChecksError) Error() string {
 	for _, f := range e.Findings {
 		b.WriteString("\n  " + f.String())
 	}
+	// Leaks pass only by graft:leak-ok and leaks.allow; .graft.yaml
+	// exceptions belong to the other checks.
 	if slices.ContainsFunc(e.Findings, func(f checks.Finding) bool { return f.Leak }) {
 		b.WriteString("\nprivate names and terms come from the user config (leaks); rewrite them in neutral words, or mark")
-		b.WriteString("\nthe line with graft:leak-ok <reason>, or allow a term everywhere in leaks.allow;")
+		b.WriteString("\nthe line with graft:leak-ok <reason>, or allow a term everywhere in leaks.allow")
 	}
-	b.WriteString("\nfix the files, or add an exception with a reason to .graft.yaml (checks.*.exceptions);")
-	b.WriteString("\nto drop a file from the commit: git rm --cached <file> and add it to .gitignore")
+	if slices.ContainsFunc(e.Findings, func(f checks.Finding) bool { return !f.Leak }) {
+		b.WriteString("\nfix the files, or add an exception with a reason to .graft.yaml (checks.*.exceptions);")
+		b.WriteString("\nto drop a file from the commit: git rm --cached <file> and add it to .gitignore")
+	}
 	return b.String()
 }
 

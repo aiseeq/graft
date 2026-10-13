@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -27,6 +28,10 @@ type Leaks struct {
 	// PublicRemotes are remote URL prefixes, host/path form
 	// (github.com/someone/): a repository pushing to one is public.
 	PublicRemotes []string `yaml:"public_remotes"`
+	// PrivateRemotes are remote URL prefixes in the same form that make a
+	// repository private even under a public prefix: the narrower prefix
+	// wins (github.com/someone/secret-tool under github.com/someone/).
+	PrivateRemotes []string `yaml:"private_remotes"`
 	// PrivateSources are private project directories; the Go identifiers
 	// they declare are private names.
 	PrivateSources []string `yaml:"private_sources"`
@@ -113,10 +118,11 @@ func (l *Leaks) normalize(path string) error {
 	if len(l.PublicRemotes) == 0 {
 		return fmt.Errorf("%s: leaks.public_remotes: required", path)
 	}
-	for i, p := range l.PublicRemotes {
-		if strings.Contains(p, "://") || strings.Contains(p, "@") {
-			return fmt.Errorf("%s: leaks.public_remotes[%d]: %q must be host/path like github.com/someone/", path, i, p)
-		}
+	if err := checkRemotePrefixes(path, "public_remotes", l.PublicRemotes); err != nil {
+		return err
+	}
+	if err := checkRemotePrefixes(path, "private_remotes", l.PrivateRemotes); err != nil {
+		return err
 	}
 	if len(l.PrivateSources) == 0 && l.TermsFile == "" {
 		return fmt.Errorf("%s: leaks: set private_sources, terms_file or both", path)
@@ -158,8 +164,18 @@ func (l *Leaks) normalize(path string) error {
 	return nil
 }
 
+func checkRemotePrefixes(path, key string, prefixes []string) error {
+	for i, p := range prefixes {
+		if strings.Contains(p, "://") || strings.Contains(p, "@") {
+			return fmt.Errorf("%s: leaks.%s[%d]: %q must be host/path like github.com/someone/", path, key, i, p)
+		}
+	}
+	return nil
+}
+
 // RemoteIsPublic reports whether a remote URL falls under one of the public
-// prefixes. scp-like (git@host:path) and URL forms compare as host/path.
+// prefixes and under none of the private ones. scp-like (git@host:path) and
+// URL forms compare as host/path.
 func (l *Leaks) RemoteIsPublic(url string) bool {
 	norm := url
 	if _, rest, ok := strings.Cut(norm, "://"); ok {
@@ -170,12 +186,10 @@ func (l *Leaks) RemoteIsPublic(url string) bool {
 	if at := strings.Index(norm, "@"); at >= 0 && at < strings.Index(norm+"/", "/") {
 		norm = norm[at+1:]
 	}
-	for _, p := range l.PublicRemotes {
-		if strings.HasPrefix(norm, p) {
-			return true
-		}
+	under := func(prefixes []string) bool {
+		return slices.ContainsFunc(prefixes, func(p string) bool { return strings.HasPrefix(norm, p) })
 	}
-	return false
+	return under(l.PublicRemotes) && !under(l.PrivateRemotes)
 }
 
 // ErrNotFound means the user has no graft config file.

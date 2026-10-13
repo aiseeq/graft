@@ -9,7 +9,8 @@ import (
 // leakRepo is a repository whose origin looks public to the user config,
 // while pushes still go to a local bare repository. The private project
 // declares SettleInvoice; the terms name a counterparty.
-func leakRepo(t *testing.T, publicPrefix string) *fixture {
+// extra is appended to the leaks section of the user config.
+func leakRepo(t *testing.T, publicPrefix, extra string) *fixture {
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion:\n  mode: none\ngate: []\n",
 		"main.go":     "package main\n\nfunc main() {}\n",
@@ -28,7 +29,7 @@ func leakRepo(t *testing.T, publicPrefix string) *fixture {
 		"  public_remotes: ["+publicPrefix+"]\n"+
 		"  private_sources: ["+yamlQuote(private)+"]\n"+
 		"  terms_file: "+yamlQuote(terms)+"\n"+
-		"  allow: [{term: PolishWidget, reason: a name every project has}]\n")
+		"  allow: [{term: PolishWidget, reason: a name every project has}]\n"+extra)
 	goroot := filepath.Join(root, "goroot")
 	writeFile(t, filepath.Join(goroot, "VERSION"), "go1.99\n")
 	writeFile(t, filepath.Join(goroot, "src", "x", "x.go"), "package x\n")
@@ -40,7 +41,7 @@ func leakRepo(t *testing.T, publicPrefix string) *fixture {
 }
 
 func TestCommitRefusesPrivateNamesInPublicRepo(t *testing.T) {
-	f := leakRepo(t, "github.com/someone/")
+	f := leakRepo(t, "github.com/someone/", "")
 	f.write("main.go", "package main\n\n// Mirrors s.SettleInvoice of the payment service.\nfunc main() {}\n")
 	out, code := f.graft("", "commit", "-m", "feat: settle like AcmePay does")
 	if code == 0 {
@@ -54,6 +55,10 @@ func TestCommitRefusesPrivateNamesInPublicRepo(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q:\n%s", want, out)
 		}
+	}
+	// Leaks have no .graft.yaml exceptions: the hint must not offer them.
+	if strings.Contains(out, "checks.*.exceptions") {
+		t.Errorf("leak findings offer .graft.yaml exceptions:\n%s", out)
 	}
 
 	f.write("main.go", "package main\n\n// Mirrors s.SettleInvoice of the service. graft:leak-ok the public name of the example\n// PolishWidget is allowed in the user config.\nfunc main() {}\n")
@@ -69,15 +74,36 @@ func TestCommitRefusesPrivateNamesInPublicRepo(t *testing.T) {
 }
 
 func TestCommitToPrivateRepoSkipsTheLeakCheck(t *testing.T) {
-	f := leakRepo(t, "github.com/somebody-else/")
+	f := leakRepo(t, "github.com/somebody-else/", "")
 	f.write("main.go", "package main\n\n// SettleInvoice, AcmePay\nfunc main() {}\n")
 	if out, code := f.graft("", "commit", "-m", "feat: AcmePay"); code != 0 {
 		t.Errorf("private repository: %d\n%s", code, out)
 	}
 }
 
+// A repository under a public prefix and under a narrower private one is
+// private: the narrower prefix wins.
+func TestCommitToPrivateRemoteUnderPublicPrefixSkipsTheLeakCheck(t *testing.T) {
+	f := leakRepo(t, "github.com/someone/", "  private_remotes: [github.com/someone/secret-tool]\n")
+	f.git("config", "remote.origin.url", "git@github.com:someone/secret-tool.git")
+	f.write("main.go", "package main\n\n// SettleInvoice, AcmePay\nfunc main() {}\n")
+	if out, code := f.graft("", "commit", "-m", "feat: AcmePay"); code != 0 {
+		t.Errorf("private repository under a public prefix: %d\n%s", code, out)
+	}
+}
+
+// private_remotes leaves the other repositories under the public prefix
+// checked.
+func TestCommitBesidePrivateRemoteIsStillChecked(t *testing.T) {
+	f := leakRepo(t, "github.com/someone/", "  private_remotes: [github.com/someone/secret-tool]\n")
+	f.write("main.go", "package main\n\n// SettleInvoice\nfunc main() {}\n")
+	if out, code := f.graft("", "commit", "-m", "feat: settle"); code == 0 || !strings.Contains(out, "private name SettleInvoice") {
+		t.Errorf("public repository beside a private prefix: %d\n%s", code, out)
+	}
+}
+
 func TestLeaksScansHistory(t *testing.T) {
-	f := leakRepo(t, "github.com/somebody-else/")
+	f := leakRepo(t, "github.com/somebody-else/", "")
 	f.write("main.go", "package main\n\n// SettleInvoice\nfunc main() {}\n")
 	f.mustGraft("commit", "-m", "feat: leak")
 	out, code := f.graft("", "leaks", "HEAD")

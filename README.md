@@ -36,6 +36,7 @@ tools:
   bin_dir: ~/bin                 # where graft tools install puts binaries; default: go install's GOBIN
 leaks:                           # keep private names out of public repositories (see Checks)
   public_remotes: [github.com/someone/]       # a repository with a remote under one of these is public
+  private_remotes: [github.com/someone/secret-tool]  # private even under a public prefix: the narrower prefix wins
   private_sources: [~/work/projectA]          # private projects: their Go declarations are private names
   terms_file: ~/.config/graft/private-terms   # "kind: regexp" per line: keys, domains, addresses, names
   min_name_length: 10                         # default 10
@@ -702,14 +703,15 @@ user config (see Install).
   refused.
 - **Leaks**: with `leaks` in the user config, a commit to a repository that
   has a remote under `public_remotes` is checked for private names in the
-  lines it adds and in its message. The lists live in the user config, never
+  lines it adds and in its message. A remote under `private_remotes` is
+  private even under a public prefix. The lists live in the user config, never
   in the public repository:
   - **names**: camel-case functions, methods and types of at least
     `min_name_length` characters declared in `private_sources` (parts of test
     names included, the test's own name not). A name the public Go code in
     GOROOT and the module cache also uses is common and dropped; modules under
-    `public_remotes` and the private sources' own modules do not count as
-    public code. The first run indexes the module cache, later runs only the
+    `public_remotes` or `private_remotes` and the private sources' own
+    modules do not count as public code. The first run indexes the module cache, later runs only the
     new modules (`<user cache dir>/graft/leaks`). A name the repository
     declares in its own non-test Go code is its vocabulary; a mention in
     tests, fixtures, comments, docs or the message is a finding.

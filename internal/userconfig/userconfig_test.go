@@ -19,6 +19,22 @@ func TestRemoteIsPublic(t *testing.T) {
 	}
 }
 
+// A narrower private prefix wins over the public prefix it lies under.
+func TestRemoteIsPublicPrivateOverrides(t *testing.T) {
+	l := &Leaks{PublicRemotes: []string{"github.com/someone/"}, PrivateRemotes: []string{"github.com/someone/secret-tool"}}
+	for url, want := range map[string]bool{
+		"git@github.com:someone/secret-tool.git":       false,
+		"https://github.com/someone/secret-tool":       false,
+		"ssh://git@github.com/someone/secret-tool.git": false,
+		"git@github.com:someone/tool.git":              true,
+		"https://github.com/someone/tool":              true,
+	} {
+		if got := l.RemoteIsPublic(url); got != want {
+			t.Errorf("%s: %v, want %v", url, got, want)
+		}
+	}
+}
+
 func TestLeaksNormalize(t *testing.T) {
 	t.Setenv("HOME", "/home/u")
 	l := &Leaks{PublicRemotes: []string{"github.com/someone/"}, PrivateSources: []string{"~/work/a"}, Allow: []LeakAllow{{Term: "X", Reason: "why"}}}
@@ -34,6 +50,8 @@ func TestLeaksNormalize(t *testing.T) {
 		{PublicRemotes: []string{"github.com/x/"}},
 		{PublicRemotes: []string{"github.com/x/"}, PrivateSources: []string{"rel/dir"}},
 		{PublicRemotes: []string{"github.com/x/"}, PrivateSources: []string{"/a"}, Allow: []LeakAllow{{Term: "X"}}},
+		{PublicRemotes: []string{"github.com/x/"}, PrivateRemotes: []string{"git@github.com:x/y"}, PrivateSources: []string{"/a"}},
+		{PublicRemotes: []string{"github.com/x/"}, PrivateRemotes: []string{"https://github.com/x/y"}, PrivateSources: []string{"/a"}},
 	} {
 		if err := bad.normalize("cfg"); err == nil {
 			t.Errorf("accepted %+v", bad)
