@@ -15,18 +15,25 @@ import (
 	"testing"
 )
 
-// fakeJira records comments and transitions. The token belongs to the account
-// "me"; assignees maps keys to other accounts ("" for nobody), and a key
-// missing there is assigned to "me". handedOver lists keys whose history shows
-// them handed over from "me".
+// fakeJira records comments, transitions and fix version edits. The token
+// belongs to the account "me"; assignees maps keys to other accounts ("" for
+// nobody), and a key missing there is assigned to "me". handedOver lists keys
+// whose history shows them handed over from "me". versions are the versions of
+// project PROJ, fixVersions the version ids each item has; failEdit lists keys
+// whose edit Jira refuses.
 type fakeJira struct {
-	mu         sync.Mutex
-	comments   map[string][]string
-	moved      []string
-	statuses   map[string]string
-	assignees  map[string]string
-	handedOver []string
-	failAll    bool
+	mu              sync.Mutex
+	comments        map[string][]string
+	moved           []string
+	statuses        map[string]string
+	assignees       map[string]string
+	handedOver      []string
+	failAll         bool
+	versions        []map[string]any
+	versionRequests int
+	fixVersions     map[string][]string
+	edits           []string
+	failEdit        []string
 }
 
 func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -44,9 +51,16 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"accountId": "me", "displayName": "Me"})
 		return
 	}
+	if r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/project/PROJ/versions" {
+		j.versionRequests++
+		_ = json.NewEncoder(w).Encode(j.versions)
+		return
+	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/rest/api/3/issue/"), "/")
 	key := parts[0]
 	switch {
+	case r.Method == http.MethodPut && len(parts) == 1:
+		j.edit(w, r, key)
 	case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "comment":
 		body, _ := io.ReadAll(r.Body)
 		var doc struct {
@@ -77,10 +91,15 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if j.statuses[key] == "Done" {
 			category = "done"
 		}
+		fixVersions := []any{}
+		for _, id := range j.fixVersions[key] {
+			fixVersions = append(fixVersions, map[string]any{"id": id, "name": j.versionName(id)})
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"fields": map[string]any{
-				"status":   map[string]any{"name": j.statuses[key], "statusCategory": map[string]string{"key": category}},
-				"assignee": assignee,
+				"status":      map[string]any{"name": j.statuses[key], "statusCategory": map[string]string{"key": category}},
+				"assignee":    assignee,
+				"fixVersions": fixVersions,
 			},
 			"transitions": []any{map[string]any{"id": "31", "to": map[string]string{"name": "Testing"}}},
 		})
@@ -90,6 +109,39 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "unexpected", http.StatusNotFound)
 	}
+}
+
+// edit takes only an update that adds one fix version by id.
+func (j *fakeJira) edit(w http.ResponseWriter, r *http.Request, key string) {
+	var body struct {
+		Fields map[string]any                            `json:"fields"`
+		Update map[string][]map[string]map[string]string `json:"update"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Fields) > 0 || len(body.Update) != 1 || len(body.Update["fixVersions"]) != 1 {
+		http.Error(w, "unexpected edit", http.StatusBadRequest)
+		return
+	}
+	id := body.Update["fixVersions"][0]["add"]["id"]
+	if id == "" {
+		http.Error(w, "no add id", http.StatusBadRequest)
+		return
+	}
+	if slices.Contains(j.failEdit, key) {
+		http.Error(w, `{"errors":{"fixVersions":"Field 'fixVersions' cannot be set."}}`, http.StatusBadRequest)
+		return
+	}
+	j.edits = append(j.edits, key+" add "+id)
+	j.fixVersions[key] = append(j.fixVersions[key], id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (j *fakeJira) versionName(id string) string {
+	for _, v := range j.versions {
+		if v["id"] == id {
+			return v["name"].(string)
+		}
+	}
+	return "version " + id
 }
 
 func (j *fakeJira) setFailing() {
@@ -121,10 +173,11 @@ func deployRepo(t *testing.T) *deployFixture {
 	}
 	state := t.TempDir()
 	jira := &fakeJira{
-		comments:   map[string][]string{},
-		statuses:   map[string]string{"PROJ-1": "In Progress", "PROJ-2": "Done", "PROJ-3": "In Progress", "PROJ-4": "To Do", "PROJ-5": "Testing", "PROJ-6": "Paused", "PROJ-7": "Blocked"},
-		assignees:  map[string]string{"PROJ-3": "colleague", "PROJ-4": "", "PROJ-5": "reviewer"},
-		handedOver: []string{"PROJ-5"},
+		comments:    map[string][]string{},
+		fixVersions: map[string][]string{},
+		statuses:    map[string]string{"PROJ-1": "In Progress", "PROJ-2": "Done", "PROJ-3": "In Progress", "PROJ-4": "To Do", "PROJ-5": "Testing", "PROJ-6": "Paused", "PROJ-7": "Blocked"},
+		assignees:   map[string]string{"PROJ-3": "colleague", "PROJ-4": "", "PROJ-5": "reviewer"},
+		handedOver:  []string{"PROJ-5"},
 	}
 	srv := httptest.NewServer(jira)
 	t.Cleanup(srv.Close)
@@ -151,6 +204,11 @@ deploy:
       release_notes: {transition: Testing, from: [In Progress]}
       status: 'echo test runs; cat ` + filepath.Join(state, "test-version") + `'
       logs: "printf 'a\nerror one\nb\nerror two\n' | tail -n {lines}"
+    uat:
+      env: local
+      run: [sh, deploy.sh]
+      deployed_sha: {path: ` + q("uat-sha") + `}
+      release_notes: {transition: Testing, from: [In Progress], fix_version: {prefix: "Product v"}}
     stage:
       env: local
       run: [sh, deploy.sh]
@@ -291,6 +349,142 @@ func TestDeployJiraFailureDoesNotFailTheDeploy(t *testing.T) {
 	out, code := d.graft("", "deploy", "test")
 	if code != 0 || !strings.Contains(out, "release notes skipped") || !strings.Contains(out, "http 500") {
 		t.Errorf("exit %d:\n%s", code, out)
+	}
+}
+
+// productVersions are the versions of PROJ: the nearest unreleased
+// "Product v" one is Product v1.2.10 (id 10010).
+func productVersions() []map[string]any {
+	return []map[string]any{
+		{"id": "10009", "name": "Product v1.2.9", "released": true, "archived": false, "releaseDate": "2026-01-01"},
+		{"id": "10030", "name": "Product v1.3.0", "released": false, "archived": false, "releaseDate": "2026-12-01"},
+		{"id": "10200", "name": "Product v2.0.0", "released": false, "archived": false},
+		{"id": "10010", "name": "Product v1.2.10", "released": false, "archived": false, "releaseDate": "2026-11-01"},
+		{"id": "10001", "name": "Other v1.0.0", "released": false, "archived": false, "releaseDate": "2026-10-01"},
+		{"id": "10008", "name": "Product v1.2.8", "released": false, "archived": true, "releaseDate": "2025-12-01"},
+	}
+}
+
+// deliverAllKeys deploys to target once to record a commit, then commits a
+// change that mentions PROJ-1 to PROJ-7.
+func (d *deployFixture) deliverAllKeys(target string) {
+	d.mustGraft("deploy", target)
+	d.write("b.txt", "b\n")
+	d.mustGraft("commit", "-m", "fix: second\n\nRefs PROJ-1, PROJ-2, PROJ-3, PROJ-4, PROJ-5, PROJ-6 and PROJ-7")
+}
+
+func (j *fakeJira) setVersions(versions []map[string]any, fixVersions map[string][]string, failEdit ...string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.versions, j.fixVersions, j.failEdit = versions, fixVersions, failEdit
+}
+
+func (j *fakeJira) editsSnapshot() ([]string, int) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return slices.Clone(j.edits), j.versionRequests
+}
+
+func TestDeployAddsFixVersion(t *testing.T) {
+	d := deployRepo(t)
+	// PROJ-5 has the version already, PROJ-6 has a version of its own.
+	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-5": {"10010"}, "PROJ-6": {"10001"}})
+	d.deliverAllKeys("uat")
+	out := d.mustGraft("deploy", "uat")
+	edits, requests := d.jira.editsSnapshot()
+	if !slices.Equal(edits, []string{"PROJ-1 add 10010", "PROJ-6 add 10010"}) {
+		t.Errorf("edits = %v\n%s", edits, out)
+	}
+	if requests != 1 {
+		t.Errorf("versions read %d times, want once per deploy", requests)
+	}
+	for _, want := range []string{"fix version Product v1.2.10 added to PROJ-1", "PROJ-5 already has fix version Product v1.2.10", "PROJ-1 moved to Testing"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
+	}
+	d.jira.mu.Lock()
+	kept := slices.Clone(d.jira.fixVersions["PROJ-6"])
+	d.jira.mu.Unlock()
+	if !slices.Equal(kept, []string{"10001", "10010"}) {
+		t.Errorf("PROJ-6 fix versions = %v, its own one must stay", kept)
+	}
+
+	// The next deploy finds the version on PROJ-1 and asks for no edit.
+	d.write("c.txt", "c\n")
+	d.mustGraft("commit", "-m", "fix: PROJ-1 third")
+	out = d.mustGraft("deploy", "uat")
+	if edits, _ := d.jira.editsSnapshot(); len(edits) != 2 {
+		t.Errorf("edits after the second deploy = %v\n%s", edits, out)
+	}
+	if !strings.Contains(out, "PROJ-1 already has fix version Product v1.2.10") {
+		t.Errorf("second deploy:\n%s", out)
+	}
+}
+
+func TestDeployFixVersionFailureFailsTheDeploy(t *testing.T) {
+	tie := append(productVersions(), map[string]any{"id": "10011", "name": "Product v1.2.11", "released": false, "archived": false, "releaseDate": "2026-11-01"})
+	cases := []struct {
+		name     string
+		versions []map[string]any
+		failEdit []string
+		outage   bool
+		unset    string
+		want     []string
+	}{
+		{
+			name:     "no version",
+			versions: []map[string]any{productVersions()[0], productVersions()[4]},
+			unset:    "PROJ-1, PROJ-5, PROJ-6",
+			want:     []string{"PROJ-1: fix version NOT SET: ", `no unreleased version of PROJ starts with "Product v" (unreleased: Other v1.0.0)`, "PROJ-6: fix version NOT SET: "},
+		},
+		{
+			name:     "tie",
+			versions: tie,
+			unset:    "PROJ-1, PROJ-5, PROJ-6",
+			want:     []string{"PROJ-5: fix version NOT SET: ", "share the nearest release date 2026-11-01: Product v1.2.10, Product v1.2.11"},
+		},
+		{
+			name:     "edit refused",
+			versions: productVersions(),
+			failEdit: []string{"PROJ-6"},
+			unset:    "PROJ-6",
+			want:     []string{"PROJ-6: fix version NOT SET: ", "http 400", "fix version Product v1.2.10 added to PROJ-1"},
+		},
+		{
+			name:     "outage",
+			versions: productVersions(),
+			outage:   true,
+			unset:    "PROJ-1, PROJ-2, PROJ-3, PROJ-4, PROJ-5, PROJ-6, PROJ-7",
+			want:     []string{"PROJ-7: fix version NOT SET: ", "http 500"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := deployRepo(t)
+			d.jira.setVersions(c.versions, map[string][]string{}, c.failEdit...)
+			d.deliverAllKeys("uat")
+			if c.outage {
+				d.jira.setFailing()
+			}
+			out, code := d.graft("", "deploy", "uat")
+			if code == 0 {
+				t.Errorf("exit 0:\n%s", out)
+			}
+			want := append(slices.Clone(c.want), "but the fix version is not set on "+c.unset+" (see above)")
+			for _, w := range want {
+				if !strings.Contains(out, w) {
+					t.Errorf("no %q:\n%s", w, out)
+				}
+			}
+			// The release is live all the same: recorded and noted.
+			if got := strings.TrimSpace(d.stateFile("uat-sha")); got != d.git("rev-parse", "HEAD") {
+				t.Errorf("deployed sha = %q", got)
+			}
+			if comments, _ := d.jira.snapshot(); !c.outage && len(comments["PROJ-1"]) != 1 {
+				t.Errorf("PROJ-1 comments = %v", comments["PROJ-1"])
+			}
+		})
 	}
 }
 

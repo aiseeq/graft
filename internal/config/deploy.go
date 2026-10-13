@@ -68,6 +68,16 @@ type TargetNotes struct {
 	// From lists the statuses an item moves from: an item anywhere else,
 	// paused say, keeps its status.
 	From []string `yaml:"from"`
+	// FixVersion adds the project's next unreleased version to every item
+	// that gets a note.
+	FixVersion *FixVersion `yaml:"fix_version"`
+}
+
+// FixVersion picks the version by the start of its name.
+type FixVersion struct {
+	// Prefix is how the names of the versions to pick from begin, such as
+	// "Product v".
+	Prefix string `yaml:"prefix"`
 }
 
 // ReleaseNotes configures the Jira release notes.
@@ -193,6 +203,8 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 		return fmt.Errorf("%s.release_notes.from: required with a transition: the statuses an item moves from, such as [In Progress] (an item elsewhere, paused or not started, keeps its status)", where)
 	case slices.Contains(n.From, n.Transition):
 		return fmt.Errorf("%s.release_notes.from: lists %q, the transition's own status", where, n.Transition)
+	case n.FixVersion != nil && strings.TrimSpace(n.FixVersion.Prefix) == "":
+		return fmt.Errorf("%s.release_notes.fix_version.prefix: required, how the version names begin, such as \"Product v\"", where)
 	}
 	return nil
 }

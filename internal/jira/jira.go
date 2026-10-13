@@ -1,7 +1,7 @@
 // Package jira posts release notes to Jira work items: a comment on every
 // open item a deploy delivered that is or was assigned to the token's user,
-// and optionally a move to a status. Nothing here can fail a deploy; the release
-// is already live when it runs.
+// and optionally a fix version and a move to a status. Nothing here can undo
+// a deploy; the release is already live when it runs.
 package jira
 
 import (
@@ -101,6 +101,8 @@ type Issue struct {
 	AssigneeID   string
 	AssigneeName string
 	Transitions  []Transition
+	// FixVersions carry the id and name of each.
+	FixVersions []Version
 }
 
 // Transition is a move available from the item's current status.
@@ -109,9 +111,10 @@ type Transition struct {
 	To string
 }
 
-// Issue reads an item's status, assignee and available transitions.
+// Issue reads an item's status, assignee, fix versions and available
+// transitions.
 func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
-	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+key+"?fields=status,assignee&expand=transitions", nil, http.StatusOK)
+	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+key+"?fields=status,assignee,fixVersions&expand=transitions", nil, http.StatusOK)
 	if err != nil {
 		return Issue{}, err
 	}
@@ -127,6 +130,7 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 				AccountID   string `json:"accountId"`
 				DisplayName string `json:"displayName"`
 			} `json:"assignee"`
+			FixVersions []Version `json:"fixVersions"`
 		} `json:"fields"`
 		Transitions []struct {
 			ID string `json:"id"`
@@ -141,7 +145,7 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 	if raw.Fields.Status.Category.Key == "" {
 		return Issue{}, fmt.Errorf("%s: the status has no category", key)
 	}
-	issue := Issue{Key: key, Status: raw.Fields.Status.Name, Done: raw.Fields.Status.Category.Key == "done"}
+	issue := Issue{Key: key, Status: raw.Fields.Status.Name, Done: raw.Fields.Status.Category.Key == "done", FixVersions: raw.Fields.FixVersions}
 	if a := raw.Fields.Assignee; a != nil {
 		if a.AccountID == "" {
 			return Issue{}, fmt.Errorf("%s: the assignee has no accountId", key)

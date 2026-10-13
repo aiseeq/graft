@@ -588,7 +588,10 @@ deploy:
       run: [bash, deploy/deploy.sh, --env, test]   # argv, run here in the foreground
       version: "cat /opt/app/VERSION"              # prints what the target runs
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
-      release_notes: {transition: Testing, from: [In Progress]}
+      release_notes:
+        transition: Testing
+        from: [In Progress]
+        fix_version: {prefix: "Product v"}  # add the next unreleased "Product v…" version
       dotenv: [REGISTRY_TOKEN, 'SMTP_HOST?']        # .env keys the script gets, as for tasks
       dotenv_sets: [db]
       status: "cat /opt/app/state.json"
@@ -654,10 +657,26 @@ release_notes:
    the Jira token get notes: not in a done-category status (Done, Won't do)
    or in `skip_statuses`, and assigned to the owner now or at some point in
    the item's history (an item handed over for review keeps its notes). Other
-   items are left alone with a warning. Release notes never fail a deploy;
-   problems are printed as warnings.
+   items are left alone with a warning. A failed comment or move is printed
+   as a warning and does not change the exit status.
+9. With `fix_version`, every item that gets a note also gets a fix version:
+   the version of its Jira project that is neither released nor archived,
+   whose name begins with `prefix`, and whose release date is the nearest,
+   that is the earliest (an overdue version still unreleased is the next
+   one); versions without a date come after the dated ones. graft never guesses:
+   no such version, two sharing the nearest date, or several undated ones
+   and no dated one are errors naming the candidates. The version is added
+   with an `update` `add`, so the item's other fix versions stay; an item
+   that has it already is left as it is, without an edit request. Editing
+   the item is the only permission it takes: graft never creates, renames or
+   releases versions. The release is live by then, so a fix version that is
+   not set (no version to pick, Jira unreachable, the edit refused) does not
+   stop the rest: graft prints `graft: PROJ-123: fix version NOT SET: <why>`,
+   one line per item, finishes the notes, and exits 1 with the list of items
+   left without it.
 
-graft exits with the deploy script's exit status. Two deploys to the same
+graft exits with the deploy script's exit status, or 1 when the script
+succeeded but a fix version is not set. Two deploys to the same
 target from one repository wait for each other.
 
 `graft deploy status <target> [-- args]` and `graft deploy logs <target>

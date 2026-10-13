@@ -304,10 +304,19 @@ deploy:
 	if _, err := Parse([]byte(notes("{transition: Testing, from: [In Progress, To Do]}"))); err != nil {
 		t.Errorf("transition with from: %v", err)
 	}
+	cfg, err = Parse([]byte(notes(`{transition: Testing, from: [In Progress], fix_version: {prefix: "Product v"}}`)))
+	if err != nil {
+		t.Errorf("fix_version: %v", err)
+	} else if fv := cfg.Deploy.Targets["test"].ReleaseNotes.FixVersion; fv == nil || fv.Prefix != "Product v" {
+		t.Errorf("fix_version = %+v", fv)
+	}
 	cases := map[string]string{
 		"transition w/o from":  notes("{transition: Testing}"),
 		"from w/o transition":  notes("{from: [In Progress]}"),
 		"from has transition":  notes("{transition: Testing, from: [Testing]}"),
+		"fix_version w/o pfx":  notes("{fix_version: {}}"),
+		"fix_version blank":    notes("{fix_version: {prefix: '  '}}"),
+		"fix_version name":     notes("{fix_version: {name: Product v1}}"),
 		"no remote":            strings.Replace(base, "remote: origin", "remote: ''", 1),
 		"unknown env":          strings.Replace(base, "env: prod,", "env: staging,", 1),
 		"unknown requires":     strings.Replace(base, "requires: test", "requires: uat", 1),

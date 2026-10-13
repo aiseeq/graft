@@ -163,8 +163,7 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 		return fmt.Errorf("the deploy script finished, but %w; the deployed commit is not recorded", err)
 	}
 	a.printf("deployed %s to %s", gitx.Short(r.head), r.name)
-	a.recordDeployment(ctx, r)
-	return nil
+	return a.recordDeployment(ctx, r)
 }
 
 // refuseSameCommit refuses to deploy the commit the target already runs,
@@ -286,92 +285,189 @@ func (a *App) runDeployScript(ctx context.Context, r *deployRun, args []string) 
 }
 
 // recordDeployment writes the deployed commit and posts release notes. The
-// release is live by now, so a failure here is reported, not returned.
-func (a *App) recordDeployment(ctx context.Context, r *deployRun) {
+// release is live by now, so a failure here is reported and the rest goes on;
+// only a fix version left unset makes the deploy exit non-zero.
+func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 	if r.target.DeployedSHA == nil {
-		return
+		return nil
 	}
 	if err := deploy.WriteDeployedSHA(ctx, r.env, r.target.DeployedSHA, r.head); err != nil {
 		a.warn("the deployed commit is not recorded: %v", err)
 	}
-	if r.target.ReleaseNotes != nil {
-		a.releaseNotes(ctx, r)
+	if r.target.ReleaseNotes == nil {
+		return nil
 	}
+	if unset := a.releaseNotes(ctx, r); len(unset) > 0 {
+		return fmt.Errorf("deployed %s to %s, but the fix version is not set on %s (see above)", gitx.Short(r.head), r.name, strings.Join(unset, ", "))
+	}
+	return nil
 }
 
 func (a *App) warn(format string, args ...any) {
 	fmt.Fprintf(a.Stderr, "graft: warning: "+format+"\n", args...)
 }
 
-func (a *App) releaseNotes(ctx context.Context, r *deployRun) {
+// releaseNotes posts the notes and returns the keys of the items whose fix
+// version, when the target asks for one, is not set.
+func (a *App) releaseNotes(ctx context.Context, r *deployRun) []string {
 	notes := r.cfg.ReleaseNotes.Jira
 	if r.prev == "" {
 		a.warn("release notes skipped: no previously deployed commit recorded (the next deploy will have one)")
-		return
+		return nil
 	}
-	if ok, err := r.repo.RevExists(r.prev); err != nil || !ok {
+	known, err := r.repo.RevExists(r.prev)
+	if err != nil {
+		a.warn("release notes skipped: %v", err)
+		return nil
+	}
+	if !known {
 		a.warn("release notes skipped: the previously deployed commit %s is unknown here (git fetch?)", r.prev)
-		return
+		return nil
 	}
 	keys, err := deliveredKeys(r.repo, r.prev, r.head, notes.ProjectKeys)
 	if err != nil {
 		a.warn("release notes skipped: %v", err)
-		return
+		return nil
 	}
 	if len(keys) == 0 {
 		a.printf("release notes: no work item keys in %s..%s", gitx.Short(r.prev), gitx.Short(r.head))
-		return
+		return nil
+	}
+	fix := &fixVersionRun{app: a, conf: r.target.ReleaseNotes.FixVersion}
+	// skipAll reports notes that cannot be posted at all; the fix version of
+	// every delivered item is then unknown.
+	skipAll := func(format string, err error) []string {
+		a.warn(format, err)
+		for _, key := range keys {
+			fix.failed(key, fmt.Errorf("release notes skipped: %w", err))
+		}
+		return fix.unset
 	}
 	client, err := jiraClient()
 	if err != nil {
-		a.warn("release notes skipped: %v", err)
-		return
+		return skipAll("release notes skipped: %v", err)
 	}
+	fix.client = client
 	text, err := envs.Fill(notes.Comment, map[string]string{"target": r.name, "version": r.version, "short": gitx.Short(r.head), "sha": r.head}, func(s string) string { return s })
 	if err != nil {
-		a.warn("release notes skipped: %v", err)
-		return
+		return skipAll("release notes skipped: %v", err)
 	}
 	me, err := client.Myself(ctx)
 	if err != nil {
-		a.warn("release notes skipped: whose items are whose is unknown: %v", err)
-		return
+		return skipAll("release notes skipped: whose items are whose is unknown: %v", err)
 	}
 	for _, key := range keys {
 		issue, err := client.Issue(ctx, key)
 		if err != nil {
 			a.warn("release note for %s not posted: %v", key, err)
+			fix.failed(key, err)
 			continue
 		}
-		// A key can reach a commit by hand, as a reference to an item that is
-		// closed or somebody else's. An item handed over for review stays
-		// yours: its history shows it assigned to you.
-		if issue.Done || slices.Contains(notes.SkipStatuses, issue.Status) {
-			a.warn("release note for %s not posted, %s left alone: it is %s", key, key, issue.Status)
+		yours, err := a.noteable(ctx, client, notes, me, issue)
+		if err != nil {
+			a.warn("release note for %s not posted: %v", key, err)
+			fix.failed(key, err)
 			continue
 		}
-		if issue.AssigneeID != me {
-			yours, err := client.WasAssignedTo(ctx, key, me)
-			if err != nil {
-				a.warn("release note for %s not posted: %v", key, err)
-				continue
-			}
-			if !yours {
-				whose := "unassigned"
-				if issue.AssigneeID != "" {
-					whose = "assigned to " + issue.AssigneeName
-				}
-				a.warn("release note for %s not posted, %s left alone: %s and never assigned to the owner of the Jira token", key, key, whose)
-				continue
-			}
+		if !yours {
+			continue
 		}
+		posted := true
 		if err := client.Comment(ctx, key, text); err != nil {
 			a.warn("release note for %s not posted: %v", key, err)
-			continue
+			posted = false
+		} else {
+			a.printf("release note posted to %s", key)
 		}
-		a.printf("release note posted to %s", key)
-		a.moveDelivered(ctx, client, issue, r.target.ReleaseNotes)
+		fix.add(ctx, issue)
+		if posted {
+			a.moveDelivered(ctx, client, issue, r.target.ReleaseNotes)
+		}
 	}
+	return fix.unset
+}
+
+// noteable tells whether an item gets a note, warning when it does not. A key
+// can reach a commit by hand, as a reference to an item that is closed or
+// somebody else's. An item handed over for review stays yours: its history
+// shows it assigned to you.
+func (a *App) noteable(ctx context.Context, client *jira.Client, notes *config.JiraNotes, me string, issue jira.Issue) (bool, error) {
+	key := issue.Key
+	if issue.Done || slices.Contains(notes.SkipStatuses, issue.Status) {
+		a.warn("release note for %s not posted, %s left alone: it is %s", key, key, issue.Status)
+		return false, nil
+	}
+	if issue.AssigneeID == me {
+		return true, nil
+	}
+	yours, err := client.WasAssignedTo(ctx, key, me)
+	if err != nil || yours {
+		return yours, err
+	}
+	whose := "unassigned"
+	if issue.AssigneeID != "" {
+		whose = "assigned to " + issue.AssigneeName
+	}
+	a.warn("release note for %s not posted, %s left alone: %s and never assigned to the owner of the Jira token", key, key, whose)
+	return false, nil
+}
+
+// fixVersionRun gives the noted items of one deploy the next version of their
+// project, reading each project's versions once.
+type fixVersionRun struct {
+	app    *App
+	conf   *config.FixVersion
+	client *jira.Client
+	next   map[string]fixChoice
+	unset  []string
+}
+
+type fixChoice struct {
+	version jira.Version
+	err     error
+}
+
+// add sets the fix version of a noted item, unless it has it already.
+func (f *fixVersionRun) add(ctx context.Context, issue jira.Issue) {
+	if f.conf == nil {
+		return
+	}
+	project, _, _ := strings.Cut(issue.Key, "-")
+	choice, ok := f.next[project]
+	if !ok {
+		versions, err := f.client.ProjectVersions(ctx, project)
+		if err == nil {
+			choice.version, err = jira.NextVersion(project, versions, f.conf.Prefix)
+		}
+		choice.err = err
+		if f.next == nil {
+			f.next = map[string]fixChoice{}
+		}
+		f.next[project] = choice
+	}
+	if choice.err != nil {
+		f.failed(issue.Key, choice.err)
+		return
+	}
+	v := choice.version
+	if slices.ContainsFunc(issue.FixVersions, func(have jira.Version) bool { return have.ID == v.ID }) {
+		f.app.printf("%s already has fix version %s", issue.Key, v.Name)
+		return
+	}
+	if err := f.client.AddFixVersion(ctx, issue.Key, v.ID); err != nil {
+		f.failed(issue.Key, err)
+		return
+	}
+	f.app.printf("fix version %s added to %s", v.Name, issue.Key)
+}
+
+// failed reports, one line per item, a fix version that is not set.
+func (f *fixVersionRun) failed(key string, err error) {
+	if f.conf == nil {
+		return
+	}
+	fmt.Fprintf(f.app.Stderr, "graft: %s: fix version NOT SET: %v\n", key, err)
+	f.unset = append(f.unset, key)
 }
 
 // moveDelivered moves a delivered item along only from the statuses the
