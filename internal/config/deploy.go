@@ -43,7 +43,7 @@ type DeployTarget struct {
 	ReleaseNotes *TargetNotes `yaml:"release_notes"`
 	// ApprovedRelease lets out only commits that name an item of a version
 	// beginning with the prefix that every approver has approved.
-	ApprovedRelease *FixVersion `yaml:"approved_release"`
+	ApprovedRelease *ApprovedRelease `yaml:"approved_release"`
 	// Status runs in Env; {args} receives what follows --.
 	Status EnvCommand `yaml:"status"`
 	// Logs runs in Env; {lines} is filled in, {args} receives what
@@ -81,6 +81,31 @@ type FixVersion struct {
 	// Prefix is how the names of the versions to pick from begin, such as
 	// "Product v".
 	Prefix string `yaml:"prefix"`
+}
+
+// ApprovedRelease lets out only the commits of an approved version.
+type ApprovedRelease struct {
+	// Prefix is how the names of the versions begin, such as "Product v".
+	Prefix string `yaml:"prefix"`
+	// IgnorePaths are globs of files that ship nothing: a commit that
+	// changes only these passes whatever it names.
+	IgnorePaths []string `yaml:"ignore_paths"`
+	// Ignore is IgnorePaths compiled.
+	Ignore []*regexp.Regexp `yaml:"-"`
+}
+
+// Ignored tells whether every one of the files matches IgnorePaths; no files
+// is not ignored.
+func (r *ApprovedRelease) Ignored(files []string) bool {
+	if len(files) == 0 || len(r.Ignore) == 0 {
+		return false
+	}
+	for _, f := range files {
+		if !slices.ContainsFunc(r.Ignore, func(re *regexp.Regexp) bool { return re.MatchString(f) }) {
+			return false
+		}
+	}
+	return true
 }
 
 // ReleaseNotes configures the Jira release notes.
@@ -189,6 +214,14 @@ func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {
 		return fmt.Errorf("%s.approved_release: needs a top-level release_notes.jira section for the project keys", where)
 	case strings.TrimSpace(t.ApprovedRelease.Prefix) == "":
 		return fmt.Errorf("%s.approved_release.prefix: required, how the version names begin, such as \"Product v\"", where)
+	}
+	t.ApprovedRelease.Ignore = nil
+	for i, g := range t.ApprovedRelease.IgnorePaths {
+		re, err := CompileGlob(g)
+		if err != nil {
+			return fmt.Errorf("%s.approved_release.ignore_paths[%d]: %w", where, i, err)
+		}
+		t.ApprovedRelease.Ignore = append(t.ApprovedRelease.Ignore, re)
 	}
 	return nil
 }

@@ -325,6 +325,7 @@ deploy:
 		"fix_version name":     notes("{fix_version: {name: Product v1}}"),
 		"approved w/o sha":     strings.Replace(base, "confirm: sudo}", "confirm: sudo, approved_release: {prefix: Product v}}", 1),
 		"approved w/o prefix":  strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {}}", 1),
+		"approved bad glob":    strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {prefix: Product v, ignore_paths: [/etc/x]}}", 1),
 		"approved w/o jira":    strings.Replace(strings.Replace(base, "release_notes: {jira: {project_keys: [PROJ]}}\n", "", 1), "release_notes: {}}", "approved_release: {prefix: Product v}}", 1),
 		"no remote":            strings.Replace(base, "remote: origin", "remote: ''", 1),
 		"unknown env":          strings.Replace(base, "env: prod,", "env: staging,", 1),

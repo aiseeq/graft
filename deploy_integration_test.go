@@ -232,7 +232,7 @@ deploy:
       env: local
       run: [sh, deploy.sh]
       deployed_sha: {path: ` + q("live-sha") + `}
-      approved_release: {prefix: "Product v"}
+      approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}
 release_notes:
   jira:
     project_keys: [PROJ]
@@ -562,6 +562,12 @@ func TestDeployApprovedRelease(t *testing.T) {
 	d.mustGraft("commit", "-m", "chore: tidy up")
 	d.write("e.txt", "e\n")
 	d.mustGraft("commit", "-m", "revert: PROJ-5 half approved")
+	d.write("docs/guide with space.md", "g\n")
+	d.write("NOTES.md", "n\n")
+	d.mustGraft("commit", "-m", "docs: the guide")
+	d.write("docs/more.md", "m\n")
+	d.write("code.txt", "c\n")
+	d.mustGraft("commit", "-m", "docs: PROJ-5 the guide and some code")
 	out, code = d.graft("", "deploy", "live")
 	if code == 0 {
 		t.Fatalf("exit 0:\n%s", out)
@@ -572,6 +578,8 @@ func TestDeployApprovedRelease(t *testing.T) {
 		`fix: PROJ-6 in another product: PROJ-6 not in an approved "Product v" version`,
 		"chore: tidy up: names no item",
 		"revert: PROJ-5 half approved: a revert, passes",
+		"docs: the guide: changes only ignore_paths, passes",
+		`docs: PROJ-5 the guide and some code: PROJ-5 not in an approved "Product v" version`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q:\n%s", want, out)

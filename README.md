@@ -603,7 +603,9 @@ deploy:
       requires: test            # prod only gets the version test already runs
       confirm: sudo             # sudo -v before the run: password in a terminal, fingerprint without
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
-      approved_release: {prefix: "Product v"}   # only commits of an approved "Product v…" version go out
+      approved_release:         # only commits of an approved "Product v…" version go out
+        prefix: "Product v"
+        ignore_paths: ["docs/**", "*.md"]   # a commit changing only these ships nothing and passes
       release_notes: {}
 
 release_notes:
@@ -632,7 +634,9 @@ release_notes:
    With `approved_release` (it needs `deployed_sha` and `release_notes.jira`),
    every commit going out, merges aside, must name an item with a fix version
    that begins with `prefix` and that has approvers, every one of whom
-   approved it in Jira. A revert (`Revert "…"`, `revert:`) passes. Otherwise
+   approved it in Jira. A revert (`Revert "…"`, `revert:`) passes, and so
+   does a commit that changes only `ignore_paths` (globs as in exceptions;
+   the version file and `sync` files that graft commit bumps do not count). Otherwise
    the deploy stops here, before deps and the script, listing each commit
    outside the release: one naming no item, or naming items without such a
    version. With no deployed commit recorded, or Jira unreachable, it stops

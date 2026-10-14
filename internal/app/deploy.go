@@ -559,26 +559,59 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 			a.printf("approved release: %s: a revert, passes", line)
 			continue
 		}
-		keys := uniqueSorted(keyRe.FindAllString(c.subject+"\n"+c.body, -1))
-		if len(keys) == 0 {
-			outside = append(outside, line+": names no item")
-			continue
+		why := "names no item"
+		if keys := uniqueSorted(keyRe.FindAllString(c.subject+"\n"+c.body, -1)); len(keys) > 0 {
+			version, err := gate.approvedVersion(ctx, keys)
+			if err != nil {
+				return refuse("%v", err)
+			}
+			if version != "" {
+				approved[version] = true
+				continue
+			}
+			why = fmt.Sprintf("%s not in an approved %q version", strings.Join(keys, ", "), conf.Prefix)
 		}
-		version, err := gate.approvedVersion(ctx, keys)
+		ignored, err := a.shipsNothing(r, conf, c.sha)
 		if err != nil {
 			return refuse("%v", err)
 		}
-		if version == "" {
-			outside = append(outside, fmt.Sprintf("%s: %s not in an approved %q version", line, strings.Join(keys, ", "), conf.Prefix))
+		if ignored {
+			a.printf("approved release: %s: changes only ignore_paths, passes", line)
 			continue
 		}
-		approved[version] = true
+		outside = append(outside, line+": "+why)
 	}
 	if len(outside) > 0 {
 		return refuse("commits outside an approved release:\n  %s\nput their items into the approved version, revert them, or pass --unapproved", strings.Join(outside, "\n  "))
 	}
 	a.printf("approved release: %d commits since %s, all in %s", len(commits), gitx.Short(r.prev), strings.Join(slices.Sorted(maps.Keys(approved)), ", "))
 	return nil
+}
+
+// shipsNothing tells whether a commit changes only approved_release's
+// ignore_paths, besides the version bump graft commit puts into every commit.
+func (a *App) shipsNothing(r *deployRun, conf *config.ApprovedRelease, sha string) (bool, error) {
+	if len(conf.Ignore) == 0 {
+		return false, nil
+	}
+	out, err := r.repo.Git("diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "-z", sha)
+	if err != nil {
+		return false, err
+	}
+	bumped := []string{}
+	if r.cfg.Version.Mode == config.ModeFile {
+		bumped = append(bumped, r.cfg.Version.File)
+		for _, f := range r.cfg.Version.Sync {
+			bumped = append(bumped, f.Path)
+		}
+	}
+	var files []string
+	for f := range strings.SplitSeq(out, "\x00") {
+		if f = strings.TrimSpace(f); f != "" && !slices.Contains(bumped, f) {
+			files = append(files, f)
+		}
+	}
+	return conf.Ignored(files), nil
 }
 
 // approvalGate reads each item and each version once per deploy.
