@@ -97,8 +97,6 @@ type Issue struct {
 	Status string
 	// Done is true in a status of the done category (Done, Won't do).
 	Done bool
-	// NotStarted is true in a status of the to-do category (To Do, Backlog).
-	NotStarted bool
 	// AssigneeID and AssigneeName are empty for an unassigned item.
 	AssigneeID   string
 	AssigneeName string
@@ -147,7 +145,7 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 	if raw.Fields.Status.Category.Key == "" {
 		return Issue{}, fmt.Errorf("%s: the status has no category", key)
 	}
-	issue := Issue{Key: key, Status: raw.Fields.Status.Name, Done: raw.Fields.Status.Category.Key == "done", NotStarted: raw.Fields.Status.Category.Key == "new", FixVersions: raw.Fields.FixVersions}
+	issue := Issue{Key: key, Status: raw.Fields.Status.Name, Done: raw.Fields.Status.Category.Key == "done", FixVersions: raw.Fields.FixVersions}
 	if a := raw.Fields.Assignee; a != nil {
 		if a.AccountID == "" {
 			return Issue{}, fmt.Errorf("%s: the assignee has no accountId", key)
