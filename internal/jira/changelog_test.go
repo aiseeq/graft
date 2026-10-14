@@ -35,3 +35,25 @@ func TestWasAssignedToReadsEveryPage(t *testing.T) {
 		}
 	}
 }
+
+func TestVersionApprovers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/api/3/version/10010" || r.URL.Query().Get("expand") != "approvers" {
+			http.Error(w, "unexpected", http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "10010", "approvers": []any{
+			map[string]string{"accountId": "a", "status": "APPROVED"},
+			map[string]string{"accountId": "b", "status": "PENDING"},
+		}})
+	}))
+	defer srv.Close()
+	c := New(Credentials{BaseURL: srv.URL})
+	got, err := c.VersionApprovers(context.Background(), "10010")
+	if err != nil || len(got) != 2 || got[0] != (Approver{AccountID: "a", Status: "APPROVED"}) || got[1].Status != "PENDING" {
+		t.Errorf("approvers = %+v %v", got, err)
+	}
+	if _, err := c.VersionApprovers(context.Background(), "10011"); err == nil {
+		t.Error("an unknown version read without an error")
+	}
+}

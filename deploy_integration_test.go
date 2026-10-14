@@ -34,6 +34,8 @@ type fakeJira struct {
 	fixVersions     map[string][]string
 	edits           []string
 	failEdit        []string
+	// approvers maps a version id to the statuses of its approvers.
+	approvers map[string][]string
 }
 
 func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -54,6 +56,14 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/project/PROJ/versions" {
 		j.versionRequests++
 		_ = json.NewEncoder(w).Encode(j.versions)
+		return
+	}
+	if id, ok := strings.CutPrefix(r.URL.Path, "/rest/api/3/version/"); ok && r.Method == http.MethodGet && r.URL.Query().Get("expand") == "approvers" {
+		approvers := []any{}
+		for i, status := range j.approvers[id] {
+			approvers = append(approvers, map[string]string{"accountId": "approver" + strconv.Itoa(i), "status": status})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "approvers": approvers})
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/rest/api/3/issue/"), "/")
@@ -218,6 +228,11 @@ deploy:
       run: [sh, deploy.sh]
       requires: test
       confirm: sudo
+    live:
+      env: local
+      run: [sh, deploy.sh]
+      deployed_sha: {path: ` + q("live-sha") + `}
+      approved_release: {prefix: "Product v"}
 release_notes:
   jira:
     project_keys: [PROJ]
@@ -485,6 +500,116 @@ func TestDeployFixVersionFailureFailsTheDeploy(t *testing.T) {
 				t.Errorf("PROJ-1 comments = %v", comments["PROJ-1"])
 			}
 		})
+	}
+}
+
+func (j *fakeJira) setApprovers(approvers map[string][]string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.approvers = approvers
+}
+
+// TestDeployFixVersionPassesOverApproved: once anybody approves the nearest
+// version, its items are fixed and a later deploy notes into the next one.
+func TestDeployFixVersionPassesOverApproved(t *testing.T) {
+	d := deployRepo(t)
+	d.jira.setVersions(productVersions(), map[string][]string{})
+	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "PENDING"}, "10030": {"PENDING"}})
+	d.deliverAllKeys("uat")
+	out := d.mustGraft("deploy", "uat")
+	edits, _ := d.jira.editsSnapshot()
+	if !slices.Equal(edits, []string{"PROJ-1 add 10030", "PROJ-5 add 10030", "PROJ-6 add 10030"}) {
+		t.Errorf("edits = %v\n%s", edits, out)
+	}
+	if !strings.Contains(out, "Product v1.2.10 is being approved: no item joins it") {
+		t.Errorf("no word about the approved version:\n%s", out)
+	}
+
+	// Every dated version approved, the undated one too: nothing to pick.
+	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED"}, "10030": {"APPROVED"}, "10200": {"APPROVED"}})
+	d.write("c.txt", "c\n")
+	d.mustGraft("commit", "-m", "fix: PROJ-1 third")
+	out, code := d.graft("", "deploy", "uat")
+	if code == 0 || !strings.Contains(out, `every unreleased version of PROJ starting with "Product v" is being approved`) {
+		t.Errorf("exit %d:\n%s", code, out)
+	}
+}
+
+// TestDeployApprovedRelease: a target with approved_release lets out only
+// commits whose items are in a version every approver approved.
+func TestDeployApprovedRelease(t *testing.T) {
+	d := deployRepo(t)
+	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-1": {"10010"}, "PROJ-5": {"10030"}, "PROJ-6": {"10001"}})
+	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "APPROVED"}, "10030": {"APPROVED", "PENDING"}, "10001": {"APPROVED"}})
+
+	out, code := d.graft("", "deploy", "live")
+	if code == 0 || !strings.Contains(out, "no deployed commit recorded, what goes out is unknown") {
+		t.Errorf("first deploy without a recorded commit: exit %d\n%s", code, out)
+	}
+	out = d.mustGraft("deploy", "--unapproved", "live")
+	if !strings.Contains(out, "approved release not checked (--unapproved)") {
+		t.Errorf("--unapproved:\n%s", out)
+	}
+	deployed := d.git("rev-parse", "HEAD")
+
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-1 approved thing")
+	d.write("b.txt", "b\n")
+	d.mustGraft("commit", "-m", "fix: PROJ-5 half approved")
+	d.write("c.txt", "c\n")
+	d.mustGraft("commit", "-m", "fix: PROJ-6 in another product")
+	d.write("d.txt", "d\n")
+	d.mustGraft("commit", "-m", "chore: tidy up")
+	d.write("e.txt", "e\n")
+	d.mustGraft("commit", "-m", "revert: PROJ-5 half approved")
+	out, code = d.graft("", "deploy", "live")
+	if code == 0 {
+		t.Fatalf("exit 0:\n%s", out)
+	}
+	for _, want := range []string{
+		"nothing was deployed: approved release: commits outside an approved release",
+		`fix: PROJ-5 half approved: PROJ-5 not in an approved "Product v" version`,
+		`fix: PROJ-6 in another product: PROJ-6 not in an approved "Product v" version`,
+		"chore: tidy up: names no item",
+		"revert: PROJ-5 half approved: a revert, passes",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "feat: PROJ-1 approved thing:") {
+		t.Errorf("the approved commit is listed:\n%s", out)
+	}
+	if got := strings.TrimSpace(d.stateFile("live-sha")); got != deployed {
+		t.Errorf("deployed sha = %q, want the earlier %q", got, deployed)
+	}
+
+	// PROJ-5's version gets its last approval, PROJ-6 moves into it, the
+	// chore names PROJ-1: everything goes out.
+	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "APPROVED"}, "10030": {"APPROVED", "APPROVED"}})
+	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-1": {"10010"}, "PROJ-5": {"10030"}, "PROJ-6": {"10001", "10010"}})
+	d.write("f.txt", "f\n")
+	d.mustGraft("commit", "-m", "chore: PROJ-1 tidy up again")
+	out, code = d.graft("", "deploy", "live")
+	if code == 0 || !strings.Contains(out, "chore: tidy up: names no item") || strings.Contains(out, "PROJ-5 not in") || strings.Contains(out, "PROJ-6 not in") {
+		t.Errorf("only the keyless commit stays outside: exit %d\n%s", code, out)
+	}
+}
+
+func TestDeployApprovedReleaseGoesOut(t *testing.T) {
+	d := deployRepo(t)
+	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-1": {"10010"}})
+	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "APPROVED"}})
+	d.mustGraft("deploy", "--unapproved", "live")
+	prev := d.git("rev-parse", "HEAD")[:12]
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-1 approved thing")
+	out := d.mustGraft("deploy", "live")
+	if !strings.Contains(out, "approved release: 1 commits since "+prev+", all in Product v1.2.10") {
+		t.Errorf("no summary:\n%s", out)
+	}
+	if got := strings.TrimSpace(d.stateFile("live-sha")); got != d.git("rev-parse", "HEAD") {
+		t.Errorf("deployed sha = %q", got)
 	}
 }
 

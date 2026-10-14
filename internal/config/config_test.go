@@ -310,6 +310,12 @@ deploy:
 	} else if fv := cfg.Deploy.Targets["test"].ReleaseNotes.FixVersion; fv == nil || fv.Prefix != "Product v" {
 		t.Errorf("fix_version = %+v", fv)
 	}
+	cfg, err = Parse([]byte(strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {prefix: Product v}}", 1)))
+	if err != nil {
+		t.Errorf("approved_release: %v", err)
+	} else if ar := cfg.Deploy.Targets["test"].ApprovedRelease; ar == nil || ar.Prefix != "Product v" {
+		t.Errorf("approved_release = %+v", ar)
+	}
 	cases := map[string]string{
 		"transition w/o from":  notes("{transition: Testing}"),
 		"from w/o transition":  notes("{from: [In Progress]}"),
@@ -317,6 +323,9 @@ deploy:
 		"fix_version w/o pfx":  notes("{fix_version: {}}"),
 		"fix_version blank":    notes("{fix_version: {prefix: '  '}}"),
 		"fix_version name":     notes("{fix_version: {name: Product v1}}"),
+		"approved w/o sha":     strings.Replace(base, "confirm: sudo}", "confirm: sudo, approved_release: {prefix: Product v}}", 1),
+		"approved w/o prefix":  strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {}}", 1),
+		"approved w/o jira":    strings.Replace(strings.Replace(base, "release_notes: {jira: {project_keys: [PROJ]}}\n", "", 1), "release_notes: {}}", "approved_release: {prefix: Product v}}", 1),
 		"no remote":            strings.Replace(base, "remote: origin", "remote: ''", 1),
 		"unknown env":          strings.Replace(base, "env: prod,", "env: staging,", 1),
 		"unknown requires":     strings.Replace(base, "requires: test", "requires: uat", 1),

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,6 +53,8 @@ type DeployOptions struct {
 	Args []string
 	// Redeploy deploys the commit the target already runs (deployed_sha).
 	Redeploy bool
+	// Unapproved skips the approved_release check.
+	Unapproved bool
 }
 
 type deployRun struct {
@@ -144,6 +147,9 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 		if err := a.refuseSameCommit(r, o.Redeploy); err != nil {
 			return err
 		}
+	}
+	if err := a.checkApproved(ctx, r, o.Unapproved); err != nil {
+		return err
 	}
 	if len(r.target.Deps) > 0 {
 		a.printf("deploy %s: running %s first", r.name, strings.Join(r.target.Deps, ", "))
@@ -437,6 +443,9 @@ func (f *fixVersionRun) add(ctx context.Context, issue jira.Issue) {
 	if !ok {
 		versions, err := f.client.ProjectVersions(ctx, project)
 		if err == nil {
+			err = f.freezeApproved(ctx, versions)
+		}
+		if err == nil {
 			choice.version, err = jira.NextVersion(project, versions, f.conf.Prefix)
 		}
 		choice.err = err
@@ -459,6 +468,25 @@ func (f *fixVersionRun) add(ctx context.Context, issue jira.Issue) {
 		return
 	}
 	f.app.printf("fix version %s added to %s", v.Name, issue.Key)
+}
+
+// freezeApproved marks the candidate versions whose approval has begun: the
+// approved set of items is theirs, and a later deploy adds nothing to it.
+func (f *fixVersionRun) freezeApproved(ctx context.Context, versions []jira.Version) error {
+	for i, v := range versions {
+		if v.Released || v.Archived || !strings.HasPrefix(v.Name, f.conf.Prefix) {
+			continue
+		}
+		approvers, err := f.client.VersionApprovers(ctx, v.ID)
+		if err != nil {
+			return err
+		}
+		if jira.ApprovalBegun(approvers) {
+			versions[i].Frozen = true
+			f.app.printf("%s is being approved: no item joins it", v.Name)
+		}
+	}
+	return nil
 }
 
 // failed reports, one line per item, a fix version that is not set.
@@ -485,6 +513,166 @@ func (a *App) moveDelivered(ctx context.Context, client *jira.Client, issue jira
 		}
 		a.printf("%s moved to %s", issue.Key, to)
 	}
+}
+
+// checkApproved lets out only the commits of an approved release: every
+// commit going out names an item with a fix version that begins with the
+// prefix and that every approver has approved. A revert takes nothing new out
+// and passes; a merge brings in commits that are checked themselves.
+func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error {
+	conf := r.target.ApprovedRelease
+	if conf == nil {
+		return nil
+	}
+	if skip {
+		a.warn("approved release not checked (--unapproved): everything since the deployed commit goes out")
+		return nil
+	}
+	refuse := func(format string, args ...any) error {
+		return fmt.Errorf("deploy %s: nothing was deployed: approved release: "+format, append([]any{r.name}, args...)...)
+	}
+	if r.prev == "" {
+		return refuse("no deployed commit recorded, what goes out is unknown; check it by hand and pass --unapproved")
+	}
+	known, err := r.repo.RevExists(r.prev)
+	if err != nil {
+		return refuse("%v", err)
+	}
+	if !known {
+		return refuse("the deployed commit %s is unknown here (git fetch?)", r.prev)
+	}
+	commits, err := deliveredCommits(r.repo, r.prev, r.head)
+	if err != nil {
+		return refuse("%v", err)
+	}
+	client, err := jiraClient()
+	if err != nil {
+		return refuse("%v", err)
+	}
+	gate := &approvalGate{client: client, prefix: conf.Prefix, items: map[string]string{}, versions: map[string]bool{}}
+	keyRe := regexp.MustCompile(`\b(` + strings.Join(r.cfg.ReleaseNotes.Jira.ProjectKeys, "|") + `)-[0-9]+\b`)
+	var outside []string
+	approved := map[string]bool{}
+	for _, c := range commits {
+		line := gitx.Short(c.sha) + " " + c.subject
+		if isRevert(c.subject) {
+			a.printf("approved release: %s: a revert, passes", line)
+			continue
+		}
+		keys := uniqueSorted(keyRe.FindAllString(c.subject+"\n"+c.body, -1))
+		if len(keys) == 0 {
+			outside = append(outside, line+": names no item")
+			continue
+		}
+		version, err := gate.approvedVersion(ctx, keys)
+		if err != nil {
+			return refuse("%v", err)
+		}
+		if version == "" {
+			outside = append(outside, fmt.Sprintf("%s: %s not in an approved %q version", line, strings.Join(keys, ", "), conf.Prefix))
+			continue
+		}
+		approved[version] = true
+	}
+	if len(outside) > 0 {
+		return refuse("commits outside an approved release:\n  %s\nput their items into the approved version, revert them, or pass --unapproved", strings.Join(outside, "\n  "))
+	}
+	a.printf("approved release: %d commits since %s, all in %s", len(commits), gitx.Short(r.prev), strings.Join(slices.Sorted(maps.Keys(approved)), ", "))
+	return nil
+}
+
+// approvalGate reads each item and each version once per deploy.
+type approvalGate struct {
+	client *jira.Client
+	prefix string
+	// items maps a key to the name of its approved version, "" for none.
+	items map[string]string
+	// versions maps a version id to whether every approver approved it.
+	versions map[string]bool
+}
+
+// approvedVersion names an approved version of one of the items, "" when
+// none of them has one.
+func (g *approvalGate) approvedVersion(ctx context.Context, keys []string) (string, error) {
+	for _, key := range keys {
+		name, ok := g.items[key]
+		if !ok {
+			var err error
+			if name, err = g.itemVersion(ctx, key); err != nil {
+				return "", err
+			}
+			g.items[key] = name
+		}
+		if name != "" {
+			return name, nil
+		}
+	}
+	return "", nil
+}
+
+// itemVersion names the item's fix version of the prefix that every
+// approver approved, "" when it has none.
+func (g *approvalGate) itemVersion(ctx context.Context, key string) (string, error) {
+	issue, err := g.client.Issue(ctx, key)
+	if err != nil {
+		return "", err
+	}
+	for _, v := range issue.FixVersions {
+		if !strings.HasPrefix(v.Name, g.prefix) {
+			continue
+		}
+		full, seen := g.versions[v.ID]
+		if !seen {
+			approvers, err := g.client.VersionApprovers(ctx, v.ID)
+			if err != nil {
+				return "", err
+			}
+			full = jira.FullyApproved(approvers)
+			g.versions[v.ID] = full
+		}
+		if full {
+			return v.Name, nil
+		}
+	}
+	return "", nil
+}
+
+// isRevert recognizes git's own subject (Revert "…") and the Conventional
+// Commits revert type.
+func isRevert(subject string) bool {
+	s := strings.ToLower(subject)
+	return strings.HasPrefix(s, "revert ") || strings.HasPrefix(s, "revert:") || strings.HasPrefix(s, "revert(") || strings.HasPrefix(s, "revert!")
+}
+
+type deliveredCommit struct {
+	sha, subject, body string
+}
+
+// deliveredCommits lists the commits that go out, merges left out.
+func deliveredCommits(repo *gitx.Repo, prev, head string) ([]deliveredCommit, error) {
+	out, err := repo.Git("log", "--no-merges", "--format=%H%x1f%s%x1f%b%x1e", prev+".."+head)
+	if err != nil {
+		return nil, err
+	}
+	var commits []deliveredCommit
+	for _, rec := range strings.Split(out, "\x1e") {
+		rec = strings.TrimLeft(rec, "\n")
+		if rec == "" {
+			continue
+		}
+		f := strings.SplitN(rec, "\x1f", 3)
+		if len(f) != 3 {
+			return nil, fmt.Errorf("unexpected git log record %q", rec)
+		}
+		commits = append(commits, deliveredCommit{sha: f[0], subject: f[1], body: f[2]})
+	}
+	return commits, nil
+}
+
+func uniqueSorted(in []string) []string {
+	out := slices.Clone(in)
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // deliveredKeys lists the project's work item keys mentioned in the subjects

@@ -53,6 +53,24 @@ func TestNextVersion(t *testing.T) {
 			errHas:   []string{"none has a release date", "Product v2.0.0, Product v3.0.0"},
 		},
 		{
+			name: "a frozen version is passed over",
+			versions: func() []Version {
+				frozen := v("5", "Product v1.3.0", "2026-11-01")
+				frozen.Frozen = true
+				return []Version{frozen, v("3", "Product v1.4.0", "2026-12-01")}
+			}(),
+			want: "3",
+		},
+		{
+			name: "only frozen versions left",
+			versions: func() []Version {
+				frozen := v("5", "Product v1.3.0", "2026-11-01")
+				frozen.Frozen = true
+				return []Version{released, frozen}
+			}(),
+			errHas: []string{`every unreleased version of PROJ starting with "Product v" is being approved`, "Product v1.3.0", "add the next version"},
+		},
+		{
 			name:     "a malformed date",
 			versions: []Version{v("12", "Product v1.3.0", "next week")},
 			errHas:   []string{`"Product v1.3.0" has release date "next week"`},
@@ -74,6 +92,35 @@ func TestNextVersion(t *testing.T) {
 			if !strings.Contains(err.Error(), s) {
 				t.Errorf("%s: %q lacks %q", c.name, err, s)
 			}
+		}
+	}
+}
+
+func TestApprovals(t *testing.T) {
+	a := func(statuses ...string) []Approver {
+		var out []Approver
+		for i, s := range statuses {
+			out = append(out, Approver{AccountID: string(rune('a' + i)), Status: s})
+		}
+		return out
+	}
+	cases := []struct {
+		name         string
+		approvers    []Approver
+		begun, fully bool
+	}{
+		{"no approvers", nil, false, false},
+		{"pending", a("PENDING"), false, false},
+		{"one of two", a("APPROVED", "PENDING"), true, false},
+		{"approved and declined", a("APPROVED", "DECLINED"), true, false},
+		{"all", a("APPROVED", "APPROVED"), true, true},
+	}
+	for _, c := range cases {
+		if got := ApprovalBegun(c.approvers); got != c.begun {
+			t.Errorf("%s: ApprovalBegun = %v", c.name, got)
+		}
+		if got := FullyApproved(c.approvers); got != c.fully {
+			t.Errorf("%s: FullyApproved = %v", c.name, got)
 		}
 	}
 }

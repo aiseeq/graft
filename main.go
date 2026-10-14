@@ -465,6 +465,13 @@ func flagsCmd(ctx context.Context, a *app.App, args []string) error {
 	return a.Flags(ctx, o)
 }
 
+// deployFlagsMisplaced tells whether flags reach a subcommand that does not
+// take them: script args check-head, log flags anything but logs, deploy
+// flags any subcommand.
+func deployFlagsMisplaced(sub string, scriptArgs, logFlags, deployFlags bool) bool {
+	return scriptArgs && sub == "check-head" || logFlags && sub != "logs" || deployFlags && isDeploySubcommand(sub)
+}
+
 func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	// Everything after -- belongs to the deploy script.
 	var scriptArgs []string
@@ -475,16 +482,17 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	lines := fs.Int("lines", 200, "logs: how many lines")
 	grep := fs.String("grep", "", "logs: keep lines matching this regexp")
 	redeploy := fs.Bool("redeploy", false, "deploy the commit the target already runs")
+	unapproved := fs.Bool("unapproved", false, "skip the approved_release check")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
 	}
-	usage := fmt.Errorf("%w: graft deploy [--redeploy] <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | check-head", errUsage)
+	usage := fmt.Errorf("%w: graft deploy [--redeploy] [--unapproved] <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | check-head", errUsage)
 	if len(pos) == 0 {
 		return usage
 	}
 	logFlags := *lines != 200 || *grep != ""
-	if scriptArgs != nil && pos[0] == "check-head" || logFlags && pos[0] != "logs" || *redeploy && isDeploySubcommand(pos[0]) {
+	if deployFlagsMisplaced(pos[0], scriptArgs != nil, logFlags, *redeploy || *unapproved) {
 		return usage
 	}
 	switch {
@@ -498,7 +506,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 		}
 		return a.DeployLogs(ctx, pos[1], *lines, *grep, scriptArgs)
 	case !isDeploySubcommand(pos[0]) && len(pos) == 1:
-		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs, Redeploy: *redeploy})
+		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs, Redeploy: *redeploy, Unapproved: *unapproved})
 	default:
 		return usage
 	}

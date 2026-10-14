@@ -66,7 +66,7 @@ leaks:                           # keep private names out of public repositories
 | `graft flags show <id>` | one event in full |
 | `graft flags ack <id> --reason R` | close an open event with a reason |
 | `graft flags mute <id> --reason R [--match S] [--all-envs]` | add an exception for it, then close it |
-| `graft deploy [--redeploy] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs |
+| `graft deploy [--redeploy] [--unapproved] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--unapproved` skips the `approved_release` check |
 | `graft deploy status <target>` / `logs <target> [--lines N] [--grep RE]` | the target's status and logs commands |
 | `graft deploy check-head` | for deploy scripts: HEAD is still the commit being deployed |
 | `graft <task> [-- args]` / `graft run <task> [-- args]` | run a task with its deps |
@@ -603,6 +603,7 @@ deploy:
       requires: test            # prod only gets the version test already runs
       confirm: sudo             # sudo -v before the run: password in a terminal, fingerprint without
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
+      approved_release: {prefix: "Product v"}   # only commits of an approved "Product v…" version go out
       release_notes: {}
 
 release_notes:
@@ -612,7 +613,7 @@ release_notes:
     skip_statuses: [On Hold]    # leave these items alone: no note, no move
 ```
 
-`graft deploy [--redeploy] <target> [-- args]`:
+`graft deploy [--redeploy] [--unapproved] <target> [-- args]`:
 
 0. Check that every required key of `dotenv` and `dotenv_sets` and every
    `${KEY}` in `run` is set, and everything the `deps` tasks need, listing all
@@ -628,6 +629,14 @@ release_notes:
    `sudo` in the target environment before the confirmation prompt: on this
    machine it may ask for its own password there. A target without
    `deployed_sha` is deployed whatever it runs.
+   With `approved_release` (it needs `deployed_sha` and `release_notes.jira`),
+   every commit going out, merges aside, must name an item with a fix version
+   that begins with `prefix` and that has approvers, every one of whom
+   approved it in Jira. A revert (`Revert "…"`, `revert:`) passes. Otherwise
+   the deploy stops here, before deps and the script, listing each commit
+   outside the release: one naming no item, or naming items without such a
+   version. With no deployed commit recorded, or Jira unreachable, it stops
+   too. `--unapproved` skips the check with a warning.
 4. Run the `deps` tasks, exactly as a task's deps run: in order, each at most
    once (deps of deps included), a `test_db: true` task with the test database
    up and its DSN. A failure ends the deploy before the deploy script runs or
@@ -663,7 +672,9 @@ release_notes:
    the version of its Jira project that is neither released nor archived,
    whose name begins with `prefix`, and whose release date is the nearest,
    that is the earliest (an overdue version still unreleased is the next
-   one); versions without a date come after the dated ones. graft never guesses:
+   one); versions without a date come after the dated ones. A version that
+   anybody has approved in Jira is passed over: its approved set of items is
+   final, and they go to the next one. graft never guesses:
    no such version, two sharing the nearest date, or several undated ones
    and no dated one are errors naming the candidates. The version is added
    with an `update` `add`, so the item's other fix versions stay; an item

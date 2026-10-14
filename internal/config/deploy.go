@@ -41,6 +41,9 @@ type DeployTarget struct {
 	Confirm      string       `yaml:"confirm"`
 	DeployedSHA  *DeployedSHA `yaml:"deployed_sha"`
 	ReleaseNotes *TargetNotes `yaml:"release_notes"`
+	// ApprovedRelease lets out only commits that name an item of a version
+	// beginning with the prefix that every approver has approved.
+	ApprovedRelease *FixVersion `yaml:"approved_release"`
 	// Status runs in Env; {args} receives what follows --.
 	Status EnvCommand `yaml:"status"`
 	// Logs runs in Env; {lines} is filled in, {args} receives what
@@ -164,7 +167,30 @@ func (c *Config) validateTarget(name string, t *DeployTarget) error {
 		return err
 	}
 	t.Keys = keys
+	return c.validateTargetJira(where, t)
+}
+
+// validateTargetJira checks what a target asks of Jira: the approved release
+// before a deploy and the notes after it.
+func (c *Config) validateTargetJira(where string, t *DeployTarget) error {
+	if err := c.validateApprovedRelease(where, t); err != nil {
+		return err
+	}
 	return c.validateTargetNotes(where, t)
+}
+
+func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {
+	switch {
+	case t.ApprovedRelease == nil:
+		return nil
+	case t.DeployedSHA == nil:
+		return fmt.Errorf("%s.approved_release: needs deployed_sha to know which commits go out", where)
+	case c.ReleaseNotes == nil || c.ReleaseNotes.Jira == nil:
+		return fmt.Errorf("%s.approved_release: needs a top-level release_notes.jira section for the project keys", where)
+	case strings.TrimSpace(t.ApprovedRelease.Prefix) == "":
+		return fmt.Errorf("%s.approved_release.prefix: required, how the version names begin, such as \"Product v\"", where)
+	}
+	return nil
 }
 
 func (c *Config) validateRequires(where, name string, t *DeployTarget) error {

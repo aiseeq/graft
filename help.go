@@ -45,7 +45,7 @@ var commands = []command{
 	), summary: text("review the project's event journal: status, show, ack, mute"),
 		applies: func(c *config.Config) bool { return c.Flags != nil }},
 	{name: "deploy", syntax: fixed(
-		"graft deploy [--redeploy] <target> [-- script args]",
+		"graft deploy [--redeploy] [--unapproved] <target> [-- script args]",
 		"graft deploy status <target> [-- args]",
 		"graft deploy logs <target> [--lines N] [--grep RE] [-- args]",
 		"graft deploy check-head",
