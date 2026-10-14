@@ -74,6 +74,10 @@ type TargetNotes struct {
 	// FixVersion adds the project's next unreleased version to every item
 	// that gets a note.
 	FixVersion *FixVersion `yaml:"fix_version"`
+	// Subtasks follow their parent: the open subtasks of a delivered item
+	// that is done or reaches Transition move to Transition, whatever From
+	// says, and so does a delivered subtask whose parent is done.
+	Subtasks bool `yaml:"subtasks"`
 }
 
 // FixVersion picks the version by the start of its name.
@@ -262,6 +266,8 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 		return fmt.Errorf("%s.release_notes.from: required with a transition: the statuses an item moves from, such as [In Progress] (an item elsewhere, paused or not started, keeps its status)", where)
 	case slices.Contains(n.From, n.Transition):
 		return fmt.Errorf("%s.release_notes.from: lists %q, the transition's own status", where, n.Transition)
+	case n.Subtasks && n.Transition == "":
+		return fmt.Errorf("%s.release_notes.subtasks: needs a transition to move them to", where)
 	case n.FixVersion != nil && strings.TrimSpace(n.FixVersion.Prefix) == "":
 		return fmt.Errorf("%s.release_notes.fix_version.prefix: required, how the version names begin, such as \"Product v\"", where)
 	}

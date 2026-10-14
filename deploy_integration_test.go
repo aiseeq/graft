@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -36,6 +37,8 @@ type fakeJira struct {
 	failEdit        []string
 	// approvers maps a version id to the statuses of its approvers.
 	approvers map[string][]string
+	// parents maps a subtask's key to its parent's.
+	parents map[string]string
 }
 
 func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -108,16 +111,29 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for _, id := range j.fixVersions[key] {
 			fixVersions = append(fixVersions, map[string]any{"id": id, "name": j.versionName(id)})
 		}
+		fields := map[string]any{
+			"status":      map[string]any{"name": j.statuses[key], "statusCategory": map[string]string{"key": category}},
+			"assignee":    assignee,
+			"fixVersions": fixVersions,
+			"issuetype":   map[string]bool{"subtask": j.parents[key] != ""},
+		}
+		if p := j.parents[key]; p != "" {
+			fields["parent"] = map[string]string{"key": p}
+		}
+		subtasks := []any{}
+		for _, st := range slices.Sorted(maps.Keys(j.parents)) {
+			if j.parents[st] == key {
+				subtasks = append(subtasks, map[string]string{"key": st})
+			}
+		}
+		fields["subtasks"] = subtasks
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"fields": map[string]any{
-				"status":      map[string]any{"name": j.statuses[key], "statusCategory": map[string]string{"key": category}},
-				"assignee":    assignee,
-				"fixVersions": fixVersions,
-			},
+			"fields":      fields,
 			"transitions": []any{map[string]any{"id": "31", "to": map[string]string{"name": "Testing"}}},
 		})
 	case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "transitions":
 		j.moved = append(j.moved, key)
+		j.statuses[key] = "Testing"
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, "unexpected", http.StatusNotFound)
@@ -222,6 +238,11 @@ deploy:
       run: [sh, deploy.sh]
       deployed_sha: {path: ` + q("uat-sha") + `}
       release_notes: {transition: Testing, from: [In Progress], fix_version: {prefix: "Product v"}}
+    sub:
+      env: local
+      run: [sh, deploy.sh]
+      deployed_sha: {path: ` + q("sub-sha") + `}
+      release_notes: {transition: Testing, from: [In Progress], subtasks: true}
     stage:
       env: local
       run: [sh, deploy.sh]
@@ -621,6 +642,38 @@ func TestDeployApprovedReleaseGoesOut(t *testing.T) {
 	}
 	if got := strings.TrimSpace(d.stateFile("live-sha")); got != d.git("rev-parse", "HEAD") {
 		t.Errorf("deployed sha = %q", got)
+	}
+}
+
+// TestDeploySubtasksFollowParents: with subtasks, a parent that reaches the
+// transition takes its open subtasks along, and a delivered subtask of a done
+// parent follows it whatever from says.
+func TestDeploySubtasksFollowParents(t *testing.T) {
+	d := deployRepo(t)
+	d.jira.mu.Lock()
+	for k, st := range map[string]string{"PROJ-20": "In Progress", "PROJ-21": "In Progress", "PROJ-22": "Done", "PROJ-23": "In Progress", "PROJ-30": "Done", "PROJ-31": "Paused", "PROJ-40": "In Progress", "PROJ-41": "In Progress"} {
+		d.jira.statuses[k] = st
+	}
+	d.jira.assignees["PROJ-23"] = "colleague"
+	d.jira.parents = map[string]string{"PROJ-21": "PROJ-20", "PROJ-22": "PROJ-20", "PROJ-23": "PROJ-20", "PROJ-31": "PROJ-30", "PROJ-41": "PROJ-40"}
+	d.jira.mu.Unlock()
+	d.mustGraft("deploy", "sub")
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-20 parent work\n\nAlso PROJ-31")
+	out := d.mustGraft("deploy", "sub")
+	_, moved := d.jira.snapshot()
+	slices.Sort(moved)
+	if !slices.Equal(moved, []string{"PROJ-20", "PROJ-21", "PROJ-31"}) {
+		t.Errorf("moved = %v\n%s", moved, out)
+	}
+	for _, want := range []string{
+		"PROJ-21 moved to Testing after its parent PROJ-20",
+		"PROJ-31 moved to Testing after its parent PROJ-30",
+		"PROJ-23 left alone: assigned to Colleague colleague",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
 	}
 }
 

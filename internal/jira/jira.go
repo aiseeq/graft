@@ -105,6 +105,10 @@ type Issue struct {
 	Transitions  []Transition
 	// FixVersions carry the id and name of each.
 	FixVersions []Version
+	// Parent is the key of the item a subtask belongs to, empty for others.
+	Parent string
+	// Subtasks are the keys of the item's subtasks.
+	Subtasks []string
 }
 
 // Transition is a move available from the item's current status.
@@ -116,7 +120,7 @@ type Transition struct {
 // Issue reads an item's status, assignee, fix versions and available
 // transitions.
 func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
-	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+key+"?fields=status,assignee,fixVersions&expand=transitions", nil, http.StatusOK)
+	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+key+"?fields=status,assignee,fixVersions,issuetype,parent,subtasks&expand=transitions", nil, http.StatusOK)
 	if err != nil {
 		return Issue{}, err
 	}
@@ -133,6 +137,15 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 				DisplayName string `json:"displayName"`
 			} `json:"assignee"`
 			FixVersions []Version `json:"fixVersions"`
+			IssueType   struct {
+				Subtask bool `json:"subtask"`
+			} `json:"issuetype"`
+			Parent *struct {
+				Key string `json:"key"`
+			} `json:"parent"`
+			Subtasks []struct {
+				Key string `json:"key"`
+			} `json:"subtasks"`
 		} `json:"fields"`
 		Transitions []struct {
 			ID string `json:"id"`
@@ -156,6 +169,12 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 	}
 	for _, t := range raw.Transitions {
 		issue.Transitions = append(issue.Transitions, Transition{ID: t.ID, To: t.To.Name})
+	}
+	if raw.Fields.IssueType.Subtask && raw.Fields.Parent != nil {
+		issue.Parent = raw.Fields.Parent.Key
+	}
+	for _, st := range raw.Fields.Subtasks {
+		issue.Subtasks = append(issue.Subtasks, st.Key)
 	}
 	return issue, nil
 }

@@ -321,6 +321,7 @@ deploy:
 		"from w/o transition":  notes("{from: [In Progress]}"),
 		"from has transition":  notes("{transition: Testing, from: [Testing]}"),
 		"fix_version w/o pfx":  notes("{fix_version: {}}"),
+		"subtasks w/o move":    notes("{subtasks: true}"),
 		"fix_version blank":    notes("{fix_version: {prefix: '  '}}"),
 		"fix_version name":     notes("{fix_version: {name: Product v1}}"),
 		"approved w/o sha":     strings.Replace(base, "confirm: sudo}", "confirm: sudo, approved_release: {prefix: Product v}}", 1),

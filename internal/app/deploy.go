@@ -362,12 +362,17 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) []string {
 	if err != nil {
 		return skipAll("release notes skipped: whose items are whose is unknown: %v", err)
 	}
+	sub := &subtaskRun{app: a, client: client, notes: notes, me: me, to: r.target.ReleaseNotes.Transition, finished: map[string]bool{}}
 	for _, key := range keys {
 		issue, err := client.Issue(ctx, key)
 		if err != nil {
 			a.warn("release note for %s not posted: %v", key, err)
 			fix.failed(key, err)
 			continue
+		}
+		sub.delivered = append(sub.delivered, issue)
+		if issue.Done {
+			sub.finished[issue.Key] = true
 		}
 		yours, err := a.noteable(ctx, client, notes, me, issue)
 		if err != nil {
@@ -386,11 +391,79 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) []string {
 			a.printf("release note posted to %s", key)
 		}
 		fix.add(ctx, issue)
-		if posted {
-			a.moveDelivered(ctx, client, issue, r.target.ReleaseNotes)
+		if posted && a.moveDelivered(ctx, client, issue, r.target.ReleaseNotes) == sub.to && sub.to != "" {
+			sub.finished[issue.Key] = true
 		}
 	}
+	if r.target.ReleaseNotes.Subtasks {
+		sub.follow(ctx)
+	}
 	return fix.unset
+}
+
+// subtaskRun moves subtasks after their parents once the notes are posted.
+type subtaskRun struct {
+	app       *App
+	client    *jira.Client
+	notes     *config.JiraNotes
+	me, to    string
+	delivered []jira.Issue
+	// finished are the keys of the items that are done or reached to.
+	finished map[string]bool
+}
+
+// follow moves the open subtasks of the finished delivered items and the
+// delivered subtasks whose parent is done.
+func (s *subtaskRun) follow(ctx context.Context) {
+	seen := map[string]bool{}
+	for _, issue := range s.delivered {
+		if s.finished[issue.Key] {
+			for _, key := range issue.Subtasks {
+				s.move(ctx, key, issue.Key, seen)
+			}
+		}
+		if issue.Parent == "" || seen[issue.Key] {
+			continue
+		}
+		parent, err := s.client.Issue(ctx, issue.Parent)
+		if err != nil {
+			s.app.warn("%s not moved after its parent %s: %v", issue.Key, issue.Parent, err)
+			continue
+		}
+		if parent.Done || s.finished[parent.Key] {
+			s.move(ctx, issue.Key, parent.Key, seen)
+		}
+	}
+}
+
+// move takes one subtask to the transition's status unless it is there or
+// done already, or is not the token owner's.
+func (s *subtaskRun) move(ctx context.Context, key, parent string, seen map[string]bool) {
+	if seen[key] {
+		return
+	}
+	seen[key] = true
+	issue, err := s.client.Issue(ctx, key)
+	if err != nil {
+		s.app.warn("%s not moved after its parent %s: %v", key, parent, err)
+		return
+	}
+	if issue.Done || issue.Status == s.to {
+		return
+	}
+	yours, err := s.app.noteable(ctx, s.client, s.notes, s.me, issue)
+	if err != nil {
+		s.app.warn("%s not moved after its parent %s: %v", key, parent, err)
+		return
+	}
+	if !yours {
+		return
+	}
+	if err := s.client.Transition(ctx, issue, s.to); err != nil {
+		s.app.warn("%s not moved to %s after its parent %s: %v", key, s.to, parent, err)
+		return
+	}
+	s.app.printf("%s moved to %s after its parent %s", key, s.to, parent)
 }
 
 // noteable tells whether an item gets a note, warning when it does not. A key
@@ -500,7 +573,8 @@ func (f *fixVersionRun) failed(key string, err error) {
 
 // moveDelivered moves a delivered item along only from the statuses the
 // target names: a paused item stays paused whatever its commits say.
-func (a *App) moveDelivered(ctx context.Context, client *jira.Client, issue jira.Issue, notes *config.TargetNotes) {
+// It returns the status the item is left in.
+func (a *App) moveDelivered(ctx context.Context, client *jira.Client, issue jira.Issue, notes *config.TargetNotes) string {
 	to := notes.Transition
 	switch {
 	case to == "" || issue.Status == to:
@@ -509,10 +583,12 @@ func (a *App) moveDelivered(ctx context.Context, client *jira.Client, issue jira
 	default:
 		if err := client.Transition(ctx, issue, to); err != nil {
 			a.warn("%s not moved to %s: %v", issue.Key, to, err)
-			return
+			return issue.Status
 		}
 		a.printf("%s moved to %s", issue.Key, to)
+		return to
 	}
+	return issue.Status
 }
 
 // checkApproved lets out only the commits of an approved release: every

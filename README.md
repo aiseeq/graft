@@ -672,6 +672,11 @@ release_notes:
    the item's history (an item handed over for review keeps its notes). Other
    items are left alone with a warning. A failed comment or move is printed
    as a warning and does not change the exit status.
+   With `subtasks: true` (it needs `transition`), subtasks follow their
+   parent: the open subtasks of a delivered item that is done or has just
+   reached `transition` move there too, and so does a delivered subtask whose
+   parent is done, whatever `from` says; subtasks that are not yours are left
+   alone as above.
 9. With `fix_version`, every item that gets a note also gets a fix version:
    the version of its Jira project that is neither released nor archived,
    whose name begins with `prefix`, and whose release date is the nearest,
