@@ -98,8 +98,11 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		category := "indeterminate"
-		if j.statuses[key] == "Done" {
+		switch j.statuses[key] {
+		case "Done":
 			category = "done"
+		case "To Do":
+			category = "new"
 		}
 		fixVersions := []any{}
 		for _, id := range j.fixVersions[key] {
@@ -347,7 +350,7 @@ func TestDeployRunsScriptAndPostsReleaseNotes(t *testing.T) {
 		"PROJ-6 stays Paused: release_notes.from moves only from In Progress",
 		"PROJ-7 left alone: it is Blocked",
 		"PROJ-3 left alone: assigned to Colleague colleague and never assigned to the owner",
-		"PROJ-4 left alone: unassigned and never",
+		"PROJ-4 left alone: it is To Do",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q:\n%s", want, out)
