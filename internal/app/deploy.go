@@ -399,7 +399,7 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) []string {
 // shows it assigned to you.
 func (a *App) noteable(ctx context.Context, client *jira.Client, notes *config.JiraNotes, me string, issue jira.Issue) (bool, error) {
 	key := issue.Key
-	if issue.Done || slices.Contains(notes.SkipStatuses, issue.Status) {
+	if issue.Done || issue.NotStarted || slices.Contains(notes.SkipStatuses, issue.Status) {
 		a.warn("release note for %s not posted, %s left alone: it is %s", key, key, issue.Status)
 		return false, nil
 	}

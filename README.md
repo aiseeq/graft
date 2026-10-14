@@ -667,8 +667,8 @@ release_notes:
    `from` statuses (required with `transition`); an item elsewhere, paused or
    not started, gets the comment and keeps its status. A key mentioned in a
    commit does not make the item yours, so only open items of the owner of
-   the Jira token get notes: not in a done-category status (Done, Won't do)
-   or in `skip_statuses`, and assigned to the owner now or at some point in
+   the Jira token get notes: not in a done-category status (Done, Won't do),
+   a to-do-category one (To Do, Backlog: work not started) or `skip_statuses`, and assigned to the owner now or at some point in
    the item's history (an item handed over for review keeps its notes). Other
    items are left alone with a warning. A failed comment or move is printed
    as a warning and does not change the exit status.
