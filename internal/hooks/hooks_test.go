@@ -7,6 +7,7 @@ func TestInstallHint(t *testing.T) {
 	for min, want := range map[string]string{
 		"":      "go install github.com/aiseeq/graft/v2@latest",
 		"1.3.0": "go install github.com/aiseeq/graft/v2@latest",
+		"2.1.0": "go install github.com/aiseeq/graft/v2@latest",
 		"2.3.1": "go install github.com/aiseeq/graft/v2@v2.3.1",
 	} {
 		if got := InstallHint(min); got != want {

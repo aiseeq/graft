@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/version"
 )
 
 // Names of the hooks graft installs.
@@ -22,12 +23,24 @@ const (
 // Names lists every hook graft installs.
 var Names = []string{PreCommit, PostMerge}
 
+// firstV2 is the first release the module path of v2 reaches: the earlier
+// tags carry the path without /v2, which go install refuses for v2 and up.
+var firstV2 = version.Semver{Major: 2, Minor: 3, Patch: 1}
+
 // InstallHint tells how to get graft onto PATH: the version the project
-// needs (X.Y.Z from its graft: key), or the latest one when it names none or
-// one from before v2, which the module path of v2 does not reach.
+// needs (X.Y.Z from its graft: key, validated with the config), or the latest
+// one when it names none or one from before firstV2.
 func InstallHint(minVersion string) string {
-	if minVersion == "" || strings.HasPrefix(minVersion, "0.") || strings.HasPrefix(minVersion, "1.") {
-		return "go install github.com/aiseeq/graft/v2@latest"
+	latest := "go install github.com/aiseeq/graft/v2@latest"
+	if minVersion == "" {
+		return latest
+	}
+	need, err := version.Parse(minVersion)
+	if err != nil {
+		return latest + " (graft: " + err.Error() + ")"
+	}
+	if need.Less(firstV2) {
+		return latest
 	}
 	return "go install github.com/aiseeq/graft/v2@v" + minVersion
 }
