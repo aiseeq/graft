@@ -589,8 +589,8 @@ deploy:
       version: "cat /opt/app/VERSION"              # prints what the target runs
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
       release_notes:
-        transition: Testing
-        from: [In Progress]
+        transitions:            # In Progress moves to Testing and goes to the reviewer
+          - {from: [In Progress], to: Testing, assign: "<reviewer accountId>"}
         fix_version: {prefix: "Product v"}  # add the next unreleased "Product v…" version
       dotenv: [REGISTRY_TOKEN, 'SMTP_HOST?']        # .env keys the script gets, as for tasks
       dotenv_sets: [db]
@@ -603,10 +603,13 @@ deploy:
       requires: test            # prod only gets the version test already runs
       confirm: sudo             # sudo -v before the run: password in a terminal, fingerprint without
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
-      approved_release:         # only commits of an approved "Product v…" version go out
-        prefix: "Product v"
+      approved_release:         # only commits of checked items go out
+        statuses: [Ready for release, Done]  # the item, or a subtask's parent, is in one of these
+        prefix: "Product v"     # optional: and in a "Product v…" version every approver approved
         ignore_paths: ["docs/**", "*.md"]   # a commit changing only these ships nothing and passes
-      release_notes: {}
+      release_notes:
+        transitions: [{from: [Ready for release], to: Done}]
+        subtasks: true
 
 release_notes:
   jira:
@@ -632,15 +635,21 @@ release_notes:
    machine it may ask for its own password there. A target without
    `deployed_sha` is deployed whatever it runs.
    With `approved_release` (it needs `deployed_sha` and `release_notes.jira`),
-   every commit going out, merges aside, must name an item with a fix version
-   that begins with `prefix` and that has approvers, every one of whom
-   approved it in Jira. A revert (`Revert "…"`, `revert:`) passes, and so
-   does a commit that changes only `ignore_paths` (globs as in exceptions;
-   the version file and `sync` files that graft commit bumps do not count). Otherwise
-   the deploy stops here, before deps and the script, listing each commit
-   outside the release: one naming no item, or naming items without such a
-   version. With no deployed commit recorded, or Jira unreachable, it stops
-   too. `--unapproved` skips the check with a warning.
+   every commit going out, merges aside, must name an item that passes:
+   with `statuses`, the item is in one of them, or it is a subtask whose
+   parent is; with `prefix`, the item has a fix version that begins with
+   `prefix` and that has approvers, every one of whom approved it in Jira;
+   with both, both. One passing item lets the commit out. A commit let out by
+   a done-category item gets a line of its own: it may only refer to old
+   work. A revert (`Revert "…"`, `revert:`) passes, but a revert of a revert
+   (`Revert "Revert "…""`, `Reapply "…"`) brings the work back and is checked
+   like any commit. A commit that changes only `ignore_paths` passes too
+   (globs as in exceptions; the version file and `sync` files that graft
+   commit bumps do not count). Otherwise the deploy stops here, before deps
+   and the script, listing each commit outside the release: one naming no
+   item, or naming items that do not pass, and why. With no deployed commit
+   recorded, or Jira unreachable, it stops too. `--unapproved` skips the
+   check with a warning.
 4. Run the `deps` tasks, exactly as a task's deps run: in order, each at most
    once (deps of deps included), a `test_db: true` task with the test database
    up and its DSN. A failure ends the deploy before the deploy script runs or
@@ -663,20 +672,25 @@ release_notes:
 7. Check again that the tree is clean and HEAD has not moved.
 8. Record the deployed commit and post release notes: a comment on every
    `project_keys` item mentioned in the delivered commits (subjects and bodies),
-   and with `transition`, a move to that status of the items in one of the
-   `from` statuses (required with `transition`); an item elsewhere, paused or
-   not started, gets the comment and keeps its status. A key mentioned in a
+   and with `transitions`, a move of the items in one of a transition's `from`
+   statuses to its `to` (a status is in one `from` at most); an item
+   elsewhere, paused or not started, gets the comment and keeps its status.
+   A transition with `assign` (an account id) hands the moved item over to
+   that account, the reviewer of Testing say, unless it is assigned there
+   already. A key mentioned in a
    commit does not make the item yours, so only open items of the owner of
    the Jira token get notes: not in a done-category status (Done, Won't do),
    a to-do-category one (To Do, Backlog: work not started) or `skip_statuses`, and assigned to the owner now or at some point in
    the item's history (an item handed over for review keeps its notes). Other
    items are left alone with a warning. A failed comment or move is printed
    as a warning and does not change the exit status.
-   With `subtasks: true` (it needs `transition`), subtasks follow their
-   parent: the open subtasks of a delivered item that is done or has just
-   reached `transition` move there too, and so does a delivered subtask whose
-   parent is done, whatever `from` says; subtasks that are not yours are left
-   alone as above.
+   With `subtasks: true` (it needs `transitions`), subtasks follow their
+   parent: when a delivered item is in, or has just reached, the `to` of a
+   transition, its open subtasks move there by that transition, `assign`
+   included, and so does a delivered subtask whose parent is in such a
+   status, whatever `from` says; subtasks that are not yours are left alone
+   as above. The single `transition` and `from` of graft 1.x are replaced by
+   `transitions`; the old keys are a config error that shows the rewrite.
 9. With `fix_version`, every item that gets a note also gets a fix version:
    the version of its Jira project that is neither released nor archived,
    whose name begins with `prefix`, and whose release date is the nearest,
@@ -693,10 +707,11 @@ release_notes:
    not set (no version to pick, Jira unreachable, the edit refused) does not
    stop the rest: graft prints `graft: PROJ-123: fix version NOT SET: <why>`,
    one line per item, finishes the notes, and exits 1 with the list of items
-   left without it.
+   left without it. An item moved but not handed over to `assign` is
+   reported the same way: `graft: PROJ-123: assignee NOT SET: <why>`.
 
 graft exits with the deploy script's exit status, or 1 when the script
-succeeded but a fix version is not set. Two deploys to the same
+succeeded but a fix version or an assignee is not set. Two deploys to the same
 target from one repository wait for each other.
 
 `graft deploy status <target> [-- args]` and `graft deploy logs <target>

@@ -235,6 +235,12 @@ func (c *Client) Transition(ctx context.Context, issue Issue, to string) error {
 	return fmt.Errorf("%s: no transition from %q to %q", issue.Key, issue.Status, to)
 }
 
+// Assign hands an item over to the account.
+func (c *Client) Assign(ctx context.Context, key, accountID string) error {
+	_, err := c.do(ctx, http.MethodPut, "/rest/api/3/issue/"+key+"/assignee", map[string]string{"accountId": accountID}, http.StatusNoContent)
+	return err
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body any, want int) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {

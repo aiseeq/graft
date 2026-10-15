@@ -303,10 +303,29 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 	if r.target.ReleaseNotes == nil {
 		return nil
 	}
-	if unset := a.releaseNotes(ctx, r); len(unset) > 0 {
-		return fmt.Errorf("deployed %s to %s, but the fix version is not set on %s (see above)", gitx.Short(r.head), r.name, strings.Join(unset, ", "))
+	unset := a.releaseNotes(ctx, r)
+	var missing []string
+	if len(unset.fixVersion) > 0 {
+		missing = append(missing, "the fix version is not set on "+strings.Join(unset.fixVersion, ", "))
+	}
+	if len(unset.assignee) > 0 {
+		missing = append(missing, "the assignee is not set on "+strings.Join(unset.assignee, ", "))
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("deployed %s to %s, but %s (see above)", gitx.Short(r.head), r.name, strings.Join(missing, "; "))
 	}
 	return nil
+}
+
+// notesUnset lists the keys of the items a deploy could not finish.
+type notesUnset struct {
+	fixVersion, assignee []string
+}
+
+// assignFailed reports, one line per item, an item moved but not handed over.
+func (a *App) assignFailed(unset *notesUnset, key string, err error) {
+	fmt.Fprintf(a.Stderr, "graft: %s: assignee NOT SET: %v\n", key, err)
+	unset.assignee = append(unset.assignee, key)
 }
 
 func (a *App) warn(format string, args ...any) {
@@ -314,40 +333,40 @@ func (a *App) warn(format string, args ...any) {
 }
 
 // releaseNotes posts the notes and returns the keys of the items whose fix
-// version, when the target asks for one, is not set.
-func (a *App) releaseNotes(ctx context.Context, r *deployRun) []string {
+// version or assignee, when the target asks for them, is not set.
+func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 	notes := r.cfg.ReleaseNotes.Jira
 	if r.prev == "" {
 		a.warn("release notes skipped: no previously deployed commit recorded (the next deploy will have one)")
-		return nil
+		return notesUnset{}
 	}
 	known, err := r.repo.RevExists(r.prev)
 	if err != nil {
 		a.warn("release notes skipped: %v", err)
-		return nil
+		return notesUnset{}
 	}
 	if !known {
 		a.warn("release notes skipped: the previously deployed commit %s is unknown here (git fetch?)", r.prev)
-		return nil
+		return notesUnset{}
 	}
 	keys, err := deliveredKeys(r.repo, r.prev, r.head, notes.ProjectKeys)
 	if err != nil {
 		a.warn("release notes skipped: %v", err)
-		return nil
+		return notesUnset{}
 	}
 	if len(keys) == 0 {
 		a.printf("release notes: no work item keys in %s..%s", gitx.Short(r.prev), gitx.Short(r.head))
-		return nil
+		return notesUnset{}
 	}
 	fix := &fixVersionRun{app: a, conf: r.target.ReleaseNotes.FixVersion}
 	// skipAll reports notes that cannot be posted at all; the fix version of
 	// every delivered item is then unknown.
-	skipAll := func(format string, err error) []string {
+	skipAll := func(format string, err error) notesUnset {
 		a.warn(format, err)
 		for _, key := range keys {
 			fix.failed(key, fmt.Errorf("release notes skipped: %w", err))
 		}
-		return fix.unset
+		return notesUnset{fixVersion: fix.unset}
 	}
 	client, err := jiraClient()
 	if err != nil {
@@ -362,7 +381,8 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) []string {
 	if err != nil {
 		return skipAll("release notes skipped: whose items are whose is unknown: %v", err)
 	}
-	sub := &subtaskRun{app: a, client: client, notes: notes, me: me, to: r.target.ReleaseNotes.Transition, finished: map[string]bool{}}
+	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes}
+	sub := &subtaskRun{mover: mover, notes: notes, me: me, reached: map[string]string{}}
 	for _, key := range keys {
 		issue, err := client.Issue(ctx, key)
 		if err != nil {
@@ -371,9 +391,7 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) []string {
 			continue
 		}
 		sub.delivered = append(sub.delivered, issue)
-		if issue.Done {
-			sub.finished[issue.Key] = true
-		}
+		sub.reached[issue.Key] = issue.Status
 		yours, err := a.noteable(ctx, client, notes, me, issue)
 		if err != nil {
 			a.warn("release note for %s not posted: %v", key, err)
@@ -391,79 +409,128 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) []string {
 			a.printf("release note posted to %s", key)
 		}
 		fix.add(ctx, issue)
-		if posted && a.moveDelivered(ctx, client, issue, r.target.ReleaseNotes) == sub.to && sub.to != "" {
-			sub.finished[issue.Key] = true
+		if posted {
+			sub.reached[issue.Key] = mover.delivered(ctx, issue)
 		}
 	}
 	if r.target.ReleaseNotes.Subtasks {
 		sub.follow(ctx)
 	}
-	return fix.unset
+	return notesUnset{fixVersion: fix.unset, assignee: mover.unset.assignee}
+}
+
+// noteMover moves items by the target's transitions and hands them over to
+// the transition's assignee.
+type noteMover struct {
+	app    *App
+	client *jira.Client
+	conf   *config.TargetNotes
+	unset  notesUnset
+}
+
+// delivered moves a delivered item along only from the statuses a transition
+// names: a paused item stays paused whatever its commits say. It returns the
+// status the item is left in.
+func (m *noteMover) delivered(ctx context.Context, issue jira.Issue) string {
+	switch t := m.conf.Moving(issue.Status); {
+	case len(m.conf.Transitions) == 0 || m.conf.Leading(issue.Status) != nil:
+	case t == nil:
+		m.app.printf("%s stays %s: release_notes.transitions move only from %s", issue.Key, issue.Status, strings.Join(m.conf.FromStatuses(), ", "))
+	default:
+		if m.move(ctx, issue, t, "") {
+			return t.To
+		}
+	}
+	return issue.Status
+}
+
+// move takes the item by the transition and hands it over; after names the
+// parent a subtask follows. It tells whether the item moved.
+func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTransition, after string) bool {
+	how := ""
+	if after != "" {
+		how = " after its parent " + after
+	}
+	if err := m.client.Transition(ctx, issue, t.To); err != nil {
+		m.app.warn("%s not moved to %s%s: %v", issue.Key, t.To, how, err)
+		return false
+	}
+	if t.Assign != "" && issue.AssigneeID != t.Assign {
+		if err := m.client.Assign(ctx, issue.Key, t.Assign); err != nil {
+			m.app.printf("%s moved to %s%s", issue.Key, t.To, how)
+			m.app.assignFailed(&m.unset, issue.Key, err)
+			return true
+		}
+		how += ", assigned to " + t.Assign
+	}
+	m.app.printf("%s moved to %s%s", issue.Key, t.To, how)
+	return true
 }
 
 // subtaskRun moves subtasks after their parents once the notes are posted.
 type subtaskRun struct {
-	app       *App
-	client    *jira.Client
+	mover     *noteMover
 	notes     *config.JiraNotes
-	me, to    string
+	me        string
 	delivered []jira.Issue
-	// finished are the keys of the items that are done or reached to.
-	finished map[string]bool
+	// reached maps the keys of the delivered items to the status each is
+	// left in.
+	reached map[string]string
 }
 
-// follow moves the open subtasks of the finished delivered items and the
-// delivered subtasks whose parent is done.
+// follow moves the open subtasks of the delivered items that are in a status
+// a transition leads to, and the delivered subtasks whose parent is.
 func (s *subtaskRun) follow(ctx context.Context) {
+	conf := s.mover.conf
 	seen := map[string]bool{}
 	for _, issue := range s.delivered {
-		if s.finished[issue.Key] {
+		if t := conf.Leading(s.reached[issue.Key]); t != nil {
 			for _, key := range issue.Subtasks {
-				s.move(ctx, key, issue.Key, seen)
+				s.move(ctx, key, issue.Key, t, seen)
 			}
 		}
 		if issue.Parent == "" || seen[issue.Key] {
 			continue
 		}
-		parent, err := s.client.Issue(ctx, issue.Parent)
-		if err != nil {
-			s.app.warn("%s not moved after its parent %s: %v", issue.Key, issue.Parent, err)
-			continue
+		status, ok := s.reached[issue.Parent]
+		if !ok {
+			parent, err := s.mover.client.Issue(ctx, issue.Parent)
+			if err != nil {
+				s.mover.app.warn("%s not moved after its parent %s: %v", issue.Key, issue.Parent, err)
+				continue
+			}
+			status = parent.Status
 		}
-		if parent.Done || s.finished[parent.Key] {
-			s.move(ctx, issue.Key, parent.Key, seen)
+		if t := conf.Leading(status); t != nil {
+			s.move(ctx, issue.Key, issue.Parent, t, seen)
 		}
 	}
 }
 
-// move takes one subtask to the transition's status unless it is there or
-// done already, or is not the token owner's.
-func (s *subtaskRun) move(ctx context.Context, key, parent string, seen map[string]bool) {
+// move takes one subtask by the transition unless it is there or done
+// already, or is not the token owner's.
+func (s *subtaskRun) move(ctx context.Context, key, parent string, t *config.NoteTransition, seen map[string]bool) {
 	if seen[key] {
 		return
 	}
 	seen[key] = true
-	issue, err := s.client.Issue(ctx, key)
+	app := s.mover.app
+	issue, err := s.mover.client.Issue(ctx, key)
 	if err != nil {
-		s.app.warn("%s not moved after its parent %s: %v", key, parent, err)
+		app.warn("%s not moved after its parent %s: %v", key, parent, err)
 		return
 	}
-	if issue.Done || issue.Status == s.to {
+	if issue.Done || issue.Status == t.To {
 		return
 	}
-	yours, err := s.app.noteable(ctx, s.client, s.notes, s.me, issue)
+	yours, err := app.noteable(ctx, s.mover.client, s.notes, s.me, issue)
 	if err != nil {
-		s.app.warn("%s not moved after its parent %s: %v", key, parent, err)
+		app.warn("%s not moved after its parent %s: %v", key, parent, err)
 		return
 	}
-	if !yours {
-		return
+	if yours {
+		s.mover.move(ctx, issue, t, parent)
 	}
-	if err := s.client.Transition(ctx, issue, s.to); err != nil {
-		s.app.warn("%s not moved to %s after its parent %s: %v", key, s.to, parent, err)
-		return
-	}
-	s.app.printf("%s moved to %s after its parent %s", key, s.to, parent)
 }
 
 // noteable tells whether an item gets a note, warning when it does not. A key
@@ -571,30 +638,10 @@ func (f *fixVersionRun) failed(key string, err error) {
 	f.unset = append(f.unset, key)
 }
 
-// moveDelivered moves a delivered item along only from the statuses the
-// target names: a paused item stays paused whatever its commits say.
-// It returns the status the item is left in.
-func (a *App) moveDelivered(ctx context.Context, client *jira.Client, issue jira.Issue, notes *config.TargetNotes) string {
-	to := notes.Transition
-	switch {
-	case to == "" || issue.Status == to:
-	case !slices.Contains(notes.From, issue.Status):
-		a.printf("%s stays %s: release_notes.from moves only from %s", issue.Key, issue.Status, strings.Join(notes.From, ", "))
-	default:
-		if err := client.Transition(ctx, issue, to); err != nil {
-			a.warn("%s not moved to %s: %v", issue.Key, to, err)
-			return issue.Status
-		}
-		a.printf("%s moved to %s", issue.Key, to)
-		return to
-	}
-	return issue.Status
-}
-
-// checkApproved lets out only the commits of an approved release: every
-// commit going out names an item with a fix version that begins with the
-// prefix and that every approver has approved. A revert takes nothing new out
-// and passes; a merge brings in commits that are checked themselves.
+// checkApproved lets out only the commits of checked items: every commit going
+// out names an item in one of the statuses, with an approved version of the
+// prefix, or both, as the target asks. A revert takes nothing new out and
+// passes; a merge brings in commits that are checked themselves.
 func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error {
 	conf := r.target.ApprovedRelease
 	if conf == nil {
@@ -625,7 +672,7 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 	if err != nil {
 		return refuse("%v", err)
 	}
-	gate := &approvalGate{client: client, prefix: conf.Prefix, items: map[string]string{}, versions: map[string]bool{}}
+	gate := &approvalGate{client: client, conf: conf, issues: map[string]jira.Issue{}, versions: map[string]bool{}}
 	keyRe := regexp.MustCompile(`\b(` + strings.Join(r.cfg.ReleaseNotes.Jira.ProjectKeys, "|") + `)-[0-9]+\b`)
 	var outside []string
 	approved := map[string]bool{}
@@ -637,15 +684,18 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 		}
 		why := "names no item"
 		if keys := uniqueSorted(keyRe.FindAllString(c.subject+"\n"+c.body, -1)); len(keys) > 0 {
-			version, err := gate.approvedVersion(ctx, keys)
+			pass, err := gate.commit(ctx, keys)
 			if err != nil {
 				return refuse("%v", err)
 			}
-			if version != "" {
-				approved[version] = true
+			if pass.ok {
+				approved[pass.label] = true
+				if pass.done != "" {
+					a.printf("approved release: %s: %s is %s, passes", line, pass.done, gate.issues[pass.done].Status)
+				}
 				continue
 			}
-			why = fmt.Sprintf("%s not in an approved %q version", strings.Join(keys, ", "), conf.Prefix)
+			why = pass.why
 		}
 		ignored, err := a.shipsNothing(r, conf, c.sha)
 		if err != nil {
@@ -658,7 +708,7 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 		outside = append(outside, line+": "+why)
 	}
 	if len(outside) > 0 {
-		return refuse("commits outside an approved release:\n  %s\nput their items into the approved version, revert them, or pass --unapproved", strings.Join(outside, "\n  "))
+		return refuse("commits outside an approved release:\n  %s\n%s, revert them, or pass --unapproved", strings.Join(outside, "\n  "), gate.remedy())
 	}
 	a.printf("approved release: %d commits since %s, all in %s", len(commits), gitx.Short(r.prev), strings.Join(slices.Sorted(maps.Keys(approved)), ", "))
 	return nil
@@ -693,41 +743,106 @@ func (a *App) shipsNothing(r *deployRun, conf *config.ApprovedRelease, sha strin
 // approvalGate reads each item and each version once per deploy.
 type approvalGate struct {
 	client *jira.Client
-	prefix string
-	// items maps a key to the name of its approved version, "" for none.
-	items map[string]string
+	conf   *config.ApprovedRelease
+	issues map[string]jira.Issue
 	// versions maps a version id to whether every approver approved it.
 	versions map[string]bool
 }
 
-// approvedVersion names an approved version of one of the items, "" when
-// none of them has one.
-func (g *approvalGate) approvedVersion(ctx context.Context, keys []string) (string, error) {
-	for _, key := range keys {
-		name, ok := g.items[key]
-		if !ok {
-			var err error
-			if name, err = g.itemVersion(ctx, key); err != nil {
-				return "", err
-			}
-			g.items[key] = name
-		}
-		if name != "" {
-			return name, nil
-		}
-	}
-	return "", nil
+// gatePass is the verdict on one commit.
+type gatePass struct {
+	ok bool
+	// label names what let the commit out: a version or a status.
+	label string
+	// done is the key of a done item that let the commit out, worth a line
+	// of its own: it may be an old item a commit only refers to.
+	done string
+	// why the commit stays outside.
+	why string
 }
 
-// itemVersion names the item's fix version of the prefix that every
-// approver approved, "" when it has none.
-func (g *approvalGate) itemVersion(ctx context.Context, key string) (string, error) {
+// commit lets a commit out when one of the items it names passes.
+func (g *approvalGate) commit(ctx context.Context, keys []string) (gatePass, error) {
+	var whys []string
+	for _, key := range keys {
+		pass, err := g.item(ctx, key)
+		if err != nil || pass.ok {
+			return pass, err
+		}
+		whys = append(whys, pass.why)
+	}
+	return gatePass{why: strings.Join(whys, "; ")}, nil
+}
+
+// item checks one item against the statuses and the approved version.
+func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
+	issue, err := g.issue(ctx, key)
+	if err != nil {
+		return gatePass{}, err
+	}
+	var pass gatePass
+	if len(g.conf.Statuses) > 0 {
+		checked, err := g.checkedIssue(ctx, issue)
+		if err != nil {
+			return pass, err
+		}
+		if checked == nil {
+			return gatePass{why: fmt.Sprintf("%s is %s, not %s", key, issue.Status, orList(g.conf.Statuses))}, nil
+		}
+		pass = gatePass{ok: true, label: checked.Status}
+		if checked.Done {
+			pass.done = checked.Key
+		}
+	}
+	if g.conf.Prefix != "" {
+		version, err := g.approvedVersion(ctx, issue)
+		if err != nil {
+			return gatePass{}, err
+		}
+		if version == "" {
+			return gatePass{why: fmt.Sprintf("%s not in an approved %q version", key, g.conf.Prefix)}, nil
+		}
+		pass.ok, pass.label = true, version
+	}
+	return pass, nil
+}
+
+// checkedIssue returns the item when it is in one of the statuses, or its
+// parent when that is, and nil when neither is.
+func (g *approvalGate) checkedIssue(ctx context.Context, issue jira.Issue) (*jira.Issue, error) {
+	if slices.Contains(g.conf.Statuses, issue.Status) {
+		return &issue, nil
+	}
+	if issue.Parent == "" {
+		return nil, nil
+	}
+	parent, err := g.issue(ctx, issue.Parent)
+	if err != nil {
+		return nil, err
+	}
+	if slices.Contains(g.conf.Statuses, parent.Status) {
+		return &parent, nil
+	}
+	return nil, nil
+}
+
+func (g *approvalGate) issue(ctx context.Context, key string) (jira.Issue, error) {
+	if issue, ok := g.issues[key]; ok {
+		return issue, nil
+	}
 	issue, err := g.client.Issue(ctx, key)
 	if err != nil {
-		return "", err
+		return jira.Issue{}, err
 	}
+	g.issues[key] = issue
+	return issue, nil
+}
+
+// approvedVersion names the item's fix version of the prefix that every
+// approver approved, "" when it has none.
+func (g *approvalGate) approvedVersion(ctx context.Context, issue jira.Issue) (string, error) {
 	for _, v := range issue.FixVersions {
-		if !strings.HasPrefix(v.Name, g.prefix) {
+		if !strings.HasPrefix(v.Name, g.conf.Prefix) {
 			continue
 		}
 		full, seen := g.versions[v.ID]
@@ -746,9 +861,42 @@ func (g *approvalGate) itemVersion(ctx context.Context, key string) (string, err
 	return "", nil
 }
 
+// remedy says how an item gets a commit out.
+func (g *approvalGate) remedy() string {
+	var ways []string
+	if len(g.conf.Statuses) > 0 {
+		ways = append(ways, "move their items to "+orList(g.conf.Statuses))
+	}
+	if g.conf.Prefix != "" {
+		ways = append(ways, "put their items into the approved version")
+	}
+	return strings.Join(ways, " and ")
+}
+
+// orList joins names as "a, b or c".
+func orList(names []string) string {
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
+}
+
 // isRevert recognizes git's own subject (Revert "…") and the Conventional
-// Commits revert type.
+// Commits revert type. A revert of a revert (Revert "Revert "…"") brings the
+// work back and is not one: git's revert subjects nest, an odd number of them
+// is a revert.
 func isRevert(subject string) bool {
+	nested := 0
+	for s := subject; ; nested++ {
+		rest, ok := strings.CutPrefix(s, `Revert "`)
+		if !ok {
+			break
+		}
+		s = rest
+	}
+	if nested > 0 {
+		return nested%2 == 1
+	}
 	s := strings.ToLower(subject)
 	return strings.HasPrefix(s, "revert ") || strings.HasPrefix(s, "revert:") || strings.HasPrefix(s, "revert(") || strings.HasPrefix(s, "revert!")
 }

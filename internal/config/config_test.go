@@ -301,10 +301,16 @@ deploy:
 		t.Errorf("default comment: %q", cfg.ReleaseNotes.Jira.Comment)
 	}
 	notes := func(n string) string { return strings.Replace(base, "release_notes: {}}", "release_notes: "+n+"}", 1) }
-	if _, err := Parse([]byte(notes("{transition: Testing, from: [In Progress, To Do]}"))); err != nil {
-		t.Errorf("transition with from: %v", err)
+	cfg, err = Parse([]byte(notes("{transitions: [{from: [In Progress, To Do], to: Testing, assign: qa-account}, {from: [Ready for release], to: Done}]}")))
+	if err != nil {
+		t.Errorf("transitions: %v", err)
+	} else if tr := cfg.Deploy.Targets["test"].ReleaseNotes.Transitions; len(tr) != 2 || tr[0].To != "Testing" || tr[0].Assign != "qa-account" || !slices.Equal(tr[1].From, []string{"Ready for release"}) {
+		t.Errorf("transitions = %+v", tr)
 	}
-	cfg, err = Parse([]byte(notes(`{transition: Testing, from: [In Progress], fix_version: {prefix: "Product v"}}`)))
+	if _, err := Parse([]byte(notes("{transition: Testing, from: [In Progress]}"))); err == nil || !strings.Contains(err.Error(), "release_notes.transition and from are replaced by transitions: [{from: [In Progress], to: Testing}]") {
+		t.Errorf("the old transition: %v", err)
+	}
+	cfg, err = Parse([]byte(notes(`{transitions: [{from: [In Progress], to: Testing}], fix_version: {prefix: "Product v"}}`)))
 	if err != nil {
 		t.Errorf("fix_version: %v", err)
 	} else if fv := cfg.Deploy.Targets["test"].ReleaseNotes.FixVersion; fv == nil || fv.Prefix != "Product v" {
@@ -317,9 +323,12 @@ deploy:
 		t.Errorf("approved_release = %+v", ar)
 	}
 	cases := map[string]string{
-		"transition w/o from":  notes("{transition: Testing}"),
-		"from w/o transition":  notes("{from: [In Progress]}"),
-		"from has transition":  notes("{transition: Testing, from: [Testing]}"),
+		"transition w/o from":  notes("{transitions: [{to: Testing}]}"),
+		"transition w/o to":    notes("{transitions: [{from: [In Progress]}]}"),
+		"from has transition":  notes("{transitions: [{from: [Testing], to: Testing}]}"),
+		"from twice":           notes("{transitions: [{from: [In Progress], to: Testing}, {from: [In Progress], to: Done}]}"),
+		"blank assign":         notes("{transitions: [{from: [In Progress], to: Testing, assign: ' '}]}"),
+		"old from":             notes("{from: [In Progress]}"),
 		"fix_version w/o pfx":  notes("{fix_version: {}}"),
 		"subtasks w/o move":    notes("{subtasks: true}"),
 		"fix_version blank":    notes("{fix_version: {prefix: '  '}}"),

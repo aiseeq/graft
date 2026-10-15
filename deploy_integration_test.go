@@ -39,7 +39,14 @@ type fakeJira struct {
 	approvers map[string][]string
 	// parents maps a subtask's key to its parent's.
 	parents map[string]string
+	// assigned records "KEY to account" for every assignment, failAssign
+	// lists keys whose assignment Jira refuses.
+	assigned   []string
+	failAssign []string
 }
+
+// fakeTransitions are the moves every item offers, by id.
+var fakeTransitions = map[string]string{"31": "Testing", "41": "Ready for release", "51": "Done"}
 
 func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	j.mu.Lock()
@@ -74,6 +81,21 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPut && len(parts) == 1:
 		j.edit(w, r, key)
+	case r.Method == http.MethodPut && len(parts) == 2 && parts[1] == "assignee":
+		var body struct {
+			AccountID string `json:"accountId"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.AccountID == "" {
+			http.Error(w, "unexpected assignee body", http.StatusBadRequest)
+			return
+		}
+		if slices.Contains(j.failAssign, key) {
+			http.Error(w, `{"errorMessages":["User cannot be assigned"]}`, http.StatusBadRequest)
+			return
+		}
+		j.assigned = append(j.assigned, key+" to "+body.AccountID)
+		j.assignees[key] = body.AccountID
+		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "comment":
 		body, _ := io.ReadAll(r.Body)
 		var doc struct {
@@ -127,13 +149,28 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		fields["subtasks"] = subtasks
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"fields":      fields,
-			"transitions": []any{map[string]any{"id": "31", "to": map[string]string{"name": "Testing"}}},
-		})
+		transitions := []any{}
+		for _, id := range slices.Sorted(maps.Keys(fakeTransitions)) {
+			transitions = append(transitions, map[string]any{"id": id, "to": map[string]string{"name": fakeTransitions[id]}})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"fields": fields, "transitions": transitions})
 	case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "transitions":
+		var body struct {
+			Transition struct {
+				ID string `json:"id"`
+			} `json:"transition"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "unexpected transition body", http.StatusBadRequest)
+			return
+		}
+		to, ok := fakeTransitions[body.Transition.ID]
+		if !ok {
+			http.Error(w, "unknown transition", http.StatusBadRequest)
+			return
+		}
 		j.moved = append(j.moved, key)
-		j.statuses[key] = "Testing"
+		j.statuses[key] = to
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, "unexpected", http.StatusNotFound)
@@ -230,19 +267,19 @@ deploy:
       run: [sh, deploy.sh]
       version: 'cat ` + filepath.Join(state, "test-version") + `'
       deployed_sha: {path: ` + q("test-sha") + `}
-      release_notes: {transition: Testing, from: [In Progress]}
+      release_notes: {transitions: [{from: [In Progress], to: Testing}]}
       status: 'echo test runs; cat ` + filepath.Join(state, "test-version") + `'
       logs: "printf 'a\nerror one\nb\nerror two\n' | tail -n {lines}"
     uat:
       env: local
       run: [sh, deploy.sh]
       deployed_sha: {path: ` + q("uat-sha") + `}
-      release_notes: {transition: Testing, from: [In Progress], fix_version: {prefix: "Product v"}}
+      release_notes: {transitions: [{from: [In Progress], to: Testing}], fix_version: {prefix: "Product v"}}
     sub:
       env: local
       run: [sh, deploy.sh]
       deployed_sha: {path: ` + q("sub-sha") + `}
-      release_notes: {transition: Testing, from: [In Progress], subtasks: true}
+      release_notes: {transitions: [{from: [In Progress], to: Testing, assign: qa}, {from: [Ready for release], to: Done}], subtasks: true}
     stage:
       env: local
       run: [sh, deploy.sh]
@@ -257,6 +294,11 @@ deploy:
       run: [sh, deploy.sh]
       deployed_sha: {path: ` + q("live-sha") + `}
       approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}
+    gate:
+      env: local
+      run: [sh, deploy.sh]
+      deployed_sha: {path: ` + q("gate-sha") + `}
+      approved_release: {statuses: [Ready for release, Done]}
 release_notes:
   jira:
     project_keys: [PROJ]
@@ -368,7 +410,7 @@ func TestDeployRunsScriptAndPostsReleaseNotes(t *testing.T) {
 	}
 	for _, want := range []string{
 		"PROJ-2 left alone: it is Done",
-		"PROJ-6 stays Paused: release_notes.from moves only from In Progress",
+		"PROJ-6 stays Paused: release_notes.transitions move only from In Progress",
 		"PROJ-7 left alone: it is Blocked",
 		"PROJ-3 left alone: assigned to Colleague colleague and never assigned to the owner",
 		"PROJ-4 left alone: it is To Do",
@@ -628,6 +670,56 @@ func TestDeployApprovedRelease(t *testing.T) {
 	}
 }
 
+// TestDeployApprovedReleaseByStatus: with statuses, a commit goes out when an
+// item it names, or the parent of a subtask it names, is in one of them. A
+// revert of a revert brings the work back and is checked like any commit.
+func TestDeployApprovedReleaseByStatus(t *testing.T) {
+	d := deployRepo(t)
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-8"] = "Ready for release"
+	d.jira.statuses["PROJ-9"] = "In Progress"
+	d.jira.parents = map[string]string{"PROJ-9": "PROJ-8"}
+	d.jira.mu.Unlock()
+	d.mustGraft("deploy", "--unapproved", "gate")
+	for i, msg := range []string{
+		"feat: PROJ-8 checked work",
+		"fix: PROJ-9 subtask of checked work",
+		"fix: PROJ-2 follow-up of done work",
+		"feat: PROJ-5 still in testing",
+		"feat: PROJ-1 in progress",
+		"chore: no item",
+		"Revert \"feat: PROJ-5 still in testing\"",
+		"Revert \"Revert \"feat: PROJ-5 still in testing\"\"",
+		"Reapply \"feat: PROJ-5 still in testing\"",
+	} {
+		d.write("f"+strconv.Itoa(i)+".txt", msg+"\n")
+		d.mustGraft("commit", "-m", msg)
+	}
+	out, code := d.graft("", "deploy", "gate")
+	if code == 0 {
+		t.Fatalf("exit 0:\n%s", out)
+	}
+	for _, want := range []string{
+		"commits outside an approved release",
+		"feat: PROJ-5 still in testing: PROJ-5 is Testing, not Ready for release or Done",
+		"feat: PROJ-1 in progress: PROJ-1 is In Progress, not Ready for release or Done",
+		"chore: no item: names no item",
+		`Revert "Revert "feat: PROJ-5 still in testing"": PROJ-5 is Testing`,
+		`Reapply "feat: PROJ-5 still in testing": PROJ-5 is Testing`,
+		`Revert "feat: PROJ-5 still in testing": a revert, passes`,
+		"fix: PROJ-2 follow-up of done work: PROJ-2 is Done, passes",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"PROJ-8 checked work:", "PROJ-9 subtask of checked work:"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("%q is listed:\n%s", unwanted, out)
+		}
+	}
+}
+
 func TestDeployApprovedReleaseGoesOut(t *testing.T) {
 	d := deployRepo(t)
 	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-1": {"10010"}})
@@ -645,17 +737,20 @@ func TestDeployApprovedReleaseGoesOut(t *testing.T) {
 	}
 }
 
-// TestDeploySubtasksFollowParents: with subtasks, a parent that reaches the
-// transition takes its open subtasks along, and a delivered subtask of a done
-// parent follows it whatever from says.
+// TestDeploySubtasksFollowParents: with subtasks, a parent that reaches a
+// transition's status takes its open subtasks along by that transition, the
+// reviewer included, and a delivered subtask follows its parent into a status
+// a transition leads to whatever from says.
 func TestDeploySubtasksFollowParents(t *testing.T) {
 	d := deployRepo(t)
 	d.jira.mu.Lock()
-	for k, st := range map[string]string{"PROJ-20": "In Progress", "PROJ-21": "In Progress", "PROJ-22": "Done", "PROJ-23": "In Progress", "PROJ-30": "Done", "PROJ-31": "Paused", "PROJ-40": "In Progress", "PROJ-41": "In Progress"} {
+	for k, st := range map[string]string{"PROJ-20": "In Progress", "PROJ-21": "In Progress", "PROJ-22": "Done", "PROJ-23": "In Progress", "PROJ-24": "In Progress", "PROJ-30": "Done", "PROJ-31": "Paused", "PROJ-40": "In Progress", "PROJ-41": "In Progress"} {
 		d.jira.statuses[k] = st
 	}
 	d.jira.assignees["PROJ-23"] = "colleague"
-	d.jira.parents = map[string]string{"PROJ-21": "PROJ-20", "PROJ-22": "PROJ-20", "PROJ-23": "PROJ-20", "PROJ-31": "PROJ-30", "PROJ-41": "PROJ-40"}
+	d.jira.assignees["PROJ-24"] = "qa"
+	d.jira.handedOver = append(d.jira.handedOver, "PROJ-24")
+	d.jira.parents = map[string]string{"PROJ-21": "PROJ-20", "PROJ-22": "PROJ-20", "PROJ-23": "PROJ-20", "PROJ-24": "PROJ-20", "PROJ-31": "PROJ-30", "PROJ-41": "PROJ-40"}
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "sub")
 	d.write("a.txt", "a\n")
@@ -663,17 +758,48 @@ func TestDeploySubtasksFollowParents(t *testing.T) {
 	out := d.mustGraft("deploy", "sub")
 	_, moved := d.jira.snapshot()
 	slices.Sort(moved)
-	if !slices.Equal(moved, []string{"PROJ-20", "PROJ-21", "PROJ-31"}) {
+	if !slices.Equal(moved, []string{"PROJ-20", "PROJ-21", "PROJ-24", "PROJ-31"}) {
 		t.Errorf("moved = %v\n%s", moved, out)
 	}
+	d.jira.mu.Lock()
+	assigned := slices.Sorted(slices.Values(d.jira.assigned))
+	statuses := map[string]string{"PROJ-20": d.jira.statuses["PROJ-20"], "PROJ-21": d.jira.statuses["PROJ-21"], "PROJ-24": d.jira.statuses["PROJ-24"], "PROJ-31": d.jira.statuses["PROJ-31"]}
+	d.jira.mu.Unlock()
+	if !slices.Equal(assigned, []string{"PROJ-20 to qa", "PROJ-21 to qa"}) {
+		t.Errorf("assigned = %v (PROJ-24 is on qa already)\n%s", assigned, out)
+	}
+	if want := map[string]string{"PROJ-20": "Testing", "PROJ-21": "Testing", "PROJ-24": "Testing", "PROJ-31": "Done"}; !maps.Equal(statuses, want) {
+		t.Errorf("statuses = %v, want %v", statuses, want)
+	}
 	for _, want := range []string{
-		"PROJ-21 moved to Testing after its parent PROJ-20",
-		"PROJ-31 moved to Testing after its parent PROJ-30",
+		"PROJ-20 moved to Testing, assigned to qa",
+		"PROJ-21 moved to Testing after its parent PROJ-20, assigned to qa",
+		"PROJ-24 moved to Testing after its parent PROJ-20\n",
+		"PROJ-31 moved to Done after its parent PROJ-30",
 		"PROJ-23 left alone: assigned to Colleague colleague",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestDeployAssignFailureFailsTheDeploy: an item moved but left on its
+// developer is reported, and the deploy exits non-zero.
+func TestDeployAssignFailureFailsTheDeploy(t *testing.T) {
+	d := deployRepo(t)
+	d.jira.mu.Lock()
+	d.jira.failAssign = []string{"PROJ-1"}
+	d.jira.mu.Unlock()
+	d.mustGraft("deploy", "sub")
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-1 work")
+	out, code := d.graft("", "deploy", "sub")
+	if code == 0 || !strings.Contains(out, "PROJ-1: assignee NOT SET: ") || !strings.Contains(out, "the assignee is not set on PROJ-1") {
+		t.Errorf("exit %d\n%s", code, out)
+	}
+	if got := strings.TrimSpace(d.stateFile("sub-sha")); got != d.git("rev-parse", "HEAD") {
+		t.Errorf("the deployed commit is not recorded: %q", got)
 	}
 }
 

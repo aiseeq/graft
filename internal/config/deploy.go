@@ -41,8 +41,8 @@ type DeployTarget struct {
 	Confirm      string       `yaml:"confirm"`
 	DeployedSHA  *DeployedSHA `yaml:"deployed_sha"`
 	ReleaseNotes *TargetNotes `yaml:"release_notes"`
-	// ApprovedRelease lets out only commits that name an item of a version
-	// beginning with the prefix that every approver has approved.
+	// ApprovedRelease lets out only commits that name an item in one of the
+	// statuses, of a version every approver approved, or both.
 	ApprovedRelease *ApprovedRelease `yaml:"approved_release"`
 	// Status runs in Env; {args} receives what follows --.
 	Status EnvCommand `yaml:"status"`
@@ -66,18 +66,60 @@ type DeployedSHA struct {
 
 // TargetNotes turns release notes on for a target.
 type TargetNotes struct {
-	// Transition moves the delivered items in one of From to this status.
-	Transition string `yaml:"transition"`
-	// From lists the statuses an item moves from: an item anywhere else,
-	// paused say, keeps its status.
-	From []string `yaml:"from"`
+	// Transitions move the delivered items: an item in a status no
+	// transition moves from, paused say, keeps its status.
+	Transitions []NoteTransition `yaml:"transitions"`
+	// OldTransition and OldFrom are the single transition Transitions
+	// replaced; they are read only to say how to rewrite them.
+	OldTransition string   `yaml:"transition"`
+	OldFrom       []string `yaml:"from"`
 	// FixVersion adds the project's next unreleased version to every item
 	// that gets a note.
 	FixVersion *FixVersion `yaml:"fix_version"`
-	// Subtasks follow their parent: the open subtasks of a delivered item
-	// that is done or reaches Transition move to Transition, whatever From
-	// says, and so does a delivered subtask whose parent is done.
+	// Subtasks follow their parent: when a delivered item is in, or reaches,
+	// the status a transition leads to, its open subtasks move there by that
+	// transition, whatever its from says, and so does a delivered subtask
+	// whose parent is in such a status.
 	Subtasks bool `yaml:"subtasks"`
+}
+
+// NoteTransition moves an item in one of From to To.
+type NoteTransition struct {
+	From []string `yaml:"from"`
+	To   string   `yaml:"to"`
+	// Assign is the account id the item is handed over to on the move: the
+	// reviewer of Testing, say.
+	Assign string `yaml:"assign"`
+}
+
+// Leading returns the transition that leads to the status, nil for none.
+func (n *TargetNotes) Leading(status string) *NoteTransition {
+	for i := range n.Transitions {
+		if n.Transitions[i].To == status {
+			return &n.Transitions[i]
+		}
+	}
+	return nil
+}
+
+// Moving returns the transition that moves an item in the status, nil for
+// none.
+func (n *TargetNotes) Moving(status string) *NoteTransition {
+	for i := range n.Transitions {
+		if slices.Contains(n.Transitions[i].From, status) {
+			return &n.Transitions[i]
+		}
+	}
+	return nil
+}
+
+// FromStatuses lists every status a transition moves from.
+func (n *TargetNotes) FromStatuses() []string {
+	var all []string
+	for _, t := range n.Transitions {
+		all = append(all, t.From...)
+	}
+	return all
 }
 
 // FixVersion picks the version by the start of its name.
@@ -87,8 +129,12 @@ type FixVersion struct {
 	Prefix string `yaml:"prefix"`
 }
 
-// ApprovedRelease lets out only the commits of an approved version.
+// ApprovedRelease lets out only the commits of checked items: items in one of
+// Statuses, items of an approved version of Prefix, or both when both are set.
 type ApprovedRelease struct {
+	// Statuses are the item statuses that go out, such as Ready for release;
+	// a subtask also goes out when its parent is in one of them.
+	Statuses []string `yaml:"statuses"`
 	// Prefix is how the names of the versions begin, such as "Product v".
 	Prefix string `yaml:"prefix"`
 	// IgnorePaths are globs of files that ship nothing: a commit that
@@ -216,8 +262,15 @@ func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {
 		return fmt.Errorf("%s.approved_release: needs deployed_sha to know which commits go out", where)
 	case c.ReleaseNotes == nil || c.ReleaseNotes.Jira == nil:
 		return fmt.Errorf("%s.approved_release: needs a top-level release_notes.jira section for the project keys", where)
-	case strings.TrimSpace(t.ApprovedRelease.Prefix) == "":
-		return fmt.Errorf("%s.approved_release.prefix: required, how the version names begin, such as \"Product v\"", where)
+	case len(t.ApprovedRelease.Statuses) == 0 && strings.TrimSpace(t.ApprovedRelease.Prefix) == "":
+		return fmt.Errorf("%s.approved_release: needs statuses (the item statuses that go out, such as [Ready for release]), prefix (how the names of the approved versions begin, such as \"Product v\"), or both", where)
+	case t.ApprovedRelease.Prefix != "" && strings.TrimSpace(t.ApprovedRelease.Prefix) == "":
+		return fmt.Errorf("%s.approved_release.prefix: blank", where)
+	}
+	for i, st := range t.ApprovedRelease.Statuses {
+		if strings.TrimSpace(st) == "" {
+			return fmt.Errorf("%s.approved_release.statuses[%d]: blank", where, i)
+		}
 	}
 	t.ApprovedRelease.Ignore = nil
 	for i, g := range t.ApprovedRelease.IgnorePaths {
@@ -259,17 +312,41 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 		return fmt.Errorf("%s.release_notes: needs a top-level release_notes.jira section", where)
 	}
 	n := t.ReleaseNotes
+	if n.OldTransition != "" || len(n.OldFrom) > 0 {
+		return fmt.Errorf("%s.release_notes.transition and from are replaced by transitions: [{from: [%s], to: %s}]", where, strings.Join(n.OldFrom, ", "), n.OldTransition)
+	}
+	if err := validateTransitions(where+".release_notes.transitions", n.Transitions); err != nil {
+		return err
+	}
 	switch {
-	case n.Transition == "" && len(n.From) > 0:
-		return fmt.Errorf("%s.release_notes.from: needs a transition", where)
-	case n.Transition != "" && len(n.From) == 0:
-		return fmt.Errorf("%s.release_notes.from: required with a transition: the statuses an item moves from, such as [In Progress] (an item elsewhere, paused or not started, keeps its status)", where)
-	case slices.Contains(n.From, n.Transition):
-		return fmt.Errorf("%s.release_notes.from: lists %q, the transition's own status", where, n.Transition)
-	case n.Subtasks && n.Transition == "":
-		return fmt.Errorf("%s.release_notes.subtasks: needs a transition to move them to", where)
+	case n.Subtasks && len(n.Transitions) == 0:
+		return fmt.Errorf("%s.release_notes.subtasks: needs transitions to move them by", where)
 	case n.FixVersion != nil && strings.TrimSpace(n.FixVersion.Prefix) == "":
 		return fmt.Errorf("%s.release_notes.fix_version.prefix: required, how the version names begin, such as \"Product v\"", where)
+	}
+	return nil
+}
+
+func validateTransitions(where string, ts []NoteTransition) error {
+	from := map[string]int{}
+	for i, t := range ts {
+		at := fmt.Sprintf("%s[%d]", where, i)
+		switch {
+		case strings.TrimSpace(t.To) == "":
+			return fmt.Errorf("%s.to: required, the status the item moves to", at)
+		case len(t.From) == 0:
+			return fmt.Errorf("%s.from: required, the statuses an item moves from, such as [In Progress] (an item elsewhere, paused or not started, keeps its status)", at)
+		case slices.Contains(t.From, t.To):
+			return fmt.Errorf("%s.from: lists %q, the transition's own status", at, t.To)
+		case t.Assign != "" && strings.TrimSpace(t.Assign) == "":
+			return fmt.Errorf("%s.assign: blank", at)
+		}
+		for _, f := range t.From {
+			if j, ok := from[f]; ok {
+				return fmt.Errorf("%s.from: %q is in %s[%d].from too: an item moves one way", at, f, where, j)
+			}
+			from[f] = i
+		}
 	}
 	return nil
 }
