@@ -3,9 +3,9 @@ package checks
 import (
 	"fmt"
 
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/gitx"
-	"github.com/aiseeq/graft/internal/version"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/version"
 )
 
 // maxVersionFileBytes bounds the version files read from the index.

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/aiseeq/graft/internal/atomicfile"
+	"github.com/aiseeq/graft/v2/internal/atomicfile"
 )
 
 // Corpus is the vocabulary of public Go code: the identifiers of the Go

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/aiseeq/graft/internal/app"
-	"github.com/aiseeq/graft/internal/config"
+	"github.com/aiseeq/graft/v2/internal/app"
+	"github.com/aiseeq/graft/v2/internal/config"
 )
 
 // command is one entry of graft help. applies decides whether the project's

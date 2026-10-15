@@ -17,11 +17,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aiseeq/graft/internal/atomicfile"
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/dotenv"
-	"github.com/aiseeq/graft/internal/proc"
-	"github.com/aiseeq/graft/internal/tasks"
+	"github.com/aiseeq/graft/v2/internal/atomicfile"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/dotenv"
+	"github.com/aiseeq/graft/v2/internal/proc"
+	"github.com/aiseeq/graft/v2/internal/tasks"
 )
 
 // Manager runs the services of one project.

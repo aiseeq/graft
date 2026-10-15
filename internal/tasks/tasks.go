@@ -15,12 +15,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/dotenv"
-	"github.com/aiseeq/graft/internal/envs"
-	"github.com/aiseeq/graft/internal/gitx"
-	"github.com/aiseeq/graft/internal/lock"
-	"github.com/aiseeq/graft/internal/stats"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/dotenv"
+	"github.com/aiseeq/graft/v2/internal/envs"
+	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/lock"
+	"github.com/aiseeq/graft/v2/internal/stats"
 )
 
 // MarkerEnv is set for git commands graft itself runs, so the pre-commit hook

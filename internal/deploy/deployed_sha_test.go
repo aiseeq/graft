@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/envs"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/envs"
 )
 
 // fakeSudo puts a sudo on PATH that opens locked for the command it runs, the

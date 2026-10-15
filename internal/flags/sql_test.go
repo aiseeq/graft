@@ -15,9 +15,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/dotenv"
-	"github.com/aiseeq/graft/internal/envs"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/dotenv"
+	"github.com/aiseeq/graft/v2/internal/envs"
 )
 
 // These tests run the SQL adapter against a real PostgreSQL: the queries are

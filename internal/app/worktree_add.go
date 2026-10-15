@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/mod/modfile"
 
-	"github.com/aiseeq/graft/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/gitx"
 )
 
 // WorktreeAddOptions are the arguments of graft worktree add.

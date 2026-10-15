@@ -21,7 +21,7 @@ import (
 
 	"github.com/gofrs/flock"
 
-	"github.com/aiseeq/graft/internal/proc"
+	"github.com/aiseeq/graft/v2/internal/proc"
 )
 
 // retryDelay is how often a waiting process retries the lock.

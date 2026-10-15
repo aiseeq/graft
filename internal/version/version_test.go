@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aiseeq/graft/internal/config"
+	"github.com/aiseeq/graft/v2/internal/config"
 )
 
 func TestParse(t *testing.T) {

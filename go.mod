@@ -1,4 +1,4 @@
-module github.com/aiseeq/graft
+module github.com/aiseeq/graft/v2
 
 go 1.26.8
 

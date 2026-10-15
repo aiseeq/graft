@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aiseeq/graft/internal/dotenv"
+	"github.com/aiseeq/graft/v2/internal/dotenv"
 )
 
 // Credentials are read from the user's env file.

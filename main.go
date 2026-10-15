@@ -21,12 +21,12 @@ import (
 	// Release windows name their time zone; Windows has no zoneinfo of its own.
 	_ "time/tzdata"
 
-	"github.com/aiseeq/graft/internal/app"
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/hooks"
-	"github.com/aiseeq/graft/internal/message"
-	"github.com/aiseeq/graft/internal/tasks"
-	"github.com/aiseeq/graft/internal/version"
+	"github.com/aiseeq/graft/v2/internal/app"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/hooks"
+	"github.com/aiseeq/graft/v2/internal/message"
+	"github.com/aiseeq/graft/v2/internal/tasks"
+	"github.com/aiseeq/graft/v2/internal/version"
 )
 
 // buildVersion is set by the build task through -ldflags; go install builds fall

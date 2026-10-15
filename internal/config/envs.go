@@ -9,7 +9,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/aiseeq/graft/internal/dotenv"
+	"github.com/aiseeq/graft/v2/internal/dotenv"
 )
 
 // DefaultDotEnv is the project .env file graft reads single keys from.

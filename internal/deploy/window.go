@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aiseeq/graft/internal/config"
+	"github.com/aiseeq/graft/v2/internal/config"
 )
 
 // Occurrence is one release window: its day and moments.

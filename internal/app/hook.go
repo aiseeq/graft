@@ -7,8 +7,8 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/aiseeq/graft/internal/hooks"
-	"github.com/aiseeq/graft/internal/tasks"
+	"github.com/aiseeq/graft/v2/internal/hooks"
+	"github.com/aiseeq/graft/v2/internal/tasks"
 )
 
 // HookPreCommit decides whether git may create a commit.

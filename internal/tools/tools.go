@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/version"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/version"
 )
 
 // checkTimeout bounds one check command: a tool that hangs on --version

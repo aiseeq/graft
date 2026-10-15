@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aiseeq/graft/internal/config"
+	"github.com/aiseeq/graft/v2/internal/config"
 )
 
 // DB is the configured test database.

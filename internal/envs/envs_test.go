@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/dotenv"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/dotenv"
 )
 
 func TestQuote(t *testing.T) {

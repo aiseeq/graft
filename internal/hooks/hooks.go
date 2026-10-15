@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/aiseeq/graft/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/gitx"
 )
 
 // Names of the hooks graft installs.
@@ -23,12 +23,13 @@ const (
 var Names = []string{PreCommit, PostMerge}
 
 // InstallHint tells how to get graft onto PATH: the version the project
-// needs (X.Y.Z from its graft: key), or the latest one when it names none.
+// needs (X.Y.Z from its graft: key), or the latest one when it names none or
+// one from before v2, which the module path of v2 does not reach.
 func InstallHint(minVersion string) string {
-	if minVersion == "" {
-		return "go install github.com/aiseeq/graft@latest"
+	if minVersion == "" || strings.HasPrefix(minVersion, "0.") || strings.HasPrefix(minVersion, "1.") {
+		return "go install github.com/aiseeq/graft/v2@latest"
 	}
-	return "go install github.com/aiseeq/graft@v" + minVersion
+	return "go install github.com/aiseeq/graft/v2@v" + minVersion
 }
 
 // shimMarker is the line that tells graft's shims from somebody else's hooks.

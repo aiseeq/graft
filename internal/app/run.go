@@ -8,12 +8,12 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/gitx"
-	"github.com/aiseeq/graft/internal/lock"
-	"github.com/aiseeq/graft/internal/services"
-	"github.com/aiseeq/graft/internal/tools"
-	"github.com/aiseeq/graft/internal/userconfig"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/lock"
+	"github.com/aiseeq/graft/v2/internal/services"
+	"github.com/aiseeq/graft/v2/internal/tools"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
 // Run runs a task from .graft.yaml.

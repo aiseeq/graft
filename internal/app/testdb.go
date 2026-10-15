@@ -10,12 +10,12 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/dotenv"
-	"github.com/aiseeq/graft/internal/gitx"
-	"github.com/aiseeq/graft/internal/lock"
-	"github.com/aiseeq/graft/internal/tasks"
-	"github.com/aiseeq/graft/internal/testdb"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/dotenv"
+	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/lock"
+	"github.com/aiseeq/graft/v2/internal/tasks"
+	"github.com/aiseeq/graft/v2/internal/testdb"
 )
 
 // testDBLock serializes container changes between worktrees and sessions.

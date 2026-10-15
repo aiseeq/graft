@@ -7,11 +7,11 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/gitx"
-	"github.com/aiseeq/graft/internal/hooks"
-	"github.com/aiseeq/graft/internal/message"
-	"github.com/aiseeq/graft/internal/version"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/hooks"
+	"github.com/aiseeq/graft/v2/internal/message"
+	"github.com/aiseeq/graft/v2/internal/version"
 )
 
 // CommitOptions are the arguments of graft commit.

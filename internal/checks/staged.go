@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/aiseeq/graft/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/gitx"
 )
 
 // StagedFile is a file whose staged content differs from HEAD.

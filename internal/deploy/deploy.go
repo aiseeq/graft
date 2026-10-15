@@ -16,9 +16,9 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/envs"
-	"github.com/aiseeq/graft/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/envs"
+	"github.com/aiseeq/graft/v2/internal/gitx"
 )
 
 // CheckTree refuses a work tree whose content is not exactly a commit: a

@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/deploy"
-	"github.com/aiseeq/graft/internal/envs"
-	"github.com/aiseeq/graft/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/deploy"
+	"github.com/aiseeq/graft/v2/internal/envs"
+	"github.com/aiseeq/graft/v2/internal/gitx"
 )
 
 // checkIntegrations compares the integrations before deps and the sudo

@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/dotenv"
-	"github.com/aiseeq/graft/internal/envs"
-	"github.com/aiseeq/graft/internal/tasks"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/dotenv"
+	"github.com/aiseeq/graft/v2/internal/envs"
+	"github.com/aiseeq/graft/v2/internal/tasks"
 )
 
 // maxPages bounds the listing loop against an API that never reports the end.

@@ -16,15 +16,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/deploy"
-	"github.com/aiseeq/graft/internal/dotenv"
-	"github.com/aiseeq/graft/internal/envs"
-	"github.com/aiseeq/graft/internal/gitx"
-	"github.com/aiseeq/graft/internal/jira"
-	"github.com/aiseeq/graft/internal/lock"
-	"github.com/aiseeq/graft/internal/tasks"
-	"github.com/aiseeq/graft/internal/userconfig"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/deploy"
+	"github.com/aiseeq/graft/v2/internal/dotenv"
+	"github.com/aiseeq/graft/v2/internal/envs"
+	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/jira"
+	"github.com/aiseeq/graft/v2/internal/lock"
+	"github.com/aiseeq/graft/v2/internal/tasks"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
 // Environment variables graft passes to the deploy script.

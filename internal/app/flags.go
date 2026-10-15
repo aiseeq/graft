@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/aiseeq/graft/internal/checks"
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/envs"
-	"github.com/aiseeq/graft/internal/flags"
-	"github.com/aiseeq/graft/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/checks"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/envs"
+	"github.com/aiseeq/graft/v2/internal/flags"
+	"github.com/aiseeq/graft/v2/internal/gitx"
 )
 
 // FlagsOptions are the arguments of graft flags.

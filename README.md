@@ -17,7 +17,7 @@ same on Linux, macOS and Windows (Git for Windows).
 ## Install
 
 ```sh
-go install github.com/aiseeq/graft@latest
+go install github.com/aiseeq/graft/v2@latest
 ```
 
 or, from a checkout, `go run . install` (atomically replaces `~/bin/graft`).

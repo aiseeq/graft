@@ -9,10 +9,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/aiseeq/graft/internal/checks"
-	"github.com/aiseeq/graft/internal/gitx"
-	"github.com/aiseeq/graft/internal/leaks"
-	"github.com/aiseeq/graft/internal/userconfig"
+	"github.com/aiseeq/graft/v2/internal/checks"
+	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/leaks"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
 // leakSettings returns the user's leak settings; ok is false when the user

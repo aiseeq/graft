@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/aiseeq/graft/internal/config"
+	"github.com/aiseeq/graft/v2/internal/config"
 )
 
 // Target is a file that holds the version: the version file itself or one of

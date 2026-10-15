@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/aiseeq/graft/internal/gitx"
-	"github.com/aiseeq/graft/internal/stats"
+	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/stats"
 )
 
 // StatsOptions select what graft stats reports.

@@ -12,15 +12,15 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/aiseeq/graft/internal/checks"
-	"github.com/aiseeq/graft/internal/config"
-	"github.com/aiseeq/graft/internal/gitx"
-	"github.com/aiseeq/graft/internal/hooks"
-	"github.com/aiseeq/graft/internal/lock"
-	"github.com/aiseeq/graft/internal/services"
-	"github.com/aiseeq/graft/internal/stats"
-	"github.com/aiseeq/graft/internal/tasks"
-	"github.com/aiseeq/graft/internal/version"
+	"github.com/aiseeq/graft/v2/internal/checks"
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/hooks"
+	"github.com/aiseeq/graft/v2/internal/lock"
+	"github.com/aiseeq/graft/v2/internal/services"
+	"github.com/aiseeq/graft/v2/internal/stats"
+	"github.com/aiseeq/graft/v2/internal/tasks"
+	"github.com/aiseeq/graft/v2/internal/version"
 )
 
 // App carries the process context the commands run in.
