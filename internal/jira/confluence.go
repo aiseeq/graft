@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 )
 
 // Page is a Confluence page with its storage-format body.
@@ -69,13 +70,16 @@ func (c *Client) FindPage(ctx context.Context, spaceID, title string) (Page, boo
 	if err := json.Unmarshal(data, &found); err != nil {
 		return Page{}, false, fmt.Errorf("pages titled %q: unexpected JSON: %w", title, err)
 	}
-	switch len(found.Results) {
+	// The title filter is not documented as exact: only the title itself
+	// counts.
+	exact := slices.DeleteFunc(found.Results, func(p rawPage) bool { return p.Title != title })
+	switch len(exact) {
 	case 0:
 		return Page{}, false, nil
 	case 1:
-		return c.page(found.Results[0]), true, nil
+		return c.page(exact[0]), true, nil
 	default:
-		return Page{}, false, fmt.Errorf("%d pages titled %q in space %s", len(found.Results), title, spaceID)
+		return Page{}, false, fmt.Errorf("%d pages titled %q in space %s", len(exact), title, spaceID)
 	}
 }
 
