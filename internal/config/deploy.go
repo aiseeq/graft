@@ -20,6 +20,7 @@ type Deploy struct {
 	// any untracked file (not ignored) blocks a deploy.
 	Untracked []string                 `yaml:"untracked"`
 	Targets   map[string]*DeployTarget `yaml:"targets"`
+	Hotfix    *Hotfix                  `yaml:"hotfix"`
 }
 
 // DeployTarget is one place the project deploys to.
@@ -44,6 +45,8 @@ type DeployTarget struct {
 	// ApprovedRelease lets out only commits that name an item in one of the
 	// statuses, of a version every approver approved, or both.
 	ApprovedRelease *ApprovedRelease `yaml:"approved_release"`
+	// Window is when the target takes releases; a hotfix goes any time.
+	Window *Window `yaml:"window"`
 	// Status runs in Env; {args} receives what follows --.
 	Status EnvCommand `yaml:"status"`
 	// Logs runs in Env; {lines} is filled in, {args} receives what
@@ -198,6 +201,9 @@ func (c *Config) validateDeploy() error {
 			return err
 		}
 	}
+	if err := c.validateHotfix(); err != nil {
+		return err
+	}
 	return c.validateReleaseNotes()
 }
 
@@ -206,7 +212,7 @@ func (c *Config) validateTarget(name string, t *DeployTarget) error {
 	if !envNameRe.MatchString(name) {
 		return fmt.Errorf("%s: invalid target name", where)
 	}
-	if name == "status" || name == "logs" || name == "check-head" {
+	if name == "status" || name == "logs" || name == "check-head" || name == "cutoff" {
 		return fmt.Errorf("%s: %q is a graft deploy subcommand, pick another name", where, name)
 	}
 	if t == nil || len(t.Run.Argv) == 0 {
@@ -242,6 +248,9 @@ func (c *Config) validateTarget(name string, t *DeployTarget) error {
 		return err
 	}
 	t.Keys = keys
+	if err := c.validateWindow(where, t); err != nil {
+		return err
+	}
 	return c.validateTargetJira(where, t)
 }
 

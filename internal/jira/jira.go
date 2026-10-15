@@ -109,6 +109,7 @@ type Issue struct {
 	Parent string
 	// Subtasks are the keys of the item's subtasks.
 	Subtasks []string
+	Labels   []string
 }
 
 // Transition is a move available from the item's current status.
@@ -120,7 +121,7 @@ type Transition struct {
 // Issue reads an item's status, assignee, fix versions and available
 // transitions.
 func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
-	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+key+"?fields=status,assignee,fixVersions,issuetype,parent,subtasks&expand=transitions", nil, http.StatusOK)
+	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+key+"?fields=status,assignee,fixVersions,issuetype,parent,subtasks,labels&expand=transitions", nil, http.StatusOK)
 	if err != nil {
 		return Issue{}, err
 	}
@@ -146,6 +147,7 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 			Subtasks []struct {
 				Key string `json:"key"`
 			} `json:"subtasks"`
+			Labels []string `json:"labels"`
 		} `json:"fields"`
 		Transitions []struct {
 			ID string `json:"id"`
@@ -160,7 +162,7 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 	if raw.Fields.Status.Category.Key == "" {
 		return Issue{}, fmt.Errorf("%s: the status has no category", key)
 	}
-	issue := Issue{Key: key, Status: raw.Fields.Status.Name, Done: raw.Fields.Status.Category.Key == "done", NotStarted: raw.Fields.Status.Category.Key == "new", FixVersions: raw.Fields.FixVersions}
+	issue := Issue{Key: key, Status: raw.Fields.Status.Name, Done: raw.Fields.Status.Category.Key == "done", NotStarted: raw.Fields.Status.Category.Key == "new", FixVersions: raw.Fields.FixVersions, Labels: raw.Fields.Labels}
 	if a := raw.Fields.Assignee; a != nil {
 		if a.AccountID == "" {
 			return Issue{}, fmt.Errorf("%s: the assignee has no accountId", key)

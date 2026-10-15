@@ -43,6 +43,8 @@ type fakeJira struct {
 	// lists keys whose assignment Jira refuses.
 	assigned   []string
 	failAssign []string
+	// labels maps a key to its labels.
+	labels map[string][]string
 }
 
 // fakeTransitions are the moves every item offers, by id.
@@ -94,6 +96,9 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		j.assigned = append(j.assigned, key+" to "+body.AccountID)
+		if a, ok := j.assignees[key]; !ok || a == "me" {
+			j.handedOver = append(j.handedOver, key)
+		}
 		j.assignees[key] = body.AccountID
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "comment":
@@ -138,6 +143,7 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"assignee":    assignee,
 			"fixVersions": fixVersions,
 			"issuetype":   map[string]bool{"subtask": j.parents[key] != ""},
+			"labels":      append([]string{}, j.labels[key]...),
 		}
 		if p := j.parents[key]; p != "" {
 			fields["parent"] = map[string]string{"key": p}
@@ -234,6 +240,13 @@ type deployFixture struct {
 }
 
 func deployRepo(t *testing.T) *deployFixture {
+	return newDeployFixture(t, deployConfig)
+}
+
+// newDeployFixture builds a repository whose .graft.yaml is config(state, q),
+// q quoting a path in the state directory, beside a fake Jira and a stand-in
+// deploy script.
+func newDeployFixture(t *testing.T, config func(state string, q func(string) string) string) *deployFixture {
 	if runtime.GOOS == "windows" {
 		t.Skip("deploy scripts use sh")
 	}
@@ -255,7 +268,25 @@ func deployRepo(t *testing.T) *deployFixture {
 
 	q := func(p string) string { return yamlQuote(filepath.Join(state, p)) }
 	f := newRepo(t, map[string]string{
-		".graft.yaml": `schema: 1
+		".graft.yaml": config(state, q),
+		"VERSION":     "1.0.0\n",
+		// The stand-in deploy script records what it was given.
+		"deploy.sh": `set -e
+STATE=` + state + `
+{ echo "target=$GRAFT_DEPLOY_TARGET env=$GRAFT_DEPLOY_ENV version=$GRAFT_DEPLOY_VERSION"; echo "sha=$GRAFT_DEPLOY_SHA"; echo "prev=$GRAFT_DEPLOY_PREVIOUS_SHA"; echo "args=$*"; } > "$STATE/$GRAFT_DEPLOY_TARGET-run"
+graft deploy check-head
+if [ -n "$MOVE_HEAD" ]; then git -c core.hooksPath=/dev/null commit -q --allow-empty -m moved; fi
+echo "$GRAFT_DEPLOY_VERSION" > "$STATE/$GRAFT_DEPLOY_TARGET-version"
+exit "${DEPLOY_EXIT:-0}"
+`,
+	}, "origin")
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
+	f.mustGraft("commit", "-m", "feat: base")
+	return &deployFixture{fixture: f, state: state, jira: jira}
+}
+
+func deployConfig(state string, q func(string) string) string {
+	return `schema: 1
 version: {mode: file}
 envs:
   local: {}
@@ -303,21 +334,7 @@ release_notes:
   jira:
     project_keys: [PROJ]
     skip_statuses: [Blocked]
-`,
-		"VERSION": "1.0.0\n",
-		// The stand-in deploy script records what it was given.
-		"deploy.sh": `set -e
-STATE=` + state + `
-{ echo "target=$GRAFT_DEPLOY_TARGET env=$GRAFT_DEPLOY_ENV version=$GRAFT_DEPLOY_VERSION"; echo "sha=$GRAFT_DEPLOY_SHA"; echo "prev=$GRAFT_DEPLOY_PREVIOUS_SHA"; echo "args=$*"; } > "$STATE/$GRAFT_DEPLOY_TARGET-run"
-graft deploy check-head
-if [ -n "$MOVE_HEAD" ]; then git -c core.hooksPath=/dev/null commit -q --allow-empty -m moved; fi
-echo "$GRAFT_DEPLOY_VERSION" > "$STATE/$GRAFT_DEPLOY_TARGET-version"
-exit "${DEPLOY_EXIT:-0}"
-`,
-	}, "origin")
-	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
-	f.mustGraft("commit", "-m", "feat: base")
-	return &deployFixture{fixture: f, state: state, jira: jira}
+`
 }
 
 func writeFile(t *testing.T, path, content string) {

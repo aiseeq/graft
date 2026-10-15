@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aiseeq/graft/internal/config"
 	"github.com/aiseeq/graft/internal/deploy"
@@ -68,6 +69,16 @@ type deployRun struct {
 	prev    string
 	// tasks runs the target's deps.
 	tasks *tasks.Runner
+	// branch is the branch deployed; hotfix tells whether it is a hotfix
+	// branch.
+	branch string
+	hotfix bool
+	// now is when the window and the hold are judged.
+	now time.Time
+	// gated is set once approved_release let the commits out; withheld are
+	// then the commits to record as withheld.
+	gated    bool
+	withheld []string
 }
 
 // Deploy runs the project's deploy script for a target between graft's
@@ -134,6 +145,19 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 		}
 	}
 	a.printf("deploying %s (version %s, commit %s) to %s", r.name, r.version, gitx.Short(head), r.env.Destination())
+	if r.now, err = deployNow(); err != nil {
+		return err
+	}
+	if r.branch, err = r.repo.Branch(); err != nil {
+		return err
+	}
+	r.hotfix = r.cfg.Deploy.IsHotfix(r.branch)
+	// The window is checked first: outside it nothing else matters.
+	if !r.hotfix {
+		if err := a.checkWindow(r); err != nil {
+			return err
+		}
+	}
 	// requires is a quick read-only check: it fails before a long deps run.
 	if err := a.requireDeployed(ctx, r); err != nil {
 		return err
@@ -147,9 +171,9 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 		if err := a.refuseSameCommit(r, o.Redeploy); err != nil {
 			return err
 		}
-	}
-	if err := a.checkApproved(ctx, r, o.Unapproved); err != nil {
-		return err
+		if err := a.checkReleaseFlow(ctx, r, o.Unapproved); err != nil {
+			return err
+		}
 	}
 	if len(r.target.Deps) > 0 {
 		a.printf("deploy %s: running %s first", r.name, strings.Join(r.target.Deps, ", "))
@@ -170,6 +194,27 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	}
 	a.printf("deployed %s to %s", gitx.Short(r.head), r.name)
 	return a.recordDeployment(ctx, r)
+}
+
+// checkReleaseFlow runs the checks between the deployed commit and the new
+// one: a hotfix branch, the hold on a release candidate, and for an approved
+// release that nothing deployed is taken back and every commit is checked.
+func (a *App) checkReleaseFlow(ctx context.Context, r *deployRun, unapproved bool) error {
+	if r.hotfix {
+		if err := a.checkHotfix(ctx, r); err != nil {
+			return err
+		}
+	}
+	if err := a.checkHold(ctx, r); err != nil {
+		return err
+	}
+	if r.hotfix || r.target.ApprovedRelease == nil {
+		return nil
+	}
+	if err := a.checkContainsDeployed(r); err != nil {
+		return err
+	}
+	return a.checkApproved(ctx, r, unapproved)
 }
 
 // refuseSameCommit refuses to deploy the commit the target already runs,
@@ -300,8 +345,10 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 	if err := deploy.WriteDeployedSHA(ctx, r.env, r.target.DeployedSHA, r.head); err != nil {
 		a.warn("the deployed commit is not recorded: %v", err)
 	}
+	withheldErr := a.recordWithheld(ctx, r)
+	a.hotfixDone(r)
 	if r.target.ReleaseNotes == nil {
-		return nil
+		return withheldErr
 	}
 	unset := a.releaseNotes(ctx, r)
 	var missing []string
@@ -312,9 +359,9 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 		missing = append(missing, "the assignee is not set on "+strings.Join(unset.assignee, ", "))
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("deployed %s to %s, but %s (see above)", gitx.Short(r.head), r.name, strings.Join(missing, "; "))
+		return errors.Join(withheldErr, fmt.Errorf("deployed %s to %s, but %s (see above)", gitx.Short(r.head), r.name, strings.Join(missing, "; ")))
 	}
-	return nil
+	return withheldErr
 }
 
 // notesUnset lists the keys of the items a deploy could not finish.
@@ -349,7 +396,7 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 		a.warn("release notes skipped: the previously deployed commit %s is unknown here (git fetch?)", r.prev)
 		return notesUnset{}
 	}
-	keys, err := deliveredKeys(r.repo, r.prev, r.head, notes.ProjectKeys)
+	keys, err := deliveredKeys(r.repo, r.prev, r.head, notes.ProjectKeys, r.withheld)
 	if err != nil {
 		a.warn("release notes skipped: %v", err)
 		return notesUnset{}
@@ -641,7 +688,9 @@ func (f *fixVersionRun) failed(key string, err error) {
 // checkApproved lets out only the commits of checked items: every commit going
 // out names an item in one of the statuses, with an approved version of the
 // prefix, or both, as the target asks. A revert takes nothing new out and
-// passes; a merge brings in commits that are checked themselves.
+// passes; a merge brings in commits that are checked themselves. Commits a
+// release branch withheld from an earlier release go out now and are
+// checked with the rest.
 func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error {
 	conf := r.target.ApprovedRelease
 	if conf == nil {
@@ -664,73 +713,181 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 	if !known {
 		return refuse("the deployed commit %s is unknown here (git fetch?)", r.prev)
 	}
-	commits, err := deliveredCommits(r.repo, r.prev, r.head)
+	withheld, err := readWithheld(ctx, r.env, r.target.DeployedSHA)
 	if err != nil {
 		return refuse("%v", err)
 	}
+	g, err := newGateRun(a, r.repo, r.cfg, conf)
+	if err != nil {
+		return refuse("%v", err)
+	}
+	out, err := g.run(ctx, r.prev, r.head, withheld, config.BranchMatches(r.cfg.Version.Build, r.branch))
+	if err != nil {
+		return refuse("%v", err)
+	}
+	if len(out.failures) > 0 {
+		lines := make([]string, len(out.failures))
+		for i, f := range out.failures {
+			lines[i] = f.line()
+		}
+		return refuse("commits outside an approved release:\n  %s\n%s, revert them, or pass --unapproved", strings.Join(lines, "\n  "), g.gate.remedy())
+	}
+	r.withheld, r.gated = out.withheld, true
+	a.printf("approved release: %d commits since %s, all in %s", out.commits, gitx.Short(r.prev), strings.Join(slices.Sorted(maps.Keys(out.approved)), ", "))
+	return nil
+}
+
+// gateRun is one pass of approved_release over the commits going out.
+type gateRun struct {
+	app   *App
+	repo  *gitx.Repo
+	cfg   *config.Config
+	conf  *config.ApprovedRelease
+	gate  *approvalGate
+	keyRe *regexp.Regexp
+}
+
+func newGateRun(a *App, repo *gitx.Repo, cfg *config.Config, conf *config.ApprovedRelease) (*gateRun, error) {
 	client, err := jiraClient()
 	if err != nil {
-		return refuse("%v", err)
+		return nil, err
 	}
-	gate := &approvalGate{client: client, conf: conf, issues: map[string]jira.Issue{}, versions: map[string]bool{}}
-	keyRe := regexp.MustCompile(`\b(` + strings.Join(r.cfg.ReleaseNotes.Jira.ProjectKeys, "|") + `)-[0-9]+\b`)
-	var outside []string
-	approved := map[string]bool{}
+	return &gateRun{
+		app: a, repo: repo, cfg: cfg, conf: conf,
+		gate:  &approvalGate{client: client, conf: conf, issues: map[string]jira.Issue{}, versions: map[string]bool{}},
+		keyRe: projectKeyRe(cfg),
+	}, nil
+}
+
+// projectKeyRe matches the work item keys of the project.
+func projectKeyRe(cfg *config.Config) *regexp.Regexp {
+	return regexp.MustCompile(`\b(` + strings.Join(cfg.ReleaseNotes.Jira.ProjectKeys, "|") + `)-[0-9]+\b`)
+}
+
+// gateFailure is a commit outside the release.
+type gateFailure struct {
+	commit deliveredCommit
+	keys   []string
+	why    string
+}
+
+func (f gateFailure) line() string {
+	return gitx.Short(f.commit.sha) + " " + f.commit.subject + ": " + f.why
+}
+
+type gateOutcome struct {
+	commits  int
+	approved map[string]bool
+	failures []gateFailure
+	// withheld are the commits reverted on a build branch: the trunk still
+	// has them, and the next release checks them.
+	withheld []string
+}
+
+var revertsRe = regexp.MustCompile(`(?m)^This reverts commit ([0-9a-f]{7,40})\b`)
+
+// run checks the commits of prev..head and the commits withheld before.
+// From a build branch (a release branch cut at the cutoff) a commit reverted
+// in the range is withheld rather than gone.
+func (g *gateRun) run(ctx context.Context, prev, head string, withheld []string, buildBranch bool) (gateOutcome, error) {
+	out := gateOutcome{approved: map[string]bool{}}
+	commits, err := deliveredCommits(g.repo, prev, head)
+	if err != nil {
+		return out, err
+	}
+	out.commits = len(commits)
+	reverted := map[string]string{}
 	for _, c := range commits {
-		line := gitx.Short(c.sha) + " " + c.subject
-		if isRevert(c.subject) {
-			a.printf("approved release: %s: a revert, passes", line)
+		if !isRevert(c.subject) {
 			continue
 		}
-		why := "names no item"
-		if keys := uniqueSorted(keyRe.FindAllString(c.subject+"\n"+c.body, -1)); len(keys) > 0 {
-			pass, err := gate.commit(ctx, keys)
+		for _, m := range revertsRe.FindAllStringSubmatch(c.body, -1) {
+			full, err := g.repo.Git("rev-parse", "--verify", "--quiet", m[1]+"^{commit}")
 			if err != nil {
-				return refuse("%v", err)
+				return out, fmt.Errorf("%s reverts %s, which is unknown here (git fetch?)", gitx.Short(c.sha), m[1])
+			}
+			reverted[strings.TrimSpace(full)] = c.sha
+		}
+	}
+	all := slices.Clone(commits)
+	for _, sha := range withheld {
+		if slices.ContainsFunc(all, func(c deliveredCommit) bool { return c.sha == sha }) {
+			continue
+		}
+		c, err := oneCommit(g.repo, sha)
+		if err != nil {
+			return out, fmt.Errorf("withheld commit %s: %w", sha, err)
+		}
+		g.app.printf("approved release: %s %s: withheld from an earlier release, goes out now", gitx.Short(sha), c.subject)
+		all = append(all, c)
+	}
+	for _, c := range all {
+		line := gitx.Short(c.sha) + " " + c.subject
+		if isRevert(c.subject) {
+			g.app.printf("approved release: %s: a revert, passes", line)
+			continue
+		}
+		if by, ok := reverted[c.sha]; ok {
+			if buildBranch {
+				out.withheld = append(out.withheld, c.sha)
+				g.app.printf("approved release: %s: reverted by %s on this release branch, withheld: the trunk keeps it and the next release checks it", line, gitx.Short(by))
+			} else {
+				g.app.printf("approved release: %s: reverted by %s, passes", line, gitx.Short(by))
+			}
+			continue
+		}
+		fail := gateFailure{commit: c, why: "names no item"}
+		if fail.keys = uniqueSorted(g.keyRe.FindAllString(c.subject+"\n"+c.body, -1)); len(fail.keys) > 0 {
+			pass, err := g.gate.commit(ctx, fail.keys)
+			if err != nil {
+				return out, err
 			}
 			if pass.ok {
-				approved[pass.label] = true
+				out.approved[pass.label] = true
 				if pass.done != "" {
-					a.printf("approved release: %s: %s is %s, passes", line, pass.done, gate.issues[pass.done].Status)
+					g.app.printf("approved release: %s: %s is %s, passes", line, pass.done, g.gate.issues[pass.done].Status)
 				}
 				continue
 			}
-			why = pass.why
+			fail.why = pass.why
 		}
-		ignored, err := a.shipsNothing(r, conf, c.sha)
+		ignored, err := shipsNothing(g.repo, g.cfg, g.conf, c.sha)
 		if err != nil {
-			return refuse("%v", err)
+			return out, err
 		}
 		if ignored {
-			a.printf("approved release: %s: changes only ignore_paths, passes", line)
+			g.app.printf("approved release: %s: changes only ignore_paths, passes", line)
 			continue
 		}
-		outside = append(outside, line+": "+why)
+		out.failures = append(out.failures, fail)
 	}
-	if len(outside) > 0 {
-		return refuse("commits outside an approved release:\n  %s\n%s, revert them, or pass --unapproved", strings.Join(outside, "\n  "), gate.remedy())
+	return out, nil
+}
+
+// oneCommit reads a commit's subject and body.
+func oneCommit(repo *gitx.Repo, sha string) (deliveredCommit, error) {
+	out, err := repo.Git("log", "-1", "--format=%H%x1f%s%x1f%b", sha)
+	if err != nil {
+		return deliveredCommit{}, fmt.Errorf("unknown here (git fetch?): %w", err)
 	}
-	a.printf("approved release: %d commits since %s, all in %s", len(commits), gitx.Short(r.prev), strings.Join(slices.Sorted(maps.Keys(approved)), ", "))
-	return nil
+	f := strings.SplitN(strings.TrimRight(out, "\n"), "\x1f", 3)
+	if len(f) != 3 {
+		return deliveredCommit{}, fmt.Errorf("unexpected git log record %q", out)
+	}
+	return deliveredCommit{sha: f[0], subject: f[1], body: f[2]}, nil
 }
 
 // shipsNothing tells whether a commit changes only approved_release's
 // ignore_paths, besides the version bump graft commit puts into every commit.
-func (a *App) shipsNothing(r *deployRun, conf *config.ApprovedRelease, sha string) (bool, error) {
+func shipsNothing(repo *gitx.Repo, cfg *config.Config, conf *config.ApprovedRelease, sha string) (bool, error) {
 	if len(conf.Ignore) == 0 {
 		return false, nil
 	}
-	out, err := r.repo.Git("diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "-z", sha)
+	out, err := repo.Git("diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "-z", sha)
 	if err != nil {
 		return false, err
 	}
-	bumped := []string{}
-	if r.cfg.Version.Mode == config.ModeFile {
-		bumped = append(bumped, r.cfg.Version.File)
-		for _, f := range r.cfg.Version.Sync {
-			bumped = append(bumped, f.Path)
-		}
-	}
+	bumped := versionFiles(cfg)
 	var files []string
 	for f := range strings.SplitSeq(out, "\x00") {
 		if f = strings.TrimSpace(f); f != "" && !slices.Contains(bumped, f) {
@@ -738,6 +895,18 @@ func (a *App) shipsNothing(r *deployRun, conf *config.ApprovedRelease, sha strin
 		}
 	}
 	return conf.Ignored(files), nil
+}
+
+// versionFiles are the files graft commit bumps in every commit.
+func versionFiles(cfg *config.Config) []string {
+	if cfg.Version.Mode != config.ModeFile {
+		return nil
+	}
+	files := []string{cfg.Version.File}
+	for _, f := range cfg.Version.Sync {
+		files = append(files, f.Path)
+	}
+	return files
 }
 
 // approvalGate reads each item and each version once per deploy.
@@ -933,21 +1102,39 @@ func uniqueSorted(in []string) []string {
 }
 
 // deliveredKeys lists the project's work item keys mentioned in the subjects
-// and bodies of the delivered commits, once each, sorted.
-func deliveredKeys(repo *gitx.Repo, prev, head string, projectKeys []string) ([]string, error) {
-	out, err := repo.Git("log", "--format=%s%n%b", prev+".."+head)
+// and bodies of the delivered commits, once each, sorted. Withheld commits
+// and the reverts that withheld them delivered nothing.
+func deliveredKeys(repo *gitx.Repo, prev, head string, projectKeys, withheld []string) ([]string, error) {
+	out, err := repo.Git("log", "--format=%H%x1f%s%n%b%x1e", prev+".."+head)
 	if err != nil {
 		return nil, err
 	}
 	re := regexp.MustCompile(`\b(` + strings.Join(projectKeys, "|") + `)-[0-9]+\b`)
 	var keys []string
-	for _, k := range re.FindAllString(out, -1) {
-		if !slices.Contains(keys, k) {
-			keys = append(keys, k)
+	for rec := range strings.SplitSeq(out, "\x1e") {
+		sha, text, _ := strings.Cut(strings.TrimLeft(rec, "\n"), "\x1f")
+		if slices.Contains(withheld, sha) || withholds(text, withheld) {
+			continue
+		}
+		for _, k := range re.FindAllString(text, -1) {
+			if !slices.Contains(keys, k) {
+				keys = append(keys, k)
+			}
 		}
 	}
 	slices.Sort(keys)
 	return keys, nil
+}
+
+// withholds tells whether a commit message reverts one of the withheld
+// commits.
+func withholds(text string, withheld []string) bool {
+	for _, m := range revertsRe.FindAllStringSubmatch(text, -1) {
+		if slices.ContainsFunc(withheld, func(sha string) bool { return strings.HasPrefix(sha, m[1]) }) {
+			return true
+		}
+	}
+	return false
 }
 
 func jiraClient() (*jira.Client, error) {

@@ -141,6 +141,19 @@ func (r *Repo) RevExists(rev string) (bool, error) {
 	return false, err
 }
 
+// IsAncestor reports whether ancestor is reachable from rev (a commit is its
+// own ancestor).
+func (r *Repo) IsAncestor(ancestor, rev string) (bool, error) {
+	_, err := r.Git("merge-base", "--is-ancestor", ancestor, rev)
+	if err == nil {
+		return true, nil
+	}
+	if ExitCode(err) == 1 {
+		return false, nil
+	}
+	return false, err
+}
+
 // RefExists reports whether the fully qualified ref exists.
 func (r *Repo) RefExists(ref string) (bool, error) {
 	_, err := r.Git("rev-parse", "--verify", "--quiet", ref)

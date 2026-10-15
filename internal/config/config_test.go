@@ -421,3 +421,51 @@ deploy:
 		}
 	}
 }
+
+func TestParseWindowAndHotfix(t *testing.T) {
+	base := `schema: 1
+version: {mode: file}
+envs: {local: {}}
+release_notes: {jira: {project_keys: [PROJ]}}
+deploy:
+  remote: origin
+  hotfix: {branches: ['hotfix/*'], label: hotfix, base: prod}
+  targets:
+    test: {env: local, run: [sh, d.sh], version: 'cat V', deployed_sha: {path: /x/test}}
+    prod: {env: local, run: [sh, d.sh], requires: test, deployed_sha: {path: /x/prod}, window: {days: [mon, thu], at: "15:00", until: "19:00", tz: Europe/Berlin, cutoff: {days_before: 1, at: "18:00"}}}
+`
+	cfg, err := Parse([]byte(base))
+	if err != nil {
+		t.Fatalf("base must parse: %v", err)
+	}
+	w := cfg.Deploy.Targets["prod"].Window
+	if w.Start != 15*time.Hour || w.End != 19*time.Hour || w.Cutoff.Time != 18*time.Hour || len(w.Weekdays) != 2 || w.Location.String() != "Europe/Berlin" {
+		t.Errorf("window = %+v", w)
+	}
+	if !cfg.Deploy.IsHotfix("hotfix/PROJ-1") || cfg.Deploy.IsHotfix("main") || !slices.Equal(cfg.Deploy.HoldingWindows("test"), []string{"prod"}) {
+		t.Error("hotfix branches or holding windows")
+	}
+	for name, yaml := range map[string]string{
+		"bad day":           strings.Replace(base, "[mon, thu]", "[monday]", 1),
+		"day twice":         strings.Replace(base, "[mon, thu]", "[mon, mon]", 1),
+		"no days":           strings.Replace(base, "days: [mon, thu], ", "", 1),
+		"bad at":            strings.Replace(base, `at: "15:00"`, `at: "3pm"`, 1),
+		"until before at":   strings.Replace(base, `until: "19:00"`, `until: "14:00"`, 1),
+		"no tz":             strings.Replace(base, "tz: Europe/Berlin, ", "", 1),
+		"unknown tz":        strings.Replace(base, "Europe/Berlin", "Mars/Olympus", 1),
+		"cutoff after":      strings.Replace(base, "days_before: 1", "days_before: 0", 1),
+		"cutoff w/o req":    strings.Replace(base, "requires: test, ", "", 1),
+		"window w/o sha":    strings.Replace(base, "deployed_sha: {path: /x/prod}, ", "", 1),
+		"held w/o sha":      strings.Replace(base, ", deployed_sha: {path: /x/test}", "", 1),
+		"hotfix no label":   strings.Replace(base, "label: hotfix, ", "", 1),
+		"hotfix no base":    strings.Replace(base, ", base: prod", "", 1),
+		"hotfix bad base":   strings.Replace(base, "base: prod", "base: uat", 1),
+		"hotfix no branch":  strings.Replace(base, "branches: ['hotfix/*'], ", "", 1),
+		"hotfix one branch": strings.Replace(base, "remote: origin", "remote: origin\n  branch: main", 1),
+		"reserved cutoff":   strings.Replace(strings.Replace(base, "    prod:", "    cutoff:", 1), "base: prod", "base: cutoff", 1),
+	} {
+		if _, err := Parse([]byte(yaml)); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}

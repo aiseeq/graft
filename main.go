@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	// Release windows name their time zone; Windows has no zoneinfo of its own.
+	_ "time/tzdata"
 
 	"github.com/aiseeq/graft/internal/app"
 	"github.com/aiseeq/graft/internal/hooks"
@@ -469,7 +471,7 @@ func flagsCmd(ctx context.Context, a *app.App, args []string) error {
 // take them: script args check-head, log flags anything but logs, deploy
 // flags any subcommand.
 func deployFlagsMisplaced(sub string, scriptArgs, logFlags, deployFlags bool) bool {
-	return scriptArgs && sub == "check-head" || logFlags && sub != "logs" || deployFlags && isDeploySubcommand(sub)
+	return scriptArgs && (sub == "check-head" || sub == "cutoff") || logFlags && sub != "logs" || deployFlags && isDeploySubcommand(sub)
 }
 
 func deployCmd(ctx context.Context, a *app.App, args []string) error {
@@ -487,7 +489,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	if err != nil {
 		return err
 	}
-	usage := fmt.Errorf("%w: graft deploy [--redeploy] [--unapproved] <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | check-head", errUsage)
+	usage := fmt.Errorf("%w: graft deploy [--redeploy] [--unapproved] <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | cutoff <target> | check-head", errUsage)
 	if len(pos) == 0 {
 		return usage
 	}
@@ -500,6 +502,8 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 		return a.DeployCheckHead()
 	case pos[0] == "status" && len(pos) == 2:
 		return a.DeployStatus(ctx, pos[1], scriptArgs)
+	case pos[0] == "cutoff" && len(pos) == 2:
+		return a.DeployCutoff(ctx, pos[1])
 	case pos[0] == "logs" && len(pos) == 2:
 		if *lines <= 0 {
 			return fmt.Errorf("%w: --lines must be positive", errUsage)
@@ -513,5 +517,5 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 }
 
 func isDeploySubcommand(s string) bool {
-	return s == "status" || s == "logs" || s == "check-head"
+	return s == "status" || s == "logs" || s == "check-head" || s == "cutoff"
 }

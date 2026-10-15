@@ -67,6 +67,7 @@ leaks:                           # keep private names out of public repositories
 | `graft flags ack <id> --reason R` | close an open event with a reason |
 | `graft flags mute <id> --reason R [--match S] [--all-envs]` | add an exception for it, then close it |
 | `graft deploy [--redeploy] [--unapproved] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--unapproved` skips the `approved_release` check |
+| `graft deploy cutoff <target>` | the release candidate of the target's window: its unchecked commits and the commands that revert them on a release branch |
 | `graft deploy status <target>` / `logs <target> [--lines N] [--grep RE]` | the target's status and logs commands |
 | `graft deploy check-head` | for deploy scripts: HEAD is still the commit being deployed |
 | `graft <task> [-- args]` / `graft run <task> [-- args]` | run a task with its deps |
@@ -656,6 +657,12 @@ release_notes:
    item, or naming items that do not pass, and why. With no deployed commit
    recorded, or Jira unreachable, it stops too. `--unapproved` skips the
    check with a warning.
+   Before it, an approved release must contain the commit the target runs:
+   a hotfix or a release branch not merged back would be taken back out. The
+   refusal names the branches that have it and how to merge each (see
+   Release windows). `--unapproved` does not skip this.
+   With a `window`, a hotfix branch and a held candidate, more checks come
+   here; see Release windows below.
 4. Run the `deps` tasks, exactly as a task's deps run: in order, each at most
    once (deps of deps included), a `test_db: true` task with the test database
    up and its DSN. A failure ends the deploy before the deploy script runs or
@@ -731,6 +738,62 @@ the file with `sudo -n` so that it never waits on a password prompt.
 
 Jira credentials are the user's, not the project's: `jira.env_file` in the
 user config (see Install).
+
+### Release windows and hotfixes
+
+```yaml
+version:
+  mode: file
+  build_branches: ['hotfix/*', 'release/*']   # their builds are 1.2.3.1, 1.2.3.2
+deploy:
+  hotfix:
+    branches: ['hotfix/*']      # these go out any time, from what base runs
+    label: hotfix               # every item a hotfix commit names carries it
+    base: prod                  # the target a hotfix branch starts from
+  targets:
+    prod:
+      requires: test            # test holds the candidate
+      window:
+        days: [mon, thu]        # mon tue wed thu fri sat sun
+        at: "15:00"
+        until: "19:00"          # required: when the window closes
+        tz: Europe/Berlin
+        cutoff: {days_before: 1, at: "18:00"}   # optional: when test starts holding the candidate
+      approved_release: {statuses: [Ready for release, Done]}
+```
+
+- Outside its window a target refuses, before `requires`, deps and sudo,
+  naming the next window. A hotfix branch goes any time.
+- From the cutoff until the window closes, or until the windowed target
+  runs what the held target runs, the target named in `requires` holds the
+  release candidate: the commit it ran at the cutoff, recorded beside its
+  `deployed_sha` (`.candidate`) on the first deploy there after the cutoff.
+  Meanwhile it takes only commits on top of the candidate that revert, that
+  change only the windowed target's `ignore_paths`, or that the windowed
+  target already runs (a merged hotfix); a hotfix branch goes there too.
+- `graft deploy cutoff <target>`, run on the trunk, prints the window, the
+  candidate and the commits of the candidate that `approved_release` would
+  refuse, grouped by item, with the commands that take them out: a branch
+  `release/DD.MM.YY` from the candidate, a reverse patch per commit without
+  the version files (`git diff <sha>^ <sha> -- . ':(exclude)VERSION' | git
+  apply -R --3way --index`) and one `graft commit -m 'revert: …' -m 'This
+  reverts commit <sha>.'` per item; then the deploys, and after the release
+  `git merge -s ours` of the release branch into the trunk. With nothing to
+  revert it prints the branch and the deploy alone.
+- A deploy from a `build_branches` branch withholds the commits a revert in
+  it names: they pass now, the trunk keeps them, and graft records them
+  beside `deployed_sha` (`.withheld`). Every later release checks them with
+  its own commits until they pass or a revert takes them out of the trunk.
+  Release notes leave out withheld commits and the reverts that withheld
+  them.
+- A hotfix branch must start from the commit `base` runs and every commit on
+  it must name an item with `label` (a revert, or a change only to the base
+  target's `ignore_paths`, passes). The window, the hold and
+  `approved_release` do not apply; `requires` does. After the hotfix reaches
+  `base`, graft prints how to merge it into the trunk; the next release from
+  the trunk refuses until it has.
+- `GRAFT_NOW` (RFC 3339), when set, is the time these checks use instead of
+  the clock: for tests and for rehearsing a cutoff.
 
 ### Version modes
 
