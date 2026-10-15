@@ -438,6 +438,28 @@ since `testdb up` and every `test_db` task run `migrate` each time, not only
 after creating the container, the next test run brings the schema back.
 `migrate` must therefore work on an empty database.
 
+### A database per test in Go
+
+The package `github.com/aiseeq/graft/v2/testdb` gives every Go test its own
+copy of the migrated database, so test binaries run in parallel without
+seeing each other's rows:
+
+```go
+func TestOrders(t *testing.T) {
+	pool := testdb.Connect(t)          // a pinged pgxpool on a fresh copy, dropped after the test
+	testdb.Truncate(t, pool, "orders") // empty tables the template's data would leak into the test
+	// testdb.NewDSN(t) gives the copy's DSN for another driver
+}
+```
+
+`TEST_DB_DSN` names the source, the database `migrate` brings up; its name
+must contain `test` and end in `_source`, say `app_test_source`. The package
+copies it once into `app_test_template` and makes the copies
+`app_test_<test>_<random>` from the template; a binary that finds the
+version in the source's `schema_migrations` changed rebuilds the template
+first. An advisory lock keyed by the source name lets copies be made side by
+side and keeps them off a template being rebuilt.
+
 ## Tools
 
 ```yaml
