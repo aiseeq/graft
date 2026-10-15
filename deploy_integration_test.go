@@ -45,6 +45,8 @@ type fakeJira struct {
 	failAssign []string
 	// labels maps a key to its labels.
 	labels map[string][]string
+	// manageVersions is the token's MANAGE_VERSIONS permission.
+	manageVersions bool
 }
 
 // fakeTransitions are the moves every item offers, by id.
@@ -68,6 +70,9 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/project/PROJ/versions" {
 		j.versionRequests++
 		_ = json.NewEncoder(w).Encode(j.versions)
+		return
+	}
+	if j.versionsAPI(w, r) {
 		return
 	}
 	if id, ok := strings.CutPrefix(r.URL.Path, "/rest/api/3/version/"); ok && r.Method == http.MethodGet && r.URL.Query().Get("expand") == "approvers" {
@@ -193,6 +198,12 @@ func (j *fakeJira) edit(w http.ResponseWriter, r *http.Request, key string) {
 		http.Error(w, "unexpected edit", http.StatusBadRequest)
 		return
 	}
+	if id := body.Update["fixVersions"][0]["remove"]["id"]; id != "" {
+		j.edits = append(j.edits, key+" remove "+id)
+		j.fixVersions[key] = slices.DeleteFunc(j.fixVersions[key], func(v string) bool { return v == id })
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	id := body.Update["fixVersions"][0]["add"]["id"]
 	if id == "" {
 		http.Error(w, "no add id", http.StatusBadRequest)
@@ -205,6 +216,83 @@ func (j *fakeJira) edit(w http.ResponseWriter, r *http.Request, key string) {
 	j.edits = append(j.edits, key+" add "+id)
 	j.fixVersions[key] = append(j.fixVersions[key], id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// versionsAPI serves the project, the permission, version changes and the
+// fix version search; it tells whether the request was one of them.
+func (j *fakeJira) versionsAPI(w http.ResponseWriter, r *http.Request) bool {
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/project/PROJ":
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "10000", "key": "PROJ"})
+	case r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/mypermissions":
+		if r.URL.Query().Get("projectKey") != "PROJ" || r.URL.Query().Get("permissions") != "MANAGE_VERSIONS" {
+			http.Error(w, "unexpected permission query", http.StatusBadRequest)
+			return true
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"permissions": map[string]any{"MANAGE_VERSIONS": map[string]bool{"havePermission": j.manageVersions}}})
+	case r.Method == http.MethodPost && r.URL.Path == "/rest/api/3/version":
+		var v map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&v); err != nil || v["projectId"] != float64(10000) || v["name"] == "" {
+			http.Error(w, "unexpected version", http.StatusBadRequest)
+			return true
+		}
+		delete(v, "projectId")
+		v["id"] = strconv.Itoa(30000 + len(j.versions))
+		v["archived"] = false
+		j.versions = append(j.versions, v)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(v)
+	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/rest/api/3/version/"):
+		id := strings.TrimPrefix(r.URL.Path, "/rest/api/3/version/")
+		i := slices.IndexFunc(j.versions, func(v map[string]any) bool { return v["id"] == id })
+		var fields map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&fields); err != nil || i < 0 {
+			http.Error(w, "unexpected version update", http.StatusBadRequest)
+			return true
+		}
+		maps.Copy(j.versions[i], fields)
+		_ = json.NewEncoder(w).Encode(j.versions[i])
+	case r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/search/jql":
+		id, ok := strings.CutPrefix(r.URL.Query().Get("jql"), "fixVersion = ")
+		if !ok {
+			http.Error(w, "unexpected jql", http.StatusBadRequest)
+			return true
+		}
+		issues := []any{}
+		for _, key := range slices.Sorted(maps.Keys(j.fixVersions)) {
+			if slices.Contains(j.fixVersions[key], id) {
+				issues = append(issues, map[string]string{"key": key})
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"issues": issues, "isLast": true})
+	default:
+		return false
+	}
+	return true
+}
+
+// version returns a copy of the version with the id.
+func (j *fakeJira) version(id string) map[string]any {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for _, v := range j.versions {
+		if v["id"] == id {
+			return maps.Clone(v)
+		}
+	}
+	return nil
+}
+
+// versionNamed returns a copy of the version with the name.
+func (j *fakeJira) versionNamed(name string) map[string]any {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for _, v := range j.versions {
+		if v["name"] == name {
+			return maps.Clone(v)
+		}
+	}
+	return nil
 }
 
 func (j *fakeJira) versionName(id string) string {

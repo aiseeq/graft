@@ -259,3 +259,117 @@ func TestReleaseHotfix(t *testing.T) {
 	d.setStatus("PROJ-1", "Ready for release")
 	d.mustGraft("deploy", "prod")
 }
+
+// versionConfig is releaseConfig with the window versions kept and the test
+// target adding the window version to the items it moves to Testing.
+func versionConfig(state string, q func(string) string) string {
+	cfg := releaseConfig(state, q)
+	cfg = strings.Replace(cfg, "release_notes: {transitions: [{from: [In Progress], to: Testing, assign: qa}]}",
+		`release_notes: {transitions: [{from: [In Progress], to: Testing, assign: qa}], fix_version: {name: "Product {dd}.{mm}.{yy}"}}`, 1)
+	return strings.Replace(cfg, "      approved_release:",
+		`      release_version: {enabled: true, name: "Product {dd}.{mm}.{yy}", hotfix: "Product {dd}.{mm}.{yy} hotfix"}
+      approved_release:`, 1)
+}
+
+func (d *deployFixture) fixVersionsOf(key string) []string {
+	d.jira.mu.Lock()
+	defer d.jira.mu.Unlock()
+	return slices.Clone(d.jira.fixVersions[key])
+}
+
+// TestReleaseVersions: the window version takes the items test moves to
+// Testing, loses the ones the cutoff reverts to the next window's, and is
+// released with its build; a hotfix gets a version of its own.
+func TestReleaseVersions(t *testing.T) {
+	d := newDeployFixture(t, versionConfig)
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-8"] = "In Progress"
+	d.jira.statuses["PROJ-9"] = "In Progress"
+	d.jira.versions = []map[string]any{
+		{"id": "20019", "name": "Product 19.10.26", "released": false, "archived": false, "releaseDate": "2026-10-19"},
+		{"id": "20022", "name": "Product.22.10.26", "released": false, "archived": false, "releaseDate": "2026-10-22"},
+		{"id": "10009", "name": "Product v1.2.9", "released": false, "archived": false},
+	}
+	d.jira.mu.Unlock()
+	d.at("2026-10-16 10:00")
+	d.mustGraft("deploy", "test")
+
+	// Without the permission, and with a name that slips from the template,
+	// the release is live but its version is not kept.
+	d.at("2026-10-19 15:30")
+	out, code := d.graft("", "deploy", "--unapproved", "prod")
+	if code == 0 || !strings.Contains(out, "needs the Manage versions permission (MANAGE_VERSIONS); in a team-managed project it comes with the Administrator role") {
+		t.Fatalf("no permission: exit %d\n%s", code, out)
+	}
+	d.jira.mu.Lock()
+	d.jira.manageVersions = true
+	d.jira.mu.Unlock()
+	out, code = d.graft("", "deploy", "--unapproved", "--redeploy", "prod")
+	if code == 0 || !strings.Contains(out, `versions "Product.22.10.26" look like the version name template but do not follow it`) {
+		t.Fatalf("a slipped name: exit %d\n%s", code, out)
+	}
+	d.jira.mu.Lock()
+	d.jira.versions[1]["name"] = "Product 22.10.26"
+	d.jira.mu.Unlock()
+	d.mustGraft("deploy", "--unapproved", "--redeploy", "prod")
+	if v := d.jira.version("20019"); v["released"] != true || v["releaseDate"] != "2026-10-19" || !strings.Contains(v["description"].(string), "build 1.0.1, commit ") {
+		t.Errorf("the Monday version: %v", v)
+	}
+
+	// Test moves the work to Testing into the Thursday version.
+	d.at("2026-10-20 10:00")
+	d.commitFile("checked.txt", "feat: PROJ-8 checked work")
+	d.commitFile("unchecked.txt", "feat: PROJ-1 unchecked work")
+	d.mustGraft("deploy", "test")
+	for _, key := range []string{"PROJ-1", "PROJ-8"} {
+		if got := d.fixVersionsOf(key); !slices.Equal(got, []string{"20022"}) {
+			t.Errorf("%s fix versions = %v", key, got)
+		}
+	}
+	d.setStatus("PROJ-8", "Ready for release")
+
+	// The cutoff reverts PROJ-1: its version becomes the next window's.
+	d.at("2026-10-21 18:30")
+	d.runCommands(d.mustGraft("deploy", "cutoff", "prod"), "goes out from release/22.10.26", "Then the candidate goes")
+	out = d.mustGraft("deploy", "test")
+	next := d.jira.versionNamed("Product 26.10.26")
+	if next == nil || next["releaseDate"] != "2026-10-26" {
+		t.Fatalf("no next window version:\n%s", out)
+	}
+	if got := d.fixVersionsOf("PROJ-1"); !slices.Equal(got, []string{next["id"].(string)}) || !strings.Contains(out, "PROJ-1 moved to version Product 26.10.26") {
+		t.Errorf("PROJ-1 fix versions = %v\n%s", got, out)
+	}
+
+	// The release refuses while the version lists work it does not take out.
+	d.at("2026-10-22 15:30")
+	d.jira.mu.Lock()
+	d.jira.fixVersions["PROJ-5"] = []string{"20022"}
+	d.jira.mu.Unlock()
+	if out, code := d.graft("", "deploy", "prod"); code == 0 || !strings.Contains(out, "version Product 22.10.26 lists PROJ-5, which this release does not take out") {
+		t.Errorf("a version with more than the release: exit %d\n%s", code, out)
+	}
+	d.jira.mu.Lock()
+	delete(d.jira.fixVersions, "PROJ-5")
+	d.jira.mu.Unlock()
+	d.mustGraft("deploy", "prod")
+	if v := d.jira.version("20022"); v["released"] != true || v["releaseDate"] != "2026-10-22" || !strings.Contains(v["description"].(string), "build 1.0.3.1") {
+		t.Errorf("the Thursday version: %v", v)
+	}
+
+	// A hotfix on Friday: its own version, released with it.
+	d.at("2026-10-23 11:00")
+	d.git("switch", "-q", "-c", "hotfix/PROJ-9", strings.TrimSpace(d.stateFile("prod-sha")))
+	d.commitFile("fix.txt", "fix: PROJ-9 urgent")
+	d.jira.mu.Lock()
+	d.jira.labels = map[string][]string{"PROJ-9": {"hotfix"}}
+	d.jira.mu.Unlock()
+	d.mustGraft("deploy", "test")
+	d.mustGraft("deploy", "prod")
+	hv := d.jira.versionNamed("Product 23.10.26 hotfix")
+	if hv == nil || hv["released"] != true || !strings.Contains(hv["description"].(string), "build 1.0.3.2") {
+		t.Fatalf("hotfix version: %v", hv)
+	}
+	if got := d.fixVersionsOf("PROJ-9"); !slices.Contains(got, hv["id"].(string)) {
+		t.Errorf("PROJ-9 fix versions = %v", got)
+	}
+}

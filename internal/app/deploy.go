@@ -24,7 +24,6 @@ import (
 	"github.com/aiseeq/graft/internal/jira"
 	"github.com/aiseeq/graft/internal/lock"
 	"github.com/aiseeq/graft/internal/tasks"
-	"github.com/aiseeq/graft/internal/tools"
 	"github.com/aiseeq/graft/internal/userconfig"
 )
 
@@ -80,6 +79,12 @@ type deployRun struct {
 	// then the commits to record as withheld.
 	gated    bool
 	withheld []string
+	// passed are the items the approved release lets out; hotfixItems the
+	// labelled items of a hotfix.
+	passed, hotfixItems []string
+	// moveOut are the items whose commits a deploy to a held target
+	// reverts: they leave the window's version for the next one.
+	moveOut *versionMove
 }
 
 // Deploy runs the project's deploy script for a target between graft's
@@ -166,9 +171,6 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 			return err
 		}
 	}
-	if err := a.pinTools(ctx, r); err != nil {
-		return fmt.Errorf("deploy %s: nothing was deployed: %w", r.name, err)
-	}
 	if len(r.target.Deps) > 0 {
 		a.printf("deploy %s: running %s first", r.name, strings.Join(r.target.Deps, ", "))
 		if err := r.tasks.RunDeps(ctx, r.target.Deps); err != nil {
@@ -224,39 +226,13 @@ func (a *App) checkReleaseFlow(ctx context.Context, r *deployRun, unapproved boo
 	if err := a.checkContainsDeployed(r); err != nil {
 		return err
 	}
-	return a.checkApproved(ctx, r, unapproved)
-}
-
-// pinTools puts the exact pinned build of every go_install tool first on
-// PATH for the deps and the deploy script: a tool release newer than the pin
-// brings checks the project has not been through yet, and a deploy, a hotfix
-// above all, must not wait for them.
-func (a *App) pinTools(ctx context.Context, r *deployRun) error {
-	var dirs, pins []string
-	for _, name := range slices.Sorted(maps.Keys(r.cfg.Tools)) {
-		t := r.cfg.Tools[name]
-		if t.GoInstall == "" {
-			continue
-		}
-		cache, err := os.UserCacheDir()
-		if err != nil {
-			return fmt.Errorf("no cache directory for the pinned tools: %w", err)
-		}
-		dir, err := tools.Pinned(ctx, name, t, filepath.Join(cache, "graft", "tools"), a.Stderr)
-		if err != nil {
-			return err
-		}
-		_, version := t.Pin()
-		dirs, pins = append(dirs, dir), append(pins, name+" "+version)
-	}
-	if len(dirs) == 0 {
-		return nil
-	}
-	if err := os.Setenv("PATH", strings.Join(append(dirs, os.Getenv("PATH")), string(os.PathListSeparator))); err != nil {
+	if err := a.checkApproved(ctx, r, unapproved); err != nil {
 		return err
 	}
-	a.printf("pinned tools first on PATH: %s", strings.Join(pins, ", "))
-	return nil
+	if !r.gated {
+		return nil
+	}
+	return a.checkVersionContents(ctx, r)
 }
 
 // refuseSameCommit refuses to deploy the commit the target already runs,
@@ -389,6 +365,7 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 	}
 	withheldErr := a.recordWithheld(ctx, r)
 	a.hotfixDone(r)
+	withheldErr = errors.Join(withheldErr, a.recordVersions(ctx, r))
 	if r.target.ReleaseNotes == nil {
 		return withheldErr
 	}
@@ -473,6 +450,10 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes}
 	sub := &subtaskRun{mover: mover, notes: notes, me: me, reached: map[string]string{}}
 	for _, key := range keys {
+		if r.moveOut != nil && slices.Contains(r.moveOut.keys, key) {
+			a.printf("release note for %s not posted: this deploy reverts its work from the candidate", key)
+			continue
+		}
 		issue, err := client.Issue(ctx, key)
 		if err != nil {
 			a.warn("release note for %s not posted: %v", key, err)
@@ -679,7 +660,11 @@ func (f *fixVersionRun) add(ctx context.Context, issue jira.Issue) {
 		if err == nil {
 			err = f.freezeApproved(ctx, versions)
 		}
-		if err == nil {
+		switch {
+		case err != nil:
+		case f.conf.Template != nil:
+			choice.version, err = jira.NextDatedVersion(project, versions, f.conf.Template)
+		default:
 			choice.version, err = jira.NextVersion(project, versions, f.conf.Prefix)
 		}
 		choice.err = err
@@ -708,7 +693,7 @@ func (f *fixVersionRun) add(ctx context.Context, issue jira.Issue) {
 // approved set of items is theirs, and a later deploy adds nothing to it.
 func (f *fixVersionRun) freezeApproved(ctx context.Context, versions []jira.Version) error {
 	for i, v := range versions {
-		if v.Released || v.Archived || !strings.HasPrefix(v.Name, f.conf.Prefix) {
+		if v.Released || v.Archived || !f.conf.Matches(v.Name) {
 			continue
 		}
 		approvers, err := f.client.VersionApprovers(ctx, v.ID)
@@ -779,7 +764,7 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 		}
 		return refuse("commits outside an approved release:\n  %s\n%s, revert them, or pass --unapproved", strings.Join(lines, "\n  "), g.gate.remedy())
 	}
-	r.withheld, r.gated = out.withheld, true
+	r.withheld, r.gated, r.passed = out.withheld, true, uniqueSorted(out.passed)
 	a.printf("approved release: %d commits since %s, all in %s", out.commits, gitx.Short(r.prev), strings.Join(slices.Sorted(maps.Keys(out.approved)), ", "))
 	return nil
 }
@@ -829,6 +814,8 @@ type gateOutcome struct {
 	// withheld are the commits reverted on a build branch: the trunk still
 	// has them, and the next release checks them.
 	withheld []string
+	// passed are the items named by the commits let out.
+	passed []string
 }
 
 var revertsRe = regexp.MustCompile(`(?m)^This reverts commit ([0-9a-f]{7,40})\b`)
@@ -890,6 +877,7 @@ func (g *gateRun) run(ctx context.Context, prev, head string, withheld []string,
 				return out, err
 			}
 			if pass.ok {
+				out.passed = append(out.passed, fail.keys...)
 				out.approved[pass.label] = true
 				if pass.done != "" {
 					g.app.printf("approved release: %s: %s is %s, passes", line, pass.done, g.gate.issues[pass.done].Status)

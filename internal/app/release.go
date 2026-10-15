@@ -95,6 +95,7 @@ func (a *App) checkHotfix(ctx context.Context, r *deployRun) error {
 	if err != nil {
 		return refuse("%v", err)
 	}
+	r.hotfixItems = items
 	if len(outside) > 0 {
 		return refuse("every commit must name an item labelled %s:\n  %s", h.Label, strings.Join(outside, "\n  "))
 	}
@@ -252,6 +253,9 @@ func (a *App) checkHeldFor(ctx context.Context, r *deployRun, wname string) erro
 			r.name, gitx.Short(candidate), wname, occ.Name(), deploy.Describe(wt.Window), occ.Cutoff.Format("Mon 02.01 15:04"), occ.End.Format("Mon 02.01 15:04"), wname, wname, strings.Join(bad, "\n  "), wname)
 	}
 	a.printf("%s holds the candidate %s of the %s window: %s takes only its reverts and hotfixes", r.name, gitx.Short(candidate), occ.Name(), gitx.Short(r.head))
+	if err := planVersionMove(r, wname, occ, candidate); err != nil {
+		return refuse("%v", err)
+	}
 	return nil
 }
 

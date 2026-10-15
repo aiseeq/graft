@@ -47,6 +47,8 @@ type DeployTarget struct {
 	ApprovedRelease *ApprovedRelease `yaml:"approved_release"`
 	// Window is when the target takes releases; a hotfix goes any time.
 	Window *Window `yaml:"window"`
+	// ReleaseVersion keeps the Jira versions of the windows.
+	ReleaseVersion *ReleaseVersion `yaml:"release_version"`
 	// Status runs in Env; {args} receives what follows --.
 	Status EnvCommand `yaml:"status"`
 	// Logs runs in Env; {lines} is filled in, {args} receives what
@@ -125,11 +127,26 @@ func (n *TargetNotes) FromStatuses() []string {
 	return all
 }
 
-// FixVersion picks the version by the start of its name.
+// FixVersion picks the version by the start of its name or by a name
+// template with the window's day.
 type FixVersion struct {
 	// Prefix is how the names of the versions to pick from begin, such as
 	// "Product v".
 	Prefix string `yaml:"prefix"`
+	// Name is a template such as "Product {dd}.{mm}.{yy}": the versions
+	// follow it, and the day in the name orders them.
+	Name string `yaml:"name"`
+	// Template is Name compiled.
+	Template *VersionName `yaml:"-"`
+}
+
+// Matches tells whether a version is one fix_version picks from.
+func (f *FixVersion) Matches(name string) bool {
+	if f.Template != nil {
+		_, ok := f.Template.Date(name)
+		return ok
+	}
+	return strings.HasPrefix(name, f.Prefix)
 }
 
 // ApprovedRelease lets out only the commits of checked items: items in one of
@@ -260,6 +277,9 @@ func (c *Config) validateTargetRelease(where string, t *DeployTarget) error {
 	if err := c.validateWindow(where, t); err != nil {
 		return err
 	}
+	if err := c.validateReleaseVersion(where, t); err != nil {
+		return err
+	}
 	if err := c.validateApprovedRelease(where, t); err != nil {
 		return err
 	}
@@ -333,8 +353,15 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 	switch {
 	case n.Subtasks && len(n.Transitions) == 0:
 		return fmt.Errorf("%s.release_notes.subtasks: needs transitions to move them by", where)
-	case n.FixVersion != nil && strings.TrimSpace(n.FixVersion.Prefix) == "":
-		return fmt.Errorf("%s.release_notes.fix_version.prefix: required, how the version names begin, such as \"Product v\"", where)
+	case n.FixVersion == nil:
+		return nil
+	case (strings.TrimSpace(n.FixVersion.Prefix) == "") == (n.FixVersion.Name == ""):
+		return fmt.Errorf("%s.release_notes.fix_version: one of prefix (how the version names begin, such as \"Product v\") or name (a template such as \"Product {dd}.{mm}.{yy}\")", where)
+	case n.FixVersion.Name != "":
+		var err error
+		if n.FixVersion.Template, err = ParseVersionName(n.FixVersion.Name); err != nil {
+			return fmt.Errorf("%s.release_notes.fix_version.name: %w", where, err)
+		}
 	}
 	return nil
 }

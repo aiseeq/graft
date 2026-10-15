@@ -469,3 +469,47 @@ deploy:
 		}
 	}
 }
+
+func TestVersionName(t *testing.T) {
+	n, err := ParseVersionName("Product {dd}.{mm}.{yy}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC)
+	if got := n.Format(day); got != "Product 19.10.26" {
+		t.Errorf("Format = %q", got)
+	}
+	if got, ok := n.Date("Product 22.10.26"); !ok || !got.Equal(time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("Date = %v, %v", got, ok)
+	}
+	for name, looks := range map[string]bool{
+		"Product.19.10.26":        true,
+		"product 19-10-26":        true,
+		"Product 19.10.26":        false,
+		"Product 19.10.26 hotfix": false,
+		"Product v2.14.20":        false,
+		"Other 19.10.26":          false,
+	} {
+		if _, ok := n.Date(name); ok && looks {
+			t.Errorf("%q follows the template", name)
+		}
+		if got := n.LooksLike(name); got != looks {
+			t.Errorf("LooksLike(%q) = %v", name, got)
+		}
+	}
+	if _, ok := n.Date("Product 31.02.26"); ok {
+		t.Error("31 February read as a day")
+	}
+	ymd, err := ParseVersionName("R {yy}-{mm}-{dd}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ymd.Format(day); got != "R 26-10-19" || !ymd.LooksLike("R 26.10.19") {
+		t.Errorf("year first: %q", got)
+	}
+	for _, bad := range []string{"", "Product {dd}.{mm}", "Product {dd}.{dd}.{yy}", "Product"} {
+		if _, err := ParseVersionName(bad); err == nil {
+			t.Errorf("ParseVersionName(%q) should fail", bad)
+		}
+	}
+}

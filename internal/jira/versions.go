@@ -3,9 +3,12 @@ package jira
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,6 +21,7 @@ type Version struct {
 	Archived bool   `json:"archived"`
 	// ReleaseDate is YYYY-MM-DD, empty when the version has none.
 	ReleaseDate string `json:"releaseDate"`
+	Description string `json:"description"`
 	// Frozen is set by the caller for a version whose approval has begun:
 	// NextVersion never adds items to it.
 	Frozen bool `json:"-"`
@@ -164,4 +168,176 @@ func names(versions []Version) string {
 	}
 	slices.Sort(out)
 	return strings.Join(out, ", ")
+}
+
+// DayNames reads the window's day from version names: Date for a name that
+// follows the template, LooksLike for a slip of it.
+type DayNames interface {
+	Date(name string) (time.Time, bool)
+	LooksLike(name string) bool
+}
+
+// SlipsOf names the unreleased versions whose names look like the template
+// but do not follow it: graft never guesses which one is meant.
+func SlipsOf(versions []Version, names DayNames) error {
+	var slips []string
+	for _, v := range versions {
+		if !v.Released && !v.Archived && names.LooksLike(v.Name) {
+			slips = append(slips, fmt.Sprintf("%q", v.Name))
+		}
+	}
+	if len(slips) > 0 {
+		return fmt.Errorf("versions %s look like the version name template but do not follow it: rename them", strings.Join(slips, ", "))
+	}
+	return nil
+}
+
+// NextDatedVersion picks, among the versions that are neither released,
+// archived nor frozen and follow the template, the one of the earliest day.
+func NextDatedVersion(project string, versions []Version, names DayNames) (Version, error) {
+	if err := SlipsOf(versions, names); err != nil {
+		return Version{}, fmt.Errorf("%s: %w", project, err)
+	}
+	var best Version
+	var bestDay time.Time
+	frozen := 0
+	for _, v := range versions {
+		day, ok := names.Date(v.Name)
+		switch {
+		case !ok || v.Released || v.Archived:
+		case v.Frozen:
+			frozen++
+		case best.ID == "" || day.Before(bestDay):
+			best, bestDay = v, day
+		}
+	}
+	if best.ID == "" {
+		if frozen > 0 {
+			return Version{}, fmt.Errorf("every unreleased window version of %s is being approved, its items are fixed; add the next one", project)
+		}
+		return Version{}, fmt.Errorf("%s has no unreleased window version; the release adds the next one, or add it by hand", project)
+	}
+	return best, nil
+}
+
+// ProjectID reads a project's id, which creating a version takes.
+func (c *Client) ProjectID(ctx context.Context, key string) (string, error) {
+	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/project/"+key, nil, http.StatusOK)
+	if err != nil {
+		return "", err
+	}
+	var raw struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return "", fmt.Errorf("project %s: unexpected JSON: %w", key, err)
+	}
+	if raw.ID == "" {
+		return "", fmt.Errorf("project %s: no id in the answer", key)
+	}
+	return raw.ID, nil
+}
+
+// ErrNoVersionRights is the refusal when the token's user may not manage
+// versions.
+var ErrNoVersionRights = errors.New("managing versions needs the Manage versions permission (MANAGE_VERSIONS); in a team-managed project it comes with the Administrator role of the project")
+
+// RequireVersionRights checks that the token's user may create, edit and
+// release the project's versions.
+func (c *Client) RequireVersionRights(ctx context.Context, project string) error {
+	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/mypermissions?projectKey="+project+"&permissions=MANAGE_VERSIONS", nil, http.StatusOK)
+	if err != nil {
+		return err
+	}
+	var raw struct {
+		Permissions map[string]struct {
+			HavePermission bool `json:"havePermission"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("mypermissions: unexpected JSON: %w", err)
+	}
+	p, ok := raw.Permissions["MANAGE_VERSIONS"]
+	if !ok {
+		return errors.New("mypermissions: no answer about MANAGE_VERSIONS")
+	}
+	if !p.HavePermission {
+		return fmt.Errorf("%s: %w", project, ErrNoVersionRights)
+	}
+	return nil
+}
+
+// CreateVersion adds an unreleased version to the project.
+func (c *Client) CreateVersion(ctx context.Context, projectID, name, releaseDate string) (Version, error) {
+	pid, err := strconv.Atoi(projectID)
+	if err != nil {
+		return Version{}, fmt.Errorf("project id %q is not a number", projectID)
+	}
+	body := map[string]any{"projectId": pid, "name": name, "releaseDate": releaseDate, "released": false}
+	data, err := c.do(ctx, http.MethodPost, "/rest/api/3/version", body, http.StatusCreated)
+	if err != nil {
+		return Version{}, err
+	}
+	var v Version
+	if err := json.Unmarshal(data, &v); err != nil {
+		return Version{}, fmt.Errorf("version %q: unexpected JSON: %w", name, err)
+	}
+	if v.ID == "" {
+		return Version{}, fmt.Errorf("version %q: no id in the answer", name)
+	}
+	return v, nil
+}
+
+// UpdateVersion changes the given fields of a version: name, description,
+// released, releaseDate.
+func (c *Client) UpdateVersion(ctx context.Context, id string, fields map[string]any) error {
+	_, err := c.do(ctx, http.MethodPut, "/rest/api/3/version/"+id, fields, http.StatusOK)
+	return err
+}
+
+// RemoveFixVersion takes a version out of an item's fix versions.
+func (c *Client) RemoveFixVersion(ctx context.Context, key, versionID string) error {
+	body := map[string]any{"update": map[string]any{
+		"fixVersions": []any{map[string]any{"remove": map[string]string{"id": versionID}}},
+	}}
+	_, err := c.do(ctx, http.MethodPut, "/rest/api/3/issue/"+key, body, http.StatusNoContent)
+	return err
+}
+
+// searchPage is how many items one search request reads.
+const searchPage = 100
+
+// VersionItems lists the keys of the items with the version among their
+// fix versions.
+func (c *Client) VersionItems(ctx context.Context, versionID string) ([]string, error) {
+	var keys []string
+	token := ""
+	for {
+		q := url.Values{"jql": {"fixVersion = " + versionID}, "fields": {"key"}, "maxResults": {fmt.Sprint(searchPage)}}
+		if token != "" {
+			q.Set("nextPageToken", token)
+		}
+		data, err := c.do(ctx, http.MethodGet, "/rest/api/3/search/jql?"+q.Encode(), nil, http.StatusOK)
+		if err != nil {
+			return nil, err
+		}
+		var page struct {
+			Issues []struct {
+				Key string `json:"key"`
+			} `json:"issues"`
+			NextPageToken string `json:"nextPageToken"`
+			IsLast        bool   `json:"isLast"`
+		}
+		if err := json.Unmarshal(data, &page); err != nil {
+			return nil, fmt.Errorf("version %s items: unexpected JSON: %w", versionID, err)
+		}
+		for _, i := range page.Issues {
+			keys = append(keys, i.Key)
+		}
+		if page.IsLast || page.NextPageToken == "" {
+			slices.Sort(keys)
+			return keys, nil
+		}
+		token = page.NextPageToken
+	}
 }

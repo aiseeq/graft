@@ -663,16 +663,7 @@ release_notes:
    Release windows). `--unapproved` does not skip this.
    With a `window`, a hotfix branch and a held candidate, more checks come
    here; see Release windows below.
-4. Put the exact pinned build of every `tools` entry with `go_install` first
-   on `PATH` for the deps and the deploy script (and the graft it runs): a
-   tool release newer than the pin, a linter with new rules say, brings
-   checks the project has not been through yet, and must not stop a release
-   or a hotfix. The build is installed once with `go install` into
-   `graft/tools` under the user cache directory and checked against the pin
-   by its Go build info; a pin that cannot be installed stops the deploy here,
-   never falling back to the copy already on `PATH`. Outside deploy, tasks
-   run whatever `PATH` finds, as before.
-   Then run the `deps` tasks, exactly as a task's deps run: in order, each at most
+4. Run the `deps` tasks, exactly as a task's deps run: in order, each at most
    once (deps of deps included), a `test_db: true` task with the test database
    up and its DSN. A failure ends the deploy before the deploy script runs or
    anything is written in the target environment. A `deps` entry that is not
@@ -721,11 +712,15 @@ release_notes:
    anybody has approved in Jira is passed over: its approved set of items is
    final, and they go to the next one. graft never guesses:
    no such version, two sharing the nearest date, or several undated ones
-   and no dated one are errors naming the candidates. The version is added
+   and no dated one are errors naming the candidates. With `name: "Product
+   {dd}.{mm}.{yy}"` instead of `prefix`, the versions are those whose names
+   follow the template exactly, the earliest day in the name first; a name
+   that looks like the template but does not follow it ("Product.19.10.26")
+   is an error naming it. The version is added
    with an `update` `add`, so the item's other fix versions stay; an item
    that has it already is left as it is, without an edit request. Editing
-   the item is the only permission it takes: graft never creates, renames or
-   releases versions. The release is live by then, so a fix version that is
+   the item is the only permission `fix_version` takes; `release_version`
+   (see Release windows) creates and releases versions. The release is live by then, so a fix version that is
    not set (no version to pick, Jira unreachable, the edit refused) does not
    stop the rest: graft prints `graft: PROJ-123: fix version NOT SET: <why>`,
    one line per item, finishes the notes, and exits 1 with the list of items
@@ -801,6 +796,27 @@ deploy:
   `approved_release` do not apply; `requires` does. After the hotfix reaches
   `base`, graft prints how to merge it into the trunk; the next release from
   the trunk refuses until it has.
+- `release_version: {enabled: true, name: "Product {dd}.{mm}.{yy}", hotfix:
+  "Product {dd}.{mm}.{yy} hotfix"}` on the windowed target keeps one Jira
+  version per window (`enabled` is required; false keeps the section and
+  leaves versions alone). It needs the Manage versions permission
+  (MANAGE_VERSIONS; in a team-managed project the Administrator role):
+  without it every step below is an error saying so.
+  - A deploy to the held target that reverts commits of the candidate moves
+    their items from the window's version to the next window's (created when
+    missing) and posts them no note: the version QA approves lists what goes
+    out.
+  - A release refuses, before deps, while the window's version lists an item
+    none of its passing commits names.
+  - After a release the window's version gets the build (`build <version>,
+    commit <short>`) appended to its description and is released on the
+    window's day; the earliest unreleased window version is renamed to that
+    day when it carries another (the window moved), and created when there is
+    none. Then the next window's version is created with its release date.
+  - A hotfix reaching its base puts its items into the day's `hotfix`
+    version (created when missing) and releases it with the build.
+  Failures after the release is live print `graft: versions NOT KEPT: <why>`
+  and make the deploy exit 1.
 - `GRAFT_NOW` (RFC 3339), when set, is the time these checks use instead of
   the clock: for tests and for rehearsing a cutoff.
 

@@ -22,6 +22,25 @@ type Hotfix struct {
 	Match []*regexp.Regexp `yaml:"-"`
 }
 
+// ReleaseVersion keeps one Jira version per window: the release writes its
+// build into the version, releases it, renames it to the day it went out on,
+// and adds the next window's version; a hotfix gets a version of its own.
+type ReleaseVersion struct {
+	// Enabled switches it on and off without dropping the rest; required.
+	Enabled *bool `yaml:"enabled"`
+	// Name is the window version template, such as "Product {dd}.{mm}.{yy}".
+	Name string `yaml:"name"`
+	// Hotfix is the template of the version a hotfix goes into, such as
+	// "Product {dd}.{mm}.{yy} hotfix"; without it versions stay as they are.
+	Hotfix string `yaml:"hotfix"`
+	// Template and HotfixTemplate are Name and Hotfix compiled.
+	Template       *VersionName `yaml:"-"`
+	HotfixTemplate *VersionName `yaml:"-"`
+}
+
+// On tells whether the versions are kept.
+func (v *ReleaseVersion) On() bool { return v != nil && v.Enabled != nil && *v.Enabled }
+
 // Window is when a target takes releases: on Days from At until Until in TZ.
 type Window struct {
 	Days  []string `yaml:"days"`
@@ -128,6 +147,32 @@ func (c *Config) validateCutoff(where string, t *DeployTarget) error {
 	}
 	if held := c.Deploy.Targets[t.Requires]; held != nil && held.DeployedSHA == nil {
 		return fmt.Errorf("%s: target %q holds the candidate and needs deployed_sha", where, t.Requires)
+	}
+	return nil
+}
+
+func (c *Config) validateReleaseVersion(where string, t *DeployTarget) error {
+	v := t.ReleaseVersion
+	if v == nil {
+		return nil
+	}
+	where += ".release_version"
+	var err error
+	switch {
+	case v.Enabled == nil:
+		return fmt.Errorf("%s.enabled: required, true or false (false keeps the section and leaves versions alone)", where)
+	case t.Window == nil:
+		return fmt.Errorf("%s: needs window, whose days name the versions", where)
+	case c.ReleaseNotes == nil || c.ReleaseNotes.Jira == nil:
+		return fmt.Errorf("%s: needs a top-level release_notes.jira section for the project keys", where)
+	}
+	if v.Template, err = ParseVersionName(v.Name); err != nil {
+		return fmt.Errorf("%s.name: %w", where, err)
+	}
+	if v.Hotfix != "" {
+		if v.HotfixTemplate, err = ParseVersionName(v.Hotfix); err != nil {
+			return fmt.Errorf("%s.hotfix: %w", where, err)
+		}
 	}
 	return nil
 }
