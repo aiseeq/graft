@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -220,5 +221,56 @@ func TestGoTestsAreRecordedPerTest(t *testing.T) {
 	}
 	if got := rows(f.mustGraft("stats", "--tests", "--all")); len(got) < 3 || got[2] != realRoot(t, f)+" example.com/p TestSlow 3 2.5s 3.5s 0%" {
 		t.Errorf("--all: %q", got)
+	}
+}
+
+// TestReportFileTestsAreRecorded: a task with tests: jest or playwright
+// gets a file in GRAFT_TEST_REPORT for the runner's JSON report and records
+// the tests in it; the terminal output is the runner's own. A test a retry
+// passed within the run is flaky by itself.
+func TestReportFileTestsAreRecorded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	fixture := func(name string) string {
+		path, err := filepath.Abs(filepath.Join("internal", "testreport", "testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	f, statsFile := statsRepo(t, "tasks:\n"+
+		"  jest:\n    tests: jest\n    run:\n      - sh: 'echo jest says hi; cp "+fixture("jest.json")+" \"$GRAFT_TEST_REPORT\"; exit 1'\n"+
+		"  e2e:\n    tests: playwright\n    run:\n      - [sh, -c, 'echo playwright says hi; cp \"$1\" \"$2\"', sh, "+fixture("playwright.json")+", '${GRAFT_TEST_REPORT}']\n"+
+		"  silent:\n    tests: jest\n    run:\n      - sh: 'echo npx jest --json'\n")
+	testsFile := filepath.Join(filepath.Dir(statsFile), "tests.jsonl")
+	if out, code := f.graft("", "jest"); code == 0 || !strings.Contains(out, "jest says hi") {
+		t.Fatalf("jest: exit %d\n%s", code, out)
+	}
+	if out := f.mustGraft("e2e"); !strings.Contains(out, "playwright says hi") {
+		t.Errorf("e2e output:\n%s", out)
+	}
+	var got []string
+	for _, l := range readTests(t, testsFile) {
+		got = append(got, l.Task+" "+l.Runner+" "+l.Package+" "+l.Result+" "+fmt.Sprint(len(l.Tests)))
+	}
+	want := []string{
+		"jest jest /src/app/src/__tests__/cart.test.tsx fail 5",
+		"jest jest /src/app/src/__tests__/menu.test.tsx pass 1",
+		"jest jest /src/app/src/__tests__/broken.test.tsx fail 0",
+		"e2e playwright smoke/login.spec.ts pass 4",
+		"e2e playwright smoke/home.spec.ts fail 1",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("tests.jsonl:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	report := f.mustGraft("stats", "--tests")
+	for _, flaky := range []string{"[chromium] Login › locks after five tries 1 1 1", "Cart reconnects 1 1 1"} {
+		if !strings.Contains(strings.Join(strings.Fields(report), " "), flaky) {
+			t.Errorf("flaky lacks %q:\n%s", flaky, report)
+		}
+	}
+	if out := f.mustGraft("silent"); !strings.Contains(out, "wrote no report to GRAFT_TEST_REPORT") {
+		t.Errorf("a jest step without a report is not reported:\n%s", out)
 	}
 }

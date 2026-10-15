@@ -1,0 +1,10 @@
+{"numFailedTestSuites":2,"numFailedTests":1,"numPassedTestSuites":1,"numPassedTests":3,"numPendingTests":1,"numTodoTests":1,"numTotalTestSuites":3,"numTotalTests":6,"startTime":1792088250972,"success":false,"wasInterrupted":false,"testResults":[
+{"name":"/src/app/src/__tests__/cart.test.tsx","status":"failed","startTime":1792088251000,"endTime":1792088252500,"message":"","summary":"","assertionResults":[
+{"ancestorTitles":["Cart"],"title":"adds an item","fullName":"Cart adds an item","status":"passed","duration":35,"invocations":1,"retryReasons":[],"failureMessages":[]},
+{"ancestorTitles":["Cart","totals"],"title":"sums prices","fullName":"Cart totals sums prices","status":"failed","duration":120,"invocations":1,"retryReasons":[],"failureMessages":["expected 3, got 4"]},
+{"ancestorTitles":["Cart"],"title":"reconnects","fullName":"Cart reconnects","status":"passed","duration":900,"invocations":2,"retryReasons":["timed out"],"failureMessages":[]},
+{"ancestorTitles":["Cart"],"title":"later","fullName":"Cart later","status":"pending","duration":null,"invocations":1,"retryReasons":[],"failureMessages":[]},
+{"ancestorTitles":["Cart"],"title":"some day","fullName":"Cart some day","status":"todo","duration":null,"invocations":1,"retryReasons":[],"failureMessages":[]}]},
+{"name":"/src/app/src/__tests__/menu.test.tsx","status":"passed","startTime":1792088251100,"endTime":1792088251400,"message":"","summary":"","assertionResults":[
+{"ancestorTitles":[],"title":"opens","fullName":"opens","status":"passed","duration":12,"invocations":1,"retryReasons":[],"failureMessages":[]}]},
+{"name":"/src/app/src/__tests__/broken.test.tsx","status":"failed","startTime":1792088251200,"endTime":1792088251250,"message":"SyntaxError: Unexpected token","summary":"","testExecError":{"message":"SyntaxError: Unexpected token"},"assertionResults":[]}]}

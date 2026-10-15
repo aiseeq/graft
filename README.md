@@ -329,6 +329,22 @@ dotenv_sets:                   # key lists several tasks and services share
   line. Lines that are not events pass through. Every package run is
   recorded in the tests file (see below). A step with `go test` in it that
   prints no events gets a warning: `-json` is missing.
+- `tests: jest` and `tests: playwright` read the JSON report the runner
+  writes to the file named in `GRAFT_TEST_REPORT` (also `${GRAFT_TEST_REPORT}`
+  in argv); the terminal shows the runner's own output. A test file is a
+  package; a jest test is its full name, a playwright one
+  `[project] describe › title` with the time of all its attempts. A test a
+  retry passed within the run is recorded as `flaky`. A step that names the
+  runner but writes no report gets a warning.
+
+  ```yaml
+  jest-unit:
+    tests: jest
+    run: [[npx, jest, --json, '--outputFile=${GRAFT_TEST_REPORT}']]
+  e2e:
+    tests: playwright
+    run: [[env, 'PLAYWRIGHT_JSON_OUTPUT_FILE=${GRAFT_TEST_REPORT}', npx, playwright, test, '--reporter=dot,json']]
+  ```
 
 ### Resource stats
 
@@ -378,7 +394,7 @@ deps and inner tasks included.
 - A failure to record is not a failure of the task: graft warns once per run
   and goes on.
 
-A task with `tests: go` also writes `tests.jsonl` next to it: one line per
+A task with `tests:` also writes `tests.jsonl` next to it: one line per
 package run, the test binary's time without the build, the top-level tests
 as `[name, wall_s, result]`, and the subtests that failed. Cached packages
 did not run and are left out.
@@ -390,9 +406,15 @@ did not run and are left out.
 - `tree` identifies what the work tree held: HEAD, the changes to tracked
   files and the untracked files that are not ignored. Two runs with the same
   tree ran the same code.
+- `runner` is the report the line was read from: `go`, `jest` or
+  `playwright`. For jest and playwright a package is a test file; its time
+  is the file's run for jest and the sum of its tests for playwright, whose
+  files run spread over workers.
 - `load_start` and `load_max` are those of the step, as on its stats line.
-- `result` is `pass`, `fail`, `skip` or `build-fail`. A package cut off
-  (a timeout, a killed process) fails with the tests that were running.
+- `result` is `pass`, `fail`, `skip`, `build-fail` or, for a test a retry
+  passed within the run, `flaky`: it counts as failed and passed on its
+  tree. A package cut off (a timeout, a killed process) fails with the tests
+  that were running.
 - A test takes about 45 bytes, so a suite of 2000 tests writes 90 KB a
   run. The file moves to `tests.jsonl.1` at 64 MB, so the two keep about
   1400 runs of such a suite.

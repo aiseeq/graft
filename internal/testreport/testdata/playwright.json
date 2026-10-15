@@ -1,0 +1,13 @@
+{"config":{"rootDir":"/src/e2e/tests","version":"1.55.1"},"errors":[],"stats":{"startTime":"2026-10-15T18:17:40.305Z","duration":6522.4,"expected":2,"skipped":1,"unexpected":1,"flaky":1},"suites":[
+{"title":"smoke/login.spec.ts","file":"smoke/login.spec.ts","line":0,"column":0,"specs":[],"suites":[
+ {"title":"Login","file":"smoke/login.spec.ts","line":5,"column":6,"specs":[
+  {"title":"accepts a valid password","ok":true,"file":"smoke/login.spec.ts","line":8,"column":3,"tests":[
+   {"projectId":"chromium","projectName":"chromium","expectedStatus":"passed","status":"expected","results":[{"retry":0,"status":"passed","duration":243}]},
+   {"projectId":"firefox","projectName":"firefox","expectedStatus":"passed","status":"expected","results":[{"retry":0,"status":"passed","duration":310}]}]},
+  {"title":"locks after five tries","ok":true,"file":"smoke/login.spec.ts","line":20,"column":3,"tests":[
+   {"projectId":"chromium","projectName":"chromium","expectedStatus":"passed","status":"flaky","results":[{"retry":0,"status":"failed","duration":5000},{"retry":1,"status":"passed","duration":1200}]}]},
+  {"title":"remembers the user","ok":true,"file":"smoke/login.spec.ts","line":30,"column":3,"tests":[
+   {"projectId":"chromium","projectName":"chromium","expectedStatus":"skipped","status":"skipped","results":[{"retry":0,"status":"skipped","duration":0}]}]}]}]},
+{"title":"smoke/home.spec.ts","file":"smoke/home.spec.ts","line":0,"column":0,"specs":[
+  {"title":"loads","ok":false,"file":"smoke/home.spec.ts","line":3,"column":1,"tests":[
+   {"projectId":"chromium","projectName":"chromium","expectedStatus":"passed","status":"unexpected","results":[{"retry":0,"status":"failed","duration":700},{"retry":1,"status":"timedOut","duration":30000}]}]}],"suites":[]}]}

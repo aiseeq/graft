@@ -204,7 +204,7 @@ func (g *GoTest) result(pkg *goPackage, name string, elapsed float64, result str
 func (g *GoTest) finish(name string, e event) {
 	pkg := g.pkgs[name]
 	delete(g.pkgs, name)
-	run := stats.PackageRun{Time: time.Now(), Package: name, Result: e.Action, WallS: round(e.Elapsed)}
+	run := newRun(name, e.Action, e.Elapsed)
 	if e.FailedBuild != "" {
 		run.Result = stats.ResultBuildFail
 	}
@@ -224,3 +224,8 @@ func (g *GoTest) finish(name string, e event) {
 }
 
 func round(s float64) float64 { return math.Round(s*1000) / 1000 }
+
+// newRun is a package run finished now; the runner fills where it ran.
+func newRun(pkg, result string, wallS float64) stats.PackageRun {
+	return stats.PackageRun{Time: time.Now(), Package: pkg, Result: result, WallS: round(wallS)}
+}

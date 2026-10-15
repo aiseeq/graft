@@ -237,6 +237,9 @@ func (r *Runner) missing(t *config.Task, steps []config.Step) []string {
 	if t.TestDB {
 		provided[r.Config.TestDB.DSNVar] = true
 	}
+	if reportFile(t) {
+		provided[config.TestReportEnv] = true
+	}
 	var problems []string
 	check := func(key string) {
 		if provided[key] {
@@ -352,6 +355,16 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	if err != nil {
 		return err
 	}
+	var report string
+	if reportFile(t) {
+		dir, err := os.MkdirTemp("", "graft-tests-")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		report = filepath.Join(dir, "report.json")
+		vars[config.TestReportEnv] = report
+	}
 	env, err := r.env(t, vars)
 	if err != nil {
 		return err
@@ -382,15 +395,61 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	}
 	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
-	if t.Tests != config.TestsGo {
-		_, err := r.measure(cmd, s.Source)
+	switch t.Tests {
+	case config.TestsGo:
+		tree := r.treeID()
+		report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
+		cmd.Stdout = report
+		use, err := r.measure(cmd, s.Source)
+		runs, cerr := report.Close()
+		if cerr != nil {
+			fmt.Fprintf(r.Stderr, "graft: printing the test output: %v\n", cerr)
+		}
+		if report.Events() == 0 && strings.Contains(s.Source, "go test") {
+			fmt.Fprintf(r.Stderr, "graft: %s: the task has tests: go, but go test printed no -json events; pass -json to it\n", r.frames[len(r.frames)-1].task)
+		}
+		r.recordTests(runs, tree, t.Tests, use)
+		return err
+	case config.TestsJest, config.TestsPlaywright:
+		return r.reportFileStep(cmd, s.Source, t.Tests, report)
+	}
+	_, err = r.measure(cmd, s.Source)
+	return err
+}
+
+// reportFile tells whether the task's steps write a test report to the file
+// in GRAFT_TEST_REPORT.
+func reportFile(t *config.Task) bool {
+	return t.Tests == config.TestsJest || t.Tests == config.TestsPlaywright
+}
+
+// reportFileStep runs a step whose test runner writes its JSON report to
+// path, the file in GRAFT_TEST_REPORT, then records the tests in it.
+func (r *Runner) reportFileStep(cmd *exec.Cmd, source, runner, path string) error {
+	tree := r.treeID()
+	use, err := r.measure(cmd, source)
+	data, rerr := os.ReadFile(path)
+	switch {
+	case errors.Is(rerr, os.ErrNotExist):
+		if strings.Contains(source, runner) {
+			fmt.Fprintf(r.Stderr, "graft: %s: the task has tests: %s, but the step wrote no report to %s; see README, Tasks\n", r.frames[len(r.frames)-1].task, runner, config.TestReportEnv)
+		}
+		return err
+	case rerr != nil:
+		fmt.Fprintf(r.Stderr, "graft: reading the %s report: %v\n", runner, rerr)
 		return err
 	}
-	tree := r.treeID()
-	report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
-	cmd.Stdout = report
-	use, err := r.measure(cmd, s.Source)
-	r.recordTests(report, tree, s.Source, use)
+	var runs []stats.PackageRun
+	if runner == config.TestsJest {
+		runs, rerr = testreport.ParseJest(data, cmd.Dir)
+	} else {
+		runs, rerr = testreport.ParsePlaywright(data)
+	}
+	if rerr != nil {
+		fmt.Fprintf(r.Stderr, "graft: the %s report is not recorded: %v\n", runner, rerr)
+		return err
+	}
+	r.recordTests(runs, tree, runner, use)
 	return err
 }
 
@@ -422,21 +481,14 @@ func (r *Runner) treeID() string {
 }
 
 // recordTests writes the package runs of a tests step to the tests file.
-func (r *Runner) recordTests(report *testreport.GoTest, tree, source string, use stats.Usage) {
-	runs, err := report.Close()
-	if err != nil {
-		fmt.Fprintf(r.Stderr, "graft: printing the test output: %v\n", err)
-	}
-	if report.Events() == 0 && strings.Contains(source, "go test") {
-		fmt.Fprintf(r.Stderr, "graft: %s: the task has tests: go, but go test printed no -json events; pass -json to it\n", r.frames[len(r.frames)-1].task)
-	}
+func (r *Runner) recordTests(runs []stats.PackageRun, tree, runner string, use stats.Usage) {
 	if r.Stats == nil || len(r.frames) == 0 {
 		return
 	}
 	for i := range runs {
 		run := &runs[i]
 		run.Project, run.Task, run.Top = r.Root, r.frames[len(r.frames)-1].task, r.top(r.frames[0].task)
-		run.Tree, run.Runner = tree, config.TestsGo
+		run.Tree, run.Runner = tree, runner
 		run.LoadStart, run.LoadMax = use.Loads()
 		r.Stats.WriteTests(*run)
 	}

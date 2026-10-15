@@ -19,6 +19,9 @@ const (
 	ResultFail      = "fail"
 	ResultSkip      = "skip"
 	ResultBuildFail = "build-fail" // a package that did not build
+	// ResultFlaky is a test that failed and then passed on a retry within
+	// the run: a flake on its tree by itself.
+	ResultFlaky = "flaky"
 )
 
 // PackageRun is one line of the tests file: a package's run in a step.
@@ -177,7 +180,7 @@ func (t *testTally) add(r *PackageRun, project string) {
 			continue
 		}
 		k := testKey{project, r.Package, tr.Name}
-		failed := tr.Result == ResultFail
+		failed, flaky := tr.Result == ResultFail, tr.Result == ResultFlaky
 		t.time(t.tests, k, tr.WallS, failed)
 		if r.Tree == "" {
 			continue
@@ -190,9 +193,13 @@ func (t *testTally) add(r *PackageRun, project string) {
 			o = &outcome{}
 			t.byTree[k][r.Tree] = o
 		}
-		if failed {
+		switch {
+		case flaky:
 			o.failed++
-		} else {
+			o.passed++
+		case failed:
+			o.failed++
+		default:
 			o.passed++
 		}
 	}
