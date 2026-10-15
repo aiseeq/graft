@@ -26,6 +26,7 @@ type statsLine struct {
 	UserS    float64   `json:"user_s"`
 	SysS     float64   `json:"sys_s"`
 	MaxRSSMB *float64  `json:"max_rss_mb"`
+	TreeMB   *float64  `json:"tree_mem_mb"`
 	Exit     int       `json:"exit"`
 }
 
@@ -145,6 +146,36 @@ tasks:
 	}
 }
 
+// TestStepMemoryOfTheProcessTree: processes running side by side add up.
+// max_rss_mb is the peak of one of them; tree_mem_mb, the peak of their sum,
+// shows four 64 MB processes at about 256 MB.
+func TestStepMemoryOfTheProcessTree(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process tree is read from /proc")
+	}
+	hold := helperBin + " hold 64 1500"
+	f, statsFile := statsRepo(t, "tasks:\n  four:\n    run:\n      - sh: '"+hold+" & "+hold+" & "+hold+" & "+hold+" & wait'\n      - "+helperStep("ok")+"\n")
+	f.mustGraft("four")
+	lines := readStats(t, statsFile)
+	if len(lines) != 3 {
+		t.Fatalf("want 2 steps and the task: %+v", lines)
+	}
+	step, ok, task := lines[0], lines[1], lines[2]
+	t.Logf("tree_mem_mb %v, max_rss_mb %v; small step %v", *step.TreeMB, *step.MaxRSSMB, *ok.TreeMB)
+	if step.TreeMB == nil || *step.TreeMB < 240 || *step.TreeMB > 400 {
+		t.Errorf("four processes of 64 MB: tree_mem_mb %v", step.TreeMB)
+	}
+	if step.MaxRSSMB == nil || *step.MaxRSSMB > 128 {
+		t.Errorf("max_rss_mb is one process's peak: %v", step.MaxRSSMB)
+	}
+	if ok.TreeMB == nil || *ok.TreeMB > 64 {
+		t.Errorf("a small step: tree_mem_mb %v", ok.TreeMB)
+	}
+	if task.TreeMB == nil || *task.TreeMB != *step.TreeMB {
+		t.Errorf("the task's peak is its largest step's: %v, step %v", task.TreeMB, step.TreeMB)
+	}
+}
+
 func TestStatsFileRotates(t *testing.T) {
 	f, statsFile := statsRepo(t, `tasks:
   one:
@@ -192,11 +223,14 @@ func TestStatsCommand(t *testing.T) {
 	other := filepath.Join(f.base, "other")
 	now := time.Now()
 	var b strings.Builder
-	line := func(age time.Duration, project, kind, task, step string, wall, cpu, rss float64, exit int) {
+	line := func(age time.Duration, project, kind, task, step string, wall, cpu, rss float64, exit int, tree ...float64) {
 		l := map[string]any{"time": now.Add(-age), "kind": kind, "project": project, "task": task, "top": task,
 			"wall_s": wall, "user_s": cpu * 0.75, "sys_s": cpu * 0.25, "max_rss_mb": rss, "exit": exit}
 		if step != "" {
 			l["step"] = step
+		}
+		if len(tree) > 0 {
+			l["tree_mem_mb"] = tree[0]
 		}
 		data, err := json.Marshal(l)
 		if err != nil {
@@ -210,8 +244,8 @@ func TestStatsCommand(t *testing.T) {
 	line(time.Hour, root, "task", "lint", "", 10, 5, 9000, 0)
 	line(2*time.Hour, root, "task", "lint", "", 20, 7, 100, 1)
 	line(3*time.Hour, root, "task", "lint", "", 30, 9, 200, 0)
-	line(4*time.Hour, root, "task", "test", "", 60, 30, 500, 0)
-	line(5*time.Hour, root, "task", "test", "", 120, 50, 700, 0)
+	line(4*time.Hour, root, "task", "test", "", 60, 30, 500, 0, 1800)
+	line(5*time.Hour, root, "task", "test", "", 120, 50, 700, 0, 2600)
 	line(10*24*time.Hour, root, "task", "lint", "", 5, 1, 20000, 0)
 	line(time.Hour, other, "task", "build", "", 3, 2, 1000, 0)
 	b.WriteString("{torn line\n")
@@ -231,9 +265,9 @@ func TestStatsCommand(t *testing.T) {
 	}
 	out := f.mustGraft("stats")
 	want := []string{
-		"TASK RUNS WALL MED WALL MAX CPU MED MEM MAX FAILED",
-		"lint 3 20s 30s 7s 8.8 GB 33%",
-		"test 2 1m30s 2m0s 40s 700 MB 0%",
+		"TASK RUNS WALL MED WALL MAX CPU MED TREE MEM MEM MAX FAILED",
+		"test 2 1m30s 2m0s 40s 2.5 GB 700 MB 0%",
+		"lint 3 20s 30s 7s - 8.8 GB 33%",
 	}
 	if got := rows(out); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("graft stats:\n%s", out)
@@ -241,22 +275,22 @@ func TestStatsCommand(t *testing.T) {
 	if !strings.Contains(out, "1 malformed line") {
 		t.Errorf("the torn line is not reported:\n%s", out)
 	}
-	if got := rows(f.mustGraft("stats", "--since", "30d")); len(got) != 3 || got[1] != "lint 4 15s 30s 6s 19.5 GB 25%" {
+	if got := rows(f.mustGraft("stats", "--since", "30d")); len(got) != 3 || got[2] != "lint 4 15s 30s 6s - 19.5 GB 25%" {
 		t.Errorf("30 days: %q", got)
 	}
 	if got := rows(f.mustGraft("stats", "--since", "90m", "--task", "lint")); strings.Join(got, "\n") != strings.Join([]string{
-		"STEP RUNS WALL MED WALL MAX CPU MED MEM MAX FAILED",
-		"(task) 1 10s 10s 5s 8.8 GB 0%",
-		"shellcheck *.sh 1 9s 9s 4s 8.8 GB 0%",
-		"go vet ./... 1 1s 1s 1s 300 MB 0%",
+		"STEP RUNS WALL MED WALL MAX CPU MED TREE MEM MEM MAX FAILED",
+		"(task) 1 10s 10s 5s - 8.8 GB 0%",
+		"shellcheck *.sh 1 9s 9s 4s - 8.8 GB 0%",
+		"go vet ./... 1 1s 1s 1s - 300 MB 0%",
 	}, "\n") {
 		t.Errorf("--task lint: %q", got)
 	}
-	if got := rows(f.mustGraft("stats", "--project", other)); len(got) != 2 || got[1] != "build 1 3s 3s 2s 1000 MB 0%" {
+	if got := rows(f.mustGraft("stats", "--project", other)); len(got) != 2 || got[1] != "build 1 3s 3s 2s - 1000 MB 0%" {
 		t.Errorf("--project: %q", got)
 	}
 	got := rows(f.mustGraft("stats", "--all"))
-	if len(got) != 4 || !strings.HasPrefix(got[0], "PROJECT TASK") || got[1] != root+" lint 3 20s 30s 7s 8.8 GB 33%" || got[3] != root+" test 2 1m30s 2m0s 40s 700 MB 0%" {
+	if len(got) != 4 || !strings.HasPrefix(got[0], "PROJECT TASK") || got[1] != root+" test 2 1m30s 2m0s 40s 2.5 GB 700 MB 0%" || got[2] != root+" lint 3 20s 30s 7s - 8.8 GB 33%" {
 		t.Errorf("--all: %q", got)
 	}
 	if out, code := f.graft("", "stats", "--all", "--project", other); code != 2 {

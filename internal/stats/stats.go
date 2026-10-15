@@ -57,6 +57,10 @@ type Record struct {
 	// step's own or that of a descendant it waited for, never their sum.
 	// Absent where the OS does not report it.
 	MaxRSSMB *float64 `json:"max_rss_mb,omitempty"`
+	// TreeMemMB is the peak of the memory the process tree held at once:
+	// the step's processes and all their descendants, sampled (TreeWatch).
+	// On a task line, its largest step's. Absent where it is not read.
+	TreeMemMB *float64 `json:"tree_mem_mb,omitempty"`
 	// Exit is the exit status; -1 when there is none (killed by a signal, or
 	// a task that failed outside its processes).
 	Exit int `json:"exit"`
@@ -69,6 +73,10 @@ type Usage struct {
 	// the OS does not report it.
 	MaxRSS   int64
 	RSSKnown bool
+	// TreeMem is the peak of the process tree's memory in bytes, known when
+	// TreeKnown.
+	TreeMem   int64
+	TreeKnown bool
 }
 
 // FromProcess reads the usage of a finished process; wall is measured by the
@@ -87,6 +95,10 @@ func (s *Usage) Add(u Usage) {
 		s.MaxRSS = max(s.MaxRSS, u.MaxRSS)
 		s.RSSKnown = true
 	}
+	if u.TreeKnown {
+		s.TreeMem = max(s.TreeMem, u.TreeMem)
+		s.TreeKnown = true
+	}
 }
 
 // Fill sets the usage fields of rec.
@@ -94,11 +106,18 @@ func (s Usage) Fill(rec *Record) {
 	rec.WallS = seconds(s.Wall)
 	rec.UserS = seconds(s.User)
 	rec.SysS = seconds(s.Sys)
-	rec.MaxRSSMB = nil
+	rec.MaxRSSMB, rec.TreeMemMB = nil, nil
 	if s.RSSKnown {
-		mb := math.Round(float64(s.MaxRSS)/(1<<20)*10) / 10
-		rec.MaxRSSMB = &mb
+		rec.MaxRSSMB = megabytes(s.MaxRSS)
 	}
+	if s.TreeKnown {
+		rec.TreeMemMB = megabytes(s.TreeMem)
+	}
+}
+
+func megabytes(b int64) *float64 {
+	mb := math.Round(float64(b)/(1<<20)*10) / 10
+	return &mb
 }
 
 func seconds(d time.Duration) float64 { return math.Round(d.Seconds()*1000) / 1000 }

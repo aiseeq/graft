@@ -77,7 +77,10 @@ type Row struct {
 	CPUMed  float64
 	// MaxRSSMB is the largest peak of a run; nil when none was reported.
 	MaxRSSMB *float64
-	Failed   int
+	// TreeMemMB is the largest peak of a run's process tree as a whole;
+	// nil when none was reported.
+	TreeMemMB *float64
+	Failed    int
 }
 
 // Summarize groups the records f selects into rows, the heaviest in memory
@@ -124,6 +127,9 @@ func Summarize(recs []Record, f Filter) []Row {
 			}
 			return 1
 		}
+		if c := compareRSS(b.TreeMemMB, a.TreeMemMB); c != 0 {
+			return c
+		}
 		if c := compareRSS(b.MaxRSSMB, a.MaxRSSMB); c != 0 {
 			return c
 		}
@@ -157,10 +163,8 @@ func summarize(project, label string, recs []Record) Row {
 		walls = append(walls, r.WallS)
 		cpus = append(cpus, r.UserS+r.SysS)
 		row.WallMax = max(row.WallMax, r.WallS)
-		if r.MaxRSSMB != nil && (row.MaxRSSMB == nil || *r.MaxRSSMB > *row.MaxRSSMB) {
-			v := *r.MaxRSSMB
-			row.MaxRSSMB = &v
-		}
+		row.MaxRSSMB = larger(row.MaxRSSMB, r.MaxRSSMB)
+		row.TreeMemMB = larger(row.TreeMemMB, r.TreeMemMB)
 		if r.Exit != 0 {
 			row.Failed++
 		}
@@ -168,6 +172,15 @@ func summarize(project, label string, recs []Record) Row {
 	row.WallMed = median(walls)
 	row.CPUMed = median(cpus)
 	return row
+}
+
+// larger is the larger of two optional values, a copy.
+func larger(a, b *float64) *float64 {
+	if b == nil || (a != nil && *a >= *b) {
+		return a
+	}
+	v := *b
+	return &v
 }
 
 func median(v []float64) float64 {
@@ -183,7 +196,7 @@ func median(v []float64) float64 {
 // the project, which is shown when withProject is set.
 func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	header := labelHeader + "\tRUNS\tWALL MED\tWALL MAX\tCPU MED\tMEM MAX\tFAILED\n"
+	header := labelHeader + "\tRUNS\tWALL MED\tWALL MAX\tCPU MED\tTREE MEM\tMEM MAX\tFAILED\n"
 	if withProject {
 		header = "PROJECT\t" + header
 	}
@@ -192,9 +205,9 @@ func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error
 		if withProject {
 			fmt.Fprintf(tw, "%s\t", r.Project)
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%d%%\n", r.Label, r.Runs,
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%d%%\n", r.Label, r.Runs,
 			formatSeconds(r.WallMed), formatSeconds(r.WallMax), formatSeconds(r.CPUMed),
-			formatMB(r.MaxRSSMB), (r.Failed*100+r.Runs/2)/r.Runs)
+			formatMB(r.TreeMemMB), formatMB(r.MaxRSSMB), (r.Failed*100+r.Runs/2)/r.Runs)
 	}
 	return tw.Flush()
 }

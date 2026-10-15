@@ -459,11 +459,22 @@ func (r *Runner) Measure(name, source string, cmd *exec.Cmd) (err error) {
 // A command that never started records nothing: no process ran.
 func (r *Runner) measure(cmd *exec.Cmd, source string) error {
 	start := time.Now()
-	err := cmd.Run()
-	if cmd.ProcessState == nil || len(r.frames) == 0 {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	watch := stats.WatchTree(cmd.Process.Pid)
+	err := cmd.Wait()
+	tree, terr := watch.Stop()
+	if len(r.frames) == 0 {
 		return err
 	}
 	use := stats.FromProcess(cmd.ProcessState, time.Since(start))
+	switch {
+	case terr == nil:
+		use.TreeMem, use.TreeKnown = tree, true
+	case r.Stats != nil && !errors.Is(terr, stats.ErrNoTree):
+		r.Stats.Warn(fmt.Errorf("reading the memory of the process tree: %w", terr))
+	}
 	code := cmd.ProcessState.ExitCode()
 	for _, f := range r.frames {
 		f.steps++

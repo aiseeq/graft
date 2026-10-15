@@ -122,6 +122,23 @@ func run(args []string) error {
 			os.Exit(code)
 		}
 		return nil
+	case "hold":
+		// hold MB MS: keep MB of touched memory for MS milliseconds.
+		mb, err := strconv.Atoi(args[1])
+		if err != nil {
+			return fmt.Errorf("hold: size %q: %w", args[1], err)
+		}
+		ms, err := strconv.Atoi(args[2])
+		if err != nil {
+			return fmt.Errorf("hold: delay %q: %w", args[2], err)
+		}
+		buf := make([]byte, mb<<20)
+		for i := 0; i < len(buf); i += 4096 {
+			buf[i] = 1
+		}
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		fmt.Println("held", mb, "MB, last byte", buf[len(buf)-1])
+		return nil
 	case "alloc":
 		mb, err := strconv.Atoi(args[1])
 		if err != nil {

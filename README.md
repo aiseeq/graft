@@ -340,8 +340,8 @@ A task gets a line of its own when it ends, covering everything it ran,
 deps and inner tasks included.
 
 ```json
-{"time":"2026-01-05T10:00:03.1+01:00","kind":"step","project":"/home/me/work/projectA","task":"lint","top":"commit","step":"shellcheck scripts/*.sh","wall_s":41.2,"user_s":38.9,"sys_s":2.4,"max_rss_mb":9123.4,"exit":0}
-{"time":"2026-01-05T10:00:03.1+01:00","kind":"task","project":"/home/me/work/projectA","task":"lint","top":"commit","steps":2,"wall_s":44,"user_s":40.1,"sys_s":2.6,"max_rss_mb":9123.4,"exit":0}
+{"time":"2026-01-05T10:00:03.1+01:00","kind":"step","project":"/home/me/work/projectA","task":"lint","top":"commit","step":"shellcheck scripts/*.sh","wall_s":41.2,"user_s":38.9,"sys_s":2.4,"max_rss_mb":9123.4,"tree_mem_mb":11840.2,"exit":0}
+{"time":"2026-01-05T10:00:03.1+01:00","kind":"task","project":"/home/me/work/projectA","task":"lint","top":"commit","steps":2,"wall_s":44,"user_s":40.1,"sys_s":2.6,"max_rss_mb":9123.4,"tree_mem_mb":11840.2,"exit":0}
 ```
 
 - `top` is the graft command the task ran under (`commit`, `amend`, `gate`,
@@ -356,6 +356,17 @@ deps and inner tasks included.
   parallel at 1 GB each show 1 GB. Processes that are never waited for
   (daemons, detached children) are not counted, in memory or in CPU time.
   Windows reports no peak memory; the field is left out there.
+- `tree_mem_mb` is the peak of the memory the whole process tree held at
+  once: the step's process and every descendant, summed, so four test
+  binaries of 1 GB running side by side show 4 GB. graft reads it from
+  `/proc` every 200 ms while the step runs: per process `RssAnon` plus
+  `RssShmem` of `/proc/<pid>/status`, the memory that is not backed by
+  files. Binaries, libraries and page cache are left out: processes share
+  them and the kernel takes them back under pressure. A process that lives
+  less than the interval may be missed; shared memory two processes map is
+  counted in each. Processes that leave the tree (daemons, containers
+  started through a docker daemon) are not counted. A task line has its
+  largest step's. Linux only; elsewhere the field is left out.
 - A line is one append-mode write, so concurrent grafts never split each
   other's lines. At 20 MB the file moves to `stats.jsonl.1`, replacing the
   older copy.
@@ -382,7 +393,8 @@ did not run and are left out.
 
 `graft stats` reports the current project for the last 7 days, one row per
 task, the heaviest in memory first: runs, median and maximum wall time,
-median CPU time (user + system), maximum peak memory, the share of failed
+median CPU time (user + system), the largest peak of the process tree
+(`TREE MEM`) and of a single process (`MEM MAX`), the share of failed
 runs. `--since` takes days (`30d`) or a duration (`12h`), `--project` another
 project's root, `--all` every project; `--task <name>` breaks one task down
 into its steps.
