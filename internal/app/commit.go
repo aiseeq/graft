@@ -150,7 +150,18 @@ func planBump(repo *gitx.Repo, cfg *config.Config, level version.Level, branch s
 	if err != nil {
 		return plan, fmt.Errorf("reading the version: %w", err)
 	}
-	next := current.Bump(level)
+	var next version.Semver
+	switch {
+	case config.BranchMatches(cfg.Version.Build, branch):
+		if level != version.Patch {
+			return plan, fmt.Errorf("--%s on %s: version.build_branches count builds in the fourth part there; bump on the trunk", level, branch)
+		}
+		next = current.BumpBuild()
+	case current.Build > 0:
+		return plan, fmt.Errorf("%s is %s, a build_branches version, on %s: a merge took it from a hotfix or release branch; put back the version %s had before the merge", cfg.Version.File, current, branch, branch)
+	default:
+		next = current.Bump(level)
+	}
 	plan.next = &next
 	if cfg.Version.TagOnCommit {
 		plan.tag = cfg.Version.TagPrefix + next.String()

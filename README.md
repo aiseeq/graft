@@ -99,6 +99,11 @@ leaks:                           # keep private names out of public repositories
 4. Run the gate. A failure stops here, with the version untouched.
 5. Bump the version file and every file synced with it, except on a branch
    in `version.skip_branches` (`--minor` and `--major` are refused there).
+   On a branch in `version.build_branches` the bump counts builds in a fourth
+   part instead: 1.2.3 -> 1.2.3.1 -> 1.2.3.2, a number the trunk never takes
+   (`--minor` and `--major` are refused there too). A fourth part anywhere
+   else, left by a merge from such a branch, is refused: put back the version
+   the branch had.
 6. `git add -A`, then check the staged changes (secrets, binaries, sizes,
    version drift, and in a public repository private names in the added lines
    and the message). A failure restores the version files and stops.
@@ -153,11 +158,12 @@ gate:
 
 version:
   mode: file                    # required: file | git-tag | none
-  file: VERSION                 # file mode; default VERSION, strictly MAJOR.MINOR.PATCH
+  file: VERSION                 # file mode; default VERSION, MAJOR.MINOR.PATCH (.BUILD on build branches)
   tag_prefix: v                 # default v
   tag_on_commit: false          # file mode: tag every commit v<version> and push the tag
   skip_branches: ['w/*']        # file mode: commits on these branches leave the version alone;
                                 # the branch they are merged into bumps (graft version bump)
+  build_branches: ['hotfix/*', 'release/*']  # file mode: commits here bump a fourth part, 1.2.3.1
   sync:                         # file mode: files that repeat the version
     - path: web/package.json
       format: json              # value at the key path; formatting is preserved

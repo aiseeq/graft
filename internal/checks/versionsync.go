@@ -30,7 +30,7 @@ func VersionSync(repo *gitx.Repo, v config.Version) ([]Finding, error) {
 	main := targets[0]
 	want, err := main.Extract(blobs[0].Content)
 	if err == nil {
-		_, err = version.Parse(want)
+		_, err = version.ParseFile(want)
 	}
 	if err != nil {
 		return []Finding{{Path: main.Path, Reason: err.Error()}}, nil

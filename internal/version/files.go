@@ -335,7 +335,7 @@ func Current(root string, v config.Version) (Semver, error) {
 	if err != nil {
 		return Semver{}, err
 	}
-	sv, err := Parse(raw)
+	sv, err := ParseFile(raw)
 	if err != nil {
 		return Semver{}, fmt.Errorf("%s: %w", target.Path, err)
 	}

@@ -24,14 +24,36 @@ func TestParse(t *testing.T) {
 }
 
 func TestBump(t *testing.T) {
-	v := Semver{1, 2, 3}
+	v := Semver{Major: 1, Minor: 2, Patch: 3}
 	for level, want := range map[Level]string{Patch: "1.2.4", Minor: "1.3.0", Major: "2.0.0"} {
 		if got := v.Bump(level).String(); got != want {
 			t.Errorf("%s bump = %s, want %s", level, got, want)
 		}
+		if got := v.BumpBuild().Bump(level).String(); got != want {
+			t.Errorf("%s bump of a build = %s, want %s", level, got, want)
+		}
 	}
-	if !(Semver{1, 9, 9}).Less(Semver{2, 0, 0}) || (Semver{1, 2, 3}).Less(Semver{1, 2, 3}) {
+	if got := v.BumpBuild().BumpBuild().String(); got != "1.2.3.2" {
+		t.Errorf("two builds = %s", got)
+	}
+	if !(Semver{Major: 1, Minor: 9, Patch: 9}).Less(Semver{Major: 2}) || (Semver{Major: 1, Minor: 2, Patch: 3}).Less(Semver{Major: 1, Minor: 2, Patch: 3}) || !v.Less(v.BumpBuild()) {
 		t.Error("Less ordering")
+	}
+}
+
+func TestParseFile(t *testing.T) {
+	for _, ok := range []string{"1.2.3", "1.2.3.1", "0.0.0.12"} {
+		if v, err := ParseFile(ok); err != nil || v.String() != ok {
+			t.Errorf("ParseFile(%q) = %v, %v", ok, v, err)
+		}
+	}
+	for _, bad := range []string{"1.2.3.0", "1.2.3.01", "1.2.3.4.5", "1.2", "v1.2.3.1", "1.2.3.99999999999999999999"} {
+		if _, err := ParseFile(bad); err == nil {
+			t.Errorf("ParseFile(%q) should fail", bad)
+		}
+	}
+	if _, err := Parse("1.2.3.1"); err == nil {
+		t.Error("Parse takes no build part")
 	}
 }
 
@@ -200,7 +222,7 @@ func TestWriteTouchesNothingWhenATargetIsBroken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Write(root, cfg.Version, Semver{1, 2, 4}); err == nil {
+	if _, err := Write(root, cfg.Version, Semver{Major: 1, Minor: 2, Patch: 4}); err == nil {
 		t.Fatal("missing sync file must fail")
 	}
 	if v, _ := os.ReadFile(filepath.Join(root, "VERSION")); string(v) != "1.2.3\n" {
@@ -226,7 +248,7 @@ version:
 	if err != nil {
 		t.Fatal(err)
 	}
-	backup, err := Write(root, cfg.Version, Semver{1, 2, 4})
+	backup, err := Write(root, cfg.Version, Semver{Major: 1, Minor: 2, Patch: 4})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -178,3 +178,45 @@ func TestAmendRewritesOnlyLeaseBranches(t *testing.T) {
 		t.Errorf("amend on a pushed work branch commit:\n%s\nVERSION %s", out, f.git("show", "HEAD:VERSION"))
 	}
 }
+
+// TestBuildBranchBumpsFourthPart: a hotfix or release branch counts builds
+// in a fourth part of its own, so it never takes a number the trunk takes,
+// and a fourth part is never left on the trunk.
+func TestBuildBranchBumpsFourthPart(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion:\n  mode: file\n  build_branches: ['hotfix/*']\n" +
+			"  sync:\n    - {path: package.json, format: json, key: [version]}\ngate: []\n",
+		"VERSION":      "1.0.0\n",
+		"package.json": "{\"name\": \"app\", \"version\": \"1.0.0\"}\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustGraft("commit", "-m", "feat: base")
+	f.git("checkout", "-q", "-b", "hotfix/PROJ-7")
+	f.write("a.txt", "a\n")
+	out := f.mustGraft("commit", "-m", "fix: PROJ-7 one")
+	if !strings.Contains(out, "version 1.0.1.1") || f.read("VERSION") != "1.0.1.1\n" || !strings.Contains(f.read("package.json"), `"1.0.1.1"`) {
+		t.Errorf("first build: VERSION %q, package.json %q\n%s", f.read("VERSION"), f.read("package.json"), out)
+	}
+	f.write("a.txt", "a2\n")
+	f.mustGraft("commit", "-m", "fix: PROJ-7 two")
+	if f.read("VERSION") != "1.0.1.2\n" {
+		t.Errorf("second build: VERSION %q", f.read("VERSION"))
+	}
+	f.write("a.txt", "a3\n")
+	if out, code := f.graft("", "commit", "--minor", "-m", "feat: x"); code == 0 || !strings.Contains(out, "build_branches") {
+		t.Errorf("--minor on a build branch: %d\n%s", code, out)
+	}
+	if out := f.mustGraft("version", "bump"); !strings.Contains(out, "version 1.0.1.2 -> 1.0.1.3") {
+		t.Errorf("version bump on a build branch:\n%s", out)
+	}
+	f.git("checkout", "-q", "--", ".")
+
+	// A merge that takes the build's version onto the trunk is caught by the
+	// next commit there.
+	f.git("checkout", "-q", "main")
+	f.git("-c", "core.hooksPath=/dev/null", "merge", "-q", "--no-ff", "-X", "theirs", "-m", "merge hotfix", "hotfix/PROJ-7")
+	f.write("b.txt", "b\n")
+	if out, code := f.graft("", "commit", "-m", "feat: on main"); code == 0 || !strings.Contains(out, "VERSION is 1.0.1.2, a build_branches version, on main") {
+		t.Errorf("a build version on the trunk: %d\n%s", code, out)
+	}
+}

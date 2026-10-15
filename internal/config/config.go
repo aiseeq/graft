@@ -97,9 +97,15 @@ type Version struct {
 	// SkipBranches are branch globs whose commits leave the version alone:
 	// work branches rebased onto the trunk, where the bump happens on merge.
 	SkipBranches []string `yaml:"skip_branches"`
+	// BuildBranches are branch globs, hotfix and release branches, whose
+	// commits bump a fourth part: 1.2.3 -> 1.2.3.1, a number the trunk never
+	// takes.
+	BuildBranches []string `yaml:"build_branches"`
 
 	// Skip is SkipBranches compiled.
 	Skip []*regexp.Regexp `yaml:"-"`
+	// Build is BuildBranches compiled.
+	Build []*regexp.Regexp `yaml:"-"`
 }
 
 // SyncFile is a file that repeats the version and is rewritten on every bump.
@@ -290,6 +296,9 @@ func (c *Config) validateVersion() error {
 			return err
 		}
 		v.Skip = skip
+		if v.Build, err = compileBranchGlobs("version.build_branches", v.BuildBranches); err != nil {
+			return err
+		}
 		if err := checkRelPath("version.file", v.File); err != nil {
 			return err
 		}
@@ -300,8 +309,8 @@ func (c *Config) validateVersion() error {
 		}
 		return nil
 	case ModeGitTag, ModeNone:
-		if v.File != "" || len(v.Sync) > 0 || v.TagOnCommit || len(v.SkipBranches) > 0 {
-			return fmt.Errorf("version: file, sync, tag_on_commit and skip_branches apply only to mode %q", ModeFile)
+		if v.File != "" || len(v.Sync) > 0 || v.TagOnCommit || len(v.SkipBranches) > 0 || len(v.BuildBranches) > 0 {
+			return fmt.Errorf("version: file, sync, tag_on_commit, skip_branches and build_branches apply only to mode %q", ModeFile)
 		}
 		return nil
 	case "":

@@ -171,7 +171,7 @@ func releaseVersion(repo *gitx.Repo, cfg *config.Config, opts ReleaseOptions) (v
 		if err != nil {
 			return version.Semver{}, err
 		}
-		return version.Parse(raw)
+		return version.ParseFile(raw)
 	case config.ModeGitTag:
 		latest, found, err := latestTag(repo, cfg.Version.TagPrefix)
 		if err != nil {
