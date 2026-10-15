@@ -1,4 +1,5 @@
 schema: 1
+graft: '>=2.5.0'
 version:
   mode: git-tag
 gate:
@@ -57,18 +58,21 @@ tasks:
     desc: all tests, the PostgreSQL and docker ones included
     usage: <go test flags>
     test_db: true
+    heavy: true
     env: {GRAFT_TEST_DOCKER: '1'}
-    run: ['go test -p 4 -count=1 {args} ./...']
+    run: ['go test -p {threads} -count=1 {args} ./...']
   test-race:
     desc: all tests with the race detector
     test_db: true
+    heavy: true
     env: {GRAFT_TEST_DOCKER: '1'}
-    run: [go test -p 4 -race -count=1 ./...]
+    run: ['go test -p {threads} -race -count=1 ./...']
   smoke:
     desc: the commit gate
     run: [{task: fmt-check}, {task: vet}, {task: test}]
   glint:
     desc: static analysis
+    heavy: true
     run: [glint check ./...]
   all:
     desc: everything, before install
