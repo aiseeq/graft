@@ -672,6 +672,11 @@ func TestGitTagMode(t *testing.T) {
 	if out, code := f.graft("", "release", "--version", "0.2.0"); code == 0 {
 		t.Errorf("release below the latest tag accepted:\n%s", out)
 	}
+	// A release of a commit already released is a mistake (a commit that
+	// failed before it), unless the version is named.
+	if out, code := f.graft("", "release", "--minor"); code == 0 || !strings.Contains(out, "HEAD is already released as v0.2.1") {
+		t.Errorf("a second release of the same commit: exit %d\n%s", code, out)
+	}
 	f.mustGraft("release", "--version", "1.0.0")
 	if out := strings.TrimSpace(f.mustGraft("version")); out != "v1.0.0" {
 		t.Errorf("version = %q", out)

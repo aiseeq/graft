@@ -1012,8 +1012,10 @@ deploy:
   `graft version` prints `git describe` from the highest version tag reachable
   from HEAD, or `no version tags yet (HEAD <hash>)`. `graft release` tags the
   next patch (or `--minor`, `--major`, `--version X.Y.Z`); with no version tag in
-  the history the first release is **v0.1.0**. Tags that are not plain
-  `vX.Y.Z` (such as `v1.0.0-rc1`) are ignored.
+  the history the first release is **v0.1.0**. A HEAD that already carries a
+  version tag is refused, unless `--version` names the new one: a release run
+  after a commit that failed would tag the same code again. Tags that are not
+  plain `vX.Y.Z` (such as `v1.0.0-rc1`) are ignored.
 - **none**: no version at all.
 
 `graft release` only tags a HEAD that every push remote already has.

@@ -193,10 +193,29 @@ func releaseVersion(repo *gitx.Repo, cfg *config.Config, opts ReleaseOptions) (v
 		if !found {
 			return InitialRelease, nil
 		}
+		if err := requireUnreleased(repo, cfg.Version.TagPrefix); err != nil {
+			return version.Semver{}, err
+		}
 		return latest.Bump(opts.Level), nil
 	default:
 		return version.Semver{}, fmt.Errorf("version.mode %s has no releases", cfg.Version.Mode)
 	}
+}
+
+// requireUnreleased refuses a release of a commit that already carries a
+// version tag: release run again after a commit that failed would publish
+// the same code under a new version.
+func requireUnreleased(repo *gitx.Repo, prefix string) error {
+	out, err := repo.Git("tag", "--points-at", "HEAD", "--list", prefix+"*")
+	if err != nil {
+		return err
+	}
+	for _, tag := range strings.Fields(out) {
+		if version.IsPlain(strings.TrimPrefix(tag, prefix)) {
+			return fmt.Errorf("HEAD is already released as %s: commit the change first, or pass --version to tag the same commit again", tag)
+		}
+	}
+	return nil
 }
 
 // latestTag finds the highest MAJOR.MINOR.PATCH tag reachable from HEAD.
