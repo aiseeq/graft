@@ -120,8 +120,12 @@ func (r *Runner) Gate(ctx context.Context) (err error) {
 	f := r.begin("gate")
 	defer func() { r.end(f, err != nil) }()
 	for i, s := range r.Config.Gate {
+		s, _, err := r.threads(s, &config.Task{})
+		if err != nil {
+			return fmt.Errorf("gate: %w", err)
+		}
 		fmt.Fprintf(r.Stdout, "graft: gate %d/%d: %s\n", i+1, len(r.Config.Gate), s.Source)
-		if err := r.step(ctx, s, &config.Task{}, nil); err != nil {
+		if err := r.step(ctx, s, &config.Task{}, nil, ""); err != nil {
 			return fmt.Errorf("gate failed at %q: %w", s.Source, err)
 		}
 	}
@@ -306,8 +310,12 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 func (r *Runner) steps(ctx context.Context, name string, t *config.Task, args []string) error {
 	var failed []string
 	for _, s := range t.Run {
+		s, threads, err := r.threads(s, t)
+		if err != nil {
+			return fmt.Errorf("task %s: %w", name, err)
+		}
 		fmt.Fprintf(r.Stderr, "graft: %s: %s\n", name, s.Source)
-		err := r.step(ctx, s, t, args)
+		err = r.step(ctx, s, t, args, threads)
 		if err == nil {
 			continue
 		}
@@ -326,7 +334,9 @@ func (r *Runner) steps(ctx context.Context, name string, t *config.Task, args []
 	return nil
 }
 
-func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args []string) error {
+// step runs s, its {threads} already filled; threads is the thread count a
+// heavy task passes as GRAFT_THREADS.
+func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args []string, threads string) error {
 	if s.Task != "" {
 		return r.run(ctx, s.Task, nil)
 	}
@@ -344,9 +354,8 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	if err != nil {
 		return err
 	}
-	s, env, err = r.threads(s, t, env)
-	if err != nil {
-		return err
+	if t.Heavy {
+		env = append(env, ThreadsEnv+"="+threads)
 	}
 	var cmd *exec.Cmd
 	if s.Shell != "" {
@@ -584,28 +593,27 @@ func (r *Runner) admit(ctx context.Context, name string) error {
 // ThreadsEnv carries the user config's load.threads into a heavy task.
 const ThreadsEnv = "GRAFT_THREADS"
 
-// threads fills {threads} in the step and, in a heavy task, sets
-// GRAFT_THREADS.
-func (r *Runner) threads(s config.Step, t *config.Task, env []string) (config.Step, []string, error) {
+// threads fills {threads} in the step, its echoed source included, and
+// returns the thread count for a heavy task's GRAFT_THREADS: "" when the step
+// does not use it and the task is not heavy.
+func (r *Runner) threads(s config.Step, t *config.Task) (config.Step, string, error) {
 	uses := strings.Contains(s.Shell, config.ThreadsPlaceholder) ||
 		slices.ContainsFunc(s.Argv, func(w string) bool { return strings.Contains(w, config.ThreadsPlaceholder) })
 	if !uses && !t.Heavy {
-		return s, env, nil
+		return s, "", nil
 	}
 	l, err := r.Load()
 	if err != nil {
-		return s, nil, err
+		return s, "", err
 	}
 	n := strconv.Itoa(l.Threads)
 	s.Shell = strings.ReplaceAll(s.Shell, config.ThreadsPlaceholder, n)
+	s.Source = strings.ReplaceAll(s.Source, config.ThreadsPlaceholder, n)
 	s.Argv = slices.Clone(s.Argv)
 	for i, w := range s.Argv {
 		s.Argv[i] = strings.ReplaceAll(w, config.ThreadsPlaceholder, n)
 	}
-	if t.Heavy {
-		env = append(env, ThreadsEnv+"="+n)
-	}
-	return s, env, nil
+	return s, n, nil
 }
 
 // Hold takes a named lock for who the way a task's lock is taken, so tasks

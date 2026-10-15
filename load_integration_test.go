@@ -63,6 +63,9 @@ tasks:
 	if got := read(); got != "light\nthreads=6 env=6\n" {
 		t.Errorf("after the load fell: %q\n%s", got, log.String())
 	}
+	if !strings.Contains(log.String(), "graft: build: sh -c echo threads=6 ") {
+		t.Errorf("the step is echoed without its thread count:\n%s", log.String())
+	}
 	if !strings.Contains(log.String(), "build: load 30.50 is above 22, waiting") || !strings.Contains(log.String(), "build: load 17.00, starting after ") {
 		t.Errorf("no wait reported:\n%s", log.String())
 	}
