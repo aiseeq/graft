@@ -447,12 +447,14 @@ Some Go tools print no real version (`dev`). A `go_install` tool may then
 leave out `check` and `expect`: graft finds the program on PATH (`binary`, or
 the name go install gives it: the last element of the package path, a `/vN`
 suffix skipped) and reads its Go build info. The main package must be the
-`go_install` path, the main module version the pinned one and, with `tags`,
-the build tags exactly those. A mismatch is reported as such (`built from
+`go_install` path, the main module version the pinned release or a later
+one (the pin is the oldest release that works: a newer copy on PATH is
+never replaced by an older one) and, with `tags`, the build tags exactly
+those. A mismatch is reported as such (`built from
 example.com/migrator/cmd/migrator@v2.2.0, pinned v2.3.0`, `built without tags
 postgres`), and so is a program with no Go build info. A copy built from a
-local checkout carries `(devel)` or a `+dirty` version and never matches a
-pin. `check` and `expect` go together; a `manual` tool needs both.
+local checkout carries `(devel)` or a `+dirty` version, a pre-release
+`-rc1`, and never matches a pin. `check` and `expect` go together; a `manual` tool needs both.
 
 ## Environments and .env
 

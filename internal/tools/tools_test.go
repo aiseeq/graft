@@ -26,6 +26,8 @@ func TestBuildProblem(t *testing.T) {
 	}{
 		{"match", pinned, info(pkg, "v1.3.0", ""), ""},
 		{"tags not pinned are not checked", pinned, info(pkg, "v1.3.0", "x"), ""},
+		{"newer release", pinned, info(pkg, "v1.4.2", ""), ""},
+		{"newer pre-release", pinned, info(pkg, "v1.4.0-rc1", ""), "built from example.com/tool/cmd/tool@v1.4.0-rc1, pinned v1.3.0"},
 		{"older version", pinned, info(pkg, "v1.2.0", ""), "built from example.com/tool/cmd/tool@v1.2.0, pinned v1.3.0"},
 		{"local build", pinned, info(pkg, "(devel)", ""), "built from example.com/tool/cmd/tool@(devel), pinned v1.3.0"},
 		{"dirty build", pinned, info(pkg, "v1.3.0+dirty", ""), "built from example.com/tool/cmd/tool@v1.3.0+dirty, pinned v1.3.0"},

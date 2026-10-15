@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/aiseeq/graft/internal/config"
+	"github.com/aiseeq/graft/internal/version"
 )
 
 // checkTimeout bounds one check command: a tool that hangs on --version
@@ -90,7 +91,7 @@ func buildProblem(bi *debug.BuildInfo, t *config.Tool) string {
 	switch {
 	case bi.Path != pkg:
 		return fmt.Sprintf("built from %s, pinned %s", built, t.GoInstall)
-	case bi.Main.Version != version:
+	case !atLeast(bi.Main.Version, version):
 		return fmt.Sprintf("built from %s, pinned %s", built, version)
 	case len(t.Tags) == 0:
 		return ""
@@ -109,6 +110,28 @@ func buildProblem(bi *debug.BuildInfo, t *config.Tool) string {
 		return fmt.Sprintf("built with tags %s, pinned %s", strings.Join(got, ","), strings.Join(want, ","))
 	}
 	return ""
+}
+
+// atLeast tells whether a build is the pinned release or a later one: the pin
+// is the oldest release the project works with. Only a clean release counts;
+// a local, dirty or pre-release build is never taken for one.
+func atLeast(built, pinned string) bool {
+	if built == pinned {
+		return true
+	}
+	b, bOK := releaseOf(built)
+	p, pOK := releaseOf(pinned)
+	return bOK && pOK && !b.Less(p)
+}
+
+// releaseOf reads vMAJOR.MINOR.PATCH; anything else is no release.
+func releaseOf(v string) (version.Semver, bool) {
+	s, ok := strings.CutPrefix(v, "v")
+	if !ok || !version.IsPlain(s) {
+		return version.Semver{}, false
+	}
+	sv, err := version.Parse(s)
+	return sv, err == nil
 }
 
 // sortedTags is a tag list sorted, without empty and repeated tags.
