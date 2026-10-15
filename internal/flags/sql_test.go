@@ -181,6 +181,30 @@ INSERT INTO `+schema+`.notices (id, notice_type, subject, body, status) VALUES
 	}
 }
 
+// A value reaches the table as written whatever the session's string
+// settings: with standard_conforming_strings off a backslash in a doubled-quote
+// literal is an escape, and the note came out changed.
+func TestSQLSourceQuotesValuesForAnySession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	dsn := pgDSN(t)
+	cfg, _ := opsJournal(t, dsn)
+	cfg.Psql["local"] = config.EnvCommand{Shell: `PGOPTIONS='-c standard_conforming_strings=off' psql "$GRAFT_TEST_PG_DSN" -X -q -t -A -v ON_ERROR_STOP=1`}
+	src, err := NewSQLSource(cfg, localEnv(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	reason := `C:\new\table it's $$ fine $graft$`
+	if err := src.Resolve(ctx, "00000000-0000-0000-0000-000000000002", reason); err != nil {
+		t.Fatal(err)
+	}
+	if e, err := src.Get(ctx, "00000000-0000-0000-0000-000000000002"); err != nil || e.Note != reason {
+		t.Errorf("note %q, %v; want %q", e.Note, err, reason)
+	}
+}
+
 func TestSQLSourceRejectsNonJSONOutput(t *testing.T) {
 	dsn := pgDSN(t)
 	cfg, _ := opsJournal(t, dsn)

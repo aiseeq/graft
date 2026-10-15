@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -35,7 +36,15 @@ const timeFormat = "YYYY-MM-DD HH24:MI"
 
 func ident(name string) string { return `"` + name + `"` }
 
-func literal(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+// literal is s dollar-quoted, $graft$...$graft$ with a tag s does not hold:
+// no escapes are read inside, whatever the session's standard_conforming_strings.
+func literal(s string) string {
+	tag := "$graft$"
+	for i := 1; strings.Contains(s+"$", tag); i++ {
+		tag = "$graft" + strconv.Itoa(i) + "$"
+	}
+	return tag + s + tag
+}
 
 func (s *SQLSource) table() string {
 	schema, name, found := strings.Cut(s.cfg.Table, ".")
