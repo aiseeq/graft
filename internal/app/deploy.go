@@ -23,6 +23,7 @@ import (
 	"github.com/aiseeq/graft/internal/jira"
 	"github.com/aiseeq/graft/internal/lock"
 	"github.com/aiseeq/graft/internal/tasks"
+	"github.com/aiseeq/graft/internal/tools"
 	"github.com/aiseeq/graft/internal/userconfig"
 )
 
@@ -151,6 +152,9 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	if err := a.checkApproved(ctx, r, o.Unapproved); err != nil {
 		return err
 	}
+	if err := a.pinTools(ctx, r); err != nil {
+		return fmt.Errorf("deploy %s: nothing was deployed: %w", r.name, err)
+	}
 	if len(r.target.Deps) > 0 {
 		a.printf("deploy %s: running %s first", r.name, strings.Join(r.target.Deps, ", "))
 		if err := r.tasks.RunDeps(ctx, r.target.Deps); err != nil {
@@ -170,6 +174,38 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	}
 	a.printf("deployed %s to %s", gitx.Short(r.head), r.name)
 	return a.recordDeployment(ctx, r)
+}
+
+// pinTools puts the exact pinned build of every go_install tool first on
+// PATH for the deps and the deploy script: a tool release newer than the pin
+// brings checks the project has not been through yet, and a deploy, a hotfix
+// above all, must not wait for them.
+func (a *App) pinTools(ctx context.Context, r *deployRun) error {
+	var dirs, pins []string
+	for _, name := range slices.Sorted(maps.Keys(r.cfg.Tools)) {
+		t := r.cfg.Tools[name]
+		if t.GoInstall == "" {
+			continue
+		}
+		cache, err := os.UserCacheDir()
+		if err != nil {
+			return fmt.Errorf("no cache directory for the pinned tools: %w", err)
+		}
+		dir, err := tools.Pinned(ctx, name, t, filepath.Join(cache, "graft", "tools"), a.Stderr)
+		if err != nil {
+			return err
+		}
+		_, version := t.Pin()
+		dirs, pins = append(dirs, dir), append(pins, name+" "+version)
+	}
+	if len(dirs) == 0 {
+		return nil
+	}
+	if err := os.Setenv("PATH", strings.Join(append(dirs, os.Getenv("PATH")), string(os.PathListSeparator))); err != nil {
+		return err
+	}
+	a.printf("pinned tools first on PATH: %s", strings.Join(pins, ", "))
+	return nil
 }
 
 // refuseSameCommit refuses to deploy the commit the target already runs,
