@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/aiseeq/graft/internal/config"
@@ -87,7 +88,32 @@ func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level versio
 	if cfg.Ticket != nil {
 		key = message.BranchKey(branch, cfg.Ticket.Regexp)
 	}
-	return commitPlan{branch: branch, remotes: remotes, message: message.WithKey(msg, key), bump: bump}, nil
+	msg = message.WithKey(msg, key)
+	if err := requireTicket(repo, cfg, msg); err != nil {
+		return plan, err
+	}
+	return commitPlan{branch: branch, remotes: remotes, message: msg, bump: bump}, nil
+}
+
+// requireTicket refuses, under ticket.required, a commit that names no work
+// item: a revert and a commit that changes only files that ship nothing pass.
+func requireTicket(repo *gitx.Repo, cfg *config.Config, msg string) error {
+	if cfg.Ticket == nil || !cfg.Ticket.Required || cfg.Ticket.Regexp.MatchString(msg) {
+		return nil
+	}
+	if subject, _, _ := strings.Cut(msg, "\n"); isRevert(subject) {
+		return nil
+	}
+	changed, err := repo.ChangedFiles()
+	if err != nil {
+		return err
+	}
+	bumped := versionFiles(cfg)
+	files := slices.DeleteFunc(changed, func(f string) bool { return slices.Contains(bumped, f) })
+	if cfg.ShipsNothing(files) {
+		return nil
+	}
+	return fmt.Errorf("the commit names no work item (ticket.required): put a key matching %s in the message or commit from a branch named for the item; only a revert and a change to approved_release ignore_paths need none", cfg.Ticket.Pattern)
 }
 
 func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, plan commitPlan) error {

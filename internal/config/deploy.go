@@ -178,6 +178,21 @@ func (r *ApprovedRelease) Ignored(files []string) bool {
 	return true
 }
 
+// ShipsNothing tells whether every one of the files matches the
+// approved_release ignore_paths of some target; no files is not.
+func (c *Config) ShipsNothing(files []string) bool {
+	if c.Deploy == nil {
+		return false
+	}
+	all := &ApprovedRelease{}
+	for _, n := range keysOf(c.Deploy.Targets) {
+		if r := c.Deploy.Targets[n].ApprovedRelease; r != nil {
+			all.Ignore = append(all.Ignore, r.Ignore...)
+		}
+	}
+	return all.Ignored(files)
+}
+
 // ReleaseNotes configures the Jira release notes.
 type ReleaseNotes struct {
 	Jira *JiraNotes `yaml:"jira"`

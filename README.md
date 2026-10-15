@@ -96,7 +96,10 @@ leaks:                           # keep private names out of public repositories
    agents in separate worktrees commit in parallel; `graft release` still
    takes the repository lock, which the main worktree's commits share.
 3. Refuse if a merge, rebase, cherry-pick or revert is in progress, if HEAD is
-   detached, or if there is nothing to commit.
+   detached, or if there is nothing to commit. With `ticket.required`, refuse
+   a commit that names no work item, in the message or by the branch: only a
+   revert and a commit whose files (the version bump aside) all match some
+   target's `approved_release.ignore_paths` need none.
 4. Run the gate. A failure stops here, with the version untouched.
 5. Bump the version file and every file synced with it, except on a branch
    in `version.skip_branches` (`--minor` and `--major` are refused there).
@@ -183,6 +186,7 @@ version:
 
 ticket:                         # omit to never add a key
   pattern: '[A-Z][A-Z]+-[0-9]+' # first match in the branch name
+  required: false               # true: a commit must name a work item
 
 push:
   remotes: []                   # empty: every configured remote

@@ -185,6 +185,31 @@ func (r *Repo) IsClean() (bool, error) {
 	return strings.TrimSpace(out) == "", nil
 }
 
+// ChangedFiles lists the paths the work tree and the index change against
+// HEAD, untracked files included; a rename lists both its paths.
+func (r *Repo) ChangedFiles() ([]string, error) {
+	out, err := r.Git("status", "--porcelain", "-z", "--untracked-files=all")
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	entries := strings.Split(out, "\x00")
+	for i := 0; i < len(entries); i++ {
+		e := entries[i]
+		if len(e) < 4 {
+			continue
+		}
+		files = append(files, e[3:])
+		if e[0] == 'R' || e[0] == 'C' {
+			i++
+			if i < len(entries) && entries[i] != "" {
+				files = append(files, entries[i])
+			}
+		}
+	}
+	return files, nil
+}
+
 // RemoteBranch is a branch on a remote, from its remote-tracking ref.
 type RemoteBranch struct {
 	Remote string

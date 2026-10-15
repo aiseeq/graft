@@ -121,8 +121,12 @@ type SyncFile struct {
 
 // Ticket describes how a work item key is recognised in a branch name.
 type Ticket struct {
-	Pattern string         `yaml:"pattern"`
-	Regexp  *regexp.Regexp `yaml:"-"`
+	Pattern string `yaml:"pattern"`
+	// Required makes graft commit refuse a commit that names no work item, in
+	// its message or by its branch; a revert and a commit that changes only
+	// approved_release ignore_paths need none.
+	Required bool           `yaml:"required"`
+	Regexp   *regexp.Regexp `yaml:"-"`
 }
 
 // Push selects the remotes a commit is published to.

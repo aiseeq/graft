@@ -220,3 +220,49 @@ func TestBuildBranchBumpsFourthPart(t *testing.T) {
 		t.Errorf("a build version on the trunk: %d\n%s", code, out)
 	}
 }
+
+// TestTicketRequired: with ticket.required a commit names a work item, in
+// its message or by its branch; a revert and a change to files that ship
+// nothing need none.
+func TestTicketRequired(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": `schema: 1
+version: {mode: file}
+ticket: {pattern: 'PROJ-[0-9]+', required: true}
+envs: {local: {}}
+deploy:
+  remote: origin
+  targets:
+    prod: {env: local, run: [sh, d.sh], deployed_sha: {path: /x/prod}, approved_release: {statuses: [Done], ignore_paths: ["docs/**"]}}
+release_notes: {jira: {project_keys: [PROJ]}}
+gate: []
+`,
+		"VERSION": "1.0.0\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustGraft("commit", "-m", "feat: PROJ-1 base")
+	f.write("a.txt", "a\n")
+	out, code := f.graft("", "commit", "-m", "fix: no item")
+	if code == 0 || !strings.Contains(out, "names no work item (ticket.required)") {
+		t.Errorf("a commit without a key: exit %d\n%s", code, out)
+	}
+	if f.read("VERSION") != "1.0.1\n" {
+		t.Errorf("the refused commit bumped the version: %q", f.read("VERSION"))
+	}
+	f.mustGraft("commit", "-m", "fix: PROJ-2 named")
+	f.write("docs/guide.md", "g\n")
+	f.mustGraft("commit", "-m", "docs: the guide")
+	f.write("docs/sub/new/more.md", "m\n")
+	f.git("mv", "docs/guide.md", "docs/sub/guide.md")
+	f.mustGraft("commit", "-m", "docs: moved")
+	f.git("mv", "docs/sub/guide.md", "guide.md")
+	if out, code := f.graft("", "commit", "-m", "docs: out of docs"); code == 0 || !strings.Contains(out, "ticket.required") {
+		t.Errorf("a rename out of ignore_paths passed:\n%s", out)
+	}
+	f.git("mv", "guide.md", "docs/guide.md")
+	f.write("a.txt", "a2\n")
+	f.mustGraft("commit", "-m", `Revert "fix: PROJ-2 named"`)
+	f.git("checkout", "-q", "-b", "w/PROJ-3-thing")
+	f.write("b.txt", "b\n")
+	f.mustGraft("commit", "-m", "feat: from the branch key")
+}
