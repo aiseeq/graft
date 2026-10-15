@@ -123,7 +123,13 @@ type Task struct {
 	// TestDB passes the test database DSN, after checking it points at the
 	// test database.
 	TestDB bool `yaml:"test_db"`
+	// Heavy holds the task back while the machine is loaded (the user
+	// config's load) and passes it GRAFT_THREADS.
+	Heavy bool `yaml:"heavy"`
 }
+
+// ThreadsPlaceholder in a step receives the user config's load.threads.
+const ThreadsPlaceholder = "{threads}"
 
 // TaskLock is a named read/write lock held while a task runs.
 type TaskLock struct {

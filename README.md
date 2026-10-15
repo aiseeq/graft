@@ -42,7 +42,18 @@ leaks:                           # keep private names out of public repositories
   min_name_length: 10                         # default 10
   allow:
     - {term: SomeName, reason: why this name is fine everywhere}
+load:                            # heavy tasks on a shared machine (heavy: true in a task)
+  free_below: 16                 # default 16: below it a heavy task starts at once
+  wait_above: 22                 # default 22: at or above it heavy tasks wait, one queue per user
+  threads: 4                     # default 4: {threads} in steps, GRAFT_THREADS in heavy tasks
+  settle: 30s                    # default 30s: between the two, the next waiter gives the load this long to show
+  poll: 5s                       # default 5s; 0 anywhere here means the default
 ```
+
+A heavy task checks the 1-minute load average (`/proc/loadavg`; where there
+is none it starts and says so). Waiting heavy tasks of all projects queue
+under one lock in the user cache (`graft/load.lock`) and start one at a time;
+a heavy task inside a heavy task was admitted with it. Ctrl-C stops the wait.
 
 ## Commands
 
@@ -247,11 +258,12 @@ tasks:
     desc: all tests
     deps: [build]              # run first, each task at most once per invocation
     test_db: true              # pass the test database DSN (see below)
+    heavy: true                # wait while the machine is loaded (user config load), GRAFT_THREADS set
     dotenv: [API_KEY!, 'LOG_DIR?']  # only these .env keys reach the steps; KEY? optional, KEY! must not be empty
     dotenv_sets: [db]          # plus the keys of named sets
     env: {LOG_LEVEL: debug, API_URL: 'http://${HOST}:8080'}   # ${KEY}: environment, then .env
     run:
-      - go test -count=1 {args} ./...      # graft test -- -run TestX
+      - go test -p {threads} -count=1 {args} ./...   # graft test -- -run TestX; {threads}: user config load.threads
   lint:
     keep_going: true           # run every step, fail at the end listing what failed
     lock: read                 # shared lock "work-tree": lints run side by side

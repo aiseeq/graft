@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,8 +20,10 @@ import (
 	"github.com/aiseeq/graft/v2/internal/dotenv"
 	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/stats"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
 // MarkerEnv is set for git commands graft itself runs, so the pre-commit hook
@@ -66,6 +69,10 @@ type Runner struct {
 	dsn     *string
 	done    map[string]bool
 	held    map[string]lock.Mode
+	// Load reads this machine's load settings for heavy tasks.
+	Load func() (userconfig.MachineLoad, error)
+	// heavy counts the heavy tasks running, admitted by the outermost.
+	heavy int
 	// frames are the tasks running now, outermost first; every process a
 	// step runs counts in all of them.
 	frames []*frame
@@ -96,6 +103,7 @@ func NewRunner(root string, cfg *config.Config, stdout, stderr io.Writer) *Runne
 		lookup: dotenv.NewLookup(filepath.Join(root, cfg.DotEnv)),
 		done:   map[string]bool{},
 		held:   map[string]lock.Mode{},
+		Load:   userconfig.LoadSettings,
 	}
 }
 
@@ -276,6 +284,16 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 	if err := r.RunDeps(ctx, t.Deps); err != nil {
 		return err
 	}
+	if t.Heavy {
+		// A heavy task inside a heavy task was admitted with it.
+		if r.heavy == 0 {
+			if err := r.admit(ctx, name); err != nil {
+				return err
+			}
+		}
+		r.heavy++
+		defer func() { r.heavy-- }()
+	}
 	release, err := r.lock(ctx, name, t.Lock)
 	if err != nil {
 		return err
@@ -323,6 +341,10 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		return err
 	}
 	env, err := r.env(t, vars)
+	if err != nil {
+		return err
+	}
+	s, env, err = r.threads(s, t, env)
 	if err != nil {
 		return err
 	}
@@ -544,6 +566,46 @@ func sortedKeys(m map[string]string) []string {
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+// admit waits until the machine takes a heavy task.
+func (r *Runner) admit(ctx context.Context, name string) error {
+	l, err := r.Load()
+	if err != nil {
+		return err
+	}
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("locating the cache for the load queue: %w", err)
+	}
+	return loadgate.Wait(ctx, name, l, filepath.Join(cache, "graft", "load.lock"), r.Stderr)
+}
+
+// ThreadsEnv carries the user config's load.threads into a heavy task.
+const ThreadsEnv = "GRAFT_THREADS"
+
+// threads fills {threads} in the step and, in a heavy task, sets
+// GRAFT_THREADS.
+func (r *Runner) threads(s config.Step, t *config.Task, env []string) (config.Step, []string, error) {
+	uses := strings.Contains(s.Shell, config.ThreadsPlaceholder) ||
+		slices.ContainsFunc(s.Argv, func(w string) bool { return strings.Contains(w, config.ThreadsPlaceholder) })
+	if !uses && !t.Heavy {
+		return s, env, nil
+	}
+	l, err := r.Load()
+	if err != nil {
+		return s, nil, err
+	}
+	n := strconv.Itoa(l.Threads)
+	s.Shell = strings.ReplaceAll(s.Shell, config.ThreadsPlaceholder, n)
+	s.Argv = slices.Clone(s.Argv)
+	for i, w := range s.Argv {
+		s.Argv[i] = strings.ReplaceAll(w, config.ThreadsPlaceholder, n)
+	}
+	if t.Heavy {
+		env = append(env, ThreadsEnv+"="+n)
+	}
+	return s, env, nil
 }
 
 // Hold takes a named lock for who the way a task's lock is taken, so tasks

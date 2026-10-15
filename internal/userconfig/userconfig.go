@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -20,6 +21,65 @@ type Config struct {
 	Jira  Jira   `yaml:"jira"`
 	Tools Tools  `yaml:"tools"`
 	Leaks *Leaks `yaml:"leaks"`
+	// Load is how this machine takes heavy tasks.
+	Load MachineLoad `yaml:"load"`
+}
+
+// MachineLoad is when a heavy task may start on this machine: the 1-minute load
+// average below WaitAbove; between FreeBelow and WaitAbove it starts and the
+// next waiter gives the load Settle to show it.
+type MachineLoad struct {
+	FreeBelow float64       `yaml:"free_below"`
+	WaitAbove float64       `yaml:"wait_above"`
+	Threads   int           `yaml:"threads"`
+	Settle    time.Duration `yaml:"settle"`
+	Poll      time.Duration `yaml:"poll"`
+}
+
+// DefaultLoad is a shared laptop's: free below 16, wait above 22, 4 threads.
+var DefaultLoad = MachineLoad{FreeBelow: 16, WaitAbove: 22, Threads: 4, Settle: 30 * time.Second, Poll: 5 * time.Second}
+
+// LoadSettings is the user's load settings over the defaults; without a user
+// config it is the defaults.
+func LoadSettings() (MachineLoad, error) {
+	cfg, _, err := Load()
+	if errors.Is(err, ErrNotFound) {
+		return DefaultLoad, nil
+	}
+	if err != nil {
+		return MachineLoad{}, err
+	}
+	return cfg.Load, nil
+}
+
+func (l *MachineLoad) normalize(path string) error {
+	d := DefaultLoad
+	for _, f := range []struct {
+		v   *float64
+		def float64
+	}{{&l.FreeBelow, d.FreeBelow}, {&l.WaitAbove, d.WaitAbove}} {
+		if *f.v == 0 {
+			*f.v = f.def
+		}
+	}
+	if l.Threads == 0 {
+		l.Threads = d.Threads
+	}
+	if l.Settle == 0 {
+		l.Settle = d.Settle
+	}
+	if l.Poll == 0 {
+		l.Poll = d.Poll
+	}
+	switch {
+	case l.FreeBelow < 0 || l.WaitAbove <= l.FreeBelow:
+		return fmt.Errorf("%s: load: free_below %v must be below wait_above %v", path, l.FreeBelow, l.WaitAbove)
+	case l.Threads < 0:
+		return fmt.Errorf("%s: load.threads: %d is negative", path, l.Threads)
+	case l.Settle < 0 || l.Poll < 0:
+		return fmt.Errorf("%s: load: settle and poll must be positive", path)
+	}
+	return nil
 }
 
 // Leaks keeps the user's private names out of their public repositories. The
@@ -110,6 +170,9 @@ func Load() (*Config, string, error) {
 		if err := cfg.Leaks.normalize(path); err != nil {
 			return nil, path, err
 		}
+	}
+	if err := cfg.Load.normalize(path); err != nil {
+		return nil, path, err
 	}
 	return &cfg, path, nil
 }
