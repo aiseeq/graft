@@ -86,7 +86,8 @@ func Summarize(recs []Record, f Filter) []Row {
 	type key struct{ project, label string }
 	groups := map[key][]Record{}
 	var order []key
-	for _, r := range recs {
+	for i := range recs {
+		r := &recs[i]
 		if r.Time.Before(f.Since) || (f.Project != "" && r.Project != f.Project) {
 			continue
 		}
@@ -110,7 +111,7 @@ func Summarize(recs []Record, f Filter) []Row {
 		if _, ok := groups[k]; !ok {
 			order = append(order, k)
 		}
-		groups[k] = append(groups[k], r)
+		groups[k] = append(groups[k], *r)
 	}
 	rows := make([]Row, 0, len(order))
 	for _, k := range order {
@@ -151,7 +152,8 @@ func summarize(project, label string, recs []Record) Row {
 	row := Row{Project: project, Label: label, Runs: len(recs)}
 	walls := make([]float64, 0, len(recs))
 	cpus := make([]float64, 0, len(recs))
-	for _, r := range recs {
+	for i := range recs {
+		r := &recs[i]
 		walls = append(walls, r.WallS)
 		cpus = append(cpus, r.UserS+r.SysS)
 		row.WallMax = max(row.WallMax, r.WallS)

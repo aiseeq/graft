@@ -663,7 +663,16 @@ release_notes:
    Release windows). `--unapproved` does not skip this.
    With a `window`, a hotfix branch and a held candidate, more checks come
    here; see Release windows below.
-4. Run the `deps` tasks, exactly as a task's deps run: in order, each at most
+4. Put the exact pinned build of every `tools` entry with `go_install` first
+   on `PATH` for the deps and the deploy script (and the graft it runs): a
+   tool release newer than the pin, a linter with new rules say, brings
+   checks the project has not been through yet, and must not stop a release
+   or a hotfix. The build is installed once with `go install` into
+   `graft/tools` under the user cache directory and checked against the pin
+   by its Go build info; a pin that cannot be installed stops the deploy here,
+   never falling back to the copy already on `PATH`. Outside deploy, tasks
+   run whatever `PATH` finds, as before.
+   Then run the `deps` tasks, exactly as a task's deps run: in order, each at most
    once (deps of deps included), a `test_db: true` task with the test database
    up and its DSN. A failure ends the deploy before the deploy script runs or
    anything is written in the target environment. A `deps` entry that is not

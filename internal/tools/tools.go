@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -224,4 +225,55 @@ func goBin(ctx context.Context) (string, error) {
 		return "", errors.New("go env reports neither GOBIN nor GOPATH")
 	}
 	return filepath.Join(first, "bin"), nil
+}
+
+// Pinned makes sure the exact pinned build of a go_install tool is in a
+// directory of its own under root, installing it there the first time, and
+// returns the directory. It never settles for another version: a pin that
+// cannot be installed is an error.
+func Pinned(ctx context.Context, name string, t *config.Tool, root string, log io.Writer) (string, error) {
+	if t.GoInstall == "" {
+		return "", fmt.Errorf("%s: not installed with go install", name)
+	}
+	id := strings.ReplaceAll(t.GoInstall, "/", "_")
+	if len(t.Tags) > 0 {
+		id += "+" + strings.Join(sortedTags(t.Tags), ",")
+	}
+	dir := filepath.Join(root, id)
+	program := filepath.Join(dir, filepath.Base(t.Program()))
+	if runtime.GOOS == "windows" {
+		program += ".exe"
+	}
+	if pinnedBuild(program, t) == "" {
+		return dir, nil
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		return "", fmt.Errorf("the pinned %s %s is installed with go install: %w", name, t.GoInstall, err)
+	}
+	args := []string{"install"}
+	if len(t.Tags) > 0 {
+		args = append(args, "-tags", strings.Join(t.Tags, ","))
+	}
+	args = append(args, t.GoInstall)
+	fmt.Fprintf(log, "graft: go %s (into %s)\n", strings.Join(args, " "), dir)
+	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd.Env = append(os.Environ(), "GOBIN="+dir)
+	cmd.Stdout, cmd.Stderr = log, log
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("the pinned %s %s: go install: %w", name, t.GoInstall, err)
+	}
+	if problem := pinnedBuild(program, t); problem != "" {
+		return "", fmt.Errorf("the pinned %s %s: after go install, %s", name, t.GoInstall, problem)
+	}
+	return dir, nil
+}
+
+// pinnedBuild says what is wrong with the program as the tool's pinned
+// build, empty when it is that build.
+func pinnedBuild(program string, t *config.Tool) string {
+	bi, err := buildinfo.ReadFile(program)
+	if err != nil {
+		return fmt.Sprintf("%s has no Go build info (%v)", program, err)
+	}
+	return buildProblem(bi, t)
 }
