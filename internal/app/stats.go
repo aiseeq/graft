@@ -23,6 +23,8 @@ type StatsOptions struct {
 	Task string
 	// Tests reports the tests instead of the tasks.
 	Tests bool
+	// MaxLoad, when set, takes only the runs whose load stayed below it.
+	MaxLoad float64
 }
 
 // testsLimit is how many tests and packages the tests report ranks.
@@ -36,7 +38,7 @@ func (a *App) Stats(o StatsOptions) error {
 		return err
 	}
 	since := time.Now().Add(-o.Since)
-	f := stats.Filter{Since: since, Task: o.Task}
+	f := stats.Filter{Since: since, Task: o.Task, MaxLoad: o.MaxLoad}
 	where := "every project"
 	if !o.All {
 		if f.Project, err = a.statsProject(o.Project); err != nil {
@@ -45,7 +47,7 @@ func (a *App) Stats(o StatsOptions) error {
 		where = f.Project
 	}
 	if o.Tests {
-		return a.statsTests(stats.TestsPath(path), stats.TestFilter{Since: since, Project: f.Project, Task: o.Task}, where)
+		return a.statsTests(stats.TestsPath(path), stats.TestFilter{Since: since, Project: f.Project, Task: o.Task, MaxLoad: o.MaxLoad}, where+calmNote(o.MaxLoad))
 	}
 	recs, malformed, err := stats.Load(path)
 	if err != nil {
@@ -59,13 +61,21 @@ func (a *App) Stats(o StatsOptions) error {
 	if o.Task != "" {
 		what, label = "task "+o.Task, "STEP"
 	}
-	a.printf("%s in %s since %s", what, where, since.Format("2006-01-02 15:04"))
+	a.printf("%s in %s%s since %s", what, where, calmNote(o.MaxLoad), since.Format("2006-01-02 15:04"))
 	rows := stats.Summarize(recs, f)
 	if len(rows) == 0 {
 		a.printf("nothing recorded (%s)", path)
 		return nil
 	}
 	return stats.Render(a.Stdout, rows, label, o.All)
+}
+
+// calmNote tells, in a report's heading, which runs --max-load kept.
+func calmNote(maxLoad float64) string {
+	if maxLoad == 0 {
+		return ""
+	}
+	return fmt.Sprintf(", runs with the load below %v", maxLoad)
 }
 
 // statsTests prints the slowest tests and packages and the flaky tests.

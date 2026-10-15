@@ -61,6 +61,15 @@ type Filter struct {
 	Project string
 	// Task, when set, breaks that task down into its steps.
 	Task string
+	// MaxLoad, when set, takes only the runs whose highest load stayed
+	// below it; runs without a load are left out.
+	MaxLoad float64
+}
+
+// calm tells whether a run with peak load stays under maxLoad, 0 taking
+// every run.
+func calm(peak *float64, maxLoad float64) bool {
+	return maxLoad == 0 || (peak != nil && *peak < maxLoad)
 }
 
 // TaskLabel is the label of the whole-task row of a task broken down into
@@ -91,7 +100,7 @@ func Summarize(recs []Record, f Filter) []Row {
 	var order []key
 	for i := range recs {
 		r := &recs[i]
-		if r.Time.Before(f.Since) || (f.Project != "" && r.Project != f.Project) {
+		if r.Time.Before(f.Since) || (f.Project != "" && r.Project != f.Project) || !calm(r.LoadMax, f.MaxLoad) {
 			continue
 		}
 		var label string

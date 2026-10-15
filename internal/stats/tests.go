@@ -40,6 +40,10 @@ type PackageRun struct {
 	WallS float64 `json:"wall_s"`
 	// Tests are the top-level tests, and the subtests that failed.
 	Tests []TestResult `json:"tests,omitempty"`
+	// LoadStart and LoadMax are the load of the step that ran the package,
+	// as on its stats line.
+	LoadStart *float64 `json:"load_start,omitempty"`
+	LoadMax   *float64 `json:"load_max,omitempty"`
 }
 
 // TestResult is one test of a package run, written as [name, wall_s,
@@ -104,10 +108,13 @@ type TestFilter struct {
 	Project string
 	// Task, when set, takes only the runs of that task.
 	Task string
+	// MaxLoad is Filter.MaxLoad.
+	MaxLoad float64
 }
 
 func (f TestFilter) takes(r *PackageRun) bool {
-	return !r.Time.Before(f.Since) && (f.Project == "" || r.Project == f.Project) && (f.Task == "" || r.Task == f.Task)
+	return !r.Time.Before(f.Since) && (f.Project == "" || r.Project == f.Project) && (f.Task == "" || r.Task == f.Task) &&
+		calm(r.LoadMax, f.MaxLoad)
 }
 
 // TimingRow is the runs of a test or of a package.

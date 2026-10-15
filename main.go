@@ -186,6 +186,7 @@ func statsCmd(a *app.App, args []string) error {
 	all := fs.Bool("all", false, "report every project")
 	task := fs.String("task", "", "break this `task` down into its steps; with --tests, only its tests")
 	tests := fs.Bool("tests", false, "report tests instead of tasks: the slowest, and the flaky ones")
+	maxLoad := fs.Float64("max-load", 0, "count only the runs whose 1-minute load average stayed below this `load`")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -196,7 +197,10 @@ func statsCmd(a *app.App, args []string) error {
 	if *all && *project != "" {
 		return fmt.Errorf("%w: --all and --project exclude each other", errUsage)
 	}
-	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task, Tests: *tests})
+	if *maxLoad < 0 {
+		return fmt.Errorf("%w: --max-load: want a positive load, got %v", errUsage, *maxLoad)
+	}
+	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task, Tests: *tests, MaxLoad: *maxLoad})
 }
 
 // parseAge reads a positive age: whole days (7d) or a Go duration (12h).

@@ -20,6 +20,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/dotenv"
 	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/loadavg"
 	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/stats"
@@ -382,13 +383,14 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
 	if t.Tests != config.TestsGo {
-		return r.measure(cmd, s.Source)
+		_, err := r.measure(cmd, s.Source)
+		return err
 	}
 	tree := r.treeID()
 	report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
 	cmd.Stdout = report
-	err = r.measure(cmd, s.Source)
-	r.recordTests(report, tree, s.Source)
+	use, err := r.measure(cmd, s.Source)
+	r.recordTests(report, tree, s.Source, use)
 	return err
 }
 
@@ -420,7 +422,7 @@ func (r *Runner) treeID() string {
 }
 
 // recordTests writes the package runs of a tests step to the tests file.
-func (r *Runner) recordTests(report *testreport.GoTest, tree, source string) {
+func (r *Runner) recordTests(report *testreport.GoTest, tree, source string, use stats.Usage) {
 	runs, err := report.Close()
 	if err != nil {
 		fmt.Fprintf(r.Stderr, "graft: printing the test output: %v\n", err)
@@ -435,6 +437,7 @@ func (r *Runner) recordTests(report *testreport.GoTest, tree, source string) {
 		run := &runs[i]
 		run.Project, run.Task, run.Top = r.Root, r.frames[len(r.frames)-1].task, r.top(r.frames[0].task)
 		run.Tree, run.Runner = tree, config.TestsGo
+		run.LoadStart, run.LoadMax = use.Loads()
 		r.Stats.WriteTests(*run)
 	}
 }
@@ -452,28 +455,26 @@ func (r *Runner) top(outermost string) string {
 func (r *Runner) Measure(name, source string, cmd *exec.Cmd) (err error) {
 	f := r.begin(name)
 	defer func() { r.end(f, err != nil) }()
-	return r.measure(cmd, source)
+	_, err = r.measure(cmd, source)
+	return err
 }
 
 // measure runs cmd and records what it cost against every running task.
 // A command that never started records nothing: no process ran.
-func (r *Runner) measure(cmd *exec.Cmd, source string) error {
+func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
-		return err
+		return stats.Usage{}, err
 	}
-	watch := stats.WatchTree(cmd.Process.Pid)
+	watch := stats.WatchProcess(cmd.Process.Pid)
 	err := cmd.Wait()
-	tree, terr := watch.Stop()
+	seen := watch.Stop()
 	if len(r.frames) == 0 {
-		return err
+		return stats.Usage{}, err
 	}
 	use := stats.FromProcess(cmd.ProcessState, time.Since(start))
-	switch {
-	case terr == nil:
-		use.TreeMem, use.TreeKnown = tree, true
-	case r.Stats != nil && !errors.Is(terr, stats.ErrNoTree):
-		r.Stats.Warn(fmt.Errorf("reading the memory of the process tree: %w", terr))
+	if werr := use.Watched(seen); werr != nil && r.Stats != nil {
+		r.Stats.Warn(werr)
 	}
 	code := cmd.ProcessState.ExitCode()
 	for _, f := range r.frames {
@@ -485,13 +486,23 @@ func (r *Runner) measure(cmd *exec.Cmd, source string) error {
 	}
 	inner := r.frames[len(r.frames)-1]
 	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Step: stats.StepText(source), Exit: code}, use, r.frames[0].task)
-	return err
+	return use, err
 }
 
 // begin opens the stats frame of a task.
 func (r *Runner) begin(task string) *frame {
 	f := &frame{task: task, start: time.Now()}
 	r.frames = append(r.frames, f)
+	if r.Stats == nil {
+		return f
+	}
+	load, err := loadavg.Read()
+	switch {
+	case err == nil:
+		f.use.LoadStart, f.use.LoadMax, f.use.LoadKnown = load, load, true
+	case !stats.Unsupported(err):
+		r.Stats.Warn(fmt.Errorf("reading the load average: %w", err))
+	}
 	return f
 }
 

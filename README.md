@@ -340,8 +340,8 @@ A task gets a line of its own when it ends, covering everything it ran,
 deps and inner tasks included.
 
 ```json
-{"time":"2026-01-05T10:00:03.1+01:00","kind":"step","project":"/home/me/work/projectA","task":"lint","top":"commit","step":"shellcheck scripts/*.sh","wall_s":41.2,"user_s":38.9,"sys_s":2.4,"max_rss_mb":9123.4,"tree_mem_mb":11840.2,"exit":0}
-{"time":"2026-01-05T10:00:03.1+01:00","kind":"task","project":"/home/me/work/projectA","task":"lint","top":"commit","steps":2,"wall_s":44,"user_s":40.1,"sys_s":2.6,"max_rss_mb":9123.4,"tree_mem_mb":11840.2,"exit":0}
+{"time":"2026-01-05T10:00:03.1+01:00","kind":"step","project":"/home/me/work/projectA","task":"lint","top":"commit","step":"shellcheck scripts/*.sh","wall_s":41.2,"user_s":38.9,"sys_s":2.4,"max_rss_mb":9123.4,"tree_mem_mb":11840.2,"load_start":4.12,"load_max":9.8,"exit":0}
+{"time":"2026-01-05T10:00:03.1+01:00","kind":"task","project":"/home/me/work/projectA","task":"lint","top":"commit","steps":2,"wall_s":44,"user_s":40.1,"sys_s":2.6,"max_rss_mb":9123.4,"tree_mem_mb":11840.2,"load_start":3.9,"load_max":9.8,"exit":0}
 ```
 
 - `top` is the graft command the task ran under (`commit`, `amend`, `gate`,
@@ -367,6 +367,11 @@ deps and inner tasks included.
   counted in each. Processes that leave the tree (daemons, containers
   started through a docker daemon) are not counted. A task line has its
   largest step's. Linux only; elsewhere the field is left out.
+- `load_start` and `load_max` are the machine's 1-minute load average when
+  the step or task started and the highest seen while it ran, read with
+  `tree_mem_mb`. Wall time on a machine at load 30 does not compare with
+  wall time at load 5: they tell such runs apart. Absent where there is no
+  `/proc/loadavg`.
 - A line is one append-mode write, so concurrent grafts never split each
   other's lines. At 20 MB the file moves to `stats.jsonl.1`, replacing the
   older copy.
@@ -385,6 +390,7 @@ did not run and are left out.
 - `tree` identifies what the work tree held: HEAD, the changes to tracked
   files and the untracked files that are not ignored. Two runs with the same
   tree ran the same code.
+- `load_start` and `load_max` are those of the step, as on its stats line.
 - `result` is `pass`, `fail`, `skip` or `build-fail`. A package cut off
   (a timeout, a killed process) fails with the tests that were running.
 - A test takes about 45 bytes, so a suite of 2000 tests writes 90 KB a
@@ -406,6 +412,9 @@ passed on the same tree, with how many trees saw that. A test that fails
 after a change and passes after the next one is not flaky; the same code
 failing and passing is. `--since`, `--project`, `--all` and `--task` select
 the runs as above.
+
+`--max-load 16`, in both reports, counts only the runs whose `load_max`
+stayed below 16; runs recorded without a load are left out with them.
 
 ## Services
 

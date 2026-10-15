@@ -27,6 +27,8 @@ type statsLine struct {
 	SysS     float64   `json:"sys_s"`
 	MaxRSSMB *float64  `json:"max_rss_mb"`
 	TreeMB   *float64  `json:"tree_mem_mb"`
+	LoadMin  *float64  `json:"load_start"`
+	LoadMax  *float64  `json:"load_max"`
 	Exit     int       `json:"exit"`
 }
 
@@ -173,6 +175,50 @@ func TestStepMemoryOfTheProcessTree(t *testing.T) {
 	}
 	if task.TreeMB == nil || *task.TreeMB != *step.TreeMB {
 		t.Errorf("the task's peak is its largest step's: %v, step %v", task.TreeMB, step.TreeMB)
+	}
+}
+
+// TestStatsRecordTheMachineLoad: every line carries the 1-minute load
+// average when its step or task started and the highest seen while it ran,
+// so runs on a loaded machine can be told apart; graft stats --max-load
+// leaves them out.
+func TestStatsRecordTheMachineLoad(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	loadavg := filepath.Join(t.TempDir(), "loadavg")
+	writeFile(t, loadavg, "3.50 2.00 1.00 1/400 1234\n")
+	f, statsFile := statsRepo(t, "tasks:\n  noisy:\n    run:\n      - "+helperStep("ok")+
+		"\n      - sh: 'sleep 0.5; echo 30.25 20.00 10.00 1/400 1234 > "+loadavg+"; sleep 0.5'\n")
+	f.env = append(f.env, "GRAFT_LOADAVG="+loadavg)
+	f.mustGraft("noisy")
+	lines := readStats(t, statsFile)
+	if len(lines) != 3 {
+		t.Fatalf("want 2 steps and the task: %+v", lines)
+	}
+	got := func(v *float64) string {
+		if v == nil {
+			return "-"
+		}
+		return fmt.Sprint(*v)
+	}
+	var loads []string
+	for _, l := range lines {
+		loads = append(loads, l.Kind+" "+got(l.LoadMin)+" "+got(l.LoadMax))
+	}
+	if want := "step 3.5 3.5,step 3.5 30.25,task 3.5 30.25"; strings.Join(loads, ",") != want {
+		t.Errorf("loads %s, want %s", strings.Join(loads, ","), want)
+	}
+
+	writeFile(t, loadavg, "4.00 2.00 1.00 1/400 1234\n")
+	f.write(".graft.yaml", f.read(".graft.yaml")+"  quiet:\n    run: ["+helperStep("ok")+"]\n")
+	f.mustGraft("quiet")
+	out := f.mustGraft("stats", "--max-load", "16")
+	if !strings.Contains(out, "quiet ") || strings.Contains(out, "noisy ") {
+		t.Errorf("--max-load 16 keeps the noisy run:\n%s", out)
+	}
+	if out := f.mustGraft("stats"); !strings.Contains(out, "noisy ") {
+		t.Errorf("without --max-load the noisy run is gone:\n%s", out)
 	}
 }
 

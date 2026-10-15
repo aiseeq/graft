@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -78,15 +79,16 @@ var passingRun = goTestStream(
 
 // testsLine is one line of tests.jsonl as the tests read it.
 type testsLine struct {
-	Project string  `json:"project"`
-	Task    string  `json:"task"`
-	Top     string  `json:"top"`
-	Tree    string  `json:"tree"`
-	Runner  string  `json:"runner"`
-	Package string  `json:"package"`
-	Result  string  `json:"result"`
-	WallS   float64 `json:"wall_s"`
-	Tests   [][]any `json:"tests"`
+	Project string   `json:"project"`
+	Task    string   `json:"task"`
+	Top     string   `json:"top"`
+	Tree    string   `json:"tree"`
+	Runner  string   `json:"runner"`
+	Package string   `json:"package"`
+	Result  string   `json:"result"`
+	WallS   float64  `json:"wall_s"`
+	Tests   [][]any  `json:"tests"`
+	LoadMax *float64 `json:"load_max"`
 }
 
 func readTests(t *testing.T, path string) []testsLine {
@@ -150,6 +152,9 @@ func TestGoTestsAreRecordedPerTest(t *testing.T) {
 	q, p := lines[0], lines[1]
 	if q.Package != "example.com/q" || q.Result != "build-fail" || len(q.Tests) != 0 {
 		t.Errorf("q: %+v", q)
+	}
+	if runtime.GOOS == "linux" && p.LoadMax == nil {
+		t.Errorf("p carries no load: %+v", p)
 	}
 	if p.Package != "example.com/p" || p.Result != "fail" || p.WallS != 2.7 || p.Runner != "go" ||
 		p.Task != "test" || p.Top != "test" || p.Project != realRoot(t, f) || len(p.Tree) < 40 {

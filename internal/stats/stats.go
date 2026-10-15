@@ -58,9 +58,14 @@ type Record struct {
 	// Absent where the OS does not report it.
 	MaxRSSMB *float64 `json:"max_rss_mb,omitempty"`
 	// TreeMemMB is the peak of the memory the process tree held at once:
-	// the step's processes and all their descendants, sampled (TreeWatch).
+	// the step's processes and all their descendants, sampled (Watch).
 	// On a task line, its largest step's. Absent where it is not read.
 	TreeMemMB *float64 `json:"tree_mem_mb,omitempty"`
+	// LoadStart and LoadMax are the 1-minute load average when the step or
+	// task started and the highest seen while it ran: a run on a loaded
+	// machine is slower for that alone. Absent where it is not read.
+	LoadStart *float64 `json:"load_start,omitempty"`
+	LoadMax   *float64 `json:"load_max,omitempty"`
 	// Exit is the exit status; -1 when there is none (killed by a signal, or
 	// a task that failed outside its processes).
 	Exit int `json:"exit"`
@@ -77,6 +82,26 @@ type Usage struct {
 	// TreeKnown.
 	TreeMem   int64
 	TreeKnown bool
+	// LoadStart and LoadMax are known when LoadKnown.
+	LoadStart, LoadMax float64
+	LoadKnown          bool
+}
+
+// Watched adds what a Watch saw; errors other than an unsupported measure
+// are returned for the caller to report.
+func (s *Usage) Watched(w Sample) error {
+	var errs []error
+	if w.TreeErr == nil {
+		s.TreeMem, s.TreeKnown = w.TreeMem, true
+	} else if !Unsupported(w.TreeErr) {
+		errs = append(errs, fmt.Errorf("reading the memory of the process tree: %w", w.TreeErr))
+	}
+	if w.LoadErr == nil {
+		s.LoadStart, s.LoadMax, s.LoadKnown = w.LoadStart, w.LoadMax, true
+	} else if !Unsupported(w.LoadErr) {
+		errs = append(errs, fmt.Errorf("reading the load average: %w", w.LoadErr))
+	}
+	return errors.Join(errs...)
 }
 
 // FromProcess reads the usage of a finished process; wall is measured by the
@@ -99,6 +124,9 @@ func (s *Usage) Add(u Usage) {
 		s.TreeMem = max(s.TreeMem, u.TreeMem)
 		s.TreeKnown = true
 	}
+	if u.LoadKnown {
+		s.LoadMax = max(s.LoadMax, u.LoadMax)
+	}
 }
 
 // Fill sets the usage fields of rec.
@@ -113,6 +141,19 @@ func (s Usage) Fill(rec *Record) {
 	if s.TreeKnown {
 		rec.TreeMemMB = megabytes(s.TreeMem)
 	}
+	rec.LoadStart, rec.LoadMax = s.Loads()
+}
+
+// Loads are LoadStart and LoadMax for a line: nil when unknown.
+func (s Usage) Loads() (start, peak *float64) {
+	if !s.LoadKnown {
+		return nil, nil
+	}
+	round := func(v float64) *float64 {
+		v = math.Round(v*100) / 100
+		return &v
+	}
+	return round(s.LoadStart), round(s.LoadMax)
 }
 
 func megabytes(b int64) *float64 {
