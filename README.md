@@ -639,7 +639,13 @@ release_notes:
    `${KEY}` in `run` is set, and everything the `deps` tasks need, listing all
    that are not; nothing else happens before this passes.
 1. The work tree must be clean; `git fetch <remote>`; HEAD must equal the remote
-   branch.
+   branch. Then every other remote is fetched (a failed fetch stops the
+   deploy), and the deploy is refused while one's branch of the same name has
+   commits whose change the deployed branch lacks, a pull request merged on a
+   mirror say: the refusal names the remote, the count and the first commits,
+   with the merge and push that bring them in. Content counts, not ancestry: a
+   commit rebased or cherry-picked under another hash is there. Merge commits
+   are not counted, the commits they bring are.
 2. With `requires`, the required target's `version` must print the version
    being deployed: a quick read-only check, so it fails before a long deps run.
 3. With `deployed_sha`, read the commit the target runs. When it is the one

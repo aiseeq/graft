@@ -78,7 +78,68 @@ func PublishedHead(repo *gitx.Repo, d *config.Deploy) (string, error) {
 	if remote = strings.TrimSpace(remote); remote != head {
 		return "", fmt.Errorf("HEAD %s is not %s/%s %s: push local commits or pull (git pull --ff-only)", gitx.Short(head), d.Remote, branch, gitx.Short(remote))
 	}
+	if err := checkOtherRemotes(repo, d.Remote, branch); err != nil {
+		return "", err
+	}
 	return head, nil
+}
+
+// shownMissing is how many missing commits a refusal names.
+const shownMissing = 5
+
+// checkOtherRemotes fetches every other remote and refuses while one's
+// branch has commits whose content the deployed remote's branch lacks: a
+// pull request merged on a mirror would otherwise never go out, or go out
+// later behind everyone's back. Content counts, not ancestry: a commit
+// rebased or cherry-picked under another hash is there.
+func checkOtherRemotes(repo *gitx.Repo, deployRemote, branch string) error {
+	remotes, err := repo.Remotes()
+	if err != nil {
+		return err
+	}
+	base := deployRemote + "/" + branch
+	for _, r := range remotes {
+		if r == deployRemote {
+			continue
+		}
+		if _, err := repo.Git("fetch", "--quiet", r); err != nil {
+			return fmt.Errorf("git fetch %s failed, cannot check that %s has everything %s/%s has: %w", r, base, r, branch, err)
+		}
+		other := r + "/" + branch
+		exists, err := repo.RevExists("refs/remotes/" + other)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		out, err := repo.Git("rev-list", "--cherry-pick", "--right-only", "--no-merges", "--reverse", base+"..."+other)
+		if err != nil {
+			return err
+		}
+		missing := strings.Fields(out)
+		if len(missing) == 0 {
+			continue
+		}
+		var lines []string
+		for _, sha := range missing[:min(len(missing), shownMissing)] {
+			subject, err := repo.Git("log", "-1", "--format=%s", sha)
+			if err != nil {
+				return err
+			}
+			lines = append(lines, gitx.Short(sha)+" "+strings.TrimSpace(subject))
+		}
+		if len(missing) > shownMissing {
+			lines = append(lines, fmt.Sprintf("and %d more", len(missing)-shownMissing))
+		}
+		noun := "commits"
+		if len(missing) == 1 {
+			noun = "commit"
+		}
+		return fmt.Errorf("%s has %d %s that %s lacks: %s\nnothing was deployed; bring them here and publish them everywhere, then deploy:\n  git merge %s\n  git push %s %s   # and every other remote that lacks the merge",
+			other, len(missing), noun, base, strings.Join(lines, "; "), other, deployRemote, branch)
+	}
+	return nil
 }
 
 // CheckHead verifies, mid-deploy, that the tree is still clean and HEAD is
