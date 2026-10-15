@@ -624,6 +624,7 @@ deploy:
       release_notes:
         transitions: [{from: [Ready for release], to: Done}]
         subtasks: true
+        comment: "Released {release}, version {version}"   # this target's text; {release} needs release_version
 
 release_notes:
   jira:
@@ -809,8 +810,10 @@ deploy:
   the trunk refuses until it has.
 - `release_version: {enabled: true, name: "Product {dd}.{mm}.{yy}", hotfix:
   "Product {dd}.{mm}.{yy} hotfix"}` on the windowed target keeps one Jira
-  version per window (`enabled` is required; false keeps the section and
-  leaves versions alone). It needs the Manage versions permission
+  version per window (`enabled` is required; false leaves the Jira versions
+  alone and needs no permission, while `name` and `hotfix` still name the
+  release for `release_page` and `{release}` in the target's
+  `release_notes.comment`). Enabled, it needs the Manage versions permission
   (MANAGE_VERSIONS; in a team-managed project the Administrator role):
   without it every step below is an error saying so.
   - A deploy to the held target that reverts commits of the candidate moves

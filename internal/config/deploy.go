@@ -108,6 +108,10 @@ type TargetNotes struct {
 	// replaced; they are read only to say how to rewrite them.
 	OldTransition string   `yaml:"transition"`
 	OldFrom       []string `yaml:"from"`
+	// Comment is this target's release note text instead of the top-level
+	// release_notes.jira.comment; {release} names the release by its window
+	// (release_version.name, release_version.hotfix for a hotfix).
+	Comment string `yaml:"comment"`
 	// FixVersion adds the project's next unreleased version to every item
 	// that gets a note.
 	FixVersion *FixVersion `yaml:"fix_version"`
@@ -408,6 +412,29 @@ func (c *Config) validateRequires(where, name string, t *DeployTarget) error {
 	return nil
 }
 
+// NoteComment is the release note text of the target.
+func (c *Config) NoteComment(t *DeployTarget) string {
+	if t.ReleaseNotes != nil && t.ReleaseNotes.Comment != "" {
+		return t.ReleaseNotes.Comment
+	}
+	return c.ReleaseNotes.Jira.Comment
+}
+
+// validateReleaseName lets {release} into a target's note only where every
+// deploy has a release name: the window's or the hotfix's version name.
+func (c *Config) validateReleaseName(where string, t *DeployTarget) error {
+	if !strings.Contains(c.NoteComment(t), "{release}") {
+		return nil
+	}
+	switch rv := t.ReleaseVersion; {
+	case rv == nil:
+		return fmt.Errorf("%s.release_notes.comment: {release} needs release_version, whose name names the release (enabled: false keeps the Jira versions alone)", where)
+	case c.Deploy.Hotfix != nil && rv.Hotfix == "":
+		return fmt.Errorf("%s.release_notes.comment: {release} needs release_version.hotfix to name a hotfix", where)
+	}
+	return nil
+}
+
 func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 	if t.ReleaseNotes == nil {
 		return nil
@@ -423,6 +450,9 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 		return fmt.Errorf("%s.release_notes.transition and from are replaced by transitions: [{from: [%s], to: %s}]", where, strings.Join(n.OldFrom, ", "), n.OldTransition)
 	}
 	if err := validateTransitions(where+".release_notes.transitions", n.Transitions); err != nil {
+		return err
+	}
+	if err := c.validateReleaseName(where, t); err != nil {
 		return err
 	}
 	switch {

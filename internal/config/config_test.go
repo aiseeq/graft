@@ -442,6 +442,10 @@ deploy:
 	if w.Start != 15*time.Hour || w.End != 19*time.Hour || w.Cutoff.Time != 18*time.Hour || len(w.Weekdays) != 2 || w.Location.String() != "Europe/Berlin" {
 		t.Errorf("window = %+v", w)
 	}
+	named := strings.Replace(base, `at: "18:00"}}}`, `at: "18:00"}}, release_version: {enabled: false, name: "P {dd}.{mm}.{yy}", hotfix: "P {dd}.{mm}.{yy} hotfix"}, release_notes: {comment: "{release}"}}`, 1)
+	if _, err := Parse([]byte(named)); err != nil {
+		t.Errorf("{release} with release_version: %v", err)
+	}
 	if !cfg.Deploy.IsHotfix("hotfix/PROJ-1") || cfg.Deploy.IsHotfix("main") || !slices.Equal(cfg.Deploy.HoldingWindows("test"), []string{"prod"}) {
 		t.Error("hotfix branches or holding windows")
 	}
@@ -463,6 +467,8 @@ deploy:
 		"hotfix no branch":  strings.Replace(base, "branches: ['hotfix/*'], ", "", 1),
 		"hotfix one branch": strings.Replace(base, "remote: origin", "remote: origin\n  branch: main", 1),
 		"reserved cutoff":   strings.Replace(strings.Replace(base, "    prod:", "    cutoff:", 1), "base: prod", "base: cutoff", 1),
+		"release unnamed":   strings.Replace(base, `at: "18:00"}}}`, `at: "18:00"}}, release_notes: {comment: "{release}"}}`, 1),
+		"hotfix unnamed":    strings.Replace(base, `at: "18:00"}}}`, `at: "18:00"}}, release_version: {enabled: false, name: "P {dd}.{mm}.{yy}"}, release_notes: {comment: "{release}"}}`, 1),
 	} {
 		if _, err := Parse([]byte(yaml)); err == nil {
 			t.Errorf("%s: want an error", name)

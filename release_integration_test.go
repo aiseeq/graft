@@ -412,3 +412,37 @@ func TestReleasePageApprovedVersions(t *testing.T) {
 		t.Errorf("the page:\n%s\n%s", body, out)
 	}
 }
+
+// TestReleaseNameWithoutVersions: release_version with enabled false names
+// the release by its window for the release page and the notes, and leaves
+// the Jira versions alone: no permission is needed.
+func TestReleaseNameWithoutVersions(t *testing.T) {
+	d := newDeployFixture(t, func(state string, q func(string) string) string {
+		cfg := strings.Replace(releaseConfig(state, q), "      approved_release:",
+			`      release_version: {enabled: false, name: "Product {dd}.{mm}.{yy}", hotfix: "Product {dd}.{mm}.{yy} hotfix"}
+      release_page: {parent: "500"}
+      approved_release:`, 1)
+		return strings.Replace(cfg, "release_notes: {transitions: [{from: [Ready for release], to: Done}",
+			"release_notes: {comment: 'Released {release} to {target}, build {version}', transitions: [{from: [Ready for release], to: Done}", 1)
+	})
+	d.at("2026-10-16 10:00")
+	d.mustGraft("deploy", "test")
+	d.at("2026-10-19 15:30")
+	d.mustGraft("deploy", "--unapproved", "prod")
+	d.at("2026-10-20 10:00")
+	d.commitFile("checked.txt", "feat: PROJ-8 checked work")
+	d.setStatus("PROJ-8", "In Progress")
+	d.mustGraft("deploy", "test")
+	d.setStatus("PROJ-8", "Ready for release")
+	d.at("2026-10-22 15:30")
+	out := d.mustGraft("deploy", "prod")
+	if body := d.jira.page("Product 22.10.26: release notes"); !strings.Contains(body, ">PROJ-8</a>") || !strings.Contains(body, "<th>Release</th><td>Product 22.10.26</td>") {
+		t.Errorf("the page:\n%s\n%s", body, out)
+	}
+	d.jira.mu.Lock()
+	comments, versions := d.jira.comments["PROJ-8"], d.jira.versions
+	d.jira.mu.Unlock()
+	if !slices.Contains(comments, "Released Product 22.10.26 to prod, build 1.0.2") || len(versions) != 0 || strings.Contains(out, "MANAGE_VERSIONS") {
+		t.Errorf("comments %q, versions %v:\n%s", comments, versions, out)
+	}
+}

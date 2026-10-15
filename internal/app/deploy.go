@@ -392,6 +392,20 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 	return withheldErr
 }
 
+// noteText is the release note of the target filled in.
+func noteText(r *deployRun) (string, error) {
+	values := map[string]string{"target": r.name, "version": r.version, "short": gitx.Short(r.head), "sha": r.head}
+	comment := r.cfg.NoteComment(r.target)
+	if strings.Contains(comment, "{release}") {
+		names, _, err := pageRelease(r)
+		if err != nil {
+			return "", err
+		}
+		values["release"] = strings.Join(names, ", ")
+	}
+	return envs.Fill(comment, values, func(s string) string { return s })
+}
+
 // notesUnset lists the keys of the items a deploy could not finish.
 type notesUnset struct {
 	fixVersion, assignee []string
@@ -448,7 +462,7 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 		return skipAll("release notes skipped: %v", err)
 	}
 	fix.client = client
-	text, err := envs.Fill(notes.Comment, map[string]string{"target": r.name, "version": r.version, "short": gitx.Short(r.head), "sha": r.head}, func(s string) string { return s })
+	text, err := noteText(r)
 	if err != nil {
 		return skipAll("release notes skipped: %v", err)
 	}
