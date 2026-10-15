@@ -126,7 +126,14 @@ type Task struct {
 	// Heavy holds the task back while the machine is loaded (the user
 	// config's load) and passes it GRAFT_THREADS.
 	Heavy bool `yaml:"heavy"`
+	// Tests names the test report the steps print: TestsGo reads go test
+	// -json on stdout, records every test and prints what plain go test
+	// would.
+	Tests string `yaml:"tests"`
 }
+
+// TestsGo is the go test -json report.
+const TestsGo = "go"
 
 // ThreadsPlaceholder in a step receives the user config's load.threads.
 const ThreadsPlaceholder = "{threads}"
@@ -408,6 +415,9 @@ func (c *Config) validateTask(name string, t *Task) error {
 	}
 	if err := t.Lock.validate(where + ".lock"); err != nil {
 		return err
+	}
+	if t.Tests != "" && t.Tests != TestsGo {
+		return fmt.Errorf("%s.tests: want %q, got %q", where, TestsGo, t.Tests)
 	}
 	if t.TestDB && c.TestDB == nil {
 		return fmt.Errorf("%s.test_db: needs a test_db section", where)

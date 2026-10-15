@@ -107,6 +107,21 @@ func run(args []string) error {
 	case "print":
 		fmt.Println(args[1])
 		return nil
+	case "cat":
+		// cat FILE [EXIT]: print the file, then exit with EXIT.
+		data, err := os.ReadFile(args[1])
+		if err != nil {
+			return err
+		}
+		os.Stdout.Write(data)
+		if len(args) > 2 {
+			code, err := strconv.Atoi(args[2])
+			if err != nil {
+				return fmt.Errorf("cat: exit %q: %w", args[2], err)
+			}
+			os.Exit(code)
+		}
+		return nil
 	case "alloc":
 		mb, err := strconv.Atoi(args[1])
 		if err != nil {

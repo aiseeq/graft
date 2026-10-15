@@ -184,7 +184,8 @@ func statsCmd(a *app.App, args []string) error {
 	since := fs.String("since", "7d", "how far back: days (7d), or a duration such as 12h or 30m")
 	project := fs.String("project", "", "`root` of the project to report (default: the current one)")
 	all := fs.Bool("all", false, "report every project")
-	task := fs.String("task", "", "break this `task` down into its steps")
+	task := fs.String("task", "", "break this `task` down into its steps; with --tests, only its tests")
+	tests := fs.Bool("tests", false, "report tests instead of tasks: the slowest, and the flaky ones")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -195,7 +196,7 @@ func statsCmd(a *app.App, args []string) error {
 	if *all && *project != "" {
 		return fmt.Errorf("%w: --all and --project exclude each other", errUsage)
 	}
-	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task})
+	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task, Tests: *tests})
 }
 
 // parseAge reads a positive age: whole days (7d) or a Go duration (12h).

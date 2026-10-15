@@ -261,11 +261,12 @@ tasks:
     deps: [build]              # run first, each task at most once per invocation
     test_db: true              # pass the test database DSN (see below)
     heavy: true                # wait while the machine is loaded (user config load), GRAFT_THREADS set
+    tests: go                  # read go test -json: print plain go test output, record every test
     dotenv: [API_KEY!, 'LOG_DIR?']  # only these .env keys reach the steps; KEY? optional, KEY! must not be empty
     dotenv_sets: [db]          # plus the keys of named sets
     env: {LOG_LEVEL: debug, API_URL: 'http://${HOST}:8080'}   # ${KEY}: environment, then .env
     run:
-      - go test -p {threads} -count=1 {args} ./...   # graft test -- -run TestX; {threads}: user config load.threads
+      - go test -json -p {threads} -count=1 {args} ./...   # graft test -- -run TestX; {threads}: user config load.threads
   lint:
     keep_going: true           # run every step, fail at the end listing what failed
     lock: read                 # shared lock "work-tree": lints run side by side
@@ -321,6 +322,13 @@ dotenv_sets:                   # key lists several tasks and services share
   repository; a task inside a task under the same lock reuses it, and asking
   for write inside read is an error. Unknown deps and cycles are config
   errors.
+- `tests: go` reads the steps' stdout as a `go test -json` stream; the step
+  passes `-json` itself, graft adds nothing to the command. The terminal
+  shows what plain `go test` would: package lines, build errors, benchmark
+  results and the output of failing tests; with `-v` in the command, every
+  line. Lines that are not events pass through. Every package run is
+  recorded in the tests file (see below). A step with `go test` in it that
+  prints no events gets a warning: `-json` is missing.
 
 ### Resource stats
 
@@ -354,12 +362,38 @@ deps and inner tasks included.
 - A failure to record is not a failure of the task: graft warns once per run
   and goes on.
 
+A task with `tests: go` also writes `tests.jsonl` next to it: one line per
+package run, the test binary's time without the build, the top-level tests
+as `[name, wall_s, result]`, and the subtests that failed. Cached packages
+did not run and are left out.
+
+```json
+{"time":"2026-01-05T10:00:03.1+01:00","project":"/home/me/work/projectA","task":"test","top":"commit","tree":"9f2c...","runner":"go","package":"example.com/a/store","result":"fail","wall_s":2.7,"tests":[["TestSave",2.5,"pass"],["TestLoad",0.1,"fail"],["TestTable/empty",0,"fail"],["TestTable",0,"fail"]]}
+```
+
+- `tree` identifies what the work tree held: HEAD, the changes to tracked
+  files and the untracked files that are not ignored. Two runs with the same
+  tree ran the same code.
+- `result` is `pass`, `fail`, `skip` or `build-fail`. A package cut off
+  (a timeout, a killed process) fails with the tests that were running.
+- A test takes about 45 bytes, so a suite of 2000 tests writes 90 KB a
+  run. The file moves to `tests.jsonl.1` at 64 MB, so the two keep about
+  1400 runs of such a suite.
+
 `graft stats` reports the current project for the last 7 days, one row per
 task, the heaviest in memory first: runs, median and maximum wall time,
 median CPU time (user + system), maximum peak memory, the share of failed
 runs. `--since` takes days (`30d`) or a duration (`12h`), `--project` another
 project's root, `--all` every project; `--task <name>` breaks one task down
 into its steps.
+
+`graft stats --tests` reports the tests file instead: the 20 slowest
+top-level tests and packages by median wall time, with their runs, maximum
+and share of failed runs, and the flaky tests: those that both failed and
+passed on the same tree, with how many trees saw that. A test that fails
+after a change and passes after the next one is not flaky; the same code
+failing and passing is. `--since`, `--project`, `--all` and `--task` select
+the runs as above.
 
 ## Services
 

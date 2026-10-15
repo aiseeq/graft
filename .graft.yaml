@@ -58,14 +58,16 @@ tasks:
     usage: <go test flags>
     test_db: true
     heavy: true
+    tests: go
     env: {GRAFT_TEST_DOCKER: '1'}
-    run: ['go test -p {threads} -count=1 {args} ./...']
+    run: ['go test -json -p {threads} -count=1 {args} ./...']
   test-race:
     desc: all tests with the race detector
     test_db: true
     heavy: true
+    tests: go
     env: {GRAFT_TEST_DOCKER: '1'}
-    run: ['go test -p {threads} -race -count=1 ./...']
+    run: ['go test -json -p {threads} -race -count=1 ./...']
   smoke:
     desc: the commit gate
     run: [{task: fmt-check}, {task: vet}, {task: test}]

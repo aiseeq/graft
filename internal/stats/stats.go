@@ -23,6 +23,10 @@ import (
 // (stats.jsonl.1) before the next line is written.
 const MaxSize = 20 << 20
 
+// MaxTestsSize is MaxSize of the tests file: a run of a large suite writes
+// hundreds of kilobytes, and the flaky report needs weeks of them.
+const MaxTestsSize = 64 << 20
+
 // maxStepText is how much of a step's text a line keeps, in runes.
 const maxStepText = 200
 
@@ -119,6 +123,11 @@ func Path() (string, error) {
 	return filepath.Join(dir, "graft", "stats.jsonl"), nil
 }
 
+// TestsPath is the tests file next to the stats file at path.
+func TestsPath(path string) string {
+	return filepath.Join(filepath.Dir(path), "tests.jsonl")
+}
+
 // Recorder appends records to the stats file.
 //
 // Recording is an explicit failover: the numbers serve a later audit, so a
@@ -142,30 +151,50 @@ func NewRecorder(warn io.Writer) *Recorder {
 // Write appends rec as one line. Failures are reported, not returned: see
 // Recorder.
 func (r *Recorder) Write(rec Record) {
+	r.append(r.path, rec, MaxSize)
+}
+
+// WriteTests appends a package run to the tests file, the same way.
+func (r *Recorder) WriteTests(run PackageRun) {
+	r.append(TestsPath(r.path), run, MaxTestsSize)
+}
+
+// Warn reports a problem of the records once per run, as a failed write is.
+func (r *Recorder) Warn(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.warnLocked(err)
+}
+
+func (r *Recorder) append(path string, v any, maxSize int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	err := r.err
 	if err == nil {
-		err = Append(r.path, rec)
+		err = Append(path, v, maxSize)
 	}
+	r.warnLocked(err)
+}
+
+func (r *Recorder) warnLocked(err error) {
 	if err != nil && !r.warned {
 		r.warned = true
 		fmt.Fprintf(r.warn, "graft: resource stats not recorded (the task goes on): %v\n", err)
 	}
 }
 
-// Append writes rec to the file at path as one line, rotating the file first
-// when it has reached MaxSize. The line goes out in a single write to a file
+// Append writes v to the file at path as one line, rotating the file first
+// when it has reached maxSize. The line goes out in a single write to a file
 // opened with O_APPEND, so lines of concurrent grafts never interleave.
-func Append(path string, rec Record) error {
-	line, err := json.Marshal(rec)
+func Append(path string, v any, maxSize int64) error {
+	line, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("encoding the stats line: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("creating the stats directory: %w", err)
 	}
-	if err := rotate(path); err != nil {
+	if err := rotate(path, maxSize); err != nil {
 		return err
 	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
@@ -186,8 +215,8 @@ func Append(path string, rec Record) error {
 // rotates at a time, under a lock next to the file, and checks the size
 // again under it: two grafts that both saw the file full would otherwise
 // rotate twice and the second would throw the first copy away.
-func rotate(path string) error {
-	full, err := isFull(path)
+func rotate(path string, maxSize int64) error {
+	full, err := isFull(path, maxSize)
 	if err != nil || !full {
 		return err
 	}
@@ -199,7 +228,7 @@ func rotate(path string) error {
 	if !locked {
 		return nil // another graft is rotating; append to whichever file is there
 	}
-	if full, err = isFull(path); err == nil && full {
+	if full, err = isFull(path, maxSize); err == nil && full {
 		if rerr := os.Rename(path, path+".1"); rerr != nil {
 			err = fmt.Errorf("rotating %s: %w", path, rerr)
 		}
@@ -210,7 +239,7 @@ func rotate(path string) error {
 	return err
 }
 
-func isFull(path string) (bool, error) {
+func isFull(path string, maxSize int64) (bool, error) {
 	st, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -218,5 +247,5 @@ func isFull(path string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("reading the size of %s: %w", path, err)
 	}
-	return st.Size() >= MaxSize, nil
+	return st.Size() >= maxSize, nil
 }

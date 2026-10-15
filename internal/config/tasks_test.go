@@ -87,6 +87,7 @@ func TestParseTasksErrors(t *testing.T) {
 		"step map two keys": strings.Replace(tasksBase, "run: [{task: lint}]", "run: [{task: lint, sh: x}]", 1),
 		"bad lock mode":     strings.Replace(tasksBase, "lock: read", "lock: exclusive", 1),
 		"dir escapes":       strings.Replace(tasksBase, "    lock: read", "    lock: read\n    dir: ../x", 1),
+		"unknown tests":     strings.Replace(tasksBase, "    lock: read", "    lock: read\n    tests: jest", 1),
 		"test_db w/o db":    tasksBase[:strings.Index(tasksBase, "test_db:\n  image")] + tasksBase[strings.Index(tasksBase, "tools:"):],
 		"service w/o log":   strings.Replace(tasksBase, "    log: tmp/web.log\n", "", 1),
 		"service bad build": strings.Replace(tasksBase, "build: lint", "build: nosuch", 1),

@@ -23,6 +23,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/stats"
+	"github.com/aiseeq/graft/v2/internal/testreport"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
@@ -358,18 +359,21 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		env = append(env, ThreadsEnv+"="+threads)
 	}
 	var cmd *exec.Cmd
+	var words []string
 	if s.Shell != "" {
 		line, err := envs.ShellArgs(s.Shell, args, nil)
 		if err != nil {
 			return err
 		}
 		cmd = exec.CommandContext(ctx, "sh", "-c", line)
+		words = strings.Fields(line)
 	} else {
 		argv, err := envs.ExpandArgv(s.Argv, args, r.lookup.With(vars))
 		if err != nil {
 			return err
 		}
 		cmd = exec.CommandContext(ctx, argv[0], argv[1:]...)
+		words = argv
 	}
 	cmd.Dir = r.Root
 	if t.Dir != "" {
@@ -377,7 +381,70 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	}
 	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
-	return r.measure(cmd, s.Source)
+	if t.Tests != config.TestsGo {
+		return r.measure(cmd, s.Source)
+	}
+	tree := r.treeID()
+	report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
+	cmd.Stdout = report
+	err = r.measure(cmd, s.Source)
+	r.recordTests(report, tree, s.Source)
+	return err
+}
+
+// verboseGoTest tells whether the command asks go test for -v: the report
+// then prints every line, as go test -v would.
+func verboseGoTest(words []string) bool {
+	return slices.ContainsFunc(words, func(w string) bool {
+		flag, ok := strings.CutPrefix(w, "-")
+		flag = strings.TrimPrefix(flag, "-")
+		return ok && (flag == "v" || flag == "v=true" || flag == "test.v" || flag == "test.v=true")
+	})
+}
+
+// treeID identifies the work tree a tests step runs on; "" when the stats
+// are off or the tree cannot be read, which the flaky report then skips.
+func (r *Runner) treeID() string {
+	if r.Stats == nil {
+		return ""
+	}
+	repo, err := gitx.Open(r.Root)
+	if err == nil {
+		var id string
+		if id, err = repo.WorkTreeID(); err == nil {
+			return id
+		}
+	}
+	r.Stats.Warn(fmt.Errorf("identifying the work tree of the tests: %w", err))
+	return ""
+}
+
+// recordTests writes the package runs of a tests step to the tests file.
+func (r *Runner) recordTests(report *testreport.GoTest, tree, source string) {
+	runs, err := report.Close()
+	if err != nil {
+		fmt.Fprintf(r.Stderr, "graft: printing the test output: %v\n", err)
+	}
+	if report.Events() == 0 && strings.Contains(source, "go test") {
+		fmt.Fprintf(r.Stderr, "graft: %s: the task has tests: go, but go test printed no -json events; pass -json to it\n", r.frames[len(r.frames)-1].task)
+	}
+	if r.Stats == nil || len(r.frames) == 0 {
+		return
+	}
+	for i := range runs {
+		run := &runs[i]
+		run.Project, run.Task, run.Top = r.Root, r.frames[len(r.frames)-1].task, r.top(r.frames[0].task)
+		run.Tree, run.Runner = tree, config.TestsGo
+		r.Stats.WriteTests(*run)
+	}
+}
+
+// top is what the tasks run under: the runner's Top, or the outermost task.
+func (r *Runner) top(outermost string) string {
+	if r.Top != "" {
+		return r.Top
+	}
+	return outermost
 }
 
 // Measure runs cmd as the one step of name, a unit of work that is not a
@@ -447,10 +514,7 @@ func (r *Runner) write(rec stats.Record, use stats.Usage, outermost string) {
 	}
 	rec.Time = time.Now()
 	rec.Project = r.Root
-	rec.Top = r.Top
-	if rec.Top == "" {
-		rec.Top = outermost
-	}
+	rec.Top = r.top(outermost)
 	use.Fill(&rec)
 	r.Stats.Write(rec)
 }
