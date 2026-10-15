@@ -268,6 +268,7 @@ func versionConfig(state string, q func(string) string) string {
 		`release_notes: {transitions: [{from: [In Progress], to: Testing, assign: qa}], fix_version: {name: "Product {dd}.{mm}.{yy}"}}`, 1)
 	return strings.Replace(cfg, "      approved_release:",
 		`      release_version: {enabled: true, name: "Product {dd}.{mm}.{yy}", hotfix: "Product {dd}.{mm}.{yy} hotfix"}
+      release_page: {parent: "500", labels: {moved: "Next window"}}
       approved_release:`, 1)
 }
 
@@ -285,6 +286,7 @@ func TestReleaseVersions(t *testing.T) {
 	d.jira.mu.Lock()
 	d.jira.statuses["PROJ-8"] = "In Progress"
 	d.jira.statuses["PROJ-9"] = "In Progress"
+	d.jira.types = map[string]string{"PROJ-8": "Bug"}
 	d.jira.versions = []map[string]any{
 		{"id": "20019", "name": "Product 19.10.26", "released": false, "archived": false, "releaseDate": "2026-10-19"},
 		{"id": "20022", "name": "Product.22.10.26", "released": false, "archived": false, "releaseDate": "2026-10-22"},
@@ -314,6 +316,10 @@ func TestReleaseVersions(t *testing.T) {
 	d.mustGraft("deploy", "--unapproved", "--redeploy", "prod")
 	if v := d.jira.version("20019"); v["released"] != true || v["releaseDate"] != "2026-10-19" || !strings.Contains(v["description"].(string), "build 1.0.1, commit ") {
 		t.Errorf("the Monday version: %v", v)
+	}
+	if body := d.jira.page("Product 19.10.26: release notes"); !strings.Contains(body, `<a href="`+d.jiraURL()+`/projects/PROJ/versions/20019">Product 19.10.26</a>`) ||
+		!strings.Contains(body, "<th>Date</th><td>2026-10-19</td>") || strings.Count(body, "<h2>Build 1.0.1, commit ") != 1 || !strings.Contains(body, "<p>No items.</p>") {
+		t.Errorf("the Monday page, published once over three deploys:\n%s", body)
 	}
 
 	// Test moves the work to Testing into the Thursday version.
@@ -355,6 +361,13 @@ func TestReleaseVersions(t *testing.T) {
 	if v := d.jira.version("20022"); v["released"] != true || v["releaseDate"] != "2026-10-22" || !strings.Contains(v["description"].(string), "build 1.0.3.1") {
 		t.Errorf("the Thursday version: %v", v)
 	}
+	body := d.jira.page("Product 22.10.26: release notes")
+	changes, moved, _ := strings.Cut(body, "<h3>Next window</h3>")
+	if !strings.Contains(changes, "<h2>Build 1.0.3.1, commit ") || !strings.Contains(changes, "<h3>Fixes</h3>") ||
+		!strings.Contains(changes, `<td><a href="`+d.jiraURL()+`/browse/PROJ-8">PROJ-8</a></td><td>Summary of PROJ-8</td><td>Bug</td>`) ||
+		!strings.Contains(moved, ">PROJ-1</a>") || strings.Contains(changes, ">PROJ-1</a>") || strings.Contains(body, "<h3>Changes</h3>") {
+		t.Errorf("the Thursday page:\n%s", body)
+	}
 
 	// A hotfix on Friday: its own version, released with it.
 	d.at("2026-10-23 11:00")
@@ -371,5 +384,31 @@ func TestReleaseVersions(t *testing.T) {
 	}
 	if got := d.fixVersionsOf("PROJ-9"); !slices.Contains(got, hv["id"].(string)) {
 		t.Errorf("PROJ-9 fix versions = %v", got)
+	}
+	if body := d.jira.page("Product 23.10.26 hotfix: release notes"); !strings.Contains(body, "<h3>Changes</h3>") || !strings.Contains(body, ">PROJ-9</a>") || !strings.Contains(body, "<th>Date</th><td>2026-10-23</td>") {
+		t.Errorf("the hotfix page:\n%s", body)
+	}
+}
+
+// TestReleasePageApprovedVersions: without windows the approved versions the
+// release took its items from name the page; without them nothing does.
+func TestReleasePageApprovedVersions(t *testing.T) {
+	d := newDeployFixture(t, func(state string, q func(string) string) string {
+		return strings.Replace(deployConfig(state, q), `approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}`,
+			`approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}
+      release_page: {parent: "500", title: "{release}: notes"}`, 1)
+	})
+	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-1": {"10010"}})
+	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "APPROVED"}})
+	if out, code := d.graft("", "deploy", "--unapproved", "live"); code != 1 || !strings.Contains(out, "graft: release page NOT PUBLISHED: no approved version names the release") {
+		t.Errorf("an unapproved release: exit %d\n%s", code, out)
+	}
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-1 approved thing")
+	out := d.mustGraft("deploy", "live")
+	body := d.jira.page("Product v1.2.10: notes")
+	if !strings.Contains(out, `release page "Product v1.2.10: notes" published: `+d.jiraURL()+"/wiki/spaces/S/pages/") ||
+		!strings.Contains(body, "/projects/PROJ/versions/10010\">Product v1.2.10</a>") || !strings.Contains(body, "<th>Target</th><td>live</td>") || !strings.Contains(body, ">PROJ-1</a>") {
+		t.Errorf("the page:\n%s\n%s", body, out)
 	}
 }

@@ -49,6 +49,8 @@ type DeployTarget struct {
 	Window *Window `yaml:"window"`
 	// ReleaseVersion keeps the Jira versions of the windows.
 	ReleaseVersion *ReleaseVersion `yaml:"release_version"`
+	// ReleasePage publishes the release notes page in Confluence.
+	ReleasePage *ReleasePage `yaml:"release_page"`
 	// Integrations refuses a release that the target from Requires runs with
 	// an integration this target does not configure.
 	Integrations *Integrations `yaml:"integrations"`
@@ -324,6 +326,9 @@ func (c *Config) validateTargetRelease(where string, t *DeployTarget) error {
 		return err
 	}
 	if err := c.validateReleaseVersion(where, t); err != nil {
+		return err
+	}
+	if err := c.validateReleasePage(where, t); err != nil {
 		return err
 	}
 	if err := c.validateApprovedRelease(where, t); err != nil {

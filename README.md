@@ -713,6 +713,8 @@ release_notes:
    status, whatever `from` says; subtasks that are not yours are left alone
    as above. The single `transition` and `from` of graft 1.x are replaced by
    `transitions`; the old keys are a config error that shows the rewrite.
+   With `release_page`, the release is published in Confluence; see Release
+   pages below.
 9. With `fix_version`, every item that gets a note also gets a fix version:
    the version of its Jira project that is neither released nor archived,
    whose name begins with `prefix`, and whose release date is the nearest,
@@ -828,6 +830,38 @@ deploy:
   and make the deploy exit 1.
 - `GRAFT_NOW` (RFC 3339), when set, is the time these checks use instead of
   the clock: for tests and for rehearsing a cutoff.
+
+### Release pages
+
+```yaml
+deploy:
+  targets:
+    prod:
+      release_page:
+        parent: "123456"                 # the id of the page release pages go under
+        title: "{release}: release notes" # the default; {release} is required
+        fix_types: [Bug]                  # the default: these are fixes, the rest changes
+        labels: {changes: Changes, fixes: Fixes, moved: Moved to the next release}
+```
+
+- After a release graft publishes a Confluence page of what went out, with
+  the Jira credentials (a Confluence of the same site). `{release}` is the
+  window's version (`release_version.name`), the hotfix's
+  (`release_version.hotfix`), or the approved versions the release took its
+  items from (`approved_release.prefix`); one of them is required.
+- A new page starts with a table of the release (linked to its Jira
+  version), the day and the target. Then a section per build: a heading
+  (`labels.build`, default `Build {version}, commit {short}`) and tables of
+  the items the release took out (the ones `approved_release` passed, or a
+  hotfix's labelled items) by issue type, with links, summaries and types,
+  and the items of withheld commits, which wait for the next release.
+- A title is unique in a space: a second release with the same name, such as
+  a second deploy in one window, adds its build section to the page; a
+  build the page lists already is left alone.
+- Labels: `release`, `date`, `target`, `build`, `changes`, `fixes`, `moved`,
+  `none`, `issue`, `summary`, `type`.
+- The release is live by then: a failure prints `graft: release page NOT
+  PUBLISHED: <why>` and makes the deploy exit 1.
 
 ### Integrations
 

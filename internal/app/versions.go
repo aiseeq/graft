@@ -304,7 +304,7 @@ func (a *App) releaseWindowVersion(ctx context.Context, w *windowVersions, proje
 // releaseHotfixVersion puts the hotfix items into the hotfix version of the
 // day and releases it.
 func (a *App) releaseHotfixVersion(ctx context.Context, r *deployRun, w *windowVersions, build string) error {
-	day := r.now.In(r.target.Window.Location)
+	day := hotfixDay(r)
 	date := day.Format(time.DateOnly)
 	name := w.conf.HotfixTemplate.Format(day)
 	var errs []error
@@ -328,6 +328,11 @@ func (a *App) releaseHotfixVersion(ctx context.Context, r *deployRun, w *windowV
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// hotfixDay is the day a hotfix goes out on, in the window's zone.
+func hotfixDay(r *deployRun) time.Time {
+	return r.now.In(r.target.Window.Location)
 }
 
 // recordVersions keeps the Jira versions after a deploy: the release is live,

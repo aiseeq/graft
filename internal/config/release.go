@@ -38,6 +38,44 @@ type ReleaseVersion struct {
 	HotfixTemplate *VersionName `yaml:"-"`
 }
 
+// ReleasePage is the Confluence page a release publishes: what went out,
+// one page per release, under Parent.
+type ReleasePage struct {
+	// Parent is the id of the page the release pages go under.
+	Parent string `yaml:"parent"`
+	// Title is the page title; {release} is the window's version, the
+	// hotfix's, or the approved versions.
+	Title string `yaml:"title"`
+	// FixTypes are the issue types listed as fixes; the rest are changes.
+	FixTypes []string `yaml:"fix_types"`
+	// Labels are the page's words, by PageLabels key.
+	Labels map[string]string `yaml:"labels"`
+}
+
+// PageLabels are the words of a release page and their defaults; build
+// takes {version} and {short}.
+var PageLabels = map[string]string{
+	"release": "Release",
+	"date":    "Date",
+	"target":  "Target",
+	"build":   "Build {version}, commit {short}",
+	"changes": "Changes",
+	"fixes":   "Fixes",
+	"moved":   "Moved to the next release",
+	"none":    "No items.",
+	"issue":   "Issue",
+	"summary": "Summary",
+	"type":    "Type",
+}
+
+// Label is the page's word for the key.
+func (p *ReleasePage) Label(key string) string {
+	if l, ok := p.Labels[key]; ok {
+		return l
+	}
+	return PageLabels[key]
+}
+
 // On tells whether the versions are kept.
 func (v *ReleaseVersion) On() bool { return v != nil && v.Enabled != nil && *v.Enabled }
 
@@ -172,6 +210,37 @@ func (c *Config) validateReleaseVersion(where string, t *DeployTarget) error {
 	if v.Hotfix != "" {
 		if v.HotfixTemplate, err = ParseVersionName(v.Hotfix); err != nil {
 			return fmt.Errorf("%s.hotfix: %w", where, err)
+		}
+	}
+	return nil
+}
+
+var pageIDRe = regexp.MustCompile(`^[0-9]+$`)
+
+func (c *Config) validateReleasePage(where string, t *DeployTarget) error {
+	p := t.ReleasePage
+	if p == nil {
+		return nil
+	}
+	where += ".release_page"
+	switch {
+	case !pageIDRe.MatchString(p.Parent):
+		return fmt.Errorf("%s.parent: required, the numeric id of the page release pages go under", where)
+	case t.ReleaseVersion == nil && (t.ApprovedRelease == nil || t.ApprovedRelease.Prefix == ""):
+		return fmt.Errorf("%s: needs release_version or approved_release.prefix, whose versions name the release", where)
+	}
+	if p.Title == "" {
+		p.Title = "{release}: release notes"
+	}
+	if !strings.Contains(p.Title, "{release}") {
+		return fmt.Errorf("%s.title: %q needs {release}: a title is unique in a space", where, p.Title)
+	}
+	if len(p.FixTypes) == 0 {
+		p.FixTypes = []string{"Bug"}
+	}
+	for k := range p.Labels {
+		if _, ok := PageLabels[k]; !ok {
+			return fmt.Errorf("%s.labels: unknown %q (%s)", where, k, strings.Join(keysOf(PageLabels), ", "))
 		}
 	}
 	return nil

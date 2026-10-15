@@ -93,7 +93,10 @@ func (c *Client) Myself(ctx context.Context) (string, error) {
 
 // Issue is what release notes need to know about an item.
 type Issue struct {
-	Key    string
+	Key     string
+	Summary string
+	// Type is the issue type's name, such as Bug.
+	Type   string
 	Status string
 	// Done is true in a status of the done category (Done, Won't do).
 	Done bool
@@ -121,13 +124,14 @@ type Transition struct {
 // Issue reads an item's status, assignee, fix versions and available
 // transitions.
 func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
-	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+key+"?fields=status,assignee,fixVersions,issuetype,parent,subtasks,labels&expand=transitions", nil, http.StatusOK)
+	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+key+"?fields=summary,status,assignee,fixVersions,issuetype,parent,subtasks,labels&expand=transitions", nil, http.StatusOK)
 	if err != nil {
 		return Issue{}, err
 	}
 	var raw struct {
 		Fields struct {
-			Status struct {
+			Summary string `json:"summary"`
+			Status  struct {
 				Name     string `json:"name"`
 				Category struct {
 					Key string `json:"key"`
@@ -139,7 +143,8 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 			} `json:"assignee"`
 			FixVersions []Version `json:"fixVersions"`
 			IssueType   struct {
-				Subtask bool `json:"subtask"`
+				Name    string `json:"name"`
+				Subtask bool   `json:"subtask"`
 			} `json:"issuetype"`
 			Parent *struct {
 				Key string `json:"key"`
@@ -162,7 +167,7 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 	if raw.Fields.Status.Category.Key == "" {
 		return Issue{}, fmt.Errorf("%s: the status has no category", key)
 	}
-	issue := Issue{Key: key, Status: raw.Fields.Status.Name, Done: raw.Fields.Status.Category.Key == "done", NotStarted: raw.Fields.Status.Category.Key == "new", FixVersions: raw.Fields.FixVersions, Labels: raw.Fields.Labels}
+	issue := Issue{Key: key, Summary: raw.Fields.Summary, Type: raw.Fields.IssueType.Name, Status: raw.Fields.Status.Name, Done: raw.Fields.Status.Category.Key == "done", NotStarted: raw.Fields.Status.Category.Key == "new", FixVersions: raw.Fields.FixVersions, Labels: raw.Fields.Labels}
 	if a := raw.Fields.Assignee; a != nil {
 		if a.AccountID == "" {
 			return Issue{}, fmt.Errorf("%s: the assignee has no accountId", key)

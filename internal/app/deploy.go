@@ -82,6 +82,9 @@ type deployRun struct {
 	// passed are the items the approved release lets out; hotfixItems the
 	// labelled items of a hotfix.
 	passed, hotfixItems []string
+	// approvedVersions are the approved versions the release took items
+	// from, with approved_release.prefix.
+	approvedVersions []string
 	// moveOut are the items whose commits a deploy to a held target
 	// reverts: they leave the window's version for the next one.
 	moveOut *versionMove
@@ -371,7 +374,7 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 	}
 	withheldErr := a.recordWithheld(ctx, r)
 	a.hotfixDone(r)
-	withheldErr = errors.Join(withheldErr, a.recordVersions(ctx, r))
+	withheldErr = errors.Join(withheldErr, a.recordVersions(ctx, r), a.publishReleasePage(ctx, r))
 	if r.target.ReleaseNotes == nil {
 		return withheldErr
 	}
@@ -771,6 +774,9 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 		return refuse("commits outside an approved release:\n  %s\n%s, revert them, or pass --unapproved", strings.Join(lines, "\n  "), g.gate.remedy())
 	}
 	r.withheld, r.gated, r.passed = out.withheld, true, uniqueSorted(out.passed)
+	if conf.Prefix != "" {
+		r.approvedVersions = slices.Sorted(maps.Keys(out.approved))
+	}
 	a.printf("approved release: %d commits since %s, all in %s", out.commits, gitx.Short(r.prev), strings.Join(slices.Sorted(maps.Keys(out.approved)), ", "))
 	return nil
 }

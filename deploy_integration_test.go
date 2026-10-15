@@ -47,6 +47,15 @@ type fakeJira struct {
 	labels map[string][]string
 	// manageVersions is the token's MANAGE_VERSIONS permission.
 	manageVersions bool
+	// types maps a key to its issue type, Task by default.
+	types map[string]string
+	// pages are the Confluence pages by id; page 500 is the parent.
+	pages map[string]*fakePage
+}
+
+type fakePage struct {
+	id, title, parent, body string
+	version                 int
 }
 
 // fakeTransitions are the moves every item offers, by id.
@@ -72,7 +81,7 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(j.versions)
 		return
 	}
-	if j.versionsAPI(w, r) {
+	if j.versionsAPI(w, r) || j.confluenceAPI(w, r) {
 		return
 	}
 	if id, ok := strings.CutPrefix(r.URL.Path, "/rest/api/3/version/"); ok && r.Method == http.MethodGet && r.URL.Query().Get("expand") == "approvers" {
@@ -143,11 +152,16 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for _, id := range j.fixVersions[key] {
 			fixVersions = append(fixVersions, map[string]any{"id": id, "name": j.versionName(id)})
 		}
+		issueType := "Task"
+		if t, ok := j.types[key]; ok {
+			issueType = t
+		}
 		fields := map[string]any{
+			"summary":     "Summary of " + key,
 			"status":      map[string]any{"name": j.statuses[key], "statusCategory": map[string]string{"key": category}},
 			"assignee":    assignee,
 			"fixVersions": fixVersions,
-			"issuetype":   map[string]bool{"subtask": j.parents[key] != ""},
+			"issuetype":   map[string]any{"name": issueType, "subtask": j.parents[key] != ""},
 			"labels":      append([]string{}, j.labels[key]...),
 		}
 		if p := j.parents[key]; p != "" {
@@ -271,6 +285,83 @@ func (j *fakeJira) versionsAPI(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
+// confluenceAPI serves the Confluence pages of one space, S1.
+func (j *fakeJira) confluenceAPI(w http.ResponseWriter, r *http.Request) bool {
+	if !strings.HasPrefix(r.URL.Path, "/wiki/api/v2/pages") {
+		return false
+	}
+	if j.pages == nil {
+		j.pages = map[string]*fakePage{"500": {id: "500", title: "Changelog", version: 1}}
+	}
+	encode := func(p *fakePage) map[string]any {
+		return map[string]any{"id": p.id, "title": p.title, "spaceId": "S1", "parentId": p.parent,
+			"version": map[string]int{"number": p.version}, "body": map[string]any{"storage": map[string]string{"value": p.body}},
+			"_links": map[string]string{"webui": "/spaces/S/pages/" + p.id}}
+	}
+	type pageBody struct {
+		SpaceID, ParentID, Title, Status string
+		Body                             struct{ Representation, Value string }
+		Version                          struct{ Number int }
+	}
+	id := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/wiki/api/v2/pages"), "/")
+	switch {
+	case r.Method == http.MethodGet && id != "":
+		if p, ok := j.pages[id]; ok {
+			_ = json.NewEncoder(w).Encode(encode(p))
+			return true
+		}
+		http.Error(w, "no page", http.StatusNotFound)
+	case r.Method == http.MethodGet:
+		q := r.URL.Query()
+		results := []any{}
+		for _, p := range j.pages {
+			if q.Get("space-id") == "S1" && q.Get("body-format") == "storage" && p.title == q.Get("title") {
+				results = append(results, encode(p))
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": results})
+	case r.Method == http.MethodPost:
+		var b pageBody
+		if err := json.NewDecoder(r.Body).Decode(&b); err != nil || b.SpaceID != "S1" || j.pages[b.ParentID] == nil || b.Body.Representation != "storage" || b.Status != "current" {
+			http.Error(w, "unexpected page", http.StatusBadRequest)
+			return true
+		}
+		for _, p := range j.pages {
+			if p.title == b.Title {
+				http.Error(w, "a page with this title already exists", http.StatusBadRequest)
+				return true
+			}
+		}
+		p := &fakePage{id: strconv.Itoa(600 + len(j.pages)), title: b.Title, parent: b.ParentID, body: b.Body.Value, version: 1}
+		j.pages[p.id] = p
+		_ = json.NewEncoder(w).Encode(encode(p))
+	case r.Method == http.MethodPut:
+		var b pageBody
+		p := j.pages[id]
+		if err := json.NewDecoder(r.Body).Decode(&b); err != nil || p == nil || b.Version.Number != p.version+1 || b.Title != p.title {
+			http.Error(w, "unexpected page update", http.StatusConflict)
+			return true
+		}
+		p.body, p.version = b.Body.Value, b.Version.Number
+		_ = json.NewEncoder(w).Encode(encode(p))
+	default:
+		return false
+	}
+	return true
+}
+
+// page returns the body of the page with the title, "" for none.
+func (j *fakeJira) page(title string) string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for _, p := range j.pages {
+		if p.title == title {
+			return p.body
+		}
+	}
+	return ""
+}
+
 // version returns a copy of the version with the id.
 func (j *fakeJira) version(id string) map[string]any {
 	j.mu.Lock()
@@ -323,8 +414,9 @@ func (j *fakeJira) snapshot() (map[string][]string, []string) {
 
 type deployFixture struct {
 	*fixture
-	state string
-	jira  *fakeJira
+	state   string
+	jira    *fakeJira
+	jiraURL func() string
 }
 
 func deployRepo(t *testing.T) *deployFixture {
@@ -370,7 +462,7 @@ exit "${DEPLOY_EXIT:-0}"
 	}, "origin")
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
 	f.mustGraft("commit", "-m", "feat: base")
-	return &deployFixture{fixture: f, state: state, jira: jira}
+	return &deployFixture{fixture: f, state: state, jira: jira, jiraURL: func() string { return srv.URL }}
 }
 
 func deployConfig(state string, q func(string) string) string {
