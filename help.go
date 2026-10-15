@@ -67,6 +67,8 @@ var commands = []command{
 		applies: func(c *config.Config) bool { return c.TestDB != nil }},
 	{name: "tools", syntax: fixed("graft tools [install]"), summary: text("check the pinned tools; install installs the failing ones"),
 		applies: func(c *config.Config) bool { return len(c.Tools) > 0 }},
+	{name: "worktree", syntax: fixed("graft worktree add <branch> [<base>]", "graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h]"),
+		summary: text("a worktree under the user's cache, with go.work's neighbours linked; remove the worktrees and branches whose work is in the trunk by content")},
 	{name: "help", syntax: fixed("graft help", "graft --version"), summary: text("this text; the version of graft itself")},
 }
 

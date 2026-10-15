@@ -114,6 +114,8 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		return deployCmd(ctx, a, rest)
 	case "stats":
 		return statsCmd(a, rest)
+	case "worktree":
+		return worktreeCmd(ctx, a, rest)
 	default:
 		return projectCmd(ctx, a, cmd, rest)
 	}
@@ -251,6 +253,31 @@ func testDBCmd(ctx context.Context, a *app.App, args []string) error {
 		return fmt.Errorf("%w: %s", errUsage, app.TestDBUsage())
 	}
 	return err
+}
+
+func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
+	usage := fmt.Errorf("%w: graft worktree add <branch> [<base>] | clean [--apply] [--trunk <ref>] [--min-age 1h]", errUsage)
+	switch {
+	case len(args) == 2 && args[0] == "add" && !strings.HasPrefix(args[1], "-"):
+		return a.WorktreeAdd(ctx, app.WorktreeAddOptions{Branch: args[1]})
+	case len(args) == 3 && args[0] == "add" && !strings.HasPrefix(args[1], "-"):
+		return a.WorktreeAdd(ctx, app.WorktreeAddOptions{Branch: args[1], Base: args[2]})
+	case len(args) == 0 || args[0] != "clean":
+		return usage
+	}
+	fs := newFlags(a, "worktree clean")
+	o := app.WorktreeCleanOptions{}
+	fs.BoolVar(&o.Apply, "apply", false, "remove; without it only report")
+	fs.StringVar(&o.Trunk, "trunk", "", "the ref work must be in (default: the HEAD branch of the deploy remote or of the only remote)")
+	fs.DurationVar(&o.MinAge, "min-age", time.Hour, "leave alone a worktree or branch used more recently")
+	pos, err := parseInterspersed(fs, args[1:])
+	if err != nil {
+		return err
+	}
+	if len(pos) != 0 {
+		return usage
+	}
+	return a.WorktreeClean(ctx, o)
 }
 
 func toolsCmd(ctx context.Context, a *app.App, args []string) error {

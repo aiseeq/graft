@@ -79,6 +79,8 @@ leaks:                           # keep private names out of public repositories
 | `graft status` | services, the test database, held locks |
 | `graft locks` | who holds graft's locks |
 | `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |
+| `graft worktree add <branch> [<base>]` | a worktree under the user's cache, go.work's neighbours linked (see Worktrees) |
+| `graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h]` | remove the worktrees and branches whose work is in the trunk by content; list the rest |
 | `graft tools [install]` | check the pinned tools; install the failing ones |
 | `graft help` | the commands the project's `.graft.yaml` uses, its tasks (those with `desc`, with their arguments) and services |
 | `graft --version` | print graft's own version |
@@ -950,6 +952,36 @@ deploy:
   `graft:leak-ok <reason>` passes; `leaks.allow` passes a name or term
   everywhere. `graft leaks <revision range>` runs the same scan over existing
   commits, each against its parent, to audit a history.
+
+## Worktrees
+
+`graft worktree add <branch> [<base>]` makes a worktree at
+`<user cache>/worktrees/<repository>/<branch, / as ->` (`~/.cache` on Linux),
+out of the directory the repositories live in, on the branch: a new one from
+`<base>`, by default the trunk (below), or the existing one. A relative path in
+go.work's `use` and `replace` or go.mod's `replace` that leads out of the
+repository (`../kit`) is linked at the same place beside the worktree, so the
+worktree builds as the repository does; a link already there must lead to the
+same directory, or nothing is made.
+
+`graft worktree clean` lists every worktree but the main one and every local
+branch no worktree holds; with `--apply` it removes the ones whose work is in
+the trunk:
+
+- the trunk is `--trunk`, or the HEAD branch (`refs/remotes/<remote>/HEAD`) of
+  `deploy.remote`, or of the only remote; every remote is fetched first;
+- in work, left alone: locked, a process works in it (its working directory,
+  read from /proc, so Linux only), used within `--min-age` (its HEAD reflog),
+  or uncommitted changes;
+- in the trunk: merging it into the trunk (`git merge-tree --write-tree`)
+  gives the trunk's tree, the version files graft bumps aside. Ancestry and
+  patch ids are no measure: a rewritten commit has another hash, and a commit
+  with the same subject may carry other content;
+- a worktree is removed with `git worktree remove`, then its branch, and the
+  branch of the same name on every remote whose copy is in the trunk too;
+- the rest is listed: `unmerged` with the lines or conflicts it adds, and
+  `check` when its commit subjects are all in the trunk but its content is
+  not: it looks merged, a look decides.
 
 ## Development
 
