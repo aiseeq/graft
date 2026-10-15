@@ -144,7 +144,24 @@ type Push struct {
 type Checks struct {
 	Secrets    Secrets    `yaml:"secrets"`
 	LargeFiles LargeFiles `yaml:"large_files"`
+	Reverts    Reverts    `yaml:"reverts"`
 }
+
+// Reverts configures the check that a commit does not take back a recent
+// commit's change to a file without saying so.
+type Reverts struct {
+	Enabled *bool `yaml:"enabled"`
+	// Depth is how many recent commits of HEAD's first-parent line count.
+	Depth int `yaml:"depth"`
+	// Exceptions are files rebuilt rather than edited, which go back and forth.
+	Exceptions []Exception `yaml:"exceptions"`
+}
+
+// DefaultRevertDepth is how many recent commits the revert check looks at.
+const DefaultRevertDepth = 60
+
+// IsEnabled reports whether the revert check runs; it is on by default.
+func (r Reverts) IsEnabled() bool { return r.Enabled == nil || *r.Enabled }
 
 // Secrets configures the credential scan.
 type Secrets struct {
@@ -249,6 +266,7 @@ func (c *Config) validate() error {
 		c.validatePush,
 		c.validateSecrets,
 		c.validateLargeFiles,
+		c.validateReverts,
 		c.validateHooks,
 		c.validateLock,
 		c.validateEnvs,
@@ -396,6 +414,17 @@ func (c *Config) validateSecrets() error {
 		s.Extra = append(s.Extra, re)
 	}
 	return validateExceptions("checks.secrets.exceptions", s.Exceptions)
+}
+
+func (c *Config) validateReverts() error {
+	r := &c.Checks.Reverts
+	switch {
+	case r.Depth == 0:
+		r.Depth = DefaultRevertDepth
+	case r.Depth < 0:
+		return fmt.Errorf("checks.reverts.depth: %d is negative", r.Depth)
+	}
+	return validateExceptions("checks.reverts.exceptions", r.Exceptions)
 }
 
 func (c *Config) validateLargeFiles() error {

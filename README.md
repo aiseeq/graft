@@ -210,6 +210,12 @@ checks:
     exceptions:
       - path: docs/vendor/diagram.min.js
         reason: vendored library, updated on purpose
+  reverts:
+    enabled: true               # default true
+    depth: 60                   # default: recent commits of HEAD's first-parent line
+    exceptions:
+      - path: 'testdata/golden/**'
+        reason: regenerated, goes back and forth
 
 hooks:
   dir: .githooks                # default .githooks
@@ -932,6 +938,16 @@ deploy:
   test) is refused unless its extension is in `binary_extensions`; binary
   files over `max_binary_bytes` and text files over `max_text_bytes` are
   refused.
+- **Reverts**: a commit must not silently take back merged work, a tree from
+  an old base committed on a fresh parent say. For each staged file and each
+  of the `depth` recent commits of HEAD's first-parent line that changed it:
+  when that commit's diff of the file applies to the staged tree and did not
+  apply to HEAD's, the file takes it back, a deleted file as much as changed
+  lines. A revert that is meant names the commit (9 characters of its hash
+  or more) or the file in the message; `git revert` names the commit, and in
+  a rebase, merge, cherry-pick or revert the message git prepared counts.
+  Moves, the version files and `exceptions` do not count. A partial
+  take-back, part of a commit's diff of a file, is not seen.
 - **Leaks**: with `leaks` in the user config, a commit to a repository that
   has a remote under `public_remotes` is checked for private names in the
   lines it adds and in its message. A remote under `private_remotes` is

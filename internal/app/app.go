@@ -208,6 +208,18 @@ func runChecks(repo *gitx.Repo, cfg *config.Config, message string, log io.Write
 	if cfg.Checks.LargeFiles.IsEnabled() {
 		findings = append(findings, checks.LargeFiles(staged, cfg.Checks.LargeFiles)...)
 	}
+	if cfg.Checks.Reverts.IsEnabled() {
+		if message == "" {
+			if message, err = machineryMessage(repo); err != nil {
+				return err
+			}
+		}
+		back, err := checks.Reverts(repo, cfg.Checks.Reverts, versionFiles(cfg), message)
+		if err != nil {
+			return err
+		}
+		findings = append(findings, back...)
+	}
 	drift, err := checks.VersionSync(repo, cfg.Version)
 	if err != nil {
 		return err
@@ -227,6 +239,20 @@ func runChecks(repo *gitx.Repo, cfg *config.Config, message string, log io.Write
 		return &ChecksError{Findings: findings}
 	}
 	return nil
+}
+
+// machineryMessage is the message of the commit git's machinery is making:
+// a rebase's, or a merge's, cherry-pick's or revert's; "" when none is in
+// progress.
+func machineryMessage(repo *gitx.Repo) (string, error) {
+	for _, f := range []string{filepath.Join("rebase-merge", "message"), "MERGE_MSG"} {
+		data, err := os.ReadFile(filepath.Join(repo.GitDir, f))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		return string(data), err
+	}
+	return "", nil
 }
 
 // pushRemotes resolves the remotes to publish to and verifies the configured
