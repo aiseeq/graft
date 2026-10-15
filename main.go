@@ -22,6 +22,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/aiseeq/graft/internal/app"
+	"github.com/aiseeq/graft/internal/config"
 	"github.com/aiseeq/graft/internal/hooks"
 	"github.com/aiseeq/graft/internal/message"
 	"github.com/aiseeq/graft/internal/tasks"
@@ -517,5 +518,5 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 }
 
 func isDeploySubcommand(s string) bool {
-	return s == "status" || s == "logs" || s == "check-head" || s == "cutoff"
+	return slices.Contains(config.DeploySubcommands, s)
 }

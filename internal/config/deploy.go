@@ -207,12 +207,15 @@ func (c *Config) validateDeploy() error {
 	return c.validateReleaseNotes()
 }
 
+// DeploySubcommands are the words after graft deploy that are not targets.
+var DeploySubcommands = []string{"status", "logs", "check-head", "cutoff"}
+
 func (c *Config) validateTarget(name string, t *DeployTarget) error {
 	where := "deploy.targets." + name
 	if !envNameRe.MatchString(name) {
 		return fmt.Errorf("%s: invalid target name", where)
 	}
-	if name == "status" || name == "logs" || name == "check-head" || name == "cutoff" {
+	if slices.Contains(DeploySubcommands, name) {
 		return fmt.Errorf("%s: %q is a graft deploy subcommand, pick another name", where, name)
 	}
 	if t == nil || len(t.Run.Argv) == 0 {
@@ -248,15 +251,15 @@ func (c *Config) validateTarget(name string, t *DeployTarget) error {
 		return err
 	}
 	t.Keys = keys
+	return c.validateTargetRelease(where, t)
+}
+
+// validateTargetRelease checks the release window and what a target asks of
+// Jira: the approved release before a deploy and the notes after it.
+func (c *Config) validateTargetRelease(where string, t *DeployTarget) error {
 	if err := c.validateWindow(where, t); err != nil {
 		return err
 	}
-	return c.validateTargetJira(where, t)
-}
-
-// validateTargetJira checks what a target asks of Jira: the approved release
-// before a deploy and the notes after it.
-func (c *Config) validateTargetJira(where string, t *DeployTarget) error {
 	if err := c.validateApprovedRelease(where, t); err != nil {
 		return err
 	}

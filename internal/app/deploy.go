@@ -146,18 +146,8 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 		}
 	}
 	a.printf("deploying %s (version %s, commit %s) to %s", r.name, r.version, gitx.Short(head), r.env.Destination())
-	if r.now, err = deployNow(); err != nil {
+	if err := a.startRelease(r); err != nil {
 		return err
-	}
-	if r.branch, err = r.repo.Branch(); err != nil {
-		return err
-	}
-	r.hotfix = r.cfg.Deploy.IsHotfix(r.branch)
-	// The window is checked first: outside it nothing else matters.
-	if !r.hotfix {
-		if err := a.checkWindow(r); err != nil {
-			return err
-		}
 	}
 	// requires is a quick read-only check: it fails before a long deps run.
 	if err := a.requireDeployed(ctx, r); err != nil {
@@ -198,6 +188,22 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	}
 	a.printf("deployed %s to %s", gitx.Short(r.head), r.name)
 	return a.recordDeployment(ctx, r)
+}
+
+// startRelease reads the time and the branch, and refuses a target with a
+// window outside it: outside the window nothing else matters.
+func (a *App) startRelease(r *deployRun) error {
+	var err error
+	if r.now, err = deployNow(); err != nil {
+		return err
+	}
+	if r.branch, err = r.repo.Branch(); err != nil {
+		return err
+	}
+	if r.hotfix = r.cfg.Deploy.IsHotfix(r.branch); r.hotfix {
+		return nil
+	}
+	return a.checkWindow(r)
 }
 
 // checkReleaseFlow runs the checks between the deployed commit and the new
@@ -520,34 +526,36 @@ func (m *noteMover) delivered(ctx context.Context, issue jira.Issue) string {
 	case t == nil:
 		m.app.printf("%s stays %s: release_notes.transitions move only from %s", issue.Key, issue.Status, strings.Join(m.conf.FromStatuses(), ", "))
 	default:
-		if m.move(ctx, issue, t, "") {
-			return t.To
+		if err := m.move(ctx, issue, t, ""); err != nil {
+			m.app.warn("%v", err)
+			return issue.Status
 		}
+		return t.To
 	}
 	return issue.Status
 }
 
 // move takes the item by the transition and hands it over; after names the
-// parent a subtask follows. It tells whether the item moved.
-func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTransition, after string) bool {
+// parent a subtask follows. An item moved but not handed over is reported
+// and recorded, not returned: the move itself happened.
+func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTransition, after string) error {
 	how := ""
 	if after != "" {
 		how = " after its parent " + after
 	}
 	if err := m.client.Transition(ctx, issue, t.To); err != nil {
-		m.app.warn("%s not moved to %s%s: %v", issue.Key, t.To, how, err)
-		return false
-	}
-	if t.Assign != "" && issue.AssigneeID != t.Assign {
-		if err := m.client.Assign(ctx, issue.Key, t.Assign); err != nil {
-			m.app.printf("%s moved to %s%s", issue.Key, t.To, how)
-			m.app.assignFailed(&m.unset, issue.Key, err)
-			return true
-		}
-		how += ", assigned to " + t.Assign
+		return fmt.Errorf("%s not moved to %s%s: %w", issue.Key, t.To, how, err)
 	}
 	m.app.printf("%s moved to %s%s", issue.Key, t.To, how)
-	return true
+	if t.Assign == "" || issue.AssigneeID == t.Assign {
+		return nil
+	}
+	if err := m.client.Assign(ctx, issue.Key, t.Assign); err != nil {
+		m.app.assignFailed(&m.unset, issue.Key, err)
+		return nil
+	}
+	m.app.printf("%s assigned to %s", issue.Key, t.Assign)
+	return nil
 }
 
 // subtaskRun moves subtasks after their parents once the notes are posted.
@@ -613,7 +621,9 @@ func (s *subtaskRun) move(ctx context.Context, key, parent string, t *config.Not
 		return
 	}
 	if yours {
-		s.mover.move(ctx, issue, t, parent)
+		if err := s.mover.move(ctx, issue, t, parent); err != nil {
+			app.warn("%v", err)
+		}
 	}
 }
 

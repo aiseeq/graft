@@ -13,6 +13,7 @@ import (
 	"github.com/aiseeq/graft/internal/deploy"
 	"github.com/aiseeq/graft/internal/envs"
 	"github.com/aiseeq/graft/internal/gitx"
+	"github.com/aiseeq/graft/internal/jira"
 )
 
 // EnvNow, when set (RFC 3339), is the time deploy judges windows and holds
@@ -79,65 +80,82 @@ func (a *App) checkHotfix(ctx context.Context, r *deployRun) error {
 	refuse := func(format string, args ...any) error {
 		return fmt.Errorf("deploy %s: nothing was deployed: hotfix %s: "+format, append([]any{r.name, r.branch}, args...)...)
 	}
-	base := h.Base
-	baseSHA := r.prev
-	if base != r.name {
-		bt := r.cfg.Deploy.Targets[base]
-		env, err := envs.Get(r.cfg, r.repo.Root, bt.Env)
-		if err != nil {
-			return refuse("%v", err)
-		}
-		if baseSHA, err = deploy.ReadDeployedSHA(ctx, env, bt.DeployedSHA); err != nil {
-			return refuse("%v", err)
-		}
-	}
-	if baseSHA == "" {
-		return refuse("%s has no deployed commit recorded to start from", base)
-	}
-	known, err := r.repo.RevExists(baseSHA)
+	baseSHA, err := hotfixBase(ctx, r)
 	if err != nil {
 		return refuse("%v", err)
-	}
-	if !known {
-		return refuse("%s runs %s, unknown here (git fetch?)", base, gitx.Short(baseSHA))
-	}
-	from, err := r.repo.IsAncestor(baseSHA, r.head)
-	if err != nil {
-		return refuse("%v", err)
-	}
-	if !from {
-		return refuse("does not start from %s, which %s runs: branch from it (git switch -c %s %s) and bring the fix over", gitx.Short(baseSHA), base, r.branch, gitx.Short(baseSHA))
 	}
 	commits, err := deliveredCommits(r.repo, baseSHA, r.head)
 	if err != nil {
 		return refuse("%v", err)
 	}
 	if len(commits) == 0 {
-		return refuse("no commits on top of %s, which %s runs", gitx.Short(baseSHA), base)
+		return refuse("no commits on top of %s, which %s runs", gitx.Short(baseSHA), h.Base)
 	}
-	client, err := jiraClient()
+	outside, items, err := unlabelled(ctx, r, commits)
 	if err != nil {
 		return refuse("%v", err)
 	}
+	if len(outside) > 0 {
+		return refuse("every commit must name an item labelled %s:\n  %s", h.Label, strings.Join(outside, "\n  "))
+	}
+	a.printf("hotfix %s: %d commits on top of %s, which %s runs, for %s; the release window, the hold and approved_release do not apply",
+		r.branch, len(commits), gitx.Short(baseSHA), h.Base, strings.Join(items, ", "))
+	return nil
+}
+
+// hotfixBase reads the commit the hotfix base target runs and checks that
+// HEAD starts from it.
+func hotfixBase(ctx context.Context, r *deployRun) (string, error) {
+	base := r.cfg.Deploy.Hotfix.Base
+	baseSHA := r.prev
+	if base != r.name {
+		bt := r.cfg.Deploy.Targets[base]
+		env, err := envs.Get(r.cfg, r.repo.Root, bt.Env)
+		if err != nil {
+			return "", err
+		}
+		if baseSHA, err = deploy.ReadDeployedSHA(ctx, env, bt.DeployedSHA); err != nil {
+			return "", err
+		}
+	}
+	if baseSHA == "" {
+		return "", fmt.Errorf("%s has no deployed commit recorded to start from", base)
+	}
+	known, err := r.repo.RevExists(baseSHA)
+	if err != nil {
+		return "", err
+	}
+	if !known {
+		return "", fmt.Errorf("%s runs %s, unknown here (git fetch?)", base, gitx.Short(baseSHA))
+	}
+	from, err := r.repo.IsAncestor(baseSHA, r.head)
+	if err != nil {
+		return "", err
+	}
+	if !from {
+		return "", fmt.Errorf("does not start from %s, which %s runs: branch from it (git switch -c %s %s) and bring the fix over", gitx.Short(baseSHA), base, r.branch, gitx.Short(baseSHA))
+	}
+	return baseSHA, nil
+}
+
+// unlabelled lists the hotfix commits that name no item with the hotfix
+// label, and the labelled items the others name.
+func unlabelled(ctx context.Context, r *deployRun, commits []deliveredCommit) (outside, items []string, err error) {
+	h := r.cfg.Deploy.Hotfix
+	client, err := jiraClient()
+	if err != nil {
+		return nil, nil, err
+	}
 	keyRe := projectKeyRe(r.cfg)
-	conf := r.cfg.Deploy.Targets[base].ApprovedRelease
-	var outside, items []string
+	conf := r.cfg.Deploy.Targets[h.Base].ApprovedRelease
 	for _, c := range commits {
-		line := gitx.Short(c.sha) + " " + c.subject
 		if isRevert(c.subject) {
 			continue
 		}
 		keys := uniqueSorted(keyRe.FindAllString(c.subject+"\n"+c.body, -1))
-		labelled := ""
-		for _, key := range keys {
-			issue, err := client.Issue(ctx, key)
-			if err != nil {
-				return refuse("%v", err)
-			}
-			if slices.Contains(issue.Labels, h.Label) {
-				labelled = key
-				break
-			}
+		labelled, err := labelledItem(ctx, client, keys, h.Label)
+		if err != nil {
+			return nil, nil, err
 		}
 		if labelled != "" {
 			if !slices.Contains(items, labelled) {
@@ -148,7 +166,7 @@ func (a *App) checkHotfix(ctx context.Context, r *deployRun) error {
 		if conf != nil {
 			ignored, err := shipsNothing(r.repo, r.cfg, conf, c.sha)
 			if err != nil {
-				return refuse("%v", err)
+				return nil, nil, err
 			}
 			if ignored {
 				continue
@@ -158,20 +176,29 @@ func (a *App) checkHotfix(ctx context.Context, r *deployRun) error {
 		if len(keys) > 0 {
 			why = fmt.Sprintf("%s without the label %s", strings.Join(keys, ", "), h.Label)
 		}
-		outside = append(outside, line+": "+why)
+		outside = append(outside, gitx.Short(c.sha)+" "+c.subject+": "+why)
 	}
-	if len(outside) > 0 {
-		return refuse("every commit must name an item labelled %s:\n  %s", h.Label, strings.Join(outside, "\n  "))
+	return outside, items, nil
+}
+
+// labelledItem names the first of the items with the label, "" for none.
+func labelledItem(ctx context.Context, client *jira.Client, keys []string, label string) (string, error) {
+	for _, key := range keys {
+		issue, err := client.Issue(ctx, key)
+		if err != nil {
+			return "", err
+		}
+		if slices.Contains(issue.Labels, label) {
+			return key, nil
+		}
 	}
-	a.printf("hotfix %s: %d commits on top of %s, which %s runs, for %s; the release window, the hold and approved_release do not apply",
-		r.branch, len(commits), gitx.Short(baseSHA), base, strings.Join(items, ", "))
-	return nil
+	return "", nil
 }
 
 // checkHold keeps a release candidate on a target from a window's cutoff
 // until the window ends or the windowed target runs it. Meanwhile only
 // reverts of the candidate's work, changes to ignore_paths and merges of
-// hotfixes already out may go there; a hotfix branch goes as well.
+// fixes already out may go there; a hotfix branch goes as well.
 func (a *App) checkHold(ctx context.Context, r *deployRun) error {
 	for _, wname := range r.cfg.Deploy.HoldingWindows(r.name) {
 		if err := a.checkHeldFor(ctx, r, wname); err != nil {
@@ -368,67 +395,15 @@ func (a *App) DeployCutoff(ctx context.Context, target string) error {
 	if r.now, err = deployNow(); err != nil {
 		return err
 	}
-	trunk, err := r.repo.Branch()
-	if err != nil {
+	if r.branch, err = r.repo.Branch(); err != nil {
 		return err
 	}
-	if r.cfg.Deploy.IsHotfix(trunk) || config.BranchMatches(r.cfg.Version.Build, trunk) {
-		return fmt.Errorf("run cutoff on the trunk, not on %s: the commands merge the release branch back into the branch checked out", trunk)
+	if r.cfg.Deploy.IsHotfix(r.branch) || config.BranchMatches(r.cfg.Version.Build, r.branch) {
+		return fmt.Errorf("run cutoff on the trunk, not on %s: the commands merge the release branch back into the branch checked out", r.branch)
 	}
-	occ, held := deploy.Hold(w, r.now)
-	if !held {
-		occ = deploy.Next(w, r.now)
-	}
-	if r.prev, err = deploy.ReadDeployedSHA(ctx, r.env, r.target.DeployedSHA); err != nil {
+	c, err := a.cutoffCandidate(ctx, r)
+	if err != nil || c.candidate == r.prev {
 		return err
-	}
-	if r.prev == "" {
-		return fmt.Errorf("%s has no deployed commit recorded: what the candidate takes out is unknown", target)
-	}
-	hname := r.target.Requires
-	ht := r.cfg.Deploy.Targets[hname]
-	henv, err := envs.Get(r.cfg, r.repo.Root, ht.Env)
-	if err != nil {
-		return err
-	}
-	runs, err := deploy.ReadDeployedSHA(ctx, henv, ht.DeployedSHA)
-	if err != nil {
-		return err
-	}
-	candidate := runs
-	if held {
-		if candidate, err = heldCandidate(ctx, henv, ht.DeployedSHA, runs, occ); err != nil {
-			return err
-		}
-	}
-	when := "the cutoff is " + occ.Cutoff.Format("Mon 02.01 15:04") + ": until then the candidate is whatever " + hname + " runs"
-	if held {
-		when = "the cutoff was " + occ.Cutoff.Format("Mon 02.01 15:04") + ", " + hname + " holds the candidate"
-	}
-	a.printf("%s window %s, %s-%s; %s", target, occ.Name(), occ.Start.Format("Mon 02.01 15:04"), occ.End.Format("15:04"), when)
-	if candidate == "" {
-		return fmt.Errorf("%s runs no recorded commit: there is no candidate", hname)
-	}
-	for _, sha := range []string{r.prev, candidate} {
-		if known, err := r.repo.RevExists(sha); err != nil || !known {
-			return errors.Join(err, fmt.Errorf("%s is unknown here (git fetch?)", sha))
-		}
-	}
-	subject, err := r.repo.Git("log", "-1", "--format=%s", candidate)
-	if err != nil {
-		return err
-	}
-	a.printf("candidate %s %s; %s runs %s", gitx.Short(candidate), strings.TrimSpace(subject), target, gitx.Short(r.prev))
-	if candidate == r.prev {
-		a.printf("%s runs the candidate already: nothing to release", target)
-		return nil
-	}
-	in, err := r.repo.IsAncestor(r.prev, candidate)
-	if err != nil {
-		return err
-	}
-	if !in {
-		a.warn("%s runs %s, which the candidate lacks: a hotfix not merged yet. Merge it into the release branch below before graft deploy %s, or that deploy refuses", target, gitx.Short(r.prev), hname)
 	}
 	withheld, err := readWithheld(ctx, r.env, r.target.DeployedSHA)
 	if err != nil {
@@ -438,19 +413,92 @@ func (a *App) DeployCutoff(ctx context.Context, target string) error {
 	if err != nil {
 		return err
 	}
-	out, err := g.run(ctx, r.prev, candidate, withheld, false)
+	out, err := g.run(ctx, r.prev, c.candidate, withheld, false)
 	if err != nil {
 		return err
 	}
-	branch := "release/" + occ.Name()
+	a.printCutoff(r, c, out.failures)
+	return nil
+}
+
+// cutoff is the window a cutoff command is about and its candidate.
+type cutoff struct {
+	occ       deploy.Occurrence
+	held      string
+	candidate string
+}
+
+// cutoffCandidate finds the window (the one holding, or the next), what the
+// windowed target runs (into r.prev) and the candidate.
+func (a *App) cutoffCandidate(ctx context.Context, r *deployRun) (cutoff, error) {
+	c := cutoff{held: r.target.Requires}
+	occ, held := deploy.Hold(r.target.Window, r.now)
+	if !held {
+		occ = deploy.Next(r.target.Window, r.now)
+	}
+	c.occ = occ
+	var err error
+	if r.prev, err = deploy.ReadDeployedSHA(ctx, r.env, r.target.DeployedSHA); err != nil {
+		return c, err
+	}
+	if r.prev == "" {
+		return c, fmt.Errorf("%s has no deployed commit recorded: what the candidate takes out is unknown", r.name)
+	}
+	ht := r.cfg.Deploy.Targets[c.held]
+	henv, err := envs.Get(r.cfg, r.repo.Root, ht.Env)
+	if err != nil {
+		return c, err
+	}
+	if c.candidate, err = deploy.ReadDeployedSHA(ctx, henv, ht.DeployedSHA); err != nil {
+		return c, err
+	}
+	when := "the cutoff is " + occ.Cutoff.Format("Mon 02.01 15:04") + ": until then the candidate is whatever " + c.held + " runs"
+	if held {
+		when = "the cutoff was " + occ.Cutoff.Format("Mon 02.01 15:04") + ", " + c.held + " holds the candidate"
+		if c.candidate, err = heldCandidate(ctx, henv, ht.DeployedSHA, c.candidate, occ); err != nil {
+			return c, err
+		}
+	}
+	a.printf("%s window %s, %s-%s; %s", r.name, occ.Name(), occ.Start.Format("Mon 02.01 15:04"), occ.End.Format("15:04"), when)
+	if c.candidate == "" {
+		return c, fmt.Errorf("%s runs no recorded commit: there is no candidate", c.held)
+	}
+	for _, sha := range []string{r.prev, c.candidate} {
+		if known, err := r.repo.RevExists(sha); err != nil || !known {
+			return c, errors.Join(err, fmt.Errorf("%s is unknown here (git fetch?)", sha))
+		}
+	}
+	subject, err := r.repo.Git("log", "-1", "--format=%s", c.candidate)
+	if err != nil {
+		return c, err
+	}
+	a.printf("candidate %s %s; %s runs %s", gitx.Short(c.candidate), strings.TrimSpace(subject), r.name, gitx.Short(r.prev))
+	if c.candidate == r.prev {
+		a.printf("%s runs the candidate already: nothing to release", r.name)
+		return c, nil
+	}
+	in, err := r.repo.IsAncestor(r.prev, c.candidate)
+	if err != nil {
+		return c, err
+	}
+	if !in {
+		a.warn("%s runs %s, which the candidate lacks: a hotfix not merged yet. Merge it into the release branch below before graft deploy %s, or that deploy refuses", r.name, gitx.Short(r.prev), c.held)
+	}
+	return c, nil
+}
+
+// printCutoff prints the commands that take the failing commits out of the
+// candidate on a release branch, deploy it and record it on the trunk.
+func (a *App) printCutoff(r *deployRun, c cutoff, failures []gateFailure) {
+	branch := "release/" + c.occ.Name()
 	remote := r.cfg.Deploy.Remote
-	fmt.Fprintf(a.Stdout, "\nThe release goes out from %s, cut from the candidate:\n  git fetch %s\n  git switch -c %s %s\n", branch, remote, branch, candidate)
-	if len(out.failures) == 0 {
-		fmt.Fprintf(a.Stdout, "  git push -u %s %s\nEvery commit of the candidate passes. In the window:\n  graft deploy %s\n", remote, branch, target)
-		return nil
+	fmt.Fprintf(a.Stdout, "\nThe release goes out from %s, cut from the candidate:\n  git fetch %s\n  git switch -c %s %s\n", branch, remote, branch, c.candidate)
+	if len(failures) == 0 {
+		fmt.Fprintf(a.Stdout, "  git push -u %s %s\nEvery commit of the candidate passes. In the window:\n  graft deploy %s\n", remote, branch, r.name)
+		return
 	}
 	fmt.Fprintf(a.Stdout, "These commits are not checked: their reverts go onto %s, one commit per item (a conflict: resolve it, git add, go on):\n", branch)
-	for _, grp := range groupFailures(out.failures) {
+	for _, grp := range groupFailures(failures) {
 		fmt.Fprintf(a.Stdout, "\n  # %s\n", grp.title)
 		var body []string
 		for _, f := range grp.failures {
@@ -458,7 +506,7 @@ func (a *App) DeployCutoff(ctx context.Context, target string) error {
 			fmt.Fprintf(a.Stdout, "  git diff %s^ %s -- .%s | git apply -R --3way --index\n", f.commit.sha, f.commit.sha, excludes(r.cfg))
 			body = append(body, "-m "+envs.Quote("This reverts commit "+f.commit.sha+"."))
 		}
-		fmt.Fprintf(a.Stdout, "  graft commit -m %s %s\n", envs.Quote("revert: "+grp.what+" not checked by the "+occ.Name()+" cutoff"), strings.Join(body, " "))
+		fmt.Fprintf(a.Stdout, "  graft commit -m %s %s\n", envs.Quote("revert: "+grp.what+" not checked by the "+c.occ.Name()+" cutoff"), strings.Join(body, " "))
 	}
 	fmt.Fprintf(a.Stdout, `
 Then the candidate goes to %[1]s again (the hold takes reverts) and out in the window:
@@ -468,8 +516,7 @@ After the release, %[3]s records it without taking the reverts: it keeps the wor
   git switch %[3]s && git pull --ff-only %[5]s %[3]s
   git merge -s ours --no-edit %[4]s
   git push %[5]s %[3]s
-`, hname, target, trunk, branch, remote)
-	return nil
+`, c.held, r.name, r.branch, branch, remote)
 }
 
 // failureGroup is the failing commits of one item, or of no item.

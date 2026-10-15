@@ -789,8 +789,10 @@ func TestDeploySubtasksFollowParents(t *testing.T) {
 		t.Errorf("statuses = %v, want %v", statuses, want)
 	}
 	for _, want := range []string{
-		"PROJ-20 moved to Testing, assigned to qa",
-		"PROJ-21 moved to Testing after its parent PROJ-20, assigned to qa",
+		"PROJ-20 moved to Testing\n",
+		"PROJ-20 assigned to qa",
+		"PROJ-21 moved to Testing after its parent PROJ-20\n",
+		"PROJ-21 assigned to qa",
 		"PROJ-24 moved to Testing after its parent PROJ-20\n",
 		"PROJ-31 moved to Done after its parent PROJ-30",
 		"PROJ-23 left alone: assigned to Colleague colleague",
