@@ -38,11 +38,11 @@ type Journal struct {
 // Split separates open events into those to review and those an exception
 // mutes.
 func (j *Journal) Split(events []Event) (review, muted []Event) {
-	for _, e := range events {
-		if j.muted(e) {
-			muted = append(muted, e)
+	for i := range events {
+		if j.muted(events[i]) {
+			muted = append(muted, events[i])
 		} else {
-			review = append(review, e)
+			review = append(review, events[i])
 		}
 	}
 	return review, muted
@@ -77,12 +77,13 @@ func (j *Journal) Status(ctx context.Context) error {
 		return nil
 	}
 	fmt.Fprintf(j.Out, "flag RAISED (%s): %d events to review, %d muted by exceptions\n\n", j.Env, len(review), len(muted))
-	for i, e := range review {
+	for i := range review {
 		if i == maxListed {
 			fmt.Fprintf(j.Out, "  ... and %d more\n", len(review)-maxListed)
 			break
 		}
-		fmt.Fprintf(j.Out, "  %s\n    %s\n    %s\n", e.ID, summary(e), e.Subject)
+		e := &review[i]
+		fmt.Fprintf(j.Out, "  %s\n    %s\n    %s\n", e.ID, summary(*e), e.Subject)
 	}
 	fmt.Fprintf(j.Out, "\nnext: graft flags show <id> --env %[1]s\n      graft flags ack <id> --reason \"what it was\" --env %[1]s\n      graft flags mute <id> --reason \"why it is noise\" --env %[1]s\n", j.Env)
 	return nil

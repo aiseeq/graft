@@ -452,7 +452,8 @@ type subtaskRun struct {
 // delivered subtasks whose parent is done.
 func (s *subtaskRun) follow(ctx context.Context) {
 	seen := map[string]bool{}
-	for _, issue := range s.delivered {
+	for i := range s.delivered {
+		issue := &s.delivered[i]
 		if s.finished[issue.Key] {
 			for _, key := range issue.Subtasks {
 				s.move(ctx, key, issue.Key, seen)

@@ -205,8 +205,8 @@ func (j jsonEvent) event() Event {
 
 func toEvents(rows []jsonEvent) []Event {
 	events := make([]Event, len(rows))
-	for i, r := range rows {
-		events[i] = r.event()
+	for i := range rows {
+		events[i] = rows[i].event()
 	}
 	return events
 }
