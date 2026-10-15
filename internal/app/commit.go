@@ -84,13 +84,11 @@ func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level versio
 	if err != nil {
 		return plan, err
 	}
-	var key string
-	if cfg.Ticket != nil {
-		key = message.BranchKey(branch, cfg.Ticket.Regexp)
-	}
-	msg = message.WithKey(msg, key)
-	if err := requireTicket(repo, cfg, msg); err != nil {
-		return plan, err
+	if cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, branch) {
+		msg = message.WithKey(msg, message.BranchKey(branch, cfg.Ticket.Regexp))
+		if err := requireTicket(repo, cfg, msg); err != nil {
+			return plan, err
+		}
 	}
 	return commitPlan{branch: branch, remotes: remotes, message: msg, bump: bump}, nil
 }
@@ -98,7 +96,7 @@ func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level versio
 // requireTicket refuses, under ticket.required, a commit that names no work
 // item: a revert and a commit that changes only files that ship nothing pass.
 func requireTicket(repo *gitx.Repo, cfg *config.Config, msg string) error {
-	if cfg.Ticket == nil || !cfg.Ticket.Required || cfg.Ticket.Regexp.MatchString(msg) {
+	if !cfg.Ticket.Required || cfg.Ticket.Regexp.MatchString(msg) {
 		return nil
 	}
 	if subject, _, _ := strings.Cut(msg, "\n"); isRevert(subject) {

@@ -113,7 +113,8 @@ a heavy task inside a heavy task was admitted with it. Ctrl-C stops the wait.
    detached, or if there is nothing to commit. With `ticket.required`, refuse
    a commit that names no work item, in the message or by the branch: only a
    revert and a commit whose files (the version bump aside) all match some
-   target's `approved_release.ignore_paths` need none.
+   target's `approved_release.ignore_paths` need none, and so does every
+   commit on a branch in `ticket.skip_branches`.
 4. Run the gate. A failure stops here, with the version untouched.
 5. Bump the version file and every file synced with it, except on a branch
    in `version.skip_branches` (`--minor` and `--major` are refused there).
@@ -129,8 +130,8 @@ a heavy task inside a heavy task was admitted with it. Ctrl-C stops the wait.
    backticks and lines starting with `#` survive. When the branch name contains
    a work item key (`ticket.pattern`) and the message does not mention it yet,
    the key is added as a paragraph of its own, before a closing trailer block
-   (`Co-Authored-By: ...`) so git still sees the trailers. graft adds no
-   trailers itself.
+   (`Co-Authored-By: ...`) so git still sees the trailers; a branch in
+   `ticket.skip_branches` lends no key. graft adds no trailers itself.
 8. Push to each remote in turn, with `--force-with-lease` on a branch in
    `push.force_with_lease`. A failing remote does not stop the others; the
    summary names every failure with the command to retry, and the exit status
@@ -201,6 +202,7 @@ version:
 ticket:                         # omit to never add a key
   pattern: '[A-Z][A-Z]+-[0-9]+' # first match in the branch name
   required: false               # true: a commit must name a work item
+  skip_branches: ['agent/*']    # commits on these branches need no work item and take no key from the branch
 
 push:
   remotes: []                   # empty: every configured remote

@@ -125,8 +125,14 @@ type Ticket struct {
 	// Required makes graft commit refuse a commit that names no work item, in
 	// its message or by its branch; a revert and a commit that changes only
 	// approved_release ignore_paths need none.
-	Required bool           `yaml:"required"`
-	Regexp   *regexp.Regexp `yaml:"-"`
+	Required bool `yaml:"required"`
+	// SkipBranches are branch globs, sessions of agents without the tracker,
+	// whose commits need no work item and take no key from the branch.
+	SkipBranches []string `yaml:"skip_branches"`
+
+	Regexp *regexp.Regexp `yaml:"-"`
+	// Skip is SkipBranches compiled.
+	Skip []*regexp.Regexp `yaml:"-"`
 }
 
 // Push selects the remotes a commit is published to.
@@ -385,7 +391,8 @@ func (c *Config) validateTicket() error {
 		return fmt.Errorf("ticket.pattern: %w", err)
 	}
 	c.Ticket.Regexp = re
-	return nil
+	c.Ticket.Skip, err = compileBranchGlobs("ticket.skip_branches", c.Ticket.SkipBranches)
+	return err
 }
 
 func (c *Config) validatePush() error {

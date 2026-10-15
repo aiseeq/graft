@@ -228,7 +228,7 @@ func TestTicketRequired(t *testing.T) {
 	f := newRepo(t, map[string]string{
 		".graft.yaml": `schema: 1
 version: {mode: file}
-ticket: {pattern: 'PROJ-[0-9]+', required: true}
+ticket: {pattern: 'PROJ-[0-9]+', required: true, skip_branches: ['agent/*']}
 envs: {local: {}}
 deploy:
   remote: origin
@@ -265,4 +265,13 @@ gate: []
 	f.git("checkout", "-q", "-b", "w/PROJ-3-thing")
 	f.write("b.txt", "b\n")
 	f.mustGraft("commit", "-m", "feat: from the branch key")
+
+	// On ticket.skip_branches a commit needs no work item, and the branch
+	// lends it no key.
+	f.git("checkout", "-q", "-b", "agent/PROJ-4-session")
+	f.write("c.txt", "c\n")
+	f.mustGraft("commit", "-m", "feat: from an agent session")
+	if body := f.git("log", "-1", "--format=%B"); strings.Contains(body, "PROJ-4") {
+		t.Errorf("a skipped branch lent its key:\n%s", body)
+	}
 }

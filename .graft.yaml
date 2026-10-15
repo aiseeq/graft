@@ -1,5 +1,4 @@
 schema: 1
-graft: '>=2.5.0'
 version:
   mode: git-tag
 gate:
