@@ -49,6 +49,9 @@ type DeployTarget struct {
 	Window *Window `yaml:"window"`
 	// ReleaseVersion keeps the Jira versions of the windows.
 	ReleaseVersion *ReleaseVersion `yaml:"release_version"`
+	// Integrations refuses a release that the target from Requires runs with
+	// an integration this target does not configure.
+	Integrations *Integrations `yaml:"integrations"`
 	// Status runs in Env; {args} receives what follows --.
 	Status EnvCommand `yaml:"status"`
 	// Logs runs in Env; {lines} is filled in, {args} receives what
@@ -60,6 +63,31 @@ type DeployTarget struct {
 	DotEnvSets []string    `yaml:"dotenv_sets"`
 	// Keys is DotEnv with the sets merged in.
 	Keys []DotEnvKey `yaml:"-"`
+}
+
+// Integrations compares the integrations two targets configure.
+type Integrations struct {
+	// Command prints one integration a line, the ones the environment's
+	// configuration turns on; it runs in the environment of this target and
+	// of the target from requires. With {staged} in it, it asks the build
+	// the deploy script uploaded: the script calls graft deploy
+	// check-integrations <path> once the build is there.
+	Command EnvCommand `yaml:"command"`
+	// Running is what {staged} is on the target from requires, which runs
+	// the release already: the path of the build it runs.
+	Running string `yaml:"running"`
+	// Exceptions is a file of "integration|reason" lines: integrations the
+	// target from requires runs and this one leaves off on purpose.
+	Exceptions string `yaml:"exceptions"`
+}
+
+// StagedPlaceholder in Integrations.Command is the build the command asks.
+const StagedPlaceholder = "{staged}"
+
+// Staged tells whether the command asks the uploaded build.
+func (i *Integrations) Staged() bool {
+	return strings.Contains(i.Command.Shell, StagedPlaceholder) ||
+		slices.ContainsFunc(i.Command.Argv, func(w string) bool { return strings.Contains(w, StagedPlaceholder) })
 }
 
 // DeployedSHA is a file in the target environment recording the deployed
@@ -240,7 +268,7 @@ func (c *Config) validateDeploy() error {
 }
 
 // DeploySubcommands are the words after graft deploy that are not targets.
-var DeploySubcommands = []string{"status", "logs", "check-head", "cutoff"}
+var DeploySubcommands = []string{"status", "logs", "check-head", "check-integrations", "cutoff"}
 
 func (c *Config) validateTarget(name string, t *DeployTarget) error {
 	where := "deploy.targets." + name
@@ -292,6 +320,9 @@ func (c *Config) validateTargetRelease(where string, t *DeployTarget) error {
 	if err := c.validateWindow(where, t); err != nil {
 		return err
 	}
+	if err := c.validateIntegrations(where, t); err != nil {
+		return err
+	}
 	if err := c.validateReleaseVersion(where, t); err != nil {
 		return err
 	}
@@ -299,6 +330,30 @@ func (c *Config) validateTargetRelease(where string, t *DeployTarget) error {
 		return err
 	}
 	return c.validateTargetNotes(where, t)
+}
+
+func (c *Config) validateIntegrations(where string, t *DeployTarget) error {
+	in := t.Integrations
+	if in == nil {
+		return nil
+	}
+	where += ".integrations"
+	switch {
+	case !in.Command.IsSet():
+		return fmt.Errorf("%s.command: required, prints one integration a line", where)
+	case t.Requires == "":
+		return fmt.Errorf("%s: needs requires, the target whose integrations this one must have", where)
+	case in.Staged() && strings.TrimSpace(in.Running) == "":
+		return fmt.Errorf("%s.running: required with %s in the command: the build the target from requires runs", where, StagedPlaceholder)
+	case !in.Staged() && in.Running != "":
+		return fmt.Errorf("%s.running: only with %s in the command", where, StagedPlaceholder)
+	}
+	for _, env := range []string{t.Env, c.Deploy.Targets[t.Requires].Env} {
+		if err := c.checkRemoteArgv(where+".command", env, in.Command); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {

@@ -50,6 +50,7 @@ var commands = []command{
 		"graft deploy logs <target> [--lines N] [--grep RE] [-- args]",
 		"graft deploy cutoff <target>",
 		"graft deploy check-head",
+		"graft deploy check-integrations [build]",
 	), summary: text("run the project's deploy script between graft's checks; status, logs, the release cutoff"),
 		applies: func(c *config.Config) bool { return c.Deploy != nil }},
 	{name: "run", syntax: fixed("graft <task> [-- args]", "graft run <task> [-- args]"), summary: text("run a task with its deps"),

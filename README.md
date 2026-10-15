@@ -70,6 +70,7 @@ leaks:                           # keep private names out of public repositories
 | `graft deploy cutoff <target>` | the release candidate of the target's window: its unchecked commits and the commands that revert them on a release branch |
 | `graft deploy status <target>` / `logs <target> [--lines N] [--grep RE]` | the target's status and logs commands |
 | `graft deploy check-head` | for deploy scripts: HEAD is still the commit being deployed |
+| `graft deploy check-integrations [build]` | for deploy scripts: the uploaded build configures every integration the target from `requires` runs (see Integrations) |
 | `graft <task> [-- args]` / `graft run <task> [-- args]` | run a task with its deps |
 | `graft tasks` | every task, building blocks and deps included |
 | `graft start` / `stop` / `restart [service]` | background services, all of them without a name |
@@ -669,6 +670,8 @@ release_notes:
    Release windows). `--unapproved` does not skip this.
    With a `window`, a hotfix branch and a held candidate, more checks come
    here; see Release windows below.
+   With `integrations`, the target must configure every integration the
+   target from `requires` runs; see Integrations below.
 4. Run the `deps` tasks, exactly as a task's deps run: in order, each at most
    once (deps of deps included), a `test_db: true` task with the test database
    up and its DSN. A failure ends the deploy before the deploy script runs or
@@ -825,6 +828,35 @@ deploy:
   and make the deploy exit 1.
 - `GRAFT_NOW` (RFC 3339), when set, is the time these checks use instead of
   the clock: for tests and for rehearsing a cutoff.
+
+### Integrations
+
+```yaml
+deploy:
+  targets:
+    prod:
+      requires: test
+      integrations:
+        command: app --print-integrations     # one integration a line
+        exceptions: deploy/integration-exceptions.conf
+```
+
+- `command` runs in the environment of the target and of the one from
+  `requires`, and prints the integrations each configuration turns on, one a
+  line. An integration `requires` runs that this target lacks stops the
+  deploy before deps and sudo, unless `exceptions` excuses it.
+- `exceptions` is a file of `integration|reason` lines, `#` comments and
+  blank lines skipped. A line without its reason, a name twice or a missing
+  file is an error; an exception the comparison does not need any more (the
+  target has it now, or `requires` no longer runs it) is a warning.
+- A command that only the new build answers right, the build asking its own
+  configuration by the rules it starts with, takes `{staged}`: `command: sudo
+  -u app {staged} --print-integrations` with `running: /opt/app/bin/app`,
+  the build the target from `requires` runs, as `{staged}` there. graft
+  deploy then leaves the comparison to the deploy script, which calls
+  `graft deploy check-integrations <uploaded build>` once the build is on the
+  target and before it switches to it; graft records the deploy only after
+  that call passed for the commit being deployed.
 
 ### Version modes
 

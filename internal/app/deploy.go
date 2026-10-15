@@ -171,6 +171,9 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 			return err
 		}
 	}
+	if err := a.checkIntegrations(ctx, r); err != nil {
+		return err
+	}
 	if len(r.target.Deps) > 0 {
 		a.printf("deploy %s: running %s first", r.name, strings.Join(r.target.Deps, ", "))
 		if err := r.tasks.RunDeps(ctx, r.target.Deps); err != nil {
@@ -187,6 +190,9 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	}
 	if err := deploy.CheckHead(r.repo, r.cfg.Deploy, r.head); err != nil {
 		return fmt.Errorf("the deploy script finished, but %w; the deployed commit is not recorded", err)
+	}
+	if err := requireIntegrationsChecked(r); err != nil {
+		return err
 	}
 	a.printf("deployed %s to %s", gitx.Short(r.head), r.name)
 	return a.recordDeployment(ctx, r)

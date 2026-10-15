@@ -469,10 +469,10 @@ func flagsCmd(ctx context.Context, a *app.App, args []string) error {
 }
 
 // deployFlagsMisplaced tells whether flags reach a subcommand that does not
-// take them: script args check-head, log flags anything but logs, deploy
+// take them: script args check-head, check-integrations and cutoff, log flags anything but logs, deploy
 // flags any subcommand.
 func deployFlagsMisplaced(sub string, scriptArgs, logFlags, deployFlags bool) bool {
-	return scriptArgs && (sub == "check-head" || sub == "cutoff") || logFlags && sub != "logs" || deployFlags && isDeploySubcommand(sub)
+	return scriptArgs && (sub == "check-head" || sub == "check-integrations" || sub == "cutoff") || logFlags && sub != "logs" || deployFlags && isDeploySubcommand(sub)
 }
 
 func deployCmd(ctx context.Context, a *app.App, args []string) error {
@@ -490,7 +490,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	if err != nil {
 		return err
 	}
-	usage := fmt.Errorf("%w: graft deploy [--redeploy] [--unapproved] <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | cutoff <target> | check-head", errUsage)
+	usage := fmt.Errorf("%w: graft deploy [--redeploy] [--unapproved] <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | cutoff <target> | check-head | check-integrations [build]", errUsage)
 	if len(pos) == 0 {
 		return usage
 	}
@@ -501,6 +501,8 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	switch {
 	case pos[0] == "check-head" && len(pos) == 1:
 		return a.DeployCheckHead()
+	case pos[0] == "check-integrations" && len(pos) <= 2:
+		return a.DeployCheckIntegrations(ctx, strings.Join(pos[1:], ""))
 	case pos[0] == "status" && len(pos) == 2:
 		return a.DeployStatus(ctx, pos[1], scriptArgs)
 	case pos[0] == "cutoff" && len(pos) == 2:

@@ -470,6 +470,38 @@ deploy:
 	}
 }
 
+func TestParseIntegrations(t *testing.T) {
+	base := `schema: 1
+version: {mode: file}
+envs: {local: {}, prod: {ssh: {host: h}}}
+deploy:
+  remote: origin
+  targets:
+    test: {env: local, run: [sh, d.sh], version: 'cat V'}
+    prod: {env: prod, run: [sh, d.sh], requires: test, integrations: {command: 'app --print-integrations', exceptions: x.conf}}
+    up: {env: prod, run: [sh, d.sh], requires: test, integrations: {command: 'run {staged} --print-integrations', running: /opt/app}}
+`
+	cfg, err := Parse([]byte(base))
+	if err != nil {
+		t.Fatalf("base must parse: %v", err)
+	}
+	if cfg.Deploy.Targets["prod"].Integrations.Staged() || !cfg.Deploy.Targets["up"].Integrations.Staged() {
+		t.Error("Staged")
+	}
+	for name, yaml := range map[string]string{
+		"no command":          strings.Replace(base, "command: 'app --print-integrations', ", "", 1),
+		"no requires":         strings.Replace(base, "requires: test, integrations: {command: 'app", "integrations: {command: 'app", 1),
+		"staged w/o running":  strings.Replace(base, ", running: /opt/app", "", 1),
+		"running w/o staged":  strings.Replace(base, "exceptions: x.conf", "running: /opt/app", 1),
+		"remote ${KEY} argv":  strings.Replace(base, "command: 'app --print-integrations'", "command: [app, '${MODE}']", 1),
+		"reserved subcommand": strings.Replace(base, "    up:", "    check-integrations:", 1),
+	} {
+		if _, err := Parse([]byte(yaml)); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+}
+
 func TestVersionName(t *testing.T) {
 	n, err := ParseVersionName("Product {dd}.{mm}.{yy}")
 	if err != nil {
