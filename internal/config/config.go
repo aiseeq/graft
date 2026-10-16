@@ -81,10 +81,13 @@ type Config struct {
 	Deploy       *Deploy       `yaml:"deploy"`
 	ReleaseNotes *ReleaseNotes `yaml:"release_notes"`
 
-	Tasks    map[string]*Task    `yaml:"tasks"`
-	Services map[string]*Service `yaml:"services"`
-	TestDB   *TestDB             `yaml:"test_db"`
-	Tools    map[string]*Tool    `yaml:"tools"`
+	Tasks map[string]*Task `yaml:"tasks"`
+	// CacheExclude are globs left out of the tree a task cache keys on.
+	CacheExclude []string `yaml:"cache_exclude"`
+	cacheExclude []*regexp.Regexp
+	Services     map[string]*Service `yaml:"services"`
+	TestDB       *TestDB             `yaml:"test_db"`
+	Tools        map[string]*Tool    `yaml:"tools"`
 }
 
 // Version describes where the project version lives.
@@ -281,6 +284,7 @@ func (c *Config) validate() error {
 		c.validateDeploy,
 		c.validateTestDB,
 		c.validateTasks,
+		c.validateCache,
 		c.validateServices,
 		c.validateTools,
 	}

@@ -70,7 +70,7 @@ func (a *App) WorktreeClean(_ context.Context, o WorktreeCleanOptions) error {
 	if c.trunk, err = cleanTrunk(repo, cfg, o.Trunk, c.remotes); err != nil {
 		return err
 	}
-	for _, f := range versionFiles(cfg) {
+	for _, f := range cfg.VersionFiles() {
 		c.exclude = append(c.exclude, ":(exclude)"+f)
 	}
 	if c.cwds, err = processCwds(); err != nil {

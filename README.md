@@ -289,6 +289,8 @@ tasks:
     dir: migrations                        # steps run here; default the repository root
     run: [[sh, apply.sh]]
 
+cache_exclude: [docs/**]       # paths the task cache does not key on
+
 dotenv_sets:                   # key lists several tasks and services share
   db: [DB_HOST, DB_NAME, 'DB_POOL?']
 ```
@@ -329,6 +331,41 @@ dotenv_sets:                   # key lists several tasks and services share
   line. Lines that are not events pass through. Every package run is
   recorded in the tests file (see below). A step with `go test` in it that
   prints no events gets a warning: `-json` is missing.
+- `cache: tree` skips a task that already passed on the same inputs, its
+  deps and inner tasks with it: `graft: lint: passed on this tree
+  2026-10-16 10:12, skipped`. The key covers the work tree by content (every
+  file `git add -A` would commit; a rebase or a commit of the same changes
+  keeps it), less `cache_exclude` and the version files graft commit bumps;
+  the definition of the task, its deps and inner tasks; the values their
+  `env` and `.env` keys take; the arguments; this graft's version and
+  platform; and, in the gate, the commit message when one of them names
+  `GRAFT_COMMIT_MESSAGE_FILE`. `GRAFT_VERSION` is left out: it changes with
+  every commit. What else the result depends on goes in a map:
+
+  ```yaml
+  lint:
+    cache:
+      env: [GOFLAGS]                       # values of these variables
+      files: ['~/.config/linter.yaml']     # content of files outside the tree or ignored
+      commands: [[go, version], [docker, image, inspect, -f, '{{.Id}}', 'postgres:18']]   # their stdout
+    run: [golangci-lint run]
+  ```
+
+  Only passes are kept, under `<user cache dir>/graft/passed`, for 30 days,
+  shared by every worktree and clone of the machine: one that holds the same
+  content skips what another one passed. A pass is not kept when the tree
+  or an input changed while the task ran. A command of `commands` that fails
+  runs the task. `--no-cache` on `graft <task>`, `graft commit` and
+  `graft deploy`, or `GRAFT_NO_CACHE=1`, runs everything. A skip is recorded
+  in the stats (see below) with what the passed run cost.
+
+  Cache only checks that change nothing outside the work tree. A task that
+  runs `graft deploy`, `release`, `commit`, `git push`, `docker push` or acts
+  on services, itself or through its deps and inner tasks, is refused; what
+  graft cannot see (a script that deploys) is the author's to keep out. A
+  check whose result depends on something outside the tree that the key
+  does not cover (a database state, a remote service) must name it in
+  `env`, `files` or `commands`, or go without cache.
 - `tests: jest` and `tests: playwright` read the JSON report the runner
   writes to the file named in `GRAFT_TEST_REPORT` (also `${GRAFT_TEST_REPORT}`
   in argv); the terminal shows the runner's own output. A test file is a
@@ -419,11 +456,15 @@ did not run and are left out.
   run. The file moves to `tests.jsonl.1` at 64 MB, so the two keep about
   1400 runs of such a suite.
 
+A task the cache skipped is a `"kind":"cache-hit"` line with the wall and
+CPU time of the run whose pass it reused: the time the skip saved.
+
 `graft stats` reports the current project for the last 7 days, one row per
 task, the heaviest in memory first: runs, median and maximum wall time,
 median CPU time (user + system), the largest peak of the process tree
 (`TREE MEM`) and of a single process (`MEM MAX`), the share of failed
-runs. `--since` takes days (`30d`) or a duration (`12h`), `--project` another
+runs, and the wall time the cache saved (`SAVED`, with the number of
+skips); a last line sums the skips, wall and CPU time. `--since` takes days (`30d`) or a duration (`12h`), `--project` another
 project's root, `--all` every project; `--task <name>` breaks one task down
 into its steps.
 

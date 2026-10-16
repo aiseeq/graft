@@ -64,6 +64,10 @@ type Runner struct {
 	// Top names, in the stats, the command the tasks run under (commit,
 	// gate, deploy); empty names the outermost task instead.
 	Top string
+	// GraftVersion is this graft's version, part of every cache key.
+	GraftVersion string
+	// NoCache runs the tasks with cache as if they had none.
+	NoCache bool
 
 	lookup  *dotenv.Lookup
 	base    []string
@@ -287,9 +291,26 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 	if r.done[name] {
 		return nil
 	}
-	f := r.begin(name)
-	defer func() { r.end(f, err != nil) }()
 	t := r.Config.Tasks[name]
+	var key string
+	if t.Cache != nil && !r.NoCache {
+		k, hit, cerr := r.cached(ctx, name, args)
+		switch {
+		case cerr != nil:
+			fmt.Fprintf(r.Stderr, "graft: %s: not looked up in the cache, running: %v\n", name, cerr)
+		case hit:
+			r.done[name] = true
+			return nil
+		}
+		key = k
+	}
+	f := r.begin(name)
+	defer func() {
+		use := r.end(f, err != nil)
+		if err == nil && key != "" {
+			r.keep(ctx, key, name, args, use)
+		}
+	}()
 	if err := r.RunDeps(ctx, t.Deps); err != nil {
 		return err
 	}
@@ -558,9 +579,9 @@ func (r *Runner) begin(task string) *frame {
 	return f
 }
 
-// end closes the frame of a task and records the task as a whole; the
-// task's error itself goes back to its caller.
-func (r *Runner) end(f *frame, failed bool) {
+// end closes the frame of a task and records the task as a whole, returning
+// what it cost; the task's error itself goes back to its caller.
+func (r *Runner) end(f *frame, failed bool) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
 	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Steps: f.steps}
 	if failed {
@@ -578,6 +599,7 @@ func (r *Runner) end(f *frame, failed bool) {
 		outermost = r.frames[0].task
 	}
 	r.write(rec, use, outermost)
+	return use
 }
 
 // write records rec with its usage; outermost names the top when the runner

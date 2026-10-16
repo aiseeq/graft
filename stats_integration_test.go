@@ -311,9 +311,9 @@ func TestStatsCommand(t *testing.T) {
 	}
 	out := f.mustGraft("stats")
 	want := []string{
-		"TASK RUNS WALL MED WALL MAX CPU MED TREE MEM MEM MAX FAILED",
-		"test 2 1m30s 2m0s 40s 2.5 GB 700 MB 0%",
-		"lint 3 20s 30s 7s - 8.8 GB 33%",
+		"TASK RUNS WALL MED WALL MAX CPU MED TREE MEM MEM MAX FAILED SAVED",
+		"test 2 1m30s 2m0s 40s 2.5 GB 700 MB 0% -",
+		"lint 3 20s 30s 7s - 8.8 GB 33% -",
 	}
 	if got := rows(out); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("graft stats:\n%s", out)
@@ -321,22 +321,22 @@ func TestStatsCommand(t *testing.T) {
 	if !strings.Contains(out, "1 malformed line") {
 		t.Errorf("the torn line is not reported:\n%s", out)
 	}
-	if got := rows(f.mustGraft("stats", "--since", "30d")); len(got) != 3 || got[2] != "lint 4 15s 30s 6s - 19.5 GB 25%" {
+	if got := rows(f.mustGraft("stats", "--since", "30d")); len(got) != 3 || got[2] != "lint 4 15s 30s 6s - 19.5 GB 25% -" {
 		t.Errorf("30 days: %q", got)
 	}
 	if got := rows(f.mustGraft("stats", "--since", "90m", "--task", "lint")); strings.Join(got, "\n") != strings.Join([]string{
-		"STEP RUNS WALL MED WALL MAX CPU MED TREE MEM MEM MAX FAILED",
-		"(task) 1 10s 10s 5s - 8.8 GB 0%",
-		"shellcheck *.sh 1 9s 9s 4s - 8.8 GB 0%",
-		"go vet ./... 1 1s 1s 1s - 300 MB 0%",
+		"STEP RUNS WALL MED WALL MAX CPU MED TREE MEM MEM MAX FAILED SAVED",
+		"(task) 1 10s 10s 5s - 8.8 GB 0% -",
+		"shellcheck *.sh 1 9s 9s 4s - 8.8 GB 0% -",
+		"go vet ./... 1 1s 1s 1s - 300 MB 0% -",
 	}, "\n") {
 		t.Errorf("--task lint: %q", got)
 	}
-	if got := rows(f.mustGraft("stats", "--project", other)); len(got) != 2 || got[1] != "build 1 3s 3s 2s - 1000 MB 0%" {
+	if got := rows(f.mustGraft("stats", "--project", other)); len(got) != 2 || got[1] != "build 1 3s 3s 2s - 1000 MB 0% -" {
 		t.Errorf("--project: %q", got)
 	}
 	got := rows(f.mustGraft("stats", "--all"))
-	if len(got) != 4 || !strings.HasPrefix(got[0], "PROJECT TASK") || got[1] != root+" test 2 1m30s 2m0s 40s 2.5 GB 700 MB 0%" || got[2] != root+" lint 3 20s 30s 7s - 8.8 GB 33%" {
+	if len(got) != 4 || !strings.HasPrefix(got[0], "PROJECT TASK") || got[1] != root+" test 2 1m30s 2m0s 40s 2.5 GB 700 MB 0% -" || got[2] != root+" lint 3 20s 30s 7s - 8.8 GB 33% -" {
 		t.Errorf("--all: %q", got)
 	}
 	if out, code := f.graft("", "stats", "--all", "--project", other); code != 2 {

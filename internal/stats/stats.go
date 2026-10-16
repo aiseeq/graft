@@ -34,6 +34,9 @@ const maxStepText = 200
 const (
 	KindStep = "step" // one process
 	KindTask = "task" // a task as a whole, everything it ran included
+	// KindCacheHit is a task the cache skipped, with the costs of the run
+	// whose pass it reused: what the skip saved.
+	KindCacheHit = "cache-hit"
 )
 
 // Record is one line of the stats file.

@@ -948,7 +948,7 @@ func shipsNothing(repo *gitx.Repo, cfg *config.Config, conf *config.ApprovedRele
 	if err != nil {
 		return false, err
 	}
-	bumped := versionFiles(cfg)
+	bumped := cfg.VersionFiles()
 	var files []string
 	for f := range strings.SplitSeq(out, "\x00") {
 		if f = strings.TrimSpace(f); f != "" && !slices.Contains(bumped, f) {
@@ -956,18 +956,6 @@ func shipsNothing(repo *gitx.Repo, cfg *config.Config, conf *config.ApprovedRele
 		}
 	}
 	return conf.Ignored(files), nil
-}
-
-// versionFiles are the files graft commit bumps in every commit.
-func versionFiles(cfg *config.Config) []string {
-	if cfg.Version.Mode != config.ModeFile {
-		return nil
-	}
-	files := []string{cfg.Version.File}
-	for _, f := range cfg.Version.Sync {
-		files = append(files, f.Path)
-	}
-	return files
 }
 
 // approvalGate reads each item and each version once per deploy.

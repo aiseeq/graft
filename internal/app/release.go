@@ -356,7 +356,7 @@ func (a *App) checkContainsDeployed(r *deployRun) error {
 		return err
 	}
 	return fmt.Errorf("deploy %s: nothing was deployed: %s runs %s %s, which %s lacks; merge it first, then push:\n  %s\n(a conflict in the version files: keep %s's, git checkout --ours -- %s)",
-		r.name, r.name, gitx.Short(r.prev), strings.TrimSpace(subject), r.branch, strings.Join(merges, "\n  "), r.branch, strings.Join(versionFiles(r.cfg), " "))
+		r.name, r.name, gitx.Short(r.prev), strings.TrimSpace(subject), r.branch, strings.Join(merges, "\n  "), r.branch, strings.Join(r.cfg.VersionFiles(), " "))
 }
 
 // recordWithheld writes the commits the release branch withheld; the
@@ -381,7 +381,7 @@ func (a *App) hotfixDone(r *deployRun) {
 		return
 	}
 	a.printf("hotfix %[1]s is on %[2]s; merge it into the trunk and into a held release branch before the next release, which refuses until then:\n  git switch <branch> && git pull --ff-only %[3]s <branch> && git merge --no-ff %[3]s/%[1]s\n  (a conflict in the version files: keep the branch's own, git checkout --ours -- %[4]s)",
-		r.branch, r.name, r.cfg.Deploy.Remote, strings.Join(versionFiles(r.cfg), " "))
+		r.branch, r.name, r.cfg.Deploy.Remote, strings.Join(r.cfg.VersionFiles(), " "))
 }
 
 // DeployCutoff is graft deploy cutoff: what the release candidate of a
@@ -554,7 +554,7 @@ func groupFailures(failures []gateFailure) []failureGroup {
 // bumps them, and the release branch counts its own builds.
 func excludes(cfg *config.Config) string {
 	var out strings.Builder
-	for _, f := range versionFiles(cfg) {
+	for _, f := range cfg.VersionFiles() {
 		out.WriteString(" " + envs.Quote(":(exclude)"+f))
 	}
 	return out.String()

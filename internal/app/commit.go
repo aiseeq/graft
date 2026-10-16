@@ -106,7 +106,7 @@ func requireTicket(repo *gitx.Repo, cfg *config.Config, msg string) error {
 	if err != nil {
 		return err
 	}
-	bumped := versionFiles(cfg)
+	bumped := cfg.VersionFiles()
 	files := slices.DeleteFunc(changed, func(f string) bool { return slices.Contains(bumped, f) })
 	if cfg.ShipsNothing(files) {
 		return nil

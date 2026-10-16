@@ -83,6 +83,13 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		return help(a)
 	}
 	cmd, rest := args[0], args[1:]
+	if v, ok := os.LookupEnv(tasks.NoCacheEnv); ok {
+		noCache, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("%w: %s=%q: want true or false", errUsage, tasks.NoCacheEnv, v)
+		}
+		a.NoCacheEnv = noCache
+	}
 	// The stats record tasks as run under the command; runTask clears it,
 	// so a task run directly names itself.
 	a.Command = cmd
@@ -169,6 +176,9 @@ func taskShortcut(ctx context.Context, a *app.App, name string, args []string) e
 // runTask takes the task arguments after --, so a task argument is never
 // mistaken for one of graft's.
 func runTask(ctx context.Context, a *app.App, name string, args []string) error {
+	if len(args) > 0 && args[0] == "--no-cache" {
+		a.NoCache, args = true, args[1:]
+	}
 	if len(args) > 0 {
 		if args[0] != "--" {
 			return fmt.Errorf("%w: task arguments go after --: graft %s -- %s", errUsage, name, strings.Join(args, " "))
@@ -375,6 +385,7 @@ func commitCmd(ctx context.Context, a *app.App, args []string) error {
 	fs.Var(&parts, "m", "commit message paragraph (repeatable)")
 	file := fs.String("F", "", "read the commit message from a file, - for stdin")
 	level := levelFlags(fs)
+	fs.BoolVar(&a.NoCache, "no-cache", false, "run the gate's tasks with cache even if they passed on this tree")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -518,6 +529,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	grep := fs.String("grep", "", "logs: keep lines matching this regexp")
 	redeploy := fs.Bool("redeploy", false, "deploy the commit the target already runs")
 	unapproved := fs.Bool("unapproved", false, "skip the approved_release check")
+	fs.BoolVar(&a.NoCache, "no-cache", false, "run the deps with cache even if they passed on this tree")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err

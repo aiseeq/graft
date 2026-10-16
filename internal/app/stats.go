@@ -62,12 +62,18 @@ func (a *App) Stats(o StatsOptions) error {
 		what, label = "task "+o.Task, "STEP"
 	}
 	a.printf("%s in %s%s since %s", what, where, calmNote(o.MaxLoad), since.Format("2006-01-02 15:04"))
-	rows := stats.Summarize(recs, f)
-	if len(rows) == 0 {
+	rows, saved := stats.Summarize(recs, f)
+	if len(rows) == 0 && saved.Hits == 0 {
 		a.printf("nothing recorded (%s)", path)
 		return nil
 	}
-	return stats.Render(a.Stdout, rows, label, o.All)
+	if err := stats.Render(a.Stdout, rows, label, o.All); err != nil {
+		return err
+	}
+	if saved.Hits > 0 {
+		a.printf("%s", stats.FormatSaved(saved))
+	}
+	return nil
 }
 
 // calmNote tells, in a report's heading, which runs --max-load kept.

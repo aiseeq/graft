@@ -131,6 +131,9 @@ type Task struct {
 	// TestsJest and TestsPlaywright read the JSON report the runner writes
 	// to the file in TestReportEnv.
 	Tests string `yaml:"tests"`
+	// Cache skips the task while nothing it depends on changed since it
+	// passed; nil runs it every time.
+	Cache *TaskCache `yaml:"cache"`
 }
 
 // Test reports a task can read.

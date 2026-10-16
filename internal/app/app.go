@@ -29,9 +29,13 @@ type App struct {
 	// ToolVersion is this graft build's version, checked against the
 	// project's graft: key.
 	ToolVersion string
-	Stdin       io.Reader
-	Stdout      io.Writer
-	Stderr      io.Writer
+	// NoCache runs the tasks with cache as if they had none (--no-cache).
+	NoCache bool
+	// NoCacheEnv is GRAFT_NO_CACHE as main reads it: the same for every run.
+	NoCacheEnv bool
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
 	// Command is the graft command being run (commit, gate, deploy, ...):
 	// the stats record tasks as run under it. Empty for graft <task>.
 	Command string
@@ -119,6 +123,8 @@ func (a *App) runner(repo *gitx.Repo, cfg *config.Config) *tasks.Runner {
 		a.stats = stats.NewRecorder(a.Stderr)
 	}
 	r.Stats, r.Top = a.stats, a.Command
+	r.GraftVersion = a.ToolVersion
+	r.NoCache = a.NoCache || a.NoCacheEnv
 	r.LockDir = lockDir(repo)
 	if cfg.TestDB != nil {
 		r.TestDSN = func(ctx context.Context) (string, error) { return a.testDSN(ctx, repo, cfg) }
@@ -214,7 +220,7 @@ func runChecks(repo *gitx.Repo, cfg *config.Config, message string, log io.Write
 				return err
 			}
 		}
-		back, err := checks.Reverts(repo, cfg.Checks.Reverts, versionFiles(cfg), message)
+		back, err := checks.Reverts(repo, cfg.Checks.Reverts, cfg.VersionFiles(), message)
 		if err != nil {
 			return err
 		}

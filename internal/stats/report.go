@@ -90,36 +90,54 @@ type Row struct {
 	// nil when none was reported.
 	TreeMemMB *float64
 	Failed    int
+	// Hits are the runs the cache skipped; SavedS is the wall time they
+	// saved.
+	Hits   int
+	SavedS float64
+}
+
+// Saved is what the cache skipped in a report: runs, wall and CPU time.
+type Saved struct {
+	Hits        int
+	WallS, CPUS float64
+}
+
+// rowKey names a row: the project is empty when the report covers one.
+type rowKey struct{ project, label string }
+
+func (f Filter) rowKey(r *Record, label string) rowKey {
+	if f.Project != "" {
+		return rowKey{label: label}
+	}
+	return rowKey{project: r.Project, label: label}
 }
 
 // Summarize groups the records f selects into rows, the heaviest in memory
-// first; a broken down task leads with its whole-task row.
-func Summarize(recs []Record, f Filter) []Row {
-	type key struct{ project, label string }
-	groups := map[key][]Record{}
-	var order []key
+// first; a broken down task leads with its whole-task row. Saved sums the
+// cache hits, which also show on their task's row.
+func Summarize(recs []Record, f Filter) ([]Row, Saved) {
+	groups := map[rowKey][]Record{}
+	hits := map[rowKey]Saved{}
+	var saved Saved
+	var order []rowKey
 	for i := range recs {
 		r := &recs[i]
-		if r.Time.Before(f.Since) || (f.Project != "" && r.Project != f.Project) || !calm(r.LoadMax, f.MaxLoad) {
+		if r.Time.Before(f.Since) || (f.Project != "" && r.Project != f.Project) {
 			continue
 		}
-		var label string
-		switch {
-		case f.Task == "" && r.Kind == KindTask:
-			label = r.Task
-		case f.Task == "" || r.Task != f.Task:
-			continue
-		case r.Kind == KindTask:
-			label = TaskLabel
-		case r.Kind == KindStep:
-			label = r.Step
-		default:
+		if r.Kind == KindCacheHit {
+			if f.Task == "" || r.Task == f.Task {
+				k := f.rowKey(r, hitLabel(r, f))
+				hits[k] = hits[k].add(r)
+				saved = saved.add(r)
+			}
 			continue
 		}
-		k := key{label: label}
-		if f.Project == "" {
-			k.project = r.Project
+		label, ok := runLabel(r, f)
+		if !ok || !calm(r.LoadMax, f.MaxLoad) {
+			continue
 		}
+		k := f.rowKey(r, label)
 		if _, ok := groups[k]; !ok {
 			order = append(order, k)
 		}
@@ -127,10 +145,35 @@ func Summarize(recs []Record, f Filter) []Row {
 	}
 	rows := make([]Row, 0, len(order))
 	for _, k := range order {
-		rows = append(rows, summarize(k.project, k.label, groups[k]))
+		row := summarize(k.project, k.label, groups[k])
+		row.Hits, row.SavedS = hits[k].Hits, hits[k].WallS
+		rows = append(rows, row)
 	}
+	sortRows(rows, f.Task != "")
+	return rows, saved
+}
+
+// runLabel is the row a task or step record belongs to; false leaves it out
+// of the report.
+func runLabel(r *Record, f Filter) (string, bool) {
+	switch {
+	case f.Task == "" && r.Kind == KindTask:
+		return r.Task, true
+	case f.Task == "" || r.Task != f.Task:
+		return "", false
+	case r.Kind == KindTask:
+		return TaskLabel, true
+	case r.Kind == KindStep:
+		return r.Step, true
+	}
+	return "", false
+}
+
+// sortRows puts the heaviest in memory first; broken down, the whole-task
+// row leads.
+func sortRows(rows []Row, brokenDown bool) {
 	slices.SortStableFunc(rows, func(a, b Row) int {
-		if (a.Label == TaskLabel) != (b.Label == TaskLabel) && f.Task != "" {
+		if (a.Label == TaskLabel) != (b.Label == TaskLabel) && brokenDown {
 			if a.Label == TaskLabel {
 				return -1
 			}
@@ -144,7 +187,6 @@ func Summarize(recs []Record, f Filter) []Row {
 		}
 		return strings.Compare(a.Project+"\x00"+a.Label, b.Project+"\x00"+b.Label)
 	})
-	return rows
 }
 
 func compareRSS(a, b *float64) int {
@@ -201,11 +243,32 @@ func median(v []float64) float64 {
 	return (v[n/2-1] + v[n/2]) / 2
 }
 
+// hitLabel is the row a cache hit belongs to: its task's, or the whole-task
+// row of a broken down task.
+func hitLabel(r *Record, f Filter) string {
+	if f.Task != "" {
+		return TaskLabel
+	}
+	return r.Task
+}
+
+func (s Saved) add(r *Record) Saved {
+	s.Hits++
+	s.WallS += r.WallS
+	s.CPUS += r.UserS + r.SysS
+	return s
+}
+
+// FormatSaved is the line a report ends with when the cache skipped runs.
+func FormatSaved(s Saved) string {
+	return fmt.Sprintf("%d runs skipped by the cache, saving %s of wall time and %s of CPU time", s.Hits, formatSeconds(s.WallS), formatSeconds(s.CPUS))
+}
+
 // Render prints rows as a table; labelHeader names the first column after
 // the project, which is shown when withProject is set.
 func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	header := labelHeader + "\tRUNS\tWALL MED\tWALL MAX\tCPU MED\tTREE MEM\tMEM MAX\tFAILED\n"
+	header := labelHeader + "\tRUNS\tWALL MED\tWALL MAX\tCPU MED\tTREE MEM\tMEM MAX\tFAILED\tSAVED\n"
 	if withProject {
 		header = "PROJECT\t" + header
 	}
@@ -214,9 +277,13 @@ func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error
 		if withProject {
 			fmt.Fprintf(tw, "%s\t", r.Project)
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%d%%\n", r.Label, r.Runs,
+		saved := "-"
+		if r.Hits > 0 {
+			saved = fmt.Sprintf("%s in %d", formatSeconds(r.SavedS), r.Hits)
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%d%%\t%s\n", r.Label, r.Runs,
 			formatSeconds(r.WallMed), formatSeconds(r.WallMax), formatSeconds(r.CPUMed),
-			formatMB(r.TreeMemMB), formatMB(r.MaxRSSMB), (r.Failed*100+r.Runs/2)/r.Runs)
+			formatMB(r.TreeMemMB), formatMB(r.MaxRSSMB), (r.Failed*100+r.Runs/2)/r.Runs, saved)
 	}
 	return tw.Flush()
 }
