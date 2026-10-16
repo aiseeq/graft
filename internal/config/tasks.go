@@ -307,8 +307,9 @@ type TestDB struct {
 }
 
 // DefaultTestDBSettings make a throwaway database fast: nothing it holds
-// needs to survive a crash.
-var DefaultTestDBSettings = []string{"fsync=off", "synchronous_commit=off", "full_page_writes=off"}
+// needs to survive a crash, and JIT compiling the short queries of tests
+// takes longer than running them.
+var DefaultTestDBSettings = []string{"fsync=off", "synchronous_commit=off", "full_page_writes=off", "jit=off"}
 
 // DSN is the connection string of database on the test server.
 func (t *TestDB) DSN(database string) string {

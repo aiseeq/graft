@@ -5,12 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/envs"
+	"github.com/aiseeq/graft/v2/internal/pgsql"
 )
 
 // SQLSource reads the journal from a PostgreSQL table through a psql process
@@ -36,16 +36,6 @@ const timeFormat = "YYYY-MM-DD HH24:MI"
 
 func ident(name string) string { return `"` + name + `"` }
 
-// literal is s dollar-quoted, $graft$...$graft$ with a tag s does not hold:
-// no escapes are read inside, whatever the session's standard_conforming_strings.
-func literal(s string) string {
-	tag := "$graft$"
-	for i := 1; strings.Contains(s+"$", tag); i++ {
-		tag = "$graft" + strconv.Itoa(i) + "$"
-	}
-	return tag + s + tag
-}
-
 func (s *SQLSource) table() string {
 	schema, name, found := strings.Cut(s.cfg.Table, ".")
 	if found {
@@ -59,7 +49,7 @@ func (s *SQLSource) eventJSON(withBody bool) string {
 	c := s.cfg.Columns
 	var parts []string
 	add := func(key, expr string) {
-		parts = append(parts, literal(key), expr)
+		parts = append(parts, pgsql.Literal(key), expr)
 	}
 	text := func(key, col string) {
 		if col != "" {
@@ -70,7 +60,7 @@ func (s *SQLSource) eventJSON(withBody bool) string {
 		if col != "" {
 			// Shown in UTC with the zone named. A timestamp without time
 			// zone is read in the session's zone, as PostgreSQL itself does.
-			add(key, "to_char("+ident(col)+"::timestamptz AT TIME ZONE 'UTC', "+literal(timeFormat)+") || ' UTC'")
+			add(key, "to_char("+ident(col)+"::timestamptz AT TIME ZONE 'UTC', "+pgsql.Literal(timeFormat)+") || ' UTC'")
 		}
 	}
 	text("id", c.ID)
@@ -96,7 +86,7 @@ func (s *SQLSource) eventJSON(withBody bool) string {
 func (s *SQLSource) openCondition() string {
 	statuses := make([]string, len(s.cfg.OpenStatuses))
 	for i, st := range s.cfg.OpenStatuses {
-		statuses[i] = literal(st)
+		statuses[i] = pgsql.Literal(st)
 	}
 	return ident(s.cfg.Columns.Status) + " IN (" + strings.Join(statuses, ", ") + ")"
 }
@@ -106,7 +96,7 @@ func (s *SQLSource) Ready(ctx context.Context) (bool, error) {
 	var out struct {
 		Ready bool `json:"ready"`
 	}
-	q := "SELECT json_build_object('ready', to_regclass(" + literal(s.cfg.Table) + ") IS NOT NULL);"
+	q := "SELECT json_build_object('ready', to_regclass(" + pgsql.Literal(s.cfg.Table) + ") IS NOT NULL);"
 	if err := s.query(ctx, q, &out); err != nil {
 		return false, err
 	}
@@ -130,7 +120,7 @@ func (s *SQLSource) Get(ctx context.Context, id string) (Event, error) {
 		return Event{}, err
 	}
 	q := "SELECT coalesce(json_agg(" + s.eventJSON(true) + "), '[]'::json) FROM " + s.table() +
-		" WHERE " + ident(s.cfg.Columns.ID) + "::text = " + literal(id) + ";"
+		" WHERE " + ident(s.cfg.Columns.ID) + "::text = " + pgsql.Literal(id) + ";"
 	var rows []jsonEvent
 	if err := s.query(ctx, q, &rows); err != nil {
 		return Event{}, err
@@ -148,17 +138,17 @@ func (s *SQLSource) Resolve(ctx context.Context, id, reason string) error {
 	}
 	c := s.cfg.Columns
 	set := []string{
-		ident(c.Status) + " = " + literal(s.cfg.ResolvedStatus),
-		ident(c.Note) + " = " + literal(reason),
+		ident(c.Status) + " = " + pgsql.Literal(s.cfg.ResolvedStatus),
+		ident(c.Note) + " = " + pgsql.Literal(reason),
 	}
 	if c.NotedBy != "" {
-		set = append(set, ident(c.NotedBy)+" = "+literal(s.cfg.Actor))
+		set = append(set, ident(c.NotedBy)+" = "+pgsql.Literal(s.cfg.Actor))
 	}
 	if c.NotedAt != "" {
 		set = append(set, ident(c.NotedAt)+" = now()")
 	}
 	q := "WITH u AS (UPDATE " + s.table() + " SET " + strings.Join(set, ", ") +
-		" WHERE " + ident(c.ID) + "::text = " + literal(id) + " AND " + s.openCondition() +
+		" WHERE " + ident(c.ID) + "::text = " + pgsql.Literal(id) + " AND " + s.openCondition() +
 		" RETURNING 1) SELECT json_build_object('updated', count(*)) FROM u;"
 	var out struct {
 		Updated int `json:"updated"`

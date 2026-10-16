@@ -89,7 +89,12 @@ type Row struct {
 	// TreeMemMB is the largest peak of a run's process tree as a whole;
 	// nil when none was reported.
 	TreeMemMB *float64
-	Failed    int
+	// DBCPUMed and DBMemMB are the median CPU time and the largest memory
+	// of the test database over the runs that recorded it; nil when none
+	// did.
+	DBCPUMed *float64
+	DBMemMB  *float64
+	Failed   int
 	// Hits are the runs the cache skipped; SavedS is the wall time they
 	// saved.
 	Hits   int
@@ -209,6 +214,7 @@ func summarize(project, label string, recs []Record) Row {
 	row := Row{Project: project, Label: label, Runs: len(recs)}
 	walls := make([]float64, 0, len(recs))
 	cpus := make([]float64, 0, len(recs))
+	var dbCPUs []float64
 	for i := range recs {
 		r := &recs[i]
 		walls = append(walls, r.WallS)
@@ -216,12 +222,20 @@ func summarize(project, label string, recs []Record) Row {
 		row.WallMax = max(row.WallMax, r.WallS)
 		row.MaxRSSMB = larger(row.MaxRSSMB, r.MaxRSSMB)
 		row.TreeMemMB = larger(row.TreeMemMB, r.TreeMemMB)
+		row.DBMemMB = larger(row.DBMemMB, r.DBMemMB)
+		if r.DBCPUS != nil {
+			dbCPUs = append(dbCPUs, *r.DBCPUS)
+		}
 		if r.Exit != 0 {
 			row.Failed++
 		}
 	}
 	row.WallMed = median(walls)
 	row.CPUMed = median(cpus)
+	if len(dbCPUs) > 0 {
+		m := median(dbCPUs)
+		row.DBCPUMed = &m
+	}
 	return row
 }
 
@@ -261,18 +275,27 @@ func (s Saved) add(r *Record) Saved {
 
 // FormatSaved is the line a report ends with when the cache skipped runs.
 func FormatSaved(s Saved) string {
-	return fmt.Sprintf("%d runs skipped by the cache, saving %s of wall time and %s of CPU time", s.Hits, formatSeconds(s.WallS), formatSeconds(s.CPUS))
+	runs := "runs"
+	if s.Hits == 1 {
+		runs = "run"
+	}
+	return fmt.Sprintf("%d %s skipped by the cache, saving %s of wall time and %s of CPU time", s.Hits, runs, formatSeconds(s.WallS), formatSeconds(s.CPUS))
 }
 
 // Render prints rows as a table; labelHeader names the first column after
-// the project, which is shown when withProject is set.
+// the project, which is shown when withProject is set. The test database's
+// columns come last, when a row has them.
 func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	header := labelHeader + "\tRUNS\tWALL MED\tWALL MAX\tCPU MED\tTREE MEM\tMEM MAX\tFAILED\tSAVED\n"
+	withDB := slices.ContainsFunc(rows, func(r Row) bool { return r.DBCPUMed != nil })
+	header := labelHeader + "\tRUNS\tWALL MED\tWALL MAX\tCPU MED\tTREE MEM\tMEM MAX\tFAILED\tSAVED"
 	if withProject {
 		header = "PROJECT\t" + header
 	}
-	fmt.Fprint(tw, header)
+	if withDB {
+		header += "\tDB CPU\tDB MEM"
+	}
+	fmt.Fprintln(tw, header)
 	for _, r := range rows {
 		if withProject {
 			fmt.Fprintf(tw, "%s\t", r.Project)
@@ -281,9 +304,17 @@ func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error
 		if r.Hits > 0 {
 			saved = fmt.Sprintf("%s in %d", formatSeconds(r.SavedS), r.Hits)
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%d%%\t%s\n", r.Label, r.Runs,
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%d%%\t%s", r.Label, r.Runs,
 			formatSeconds(r.WallMed), formatSeconds(r.WallMax), formatSeconds(r.CPUMed),
 			formatMB(r.TreeMemMB), formatMB(r.MaxRSSMB), (r.Failed*100+r.Runs/2)/r.Runs, saved)
+		if withDB {
+			dbCPU := "-"
+			if r.DBCPUMed != nil {
+				dbCPU = formatSeconds(*r.DBCPUMed)
+			}
+			fmt.Fprintf(tw, "\t%s\t%s", dbCPU, formatMB(r.DBMemMB))
+		}
+		fmt.Fprintln(tw)
 	}
 	return tw.Flush()
 }

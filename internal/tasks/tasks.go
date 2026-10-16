@@ -47,8 +47,8 @@ type Runner struct {
 	Stdin io.Reader
 	// LockDir holds the named locks.
 	LockDir string
-	// TestDSN returns the checked test database DSN for test_db tasks.
-	TestDSN func(context.Context) (string, error)
+	// TestDB returns the checked test database for test_db tasks.
+	TestDB func(context.Context) (TestDB, error)
 	// Service starts, stops or restarts a service (every service when name
 	// is empty) for {service: ...} steps.
 	Service func(ctx context.Context, action, name string) error
@@ -72,7 +72,7 @@ type Runner struct {
 	lookup  *dotenv.Lookup
 	base    []string
 	version *string
-	dsn     *string
+	testDB  *TestDB
 	done    map[string]bool
 	held    map[string]lock.Mode
 	// Load reads this machine's load settings for heavy tasks.
@@ -92,6 +92,19 @@ type frame struct {
 	use   stats.Usage
 	// exit is the first non-zero exit status of its processes.
 	exit int
+	// db follows the test database's container in a test_db task.
+	db *stats.CgroupWatch
+}
+
+// TestDB is the test database of test_db tasks.
+type TestDB struct {
+	DSN string
+	// Cgroup is the container's cgroup when graft runs the container and
+	// can see it; CgroupErr tells why it could not be found, empty both
+	// when there is nothing to follow (a DSN from the environment, docker
+	// in a virtual machine).
+	Cgroup    string
+	CgroupErr error
 }
 
 // VersionEnv carries the project version into every step.
@@ -594,6 +607,13 @@ func (r *Runner) end(f *frame, failed bool) stats.Usage {
 	}
 	use := f.use
 	use.Wall = time.Since(f.start)
+	if f.db != nil {
+		if use.DB = f.db.Stop(); use.DB.Err == nil {
+			use.DBKnown = true
+		} else if r.Stats != nil {
+			r.Stats.Warn(fmt.Errorf("reading the test database's container: %w", use.DB.Err))
+		}
+	}
 	outermost := f.task // the outermost task's own frame is already closed
 	if len(r.frames) > 0 {
 		outermost = r.frames[0].task
@@ -642,19 +662,37 @@ func (r *Runner) vars(ctx context.Context, t *config.Task) (map[string]string, e
 		vars[k] = v
 	}
 	if t.TestDB {
-		if r.TestDSN == nil {
+		if r.TestDB == nil {
 			return nil, errors.New("test_db is set but no test database is configured")
 		}
-		if r.dsn == nil {
-			dsn, err := r.TestDSN(ctx)
+		if r.testDB == nil {
+			db, err := r.TestDB(ctx)
 			if err != nil {
 				return nil, err
 			}
-			r.dsn = &dsn
+			r.testDB = &db
 		}
-		vars[r.Config.TestDB.DSNVar] = *r.dsn
+		vars[r.Config.TestDB.DSNVar] = r.testDB.DSN
+		r.watchDB()
 	}
 	return vars, nil
+}
+
+// watchDB starts following the test database's container for the running
+// task, once, from its first step on.
+func (r *Runner) watchDB() {
+	if r.Stats == nil || len(r.frames) == 0 {
+		return
+	}
+	f := r.frames[len(r.frames)-1]
+	switch {
+	case f.db != nil:
+	case r.testDB.CgroupErr != nil:
+		r.Stats.Warn(fmt.Errorf("the test database's container: %w", r.testDB.CgroupErr))
+		r.testDB.CgroupErr = nil // one warning
+	case r.testDB.Cgroup != "":
+		f.db = stats.WatchCgroup(r.testDB.Cgroup)
+	}
 }
 
 // env is the base environment (without graft's marker and git's hook

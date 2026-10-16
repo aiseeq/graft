@@ -425,6 +425,16 @@ deps and inner tasks included.
   `tree_mem_mb`. Wall time on a machine at load 30 does not compare with
   wall time at load 5: they tell such runs apart. Absent where there is no
   `/proc/loadavg`.
+- `db_cpu_s` and `db_mem_mb`, on the line of a task with `test_db: true`,
+  are what PostgreSQL in the test database's container cost, which the
+  task's own processes do not show: the CPU time of the container's cgroup
+  from the task's first step to its end, and the highest `memory.current`
+  read every 200 ms, page cache and tmpfs data included. Bringing the
+  container up and `migrate` come before and are not counted. The container
+  is shared: tests run at the same time from another worktree or session
+  against it count in this task's numbers too. Only when graft runs the
+  container (not with a DSN from the environment) and sees its cgroup v2
+  from the host: Linux with docker on the host itself, not Docker Desktop.
 - A line is one append-mode write, so concurrent grafts never split each
   other's lines. At 20 MB the file moves to `stats.jsonl.1`, replacing the
   older copy.
@@ -464,7 +474,9 @@ task, the heaviest in memory first: runs, median and maximum wall time,
 median CPU time (user + system), the largest peak of the process tree
 (`TREE MEM`) and of a single process (`MEM MAX`), the share of failed
 runs, and the wall time the cache saved (`SAVED`, with the number of
-skips); a last line sums the skips, wall and CPU time. `--since` takes days (`30d`) or a duration (`12h`), `--project` another
+skips); a last line sums the skips, wall and CPU time. When tasks recorded
+their test database, `DB CPU` and `DB MEM` follow: its median CPU time and
+largest memory. `--since` takes days (`30d`) or a duration (`12h`), `--project` another
 project's root, `--all` every project; `--task <name>` breaks one task down
 into its steps.
 
@@ -525,7 +537,7 @@ test_db:
   database: app_test
   user: app
   password: app                  # a throwaway local database
-  settings: [fsync=off, synchronous_commit=off, full_page_writes=off]   # the default
+  settings: [fsync=off, synchronous_commit=off, full_page_writes=off, jit=off]   # the default
   tmpfs: 2g                      # optional: keep the data in RAM (k, m or g; at least 64m)
   migrations: migrations          # optional: a source database per set of migration files
   migrate: [go, run, ./cmd/migrate, up]   # run after up with the DSN in dsn_var
@@ -542,7 +554,8 @@ in step for tests started from an IDE. In `migrate`, `${<dsn_var>}` (say
 `${TEST_DB_DSN}`) is the DSN of the database just brought up, whatever `.env`
 holds; other `${KEY}` are looked up as usual. A container created with other
 settings or another `tmpfs` gets a warning; `graft testdb recreate` applies
-the config.
+the config. `jit=off` is in the default settings since 2.15: a container
+made earlier without `settings` warns until it is recreated.
 
 With `migrations`, every set of migration files gets a database of its
 own: `app_test_source` becomes `app_test_<hash>_source`, the hash of the
@@ -590,6 +603,16 @@ copies it once into `app_test_template` and makes the copies
 version in the source's `schema_migrations` changed rebuilds the template
 first. An advisory lock keyed by the source name lets copies be made side by
 side and keeps them off a template being rebuilt.
+
+The source is analyzed before the template is made, so the template and
+every copy carry the planner statistics of the rows `migrate` loaded:
+without them the planner takes the tables for empty and may pick plans
+thousands of times slower. On PostgreSQL 15 and later the template and the
+copies are made with `STRATEGY FILE_COPY`, which copies the files instead of
+writing the whole template to the WAL and costs less CPU while tests write
+in parallel. `Truncate` empties the given tables and every table that
+references them, as `TRUNCATE ... CASCADE` does, in one statement, and
+leaves the empty ones alone: a fresh copy holds only what the template had.
 
 ## Tools
 

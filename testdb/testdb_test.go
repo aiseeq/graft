@@ -169,3 +169,97 @@ func TestCopyNamesFitPostgreSQL(t *testing.T) {
 		t.Error("a prefix leaving no room for copy names was accepted")
 	}
 }
+
+// TestCopiesCarryTheSourceStatistics: rows a migration loads leave the source
+// without planner statistics until autovacuum comes; the template is made
+// from an analyzed source, so every copy plans with the real row counts.
+func TestCopiesCarryTheSourceStatistics(t *testing.T) {
+	source(t, 7)
+	db, err := newDB(os.Getenv(DSNEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := sql.Open("pgx", db.dsn(db.source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = src.Exec("INSERT INTO items SELECT g FROM generate_series(2, 5000) g")
+	src.Close() // a database with connections cannot be copied
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyDB, err := sql.Open("pgx", db.NewDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer copyDB.Close()
+	var tuples float64
+	if err := copyDB.QueryRow("SELECT reltuples FROM pg_class WHERE relname = 'items'").Scan(&tuples); err != nil {
+		t.Fatal(err)
+	}
+	if tuples != 5000 {
+		t.Errorf("the copy's planner sees %v rows in items, want 5000", tuples)
+	}
+}
+
+// TestCreateStatement: copies are made with STRATEGY FILE_COPY where the
+// server has it (PostgreSQL 15 and later): no WAL of the whole template per
+// copy.
+func TestCreateStatement(t *testing.T) {
+	for _, c := range []struct {
+		version int
+		want    string
+	}{
+		{180004, `CREATE DATABASE "a_x" TEMPLATE "a_template" STRATEGY FILE_COPY`},
+		{150000, `CREATE DATABASE "a_x" TEMPLATE "a_template" STRATEGY FILE_COPY`},
+		{140011, `CREATE DATABASE "a_x" TEMPLATE "a_template"`},
+	} {
+		if got := createStatement("a_x", "a_template", c.version); got != c.want {
+			t.Errorf("server %d: %s, want %s", c.version, got, c.want)
+		}
+	}
+}
+
+// TestTruncateSkipsEmptyTables: Truncate leaves the empty tables alone, a
+// TRUNCATE costing a new file per table, and still empties every table the
+// CASCADE would have reached.
+func TestTruncateSkipsEmptyTables(t *testing.T) {
+	source(t, 1)
+	pool := Connect(t)
+	ctx := t.Context()
+	for _, q := range []string{
+		"DELETE FROM items",
+		"CREATE TABLE empty_one (id int)",
+		"CREATE TABLE parent (id int PRIMARY KEY)",
+		"CREATE TABLE child (parent_id int REFERENCES parent)",
+		"CREATE TABLE grandchild (child_ref int, other_parent int REFERENCES parent)",
+		"INSERT INTO child VALUES (NULL)",
+		"INSERT INTO grandchild VALUES (1, NULL)",
+	} {
+		if _, err := pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	filenode := func(table string) uint32 {
+		t.Helper()
+		var n uint32
+		if err := pool.QueryRow(ctx, "SELECT pg_relation_filenode($1::regclass)", table).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := filenode("empty_one")
+	Truncate(t, pool, "empty_one")
+	if filenode("empty_one") != before {
+		t.Error("an empty table was truncated")
+	}
+	parent := filenode("parent")
+	Truncate(t, pool, "parent", "public.empty_one")
+	var left int
+	if err := pool.QueryRow(ctx, "SELECT (SELECT count(*) FROM child) + (SELECT count(*) FROM grandchild)").Scan(&left); err != nil || left != 0 {
+		t.Errorf("tables the cascade reaches keep %d rows, %v", left, err)
+	}
+	if filenode("parent") != parent {
+		t.Error("the empty parent was truncated")
+	}
+}

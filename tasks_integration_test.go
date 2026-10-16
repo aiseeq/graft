@@ -576,7 +576,10 @@ func TestTestDB(t *testing.T) {
 	port := freePort(t)
 	t.Cleanup(func() { exec.Command("docker", "rm", "-f", "-v", container).Run() })
 	f := tasksRepo(t, "", map[string]string{".env": "OTHER=1\nAPP_DSN=old\n"})
+	cache := filepath.Join(f.base, "cache")
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache, "LOCALAPPDATA="+cache)
 	out := f.path("out.txt")
+	psql := fmt.Sprintf("[docker, exec, %s, psql, -U, app, -d, app_test, -Atc, %%q]", container)
 	f.write(".graft.yaml", f.read(".graft.yaml")+fmt.Sprintf(`test_db:
   image: postgres:18-alpine
   container: %s
@@ -589,9 +592,22 @@ func TestTestDB(t *testing.T) {
 tasks:
   test:
     test_db: true
-    run: [%s]
-`, container, port, helperStep("append", out, "migrate", "${APP_DSN}"), helperStep("env", out, "APP_DSN")))
-	f.mustGraft("test")
+    run: [%s, %s, %s]
+`, container, port, helperStep("append", out, "migrate", "${APP_DSN}"), helperStep("env", out, "APP_DSN"),
+		fmt.Sprintf(psql, "show jit"), fmt.Sprintf(psql, "select count(*) from generate_series(1, 5000000)")))
+	if got := f.mustGraft("test"); !strings.Contains(got, "\noff\n") {
+		t.Errorf("jit is not off by default:\n%s", got)
+	}
+	// The task's line carries what PostgreSQL in the container cost.
+	var task *statsLine
+	for _, l := range readStats(t, filepath.Join(cache, "graft", "stats.jsonl")) {
+		if l.Kind == "task" && l.Task == "test" {
+			task = &l
+		}
+	}
+	if task == nil || task.DBCPUS == nil || *task.DBCPUS <= 0 || task.DBMemMB == nil || *task.DBMemMB <= 0 {
+		t.Errorf("the task line has no database usage: %+v", task)
+	}
 	dsn := fmt.Sprintf("postgres://app:app@127.0.0.1:%d/app_test?sslmode=disable", port)
 	// ${APP_DSN} in migrate is the fresh DSN, not the stale one in .env.
 	if got := strings.Join(f.lines("out.txt"), ","); got != "migrate "+dsn+",APP_DSN="+dsn {

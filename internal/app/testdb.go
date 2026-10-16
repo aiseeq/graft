@@ -171,25 +171,31 @@ func (a *App) syncDotEnvDSN(repo *gitx.Repo, cfg *config.Config, dsn string) err
 	return nil
 }
 
-// testDSN is the DSN a test_db task gets. A DSN already in the environment
-// (a CI service container) is used as is once it is shown to name the test
-// database; otherwise the local container is brought up and migrated.
-func (a *App) testDSN(ctx context.Context, repo *gitx.Repo, cfg *config.Config) (string, error) {
+// testDB is the database a test_db task gets. A DSN already in the
+// environment (a CI service container) is used as is once it is shown to
+// name the test database; otherwise the local container is brought up and
+// migrated, and its cgroup found for the stats.
+func (a *App) testDB(ctx context.Context, repo *gitx.Repo, cfg *config.Config) (tasks.TestDB, error) {
 	source, err := testdb.SourceFor(cfg.TestDB, repo.Root)
 	if err != nil {
-		return "", err
+		return tasks.TestDB{}, err
 	}
 	if dsn, ok := os.LookupEnv(cfg.TestDB.DSNVar); ok {
 		if err := testdb.CheckDSN(dsn, cfg.TestDB, source); err != nil {
-			return "", err
+			return tasks.TestDB{}, err
 		}
-		return dsn, nil
+		return tasks.TestDB{DSN: dsn}, nil
 	}
 	db := &testdb.DB{Cfg: cfg.TestDB, Log: a.Stderr, Source: source}
 	if err := a.withTestDBLock(ctx, repo, cfg, func() error { return a.testDBUp(ctx, repo, cfg, db) }); err != nil {
-		return "", err
+		return tasks.TestDB{}, err
 	}
-	return db.DSN(), nil
+	got := tasks.TestDB{DSN: db.DSN()}
+	got.Cgroup, got.CgroupErr = db.Cgroup(ctx)
+	if errors.Is(got.CgroupErr, testdb.ErrNoCgroup) {
+		got.CgroupErr = nil
+	}
+	return got, nil
 }
 
 // lockDir holds the named locks, shared by all worktrees.

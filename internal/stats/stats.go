@@ -69,6 +69,14 @@ type Record struct {
 	// machine is slower for that alone. Absent where it is not read.
 	LoadStart *float64 `json:"load_start,omitempty"`
 	LoadMax   *float64 `json:"load_max,omitempty"`
+	// DBCPUS and DBMemMB are, on the line of a task with test_db, what the
+	// test database's container used from the moment the database was ready
+	// until the task ended: its CPU time and the most memory it held, page
+	// cache and tmpfs data included. The container is shared, so a task
+	// running beside it in another worktree counts too. Absent when graft
+	// did not start the container or cannot see its cgroup.
+	DBCPUS  *float64 `json:"db_cpu_s,omitempty"`
+	DBMemMB *float64 `json:"db_mem_mb,omitempty"`
 	// Exit is the exit status; -1 when there is none (killed by a signal, or
 	// a task that failed outside its processes).
 	Exit int `json:"exit"`
@@ -88,6 +96,9 @@ type Usage struct {
 	// LoadStart and LoadMax are known when LoadKnown.
 	LoadStart, LoadMax float64
 	LoadKnown          bool
+	// DB is what the test database's container used, known when DBKnown.
+	DB      DBSample
+	DBKnown bool
 }
 
 // Watched adds what a Watch saw; errors other than an unsupported measure
@@ -145,6 +156,11 @@ func (s Usage) Fill(rec *Record) {
 		rec.TreeMemMB = megabytes(s.TreeMem)
 	}
 	rec.LoadStart, rec.LoadMax = s.Loads()
+	rec.DBCPUS, rec.DBMemMB = nil, nil
+	if s.DBKnown {
+		cpu := seconds(s.DB.CPU)
+		rec.DBCPUS, rec.DBMemMB = &cpu, megabytes(s.DB.Mem)
+	}
 }
 
 // Loads are LoadStart and LoadMax for a line: nil when unknown.

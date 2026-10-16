@@ -127,7 +127,7 @@ func (a *App) runner(repo *gitx.Repo, cfg *config.Config) *tasks.Runner {
 	r.NoCache = a.NoCache || a.NoCacheEnv
 	r.LockDir = lockDir(repo)
 	if cfg.TestDB != nil {
-		r.TestDSN = func(ctx context.Context) (string, error) { return a.testDSN(ctx, repo, cfg) }
+		r.TestDB = func(ctx context.Context) (tasks.TestDB, error) { return a.testDB(ctx, repo, cfg) }
 	}
 	r.Service = func(ctx context.Context, action, name string) error {
 		return a.serviceAction(ctx, services.New(repo.Root, cfg, r, a.Stdout), ServiceAction(action), name)

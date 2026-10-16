@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aiseeq/graft/v2/internal/pgsql"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib" // the pgx driver for database/sql
@@ -54,6 +55,9 @@ type DB struct {
 
 	once        sync.Once
 	templateErr error
+	// serverVersion is the server's server_version_num, read with the
+	// template.
+	serverVersion int
 }
 
 var (
@@ -147,7 +151,7 @@ func (db *DB) NewDSN(t *testing.T) string {
 	// are left alone: since PostgreSQL 15 a template with readers copies fine,
 	// and terminating them kills the parallel binaries reading its version.
 	err = db.withLock(t.Context(), admin, shared, func() error {
-		_, err := admin.ExecContext(t.Context(), "CREATE DATABASE "+ident(name)+" TEMPLATE "+ident(db.template))
+		_, err := admin.ExecContext(t.Context(), createStatement(name, db.template, db.serverVersion))
 		return err
 	})
 	if err != nil {
@@ -206,6 +210,9 @@ func (db *DB) refreshTemplate(ctx context.Context) error {
 		return err
 	}
 	defer admin.Close()
+	if err := admin.QueryRowContext(ctx, "SELECT current_setting('server_version_num')::int").Scan(&db.serverVersion); err != nil {
+		return fmt.Errorf("reading the server version: %w", err)
+	}
 	// Exclusive: one binary rebuilds the template, and nobody copies it
 	// meanwhile.
 	return db.withLock(ctx, admin, exclusive, func() error {
@@ -216,11 +223,47 @@ func (db *DB) refreshTemplate(ctx context.Context) error {
 		if _, err := admin.ExecContext(ctx, "DROP DATABASE IF EXISTS "+ident(db.template)+" WITH (FORCE)"); err != nil {
 			return fmt.Errorf("dropping the stale template: %w", err)
 		}
-		if _, err := admin.ExecContext(ctx, "CREATE DATABASE "+ident(db.template)+" TEMPLATE "+ident(db.source)); err != nil {
+		if err := db.analyzeSource(ctx); err != nil {
+			return err
+		}
+		if _, err := admin.ExecContext(ctx, createStatement(db.template, db.source, db.serverVersion)); err != nil {
 			return fmt.Errorf("copying %s: %w", db.source, err)
 		}
 		return nil
 	})
+}
+
+// analyzeSource gathers the planner statistics of the source, which the
+// template and every copy inherit: rows a migration loads have none until
+// autovacuum comes, and a planner that takes a table for empty picks plans
+// thousands of times slower. The connection is closed before the copy, which
+// a database with connections refuses.
+func (db *DB) analyzeSource(ctx context.Context) error {
+	conn, err := sql.Open("pgx", db.dsn(db.source))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "ANALYZE"); err != nil {
+		return fmt.Errorf("analyzing %s: %w", db.source, err)
+	}
+	return nil
+}
+
+// fileCopySince is the server_version_num of PostgreSQL 15, which added
+// CREATE DATABASE ... STRATEGY.
+const fileCopySince = 150000
+
+// createStatement makes database name from template. FILE_COPY copies the
+// files after a checkpoint instead of writing the whole template to the WAL,
+// which costs less CPU when tests write in parallel; older servers copy the
+// files anyway.
+func createStatement(name, template string, serverVersion int) string {
+	stmt := "CREATE DATABASE " + ident(name) + " TEMPLATE " + ident(template)
+	if serverVersion >= fileCopySince {
+		stmt += " STRATEGY FILE_COPY"
+	}
+	return stmt
 }
 
 // templateFresh tells whether the template exists with the source's
@@ -313,8 +356,11 @@ func Connect(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// Truncate empties the tables, plain or schema-qualified, in one statement,
-// CASCADE.
+// Truncate empties the tables, plain or schema-qualified, as TRUNCATE ...
+// CASCADE would: every table that references them, directly or through
+// others, is emptied too. Tables already empty are left alone, a TRUNCATE
+// costing new files for each table; it all runs as one statement, the tables
+// locked first as TRUNCATE locks them.
 func Truncate(t *testing.T, pool *pgxpool.Pool, tables ...string) {
 	t.Helper()
 	if len(tables) == 0 {
@@ -322,9 +368,39 @@ func Truncate(t *testing.T, pool *pgxpool.Pool, tables ...string) {
 	}
 	names := make([]string, len(tables))
 	for i, name := range tables {
-		names[i] = pgx.Identifier(strings.Split(name, ".")).Sanitize()
+		names[i] = pgsql.Literal(pgx.Identifier(strings.Split(name, ".")).Sanitize()) + "::regclass"
 	}
-	if _, err := pool.Exec(t.Context(), "TRUNCATE "+strings.Join(names, ", ")+" CASCADE"); err != nil {
+	if _, err := pool.Exec(t.Context(), truncateBlock(names)); err != nil {
 		t.Fatalf("testdb: truncate: %v", err)
 	}
+}
+
+// truncateBlock truncates the non-empty tables of the closure of tables (as
+// regclass expressions) under the foreign keys that reference them.
+func truncateBlock(tables []string) string {
+	body := `
+DECLARE
+	closure regclass[];
+	nonempty text[] := '{}';
+	r regclass;
+	found boolean;
+BEGIN
+	WITH RECURSIVE c(rel) AS (
+		SELECT unnest(ARRAY[` + strings.Join(tables, ", ") + `])
+		UNION
+		SELECT k.conrelid::regclass FROM pg_constraint k JOIN c ON k.confrelid = c.rel WHERE k.contype = 'f'
+	)
+	SELECT array_agg(rel) INTO closure FROM c;
+	EXECUTE 'LOCK TABLE ' || array_to_string(closure::text[], ', ') || ' IN ACCESS EXCLUSIVE MODE';
+	FOREACH r IN ARRAY closure LOOP
+		EXECUTE format('SELECT EXISTS (SELECT FROM %s)', r) INTO found;
+		IF found THEN
+			nonempty := nonempty || r::text;
+		END IF;
+	END LOOP;
+	IF cardinality(nonempty) > 0 THEN
+		EXECUTE 'TRUNCATE ' || array_to_string(nonempty, ', ') || ' CASCADE';
+	END IF;
+END`
+	return "DO " + pgsql.Literal(body)
 }

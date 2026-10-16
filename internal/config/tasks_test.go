@@ -70,6 +70,10 @@ func TestParseTasks(t *testing.T) {
 	if db.DSNVar != "TEST_DB_DSN" || !slices.Equal(db.Settings, DefaultTestDBSettings) || db.ReadyTimeout != time.Minute || db.Tmpfs != "2g" {
 		t.Errorf("test_db defaults = %+v", db)
 	}
+	// JIT compiles the short queries of tests for longer than they run.
+	if !slices.Contains(DefaultTestDBSettings, "jit=off") {
+		t.Errorf("default settings %v leave jit on", DefaultTestDBSettings)
+	}
 	if got := db.DSN(db.Database); got != "postgres://app:app@127.0.0.1:55432/app_test?sslmode=disable" {
 		t.Errorf("DSN = %s", got)
 	}

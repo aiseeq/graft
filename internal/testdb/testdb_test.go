@@ -1,6 +1,7 @@
 package testdb
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -87,5 +88,17 @@ func TestReadyArgs(t *testing.T) {
 	want := []string{"exec", "c", "pg_isready", "-h", "127.0.0.1", "-U", "app", "-d", "app_test"}
 	if got := d.readyArgs(); !slices.Equal(got, want) {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestUnifiedPath: the container's cgroup is the 0:: line; a host on cgroup
+// v1 has none, which is no error.
+func TestUnifiedPath(t *testing.T) {
+	got, err := unifiedPath("0::/system.slice/docker-c2.scope\n")
+	if err != nil || got != "/system.slice/docker-c2.scope" {
+		t.Errorf("v2: %q, %v", got, err)
+	}
+	if _, err := unifiedPath("12:memory:/docker/c2\n1:name=systemd:/docker/c2\n"); !errors.Is(err, ErrNoCgroup) {
+		t.Errorf("v1: %v", err)
 	}
 }

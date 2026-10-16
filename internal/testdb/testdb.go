@@ -43,6 +43,9 @@ type State struct {
 	Cmd []string
 	// Tmpfs maps the tmpfs mount points of the container to their options.
 	Tmpfs map[string]string
+	// Pid is the container's main process as the host sees it; 0 when it
+	// is not running.
+	Pid int
 }
 
 // Inspect asks docker about the container.
@@ -59,14 +62,17 @@ func (d *DB) Inspect(ctx context.Context) (State, error) {
 		return State{}, fmt.Errorf("docker inspect %s: %w (is the docker daemon running?)", d.Cfg.Container, err)
 	}
 	var info []struct {
-		State      struct{ Running bool }
+		State struct {
+			Running bool
+			Pid     int
+		}
 		Config     struct{ Cmd []string }
 		HostConfig struct{ Tmpfs map[string]string }
 	}
 	if err := json.Unmarshal(out, &info); err != nil || len(info) != 1 {
 		return State{}, fmt.Errorf("docker inspect %s: unexpected output", d.Cfg.Container)
 	}
-	return State{Exists: true, Running: info[0].State.Running, Cmd: info[0].Config.Cmd, Tmpfs: info[0].HostConfig.Tmpfs}, nil
+	return State{Exists: true, Running: info[0].State.Running, Cmd: info[0].Config.Cmd, Tmpfs: info[0].HostConfig.Tmpfs, Pid: info[0].State.Pid}, nil
 }
 
 // wantArgs are the server arguments the config asks for. The image's

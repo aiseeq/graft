@@ -29,6 +29,8 @@ type statsLine struct {
 	TreeMB   *float64  `json:"tree_mem_mb"`
 	LoadMin  *float64  `json:"load_start"`
 	LoadMax  *float64  `json:"load_max"`
+	DBCPUS   *float64  `json:"db_cpu_s"`
+	DBMemMB  *float64  `json:"db_mem_mb"`
 	Exit     int       `json:"exit"`
 }
 
