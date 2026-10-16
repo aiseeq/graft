@@ -196,6 +196,21 @@ type ApprovedRelease struct {
 	IgnorePaths []string `yaml:"ignore_paths"`
 	// Ignore is IgnorePaths compiled.
 	Ignore []*regexp.Regexp `yaml:"-"`
+	// Attribute ties commits whose messages name no item to their items.
+	Attribute []Attribution `yaml:"attribute"`
+	// Attributed maps the full commit hashes of Attribute to their entries.
+	Attributed map[string]Attribution `yaml:"-"`
+}
+
+// Attribution ties a commit that names no item to the item it belongs to:
+// the commit is checked, noted and listed as a commit naming the item.
+type Attribution struct {
+	// Commit is the full hash of the commit.
+	Commit string `yaml:"commit"`
+	// Item is the key of the item, such as PROJ-123.
+	Item string `yaml:"item"`
+	// Reason says why the commit belongs to the item; required.
+	Reason string `yaml:"reason"`
 }
 
 // Ignored tells whether every one of the files matches IgnorePaths; no files
@@ -262,15 +277,16 @@ func (c *Config) validateDeploy() error {
 	if len(d.Targets) == 0 {
 		return errors.New("deploy.targets: at least one target is required")
 	}
+	// The project keys first: approved_release.attribute names their items.
+	if err := c.validateReleaseNotes(); err != nil {
+		return err
+	}
 	for _, name := range keysOf(d.Targets) {
 		if err := c.validateTarget(name, d.Targets[name]); err != nil {
 			return err
 		}
 	}
-	if err := c.validateHotfix(); err != nil {
-		return err
-	}
-	return c.validateReleaseNotes()
+	return c.validateHotfix()
 }
 
 // DeploySubcommands are the words after graft deploy that are not targets.
@@ -391,7 +407,41 @@ func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {
 		}
 		t.ApprovedRelease.Ignore = append(t.ApprovedRelease.Ignore, re)
 	}
+	return c.validateAttribute(where+".approved_release.attribute", t.ApprovedRelease)
+}
+
+var fullHashRe = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+
+// validateAttribute checks the attributions as written; whether the commits
+// exist and name no item is for the repository to tell (graft check, deploy).
+func (c *Config) validateAttribute(where string, r *ApprovedRelease) error {
+	r.Attributed = map[string]Attribution{}
+	seen := map[string]int{}
+	for i, at := range r.Attribute {
+		w := fmt.Sprintf("%s[%d]", where, i)
+		switch {
+		case !fullHashRe.MatchString(at.Commit):
+			return fmt.Errorf("%s.commit: %q is not a full commit hash (40 lowercase hex digits, 64 in a SHA-256 repository)", w, at.Commit)
+		case !c.isProjectKey(at.Item):
+			return fmt.Errorf("%s.item: %q is not an item of release_notes.jira.project_keys, such as PROJ-123", w, at.Item)
+		case strings.TrimSpace(at.Reason) == "":
+			return fmt.Errorf("%s.reason: required, why the commit belongs to %s", w, at.Item)
+		}
+		if j, ok := seen[at.Commit]; ok {
+			return fmt.Errorf("%s.commit: %s is attributed twice, in %s[%d] too", w, at.Commit, where, j)
+		}
+		seen[at.Commit] = i
+		r.Attributed[at.Commit] = at
+	}
 	return nil
+}
+
+var itemNumberRe = regexp.MustCompile(`^[1-9][0-9]*$`)
+
+// isProjectKey tells whether key is an item key of one of the project keys.
+func (c *Config) isProjectKey(key string) bool {
+	project, number, ok := strings.Cut(key, "-")
+	return ok && slices.Contains(c.ReleaseNotes.Jira.ProjectKeys, project) && itemNumberRe.MatchString(number)
 }
 
 func (c *Config) validateRequires(where, name string, t *DeployTarget) error {

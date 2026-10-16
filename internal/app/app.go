@@ -231,6 +231,13 @@ func runChecks(repo *gitx.Repo, cfg *config.Config, message string, log io.Write
 		return err
 	}
 	findings = append(findings, drift...)
+	problems, err := attributionProblems(repo, cfg)
+	if err != nil {
+		return err
+	}
+	for _, p := range problems {
+		findings = append(findings, checks.Finding{Path: config.FileName, Reason: p})
+	}
 	ruleFindings, err := flagRuleFindings(repo, cfg)
 	if err != nil {
 		return err

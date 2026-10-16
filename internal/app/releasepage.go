@@ -113,7 +113,7 @@ func withheldItems(r *deployRun, shipped []string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("withheld commit %s: %w", gitx.Short(sha), err)
 		}
-		for _, k := range keyRe.FindAllString(c.subject+"\n"+c.body, -1) {
+		for _, k := range commitKeys(keyRe, r.target.ApprovedRelease, c) {
 			if !slices.Contains(shipped, k) {
 				keys = append(keys, k)
 			}

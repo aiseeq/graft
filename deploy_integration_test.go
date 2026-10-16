@@ -934,6 +934,84 @@ func TestDeployApprovedReleaseGoesOut(t *testing.T) {
 	}
 }
 
+// TestDeployApprovedReleaseAttribute: a commit whose message names no item
+// goes out as a commit of the item approved_release.attribute ties it to:
+// checked by status, a subtask by its parent, by an approved version, and
+// noted on the item. An attribution the repository contradicts stops graft
+// check and the deploy.
+func TestDeployApprovedReleaseAttribute(t *testing.T) {
+	d := deployRepo(t)
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-8"] = "Ready for release"
+	d.jira.statuses["PROJ-9"] = "In Progress"
+	d.jira.mu.Unlock()
+	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-1": {"10010"}, "PROJ-2": {"10010"}, "PROJ-6": {"10030"}})
+	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "APPROVED"}, "10030": {"APPROVED", "PENDING"}})
+	d.mustGraft("deploy", "--unapproved", "gate")
+	d.mustGraft("deploy", "--unapproved", "live")
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "feat: forgot the key")
+	keyless := d.git("rev-parse", "HEAD")
+	if out, code := d.graft("", "deploy", "gate"); code == 0 || !strings.Contains(out, "feat: forgot the key: names no item") {
+		t.Fatalf("the keyless commit: exit %d\n%s", code, out)
+	}
+
+	attribute := func(gateItem, liveItem string) {
+		cfg := strings.Replace(d.read(".graft.yaml"), "approved_release: {statuses: [Ready for release, Done]}",
+			"approved_release: {statuses: [Ready for release, Done], attribute: [{commit: "+keyless+", item: "+gateItem+", reason: key left out}]}\n      release_notes: {}", 1)
+		cfg = strings.Replace(cfg, `ignore_paths: ["docs/**", "*.md"]}`,
+			`ignore_paths: ["docs/**", "*.md"], attribute: [{commit: `+keyless+`, item: `+liveItem+`, reason: "key left out, see PROJ-1"}]}`, 1)
+		d.write(".graft.yaml", cfg)
+	}
+	attribute("PROJ-9", "PROJ-6")
+	d.write("docs/attribute.md", "x\n")
+	d.mustGraft("commit", "-m", "docs: PROJ-2 attribute the keyless commit")
+	out, code := d.graft("", "deploy", "gate")
+	if code == 0 || !strings.Contains(out, "feat: forgot the key: attributed to PROJ-9: key left out") ||
+		!strings.Contains(out, "feat: forgot the key: PROJ-9 is In Progress, not Ready for release or Done") {
+		t.Fatalf("attributed to an unchecked item: exit %d\n%s", code, out)
+	}
+	if out, code := d.graft("", "deploy", "live"); code == 0 || !strings.Contains(out, `feat: forgot the key: PROJ-6 not in an approved "Product v" version`) {
+		t.Fatalf("attributed to an unapproved version: exit %d\n%s", code, out)
+	}
+
+	// A subtask goes out by its parent, a version item by its approvals; the
+	// release note goes to the item.
+	d.jira.mu.Lock()
+	d.jira.parents = map[string]string{"PROJ-9": "PROJ-8"}
+	d.jira.mu.Unlock()
+	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "APPROVED"}, "10030": {"APPROVED", "APPROVED"}})
+	out = d.mustGraft("deploy", "gate")
+	if !strings.Contains(out, "approved release: 2 commits since") {
+		t.Errorf("the attributed commit goes out:\n%s", out)
+	}
+	out = d.mustGraft("deploy", "live")
+	if !strings.Contains(out, "all in Product v1.2.10, Product v1.3.0") {
+		t.Errorf("the attributed commit goes out by its version:\n%s", out)
+	}
+	comments, _ := d.jira.snapshot()
+	if !slices.ContainsFunc(comments["PROJ-9"], func(c string) bool { return strings.Contains(c, "Deployed to gate") }) {
+		t.Errorf("no notes on the attributed items: %v", comments)
+	}
+
+	// The repository contradicts an attribution: the commit is unknown, or
+	// it names an item already.
+	d.write("b.txt", "b\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-8 named")
+	named := d.git("rev-parse", "HEAD")
+	unknown := strings.Repeat("ab", 20)
+	cfg := strings.Replace(d.read(".graft.yaml"), keyless+", item: PROJ-9", named+", item: PROJ-9", 1)
+	d.write(".graft.yaml", strings.Replace(cfg, keyless+", item: PROJ-6", unknown+", item: PROJ-6", 1))
+	for _, args := range [][]string{{"check"}, {"deploy", "gate"}} {
+		out, code := d.graft("", args...)
+		if code == 0 ||
+			!strings.Contains(out, "deploy.targets.gate.approved_release.attribute[0]: commit "+named[:12]+` "feat: PROJ-8 named" names PROJ-8 already: attribute is for a commit that names no item`) ||
+			!strings.Contains(out, "deploy.targets.live.approved_release.attribute[0]: commit "+unknown+" is not in this repository (git fetch?)") {
+			t.Errorf("%v: exit %d\n%s", args, code, out)
+		}
+	}
+}
+
 // TestDeploySubtasksFollowParents: with subtasks, a parent that reaches a
 // transition's status takes its open subtasks along by that transition, the
 // reviewer included, and a delivered subtask follows its parent into a status

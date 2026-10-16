@@ -446,3 +446,81 @@ func TestReleaseNameWithoutVersions(t *testing.T) {
 		t.Errorf("comments %q, versions %v:\n%s", comments, versions, out)
 	}
 }
+
+// TestReleaseAttribute: a commit that names no item, attributed to an
+// unchecked item, is reverted by the cutoff under that item, withheld by the
+// release and listed as the item's on the release page; the next release
+// checks it again and takes it out as the item's.
+func TestReleaseAttribute(t *testing.T) {
+	d := newDeployFixture(t, func(state string, q func(string) string) string {
+		return strings.Replace(releaseConfig(state, q), "      approved_release:",
+			`      release_version: {enabled: false, name: "Product {dd}.{mm}.{yy}"}
+      release_page: {parent: "500"}
+      approved_release:`, 1)
+	})
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-8"] = "Ready for release"
+	d.jira.mu.Unlock()
+	trunk := d.git("branch", "--show-current")
+	d.at("2026-10-16 10:00")
+	d.mustGraft("deploy", "test")
+	d.at("2026-10-19 15:30")
+	d.mustGraft("deploy", "--unapproved", "prod")
+
+	d.at("2026-10-20 10:00")
+	d.commitFile("checked.txt", "feat: PROJ-8 checked work")
+	keyless := d.commitFile("keyless.txt", "feat: forgot the key")
+	d.write(".graft.yaml", strings.Replace(d.read(".graft.yaml"), `ignore_paths: ["docs/**"]}`,
+		`ignore_paths: ["docs/**"], attribute: [{commit: `+keyless+`, item: PROJ-1, reason: key left out}]}`, 1))
+	d.mustGraft("commit", "-m", "chore: PROJ-8 attribute the keyless commit")
+	d.mustGraft("deploy", "test")
+
+	d.at("2026-10-21 18:30")
+	out := d.mustGraft("deploy", "cutoff", "prod")
+	for _, want := range []string{
+		"# PROJ-1 is In Progress, not Ready for release or Done",
+		"git diff " + keyless + "^ " + keyless + " -- . ':(exclude)VERSION' | git apply -R --3way --index",
+		"graft commit -m 'revert: PROJ-1 not checked by the 22.10.26 cutoff' -m 'This reverts commit " + keyless + ".'",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("cutoff: no %q\n%s", want, out)
+		}
+	}
+	d.runCommands(out, "goes out from release/22.10.26", "Then the candidate goes")
+	d.mustGraft("deploy", "test")
+
+	d.at("2026-10-22 15:30")
+	out = d.mustGraft("deploy", "prod")
+	if got := strings.TrimSpace(d.stateFile("prod-sha.withheld")); got != keyless || !strings.Contains(out, "feat: forgot the key: reverted by") {
+		t.Errorf("withheld = %q, want %s\n%s", got, keyless, out)
+	}
+	changes, moved, _ := strings.Cut(d.jira.page("Product 22.10.26: release notes"), "<h3>Moved to the next release</h3>")
+	if !strings.Contains(changes, ">PROJ-8</a>") || strings.Contains(changes, ">PROJ-1</a>") || !strings.Contains(moved, ">PROJ-1</a>") {
+		t.Errorf("the page: changes\n%s\nmoved\n%s", changes, moved)
+	}
+	comments, _ := d.jira.snapshot()
+	if slices.ContainsFunc(comments["PROJ-1"], func(c string) bool { return strings.Contains(c, "prod") }) {
+		t.Errorf("PROJ-1 got a prod note for withheld work: %v", comments["PROJ-1"])
+	}
+
+	d.git("switch", "-q", trunk)
+	d.git("-c", "core.hooksPath=/dev/null", "merge", "-q", "-s", "ours", "--no-edit", "release/22.10.26")
+	d.git("push", "-q", "origin", trunk)
+	d.at("2026-10-23 10:00")
+	d.mustGraft("deploy", "test")
+	d.setStatus("PROJ-1", "Ready for release")
+	d.at("2026-10-26 15:30")
+	out = d.mustGraft("deploy", "prod")
+	if !strings.Contains(out, "feat: forgot the key: withheld from an earlier release, goes out now") || !strings.Contains(out, "feat: forgot the key: attributed to PROJ-1: key left out") {
+		t.Errorf("the withheld commit:\n%s", out)
+	}
+	// It went out now, outside the deployed range: its item gets the notes.
+	comments, _ = d.jira.snapshot()
+	if got := strings.TrimSpace(d.stateFile("prod-sha.withheld")); got != "" || d.status("PROJ-1") != "Done" ||
+		!slices.ContainsFunc(comments["PROJ-1"], func(c string) bool { return strings.Contains(c, "Deployed to prod") }) {
+		t.Errorf("withheld = %q, PROJ-1 %s, comments %v", got, d.status("PROJ-1"), comments["PROJ-1"])
+	}
+	if body := d.jira.page("Product 26.10.26: release notes"); !strings.Contains(body, ">PROJ-1</a>") {
+		t.Errorf("the next page:\n%s", body)
+	}
+}

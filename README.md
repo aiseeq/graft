@@ -819,6 +819,8 @@ deploy:
         statuses: [Ready for release, Done]  # the item, or a subtask's parent, is in one of these
         prefix: "Product v"     # optional: and in a "Product v…" version every approver approved
         ignore_paths: ["docs/**", "*.md"]   # a commit changing only these ships nothing and passes
+        attribute:              # optional: a commit whose message names no item, as a commit of the item
+          - {commit: 0123456789abcdef0123456789abcdef01234567, item: PROJ-123, reason: "the key was left out of the message"}
       release_notes:
         transitions: [{from: [Ready for release], to: Done}]
         subtasks: true
@@ -869,6 +871,20 @@ release_notes:
    item, or naming items that do not pass, and why. With no deployed commit
    recorded, or Jira unreachable, it stops too. `--unapproved` skips the
    check with a warning.
+   `attribute` ties a commit already in the history whose message names no
+   item to the item it belongs to, without rewriting history: the commit is
+   checked exactly as a commit naming that item (`statuses`, a subtask by its
+   parent, `prefix` with every approval), the deploy prints `attributed to
+   PROJ-123: <reason>` for it, and the release notes, the release page,
+   `graft deploy cutoff`, `.withheld`, the window versions and, on the
+   hotfix `base` target, the hotfix label check count it as the item's.
+   `commit` is the full hash (40 lowercase hex digits, 64 in a SHA-256
+   repository), `item` a key of `project_keys`, `reason` is required. A short
+   or repeated hash, a missing reason, a commit the repository does not have
+   and a commit whose message names an item already are config errors: the
+   first ones when the config loads, the last two in `graft check` (and so
+   `graft commit`) and every `graft deploy` command. Each target has its own
+   list.
    Before it, an approved release must contain the commit the target runs:
    a hotfix or a release branch not merged back would be taken back out. The
    refusal names the branches that have it and how to merge each (see
@@ -898,7 +914,8 @@ release_notes:
    shipping, the script can call `graft deploy check-head`.
 7. Check again that the tree is clean and HEAD has not moved.
 8. Record the deployed commit and post release notes: a comment on every
-   `project_keys` item mentioned in the delivered commits (subjects and bodies),
+   `project_keys` item mentioned in the delivered commits (subjects and bodies)
+   or tied to one by the target's `approved_release.attribute`,
    and with `transitions`, a move of the items in one of a transition's `from`
    statuses to its `to` (a status is in one `from` at most); an item
    elsewhere, paused or not started, gets the comment and keeps its status.
@@ -1005,7 +1022,8 @@ deploy:
   beside `deployed_sha` (`.withheld`). Every later release checks them with
   its own commits until they pass or a revert takes them out of the trunk.
   Release notes leave out withheld commits and the reverts that withheld
-  them.
+  them; a withheld commit that a later release lets out gets its notes
+  there, though it is outside that release's range.
 - A hotfix branch must start from the commit `base` runs and every commit on
   it must name an item with `label` (a revert, or a change only to the base
   target's `ignore_paths`, passes). The window, the hold and

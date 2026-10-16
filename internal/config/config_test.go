@@ -322,6 +322,28 @@ deploy:
 	} else if ar := cfg.Deploy.Targets["test"].ApprovedRelease; ar == nil || ar.Prefix != "Product v" {
 		t.Errorf("approved_release = %+v", ar)
 	}
+	sha := strings.Repeat("0123456789abcdef", 3)[:40]
+	attr := func(entries string) string {
+		return strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {prefix: Product v, attribute: ["+entries+"]}}", 1)
+	}
+	cfg, err = Parse([]byte(attr("{commit: " + sha + ", item: PROJ-12, reason: key left out}")))
+	if err != nil {
+		t.Errorf("attribute: %v", err)
+	} else if at := cfg.Deploy.Targets["test"].ApprovedRelease.Attributed[sha]; at.Item != "PROJ-12" || at.Reason != "key left out" {
+		t.Errorf("attributed = %+v", cfg.Deploy.Targets["test"].ApprovedRelease.Attributed)
+	}
+	for entries, want := range map[string]string{
+		"{commit: 0123456789ab, item: PROJ-1, reason: x}":                                                `attribute[0].commit: "0123456789ab" is not a full commit hash`,
+		"{commit: " + strings.ToUpper(sha) + ", item: PROJ-1, reason: x}":                                "is not a full commit hash (40 lowercase hex digits",
+		"{commit: " + sha + ", item: PROJ-1, reason: ' '}":                                               "attribute[0].reason: required, why the commit belongs to PROJ-1",
+		"{commit: " + sha + ", item: OTHER-1, reason: x}":                                                `attribute[0].item: "OTHER-1" is not an item of release_notes.jira.project_keys`,
+		"{commit: " + sha + ", item: PROJ-0, reason: x}":                                                 `"PROJ-0" is not an item`,
+		"{commit: " + sha + ", item: PROJ-1, reason: x}, {commit: " + sha + ", item: PROJ-2, reason: y}": "attribute[1].commit: " + sha + " is attributed twice, in deploy.targets.test.approved_release.attribute[0] too",
+	} {
+		if _, err := Parse([]byte(attr(entries))); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("attribute %s: %v, want %q", entries, err, want)
+		}
+	}
 	cases := map[string]string{
 		"transition w/o from":  notes("{transitions: [{to: Testing}]}"),
 		"transition w/o to":    notes("{transitions: [{from: [In Progress]}]}"),

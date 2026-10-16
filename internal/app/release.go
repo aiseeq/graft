@@ -153,7 +153,7 @@ func unlabelled(ctx context.Context, r *deployRun, commits []deliveredCommit) (o
 		if isRevert(c.subject) {
 			continue
 		}
-		keys := uniqueSorted(keyRe.FindAllString(c.subject+"\n"+c.body, -1))
+		keys := commitKeys(keyRe, conf, c)
 		labelled, err := labelledItem(ctx, client, keys, h.Label)
 		if err != nil {
 			return nil, nil, err
