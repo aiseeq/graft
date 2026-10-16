@@ -73,7 +73,11 @@ func (a *App) TestDB(ctx context.Context, name string) error {
 	if cfg.TestDB == nil {
 		return errors.New("no test_db section in .graft.yaml")
 	}
-	db := &testdb.DB{Cfg: cfg.TestDB, Log: a.Stdout}
+	source, err := testdb.SourceFor(cfg.TestDB, repo.Root)
+	if err != nil {
+		return err
+	}
+	db := &testdb.DB{Cfg: cfg.TestDB, Log: a.Stdout, Source: source}
 	if !action.locked {
 		return action.run(a, ctx, repo, cfg, db)
 	}
@@ -101,7 +105,7 @@ func (a *App) testDBStatus(ctx context.Context, db *testdb.DB) error {
 	case !s.Exists:
 		a.printf("%s does not exist (graft testdb up creates it)", db.Cfg.Container)
 	case s.Running:
-		a.printf("%s is running, %s", db.Cfg.Container, db.Cfg.DSN())
+		a.printf("%s is running, %s", db.Cfg.Container, db.DSN())
 	default:
 		a.printf("%s is stopped (graft testdb up starts it)", db.Cfg.Container)
 	}
@@ -114,7 +118,7 @@ func (a *App) testDBStatus(ctx context.Context, db *testdb.DB) error {
 // testDBUp brings the database up, migrates it and keeps the DSN in .env in
 // step, so tests started outside graft (an IDE) reach the same database.
 func (a *App) testDBUp(ctx context.Context, repo *gitx.Repo, cfg *config.Config, db *testdb.DB) error {
-	dsn := cfg.TestDB.DSN()
+	dsn := db.DSN()
 	if err := db.Up(ctx, func(ctx context.Context) error { return a.migrate(ctx, repo, cfg, dsn) }); err != nil {
 		return err
 	}
@@ -171,17 +175,21 @@ func (a *App) syncDotEnvDSN(repo *gitx.Repo, cfg *config.Config, dsn string) err
 // (a CI service container) is used as is once it is shown to name the test
 // database; otherwise the local container is brought up and migrated.
 func (a *App) testDSN(ctx context.Context, repo *gitx.Repo, cfg *config.Config) (string, error) {
+	source, err := testdb.SourceFor(cfg.TestDB, repo.Root)
+	if err != nil {
+		return "", err
+	}
 	if dsn, ok := os.LookupEnv(cfg.TestDB.DSNVar); ok {
-		if err := testdb.CheckDSN(dsn, cfg.TestDB); err != nil {
+		if err := testdb.CheckDSN(dsn, cfg.TestDB, source); err != nil {
 			return "", err
 		}
 		return dsn, nil
 	}
-	db := &testdb.DB{Cfg: cfg.TestDB, Log: a.Stderr}
+	db := &testdb.DB{Cfg: cfg.TestDB, Log: a.Stderr, Source: source}
 	if err := a.withTestDBLock(ctx, repo, cfg, func() error { return a.testDBUp(ctx, repo, cfg, db) }); err != nil {
 		return "", err
 	}
-	return cfg.TestDB.DSN(), nil
+	return db.DSN(), nil
 }
 
 // lockDir holds the named locks, shared by all worktrees.

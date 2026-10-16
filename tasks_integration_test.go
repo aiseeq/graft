@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -605,6 +606,75 @@ tasks:
 	f.mustGraft("testdb", "down")
 	if st := f.mustGraft("testdb", "status"); !strings.Contains(st, "does not exist") {
 		t.Errorf("status after down:\n%s", st)
+	}
+}
+
+// TestTestDBPerMigrationSet: with test_db.migrations each set of migration
+// files gets a source database of its own, so branches and worktrees that
+// share the container never see each other's migrations; a source unused for
+// a week is dropped with the databases made from it.
+func TestTestDBPerMigrationSet(t *testing.T) {
+	if os.Getenv("GRAFT_TEST_DOCKER") != "1" {
+		t.Skip("set GRAFT_TEST_DOCKER=1 to run against docker")
+	}
+	container := fmt.Sprintf("graft-it-testdb-sets-%d", os.Getpid())
+	port := freePort(t)
+	t.Cleanup(func() { exec.Command("docker", "rm", "-f", "-v", container).Run() })
+	f := tasksRepo(t, "", map[string]string{"migrations/001_init.up.sql": "create table a();\n"})
+	out := f.path("out.txt")
+	f.write(".graft.yaml", f.read(".graft.yaml")+fmt.Sprintf(`test_db:
+  image: postgres:18-alpine
+  container: %s
+  port: %d
+  database: app_test_source
+  user: app
+  password: app
+  migrations: migrations
+  migrate: %s
+`, container, port, helperStep("append", out, "${TEST_DB_DSN}")))
+	name := regexp.MustCompile(`/(app_test_[0-9a-f]{8}_source)\?`)
+	up := func() string {
+		t.Helper()
+		f.mustGraft("testdb", "up")
+		lines := f.lines("out.txt")
+		m := name.FindStringSubmatch(lines[len(lines)-1])
+		if m == nil {
+			t.Fatalf("migrate got %q", lines[len(lines)-1])
+		}
+		return m[1]
+	}
+	psql := func(db, sql string) string {
+		t.Helper()
+		out, err := exec.Command("docker", "exec", container, "psql", "-U", "app", "-d", db, "-tAc", sql).CombinedOutput()
+		if err != nil {
+			t.Fatalf("psql %s: %v\n%s", sql, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	branchA := up()
+	psql(branchA, "create table only_a()")
+	f.write("migrations/002_more.up.sql", "create table b();\n")
+	branchB := up()
+	if branchB == branchA {
+		t.Fatalf("another migration set reuses %s", branchA)
+	}
+	if got := psql(branchB, "select to_regclass('only_a')"); got != "" {
+		t.Errorf("branch B sees branch A's table: %q", got)
+	}
+	if err := os.Remove(f.path("migrations/002_more.up.sql")); err != nil {
+		t.Fatal(err)
+	}
+	if again := up(); again != branchA || psql(branchA, "select to_regclass('only_a')") != "only_a" {
+		t.Errorf("back on branch A: %s", again)
+	}
+
+	// Branch B's source, unused for a week, goes with its template.
+	stem := strings.TrimSuffix(branchB, "_source")
+	psql(branchA, "create database "+stem+"_template")
+	psql(branchA, "comment on database "+branchB+" is 'graft used 2020-01-01T00:00:00Z'")
+	up()
+	if got := psql(branchA, "select string_agg(datname, ',' order by datname) from pg_database where datname like 'app_test%'"); got != branchA+",app_test_source" {
+		t.Errorf("databases left: %s", got)
 	}
 }
 

@@ -18,7 +18,7 @@ func TestCheckDSN(t *testing.T) {
 		"host=127.0.0.1 dbname=app_test":                         false,
 		"mysql://u@h/app_test":                                   false,
 	} {
-		if err := CheckDSN(dsn, cfg); (err == nil) != ok {
+		if err := CheckDSN(dsn, cfg, cfg.Database); (err == nil) != ok {
 			t.Errorf("CheckDSN(%q) = %v", dsn, err)
 		}
 	}

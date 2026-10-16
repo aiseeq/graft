@@ -27,7 +27,13 @@ import (
 type DB struct {
 	Cfg *config.TestDB
 	Log io.Writer
+	// Source is the database the tests copy (SourceFor): the configured one,
+	// or that of the work tree's migration set.
+	Source string
 }
+
+// DSN is the DSN of the source database.
+func (d *DB) DSN() string { return d.Cfg.DSN(d.Source) }
 
 // State is what docker reports about the container.
 type State struct {
@@ -152,6 +158,9 @@ func (d *DB) Up(ctx context.Context, migrate func(context.Context) error) error 
 	if err := d.waitReady(ctx); err != nil {
 		return err
 	}
+	if err := d.prepareSource(ctx, d.Source); err != nil {
+		return err
+	}
 	// Always, not only after create: a container on tmpfs comes back from a
 	// restart with an empty cluster.
 	if migrate != nil {
@@ -273,15 +282,16 @@ func runDocker(cmd *exec.Cmd) error {
 	return nil
 }
 
-// CheckDSN refuses a DSN that does not point at the test database: tests
-// drop and create databases, and a DSN left over from real work must never
-// reach them.
-func CheckDSN(dsn string, cfg *config.TestDB) error {
+// CheckDSN refuses a DSN that does not point at the test database, the
+// configured one or source, that of the work tree's migration set: tests drop
+// and create databases, and a DSN left over from real work must never reach
+// them.
+func CheckDSN(dsn string, cfg *config.TestDB, source string) error {
 	u, err := url.Parse(dsn)
 	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
 		return fmt.Errorf("%s is not a postgres:// URL", cfg.DSNVar)
 	}
-	if db := strings.TrimPrefix(u.Path, "/"); db != cfg.Database {
+	if db := strings.TrimPrefix(u.Path, "/"); db != cfg.Database && db != source {
 		return fmt.Errorf("%s points at database %q, not the test database %q", cfg.DSNVar, db, cfg.Database)
 	}
 	return nil

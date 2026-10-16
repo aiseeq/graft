@@ -486,6 +486,7 @@ test_db:
   password: app                  # a throwaway local database
   settings: [fsync=off, synchronous_commit=off, full_page_writes=off]   # the default
   tmpfs: 2g                      # optional: keep the data in RAM (k, m or g; at least 64m)
+  migrations: migrations          # optional: a source database per set of migration files
   migrate: [go, run, ./cmd/migrate, up]   # run after up with the DSN in dsn_var
   dsn_var: TEST_DB_DSN           # default
   ready_timeout: 60s             # default
@@ -501,6 +502,18 @@ in step for tests started from an IDE. In `migrate`, `${<dsn_var>}` (say
 holds; other `${KEY}` are looked up as usual. A container created with other
 settings or another `tmpfs` gets a warning; `graft testdb recreate` applies
 the config.
+
+With `migrations`, every set of migration files gets a database of its
+own: `app_test_source` becomes `app_test_<hash>_source`, the hash of the
+files' names and contents. Branches and worktrees share the container, and a
+migration one of them applied no longer lands in the database another one
+tests against (a migrate tool that finds a version it has no file for
+refuses to run). graft creates the database on the first `up` of a set and
+marks it used on every `up`; the database of another set unused for 7 days
+is dropped, with the template and copies the testdb package made from it
+(`app_test_<hash>_template`, `app_test_<hash>_*`). `database` itself stays:
+it is the one the container starts with, and a DSN from the environment (a
+CI service container) may still name it.
 
 `tmpfs` mounts a tmpfs of that size in place of the image's data volume
 (`/var/lib/postgresql` for postgres 18 and later, `/var/lib/postgresql/data`

@@ -292,6 +292,11 @@ type TestDB struct {
 	// Tmpfs is the size of the tmpfs the data volumes of the image are
 	// mounted in (512m, 2g), lowercased; empty keeps the data on disk.
 	Tmpfs string `yaml:"tmpfs"`
+	// Migrations is the directory of the migration files. When set, every
+	// set of them gets a source database of its own, named by their hash
+	// (SourceName): branches sharing the container never see each other's
+	// migrations.
+	Migrations string `yaml:"migrations"`
 	// Migrate runs after the database is up, with the DSN in DSNVar.
 	Migrate      Command       `yaml:"migrate"`
 	DSNVar       string        `yaml:"dsn_var"`
@@ -302,17 +307,33 @@ type TestDB struct {
 // needs to survive a crash.
 var DefaultTestDBSettings = []string{"fsync=off", "synchronous_commit=off", "full_page_writes=off"}
 
-// DSN is the connection string of the test database.
-func (t *TestDB) DSN() string {
+// DSN is the connection string of database on the test server.
+func (t *TestDB) DSN(database string) string {
 	u := url.URL{
 		Scheme:   "postgres",
 		User:     url.UserPassword(t.User, t.Password),
 		Host:     fmt.Sprintf("127.0.0.1:%d", t.Port),
-		Path:     "/" + t.Database,
+		Path:     "/" + database,
 		RawQuery: "sslmode=disable",
 	}
 	return u.String()
 }
+
+// SourceSuffix ends the name of a source database the testdb package copies.
+const SourceSuffix = "_source"
+
+// SourceName is the database of a set of migrations with that hash:
+// app_test_source becomes app_test_<hash>_source, keeping the suffix the
+// testdb package derives its template from; another name gets _<hash>.
+func (t *TestDB) SourceName(hash string) string {
+	if stem, ok := strings.CutSuffix(t.Database, SourceSuffix); ok {
+		return stem + "_" + hash + SourceSuffix
+	}
+	return t.Database + "_" + hash
+}
+
+// MigrationHashLen is how many hex characters of the hash name a source.
+const MigrationHashLen = 8
 
 // Tool is a pinned development tool: installed with go install, or by hand
 // when go install cannot provide it (a system package).
@@ -661,6 +682,14 @@ func (c *Config) validateTestDB() error {
 	}
 	if err := t.validateTmpfs(); err != nil {
 		return err
+	}
+	if t.Migrations != "" {
+		if err := checkRelPath("test_db.migrations", t.Migrations); err != nil {
+			return err
+		}
+		if n := len(t.SourceName(strings.Repeat("0", MigrationHashLen))); n > 63 {
+			return fmt.Errorf("test_db.database: %q is too long to take the migration hash within 63 characters", t.Database)
+		}
 	}
 	if t.Settings == nil {
 		t.Settings = slices.Clone(DefaultTestDBSettings)
