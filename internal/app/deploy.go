@@ -91,6 +91,18 @@ type deployRun struct {
 	// moveOut are the items whose commits a deploy to a held target
 	// reverts: they leave the window's version for the next one.
 	moveOut *versionMove
+	// dryRun is graft deploy check: the checks record nothing and never
+	// wait for a sudo password.
+	dryRun bool
+}
+
+// readSHA reads a commit record of an environment, without a sudo prompt
+// in a dry run.
+func (r *deployRun) readSHA(ctx context.Context, env *envs.Env, rec *config.DeployedSHA) (string, error) {
+	if r.dryRun {
+		return deploy.PeekDeployedSHA(ctx, env, rec)
+	}
+	return deploy.ReadDeployedSHA(ctx, env, rec)
 }
 
 // Deploy runs the project's deploy script for a target between graft's
@@ -174,7 +186,7 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	// The deployed commit is read before deps, sudo and the script: a target
 	// that already runs HEAD has nothing to gain from them.
 	if r.target.DeployedSHA != nil {
-		if r.prev, err = deploy.ReadDeployedSHA(ctx, r.env, r.target.DeployedSHA); err != nil {
+		if r.prev, err = r.readSHA(ctx, r.env, r.target.DeployedSHA); err != nil {
 			return err
 		}
 		if err := a.refuseSameCommit(r, o.Redeploy); err != nil {
@@ -230,28 +242,27 @@ func (a *App) startRelease(r *deployRun) error {
 // checkReleaseFlow runs the checks between the deployed commit and the new
 // one: a hotfix branch, the hold on a release candidate, and for an approved
 // release that nothing deployed is taken back and every commit is checked.
+// A deploy stops at the first refusal; a dry run goes on and returns them
+// all.
 func (a *App) checkReleaseFlow(ctx context.Context, r *deployRun, unapproved bool) error {
-	if r.hotfix {
-		if err := a.checkHotfix(ctx, r); err != nil {
-			return err
+	var errs []error
+	stop := func(err error) bool {
+		if err != nil {
+			errs = append(errs, err)
 		}
+		return err != nil && !r.dryRun
 	}
-	if err := a.checkHold(ctx, r); err != nil {
-		return err
+	if r.hotfix && stop(a.checkHotfix(ctx, r)) {
+		return errors.Join(errs...)
 	}
-	if r.hotfix || r.target.ApprovedRelease == nil {
-		return nil
+	if stop(a.checkHold(ctx, r)) || r.hotfix || r.target.ApprovedRelease == nil {
+		return errors.Join(errs...)
 	}
-	if err := a.checkContainsDeployed(r); err != nil {
-		return err
+	if stop(a.checkContainsDeployed(r)) || stop(a.checkApproved(ctx, r, unapproved)) || !r.gated {
+		return errors.Join(errs...)
 	}
-	if err := a.checkApproved(ctx, r, unapproved); err != nil {
-		return err
-	}
-	if !r.gated {
-		return nil
-	}
-	return a.checkVersionContents(ctx, r)
+	stop(a.checkVersionContents(ctx, r))
+	return errors.Join(errs...)
 }
 
 // refuseSameCommit refuses to deploy the commit the target already runs,
@@ -768,25 +779,7 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 	refuse := func(format string, args ...any) error {
 		return fmt.Errorf("deploy %s: nothing was deployed: approved release: "+format, append([]any{r.name}, args...)...)
 	}
-	if r.prev == "" {
-		return refuse("no deployed commit recorded, what goes out is unknown; check it by hand and pass --unapproved")
-	}
-	known, err := r.repo.RevExists(r.prev)
-	if err != nil {
-		return refuse("%v", err)
-	}
-	if !known {
-		return refuse("the deployed commit %s is unknown here (git fetch?)", r.prev)
-	}
-	withheld, err := readWithheld(ctx, r.env, r.target.DeployedSHA)
-	if err != nil {
-		return refuse("%v", err)
-	}
-	g, err := newGateRun(a, r.repo, r.cfg, conf)
-	if err != nil {
-		return refuse("%v", err)
-	}
-	out, err := g.run(ctx, r.prev, r.head, withheld, config.BranchMatches(r.cfg.Version.Build, r.branch))
+	out, g, err := a.approvalRun(ctx, r)
 	if err != nil {
 		return refuse("%v", err)
 	}
@@ -795,14 +788,45 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 		for i, f := range out.failures {
 			lines[i] = f.line()
 		}
-		return refuse("commits outside an approved release:\n  %s\n%s, revert them, or pass --unapproved", strings.Join(lines, "\n  "), g.gate.remedy())
+		return refuse("commits outside an approved release:\n  %s\nTheir items:\n  %s\n%s, revert them, or pass --unapproved",
+			strings.Join(lines, "\n  "), strings.Join(g.gate.describe(out.failures), "\n  "), g.gate.remedy())
 	}
+	a.passApproved(r, out)
+	return nil
+}
+
+// approvalRun checks the commits from the deployed one to HEAD and those
+// withheld before against approved_release.
+func (a *App) approvalRun(ctx context.Context, r *deployRun) (gateOutcome, *gateRun, error) {
+	if r.prev == "" {
+		return gateOutcome{}, nil, errors.New("no deployed commit recorded, what goes out is unknown; check it by hand and pass --unapproved")
+	}
+	known, err := r.repo.RevExists(r.prev)
+	if err != nil {
+		return gateOutcome{}, nil, err
+	}
+	if !known {
+		return gateOutcome{}, nil, fmt.Errorf("the deployed commit %s is unknown here (git fetch?)", r.prev)
+	}
+	withheld, err := r.readWithheld(ctx)
+	if err != nil {
+		return gateOutcome{}, nil, err
+	}
+	g, err := newGateRun(a, r.repo, r.cfg, r.target.ApprovedRelease)
+	if err != nil {
+		return gateOutcome{}, nil, err
+	}
+	out, err := g.run(ctx, r.prev, r.head, withheld, config.BranchMatches(r.cfg.Version.Build, r.branch))
+	return out, g, err
+}
+
+// passApproved records what an approved release with no failures lets out.
+func (a *App) passApproved(r *deployRun, out gateOutcome) {
 	r.withheld, r.released, r.gated, r.passed = out.withheld, out.released, true, uniqueSorted(out.passed)
-	if conf.Prefix != "" {
+	if r.target.ApprovedRelease.Prefix != "" {
 		r.approvedVersions = slices.Sorted(maps.Keys(out.approved))
 	}
 	a.printf("approved release: %d commits since %s, all in %s", out.commits, gitx.Short(r.prev), strings.Join(slices.Sorted(maps.Keys(out.approved)), ", "))
-	return nil
 }
 
 // gateRun is one pass of approved_release over the commits going out.
@@ -1176,6 +1200,55 @@ func (g *approvalGate) approvedVersion(ctx context.Context, issue jira.Issue) (s
 		}
 	}
 	return "", nil
+}
+
+// describe names each item of the failing commits once, with its summary,
+// status and the fix versions of the prefix: what to fix in the tracker.
+func (g *approvalGate) describe(failures []gateFailure) []string {
+	var lines []string
+	seen := map[string]bool{}
+	for _, f := range failures {
+		if len(f.keys) == 0 && !seen[""] {
+			seen[""] = true
+			lines = append(lines, "commits naming no item: tie each to its item with approved_release.attribute, or revert it")
+		}
+		for _, key := range f.keys {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			issue, ok := g.issues[key]
+			if !ok {
+				continue
+			}
+			line := key + " " + issue.Summary + ": " + issue.Status
+			if g.conf.Prefix != "" {
+				line += "; " + g.fixVersions(issue)
+			}
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// fixVersions lists the item's fix versions of the prefix and whether every
+// approver approved each.
+func (g *approvalGate) fixVersions(issue jira.Issue) string {
+	var vs []string
+	for _, v := range issue.FixVersions {
+		if !strings.HasPrefix(v.Name, g.conf.Prefix) {
+			continue
+		}
+		state := "not approved by every approver"
+		if g.versions[v.ID] {
+			state = "approved"
+		}
+		vs = append(vs, v.Name+" ("+state+")")
+	}
+	if len(vs) == 0 {
+		return fmt.Sprintf("in no %q version", g.conf.Prefix)
+	}
+	return "fix versions " + strings.Join(vs, ", ")
 }
 
 // remedy says how an item gets a commit out.

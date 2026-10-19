@@ -290,7 +290,7 @@ func (c *Config) validateDeploy() error {
 }
 
 // DeploySubcommands are the words after graft deploy that are not targets.
-var DeploySubcommands = []string{"status", "logs", "check-head", "check-integrations", "cutoff"}
+var DeploySubcommands = []string{"status", "logs", "check", "versions", "check-head", "check-integrations", "cutoff"}
 
 func (c *Config) validateTarget(name string, t *DeployTarget) error {
 	where := "deploy.targets." + name

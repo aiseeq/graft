@@ -1493,3 +1493,76 @@ deploy:
 		t.Errorf("plain ran:\n%s", got)
 	}
 }
+
+// TestDeployCheck: graft deploy check lists every refusal of graft deploy,
+// the items of the commits outside the approved release among them, and
+// deploys and records nothing; with nothing to refuse it passes.
+func TestDeployCheck(t *testing.T) {
+	d := deployRepo(t)
+	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-1": {"10010"}, "PROJ-5": {"10030"}})
+	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "APPROVED"}, "10030": {"APPROVED", "PENDING"}})
+	d.mustGraft("deploy", "--unapproved", "live")
+	deployed := d.git("rev-parse", "HEAD")
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-1 approved thing")
+	if out := d.mustGraft("deploy", "check", "live"); !strings.Contains(out, "approved release: 1 commits since") ||
+		!strings.Contains(out, "graft deploy live passes its checks now") {
+		t.Errorf("an approved release passes:\n%s", out)
+	}
+	d.write("b.txt", "b\n")
+	d.mustGraft("commit", "-m", "fix: PROJ-5 half approved")
+	d.write("c.txt", "c\n")
+	d.mustGraft("commit", "-m", "chore: tidy up")
+	d.write("dirty.txt", "uncommitted\n")
+	before := readFile(t, filepath.Join(d.state, "live-run"))
+
+	out, code := d.graft("", "deploy", "check", "live")
+	if code == 0 {
+		t.Fatalf("exit 0:\n%s", out)
+	}
+	for _, want := range []string{
+		"checking graft deploy live for ",
+		"graft deploy live would refuse:",
+		"- the work tree is not clean",
+		`fix: PROJ-5 half approved: PROJ-5 not in an approved "Product v" version`,
+		"chore: tidy up: names no item",
+		"Their items:",
+		"PROJ-5 Summary of PROJ-5: Testing; fix versions Product v1.3.0 (not approved by every approver)",
+		"commits naming no item: tie each to its item with approved_release.attribute, or revert it",
+		"would refuse, see above",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
+	}
+	if got := strings.TrimSpace(d.stateFile("live-sha")); got != deployed {
+		t.Errorf("deployed sha = %q, want the earlier %q", got, deployed)
+	}
+	if after := readFile(t, filepath.Join(d.state, "live-run")); after != before {
+		t.Errorf("the deploy script ran:\n%s", after)
+	}
+}
+
+func TestDeployVersions(t *testing.T) {
+	d := deployRepo(t)
+	d.mustGraft("deploy", "test")
+	subject := d.git("log", "-1", "--format=%h %s (%cs)")
+	out := d.mustGraft("deploy", "versions")
+	for _, want := range []string{
+		"test (local): version 1.0.1; commit " + subject + "\n",
+		"live (local): version no version command; commit none recorded\n",
+		"stage (local): version no version command; commit no deployed_sha\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "stage (") < strings.Index(out, "test (") {
+		t.Errorf("stage requires test and comes after it:\n%s", out)
+	}
+	writeFile(t, filepath.Join(d.state, "test-version"), "")
+	if out, code := d.graft("", "deploy", "versions"); code == 0 || !strings.Contains(out, "test (local): version unknown: the version command on local printed nothing") ||
+		!strings.Contains(out, "could not read test") {
+		t.Errorf("an unreadable version: exit %d\n%s", code, out)
+	}
+}

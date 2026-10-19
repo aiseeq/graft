@@ -46,8 +46,8 @@ func sibling(rec *config.DeployedSHA, suffix string) *config.DeployedSHA {
 	return &config.DeployedSHA{Path: rec.Path + suffix, Sudo: rec.Sudo}
 }
 
-func readWithheld(ctx context.Context, env *envs.Env, rec *config.DeployedSHA) ([]string, error) {
-	out, err := deploy.ReadDeployedSHA(ctx, env, sibling(rec, withheldSuffix))
+func (r *deployRun) readWithheld(ctx context.Context) ([]string, error) {
+	out, err := r.readSHA(ctx, r.env, sibling(r.target.DeployedSHA, withheldSuffix))
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +115,7 @@ func hotfixBase(ctx context.Context, r *deployRun) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if baseSHA, err = deploy.ReadDeployedSHA(ctx, env, bt.DeployedSHA); err != nil {
+		if baseSHA, err = r.readSHA(ctx, env, bt.DeployedSHA); err != nil {
 			return "", err
 		}
 	}
@@ -222,7 +222,7 @@ func (a *App) checkHeldFor(ctx context.Context, r *deployRun, wname string) erro
 	if err != nil {
 		return refuse("%v", err)
 	}
-	released, err := deploy.ReadDeployedSHA(ctx, wenv, wt.DeployedSHA)
+	released, err := r.readSHA(ctx, wenv, wt.DeployedSHA)
 	if err != nil {
 		return refuse("%v", err)
 	}
@@ -230,15 +230,17 @@ func (a *App) checkHeldFor(ctx context.Context, r *deployRun, wname string) erro
 		a.printf("%s already runs %s, the candidate of the %s window: the hold is over", wname, gitx.Short(released), occ.Name())
 		return nil
 	}
-	candidate, err := heldCandidate(ctx, r.env, r.target.DeployedSHA, r.prev, occ)
+	candidate, err := r.heldCandidate(ctx, r.env, r.target.DeployedSHA, r.prev, occ)
 	if err != nil {
 		return refuse("%v", err)
 	}
 	if candidate == "" {
 		return refuse("%s holds the release candidate of %s from %s, but runs no recorded commit to hold", r.name, wname, occ.Cutoff.Format("Mon 02.01 15:04"))
 	}
-	if err := recordCandidate(ctx, r, occ, candidate); err != nil {
-		return refuse("%v", err)
+	if !r.dryRun {
+		if err := recordCandidate(ctx, r, occ, candidate); err != nil {
+			return refuse("%v", err)
+		}
 	}
 	if r.hotfix {
 		a.printf("%s holds the candidate %s of the %s window; a hotfix passes the hold", r.name, gitx.Short(candidate), occ.Name())
@@ -261,8 +263,8 @@ func (a *App) checkHeldFor(ctx context.Context, r *deployRun, wname string) erro
 
 // heldCandidate is the candidate recorded for the window, or, before any
 // deploy since the cutoff recorded one, the commit the target runs.
-func heldCandidate(ctx context.Context, env *envs.Env, rec *config.DeployedSHA, runs string, occ deploy.Occurrence) (string, error) {
-	line, err := deploy.ReadDeployedSHA(ctx, env, sibling(rec, candidateSuffix))
+func (r *deployRun) heldCandidate(ctx context.Context, env *envs.Env, rec *config.DeployedSHA, runs string, occ deploy.Occurrence) (string, error) {
+	line, err := r.readSHA(ctx, env, sibling(rec, candidateSuffix))
 	if err != nil {
 		return "", err
 	}
@@ -409,7 +411,7 @@ func (a *App) DeployCutoff(ctx context.Context, target string) error {
 	if err != nil || c.candidate == r.prev {
 		return err
 	}
-	withheld, err := readWithheld(ctx, r.env, r.target.DeployedSHA)
+	withheld, err := r.readWithheld(ctx)
 	if err != nil {
 		return err
 	}
@@ -459,7 +461,7 @@ func (a *App) cutoffCandidate(ctx context.Context, r *deployRun) (cutoff, error)
 	when := "the cutoff is " + occ.Cutoff.Format("Mon 02.01 15:04") + ": until then the candidate is whatever " + c.held + " runs"
 	if held {
 		when = "the cutoff was " + occ.Cutoff.Format("Mon 02.01 15:04") + ", " + c.held + " holds the candidate"
-		if c.candidate, err = heldCandidate(ctx, henv, ht.DeployedSHA, c.candidate, occ); err != nil {
+		if c.candidate, err = r.heldCandidate(ctx, henv, ht.DeployedSHA, c.candidate, occ); err != nil {
 			return c, err
 		}
 	}

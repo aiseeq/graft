@@ -78,6 +78,8 @@ a heavy task inside a heavy task was admitted with it. Ctrl-C stops the wait.
 | `graft flags ack <id> --reason R` | close an open event with a reason |
 | `graft flags mute <id> --reason R [--match S] [--all-envs]` | add an exception for it, then close it |
 | `graft deploy [--redeploy] [--unapproved] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--unapproved` skips the `approved_release` check |
+| `graft deploy check <target>` | what `graft deploy <target>` would refuse now, read only: unpublished work, the window, `requires`, the hold, `approved_release` with the items of the commits outside it (summary, status, fix versions); exit 1 when it would refuse |
+| `graft deploy versions` | the version and the commit each target runs, required targets first |
 | `graft deploy cutoff <target>` | the release candidate of the target's window: its unchecked commits and the commands that revert them on a release branch |
 | `graft deploy status <target>` / `logs <target> [--lines N] [--grep RE]` | the target's status and logs commands |
 | `graft deploy check-head` | for deploy scripts: HEAD is still the commit being deployed |
@@ -888,8 +890,15 @@ release_notes:
    commit bumps do not count). Otherwise the deploy stops here, before deps
    and the script, listing each commit outside the release: one naming no
    item, or naming items that do not pass, and why. With no deployed commit
-   recorded, or Jira unreachable, it stops too. `--unapproved` skips the
-   check with a warning.
+   recorded, or Jira unreachable, it stops too. After the commits it lists
+   their items once each, with summary, status and the fix versions of
+   `prefix` and their approval: what to fix in Jira. `--unapproved` skips the
+   check with a warning. `graft deploy check <target>` runs this check and
+   the others before the deps (unpublished work, the window, `requires`, the
+   hold) without deploying: it lists every refusal rather than the first,
+   records nothing (not even the hold's candidate) and reads the deployed
+   commits with `sudo -n`, so a server that wants a sudo password answers
+   with an error instead of a prompt.
    `attribute` ties a commit already in the history whose message names no
    item to the item it belongs to, without rewriting history: the commit is
    checked exactly as a commit naming that item (`statuses`, a subtask by its

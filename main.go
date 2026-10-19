@@ -515,7 +515,7 @@ func flagsCmd(ctx context.Context, a *app.App, args []string) error {
 // take them: script args check-head, check-integrations and cutoff, log flags anything but logs, deploy
 // flags any subcommand.
 func deployFlagsMisplaced(sub string, scriptArgs, logFlags, deployFlags bool) bool {
-	return scriptArgs && (sub == "check-head" || sub == "check-integrations" || sub == "cutoff") || logFlags && sub != "logs" || deployFlags && isDeploySubcommand(sub)
+	return scriptArgs && (sub == "check-head" || sub == "check-integrations" || sub == "cutoff" || sub == "check" || sub == "versions") || logFlags && sub != "logs" || deployFlags && isDeploySubcommand(sub)
 }
 
 func deployCmd(ctx context.Context, a *app.App, args []string) error {
@@ -534,7 +534,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	if err != nil {
 		return err
 	}
-	usage := fmt.Errorf("%w: graft deploy [--redeploy] [--unapproved] <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | cutoff <target> | check-head | check-integrations [build]", errUsage)
+	usage := fmt.Errorf("%w: graft deploy [--redeploy] [--unapproved] <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | check <target> | versions | cutoff <target> | check-head | check-integrations [build]", errUsage)
 	if len(pos) == 0 {
 		return usage
 	}
@@ -542,15 +542,10 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	if deployFlagsMisplaced(pos[0], scriptArgs != nil, logFlags, *redeploy || *unapproved) {
 		return usage
 	}
+	if run := readOnlyDeployCmd(ctx, a, pos, scriptArgs); run != nil {
+		return run()
+	}
 	switch {
-	case pos[0] == "check-head" && len(pos) == 1:
-		return a.DeployCheckHead()
-	case pos[0] == "check-integrations" && len(pos) <= 2:
-		return a.DeployCheckIntegrations(ctx, strings.Join(pos[1:], ""))
-	case pos[0] == "status" && len(pos) == 2:
-		return a.DeployStatus(ctx, pos[1], scriptArgs)
-	case pos[0] == "cutoff" && len(pos) == 2:
-		return a.DeployCutoff(ctx, pos[1])
 	case pos[0] == "logs" && len(pos) == 2:
 		if *lines <= 0 {
 			return fmt.Errorf("%w: --lines must be positive", errUsage)
@@ -561,6 +556,26 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	default:
 		return usage
 	}
+}
+
+// readOnlyDeployCmd is the read-only graft deploy subcommand of pos, nil
+// for any other.
+func readOnlyDeployCmd(ctx context.Context, a *app.App, pos, scriptArgs []string) func() error {
+	switch {
+	case pos[0] == "check-head" && len(pos) == 1:
+		return a.DeployCheckHead
+	case pos[0] == "check-integrations" && len(pos) <= 2:
+		return func() error { return a.DeployCheckIntegrations(ctx, strings.Join(pos[1:], "")) }
+	case pos[0] == "status" && len(pos) == 2:
+		return func() error { return a.DeployStatus(ctx, pos[1], scriptArgs) }
+	case pos[0] == "cutoff" && len(pos) == 2:
+		return func() error { return a.DeployCutoff(ctx, pos[1]) }
+	case pos[0] == "check" && len(pos) == 2:
+		return func() error { return a.DeployCheck(ctx, pos[1]) }
+	case pos[0] == "versions" && len(pos) == 1:
+		return func() error { return a.DeployVersions(ctx) }
+	}
+	return nil
 }
 
 func isDeploySubcommand(s string) bool {
