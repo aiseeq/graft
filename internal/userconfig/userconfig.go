@@ -25,6 +25,28 @@ type Config struct {
 	Load MachineLoad `yaml:"load"`
 	// Limits are how long the gate and a task may take.
 	Limits Limits `yaml:"limits"`
+	// Commit is what graft commit asks of the user's messages.
+	Commit Commit `yaml:"commit"`
+}
+
+// Commit is what graft commit asks of the messages in every project of the
+// user.
+type Commit struct {
+	// Conventional asks for a Conventional Commits subject.
+	Conventional bool `yaml:"conventional"`
+}
+
+// CommitSettings is the user's commit settings; without a user config none
+// is asked for.
+func CommitSettings() (Commit, error) {
+	cfg, _, err := Load()
+	if errors.Is(err, ErrNotFound) {
+		return Commit{}, nil
+	}
+	if err != nil {
+		return Commit{}, err
+	}
+	return cfg.Commit, nil
 }
 
 // Limits are the times graft stats marks a gate or a task over, measured

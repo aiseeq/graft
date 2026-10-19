@@ -113,9 +113,9 @@ func commitLock(repo *gitx.Repo, cfg *config.Config) string {
 	return repoLock(repo)
 }
 
-// runner prepares the task runner for the repository.
-func (a *App) runner(repo *gitx.Repo, cfg *config.Config) *tasks.Runner {
-	r := tasks.NewRunner(repo.Root, cfg, a.Stdout, a.Stderr)
+// newRunner is a runner in root that records its tasks under the command.
+func (a *App) newRunner(root string, cfg *config.Config) *tasks.Runner {
+	r := tasks.NewRunner(root, cfg, a.Stdout, a.Stderr)
 	r.Stdin = a.Stdin
 	// One recorder per run: a failing stats file warns once, however many
 	// runners the command makes.
@@ -123,6 +123,12 @@ func (a *App) runner(repo *gitx.Repo, cfg *config.Config) *tasks.Runner {
 		a.stats = stats.NewRecorder(a.Stderr)
 	}
 	r.Stats, r.Top = a.stats, a.Command
+	return r
+}
+
+// runner prepares the task runner for the repository.
+func (a *App) runner(repo *gitx.Repo, cfg *config.Config) *tasks.Runner {
+	r := a.newRunner(repo.Root, cfg)
 	r.GraftVersion = a.ToolVersion
 	r.NoCache = a.NoCache || a.NoCacheEnv
 	r.LockDir = lockDir(repo)

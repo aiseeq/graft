@@ -671,6 +671,41 @@ func (r *Runner) top(outermost string) string {
 	return outermost
 }
 
+// ExecTask names in the stats a command run by graft exec.
+const ExecTask = "exec"
+
+// Exec runs argv in dir, a command that is not a task, recorded as the task
+// exec. A heavy one queues for the machine as a heavy task does and gets
+// {threads} filled and GRAFT_THREADS.
+func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool) (err error) {
+	t := &config.Task{Heavy: heavy}
+	f := r.begin(ExecTask)
+	defer func() { r.end(f, err != nil) }()
+	if heavy {
+		waited, err := r.admit(ctx, ExecTask)
+		r.Waited(waited)
+		if err != nil {
+			return err
+		}
+	}
+	s, threads, err := r.threads(config.Step{Argv: argv, Source: strings.Join(argv, " ")}, t)
+	if err != nil {
+		return err
+	}
+	env, err := r.env(t, nil)
+	if err != nil {
+		return err
+	}
+	if heavy {
+		env = append(env, ThreadsEnv+"="+threads)
+	}
+	cmd := exec.CommandContext(ctx, s.Argv[0], s.Argv[1:]...)
+	cmd.Dir, cmd.Env = dir, env
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
+	_, err = r.measure(cmd, s.Source)
+	return err
+}
+
 // Unit runs fn as name, a unit of work that is not a task (a deploy), and
 // records it the way a task is recorded: the tasks fn runs are recorded as
 // run in it, and Measure records its steps.

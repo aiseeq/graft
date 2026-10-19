@@ -11,6 +11,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/hooks"
 	"github.com/aiseeq/graft/v2/internal/message"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 	"github.com/aiseeq/graft/v2/internal/version"
 )
 
@@ -31,6 +32,15 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 	msg, err := message.Read(opts.Message)
 	if err != nil {
 		return err
+	}
+	uc, err := userconfig.CommitSettings()
+	if err != nil {
+		return err
+	}
+	if uc.Conventional {
+		if err := message.CheckConventional(msg); err != nil {
+			return err
+		}
 	}
 	if opts.Level != version.Patch && cfg.Version.Mode != config.ModeFile {
 		return fmt.Errorf("--%s needs version.mode %s; with %s, versions come from graft release", opts.Level, config.ModeFile, cfg.Version.Mode)

@@ -54,7 +54,14 @@ load:                            # heavy tasks on a shared machine (heavy: true 
 limits:                          # graft stats marks the tasks over them, by median without the waits
   gate: 1m                       # default 1m: the gate of a commit as a whole
   task: 8m                       # default 8m: any other task, a test run before a deploy, merge or release
+commit:
+  conventional: true             # default false: graft commit refuses a subject that is not Conventional Commits
 ```
+
+With `commit.conventional` graft commit wants the subject as `type(scope)!:
+description`, the type one of build, chore, ci, docs, feat, fix, perf,
+refactor, revert, style, test; git's own `Revert "..."` passes. It is the
+user's, so it holds in every project they commit to.
 
 A heavy task checks whether the machine is busy: the 1-minute load average
 (`/proc/loadavg`) at or above `free_below`, the IO pressure above
@@ -66,6 +73,14 @@ each once the load is below `wait_above` and the disk and swap are calm; one
 that waited holds the queue for `settle`, since the load average is a
 minute's. A heavy task inside a heavy task was admitted with it. Ctrl-C stops
 the wait.
+
+A heavy command that is no task of the project (a one-off `go test`, a
+build, an e2e run) takes the same queue with `graft exec --heavy -- <command>
+[args]`: it runs in the current directory once the machine admits it, `{threads}`
+in its arguments and `GRAFT_THREADS` set to `threads`, and graft exits with
+its exit status. `graft stats` records it as the task `exec` of the work tree
+around (`--task exec` lists the commands); without `--heavy` it runs at once
+and is only recorded.
 
 `graft deploy` gives its heavy tasks, and those of every graft its script
 starts, a priority (`GRAFT_LOAD_PRIORITY`, `GRAFT_LOAD_BUDGET`,
@@ -112,12 +127,14 @@ stats` (`wait_s`).
 | `graft tasks` | every task, building blocks and deps included |
 | `graft start` / `stop` / `restart [service]` | background services, all of them without a name |
 | `graft logs <service> [--lines N] [-f]` | the end of a service's log, or its journal; `-f` follows until Ctrl-C |
+| `graft exec [--heavy] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config) |
 | `graft stats [--since 7d] [--project <root>\|--all] [--task <name>]` | recorded resource use of tasks (see [Resource stats](#resource-stats)) |
 | `graft status` | services, the test database, held locks |
 | `graft locks` | who holds graft's locks |
 | `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |
 | `graft worktree add <branch> [<base>]` | a worktree under the user's cache, go.work's neighbours linked (see Worktrees) |
 | `graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h]` | remove the worktrees and branches whose work is in the trunk by content; list the rest |
+| `graft worktree sync [--trunk <ref>]` | move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted (see Worktrees) |
 | `graft tools [install]` | check the pinned tools; install the failing ones |
 | `graft help` | the commands the project's `.graft.yaml` uses, its tasks (those with `desc`, with their arguments) and services |
 | `graft --version` | print graft's own version |
@@ -1316,6 +1333,17 @@ the trunk:
 - the rest is listed: `unmerged` with the lines or conflicts it adds, and
   `check` when its commit subjects are all in the trunk but its content is
   not: it looks merged, a look decides.
+
+`graft worktree sync [--trunk <ref>]`, run in a worktree, moves its work onto
+the fresh trunk: it fetches every remote, rebases the branch's own commits
+onto the trunk (found as for clean) and brings the uncommitted changes back
+uncommitted, untracked files left where they are (`git rebase --autostash`).
+Nothing is committed or pushed, so a worktree is synced in the middle of its
+work without a temporary commit past the hooks. Uncommitted changes that
+conflict with the trunk are left with their markers and kept in the stash
+too (resolve, then `git stash drop`); a commit of the branch that conflicts
+stops the rebase (`git rebase --continue` or `--abort`); an untracked file
+the trunk adds stops it before anything changes.
 
 ## Development
 

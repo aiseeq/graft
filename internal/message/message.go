@@ -55,6 +55,21 @@ func Read(src Source) (string, error) {
 	return msg, nil
 }
 
+// conventional is a Conventional Commits subject: a type of the common set,
+// an optional scope, ! for a breaking change, then the description.
+var conventional = regexp.MustCompile(`^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([^()\n]+\))?!?: \S`)
+
+// CheckConventional refuses a message whose subject is not a Conventional
+// Commits one (type(scope)!: description); git's own revert subject, Revert
+// "...", passes.
+func CheckConventional(msg string) error {
+	subject, _, _ := strings.Cut(msg, "\n")
+	if conventional.MatchString(subject) || strings.HasPrefix(subject, `Revert "`) {
+		return nil
+	}
+	return fmt.Errorf("the subject %q is not Conventional Commits (user config commit.conventional): type(scope): description, the type one of build, chore, ci, docs, feat, fix, perf, refactor, revert, style, test", subject)
+}
+
 // BranchKey returns the first work item key in the branch name, or "" when the
 // branch names none.
 func BranchKey(branch string, pattern *regexp.Regexp) string {

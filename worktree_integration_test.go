@@ -160,3 +160,61 @@ func TestWorktreeAdd(t *testing.T) {
 		t.Errorf("a wrong link: exit %d\n%s", code, out)
 	}
 }
+
+// TestWorktreeSync: graft worktree sync puts the worktree's own commits on
+// the fresh trunk and brings its uncommitted changes, untracked files too,
+// back uncommitted, committing and pushing nothing; changes that conflict
+// with the trunk keep their markers and stay in the stash.
+func TestWorktreeSync(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none}\n",
+		"shared.txt":  "one\ntwo\nthree\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustGraft("commit", "-m", "feat: base")
+	f.git("remote", "set-head", "origin", "main")
+	wt := filepath.Join(f.base, "wt-sync")
+	f.git("worktree", "add", "-q", "-b", "w/sync", wt, "main")
+	writeFile(t, filepath.Join(wt, "own.txt"), "own\n")
+	if out, code := f.exec(wt, "", graftBin, "commit", "-m", "feat: own work"); code != 0 {
+		t.Fatalf("commit in the worktree: exit %d\n%s", code, out)
+	}
+	writeFile(t, filepath.Join(wt, "shared.txt"), "one\ntwo\nTHREE\n")
+	writeFile(t, filepath.Join(wt, "notes.txt"), "notes\n")
+	f.write("shared.txt", "ONE\ntwo\nthree\n")
+	f.mustGraft("commit", "-m", "feat: trunk moves")
+	trunk := f.gitIn(f.work, "rev-parse", "HEAD")
+
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync")
+	if code != 0 || !strings.Contains(out, "on origin/main (") {
+		t.Fatalf("sync: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(wt, "rev-parse", "HEAD~1"); got != trunk {
+		t.Errorf("the own commit is on %s, want the trunk %s", got, trunk)
+	}
+	if got := f.gitIn(wt, "log", "-1", "--format=%s"); got != "feat: own work" {
+		t.Errorf("HEAD is %q", got)
+	}
+	if got := f.gitIn(wt, "status", "--porcelain"); got != "M shared.txt\n?? notes.txt" && got != " M shared.txt\n?? notes.txt" {
+		t.Errorf("status %q, want shared.txt changed and notes.txt untracked", got)
+	}
+	if data, _ := os.ReadFile(filepath.Join(wt, "shared.txt")); string(data) != "ONE\ntwo\nTHREE\n" {
+		t.Errorf("shared.txt %q", data)
+	}
+	if got := f.gitIn(wt, "stash", "list"); got != "" {
+		t.Errorf("stash left: %q", got)
+	}
+	if got := f.gitIn(wt, "ls-remote", "origin", "refs/heads/w/sync"); strings.HasPrefix(got, f.gitIn(wt, "rev-parse", "HEAD")) {
+		t.Errorf("sync pushed the branch: %q", got)
+	}
+
+	f.write("shared.txt", "ONE\ntwo\nthree, trunk\n")
+	f.mustGraft("commit", "-m", "feat: trunk conflicts")
+	out, code = f.exec(wt, "", graftBin, "worktree", "sync")
+	if code == 0 || !strings.Contains(out, "the uncommitted changes conflict with it in shared.txt") {
+		t.Errorf("a conflict: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(wt, "stash", "list"); !strings.Contains(got, "autostash") {
+		t.Errorf("the changes are not kept in the stash: %q", got)
+	}
+}

@@ -89,3 +89,16 @@ func TestRead(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckConventional(t *testing.T) {
+	for _, ok := range []string{"feat: add x", "fix(load)!: y\n\nbody", "revert: z", `Revert "feat: add x"`, "refactor(app, tasks): w"} {
+		if err := CheckConventional(ok); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"add x", "Feat: x", "feat:x", "feat: ", "fxi: x", "feat(): x", "wip\n\nfeat: x"} {
+		if err := CheckConventional(bad); err == nil {
+			t.Errorf("%q passes", bad)
+		}
+	}
+}

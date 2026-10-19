@@ -128,6 +128,8 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		return statsCmd(a, rest)
 	case "worktree":
 		return worktreeCmd(ctx, a, rest)
+	case "exec":
+		return execCmd(ctx, a, rest)
 	default:
 		return projectCmd(ctx, a, cmd, rest)
 	}
@@ -276,8 +278,20 @@ func testDBCmd(ctx context.Context, a *app.App, args []string) error {
 }
 
 func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := fmt.Errorf("%w: graft worktree add <branch> [<base>] | clean [--apply] [--trunk <ref>] [--min-age 1h]", errUsage)
+	usage := fmt.Errorf("%w: graft worktree add <branch> [<base>] | clean [--apply] [--trunk <ref>] [--min-age 1h] | sync [--trunk <ref>]", errUsage)
 	switch {
+	case len(args) > 0 && args[0] == "sync":
+		fs := newFlags(a, "worktree sync")
+		o := app.WorktreeSyncOptions{}
+		fs.StringVar(&o.Trunk, "trunk", "", "the ref to sync onto (default: the HEAD branch of the deploy remote or of the only remote)")
+		pos, err := parseInterspersed(fs, args[1:])
+		if err != nil {
+			return err
+		}
+		if len(pos) != 0 {
+			return usage
+		}
+		return a.WorktreeSync(ctx, o)
 	case len(args) == 2 && args[0] == "add" && !strings.HasPrefix(args[1], "-"):
 		return a.WorktreeAdd(ctx, app.WorktreeAddOptions{Branch: args[1]})
 	case len(args) == 3 && args[0] == "add" && !strings.HasPrefix(args[1], "-"):
@@ -298,6 +312,19 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 		return usage
 	}
 	return a.WorktreeClean(ctx, o)
+}
+
+// execCmd runs graft exec [--heavy] -- <command> [args].
+func execCmd(ctx context.Context, a *app.App, args []string) error {
+	usage := fmt.Errorf("%w: graft exec [--heavy] -- <command> [args]", errUsage)
+	heavy := len(args) > 0 && args[0] == "--heavy"
+	if heavy {
+		args = args[1:]
+	}
+	if len(args) < 2 || args[0] != "--" {
+		return usage
+	}
+	return a.Exec(ctx, args[1:], heavy)
 }
 
 func toolsCmd(ctx context.Context, a *app.App, args []string) error {

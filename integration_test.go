@@ -898,3 +898,23 @@ func TestCommitWarnsAboutOutdatedHooks(t *testing.T) {
 		t.Errorf("stale shim not reported:\n%s", out)
 	}
 }
+
+// TestCommitConventional: with commit.conventional in the user config a
+// subject that is not Conventional Commits is refused before the gate and
+// nothing is committed; without it any subject goes.
+func TestCommitConventional(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"})
+	f.mustGraft("commit", "-m", "first commit, any subject")
+	cfgDir := t.TempDir()
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "commit: {conventional: true}\n")
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
+	f.write("a.txt", "a\n")
+	before := f.gitIn(f.work, "rev-parse", "HEAD")
+	if out, code := f.graft("", "commit", "-m", "add a"); code == 0 || !strings.Contains(out, `the subject "add a" is not Conventional Commits (user config commit.conventional)`) {
+		t.Errorf("a plain subject: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.work, "rev-parse", "HEAD"); got != before {
+		t.Errorf("a refused message committed %s", got)
+	}
+	f.mustGraft("commit", "-m", "feat: add a")
+}

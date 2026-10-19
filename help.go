@@ -61,6 +61,8 @@ var commands = []command{
 		applies: func(c *config.Config) bool { return len(c.Tasks) > 0 }},
 	{name: "start", syntax: fixed("graft start|stop|restart [service]", "graft logs <service> [--lines N] [-f]"), summary: text("start services in the background or through systemd --user; stop, restart, logs"),
 		applies: func(c *config.Config) bool { return len(c.Services) > 0 }},
+	{name: "exec", syntax: fixed("graft exec [--heavy] -- <command> [args]"),
+		summary: text("run a command that is not a task, recorded in the stats as exec; --heavy: queue for the machine as heavy tasks do, {threads} and GRAFT_THREADS from load.threads")},
 	{name: "stats", syntax: fixed("graft stats [--tests] [--since 7d] [--project <root>|--all] [--task <name>] [--max-load N]"),
 		summary: text("resource use recorded for tasks: runs, wall and CPU time, peak memory, failures; --tests: the slowest tests, the skipped and the flaky ones")},
 	{name: "status", syntax: fixed("graft status"), summary: text("show services, the test database and held locks")},
@@ -69,8 +71,8 @@ var commands = []command{
 		applies: func(c *config.Config) bool { return c.TestDB != nil }},
 	{name: "tools", syntax: fixed("graft tools [install]"), summary: text("check the pinned tools; install installs the failing ones"),
 		applies: func(c *config.Config) bool { return len(c.Tools) > 0 }},
-	{name: "worktree", syntax: fixed("graft worktree add <branch> [<base>]", "graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h]"),
-		summary: text("a worktree under the user's cache, with go.work's neighbours linked; remove the worktrees and branches whose work is in the trunk by content")},
+	{name: "worktree", syntax: fixed("graft worktree add <branch> [<base>]", "graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h]", "graft worktree sync [--trunk <ref>]"),
+		summary: text("a worktree under the user's cache, with go.work's neighbours linked; remove the worktrees and branches whose work is in the trunk by content; move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted")},
 	{name: "help", syntax: fixed("graft help", "graft --version"), summary: text("this text; the version of graft itself")},
 }
 

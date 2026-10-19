@@ -67,7 +67,7 @@ func (a *App) WorktreeClean(_ context.Context, o WorktreeCleanOptions) error {
 			return fmt.Errorf("git fetch %s failed, what the trunk has is unknown: %w", r, err)
 		}
 	}
-	if c.trunk, err = cleanTrunk(repo, cfg, o.Trunk, c.remotes); err != nil {
+	if c.trunk, err = trunkRef(repo, cfg, o.Trunk, c.remotes); err != nil {
 		return err
 	}
 	for _, f := range cfg.VersionFiles() {
@@ -103,9 +103,10 @@ func (a *App) WorktreeClean(_ context.Context, o WorktreeCleanOptions) error {
 	return nil
 }
 
-// cleanTrunk is the ref merged work must be in: --trunk, or the HEAD branch
-// of the deploy remote, or of the only remote.
-func cleanTrunk(repo *gitx.Repo, cfg *config.Config, flag string, remotes []string) (string, error) {
+// trunkRef is the trunk, which merged work must be in and work is synced
+// onto: --trunk, or the HEAD branch of the deploy remote, or of the only
+// remote.
+func trunkRef(repo *gitx.Repo, cfg *config.Config, flag string, remotes []string) (string, error) {
 	if flag != "" {
 		if ok, err := repo.RevExists(flag); err != nil || !ok {
 			return "", fmt.Errorf("--trunk %s: no such commit: %w", flag, err)

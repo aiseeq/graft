@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -158,5 +159,52 @@ func TestDeployPrioritySkipsTheQueue(t *testing.T) {
 	}
 	if left, err := os.ReadFile(budget); err != nil || strings.TrimSpace(string(left)) != "0" {
 		t.Errorf("budget left: %s %v", left, err)
+	}
+}
+
+// TestExecHeavyWaitsForLoad: graft exec --heavy runs a command that is no
+// task in the directory it was started in, after the machine admits it,
+// with {threads} and GRAFT_THREADS; its exit status is graft's, and the
+// stats record it as the task exec of the work tree. Without --heavy it
+// does not wait.
+func TestExecHeavyWaitsForLoad(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n", "sub/keep": ""})
+	loadavg := filepath.Join(t.TempDir(), "loadavg")
+	writeFile(t, loadavg, "30.50 20.00 10.00 3/400 1234\n")
+	cfgDir, cache := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms, swap_window: 10ms}\n")
+	f.env = append(append(f.env, "XDG_CONFIG_HOME="+cfgDir, "GRAFT_LOADAVG="+loadavg, "XDG_CACHE_HOME="+cache), calmMachine(t)...)
+	sub := filepath.Join(f.work, "sub")
+
+	if out, code := f.exec(sub, "", graftBin, "exec", "--", "sh", "-c", "echo light in $(basename $PWD)"); code != 0 || !strings.Contains(out, "light in sub") || strings.Contains(out, "waiting") {
+		t.Fatalf("exec without --heavy: exit %d\n%s", code, out)
+	}
+	cmd, log := f.start(sub, "exec", "--heavy", "--", "sh", "-c", "echo threads={threads} env=$GRAFT_THREADS in $(basename $PWD); exit 3")
+	waitFor(t, func() bool { return strings.Contains(log.String(), "exec: load 30.50 is at or above 22") })
+	if strings.Contains(log.String(), "threads=") {
+		t.Fatalf("ran at load 30.50:\n%s", log.String())
+	}
+	writeFile(t, loadavg, "17.00 20.00 10.00 3/400 1234\n")
+	err := cmd.Wait()
+	if code := cmd.ProcessState.ExitCode(); err == nil || code != 3 {
+		t.Errorf("exit %d (%v), want the command's 3", code, err)
+	}
+	if !strings.Contains(log.String(), "threads=6 env=6 in sub\n") {
+		t.Errorf("no thread count, or not in sub:\n%s", log.String())
+	}
+	var tasks []string
+	for _, l := range readStats(t, filepath.Join(cache, "graft", "stats.jsonl")) {
+		if l.Kind == "task" {
+			tasks = append(tasks, fmt.Sprintf("%s %s %d wait=%v", l.Task, l.Top, l.Exit, l.WaitS > 0))
+		}
+	}
+	if want := "exec exec 0 wait=false,exec exec 3 wait=true"; strings.Join(tasks, ",") != want {
+		t.Errorf("task lines %q, want %q", strings.Join(tasks, ","), want)
+	}
+	if out, code := f.graft("", "exec", "--heavy", "sh"); code != 2 || !strings.Contains(out, "graft exec [--heavy] -- <command>") {
+		t.Errorf("without --: exit %d\n%s", code, out)
 	}
 }

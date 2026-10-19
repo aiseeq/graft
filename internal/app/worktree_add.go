@@ -45,7 +45,7 @@ func (a *App) WorktreeAdd(_ context.Context, o WorktreeAddOptions) error {
 		if err != nil {
 			return err
 		}
-		if base, err = cleanTrunk(repo, cfg, "", remotes); err != nil {
+		if base, err = trunkRef(repo, cfg, "", remotes); err != nil {
 			return err
 		}
 	}
