@@ -143,8 +143,9 @@ type gateStep struct {
 // unless go_vet is turned off, then the steps of the config. A module is the
 // root when it has go.mod, and every directory below it with a go.mod that
 // git lists (tracked, or not ignored); testdata, vendor and node_modules are
-// skipped, and so are the directories of go_vet.exclude. A project that also
-// vets in its own gate vets twice; the build cache makes the second run cheap.
+// skipped, and so are the directories of go_vet.exclude. The steps take
+// go_vet.env, the project's build flags: vet with other flags is another
+// build, which the build cache does not share.
 func (r *Runner) gateSteps() ([]gateStep, error) {
 	var steps []gateStep
 	mods, err := r.goModules()
@@ -158,7 +159,7 @@ func (r *Runner) gateSteps() ([]gateStep, error) {
 		}
 		steps = append(steps, gateStep{
 			step: config.Step{Argv: []string{"go", "vet", "./..."}, Source: src},
-			task: &config.Task{Dir: dir},
+			task: &config.Task{Dir: dir, Env: r.Config.GoVet.Env},
 		})
 	}
 	for _, s := range r.Config.Gate {

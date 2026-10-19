@@ -161,6 +161,9 @@ type GoVet struct {
 	Exclude []string `yaml:"exclude"`
 	// Reason is mandatory when the steps are turned off or exclude is set.
 	Reason string `yaml:"reason"`
+	// Env sets variables for the vet steps as a task's env does: the
+	// project's GOFLAGS (build tags), so vet sees the files the build does.
+	Env map[string]string `yaml:"env"`
 }
 
 // IsEnabled reports whether the gate runs go vet; it is on by default.

@@ -164,3 +164,17 @@ func TestGateVetsAGoWorkModuleWithASpaceInItsPath(t *testing.T) {
 		t.Errorf("only my app, the module of go.work use, must be vetted:\n%s", out)
 	}
 }
+
+// TestGoVetEnvGivesTheBuildFlags: a file behind a build tag is vetted only
+// when go_vet.env gives the tag.
+func TestGoVetEnvGivesTheBuildFlags(t *testing.T) {
+	files := func() map[string]string {
+		return map[string]string{"go.mod": vetGoMod, "main.go": vetGood, "tagged.go": "//go:build special\n\n" + strings.Replace(vetBad, "func main()", "func init()", 1)}
+	}
+	f := vetRepo(t, "", files())
+	f.mustGraft("gate")
+	f = vetRepo(t, "go_vet:\n  env: {GOFLAGS: -tags=special}\n", files())
+	if out, code := f.graft("", "gate"); code == 0 || !strings.Contains(out, "tagged.go") {
+		t.Errorf("the tagged file is not vetted with go_vet.env: exit %d\n%s", code, out)
+	}
+}

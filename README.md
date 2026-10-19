@@ -190,10 +190,13 @@ gate:
 # the root shows as "go vet ./... (backend)". With a go.work in the root only
 # the modules of its use are vetted: a go.mod outside it is not part of the
 # build. A failing vet fails the gate like
-# any step. A project that vets in its own gate too just vets twice; the build
-# cache makes the second run cheap. Turning it off needs a reason.
+# any step. Turning it off needs a reason. A project that builds with flags
+# of its own (GOFLAGS=-tags=...) gives them in go_vet.env: vet with other
+# flags is another build, which neither shares the build cache nor sees the
+# same files. A vet step of the project's own gate then only repeats it.
 go_vet:
   enabled: true                 # default true; false turns all vet steps off
+  # env: {GOFLAGS: -tags=foo}   # variables of the vet steps, as a task's env
   # exclude: [tools/gen]        # module directories left unvetted (with everything below)
   # reason: ...                 # required with enabled: false or exclude
 
