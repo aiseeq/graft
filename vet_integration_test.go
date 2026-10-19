@@ -150,3 +150,17 @@ func TestGateWithGoWorkStillFailsOnVetOfAUsedModule(t *testing.T) {
 		t.Errorf("exit %d:\n%s", code, out)
 	}
 }
+
+func TestGateVetsAGoWorkModuleWithASpaceInItsPath(t *testing.T) {
+	f := vetRepo(t, "", map[string]string{
+		"go.work":        "go 1.21\n\nuse \"./my app\"\n",
+		"my app/go.mod":  vetGoMod,
+		"my app/main.go": vetGood,
+		"legacy/go.mod":  vetGoMod,
+		"legacy/main.go": vetBad,
+	})
+	out := f.mustGraft("gate")
+	if !strings.Contains(out, "go vet ./... (my app)") || strings.Contains(out, "(legacy)") {
+		t.Errorf("only my app, the module of go.work use, must be vetted:\n%s", out)
+	}
+}

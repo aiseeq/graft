@@ -217,7 +217,12 @@ func (r *Runner) inWorkspace(dirs []string) ([]string, error) {
 		return nil, fmt.Errorf("listing the modules of go.work: %w", err)
 	}
 	used := map[string]bool{}
-	for _, d := range strings.Fields(string(out)) {
+	// One directory per line: a path may hold spaces.
+	for d := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			continue
+		}
 		rel, err := filepath.Rel(r.Root, d)
 		if err != nil {
 			return nil, fmt.Errorf("go.work module %s is not under %s: %w", d, r.Root, err)
