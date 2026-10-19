@@ -65,11 +65,15 @@ minute's. A heavy task inside a heavy task was admitted with it. Ctrl-C stops
 the wait.
 
 `graft deploy` gives its heavy tasks, and those of every graft its script
-starts, a priority (`GRAFT_LOAD_PRIORITY`, `GRAFT_LOAD_DEADLINE`,
+starts, a priority (`GRAFT_LOAD_PRIORITY`, `GRAFT_LOAD_BUDGET`,
 `GRAFT_LOAD_THEN`): they skip the queue and the settling, a deploy not
 standing behind the test runs of every project, and wait for the machine
-within one budget for the whole deploy, `deploy.load_wait`; when it is spent
-they start, or with `then: fail` fail the deploy. The wait shows in `graft
+out of one budget for the whole deploy, `deploy.load_wait`; when it is spent
+they start, or with `then: fail` fail the deploy. Only waiting spends the
+budget, the waits of tasks side by side adding up: a task that finds the
+machine calm late in a long deploy takes nothing from it. The budget lives in
+a file in the user cache (`graft/load-budget-*`) for as long as the deploy
+runs. The wait shows in `graft
 stats` (`wait_s`).
 
 ## Commands

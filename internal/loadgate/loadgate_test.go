@@ -71,7 +71,7 @@ func TestBusyDiskAndSwapHoldTasks(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 			defer cancel()
 			var log strings.Builder
-			p := &Priority{For: "graft deploy prod", Deadline: time.Now().Add(time.Hour)}
+			p := &Priority{For: "graft deploy prod", Budget: newBudget(t, time.Hour)}
 			if _, err := Wait(ctx, "build", p, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log); err == nil {
 				t.Errorf("started on a busy machine:\n%s", log.String())
 			}
@@ -82,14 +82,34 @@ func TestBusyDiskAndSwapHoldTasks(t *testing.T) {
 	}
 }
 
-// TestPriorityDeadline: past the deploy's deadline a priority task starts,
-// or with Fail fails; without a priority it keeps waiting.
-func TestPriorityDeadline(t *testing.T) {
+func newBudget(t *testing.T, d time.Duration) string {
+	t.Helper()
+	path, err := NewBudget(t.TempDir(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestPriorityBudget: a priority task waits out of the deploy's budget, then
+// starts, or with Fail fails; the deploy's tasks share the budget, and only
+// waiting spends it, not the time the deploy runs; a task without a
+// priority keeps waiting.
+func TestPriorityBudget(t *testing.T) {
 	setLoad, _ := fakeMachine(t)
-	setLoad("30.00")
 	lockPath := filepath.Join(t.TempDir(), "load.lock")
 	var log strings.Builder
-	p := &Priority{For: "graft deploy prod", Deadline: time.Now().Add(100 * time.Millisecond)}
+	p := &Priority{For: "graft deploy prod", Budget: newBudget(t, 100*time.Millisecond)}
+	// A task that finds the machine calm spends nothing, however long the
+	// deploy has run.
+	setLoad("1.00")
+	if waited, err := Wait(context.Background(), "lint", p, testLoad, lockPath, &log); err != nil || waited != 0 {
+		t.Fatalf("on a calm machine: waited %s, %v", waited, err)
+	}
+	if left, err := p.spend(0); err != nil || left != 100*time.Millisecond {
+		t.Fatalf("budget left after a calm start: %s, %v", left, err)
+	}
+	setLoad("30.00")
 	waited, err := Wait(context.Background(), "build", p, testLoad, lockPath, &log)
 	if err != nil || waited < 90*time.Millisecond || waited > time.Second {
 		t.Fatalf("waited %s, %v", waited, err)
@@ -97,9 +117,13 @@ func TestPriorityDeadline(t *testing.T) {
 	if !strings.Contains(log.String(), "starting after") || !strings.Contains(log.String(), "all the wait graft deploy prod allows") {
 		t.Errorf("log:\n%s", log.String())
 	}
-	p = &Priority{For: "graft deploy prod", Deadline: time.Now().Add(100 * time.Millisecond), Fail: true}
+	// The next task of the deploy finds the budget spent.
+	if waited, err := Wait(context.Background(), "test", p, testLoad, lockPath, &log); err != nil || waited > 50*time.Millisecond {
+		t.Errorf("a task after the budget was spent waited %s, %v", waited, err)
+	}
+	p = &Priority{For: "graft deploy prod", Budget: newBudget(t, 100*time.Millisecond), Fail: true}
 	if _, err := Wait(context.Background(), "build", p, testLoad, lockPath, &log); err == nil || !strings.Contains(err.Error(), "past the wait graft deploy prod allows") {
-		t.Errorf("fail at the deadline: %v", err)
+		t.Errorf("fail when the budget is spent: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
@@ -108,14 +132,14 @@ func TestPriorityDeadline(t *testing.T) {
 	}
 }
 
-// TestPriorityFromEnv: a priority needs its deadline and a known then.
+// TestPriorityFromEnv: a priority needs its budget and a known then.
 func TestPriorityFromEnv(t *testing.T) {
-	want := Priority{For: "graft deploy prod", Deadline: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), Fail: true}
+	want := Priority{For: "graft deploy prod", Budget: "/tmp/budget", Fail: true}
 	for k, v := range want.Env() {
 		t.Setenv(k, v)
 	}
 	got, ok, err := PriorityFromEnv()
-	if err != nil || !ok || got.For != want.For || !got.Deadline.Equal(want.Deadline) || !got.Fail {
+	if err != nil || !ok || got != want {
 		t.Errorf("got %+v, %v", got, err)
 	}
 	t.Setenv(EnvThen, "maybe")
@@ -123,9 +147,9 @@ func TestPriorityFromEnv(t *testing.T) {
 		t.Error("then maybe accepted")
 	}
 	t.Setenv(EnvThen, ThenStart)
-	t.Setenv(EnvDeadline, "")
+	t.Setenv(EnvBudget, "")
 	if _, _, err := PriorityFromEnv(); err == nil {
-		t.Error("a priority without a deadline accepted")
+		t.Error("a priority without a budget accepted")
 	}
 	t.Setenv(EnvPriority, "")
 	if p, ok, err := PriorityFromEnv(); ok || err != nil {

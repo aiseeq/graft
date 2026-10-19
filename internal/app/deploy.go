@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -121,8 +122,23 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 	// the queue of heavy tasks within one budget; a deploy inside a deploy
 	// keeps the outer's.
 	if os.Getenv(loadgate.EnvPriority) == "" {
+		cache, err := os.UserCacheDir()
+		if err != nil {
+			return fmt.Errorf("the budget for waiting: %w", err)
+		}
 		lw := r.cfg.Deploy.LoadWait
-		p := loadgate.Priority{For: "graft deploy " + o.Target, Deadline: time.Now().Add(lw.Budget), Fail: lw.Then == loadgate.ThenFail}
+		budget, err := loadgate.NewBudget(filepath.Join(cache, "graft"), lw.Budget)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			for _, f := range []string{budget, budget + ".lock"} {
+				if err := os.Remove(f); err != nil && !errors.Is(err, fs.ErrNotExist) {
+					fmt.Fprintf(a.Stderr, "graft: warning: removing the budget for waiting: %v\n", err)
+				}
+			}
+		}()
+		p := loadgate.Priority{For: "graft deploy " + o.Target, Budget: budget, Fail: lw.Then == loadgate.ThenFail}
 		for k, v := range p.Env() {
 			if err := os.Setenv(k, v); err != nil {
 				return fmt.Errorf("setting %s: %w", k, err)

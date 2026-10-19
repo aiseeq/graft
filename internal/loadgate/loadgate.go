@@ -10,7 +10,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 	"time"
+
+	"github.com/gofrs/flock"
 
 	"github.com/aiseeq/graft/v2/internal/loadavg"
 	"github.com/aiseeq/graft/v2/internal/lock"
@@ -25,8 +29,9 @@ const queueTimeout = 24 * time.Hour
 const (
 	// EnvPriority names what the heavy tasks run for.
 	EnvPriority = "GRAFT_LOAD_PRIORITY"
-	// EnvDeadline is when the deploy's budget for waiting ends, RFC 3339.
-	EnvDeadline = "GRAFT_LOAD_DEADLINE"
+	// EnvBudget is the file of what is left of the deploy's budget for
+	// waiting (NewBudget).
+	EnvBudget = "GRAFT_LOAD_BUDGET"
 	// EnvThen is what a task does at the deadline: start or fail.
 	EnvThen = "GRAFT_LOAD_THEN"
 )
@@ -39,12 +44,14 @@ const (
 
 // Priority is what a deploy gives its heavy tasks and those of the grafts
 // its script starts: they skip the queue, a deploy not standing behind the
-// test runs of every project, and wait for the machine until Deadline, one
-// budget for the whole deploy; then they start, or with Fail fail.
+// test runs of every project, and wait for the machine out of one budget for
+// the whole deploy, kept in the file Budget; when it is spent they start, or
+// with Fail fail. Only waiting spends it: a task that finds the machine calm
+// late in a long deploy takes nothing from it.
 type Priority struct {
-	For      string
-	Deadline time.Time
-	Fail     bool
+	For    string
+	Budget string
+	Fail   bool
 }
 
 // Env is the priority as the variables its grafts read.
@@ -53,21 +60,21 @@ func (p Priority) Env() map[string]string {
 	if p.Fail {
 		then = ThenFail
 	}
-	return map[string]string{EnvPriority: p.For, EnvDeadline: p.Deadline.Format(time.RFC3339Nano), EnvThen: then}
+	return map[string]string{EnvPriority: p.For, EnvBudget: p.Budget, EnvThen: then}
 }
 
 // PriorityFromEnv reads the priority of this process; ok is false without
-// one. A priority with a missing or unreadable deadline is an error.
+// one. A priority without its budget file is an error.
 func PriorityFromEnv() (p Priority, ok bool, err error) {
 	name := os.Getenv(EnvPriority)
 	if name == "" {
 		return Priority{}, false, nil
 	}
-	deadline, err := time.Parse(time.RFC3339Nano, os.Getenv(EnvDeadline))
-	if err != nil {
-		return Priority{}, false, fmt.Errorf("%s=%s needs %s, the end of its wait: %w", EnvPriority, name, EnvDeadline, err)
+	budget := os.Getenv(EnvBudget)
+	if budget == "" {
+		return Priority{}, false, fmt.Errorf("%s=%s needs %s, the file of its budget for waiting", EnvPriority, name, EnvBudget)
 	}
-	p = Priority{For: name, Deadline: deadline}
+	p = Priority{For: name, Budget: budget}
 	switch then := os.Getenv(EnvThen); then {
 	case ThenStart:
 	case ThenFail:
@@ -78,6 +85,48 @@ func PriorityFromEnv() (p Priority, ok bool, err error) {
 	return p, true, nil
 }
 
+// NewBudget writes a budget of d for waiting into a new file in dir and
+// returns its path; the deploy removes it when it ends.
+func NewBudget(dir string, d time.Duration) (string, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("the budget for waiting: %w", err)
+	}
+	f, err := os.CreateTemp(dir, "load-budget-*")
+	if err != nil {
+		return "", fmt.Errorf("the budget for waiting: %w", err)
+	}
+	_, err = f.WriteString(strconv.FormatInt(int64(d), 10))
+	if err = errors.Join(err, f.Close()); err != nil {
+		return "", fmt.Errorf("the budget for waiting: %w", err)
+	}
+	return f.Name(), nil
+}
+
+// spend takes d from the budget and returns what is left, under a lock: the
+// heavy tasks of a deploy wait side by side, and their waits add up.
+func (p *Priority) spend(d time.Duration) (left time.Duration, err error) {
+	fl := flock.New(p.Budget + ".lock")
+	if err := fl.Lock(); err != nil {
+		return 0, fmt.Errorf("locking the budget for waiting %s: %w", p.Budget, err)
+	}
+	defer func() { err = errors.Join(err, fl.Unlock()) }()
+	data, err := os.ReadFile(p.Budget)
+	if err != nil {
+		return 0, fmt.Errorf("the budget for waiting of %s: %w", p.For, err)
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("the budget for waiting %s: %q is not a number of nanoseconds", p.Budget, data)
+	}
+	left = time.Duration(n) - d
+	if d > 0 {
+		if err := os.WriteFile(p.Budget, []byte(strconv.FormatInt(int64(max(left, 0)), 10)), 0o644); err != nil {
+			return 0, fmt.Errorf("the budget for waiting: %w", err)
+		}
+	}
+	return left, nil
+}
+
 // Wait admits a heavy task and returns how long it waited. A calm machine
 // (MachineLoad) takes it at once. Otherwise it queues behind the other
 // heavy tasks of the machine, one at a time under a lock at lockPath, until
@@ -85,7 +134,7 @@ func PriorityFromEnv() (p Priority, ok bool, err error) {
 // starts above FreeBelow, then holds the lock for Settle, since the load
 // average is a minute's and every waiter would otherwise see the same low
 // figure and start together. A task with a priority skips the queue and the
-// settling, and waits no longer than its deadline.
+// settling, and waits no longer than its budget allows.
 func Wait(ctx context.Context, name string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (time.Duration, error) {
 	m := &machine{l: l, log: log, name: name}
 	busy, err := m.busy(ctx, l.FreeBelow, true)
@@ -198,9 +247,10 @@ func (m *machine) swapping(ctx context.Context, fresh bool) (float64, error) {
 
 // admit waits for the machine to be calm with the load below WaitAbove,
 // then settles; a priority task does not settle and waits no longer than
-// its deadline.
+// its budget allows, spending it as it waits.
 func (m *machine) admit(ctx context.Context, p *Priority) error {
 	start := time.Now()
+	spent := start
 	var said time.Time
 	waited := false
 	for {
@@ -218,7 +268,15 @@ func (m *machine) admit(ctx context.Context, p *Priority) error {
 			return sleep(ctx, m.l.Settle)
 		}
 		waited = true
-		if p != nil && !time.Now().Before(p.Deadline) {
+		var left time.Duration
+		if p != nil {
+			now := time.Now()
+			if left, err = p.spend(now.Sub(spent)); err != nil {
+				return err
+			}
+			spent = now
+		}
+		if p != nil && left <= 0 {
 			if p.Fail {
 				return fmt.Errorf("%s: %s after %s, past the wait %s allows (deploy.load_wait)", m.name, busy, time.Since(start).Round(time.Second), p.For)
 			}
@@ -231,7 +289,7 @@ func (m *machine) admit(ctx context.Context, p *Priority) error {
 		}
 		pause := m.l.Poll
 		if p != nil {
-			pause = min(pause, time.Until(p.Deadline))
+			pause = min(pause, left)
 		}
 		if err := sleep(ctx, pause); err != nil {
 			return err

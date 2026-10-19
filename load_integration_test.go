@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -146,11 +147,16 @@ func TestDeployPrioritySkipsTheQueue(t *testing.T) {
 	defer cancel()
 	priority := exec.CommandContext(ctx, graftBin, "build")
 	priority.Dir = f.work
+	budget := filepath.Join(t.TempDir(), "budget")
+	writeFile(t, budget, fmt.Sprint(int64(300*time.Millisecond)))
 	priority.Env = append(slices.Clone(testEnv), append(f.env, "GRAFT_LOAD_PRIORITY=graft deploy prod",
-		"GRAFT_LOAD_DEADLINE="+time.Now().Add(300*time.Millisecond).Format(time.RFC3339Nano), "GRAFT_LOAD_THEN=start")...)
+		"GRAFT_LOAD_BUDGET="+budget, "GRAFT_LOAD_THEN=start")...)
 	out, err := priority.CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "not queueing behind other heavy tasks: it runs for graft deploy prod") ||
 		!strings.Contains(string(out), "all the wait graft deploy prod allows") {
-		t.Errorf("the priority task did not skip the queue and start at its deadline: %v\n%s", err, out)
+		t.Errorf("the priority task did not skip the queue and start when its budget was spent: %v\n%s", err, out)
+	}
+	if left, err := os.ReadFile(budget); err != nil || strings.TrimSpace(string(left)) != "0" {
+		t.Errorf("budget left: %s %v", left, err)
 	}
 }
