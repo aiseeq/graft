@@ -56,26 +56,26 @@ func (p Priority) Env() map[string]string {
 	return map[string]string{EnvPriority: p.For, EnvDeadline: p.Deadline.Format(time.RFC3339Nano), EnvThen: then}
 }
 
-// PriorityFromEnv reads the priority of this process; nil without one. A
-// priority with a missing or unreadable deadline is an error.
-func PriorityFromEnv() (*Priority, error) {
+// PriorityFromEnv reads the priority of this process; ok is false without
+// one. A priority with a missing or unreadable deadline is an error.
+func PriorityFromEnv() (p Priority, ok bool, err error) {
 	name := os.Getenv(EnvPriority)
 	if name == "" {
-		return nil, nil
+		return Priority{}, false, nil
 	}
 	deadline, err := time.Parse(time.RFC3339Nano, os.Getenv(EnvDeadline))
 	if err != nil {
-		return nil, fmt.Errorf("%s=%s needs %s, the end of its wait: %w", EnvPriority, name, EnvDeadline, err)
+		return Priority{}, false, fmt.Errorf("%s=%s needs %s, the end of its wait: %w", EnvPriority, name, EnvDeadline, err)
 	}
-	p := &Priority{For: name, Deadline: deadline}
+	p = Priority{For: name, Deadline: deadline}
 	switch then := os.Getenv(EnvThen); then {
 	case ThenStart:
 	case ThenFail:
 		p.Fail = true
 	default:
-		return nil, fmt.Errorf("%s: want %s or %s, got %q", EnvThen, ThenStart, ThenFail, then)
+		return Priority{}, false, fmt.Errorf("%s: want %s or %s, got %q", EnvThen, ThenStart, ThenFail, then)
 	}
-	return p, nil
+	return p, true, nil
 }
 
 // Wait admits a heavy task and returns how long it waited. A calm machine

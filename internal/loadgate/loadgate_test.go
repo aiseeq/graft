@@ -114,21 +114,21 @@ func TestPriorityFromEnv(t *testing.T) {
 	for k, v := range want.Env() {
 		t.Setenv(k, v)
 	}
-	got, err := PriorityFromEnv()
-	if err != nil || got == nil || got.For != want.For || !got.Deadline.Equal(want.Deadline) || !got.Fail {
+	got, ok, err := PriorityFromEnv()
+	if err != nil || !ok || got.For != want.For || !got.Deadline.Equal(want.Deadline) || !got.Fail {
 		t.Errorf("got %+v, %v", got, err)
 	}
 	t.Setenv(EnvThen, "maybe")
-	if _, err := PriorityFromEnv(); err == nil {
+	if _, _, err := PriorityFromEnv(); err == nil {
 		t.Error("then maybe accepted")
 	}
 	t.Setenv(EnvThen, ThenStart)
 	t.Setenv(EnvDeadline, "")
-	if _, err := PriorityFromEnv(); err == nil {
+	if _, _, err := PriorityFromEnv(); err == nil {
 		t.Error("a priority without a deadline accepted")
 	}
 	t.Setenv(EnvPriority, "")
-	if p, err := PriorityFromEnv(); p != nil || err != nil {
+	if p, ok, err := PriorityFromEnv(); ok || err != nil {
 		t.Errorf("no priority: %+v, %v", p, err)
 	}
 }
