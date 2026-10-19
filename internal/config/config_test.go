@@ -378,6 +378,8 @@ deploy:
 		"unknown dotenv set":   strings.Replace(base, "confirm: sudo}", "confirm: sudo, dotenv_sets: [nope]}", 1),
 		"placeholder twice":    strings.Replace(base, "requires: test, confirm", "status: [x, '{args}{args}'], requires: test, confirm", 1),
 		"unknown dep":          strings.Replace(base, "confirm: sudo}", "confirm: sudo, deps: [nope]}", 1),
+		"load wait then":       strings.Replace(base, "  remote: origin\n", "  remote: origin\n  load_wait: {then: maybe}\n", 1),
+		"negative load wait":   strings.Replace(base, "  remote: origin\n", "  remote: origin\n  load_wait: {budget: -1m}\n", 1),
 	}
 	for name, data := range cases {
 		if _, err := Parse([]byte(data)); err == nil {
@@ -403,6 +405,13 @@ deploy:
 	}
 	if got := cfg.Deploy.Targets["staging"].Deps; !slices.Equal(got, []string{"smoke"}) {
 		t.Errorf("deps = %v", got)
+	}
+	if lw := cfg.Deploy.LoadWait; lw.Budget != DefaultLoadWait || lw.Then != "start" {
+		t.Errorf("load_wait defaults: %+v", lw)
+	}
+	cfg, err = Parse([]byte(strings.Replace(base, "  remote: origin\n", "  remote: origin\n  load_wait: {budget: 3m, then: fail}\n", 1)))
+	if err != nil || cfg.Deploy.LoadWait.Budget != 3*time.Minute || cfg.Deploy.LoadWait.Then != "fail" {
+		t.Errorf("load_wait 3m fail: %+v, %v", cfg.Deploy.LoadWait, err)
 	}
 	_, err = Parse([]byte(strings.Replace(base, "deps: [smoke]", "deps: [smoke, nope]", 1)))
 	if err == nil || !strings.Contains(err.Error(), `deploy.targets.staging.deps: unknown task "nope"`) {

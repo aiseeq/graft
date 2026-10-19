@@ -118,10 +118,15 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 		return err
 	}
 	// Its heavy tasks, and those of every graft its script starts, skip
-	// the queue of heavy tasks; a deploy inside a deploy keeps the outer's.
+	// the queue of heavy tasks within one budget; a deploy inside a deploy
+	// keeps the outer's.
 	if os.Getenv(loadgate.EnvPriority) == "" {
-		if err := os.Setenv(loadgate.EnvPriority, "graft deploy "+o.Target); err != nil {
-			return fmt.Errorf("setting %s: %w", loadgate.EnvPriority, err)
+		lw := r.cfg.Deploy.LoadWait
+		p := loadgate.Priority{For: "graft deploy " + o.Target, Deadline: time.Now().Add(lw.Budget), Fail: lw.Then == loadgate.ThenFail}
+		for k, v := range p.Env() {
+			if err := os.Setenv(k, v); err != nil {
+				return fmt.Errorf("setting %s: %w", k, err)
+			}
 		}
 	}
 	path := filepath.Join(r.repo.CommonDir, "graft-locks", "deploy-"+o.Target+".lock")

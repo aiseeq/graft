@@ -43,22 +43,34 @@ leaks:                           # keep private names out of public repositories
   allow:
     - {term: SomeName, reason: why this name is fine everywhere}
 load:                            # heavy tasks on a shared machine (heavy: true in a task)
-  free_below: 16                 # default 16: below it a heavy task starts at once
-  wait_above: 22                 # default 22: at or above it heavy tasks wait, one queue per user
+  free_below: 22                 # default 22: below it, the disk and swap calm, a heavy task starts at once
+  wait_above: 22                 # default 22: queued heavy tasks start one at a time once the load is below it
+  max_io_full: 10                # default 10: % of the last minute all processes stalled on the disk (/proc/pressure/io)
+  max_swap_kbs: 1024             # default 1024: swap traffic in and out, KB/s (pswpin + pswpout of /proc/vmstat)
+  swap_window: 1s                # default 1s: how long a starting task measures the swapping
   threads: 4                     # default 4: {threads} in steps, GRAFT_THREADS in heavy tasks
-  settle: 30s                    # default 30s: between the two, the next waiter gives the load this long to show
+  settle: 30s                    # default 30s: a task that waited gives the load this long to show before the next
   poll: 5s                       # default 5s; 0 anywhere here means the default
 ```
 
-A heavy task checks the 1-minute load average (`/proc/loadavg`; where there
-is none it starts and says so). Waiting heavy tasks of all projects queue
-under one lock in the user cache (`graft/load.lock`) and start one at a time;
-a heavy task inside a heavy task was admitted with it. Ctrl-C stops the wait.
+A heavy task checks whether the machine is busy: the 1-minute load average
+(`/proc/loadavg`) at or above `free_below`, the IO pressure above
+`max_io_full` or the swapping above `max_swap_kbs`; swap in use is no harm,
+swapping is. A measure the system lacks (no `/proc/loadavg`, a kernel without
+PSI) is skipped and said. On a busy machine heavy tasks of all projects queue
+under one lock in the user cache (`graft/load.lock`) and start one at a time,
+each once the load is below `wait_above` and the disk and swap are calm; one
+that waited holds the queue for `settle`, since the load average is a
+minute's. A heavy task inside a heavy task was admitted with it. Ctrl-C stops
+the wait.
+
 `graft deploy` gives its heavy tasks, and those of every graft its script
-starts, a priority (`GRAFT_LOAD_PRIORITY`): they skip the queue and the
-settling, a deploy not standing behind the test runs of every project, and
-wait for the load below `wait_above` at most 10 minutes, then start and say
-so. The wait shows in `graft stats` (`wait_s`).
+starts, a priority (`GRAFT_LOAD_PRIORITY`, `GRAFT_LOAD_DEADLINE`,
+`GRAFT_LOAD_THEN`): they skip the queue and the settling, a deploy not
+standing behind the test runs of every project, and wait for the machine
+within one budget for the whole deploy, `deploy.load_wait`; when it is spent
+they start, or with `then: fail` fail the deploy. The wait shows in `graft
+stats` (`wait_s`).
 
 ## Commands
 
@@ -842,6 +854,7 @@ deploy:
   remote: origin                # HEAD must equal this remote's branch
   branch: main                  # optional: deploy only main; default: the current branch
   untracked: [backend, web]     # optional: where untracked files block; default: anywhere
+  load_wait: {budget: 10m, then: start}   # default: how long the deploy's heavy tasks wait for a busy machine in all; then start or fail
   targets:
     test:
       env: test                 # see envs

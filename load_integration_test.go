@@ -11,6 +11,17 @@ import (
 	"time"
 )
 
+// calmMachine is the environment of a machine whose disk and swap are calm,
+// so that only the faked load decides.
+func calmMachine(t *testing.T) []string {
+	t.Helper()
+	dir := t.TempDir()
+	io, vmstat := filepath.Join(dir, "io"), filepath.Join(dir, "vmstat")
+	writeFile(t, io, "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n")
+	writeFile(t, vmstat, "pswpin 7\npswpout 3\n")
+	return []string{"GRAFT_PRESSURE_IO=" + io, "GRAFT_VMSTAT=" + vmstat}
+}
+
 // TestHeavyTaskWaitsForLoad: a heavy task starts only once the load is below
 // the user's wait threshold, gets the user's thread count as {threads}, and a
 // task that is not heavy never waits.
@@ -32,7 +43,7 @@ tasks:
 	writeFile(t, loadavg, "30.50 20.00 10.00 3/400 1234\n")
 	cfgDir := t.TempDir()
 	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms}\n")
-	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, "GRAFT_LOADAVG="+loadavg, "XDG_CACHE_HOME="+t.TempDir())
+	f.env = append(append(f.env, "XDG_CONFIG_HOME="+cfgDir, "GRAFT_LOADAVG="+loadavg, "XDG_CACHE_HOME="+t.TempDir()), calmMachine(t)...)
 
 	read := func() string {
 		data, err := os.ReadFile(out)
@@ -68,7 +79,7 @@ tasks:
 	if !strings.Contains(log.String(), "graft: build: sh -c echo threads=6 ") {
 		t.Errorf("the step is echoed without its thread count:\n%s", log.String())
 	}
-	if !strings.Contains(log.String(), "build: load 30.50 is above 22, waiting") || !strings.Contains(log.String(), "build: load 17.00, starting after ") {
+	if !strings.Contains(log.String(), "build: load 30.50 is at or above 22 (user config load.wait_above), waiting") || !strings.Contains(log.String(), "build: load 17.00, starting after ") {
 		t.Errorf("no wait reported:\n%s", log.String())
 	}
 }
@@ -84,7 +95,7 @@ func TestHeavyTaskWaitIsRecorded(t *testing.T) {
 	writeFile(t, loadavg, "30.50 20.00 10.00 3/400 1234\n")
 	cfgDir, cache := t.TempDir(), t.TempDir()
 	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {poll: 20ms, settle: 10ms}\n")
-	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, "GRAFT_LOADAVG="+loadavg, "XDG_CACHE_HOME="+cache)
+	f.env = append(append(f.env, "XDG_CONFIG_HOME="+cfgDir, "GRAFT_LOADAVG="+loadavg, "XDG_CACHE_HOME="+cache), calmMachine(t)...)
 	cmd := exec.Command(graftBin, "outer")
 	cmd.Dir = f.work
 	cmd.Env = append(slices.Clone(testEnv), f.env...)
@@ -114,17 +125,18 @@ func TestHeavyTaskWaitIsRecorded(t *testing.T) {
 }
 
 // TestDeployPrioritySkipsTheQueue: a heavy task run for a deploy does not
-// queue behind a heavy task that holds the queue while it settles.
+// queue behind a heavy task waiting for a busy machine, and starts when the
+// deploy's budget for waiting is spent.
 func TestDeployPrioritySkipsTheQueue(t *testing.T) {
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: none}\ntasks:\n  build:\n    heavy: true\n    run: [" + helperStep("ok") + "]\n",
 	})
 	loadavg := filepath.Join(t.TempDir(), "loadavg")
-	writeFile(t, loadavg, "18.00 20.00 10.00 3/400 1234\n")
+	writeFile(t, loadavg, "30.00 20.00 10.00 3/400 1234\n")
 	cfgDir := t.TempDir()
 	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {poll: 20ms, settle: 1h}\n")
 	cache := t.TempDir()
-	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, "GRAFT_LOADAVG="+loadavg, "XDG_CACHE_HOME="+cache)
+	f.env = append(append(f.env, "XDG_CONFIG_HOME="+cfgDir, "GRAFT_LOADAVG="+loadavg, "XDG_CACHE_HOME="+cache), calmMachine(t)...)
 	queued := exec.Command(graftBin, "build")
 	queued.Dir = f.work
 	queued.Env = append(slices.Clone(testEnv), f.env...)
@@ -136,14 +148,16 @@ func TestDeployPrioritySkipsTheQueue(t *testing.T) {
 		notes, _ := filepath.Glob(filepath.Join(cache, "graft", "load.lock.*.holder"))
 		return len(notes) > 0
 	})
-	// Queued, it would wait the hour the holder settles.
+	// Queued, it would wait as long as the load stays up.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	priority := exec.CommandContext(ctx, graftBin, "build")
 	priority.Dir = f.work
-	priority.Env = append(slices.Clone(testEnv), append(f.env, "GRAFT_LOAD_PRIORITY=graft deploy prod")...)
+	priority.Env = append(slices.Clone(testEnv), append(f.env, "GRAFT_LOAD_PRIORITY=graft deploy prod",
+		"GRAFT_LOAD_DEADLINE="+time.Now().Add(300*time.Millisecond).Format(time.RFC3339Nano), "GRAFT_LOAD_THEN=start")...)
 	out, err := priority.CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "not queueing behind other heavy tasks: it runs for graft deploy prod") {
-		t.Errorf("the priority task did not skip the queue: %v\n%s", err, out)
+	if err != nil || !strings.Contains(string(out), "not queueing behind other heavy tasks: it runs for graft deploy prod") ||
+		!strings.Contains(string(out), "all the wait graft deploy prod allows") {
+		t.Errorf("the priority task did not skip the queue and start at its deadline: %v\n%s", err, out)
 	}
 }

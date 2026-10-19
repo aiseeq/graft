@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Deploy configures graft deploy: the common steps around a project's own
@@ -21,7 +22,23 @@ type Deploy struct {
 	Untracked []string                 `yaml:"untracked"`
 	Targets   map[string]*DeployTarget `yaml:"targets"`
 	Hotfix    *Hotfix                  `yaml:"hotfix"`
+	// LoadWait bounds how long the heavy tasks of a deploy, and of the
+	// grafts its script starts, wait for a busy machine: one budget for
+	// the whole deploy.
+	LoadWait LoadWait `yaml:"load_wait"`
 }
+
+// LoadWait is a deploy's budget for waiting on a busy machine.
+type LoadWait struct {
+	// Budget is the whole deploy's; DefaultLoadWait when unset.
+	Budget time.Duration `yaml:"budget"`
+	// Then is what a heavy task does when the budget is spent: start (the
+	// default) or fail, failing the deploy.
+	Then string `yaml:"then"`
+}
+
+// DefaultLoadWait is a deploy's budget for waiting when it sets none.
+const DefaultLoadWait = 10 * time.Minute
 
 // DeployTarget is one place the project deploys to.
 type DeployTarget struct {
@@ -276,6 +293,19 @@ func (c *Config) validateDeploy() error {
 	}
 	if len(d.Targets) == 0 {
 		return errors.New("deploy.targets: at least one target is required")
+	}
+	if d.LoadWait.Budget < 0 {
+		return errors.New("deploy.load_wait.budget: must not be negative")
+	}
+	if d.LoadWait.Budget == 0 {
+		d.LoadWait.Budget = DefaultLoadWait
+	}
+	switch d.LoadWait.Then {
+	case "":
+		d.LoadWait.Then = "start"
+	case "start", "fail":
+	default:
+		return fmt.Errorf("deploy.load_wait.then: want start or fail, got %q", d.LoadWait.Then)
 	}
 	// The project keys first: approved_release.attribute names their items.
 	if err := c.validateReleaseNotes(); err != nil {

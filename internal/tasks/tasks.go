@@ -931,7 +931,11 @@ func (r *Runner) admit(ctx context.Context, name string) (time.Duration, error) 
 	if err != nil {
 		return 0, fmt.Errorf("locating the cache for the load queue: %w", err)
 	}
-	return loadgate.Wait(ctx, name, os.Getenv(loadgate.EnvPriority), l, filepath.Join(cache, "graft", "load.lock"), r.Stderr)
+	p, err := loadgate.PriorityFromEnv()
+	if err != nil {
+		return 0, err
+	}
+	return loadgate.Wait(ctx, name, p, l, filepath.Join(cache, "graft", "load.lock"), r.Stderr)
 }
 
 // Waited adds a wait before steps (the load, a lock, a confirmation) to

@@ -25,19 +25,32 @@ type Config struct {
 	Load MachineLoad `yaml:"load"`
 }
 
-// MachineLoad is when a heavy task may start on this machine: the 1-minute load
-// average below WaitAbove; between FreeBelow and WaitAbove it starts and the
-// next waiter gives the load Settle to show it.
+// MachineLoad is when a heavy task may start on this machine: the 1-minute
+// load average below FreeBelow, the IO pressure at most MaxIOFull and the
+// swapping at most MaxSwapKBs. Otherwise heavy tasks queue, one at a time,
+// until the load is below WaitAbove and the IO and swap are calm; a task
+// that waited, or starts above FreeBelow, gives the load Settle to show it
+// before the next one.
 type MachineLoad struct {
-	FreeBelow float64       `yaml:"free_below"`
-	WaitAbove float64       `yaml:"wait_above"`
-	Threads   int           `yaml:"threads"`
-	Settle    time.Duration `yaml:"settle"`
-	Poll      time.Duration `yaml:"poll"`
+	FreeBelow float64 `yaml:"free_below"`
+	WaitAbove float64 `yaml:"wait_above"`
+	// MaxIOFull is the share of the last minute, in percent, during which
+	// every running process stalled on the disk (/proc/pressure/io).
+	MaxIOFull float64 `yaml:"max_io_full"`
+	// MaxSwapKBs is the swap traffic in and out, in KB per second, measured
+	// over SwapWindow: swap in use is no harm, swapping is.
+	MaxSwapKBs float64       `yaml:"max_swap_kbs"`
+	SwapWindow time.Duration `yaml:"swap_window"`
+	Threads    int           `yaml:"threads"`
+	Settle     time.Duration `yaml:"settle"`
+	Poll       time.Duration `yaml:"poll"`
 }
 
-// DefaultLoad is a shared laptop's: free below 16, wait above 22, 4 threads.
-var DefaultLoad = MachineLoad{FreeBelow: 16, WaitAbove: 22, Threads: 4, Settle: 30 * time.Second, Poll: 5 * time.Second}
+// DefaultLoad is a shared laptop's with 22 threads: heavy tasks start freely
+// below a load of 22 and queue at or above it, with the disk and the swap
+// calm.
+var DefaultLoad = MachineLoad{FreeBelow: 22, WaitAbove: 22, MaxIOFull: 10, MaxSwapKBs: 1024, SwapWindow: time.Second,
+	Threads: 4, Settle: 30 * time.Second, Poll: 5 * time.Second}
 
 // LoadSettings is the user's load settings over the defaults; without a user
 // config it is the defaults.
@@ -57,7 +70,7 @@ func (l *MachineLoad) normalize(path string) error {
 	for _, f := range []struct {
 		v   *float64
 		def float64
-	}{{&l.FreeBelow, d.FreeBelow}, {&l.WaitAbove, d.WaitAbove}} {
+	}{{&l.FreeBelow, d.FreeBelow}, {&l.WaitAbove, d.WaitAbove}, {&l.MaxIOFull, d.MaxIOFull}, {&l.MaxSwapKBs, d.MaxSwapKBs}} {
 		if *f.v == 0 {
 			*f.v = f.def
 		}
@@ -68,16 +81,21 @@ func (l *MachineLoad) normalize(path string) error {
 	if l.Settle == 0 {
 		l.Settle = d.Settle
 	}
+	if l.SwapWindow == 0 {
+		l.SwapWindow = d.SwapWindow
+	}
 	if l.Poll == 0 {
 		l.Poll = d.Poll
 	}
 	switch {
-	case l.FreeBelow < 0 || l.WaitAbove <= l.FreeBelow:
-		return fmt.Errorf("%s: load: free_below %v must be below wait_above %v", path, l.FreeBelow, l.WaitAbove)
+	case l.FreeBelow < 0 || l.WaitAbove < l.FreeBelow:
+		return fmt.Errorf("%s: load: free_below %v must not be above wait_above %v", path, l.FreeBelow, l.WaitAbove)
+	case l.MaxIOFull < 0 || l.MaxSwapKBs < 0:
+		return fmt.Errorf("%s: load: max_io_full and max_swap_kbs must be positive", path)
 	case l.Threads < 0:
 		return fmt.Errorf("%s: load.threads: %d is negative", path, l.Threads)
-	case l.Settle < 0 || l.Poll < 0:
-		return fmt.Errorf("%s: load: settle and poll must be positive", path)
+	case l.Settle < 0 || l.Poll < 0 || l.SwapWindow < 0:
+		return fmt.Errorf("%s: load: settle, poll and swap_window must be positive", path)
 	}
 	return nil
 }
