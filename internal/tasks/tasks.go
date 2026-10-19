@@ -126,24 +126,45 @@ func NewRunner(root string, cfg *config.Config, stdout, stderr io.Writer) *Runne
 	}
 }
 
+// GoVetSource is how the implicit go vet step of a Go project's gate reads in
+// the output.
+const GoVetSource = "go vet ./..."
+
+// gateSteps is the gate: for a Go project (go.mod in the root) go vet ./...
+// first, unless go_vet is turned off, then the steps of the config. A project
+// that also runs vet itself vets twice; the build cache makes the second run
+// cheap.
+func (r *Runner) gateSteps() []config.Step {
+	steps := r.Config.Gate
+	if !r.Config.GoVet.IsEnabled() {
+		return steps
+	}
+	if _, err := os.Stat(filepath.Join(r.Root, "go.mod")); err != nil {
+		return steps
+	}
+	vet := config.Step{Argv: []string{"go", "vet", "./..."}, Source: GoVetSource}
+	return append([]config.Step{vet}, steps...)
+}
+
 // Gate runs the commit gate with stdin closed.
 func (r *Runner) Gate(ctx context.Context) (err error) {
-	if len(r.Config.Gate) == 0 {
+	steps := r.gateSteps()
+	if len(steps) == 0 {
 		fmt.Fprintln(r.Stdout, "graft: gate is empty, nothing to run")
 		return nil
 	}
 	r.Stdin = nil
-	if err := r.preflight(r.Config.Gate, &config.Task{}, "gate"); err != nil {
+	if err := r.preflight(steps, &config.Task{}, "gate"); err != nil {
 		return err
 	}
 	f := r.begin("gate")
 	defer func() { r.end(f, err != nil) }()
-	for i, s := range r.Config.Gate {
+	for i, s := range steps {
 		s, _, err := r.threads(s, &config.Task{})
 		if err != nil {
 			return fmt.Errorf("gate: %w", err)
 		}
-		fmt.Fprintf(r.Stdout, "graft: gate %d/%d: %s\n", i+1, len(r.Config.Gate), s.Source)
+		fmt.Fprintf(r.Stdout, "graft: gate %d/%d: %s\n", i+1, len(steps), s.Source)
 		if err := r.step(ctx, s, &config.Task{}, nil, ""); err != nil {
 			return fmt.Errorf("gate failed at %q: %w", s.Source, err)
 		}

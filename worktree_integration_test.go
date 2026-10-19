@@ -123,7 +123,7 @@ func TestWorktreeAdd(t *testing.T) {
 		t.Skip("symlinks need privileges on Windows")
 	}
 	f := newRepo(t, map[string]string{
-		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		".graft.yaml": "schema: 1\nversion: {mode: file}\ngo_vet: {enabled: false, reason: the fixture has no packages}\n",
 		"VERSION":     "1.0.0\n",
 		"go.mod":      "module example.com/app\n\ngo 1.22\n",
 		"go.work":     "go 1.22\n\nuse (\n\t.\n\t../kit\n)\n",

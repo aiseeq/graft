@@ -156,6 +156,7 @@ func TestParseErrors(t *testing.T) {
 		"absolute path":          "schema: 1\nversion:\n  mode: file\n  file: /etc/VERSION\n",
 		"exception w/o reason":   minimal + "checks:\n  secrets:\n    exceptions: [{path: a}]\n",
 		"shell in gate":          minimal + "gate: ['make a && make b']\n",
+		"go_vet off w/o reason":  minimal + "go_vet:\n  enabled: false\n",
 		"empty ticket":           minimal + "ticket: {}\n",
 		"duplicate remote":       minimal + "push:\n  remotes: [a, a]\n",
 		"dotted extension":       minimal + "checks:\n  large_files:\n    binary_extensions: [.png]\n",
@@ -602,5 +603,22 @@ func TestVersionName(t *testing.T) {
 		if _, err := ParseVersionName(bad); err == nil {
 			t.Errorf("ParseVersionName(%q) should fail", bad)
 		}
+	}
+}
+
+func TestParseGoVet(t *testing.T) {
+	cfg, err := Parse([]byte(minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.GoVet.IsEnabled() {
+		t.Error("go vet must be on by default")
+	}
+	cfg, err = Parse([]byte(minimal + "go_vet:\n  enabled: false\n  reason: generated code only\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GoVet.IsEnabled() {
+		t.Error("go_vet.enabled: false must turn the step off")
 	}
 }

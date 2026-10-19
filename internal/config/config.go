@@ -62,6 +62,7 @@ type Config struct {
 	MinGraft string `yaml:"-"`
 
 	Gate    []Step  `yaml:"gate"`
+	GoVet   GoVet   `yaml:"go_vet"`
 	Version Version `yaml:"version"`
 	Ticket  *Ticket `yaml:"ticket"`
 	Push    Push    `yaml:"push"`
@@ -148,6 +149,18 @@ type Push struct {
 	// Remotes to push to; empty means every configured remote.
 	Remotes []string `yaml:"remotes"`
 }
+
+// GoVet configures the step graft puts first in the gate of a Go project, one
+// with go.mod in the tree root: go vet ./... . It is on by default, because
+// some analyzers (composites, copylocks, printf) catch what linters do not.
+type GoVet struct {
+	Enabled *bool `yaml:"enabled"`
+	// Reason is mandatory when the step is turned off.
+	Reason string `yaml:"reason"`
+}
+
+// IsEnabled reports whether the gate runs go vet; it is on by default.
+func (g GoVet) IsEnabled() bool { return g.Enabled == nil || *g.Enabled }
 
 // Checks configures the content checks run on the staged changes.
 type Checks struct {
@@ -275,6 +288,7 @@ func (c *Config) validate() error {
 		c.validatePush,
 		c.validateSecrets,
 		c.validateLargeFiles,
+		c.validateGoVet,
 		c.validateReverts,
 		c.validateHooks,
 		c.validateLock,
@@ -459,6 +473,13 @@ func (c *Config) validateLargeFiles() error {
 		l.BinaryExtensions[i] = strings.ToLower(ext)
 	}
 	return validateExceptions("checks.large_files.exceptions", l.Exceptions)
+}
+
+func (c *Config) validateGoVet() error {
+	if !c.GoVet.IsEnabled() && strings.TrimSpace(c.GoVet.Reason) == "" {
+		return errors.New("go_vet.reason: required when go_vet.enabled is false, why vet is skipped")
+	}
+	return nil
 }
 
 func validateExceptions(where string, exceptions []Exception) error {

@@ -35,7 +35,7 @@ var commands = []command{
 	{name: "init", syntax: fixed("graft init"), summary: text("install the git hooks (core.hooksPath) and the pinned tools")},
 	{name: "check", syntax: fixed("graft check"), summary: text("scan the staged changes for secrets, binaries, large files, version drift")},
 	{name: "leaks", syntax: fixed("graft leaks <revision range>"), summary: text("scan commits for the private names and terms of the user config (leaks)")},
-	{name: "gate", syntax: fixed("graft gate"), summary: text("run the gate")},
+	{name: "gate", syntax: fixed("graft gate"), summary: text("run the gate (a Go project: go vet ./... first, off by go_vet.enabled: false with a reason)")},
 	{name: "hook", syntax: fixed("graft hook (pre-commit|post-merge)"), summary: text("entry point of the installed hooks")},
 	{name: "flags", syntax: fixed(
 		"graft flags [status] [--env E]",
