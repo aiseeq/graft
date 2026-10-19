@@ -180,7 +180,9 @@ gate:
 # runs in the root when it has go.mod and in every directory below it with a
 # go.mod that git lists (tracked, or untracked and not ignored), at any depth,
 # except paths with a testdata, vendor or node_modules segment; a module below
-# the root shows as "go vet ./... (backend)". A failing vet fails the gate like
+# the root shows as "go vet ./... (backend)". With a go.work in the root only
+# the modules of its use are vetted: a go.mod outside it is not part of the
+# build. A failing vet fails the gate like
 # any step. A project that vets in its own gate too just vets twice; the build
 # cache makes the second run cheap. Turning it off needs a reason.
 go_vet:

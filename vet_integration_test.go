@@ -121,3 +121,32 @@ func TestGoVetExcludeNeedsAReasonAndSkipsTheDirectory(t *testing.T) {
 		t.Errorf("only tools/ must be vetted:\n%s", out)
 	}
 }
+
+func TestGateVetsOnlyTheModulesOfGoWork(t *testing.T) {
+	f := vetRepo(t, "", map[string]string{
+		"go.work":        "go 1.21\n\nuse ./app\n",
+		"app/go.mod":     vetGoMod,
+		"app/main.go":    vetGood,
+		"legacy/go.mod":  vetGoMod,
+		"legacy/main.go": vetBad,
+	})
+	out := f.mustGraft("gate")
+	if !strings.Contains(out, "go vet ./... (app)") || strings.Contains(out, "(legacy)") {
+		t.Errorf("only app, the module of go.work use, must be vetted:\n%s", out)
+	}
+	f.mustGraft("commit", "-m", "feat: x")
+}
+
+func TestGateWithGoWorkStillFailsOnVetOfAUsedModule(t *testing.T) {
+	f := vetRepo(t, "", map[string]string{
+		"go.work":     "go 1.21\n\nuse (\n\t.\n\t./app\n)\n",
+		"go.mod":      vetGoMod,
+		"main.go":     vetGood,
+		"app/go.mod":  "module example.com/vetcase/app\n\ngo 1.21\n",
+		"app/main.go": vetBad,
+	})
+	out, code := f.graft("", "gate")
+	if code == 0 || !strings.Contains(out, "go vet ./... (app)") {
+		t.Errorf("exit %d:\n%s", code, out)
+	}
+}

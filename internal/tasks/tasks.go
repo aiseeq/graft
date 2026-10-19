@@ -198,7 +198,33 @@ func (r *Runner) goModules() ([]string, error) {
 		dirs = append(dirs, dir)
 	}
 	slices.Sort(dirs[min(len(dirs), 1):])
-	return dirs, nil
+	return r.inWorkspace(dirs)
+}
+
+// inWorkspace keeps, when the root has go.work, the modules its use lists:
+// go.work defines the workspace, and a go.mod outside it (a fenced-off copy
+// of foreign code) does not build with it. Without go.work, all dirs stay.
+func (r *Runner) inWorkspace(dirs []string) ([]string, error) {
+	if _, err := os.Stat(filepath.Join(r.Root, "go.work")); errors.Is(err, os.ErrNotExist) {
+		return dirs, nil
+	} else if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command("go", "list", "-m", "-f", "{{.Dir}}")
+	cmd.Dir = r.Root
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("listing the modules of go.work: %w", err)
+	}
+	used := map[string]bool{}
+	for _, d := range strings.Fields(string(out)) {
+		rel, err := filepath.Rel(r.Root, d)
+		if err != nil {
+			return nil, fmt.Errorf("go.work module %s is not under %s: %w", d, r.Root, err)
+		}
+		used[filepath.ToSlash(rel)] = true
+	}
+	return slices.DeleteFunc(dirs, func(d string) bool { return !used[d] }), nil
 }
 
 // vetSkipped tells whether the module directory is never vetted: a testdata,
