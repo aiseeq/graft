@@ -48,9 +48,16 @@ func setup(m *testing.M) (int, error) {
 	}
 	graftBin = filepath.Join(binDir, "graft"+exe)
 	helperBin = filepath.Join(binDir, "gatehelper"+exe)
+	// GRAFT_TEST_COVERDIR: the coverage of the graft the tests run, which
+	// go test -cover does not see, goes there (go tool covdata percent -i).
+	coverDir := os.Getenv("GRAFT_TEST_COVERDIR")
 	for target, pkg := range map[string]string{graftBin: ".", helperBin: "./testdata/gatehelper"} {
 		// A fixed version, so the graft: minimum version tests know it.
-		out, err := exec.Command("go", "build", "-ldflags", "-X main.buildVersion="+testGraftVersion, "-o", target, pkg).CombinedOutput()
+		args := []string{"build", "-ldflags", "-X main.buildVersion=" + testGraftVersion, "-o", target}
+		if coverDir != "" && pkg == "." {
+			args = append(args, "-cover", "-coverpkg=./...")
+		}
+		out, err := exec.Command("go", append(args, pkg)...).CombinedOutput()
 		if err != nil {
 			return 0, fmt.Errorf("go build %s: %v\n%s", pkg, err, out)
 		}
@@ -62,6 +69,9 @@ func setup(m *testing.M) (int, error) {
 	testEnv, err = isolatedEnv(gitconfig, filepath.Join(dir, "userconfig"), filepath.Join(dir, "cache"))
 	if err != nil {
 		return 0, err
+	}
+	if coverDir != "" {
+		testEnv = append(testEnv, "GOCOVERDIR="+coverDir)
 	}
 	return m.Run(), nil
 }
