@@ -32,6 +32,8 @@ type statsLine struct {
 	DBCPUS   *float64  `json:"db_cpu_s"`
 	DBMemMB  *float64  `json:"db_mem_mb"`
 	Exit     int       `json:"exit"`
+	Run      string    `json:"run"`
+	Parent   string    `json:"parent"`
 }
 
 // statsRepo is a task repository whose graft keeps its stats in a cache of
@@ -346,5 +348,27 @@ func TestStatsCommand(t *testing.T) {
 	}
 	if out, code := f.graft("", "stats", "--since", "soon"); code != 2 {
 		t.Errorf("bad --since: exit %d\n%s", code, out)
+	}
+}
+
+// TestStatsNestedGraft: a graft a task step starts records the run of the
+// outer graft as its parent, and the breakdown of the outer task shows the
+// inner graft's outermost task as a row of its own.
+func TestStatsNestedGraft(t *testing.T) {
+	f, statsFile := statsRepo(t, "tasks:\n  outer:\n    run: [[graft, inner]]\n  inner:\n    deps: [leaf]\n    run: ["+helperStep("ok")+"]\n  leaf:\n    run: ["+helperStep("ok")+"]\n")
+	f.mustGraft("outer")
+	runs := map[string]statsLine{}
+	for _, l := range readStats(t, statsFile) {
+		if l.Kind == "task" {
+			runs[l.Task] = l
+		}
+	}
+	outer, inner, leaf := runs["outer"], runs["inner"], runs["leaf"]
+	if outer.Run == "" || outer.Parent != "" || inner.Parent != outer.Run || inner.Run == outer.Run || leaf.Run != inner.Run {
+		t.Errorf("runs: outer %q (parent %q), inner %q (parent %q), leaf %q", outer.Run, outer.Parent, inner.Run, inner.Parent, leaf.Run)
+	}
+	out := f.mustGraft("stats", "--task", "outer")
+	if !strings.Contains(out, "graft inner ") || strings.Contains(out, "graft leaf") {
+		t.Errorf("the breakdown names the inner graft's outermost task alone:\n%s", out)
 	}
 }

@@ -5,6 +5,8 @@
 package stats
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,6 +82,29 @@ type Record struct {
 	// Exit is the exit status; -1 when there is none (killed by a signal, or
 	// a task that failed outside its processes).
 	Exit int `json:"exit"`
+	// Run names the graft process that wrote the line; Parent the graft
+	// that started it, through a task step or a deploy script. Absent in
+	// lines written before graft 2.19.
+	Run    string `json:"run,omitempty"`
+	Parent string `json:"parent,omitempty"`
+}
+
+// EnvRun carries the run of a graft to the processes it starts: a graft
+// among them records it as its parent.
+const EnvRun = "GRAFT_RUN_ID"
+
+// run and parent are this process's run and the run that started it.
+var run, parent string
+
+// StartRun names this process's run and makes it the parent of every graft
+// the process starts; main calls it once, before anything is recorded.
+func StartRun() error {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Errorf("naming the run: %w", err)
+	}
+	run, parent = hex.EncodeToString(b), os.Getenv(EnvRun)
+	return os.Setenv(EnvRun, run)
 }
 
 // Usage is what one process or a group of them cost.
@@ -230,6 +255,7 @@ func NewRecorder(warn io.Writer) *Recorder {
 // Write appends rec as one line. Failures are reported, not returned: see
 // Recorder.
 func (r *Recorder) Write(rec Record) {
+	rec.Run, rec.Parent = run, parent
 	r.append(r.path, rec, MaxSize)
 }
 

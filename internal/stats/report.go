@@ -125,9 +125,10 @@ func Summarize(recs []Record, f Filter) ([]Row, Saved) {
 	hits := map[rowKey]Saved{}
 	var saved Saved
 	var order []rowKey
+	runs := f.taskRuns(recs)
 	for i := range recs {
 		r := &recs[i]
-		if r.Time.Before(f.Since) || (f.Project != "" && r.Project != f.Project) {
+		if !f.selects(r) {
 			continue
 		}
 		if r.Kind == KindCacheHit {
@@ -138,7 +139,7 @@ func Summarize(recs []Record, f Filter) ([]Row, Saved) {
 			}
 			continue
 		}
-		label, ok := runLabel(r, f)
+		label, ok := runLabel(r, f, runs)
 		if !ok || !calm(r.LoadMax, f.MaxLoad) {
 			continue
 		}
@@ -158,12 +159,38 @@ func Summarize(recs []Record, f Filter) ([]Row, Saved) {
 	return rows, saved
 }
 
+// selects tells whether a record is of the period and the project.
+func (f Filter) selects(r *Record) bool {
+	return !r.Time.Before(f.Since) && (f.Project == "" || r.Project == f.Project)
+}
+
+// taskRuns are the runs of graft that ran the broken down task: the
+// parents of the grafts it started.
+func (f Filter) taskRuns(recs []Record) map[string]bool {
+	runs := map[string]bool{}
+	if f.Task == "" {
+		return runs
+	}
+	for i := range recs {
+		if r := &recs[i]; r.Kind == KindTask && r.Task == f.Task && r.Run != "" && f.selects(r) {
+			runs[r.Run] = true
+		}
+	}
+	return runs
+}
+
+// NestedPrefix labels, in a broken down task, a graft it started (a deploy
+// script or a step that runs graft <task>): its outermost task as a whole.
+const NestedPrefix = "graft "
+
 // runLabel is the row a task or step record belongs to; false leaves it out
-// of the report.
-func runLabel(r *Record, f Filter) (string, bool) {
+// of the report. runs are the grafts that ran the broken down task.
+func runLabel(r *Record, f Filter, runs map[string]bool) (string, bool) {
 	switch {
 	case f.Task == "" && r.Kind == KindTask:
 		return r.Task, true
+	case r.Kind == KindTask && runs[r.Parent] && r.Task == r.Top:
+		return NestedPrefix + r.Task, true
 	case f.Task == "" || r.Task != f.Task:
 		return "", false
 	case r.Kind == KindTask:

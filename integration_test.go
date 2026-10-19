@@ -68,8 +68,9 @@ func setup(m *testing.M) (int, error) {
 }
 
 // isolatedEnv keeps the tests away from the user's git config, from the
-// user's cache (graft's stats) and from the variables git sets when these
-// tests run inside a hook (graft's own gate).
+// user's cache (graft's stats), from the run of a graft the tests run under
+// and from the variables git sets when these tests run inside a hook
+// (graft's own gate).
 func isolatedEnv(gitconfig, userConfig, cache string) ([]string, error) {
 	out, err := exec.Command("git", "rev-parse", "--local-env-vars").Output()
 	if err != nil {
@@ -81,7 +82,7 @@ func isolatedEnv(gitconfig, userConfig, cache string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	drop := append(strings.Fields(string(out)), "GRAFT_COMMIT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "PATH", "XDG_CONFIG_HOME", "APPDATA",
+	drop := append(strings.Fields(string(out)), "GRAFT_COMMIT", "GRAFT_RUN_ID", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "PATH", "XDG_CONFIG_HOME", "APPDATA",
 		"XDG_CACHE_HOME", "LOCALAPPDATA", "GOCACHE")
 	var env []string
 	for _, kv := range os.Environ() {

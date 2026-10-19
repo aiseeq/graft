@@ -25,6 +25,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/hooks"
 	"github.com/aiseeq/graft/v2/internal/message"
+	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/tasks"
 	"github.com/aiseeq/graft/v2/internal/version"
 )
@@ -46,6 +47,10 @@ func main() {
 	// inherited from an outer graft (a task that runs graft) describes
 	// another project, or the same one at another moment.
 	if err := os.Unsetenv(tasks.VersionEnv); err != nil {
+		fmt.Fprintln(os.Stderr, "graft:", err)
+		os.Exit(1)
+	}
+	if err := stats.StartRun(); err != nil {
 		fmt.Fprintln(os.Stderr, "graft:", err)
 		os.Exit(1)
 	}

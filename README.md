@@ -417,6 +417,11 @@ deps and inner tasks included.
 - `top` is the graft command the task ran under (`commit`, `amend`, `gate`,
   `hook`, `deploy`, `start`), or the outermost task for `graft <task>`. The
   deploy script is recorded as task `deploy <target>`.
+- `run` names the graft process that wrote the line, `parent` the graft
+  that started it: graft passes its run to every process it starts in
+  `GRAFT_RUN_ID`, so a `graft <task>` in a step or a deploy script records
+  the outer graft as its parent. Lines of a graft started by no graft have
+  no `parent`.
 - `step` is the step as written in `.graft.yaml`, on one line, cut to 200
   characters. `exit` is -1 when there is no exit status: killed by a signal,
   or a task that failed outside its processes.
@@ -495,7 +500,9 @@ skips); a last line sums the skips, wall and CPU time. When tasks recorded
 their test database, `DB CPU` and `DB MEM` follow: its median CPU time and
 largest memory. `--since` takes days (`30d`) or a duration (`12h`), `--project` another
 project's root, `--all` every project; `--task <name>` breaks one task down
-into its steps.
+into its steps, and into the grafts it started: a step or deploy script
+that runs `graft <task>` shows that graft's outermost task as a row
+`graft <task>`, its wall time part of the step that started it.
 
 `graft stats --tests` reports the tests file instead: the 20 slowest
 top-level tests and packages by median wall time, with their runs, maximum
