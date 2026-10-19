@@ -139,7 +139,8 @@ func (r *Runner) gateSteps() []config.Step {
 	if !r.Config.GoVet.IsEnabled() {
 		return steps
 	}
-	if _, err := os.Stat(filepath.Join(r.Root, "go.mod")); err != nil {
+	// Any other error than a missing file leaves vet in: it fails visibly.
+	if _, err := os.Stat(filepath.Join(r.Root, "go.mod")); errors.Is(err, os.ErrNotExist) {
 		return steps
 	}
 	vet := config.Step{Argv: []string{"go", "vet", "./..."}, Source: GoVetSource}
