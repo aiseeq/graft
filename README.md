@@ -369,7 +369,12 @@ dotenv_sets:                   # key lists several tasks and services share
   passes `-json` itself, graft adds nothing to the command. The terminal
   shows what plain `go test` would: package lines, build errors, benchmark
   results and the output of failing tests; with `-v` in the command, every
-  line. Lines that are not events pass through. Every package run is
+  line. Lines that are not events pass through. Unlike plain `go test` it
+  names the skipped tests, subtests included, under their package line
+  with what they printed as the reason (`skipped 2 tests in m/a:`, then
+  `    TestCorpus: a_test.go:9: no corpus`), a cached package's too, and
+  counts them all in a last line (`skipped 3 tests in 2 packages`): a test
+  skipped for want of a file or a service looks green otherwise. Every package run is
   recorded in the tests file (see below). A step with `go test` in it that
   prints no events gets a warning: `-json` is missing.
 - `cache: tree` skips a task that already passed on the same inputs, its
@@ -495,7 +500,8 @@ deps and inner tasks included.
 
 A task with `tests:` also writes `tests.jsonl` next to it: one line per
 package run, the test binary's time without the build, the top-level tests
-as `[name, wall_s, result]`, and the subtests that failed. Cached packages
+as `[name, wall_s, result]`, and the subtests that failed or were skipped;
+a skipped test with a reason is `[name, wall_s, "skip", reason]`. Cached packages
 did not run and are left out.
 
 ```json
@@ -538,7 +544,9 @@ their wall time part of the task's own.
 
 `graft stats --tests` reports the tests file instead: the 20 slowest
 top-level tests and packages by median wall time, with their runs, maximum
-and share of failed runs, and the flaky tests: those that both failed and
+and share of failed runs, the 20 most skipped tests (skipped ones are left
+out of the timing) with how many runs skipped them, the runs of their
+package and the reason of the last skip, and the flaky tests: those that both failed and
 passed on the same tree, with how many trees saw that. A test that fails
 after a change and passes after the next one is not flaky; the same code
 failing and passing is. The flaky tasks follow: a task that failed and then

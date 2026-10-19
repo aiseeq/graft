@@ -62,7 +62,7 @@ var commands = []command{
 	{name: "start", syntax: fixed("graft start|stop|restart [service]", "graft logs <service> [--lines N] [-f]"), summary: text("start services in the background or through systemd --user; stop, restart, logs"),
 		applies: func(c *config.Config) bool { return len(c.Services) > 0 }},
 	{name: "stats", syntax: fixed("graft stats [--tests] [--since 7d] [--project <root>|--all] [--task <name>] [--max-load N]"),
-		summary: text("resource use recorded for tasks: runs, wall and CPU time, peak memory, failures; --tests: the slowest tests and the flaky ones")},
+		summary: text("resource use recorded for tasks: runs, wall and CPU time, peak memory, failures; --tests: the slowest tests, the skipped and the flaky ones")},
 	{name: "status", syntax: fixed("graft status"), summary: text("show services, the test database and held locks")},
 	{name: "locks", syntax: fixed("graft locks"), summary: text("show who holds graft's locks")},
 	{name: "testdb", syntax: fixed("graft testdb (up|down|status|recreate)"), summary: text("manage the disposable test PostgreSQL in docker"),

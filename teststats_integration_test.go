@@ -51,6 +51,7 @@ var failingRun = goTestStream(
 	`{"Action":"output","Package":"example.com/p","Test":"TestTable","Output":"--- FAIL: TestTable (0.00s)\n"}`,
 	`{"Action":"fail","Package":"example.com/p","Test":"TestTable","Elapsed":0}`,
 	`{"Action":"run","Package":"example.com/p","Test":"TestLater"}`,
+	`{"Action":"output","Package":"example.com/p","Test":"TestLater","Output":"    p_test.go:20: no corpus in testdata/corpus\n"}`,
 	`{"Action":"output","Package":"example.com/p","Test":"TestLater","Output":"--- SKIP: TestLater (0.00s)\n"}`,
 	`{"Action":"skip","Package":"example.com/p","Test":"TestLater","Elapsed":0}`,
 	`{"Action":"output","Package":"example.com/p","Output":"FAIL\n"}`,
@@ -135,6 +136,8 @@ func TestGoTestsAreRecordedPerTest(t *testing.T) {
 		"--- FAIL: TestTable (0.00s)\n",
 		"FAIL\texample.com/p\t2.700s\n",
 		"ok  \texample.com/r\t(cached)\n",
+		"FAIL\texample.com/p\t2.700s\nskipped 1 test in example.com/p:\n    TestLater: p_test.go:20: no corpus in testdata/corpus\n",
+		"skipped 1 test in 1 package\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
@@ -166,7 +169,7 @@ func TestGoTestsAreRecordedPerTest(t *testing.T) {
 		data, _ := json.Marshal(tc)
 		got = append(got, string(data))
 	}
-	want := `["TestSlow",2.5,"pass"] ["TestFlaky",0.1,"fail"] ["TestTable/bad",0,"fail"] ["TestTable",0,"fail"] ["TestLater",0,"skip"]`
+	want := `["TestSlow",2.5,"pass"] ["TestFlaky",0.1,"fail"] ["TestTable/bad",0,"fail"] ["TestTable",0,"fail"] ["TestLater",0,"skip","p_test.go:20: no corpus in testdata/corpus"]`
 	if strings.Join(got, " ") != want {
 		t.Errorf("tests of p:\n%s\nwant\n%s", strings.Join(got, " "), want)
 	}
@@ -208,6 +211,9 @@ func TestGoTestsAreRecordedPerTest(t *testing.T) {
 		"PACKAGE RUNS WALL MED WALL MAX FAILED",
 		"example.com/p 3 2.7s 3.8s 67%",
 		"example.com/q 2 0s 0s 100%",
+		"skipped tests: skipped in some runs of their package, the reason the last one gave",
+		"PACKAGE TEST SKIPPED RUNS REASON",
+		"example.com/p TestLater 2 3 p_test.go:20: no corpus in testdata/corpus",
 		"flaky: failed and passed on the same tree",
 		"PACKAGE TEST TREES FAILED PASSED",
 		"example.com/p TestFlaky 1 1 1",

@@ -6,8 +6,10 @@ package testreport
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,7 +19,10 @@ import (
 // GoTest reads a go test -json stream written to it. It prints what plain
 // go test prints: package lines, build errors, benchmark results and the
 // output of failing tests, or, verbose, every line of output. Lines that are
-// not events pass through as they are.
+// not events pass through as they are. Unlike plain go test it names the
+// skipped tests with their reasons under their package, and counts them all
+// at the end: a test skipped for want of a file or a service looks green
+// otherwise.
 type GoTest struct {
 	out     io.Writer
 	verbose bool
@@ -26,7 +31,9 @@ type GoTest struct {
 	order   []string
 	runs    []stats.PackageRun
 	events  int
-	err     error
+	// skipped and skippedPkgs count the skipped tests and their packages.
+	skipped, skippedPkgs int
+	err                  error
 }
 
 type goPackage struct {
@@ -34,10 +41,14 @@ type goPackage struct {
 	// seen are the tests in the order they first appeared.
 	seen    []string
 	results []stats.TestResult
+	// skipped are the skipped tests, subtests included, as they ended.
+	skipped []stats.TestResult
 	cached  bool
 }
 
 type goTest struct {
+	// lines are its output so far, the framing of -v left out: shown when
+	// it fails, its reason when it is skipped.
 	lines []string
 	done  bool
 	// failed is set once the test failed: output that comes after its
@@ -93,6 +104,9 @@ func (g *GoTest) Close() ([]stats.PackageRun, error) {
 		if g.pkgs[name] != nil {
 			g.finish(name, event{Action: stats.ResultFail})
 		}
+	}
+	if g.skipped > 0 {
+		g.print(fmt.Sprintf("skipped %s in %s\n", plural(g.skipped, "test"), plural(g.skippedPkgs, "package")))
 	}
 	return g.runs, g.err
 }
@@ -168,36 +182,82 @@ func (g *GoTest) packageOutput(pkg *goPackage, out string) {
 
 func (g *GoTest) testOutput(name string, t *goTest, out string) {
 	bench := strings.HasPrefix(name, "Benchmark")
-	switch {
-	case g.verbose:
+	if g.verbose {
 		g.print(out)
+	}
+	switch {
 	case t.done:
-		if t.failed {
+		if t.failed && !g.verbose {
 			g.print(out)
 		}
 	case strings.HasPrefix(out, "=== "), bench && out == name+"\n":
 		// The framing of -v, which plain go test does not print.
 	case bench:
 		// A benchmark has no result event: its lines are its results.
-		g.print(out)
+		if !g.verbose {
+			g.print(out)
+		}
 	default:
 		t.lines = append(t.lines, out)
 	}
 }
 
-// result ends a test: a failed one shows its output. Every top-level test is
-// kept, and the subtests that failed, whose names tell which case of a table
-// broke.
+// result ends a test: a failed one shows its output, a skipped one keeps its
+// reason. Every top-level test is kept, and the subtests that failed or were
+// skipped, whose names tell which case of a table broke or did not run.
 func (g *GoTest) result(pkg *goPackage, name string, elapsed float64, result string) {
 	t := pkg.test(name)
 	t.done, t.failed = true, result == stats.ResultFail
 	if t.failed && !g.verbose {
 		g.print(strings.Join(t.lines, ""))
 	}
-	t.lines = nil
-	if !strings.Contains(name, "/") || t.failed {
-		pkg.results = append(pkg.results, stats.TestResult{Name: name, WallS: round(elapsed), Result: result})
+	res := stats.TestResult{Name: name, WallS: round(elapsed), Result: result}
+	if result == stats.ResultSkip {
+		res.Reason = skipReason(t.lines)
+		pkg.skipped = append(pkg.skipped, res)
 	}
+	t.lines = nil
+	if !strings.Contains(name, "/") || t.failed || result == stats.ResultSkip {
+		pkg.results = append(pkg.results, res)
+	}
+}
+
+// skipReason is what a skipped test printed, its --- SKIP line left out, one
+// line; empty when it gave no reason (t.SkipNow).
+func skipReason(lines []string) string {
+	var reason []string
+	for _, l := range lines {
+		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "--- SKIP: ") {
+			reason = append(reason, l)
+		}
+	}
+	return strings.Join(reason, "; ")
+}
+
+// printSkipped names the skipped tests of a package under its line.
+func (g *GoTest) printSkipped(name string, skipped []stats.TestResult) {
+	if len(skipped) == 0 {
+		return
+	}
+	g.skipped += len(skipped)
+	g.skippedPkgs++
+	var b strings.Builder
+	fmt.Fprintf(&b, "skipped %s in %s:\n", plural(len(skipped), "test"), name)
+	for _, s := range skipped {
+		reason := s.Reason
+		if reason == "" {
+			reason = "no reason given"
+		}
+		fmt.Fprintf(&b, "    %s: %s\n", s.Name, reason)
+	}
+	g.print(b.String())
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return strconv.Itoa(n) + " " + noun + "s"
 }
 
 // finish closes a package on its result event.
@@ -217,6 +277,7 @@ func (g *GoTest) finish(name string, e event) {
 		}
 	}
 	run.Tests = pkg.results
+	g.printSkipped(name, pkg.skipped)
 	if pkg.cached || run.Result == stats.ResultSkip || (run.Result == stats.ResultPass && len(run.Tests) == 0) {
 		return
 	}

@@ -50,28 +50,39 @@ type PackageRun struct {
 }
 
 // TestResult is one test of a package run, written as [name, wall_s,
-// result] to keep large suites small.
+// result] to keep large suites small, or [name, wall_s, "skip", reason] for
+// a test skipped with a reason.
 type TestResult struct {
 	Name   string
 	WallS  float64
 	Result string
+	// Reason is what a skipped test said, when its runner tells.
+	Reason string
 }
 
-// MarshalJSON writes the test as [name, wall_s, result].
+// MarshalJSON writes the test as [name, wall_s, result] or with its reason.
 func (t TestResult) MarshalJSON() ([]byte, error) {
+	if t.Reason != "" {
+		return json.Marshal([]any{t.Name, t.WallS, t.Result, t.Reason})
+	}
 	return json.Marshal([]any{t.Name, t.WallS, t.Result})
 }
 
-// UnmarshalJSON reads [name, wall_s, result].
+// UnmarshalJSON reads [name, wall_s, result] or [name, wall_s, result,
+// reason].
 func (t *TestResult) UnmarshalJSON(data []byte) error {
 	var raw []json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	if len(raw) != 3 {
-		return fmt.Errorf("a test is [name, wall_s, result], got %s", data)
+	if len(raw) != 3 && len(raw) != 4 {
+		return fmt.Errorf("a test is [name, wall_s, result] or [name, wall_s, result, reason], got %s", data)
 	}
-	return errors.Join(json.Unmarshal(raw[0], &t.Name), json.Unmarshal(raw[1], &t.WallS), json.Unmarshal(raw[2], &t.Result))
+	err := errors.Join(json.Unmarshal(raw[0], &t.Name), json.Unmarshal(raw[1], &t.WallS), json.Unmarshal(raw[2], &t.Result))
+	if len(raw) == 4 {
+		err = errors.Join(err, json.Unmarshal(raw[3], &t.Reason))
+	}
+	return err
 }
 
 // LoadTests reads the old copy of the tests file and the file itself, oldest
@@ -136,10 +147,24 @@ type FlakyRow struct {
 	Trees, Failed, Passed int
 }
 
+// SkipRow is a test skipped in some runs of its package.
+type SkipRow struct {
+	Project, Package, Test string
+	// Skipped is how many runs skipped it, of Runs runs of its package.
+	Skipped, Runs int
+	// Reason is the reason of the last skip.
+	Reason string
+	last   time.Time
+}
+
 // TestReport is what graft stats --tests shows.
 type TestReport struct {
 	Tests, Packages []TimingRow
-	Flaky           []FlakyRow
+	// Skipped are the most skipped tests, SkippedAll how many were skipped
+	// in all.
+	Skipped    []SkipRow
+	SkippedAll int
+	Flaky      []FlakyRow
 	// Reruns are the tasks a graft reran to a pass (Reruns).
 	Reruns []RerunRow
 }
@@ -161,6 +186,7 @@ type testTally struct {
 	tests, pkgs map[testKey]*timing
 	// byTree holds each test's results per tree.
 	byTree map[testKey]map[string]*outcome
+	skips  map[testKey]*SkipRow
 }
 
 func (t *testTally) time(m map[testKey]*timing, k testKey, wall float64, failed bool) {
@@ -178,7 +204,11 @@ func (t *testTally) time(m map[testKey]*timing, k testKey, wall float64, failed 
 func (t *testTally) add(r *PackageRun, project string) {
 	t.time(t.pkgs, testKey{project, r.Package, ""}, r.WallS, r.Result != ResultPass)
 	for _, tr := range r.Tests {
-		if strings.Contains(tr.Name, "/") || tr.Result == ResultSkip {
+		if tr.Result == ResultSkip {
+			t.skip(r, project, tr)
+			continue
+		}
+		if strings.Contains(tr.Name, "/") {
 			continue
 		}
 		k := testKey{project, r.Package, tr.Name}
@@ -207,12 +237,42 @@ func (t *testTally) add(r *PackageRun, project string) {
 	}
 }
 
+func (t *testTally) skip(r *PackageRun, project string, tr TestResult) {
+	k := testKey{project, r.Package, tr.Name}
+	s := t.skips[k]
+	if s == nil {
+		s = &SkipRow{Project: project, Package: r.Package, Test: tr.Name}
+		t.skips[k] = s
+	}
+	s.Skipped++
+	if !r.Time.Before(s.last) {
+		s.last, s.Reason = r.Time, tr.Reason
+	}
+}
+
+// mostSkipped are the skipped tests, the most skipped first, at most limit,
+// and how many there are.
+func (t *testTally) mostSkipped(limit int) ([]SkipRow, int) {
+	out := make([]SkipRow, 0, len(t.skips))
+	for k, s := range t.skips {
+		s.Runs = len(t.pkgs[testKey{k.project, k.pkg, ""}].walls)
+		out = append(out, *s)
+	}
+	slices.SortFunc(out, func(a, b SkipRow) int {
+		if a.Skipped != b.Skipped {
+			return b.Skipped - a.Skipped
+		}
+		return strings.Compare(testKey{a.Project, a.Package, a.Test}.String(), testKey{b.Project, b.Package, b.Test}.String())
+	})
+	return out[:min(len(out), limit)], len(out)
+}
+
 // SummarizeTests ranks the tests and packages f selects by median wall time,
-// the slowest first, at most limit rows each, and lists the flaky tests.
-// Subtests are recorded only when they fail, so the timing and the flakes
-// are of top-level tests.
+// the slowest first, at most limit rows each, and lists the most skipped
+// tests and the flaky ones. Subtests are recorded only when they fail or are
+// skipped, so the timing and the flakes are of top-level tests.
 func SummarizeTests(runs []PackageRun, f TestFilter, limit int) TestReport {
-	t := &testTally{tests: map[testKey]*timing{}, pkgs: map[testKey]*timing{}, byTree: map[testKey]map[string]*outcome{}}
+	t := &testTally{tests: map[testKey]*timing{}, pkgs: map[testKey]*timing{}, byTree: map[testKey]map[string]*outcome{}, skips: map[testKey]*SkipRow{}}
 	for i := range runs {
 		r := &runs[i]
 		if !f.takes(r) {
@@ -224,7 +284,9 @@ func SummarizeTests(runs []PackageRun, f TestFilter, limit int) TestReport {
 		}
 		t.add(r, project)
 	}
-	return TestReport{Tests: slowest(t.tests, limit), Packages: slowest(t.pkgs, limit), Flaky: flaky(t.byTree)}
+	rep := TestReport{Tests: slowest(t.tests, limit), Packages: slowest(t.pkgs, limit), Flaky: flaky(t.byTree)}
+	rep.Skipped, rep.SkippedAll = t.mostSkipped(limit)
+	return rep
 }
 
 func slowest(m map[testKey]*timing, limit int) []TimingRow {
@@ -281,7 +343,10 @@ func cmpFloat(a, b float64) int {
 	return 0
 }
 
-// RenderTests prints the report as four tables; withProject adds the
+// maxReason is as much of a skip's reason as a row shows.
+const maxReason = 100
+
+// RenderTests prints the report as five tables; withProject adds the
 // project column.
 func RenderTests(w io.Writer, rep TestReport, withProject bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
@@ -309,6 +374,25 @@ func RenderTests(w io.Writer, rep TestReport, withProject bool) error {
 	for _, r := range rep.Packages {
 		project(r.Project)
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d%%\n", r.Package, r.Runs, formatSeconds(r.WallMed), formatSeconds(r.WallMax), percent(r.Failed, r.Runs))
+	}
+	fmt.Fprintln(tw, "\nskipped tests: skipped in some runs of their package, the reason the last one gave")
+	if len(rep.Skipped) == 0 {
+		fmt.Fprintln(tw, "none")
+	} else {
+		header("PACKAGE\tTEST\tSKIPPED\tRUNS\tREASON")
+	}
+	for _, r := range rep.Skipped {
+		project(r.Project)
+		reason := strings.ReplaceAll(r.Reason, "\t", " ")
+		if reason == "" {
+			reason = "-"
+		} else if rs := []rune(reason); len(rs) > maxReason {
+			reason = string(rs[:maxReason-1]) + "…"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\n", r.Package, r.Test, r.Skipped, r.Runs, reason)
+	}
+	if more := rep.SkippedAll - len(rep.Skipped); more > 0 {
+		fmt.Fprintf(tw, "and %d more\n", more)
 	}
 	fmt.Fprintln(tw, "\nflaky: failed and passed on the same tree")
 	if len(rep.Flaky) == 0 {

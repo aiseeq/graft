@@ -54,6 +54,7 @@ func TestGoTestPrintsWhatPlainGoTestPrints(t *testing.T) {
 		"--- FAIL: TestPanic (0.00s)\npanic: oops [recovered, repanicked]\n",
 		"created by testing.(*T).Run in goroutine 1\n",
 		"FAIL\ttoy/b\t0.005s\n",
+		"FAIL\ttoy/a\t0.004s\nskipped 1 test in toy/a:\n    TestSkip: a_test.go:5: later\n",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
@@ -64,8 +65,11 @@ func TestGoTestPrintsWhatPlainGoTestPrints(t *testing.T) {
 			t.Errorf("output shows %q:\n%s", absent, out.String())
 		}
 	}
+	if !strings.HasSuffix(out.String(), "\nskipped 1 test in 1 package\n") {
+		t.Errorf("output does not end in the count of skipped tests:\n%s", out.String())
+	}
 	want := `toy/c build-fail null
-toy/a fail [["TestPass",0,"pass"],["TestFail",0,"fail"],["TestSkip",0,"skip"],["TestSub/bad",0,"fail"],["TestSub",0,"fail"]]
+toy/a fail [["TestPass",0,"pass"],["TestFail",0,"fail"],["TestSkip",0,"skip","a_test.go:5: later"],["TestSub/bad",0,"fail"],["TestSub",0,"fail"]]
 toy/b fail [["TestOK",0,"pass"],["TestPanic",0,"fail"]]
 `
 	if got := summary(runs); got != want {
@@ -82,7 +86,8 @@ func TestGoTestVerbose(t *testing.T) {
 	}
 	var out strings.Builder
 	feed(t, NewGoTest(&out, true), string(stream))
-	for _, want := range []string{"=== RUN   TestPass\n    a_test.go:3: hello\n--- PASS: TestPass (0.00s)\n", "--- SKIP: TestSkip", "=== RUN   TestSub/ok\n--- PASS: TestSub/ok"} {
+	for _, want := range []string{"=== RUN   TestPass\n    a_test.go:3: hello\n--- PASS: TestPass (0.00s)\n", "--- SKIP: TestSkip", "=== RUN   TestSub/ok\n--- PASS: TestSub/ok",
+		"skipped 1 test in toy/a:\n    TestSkip: a_test.go:5: later\n"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("verbose output lacks %q:\n%s", want, out.String())
 		}
@@ -113,6 +118,54 @@ func TestGoTestBenchmarksAndCutStreams(t *testing.T) {
 		t.Errorf("output:\n%q\nwant\n%q", out.String(), want)
 	}
 	if got := summary(runs); got != "m/b fail [[\"TestHangs\",0,\"fail\"]]\n" {
+		t.Errorf("runs:\n%s", got)
+	}
+}
+
+// TestGoTestNamesSkippedTests: the skipped tests of a package, a subtest of
+// a table and one that gave no reason among them, are listed under the
+// package line, a cached package's too, and counted at the end; the
+// subtest is recorded with the top-level tests.
+func TestGoTestNamesSkippedTests(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"Action":"start","Package":"m/a"}`,
+		`{"Action":"run","Package":"m/a","Test":"TestCorpus"}`,
+		`{"Action":"output","Package":"m/a","Test":"TestCorpus","Output":"=== RUN   TestCorpus\n"}`,
+		`{"Action":"output","Package":"m/a","Test":"TestCorpus","Output":"    a_test.go:7: reading testdata/corpus\n"}`,
+		`{"Action":"output","Package":"m/a","Test":"TestCorpus","Output":"    a_test.go:9: no corpus: run make corpus\n"}`,
+		`{"Action":"output","Package":"m/a","Test":"TestCorpus","Output":"--- SKIP: TestCorpus (0.00s)\n"}`,
+		`{"Action":"skip","Package":"m/a","Test":"TestCorpus","Elapsed":0}`,
+		`{"Action":"run","Package":"m/a","Test":"TestTable"}`,
+		`{"Action":"run","Package":"m/a","Test":"TestTable/ok"}`,
+		`{"Action":"pass","Package":"m/a","Test":"TestTable/ok","Elapsed":0}`,
+		`{"Action":"run","Package":"m/a","Test":"TestTable/traces"}`,
+		`{"Action":"output","Package":"m/a","Test":"TestTable/traces","Output":"    --- SKIP: TestTable/traces (0.00s)\n"}`,
+		`{"Action":"skip","Package":"m/a","Test":"TestTable/traces","Elapsed":0}`,
+		`{"Action":"pass","Package":"m/a","Test":"TestTable","Elapsed":0.1}`,
+		`{"Action":"output","Package":"m/a","Output":"ok  \tm/a\t0.104s\n"}`,
+		`{"Action":"pass","Package":"m/a","Elapsed":0.104}`,
+		`{"Action":"start","Package":"m/b"}`,
+		`{"Action":"run","Package":"m/b","Test":"TestLive"}`,
+		`{"Action":"output","Package":"m/b","Test":"TestLive","Output":"    b_test.go:3: set B_LIVE to run\n"}`,
+		`{"Action":"output","Package":"m/b","Test":"TestLive","Output":"--- SKIP: TestLive (0.00s)\n"}`,
+		`{"Action":"skip","Package":"m/b","Test":"TestLive","Elapsed":0}`,
+		`{"Action":"output","Package":"m/b","Output":"ok  \tm/b\t(cached)\n"}`,
+		`{"Action":"pass","Package":"m/b","Elapsed":0}`,
+	}, "\n") + "\n"
+	var out strings.Builder
+	runs := feed(t, NewGoTest(&out, false), stream)
+	want := "ok  \tm/a\t0.104s\n" +
+		"skipped 2 tests in m/a:\n" +
+		"    TestCorpus: a_test.go:7: reading testdata/corpus; a_test.go:9: no corpus: run make corpus\n" +
+		"    TestTable/traces: no reason given\n" +
+		"ok  \tm/b\t(cached)\n" +
+		"skipped 1 test in m/b:\n" +
+		"    TestLive: b_test.go:3: set B_LIVE to run\n" +
+		"skipped 3 tests in 2 packages\n"
+	if out.String() != want {
+		t.Errorf("output:\n%s\nwant\n%s", out.String(), want)
+	}
+	if got := summary(runs); got != `m/a pass [["TestCorpus",0,"skip","a_test.go:7: reading testdata/corpus; a_test.go:9: no corpus: run make corpus"],["TestTable/traces",0,"skip"],["TestTable",0.1,"pass"]]`+"\n" {
 		t.Errorf("runs:\n%s", got)
 	}
 }
