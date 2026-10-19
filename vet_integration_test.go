@@ -68,3 +68,56 @@ func TestGoVetOffWithoutReasonIsRefused(t *testing.T) {
 		t.Errorf("exit %d:\n%s", code, out)
 	}
 }
+
+func TestGateVetsAModuleBelowTheRootWithoutRootGoMod(t *testing.T) {
+	f := vetRepo(t, "", map[string]string{"backend/go.mod": vetGoMod, "backend/main.go": vetBad})
+	out, code := f.graft("", "commit", "-m", "feat: x")
+	if code == 0 || !strings.Contains(out, "go vet ./... (backend)") || !strings.Contains(out, "gate failed") {
+		t.Errorf("a failing vet in backend/ must fail the gate: exit %d\n%s", code, out)
+	}
+	if n := f.commitCount(); n != 0 {
+		t.Errorf("%d commits made", n)
+	}
+}
+
+func TestGateVetsEveryModuleAndPassesWhenClean(t *testing.T) {
+	f := vetRepo(t, "", map[string]string{
+		"go.mod": vetGoMod, "main.go": vetGood,
+		"tools/a/go.mod": vetGoMod, "tools/a/main.go": vetGood,
+		"deep/er/b/go.mod": vetGoMod, "deep/er/b/main.go": vetGood,
+	})
+	out := f.mustGraft("gate")
+	for _, want := range []string{"gate 1/4: go vet ./...\n", "go vet ./... (deep/er/b)", "go vet ./... (tools/a)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestGateSkipsTestdataVendorAndNodeModulesModules(t *testing.T) {
+	f := vetRepo(t, "", map[string]string{
+		"testdata/go.mod": vetGoMod, "testdata/main.go": vetBad,
+		"pkg/testdata/x/go.mod": vetGoMod, "pkg/testdata/x/main.go": vetBad,
+		"vendor/v/go.mod": vetGoMod, "vendor/v/main.go": vetBad,
+		"web/node_modules/m/go.mod": vetGoMod, "web/node_modules/m/main.go": vetBad,
+	})
+	out := f.mustGraft("gate")
+	if strings.Contains(out, "go vet") {
+		t.Errorf("modules under testdata, vendor, node_modules must not be vetted:\n%s", out)
+	}
+}
+
+func TestGoVetExcludeNeedsAReasonAndSkipsTheDirectory(t *testing.T) {
+	files := func() map[string]string {
+		return map[string]string{"backend/go.mod": vetGoMod, "backend/main.go": vetBad, "tools/go.mod": vetGoMod, "tools/main.go": vetGood}
+	}
+	f := vetRepo(t, "go_vet:\n  exclude: [backend]\n", files())
+	if out, code := f.graft("", "gate"); code == 0 || !strings.Contains(out, "go_vet.reason") {
+		t.Errorf("exclude without a reason: exit %d\n%s", code, out)
+	}
+	f = vetRepo(t, "go_vet:\n  exclude: [backend]\n  reason: generated code\n", files())
+	out := f.mustGraft("gate")
+	if strings.Contains(out, "(backend)") || !strings.Contains(out, "go vet ./... (tools)") {
+		t.Errorf("only tools/ must be vetted:\n%s", out)
+	}
+}

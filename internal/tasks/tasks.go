@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -127,46 +128,121 @@ func NewRunner(root string, cfg *config.Config, stdout, stderr io.Writer) *Runne
 }
 
 // GoVetSource is how the implicit go vet step of a Go project's gate reads in
-// the output.
+// the output; a module below the root adds its directory in parentheses.
 const GoVetSource = "go vet ./..."
 
-// gateSteps is the gate: for a Go project (go.mod in the root) go vet ./...
-// first, unless go_vet is turned off, then the steps of the config. A project
-// that also runs vet itself vets twice; the build cache makes the second run
-// cheap.
-func (r *Runner) gateSteps() []config.Step {
-	steps := r.Config.Gate
+// gateStep is a step of the gate with the task that sets its directory.
+type gateStep struct {
+	step config.Step
+	task *config.Task
+}
+
+// gateSteps is the gate: go vet ./... in every Go module of the tree first,
+// unless go_vet is turned off, then the steps of the config. A module is the
+// root when it has go.mod, and every directory below it with a go.mod that
+// git lists (tracked, or not ignored); testdata, vendor and node_modules are
+// skipped, and so are the directories of go_vet.exclude. A project that also
+// vets in its own gate vets twice; the build cache makes the second run cheap.
+func (r *Runner) gateSteps() ([]gateStep, error) {
+	var steps []gateStep
+	mods, err := r.goModules()
+	if err != nil {
+		return nil, err
+	}
+	for _, dir := range mods {
+		src := GoVetSource
+		if dir != "." {
+			src += " (" + dir + ")"
+		}
+		steps = append(steps, gateStep{
+			step: config.Step{Argv: []string{"go", "vet", "./..."}, Source: src},
+			task: &config.Task{Dir: dir},
+		})
+	}
+	for _, s := range r.Config.Gate {
+		steps = append(steps, gateStep{step: s, task: &config.Task{}})
+	}
+	return steps, nil
+}
+
+// goModules lists the directories to vet, relative to the root, "." first.
+func (r *Runner) goModules() ([]string, error) {
 	if !r.Config.GoVet.IsEnabled() {
-		return steps
+		return nil, nil
 	}
+	var dirs []string
 	// Any other error than a missing file leaves vet in: it fails visibly.
-	if _, err := os.Stat(filepath.Join(r.Root, "go.mod")); errors.Is(err, os.ErrNotExist) {
-		return steps
+	if _, err := os.Stat(filepath.Join(r.Root, "go.mod")); !errors.Is(err, os.ErrNotExist) && !vetSkipped(".", r.Config.GoVet.Exclude) {
+		dirs = append(dirs, ".")
 	}
-	vet := config.Step{Argv: []string{"go", "vet", "./..."}, Source: GoVetSource}
-	return append([]config.Step{vet}, steps...)
+	repo, err := gitx.Open(r.Root)
+	if err != nil {
+		return nil, fmt.Errorf("listing Go modules: %w", err)
+	}
+	out, err := repo.Git("ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*/go.mod")
+	if err != nil {
+		return nil, fmt.Errorf("listing Go modules: %w", err)
+	}
+	for _, f := range strings.Split(out, "\x00") {
+		dir, ok := strings.CutSuffix(strings.TrimSpace(f), "/go.mod")
+		if !ok || vetSkipped(dir, r.Config.GoVet.Exclude) {
+			continue
+		}
+		_, err := os.Stat(filepath.Join(r.Root, filepath.FromSlash(dir), "go.mod"))
+		if errors.Is(err, os.ErrNotExist) {
+			continue // tracked, but deleted in the work tree
+		}
+		if err != nil {
+			return nil, err
+		}
+		dirs = append(dirs, dir)
+	}
+	slices.Sort(dirs[min(len(dirs), 1):])
+	return dirs, nil
+}
+
+// vetSkipped tells whether the module directory is never vetted: a testdata,
+// vendor or node_modules segment in the path, or a go_vet.exclude directory
+// that is the module or contains it.
+func vetSkipped(dir string, exclude []string) bool {
+	for _, seg := range strings.Split(dir, "/") {
+		if seg == "testdata" || seg == "vendor" || seg == "node_modules" {
+			return true
+		}
+	}
+	return slices.ContainsFunc(exclude, func(e string) bool {
+		e = strings.Trim(path.Clean(e), "/")
+		return dir == e || strings.HasPrefix(dir, e+"/")
+	})
 }
 
 // Gate runs the commit gate with stdin closed.
 func (r *Runner) Gate(ctx context.Context) (err error) {
-	steps := r.gateSteps()
+	steps, err := r.gateSteps()
+	if err != nil {
+		return err
+	}
 	if len(steps) == 0 {
 		fmt.Fprintln(r.Stdout, "graft: gate is empty, nothing to run")
 		return nil
 	}
 	r.Stdin = nil
-	if err := r.preflight(steps, &config.Task{}, "gate"); err != nil {
+	all := make([]config.Step, len(steps))
+	for i, gs := range steps {
+		all[i] = gs.step
+	}
+	if err := r.preflight(all, &config.Task{}, "gate"); err != nil {
 		return err
 	}
 	f := r.begin("gate")
 	defer func() { r.end(f, err != nil) }()
-	for i, s := range steps {
-		s, _, err := r.threads(s, &config.Task{})
+	for i, gs := range steps {
+		s, _, err := r.threads(gs.step, gs.task)
 		if err != nil {
 			return fmt.Errorf("gate: %w", err)
 		}
 		fmt.Fprintf(r.Stdout, "graft: gate %d/%d: %s\n", i+1, len(steps), s.Source)
-		if err := r.step(ctx, s, &config.Task{}, nil, ""); err != nil {
+		if err := r.step(ctx, s, gs.task, nil, ""); err != nil {
 			return fmt.Errorf("gate failed at %q: %w", s.Source, err)
 		}
 	}

@@ -150,12 +150,16 @@ type Push struct {
 	Remotes []string `yaml:"remotes"`
 }
 
-// GoVet configures the step graft puts first in the gate of a Go project, one
-// with go.mod in the tree root: go vet ./... . It is on by default, because
-// some analyzers (composites, copylocks, printf) catch what linters do not.
+// GoVet configures the steps graft puts first in the gate of a Go project:
+// go vet ./... in the root when it has go.mod and in every directory below it
+// with its own go.mod. It is on by default, because some analyzers
+// (composites, copylocks, printf) catch what linters do not.
 type GoVet struct {
 	Enabled *bool `yaml:"enabled"`
-	// Reason is mandatory when the step is turned off.
+	// Exclude are module directories, relative to the root, left unvetted:
+	// the directory itself and everything below it.
+	Exclude []string `yaml:"exclude"`
+	// Reason is mandatory when the steps are turned off or exclude is set.
 	Reason string `yaml:"reason"`
 }
 
@@ -476,8 +480,14 @@ func (c *Config) validateLargeFiles() error {
 }
 
 func (c *Config) validateGoVet() error {
-	if !c.GoVet.IsEnabled() && strings.TrimSpace(c.GoVet.Reason) == "" {
-		return errors.New("go_vet.reason: required when go_vet.enabled is false, why vet is skipped")
+	off := !c.GoVet.IsEnabled()
+	if (off || len(c.GoVet.Exclude) > 0) && strings.TrimSpace(c.GoVet.Reason) == "" {
+		return errors.New("go_vet.reason: required when go_vet.enabled is false or go_vet.exclude is set, why vet is skipped")
+	}
+	for i, e := range c.GoVet.Exclude {
+		if strings.TrimSpace(e) == "" || filepath.IsAbs(e) || strings.HasPrefix(path.Clean(e), "..") {
+			return fmt.Errorf("go_vet.exclude[%d]: %q must be a directory inside the tree", i, e)
+		}
 	}
 	return nil
 }

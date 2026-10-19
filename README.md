@@ -71,7 +71,7 @@ a heavy task inside a heavy task was admitted with it. Ctrl-C stops the wait.
 | `graft init` | install the hooks and set `core.hooksPath`, create the `.env` file from `dotenv_template` when it is missing, install pinned tools that fail their check; safe to repeat |
 | `graft check` | run the content checks on the index |
 | `graft leaks <revision range>` | scan commits for the private names and terms of the user config (`leaks`) |
-| `graft gate` | run the gate commands (in a Go project, `go vet ./...` first, see `go_vet`) |
+| `graft gate` | run the gate commands (`go vet ./...` in every Go module first, see `go_vet`) |
 | `graft hook pre-commit` / `post-merge` | what the installed hooks call |
 | `graft flags [status]` | is the flag raised: open journal events no exception mutes |
 | `graft flags show <id>` | one event in full |
@@ -175,14 +175,18 @@ gate:
   - [go, test, -short, ./...]
   - sh: go vet ./... && go test ./...   # run by sh -c
 
-# In a Go project (go.mod in the tree root) the gate starts with go vet ./...
-# on its own, before the steps above: vet analyzers such as composites and
-# copylocks catch what linters do not. A failing vet fails the gate like any
-# step. A project that vets in its own gate too just vets twice; the build
+# The gate starts with go vet ./... of its own, before the steps above: vet
+# analyzers such as composites and copylocks catch what linters do not. It
+# runs in the root when it has go.mod and in every directory below it with a
+# go.mod that git lists (tracked, or untracked and not ignored), at any depth,
+# except paths with a testdata, vendor or node_modules segment; a module below
+# the root shows as "go vet ./... (backend)". A failing vet fails the gate like
+# any step. A project that vets in its own gate too just vets twice; the build
 # cache makes the second run cheap. Turning it off needs a reason.
 go_vet:
-  enabled: true                 # default true
-  # reason: ...                 # required with enabled: false
+  enabled: true                 # default true; false turns all vet steps off
+  # exclude: [tools/gen]        # module directories left unvetted (with everything below)
+  # reason: ...                 # required with enabled: false or exclude
 
 version:
   mode: file                    # required: file | git-tag | none
