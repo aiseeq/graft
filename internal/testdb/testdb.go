@@ -46,6 +46,9 @@ type State struct {
 	// Pid is the container's main process as the host sees it; 0 when it
 	// is not running.
 	Pid int
+	// Network is the container's network mode; Binds are its bind mounts.
+	Network string
+	Binds   []string
 }
 
 // Inspect asks docker about the container.
@@ -67,13 +70,25 @@ func (d *DB) Inspect(ctx context.Context) (State, error) {
 			Pid     int
 		}
 		Config     struct{ Cmd []string }
-		HostConfig struct{ Tmpfs map[string]string }
+		HostConfig struct {
+			Tmpfs       map[string]string
+			NetworkMode string
+			Binds       []string
+		}
 	}
 	if err := json.Unmarshal(out, &info); err != nil || len(info) != 1 {
 		return State{}, fmt.Errorf("docker inspect %s: unexpected output", d.Cfg.Container)
 	}
-	return State{Exists: true, Running: info[0].State.Running, Cmd: info[0].Config.Cmd, Tmpfs: info[0].HostConfig.Tmpfs, Pid: info[0].State.Pid}, nil
+	host := info[0].HostConfig
+	return State{Exists: true, Running: info[0].State.Running, Cmd: info[0].Config.Cmd, Tmpfs: host.Tmpfs, Pid: info[0].State.Pid,
+		Network: host.NetworkMode, Binds: host.Binds}, nil
 }
+
+// socketMount is where the container sees the socket directory of a socket
+// database. The image's own /var/run/postgresql stays where it is: its
+// entrypoint takes that directory over for the server's user, and the
+// server it initializes the cluster with answers there.
+const socketMount = "/run/graft-testdb"
 
 // wantArgs are the server arguments the config asks for. The image's
 // entrypoint prepends postgres to arguments starting with -.
@@ -82,7 +97,25 @@ func (d *DB) wantArgs() []string {
 	for _, s := range d.Cfg.Settings {
 		args = append(args, "-c", s)
 	}
+	if d.Cfg.Socket {
+		args = append(args, "-c", "unix_socket_directories=/var/run/postgresql,"+socketMount)
+	}
 	return args
+}
+
+// socketBind is the bind mount of the socket directory; z relabels it for
+// SELinux, and docker ignores it without.
+func (d *DB) socketBind() string {
+	return d.Cfg.SocketDir + ":" + socketMount + ":z"
+}
+
+// networkMatches tells whether the container listens where the config
+// asks: a published port, or no network and the socket directory.
+func (d *DB) networkMatches(s State) bool {
+	if !d.Cfg.Socket {
+		return s.Network != "none"
+	}
+	return s.Network == "none" && slices.Contains(s.Binds, d.socketBind())
 }
 
 // tmpfsOptions are the mount options of each tmpfs the config asks for.
@@ -116,6 +149,13 @@ func (d *DB) Drift(s State) string {
 		}
 		want := cmp.Or(d.Cfg.Tmpfs, "none")
 		drift = append(drift, "tmpfs ("+have+", the config asks for "+want+")")
+	}
+	if !d.networkMatches(s) {
+		have := "network " + cmp.Or(s.Network, "default")
+		if len(s.Binds) > 0 {
+			have += ", binds " + strings.Join(s.Binds, " ")
+		}
+		drift = append(drift, "listening ("+have+", the config asks for "+d.Cfg.Where()+")")
 	}
 	return strings.Join(drift, " and ")
 }
@@ -152,7 +192,7 @@ func (d *DB) Up(ctx context.Context, migrate func(context.Context) error) error 
 			return err
 		}
 	default:
-		fmt.Fprintf(d.Log, "graft: creating %s (%s on 127.0.0.1:%d)\n", d.Cfg.Container, d.Cfg.Image, d.Cfg.Port)
+		fmt.Fprintf(d.Log, "graft: creating %s (%s on %s)\n", d.Cfg.Container, d.Cfg.Image, d.Cfg.Where())
 		if err := d.create(ctx); err != nil {
 			return err
 		}
@@ -185,17 +225,34 @@ func (d *DB) create(ctx context.Context) error {
 			return err
 		}
 	}
+	if d.Cfg.Socket {
+		// The server runs as a user of the image, not the host's: it
+		// needs the directory writable by all. Its parents keep other
+		// host users out.
+		if err := os.MkdirAll(d.Cfg.SocketDir, 0o700); err != nil {
+			return fmt.Errorf("the socket directory: %w", err)
+		}
+		if err := os.Chmod(d.Cfg.SocketDir, 0o777); err != nil {
+			return fmt.Errorf("the socket directory: %w", err)
+		}
+	}
 	cmd := exec.CommandContext(ctx, "docker", d.runArgs(volumes)...)
 	cmd.Env = append(os.Environ(), "POSTGRES_USER="+d.Cfg.User, "POSTGRES_PASSWORD="+d.Cfg.Password, "POSTGRES_DB="+d.Cfg.Database)
 	return runDocker(cmd)
 }
 
 // runArgs is the docker run command line; each of tmpfsVolumes becomes a
-// tmpfs, which takes the place of the image volume at that path.
+// tmpfs, which takes the place of the image volume at that path. A socket
+// database runs without a network: a published port gives the container a
+// network device on the host, a veth, created and removed with it.
 func (d *DB) runArgs(tmpfsVolumes []string) []string {
 	args := []string{"run", "-d", "--name", d.Cfg.Container, "--restart", "unless-stopped",
-		"-e", "POSTGRES_USER", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB",
-		"-p", "127.0.0.1:" + strconv.Itoa(d.Cfg.Port) + ":5432"}
+		"-e", "POSTGRES_USER", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB"}
+	if d.Cfg.Socket {
+		args = append(args, "--network", "none", "-v", d.socketBind())
+	} else {
+		args = append(args, "-p", "127.0.0.1:"+strconv.Itoa(d.Cfg.Port)+":5432")
+	}
 	for _, v := range tmpfsVolumes {
 		args = append(args, "--tmpfs", v+":"+d.tmpfsOptions())
 	}
@@ -232,7 +289,8 @@ func (d *DB) imageVolumes(ctx context.Context) ([]string, error) {
 
 // readyArgs ask the server over TCP: while the image's entrypoint
 // initializes a cluster (every start on tmpfs), a temporary server answers
-// on the socket only and then stops.
+// on the socket only and then stops. Without a network the container still
+// has its loopback.
 func (d *DB) readyArgs() []string {
 	return []string{"exec", d.Cfg.Container, "pg_isready", "-h", "127.0.0.1", "-U", d.Cfg.User, "-d", d.Cfg.Database}
 }
@@ -270,6 +328,11 @@ func (d *DB) Down(ctx context.Context) error {
 	}
 	if err := docker(ctx, "rm", "-f", "-v", d.Cfg.Container); err != nil {
 		return err
+	}
+	if d.Cfg.Socket {
+		if err := os.RemoveAll(d.Cfg.SocketDir); err != nil {
+			return fmt.Errorf("removing the socket directory: %w", err)
+		}
 	}
 	fmt.Fprintf(d.Log, "graft: removed %s\n", d.Cfg.Container)
 	return nil

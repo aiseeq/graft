@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -292,6 +295,14 @@ type TestDB struct {
 	User      string   `yaml:"user"`
 	Password  string   `yaml:"password"`
 	Settings  []string `yaml:"settings"`
+	// Socket serves the database on a unix socket only: the container runs
+	// without a network (docker --network none), so it adds no network
+	// device to the host, and the DSN names the socket's directory,
+	// SocketDir. Port is not used then.
+	Socket bool `yaml:"socket"`
+	// SocketDir is the host directory of the socket of a Socket database,
+	// under the user's cache; set by the config.
+	SocketDir string `yaml:"-"`
 	// Tmpfs is the size of the tmpfs the data volumes of the image are
 	// mounted in (512m, 2g), lowercased; empty keeps the data on disk.
 	Tmpfs string `yaml:"tmpfs"`
@@ -311,16 +322,30 @@ type TestDB struct {
 // takes longer than running them.
 var DefaultTestDBSettings = []string{"fsync=off", "synchronous_commit=off", "full_page_writes=off", "jit=off"}
 
-// DSN is the connection string of database on the test server.
+// DSN is the connection string of database on the test server: over TCP,
+// or for Socket with the socket's directory in the host parameter, which
+// libpq, pgx and lib/pq read the same way.
 func (t *TestDB) DSN(database string) string {
 	u := url.URL{
 		Scheme:   "postgres",
 		User:     url.UserPassword(t.User, t.Password),
-		Host:     fmt.Sprintf("127.0.0.1:%d", t.Port),
 		Path:     "/" + database,
 		RawQuery: "sslmode=disable",
 	}
+	if t.Socket {
+		u.RawQuery = url.Values{"host": {t.SocketDir}, "sslmode": {"disable"}}.Encode()
+	} else {
+		u.Host = fmt.Sprintf("127.0.0.1:%d", t.Port)
+	}
 	return u.String()
+}
+
+// Where is where the server listens, for messages.
+func (t *TestDB) Where() string {
+	if t.Socket {
+		return "a unix socket in " + t.SocketDir
+	}
+	return fmt.Sprintf("127.0.0.1:%d", t.Port)
 }
 
 // SourceSuffix ends the name of a source database the testdb package copies.
@@ -673,8 +698,11 @@ func (c *Config) validateTestDB() error {
 	if t == nil {
 		return nil
 	}
-	if t.Image == "" || !containerRe.MatchString(t.Container) || t.Port <= 0 || t.Port > 65535 {
-		return errors.New("test_db: image, container and port are required")
+	if t.Image == "" || !containerRe.MatchString(t.Container) {
+		return errors.New("test_db: image and container are required")
+	}
+	if err := t.validateListen(); err != nil {
+		return err
 	}
 	for field, v := range map[string]string{"database": t.Database, "user": t.User} {
 		if !dbIdentRe.MatchString(v) {
@@ -703,6 +731,46 @@ func (c *Config) validateTestDB() error {
 	}
 	if t.ReadyTimeout == 0 {
 		t.ReadyTimeout = 60 * time.Second
+	}
+	return nil
+}
+
+// socketFile is the name of the server's socket in its directory: the
+// container listens on PostgreSQL's default port.
+const socketFile = ".s.PGSQL.5432"
+
+// maxSocketPath is the longest path of a unix socket on Linux (sun_path
+// less its terminating NUL).
+const maxSocketPath = 107
+
+// validateListen checks the port of a TCP database, or places the socket of
+// a Socket one.
+func (t *TestDB) validateListen() error {
+	if !t.Socket {
+		if t.Port <= 0 || t.Port > 65535 {
+			return errors.New("test_db.port: required, 1-65535 (or socket: true)")
+		}
+		return nil
+	}
+	if t.Port != 0 {
+		return errors.New("test_db.port: not used with socket: true, the database has no TCP port on the host")
+	}
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("test_db.socket: needs docker on Linux, a unix socket does not cross the VM of docker on %s", runtime.GOOS)
+	}
+	for _, s := range t.Settings {
+		if strings.HasPrefix(s, "unix_socket_directories=") {
+			return fmt.Errorf("test_db.settings: %s: socket: true sets the socket directories", s)
+		}
+	}
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("test_db.socket: the directory of the socket: %w", err)
+	}
+	t.SocketDir = filepath.Join(cache, "graft", "testdb", t.Container)
+	if n := len(t.SocketDir) + 1 + len(socketFile); n > maxSocketPath {
+		return fmt.Errorf("test_db.socket: the socket %s is %d bytes, over the %d a unix socket allows; shorten test_db.container",
+			filepath.Join(t.SocketDir, socketFile), n, maxSocketPath)
 	}
 	return nil
 }

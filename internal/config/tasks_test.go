@@ -1,6 +1,8 @@
 package config
 
 import (
+	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -79,6 +81,35 @@ func TestParseTasks(t *testing.T) {
 	}
 }
 
+// TestParseTestDBSocket: a socket database has no port, its socket lives
+// under the user's cache and the DSN names that directory.
+func TestParseTestDBSocket(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+	data := strings.Replace(tasksBase, "  port: 55432\n", "  socket: true\n", 1)
+	cfg, err := Parse([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := cfg.TestDB
+	dir := filepath.Join(cache, "graft", "testdb", "app-test-pg")
+	if db.SocketDir != dir {
+		t.Errorf("socket dir = %s, want %s", db.SocketDir, dir)
+	}
+	want := "postgres://app:app@/app_test?host=" + url.QueryEscape(dir) + "&sslmode=disable"
+	if got := db.DSN(db.Database); got != want {
+		t.Errorf("DSN = %s, want %s", got, want)
+	}
+	if u, err := url.Parse(db.DSN("x")); err != nil || u.Query().Get("host") != dir || u.Path != "/x" {
+		t.Errorf("the DSN does not read back: %v %v", u, err)
+	}
+	// The kernel takes a socket path of 107 bytes at most.
+	t.Setenv("XDG_CACHE_HOME", "/"+strings.Repeat("c", 70))
+	if _, err := Parse([]byte(data)); err == nil || !strings.Contains(err.Error(), "over the 107 a unix socket allows") {
+		t.Errorf("a socket path too long: %v", err)
+	}
+}
+
 func TestParseTasksErrors(t *testing.T) {
 	cases := map[string]string{
 		"reserved name":     strings.Replace(tasksBase, "  lint:\n    desc", "  commit:\n    desc", 1),
@@ -98,6 +129,9 @@ func TestParseTasksErrors(t *testing.T) {
 		"service dotenv":    strings.Replace(tasksBase, "dotenv: all", "dotenv: some", 1),
 		"db name":           strings.Replace(tasksBase, "database: app_test", "database: app-test", 1),
 		"no password":       strings.Replace(tasksBase, "  password: app\n", "", 1),
+		"no port":           strings.Replace(tasksBase, "  port: 55432\n", "", 1),
+		"socket and port":   strings.Replace(tasksBase, "  port: 55432\n", "  port: 55432\n  socket: true\n", 1),
+		"socket dirs set":   strings.Replace(tasksBase, "  port: 55432\n", "  socket: true\n  settings: [unix_socket_directories=/tmp]\n", 1),
 		"tmpfs unit":        strings.Replace(tasksBase, "tmpfs: 2G", "tmpfs: 2gb", 1),
 		"tmpfs no unit":     strings.Replace(tasksBase, "tmpfs: 2G", "tmpfs: 2048", 1),
 		"tmpfs zero":        strings.Replace(tasksBase, "tmpfs: 2G", "tmpfs: 0g", 1),

@@ -5,11 +5,11 @@ gate:
   - task: smoke
 
 # Tests of the flags SQL adapter run against this container; graft passes
-# its DSN to test_db tasks.
+# its DSN to test_db tasks. A unix socket: no network device per container.
 test_db:
   image: postgres:18-alpine
   container: graft-test-pg
-  port: 55432
+  socket: true
   database: graft
   user: graft
   password: graft

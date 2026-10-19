@@ -81,6 +81,43 @@ func TestRunArgs(t *testing.T) {
 	}
 }
 
+// TestRunArgsSocket: a socket database runs without a network, so docker
+// gives it no veth on the host, and serves the socket in a bind mount next
+// to the image's own directory.
+func TestRunArgsSocket(t *testing.T) {
+	cfg := &config.TestDB{Image: "postgres:18-alpine", Container: "app-test-pg", Socket: true, SocketDir: "/c/graft/testdb/app-test-pg",
+		Settings: []string{"fsync=off"}}
+	want := []string{"run", "-d", "--name", "app-test-pg", "--restart", "unless-stopped",
+		"-e", "POSTGRES_USER", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB",
+		"--network", "none", "-v", "/c/graft/testdb/app-test-pg:/run/graft-testdb:z", "postgres:18-alpine",
+		"-c", "fsync=off", "-c", "unix_socket_directories=/var/run/postgresql,/run/graft-testdb"}
+	if got := (&DB{Cfg: cfg}).runArgs(nil); !slices.Equal(got, want) {
+		t.Errorf("\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestDriftListening(t *testing.T) {
+	tcp := &DB{Cfg: &config.TestDB{Port: 55432}}
+	sock := &DB{Cfg: &config.TestDB{Socket: true, SocketDir: "/c/s"}}
+	sockCmd := []string{"-c", "unix_socket_directories=/var/run/postgresql,/run/graft-testdb"}
+	for _, c := range []struct {
+		db   *DB
+		s    State
+		want string
+	}{
+		{tcp, State{Exists: true, Network: "bridge"}, ""},
+		{tcp, State{Exists: true, Network: "none"}, "listening (network none, the config asks for 127.0.0.1:55432)"},
+		{sock, State{Exists: true, Cmd: sockCmd, Network: "none", Binds: []string{"/c/s:/run/graft-testdb:z"}}, ""},
+		{sock, State{Exists: true, Cmd: sockCmd, Network: "bridge"}, "listening (network bridge, the config asks for a unix socket in /c/s)"},
+		{sock, State{Exists: true, Cmd: sockCmd, Network: "none", Binds: []string{"/old/s:/run/graft-testdb:z"}},
+			"listening (network none, binds /old/s:/run/graft-testdb:z, the config asks for a unix socket in /c/s)"},
+	} {
+		if got := c.db.Drift(c.s); got != c.want {
+			t.Errorf("%+v: drift %q, want %q", c.s, got, c.want)
+		}
+	}
+}
+
 // The image's entrypoint initializes the cluster with a server listening on
 // the socket only: readiness is asked over TCP, the way migrate connects.
 func TestReadyArgs(t *testing.T) {

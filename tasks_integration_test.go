@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -235,6 +236,23 @@ func checkNoOverlap(t *testing.T, log string) {
 			open = false
 		}
 	}
+}
+
+// shortCache is a user cache whose path leaves room for the socket of a
+// test database under it, which that of t.TempDir does not.
+func shortCache(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "gdb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
+// socketDSN is the DSN graft gives the tests of a socket database.
+func socketDSN(cache, container string) string {
+	return "postgres://app:app@/app_test?host=" + url.QueryEscape(filepath.Join(cache, "graft", "testdb", container)) + "&sslmode=disable"
 }
 
 func freePort(t *testing.T) int {
@@ -573,17 +591,16 @@ func TestTestDB(t *testing.T) {
 		t.Skip("set GRAFT_TEST_DOCKER=1 to run against docker")
 	}
 	container := fmt.Sprintf("graft-it-testdb-%d", os.Getpid())
-	port := freePort(t)
 	t.Cleanup(func() { exec.Command("docker", "rm", "-f", "-v", container).Run() })
 	f := tasksRepo(t, "", map[string]string{".env": "OTHER=1\nAPP_DSN=old\n"})
-	cache := filepath.Join(f.base, "cache")
+	cache := shortCache(t)
 	f.env = append(f.env, "XDG_CACHE_HOME="+cache, "LOCALAPPDATA="+cache)
 	out := f.path("out.txt")
 	psql := fmt.Sprintf("[docker, exec, %s, psql, -U, app, -d, app_test, -Atc, %%q]", container)
 	f.write(".graft.yaml", f.read(".graft.yaml")+fmt.Sprintf(`test_db:
   image: postgres:18-alpine
   container: %s
-  port: %d
+  socket: true
   database: app_test
   user: app
   password: app
@@ -593,7 +610,7 @@ tasks:
   test:
     test_db: true
     run: [%s, %s, %s]
-`, container, port, helperStep("append", out, "migrate", "${APP_DSN}"), helperStep("env", out, "APP_DSN"),
+`, container, helperStep("append", out, "migrate", "${APP_DSN}"), helperStep("env", out, "APP_DSN"),
 		fmt.Sprintf(psql, "show jit"), fmt.Sprintf(psql, "select count(*) from generate_series(1, 5000000)")))
 	if got := f.mustGraft("test"); !strings.Contains(got, "\noff\n") {
 		t.Errorf("jit is not off by default:\n%s", got)
@@ -608,13 +625,18 @@ tasks:
 	if task == nil || task.DBCPUS == nil || *task.DBCPUS <= 0 || task.DBMemMB == nil || *task.DBMemMB <= 0 {
 		t.Errorf("the task line has no database usage: %+v", task)
 	}
-	dsn := fmt.Sprintf("postgres://app:app@127.0.0.1:%d/app_test?sslmode=disable", port)
+	dsn := socketDSN(cache, container)
 	// ${APP_DSN} in migrate is the fresh DSN, not the stale one in .env.
 	if got := strings.Join(f.lines("out.txt"), ","); got != "migrate "+dsn+",APP_DSN="+dsn {
 		t.Errorf("out = %s", got)
 	}
 	if env := f.read(".env"); env != "OTHER=1\nAPP_DSN="+dsn+"\n" {
 		t.Errorf(".env:\n%s", env)
+	}
+	// No network: docker adds no veth to the host for the container.
+	if out, err := exec.Command("docker", "inspect", "--format", "{{.HostConfig.NetworkMode}}", container).Output(); err != nil ||
+		strings.TrimSpace(string(out)) != "none" {
+		t.Errorf("network mode %q: %v", out, err)
 	}
 	if st := f.mustGraft("testdb", "status"); !strings.Contains(st, container+" is running") {
 		t.Errorf("status:\n%s", st)
@@ -634,20 +656,20 @@ func TestTestDBPerMigrationSet(t *testing.T) {
 		t.Skip("set GRAFT_TEST_DOCKER=1 to run against docker")
 	}
 	container := fmt.Sprintf("graft-it-testdb-sets-%d", os.Getpid())
-	port := freePort(t)
 	t.Cleanup(func() { exec.Command("docker", "rm", "-f", "-v", container).Run() })
 	f := tasksRepo(t, "", map[string]string{"migrations/001_init.up.sql": "create table a();\n"})
+	f.env = append(f.env, "XDG_CACHE_HOME="+shortCache(t))
 	out := f.path("out.txt")
 	f.write(".graft.yaml", f.read(".graft.yaml")+fmt.Sprintf(`test_db:
   image: postgres:18-alpine
   container: %s
-  port: %d
+  socket: true
   database: app_test_source
   user: app
   password: app
   migrations: migrations
   migrate: %s
-`, container, port, helperStep("append", out, "${TEST_DB_DSN}")))
+`, container, helperStep("append", out, "${TEST_DB_DSN}")))
 	name := regexp.MustCompile(`/(app_test_[0-9a-f]{8}_source)\?`)
 	up := func() string {
 		t.Helper()
@@ -701,21 +723,22 @@ func TestTestDBMigrateOnFreshClone(t *testing.T) {
 		t.Skip("set GRAFT_TEST_DOCKER=1 to run against docker")
 	}
 	container := fmt.Sprintf("graft-it-testdb-fresh-%d", os.Getpid())
-	port := freePort(t)
 	t.Cleanup(func() { exec.Command("docker", "rm", "-f", "-v", container).Run() })
 	f := tasksRepo(t, "", nil)
+	cache := shortCache(t)
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache)
 	out := f.path("out.txt")
 	f.write(".graft.yaml", f.read(".graft.yaml")+fmt.Sprintf(`test_db:
   image: postgres:18-alpine
   container: %s
-  port: %d
+  socket: true
   database: app_test
   user: app
   password: app
   migrate: %s
-`, container, port, helperStep("append", out, "migrate", "--dsn=${TEST_DB_DSN}")))
+`, container, helperStep("append", out, "migrate", "--dsn=${TEST_DB_DSN}")))
 	f.mustGraft("testdb", "up")
-	dsn := fmt.Sprintf("postgres://app:app@127.0.0.1:%d/app_test?sslmode=disable", port)
+	dsn := socketDSN(cache, container)
 	if got := f.read("out.txt"); got != "migrate --dsn="+dsn+"\n" {
 		t.Errorf("migrate got %q", got)
 	}
@@ -731,22 +754,23 @@ func TestTestDBTmpfs(t *testing.T) {
 		t.Skip("set GRAFT_TEST_DOCKER=1 to run against docker")
 	}
 	container := fmt.Sprintf("graft-it-testdb-tmpfs-%d", os.Getpid())
-	port := freePort(t)
 	t.Cleanup(func() { exec.Command("docker", "rm", "-f", "-v", container).Run() })
 	f := tasksRepo(t, "", nil)
+	f.env = append(f.env, "XDG_CACHE_HOME="+shortCache(t))
 	base := f.read(".graft.yaml")
-	// migrate connects over TCP, as a real one does, and fails on a table
-	// that survived: it proves both readiness and an empty cluster.
+	// migrate connects over TCP in the container, which has its loopback
+	// without a network, and fails on a table that survived: it proves
+	// both readiness and an empty cluster.
 	conf := func(tmpfs string) string {
 		return base + fmt.Sprintf(`test_db:
   image: postgres:18-alpine
   container: %s
-  port: %d
+  socket: true
   database: app_test
   user: app
   password: app
 %s  migrate: [docker, exec, %s, psql, -h, 127.0.0.1, -U, app, -d, app_test, -v, ON_ERROR_STOP=1, -c, 'create table marker ()']
-`, container, port, tmpfs, container)
+`, container, tmpfs, container)
 	}
 	f.write(".graft.yaml", conf("  tmpfs: 256m\n"))
 	f.mustGraft("testdb", "up")
@@ -757,7 +781,9 @@ func TestTestDBTmpfs(t *testing.T) {
 		}
 		return strings.TrimSpace(string(out))
 	}
-	if got := inspect("{{json .HostConfig.Tmpfs}} {{len .Mounts}}"); got != `{"/var/lib/postgresql":"rw,size=256m"} 0` {
+	// The socket's directory is the only mount besides the tmpfs: no data
+	// volume on disk.
+	if got := inspect("{{json .HostConfig.Tmpfs}} {{range .Mounts}}{{.Type}}{{end}}"); got != `{"/var/lib/postgresql":"rw,size=256m"} bind` {
 		t.Errorf("tmpfs and mounts: %s", got)
 	}
 	if out, err := exec.Command("docker", "restart", container).CombinedOutput(); err != nil {

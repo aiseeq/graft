@@ -591,6 +591,7 @@ test_db:
   image: postgres:18-alpine
   container: app-test-pg
   port: 55432                    # published on 127.0.0.1 only
+  # socket: true                 # instead of port: a unix socket, no network (Linux)
   database: app_test
   user: app
   password: app                  # a throwaway local database
@@ -610,8 +611,8 @@ Otherwise graft starts the container (creating it if needed), waits for
 in step for tests started from an IDE. In `migrate`, `${<dsn_var>}` (say
 `${TEST_DB_DSN}`) is the DSN of the database just brought up, whatever `.env`
 holds; other `${KEY}` are looked up as usual. A container created with other
-settings or another `tmpfs` gets a warning; `graft testdb recreate` applies
-the config. `jit=off` is in the default settings since 2.15: a container
+settings, another `tmpfs` or listening elsewhere (`port` or `socket`) gets
+a warning; `graft testdb recreate` applies the config. `jit=off` is in the default settings since 2.15: a container
 made earlier without `settings` warns until it is recreated.
 
 With `migrations`, every set of migration files gets a database of its
@@ -625,6 +626,20 @@ is dropped, with the template and copies the testdb package made from it
 (`app_test_<hash>_template`, `app_test_<hash>_*`). `database` itself stays:
 it is the one the container starts with, and a DSN from the environment (a
 CI service container) may still name it.
+
+`socket: true` serves the database on a unix socket instead of a port. The
+container runs without a network (`docker run --network none`): a published
+port gives every container a network device on the host, a veth, created and
+removed with it, which network managers and SELinux log each time. The
+socket lives in `<user cache>/graft/testdb/<container>/` (bind-mounted with
+`:z` for SELinux), and the DSN names that directory in its `host` parameter,
+which libpq, pgx and lib/pq read:
+`postgres://app:app@/app_test?host=%2Fhome%2Fu%2F.cache%2Fgraft%2Ftestdb%2Fapp-test-pg&sslmode=disable`.
+`port` is then not used, and the path of the socket must fit in the 107 bytes
+Linux allows (graft refuses a config that does not). Tools in the container
+(`docker exec ... psql -h 127.0.0.1`) still reach the server over its
+loopback. Moving an existing container to the socket takes `graft testdb
+recreate`; `graft testdb down` removes the socket's directory too.
 
 `tmpfs` mounts a tmpfs of that size in place of the image's data volume
 (`/var/lib/postgresql` for postgres 18 and later, `/var/lib/postgresql/data`
