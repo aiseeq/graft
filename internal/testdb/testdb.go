@@ -237,7 +237,11 @@ func (d *DB) create(ctx context.Context) error {
 		}
 	}
 	cmd := exec.CommandContext(ctx, "docker", d.runArgs(volumes)...)
-	cmd.Env = append(os.Environ(), "POSTGRES_USER="+d.Cfg.User, "POSTGRES_PASSWORD="+d.Cfg.Password, "POSTGRES_DB="+d.Cfg.Database)
+	// initdb --no-sync: a cluster nothing needs to survive a crash of, as
+	// fsync=off already says, is ready in about a second and a half instead
+	// of eight on a busy disk.
+	cmd.Env = append(os.Environ(), "POSTGRES_USER="+d.Cfg.User, "POSTGRES_PASSWORD="+d.Cfg.Password, "POSTGRES_DB="+d.Cfg.Database,
+		"POSTGRES_INITDB_ARGS=--no-sync")
 	return runDocker(cmd)
 }
 
@@ -247,7 +251,7 @@ func (d *DB) create(ctx context.Context) error {
 // network device on the host, a veth, created and removed with it.
 func (d *DB) runArgs(tmpfsVolumes []string) []string {
 	args := []string{"run", "-d", "--name", d.Cfg.Container, "--restart", "unless-stopped",
-		"-e", "POSTGRES_USER", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB"}
+		"-e", "POSTGRES_USER", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB", "-e", "POSTGRES_INITDB_ARGS"}
 	if d.Cfg.Socket {
 		args = append(args, "--network", "none", "-v", d.socketBind())
 	} else {

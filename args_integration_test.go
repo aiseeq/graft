@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -240,13 +238,7 @@ func TestServiceLogsFollow(t *testing.T) {
 	}
 	f, _ := serviceRepo(t, "serve", "")
 	f.write("tmp/web.log", "old\n")
-	cmd := exec.Command(graftBin, "logs", "web", "-f", "--lines", "1")
-	cmd.Dir, cmd.Env = f.work, append(slices.Clone(testEnv), f.env...)
-	var out syncBuffer
-	cmd.Stdout, cmd.Stderr = &out, &out
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	cmd, out := f.start(f.work, "logs", "web", "-f", "--lines", "1")
 	waitFor(t, func() bool { return strings.Contains(out.String(), "old") })
 	logFile, err := os.OpenFile(f.path("tmp/web.log"), os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {

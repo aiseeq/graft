@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -171,10 +170,11 @@ tasks:
 func TestTaskLocks(t *testing.T) {
 	f := tasksRepo(t, "", nil)
 	log := f.path("log.txt")
+	release := filepath.Join(f.base, "release")
 	f.write(".graft.yaml", f.read(".graft.yaml")+`tasks:
   slow:
     lock: write
-    run: [`+helperStep("log", log, "1500")+`]
+    run: [`+helperStep("await", log, release)+`]
   outer:
     lock: write
     run: [{task: inner}]
@@ -193,15 +193,25 @@ func TestTaskLocks(t *testing.T) {
 		t.Errorf("read to write upgrade: exit %d\n%s", code, out)
 	}
 
-	var wg sync.WaitGroup
-	wg.Go(func() { f.mustGraft("slow") })
+	// The first slow holds the lock until release appears; the second
+	// waits for it, and only then is release written.
+	first, firstOut := f.start(f.work, "slow")
 	waitForFile(t, log)
 	locks := f.mustGraft("locks")
 	if !strings.Contains(locks, "lock work-tree held by graft slow") {
 		t.Errorf("locks while slow runs:\n%s", locks)
 	}
-	f.mustGraft("slow")
-	wg.Wait()
+	second, secondOut := f.start(f.work, "slow")
+	waitFor(t, func() bool { return strings.Contains(secondOut.String(), "graft: waiting for the write lock") })
+	writeFile(t, release, "")
+	for _, run := range []struct {
+		cmd *exec.Cmd
+		out *syncBuffer
+	}{{first, firstOut}, {second, secondOut}} {
+		if err := run.cmd.Wait(); err != nil {
+			t.Fatalf("slow: %v\n%s", err, run.out.String())
+		}
+	}
 	checkNoOverlap(t, f.read("log.txt"))
 	if locks := f.mustGraft("locks"); !strings.Contains(locks, "no locks held") {
 		t.Errorf("locks after:\n%s", locks)
@@ -357,10 +367,10 @@ func TestServiceStubbornIsKilled(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("no SIGTERM on Windows")
 	}
-	f, port := serviceRepo(t, "stubborn", "    stop_timeout: 1s\n")
+	f, port := serviceRepo(t, "stubborn", "    stop_timeout: 200ms\n")
 	f.mustGraft("start")
 	out := f.mustGraft("stop")
-	if !strings.Contains(out, "did not stop in 1s, killing it") || listeningOn(port) {
+	if !strings.Contains(out, "did not stop in 200ms, killing it") || listeningOn(port) {
 		t.Errorf("stop:\n%s", out)
 	}
 }
@@ -633,10 +643,11 @@ tasks:
 	if env := f.read(".env"); env != "OTHER=1\nAPP_DSN="+dsn+"\n" {
 		t.Errorf(".env:\n%s", env)
 	}
-	// No network: docker adds no veth to the host for the container.
-	if out, err := exec.Command("docker", "inspect", "--format", "{{.HostConfig.NetworkMode}}", container).Output(); err != nil ||
-		strings.TrimSpace(string(out)) != "none" {
-		t.Errorf("network mode %q: %v", out, err)
+	// No network: docker adds no veth to the host for the container. And a
+	// cluster initialized without syncing, which nothing needs.
+	if out, err := exec.Command("docker", "inspect", "--format", "{{.HostConfig.NetworkMode}} {{json .Config.Env}}", container).Output(); err != nil ||
+		!strings.HasPrefix(string(out), "none ") || !strings.Contains(string(out), `"POSTGRES_INITDB_ARGS=--no-sync"`) {
+		t.Errorf("network mode and env %q: %v", out, err)
 	}
 	if st := f.mustGraft("testdb", "status"); !strings.Contains(st, container+" is running") {
 		t.Errorf("status:\n%s", st)

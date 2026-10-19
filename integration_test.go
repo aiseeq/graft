@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -191,6 +190,21 @@ func (f *fixture) exec(dir, stdin, name string, args ...string) (string, int) {
 		f.t.Fatalf("%s: %v", name, err)
 	}
 	return out.String(), 0
+}
+
+// start runs graft in dir in the background; its output gathers in the
+// buffer while it runs.
+func (f *fixture) start(dir string, args ...string) (*exec.Cmd, *syncBuffer) {
+	f.t.Helper()
+	cmd := exec.Command(graftBin, args...)
+	cmd.Dir = dir
+	cmd.Env = append(slices.Clone(testEnv), f.env...)
+	out := &syncBuffer{}
+	cmd.Stdout, cmd.Stderr = out, out
+	if err := cmd.Start(); err != nil {
+		f.t.Fatal(err)
+	}
+	return cmd, out
 }
 
 func (f *fixture) mustGraft(args ...string) string {
@@ -432,33 +446,40 @@ func TestBinaryFileBlocked(t *testing.T) {
 }
 
 func TestConcurrentCommitsTakeTurns(t *testing.T) {
-	logFile := filepath.Join(t.TempDir(), "gate.log")
-	f := fileModeRepo(t, gateStep("log", logFile, "300"), "origin")
+	state := t.TempDir()
+	logFile, release := filepath.Join(state, "gate.log"), filepath.Join(state, "release")
+	f := fileModeRepo(t, gateStep("await", logFile, release), "origin")
+	writeFile(t, release, "")
 	f.mustGraft("commit", "-m", "feat: base")
 	// A second worktree shares the repository and therefore the lock, but has
 	// its own changes, so both commits have something to do.
 	other := filepath.Join(f.base, "other")
 	f.git("worktree", "add", "-q", "-b", "feature/PROJ-43-other", other)
 	f.write("a.txt", "a\n")
-	if err := os.WriteFile(filepath.Join(other, "b.txt"), []byte("b\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(logFile); err != nil {
-		t.Fatal(err)
+	writeFile(t, filepath.Join(other, "b.txt"), "b\n")
+	for _, done := range []string{logFile, release} {
+		if err := os.Remove(done); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	var wg sync.WaitGroup
-	results := make([]string, 2)
-	codes := make([]int, 2)
-	for i, dir := range []string{f.work, other} {
-		wg.Go(func() {
-			results[i], codes[i] = f.exec(dir, "", graftBin, "commit", "-m", fmt.Sprintf("feat: parallel %d", i))
-		})
+	// The first gate holds until one commit waits for the other's lock.
+	type run struct {
+		cmd *exec.Cmd
+		out *syncBuffer
 	}
-	wg.Wait()
-	for i := range codes {
-		if codes[i] != 0 {
-			t.Fatalf("commit %d: exit %d\n%s", i, codes[i], results[i])
+	var runs []run
+	for i, dir := range []string{f.work, other} {
+		cmd, out := f.start(dir, "commit", "-m", fmt.Sprintf("feat: parallel %d", i))
+		runs = append(runs, run{cmd, out})
+	}
+	waitFor(t, func() bool {
+		return strings.Contains(runs[0].out.String()+runs[1].out.String(), "waiting for the write lock graft.lock")
+	})
+	writeFile(t, release, "")
+	for i, r := range runs {
+		if err := r.cmd.Wait(); err != nil {
+			t.Fatalf("commit %d: %v\n%s", i, err, r.out.String())
 		}
 	}
 
@@ -474,9 +495,6 @@ func TestConcurrentCommitsTakeTurns(t *testing.T) {
 	}
 	if !slices.Equal(events, []string{"start", "end", "start", "end"}) {
 		t.Errorf("gates overlapped: %v\n%s", events, data)
-	}
-	if !strings.Contains(results[0]+results[1], "waiting for the write lock graft.lock") {
-		t.Errorf("no process waited for the lock:\n%s\n%s", results[0], results[1])
 	}
 }
 

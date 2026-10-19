@@ -41,18 +41,19 @@ func WatchCgroup(dir string) *CgroupWatch {
 				w.sample.Err = fmt.Errorf("following the cgroup panicked: %v", p)
 			}
 		}()
-		w.sample = followCgroup(dir, w.stop)
+		t := time.NewTicker(watchInterval)
+		defer t.Stop()
+		w.sample = followCgroup(dir, w.stop, t.C)
 	}()
 	return w
 }
 
-func followCgroup(dir string, stop <-chan struct{}) DBSample {
+// followCgroup reads the memory at once and on every tick until stop.
+func followCgroup(dir string, stop <-chan struct{}, tick <-chan time.Time) DBSample {
 	start, err := cgroupCPU(dir)
 	if err != nil {
 		return DBSample{Err: err}
 	}
-	t := time.NewTicker(watchInterval)
-	defer t.Stop()
 	var s DBSample
 	for {
 		mem, err := cgroupMemory(dir)
@@ -68,7 +69,7 @@ func followCgroup(dir string, stop <-chan struct{}) DBSample {
 			}
 			s.CPU = end - start
 			return s
-		case <-t.C:
+		case <-tick:
 		}
 	}
 }

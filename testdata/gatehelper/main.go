@@ -6,6 +6,7 @@
 //	gatehelper failif <file>      exit 1 if file exists
 //	gatehelper touch <file>       create file
 //	gatehelper log <file> <ms>    append start and end timestamps around a sleep
+//	gatehelper await <file> <release> append start, wait for release to exist, append end
 //	gatehelper append <file> <w>... append the words as one line
 //	gatehelper env <file> <key>...  append KEY=value, or KEY unset, per key
 //	gatehelper serve <addr>         listen on addr until terminated
@@ -59,6 +60,19 @@ func run(args []string) error {
 			return err
 		}
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+		return appendLine(args[1], stamp("end"))
+	case "await":
+		if err := appendLine(args[1], stamp("start")); err != nil {
+			return err
+		}
+		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			if _, err := os.Stat(args[2]); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("await: %s did not appear", args[2])
+			}
+		}
 		return appendLine(args[1], stamp("end"))
 	case "append":
 		return appendLine(args[1], strings.Join(args[2:], " "))

@@ -25,15 +25,23 @@ func TestWatchCgroup(t *testing.T) {
 	}
 	write("cpu.stat", "usage_usec 1000000\nuser_usec 600000\n")
 	write("memory.current", "1048576\n")
-	w := WatchCgroup(dir)
-	time.Sleep(2 * watchInterval)
+	// The test ticks: a tick is taken only between two readings, so the
+	// second of two ticks after a write proves a reading of it.
+	stop, tick := make(chan struct{}), make(chan time.Time)
+	done := make(chan DBSample)
+	go func() { done <- followCgroup(dir, stop, tick) }()
+	tick <- time.Time{}
 	write("memory.current", "3145728\n")
-	time.Sleep(2 * watchInterval)
+	tick <- time.Time{}
+	tick <- time.Time{}
 	write("memory.current", "2097152\n")
 	write("cpu.stat", "usage_usec 3500000\nuser_usec 900000\n")
-	s := w.Stop()
-	if s.Err != nil || s.CPU != 2500*time.Millisecond || s.Mem != 3<<20 {
+	close(stop)
+	if s := <-done; s.Err != nil || s.CPU != 2500*time.Millisecond || s.Mem != 3<<20 {
 		t.Errorf("sample %+v", s)
+	}
+	if s := WatchCgroup(dir).Stop(); s.Err != nil || s.Mem != 2<<20 {
+		t.Errorf("the watch: %+v", s)
 	}
 	if s := WatchCgroup(filepath.Join(dir, "gone")).Stop(); s.Err == nil {
 		t.Error("a missing cgroup gave no error")

@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -81,40 +80,50 @@ func TestCommitLockScope(t *testing.T) {
 	for _, scope := range []string{"repository", "worktree"} {
 		t.Run(scope, func(t *testing.T) {
 			state := t.TempDir()
+			release := filepath.Join(state, "release")
 			f := newRepo(t, map[string]string{
 				".graft.yaml": "schema: 1\nversion:\n  mode: none\nlock:\n  timeout: 300ms\n  scope: " + scope + "\ngate:\n" +
-					gateStep("log", filepath.Join(state, "gate.log"), "1500"),
+					gateStep("await", filepath.Join(state, "gate.log"), release),
 			}, "origin")
+			// The base commit's gate passes at once; only the first
+			// commit's gate holds, until release appears.
+			writeFile(t, release, "")
 			f.mustGraft("commit", "-m", "feat: base")
-			// The base commit ran the gate too; only the first commit's run counts.
-			if err := os.Remove(filepath.Join(state, "gate.log")); err != nil {
-				t.Fatal(err)
+			for _, done := range []string{"gate.log", "release"} {
+				if err := os.Remove(filepath.Join(state, done)); err != nil {
+					t.Fatal(err)
+				}
 			}
 			second := filepath.Join(f.base, "second")
 			f.git("worktree", "add", "-q", "-b", "w/two", second)
 
 			f.write("a.txt", "a\n")
-			var wg sync.WaitGroup
-			var firstOut string
-			var firstCode int
-			wg.Go(func() { firstOut, firstCode = f.graft("", "commit", "-m", "feat: first") })
+			first, firstOut := f.start(f.work, "commit", "-m", "feat: first")
 			// The first gate has started, so the first commit holds its lock.
 			waitForFile(t, filepath.Join(state, "gate.log"))
 			writeFile(t, filepath.Join(second, "b.txt"), "b\n")
-			out, code := f.exec(second, "", graftBin, "commit", "-m", "feat: second")
-			wg.Wait()
-			if firstCode != 0 {
-				t.Fatalf("first commit: %d\n%s", firstCode, firstOut)
-			}
 			switch scope {
 			case "repository":
+				out, code := f.exec(second, "", graftBin, "commit", "-m", "feat: second")
 				if code == 0 || !strings.Contains(out, "still held") {
 					t.Errorf("second worktree did not wait for the repository lock: %d\n%s", code, out)
 				}
+				writeFile(t, release, "")
 			case "worktree":
-				if code != 0 {
-					t.Errorf("second worktree blocked: %d\n%s", code, out)
+				// Both gates run at once: the second commit took its
+				// worktree's lock while the first holds its own.
+				cmd, out := f.start(second, "commit", "-m", "feat: second")
+				waitFor(t, func() bool {
+					log, _ := os.ReadFile(filepath.Join(state, "gate.log")) // not there yet reads as empty
+					return strings.Count(string(log), "start") == 2
+				})
+				writeFile(t, release, "")
+				if err := cmd.Wait(); err != nil {
+					t.Errorf("second commit: %v\n%s", err, out.String())
 				}
+			}
+			if err := first.Wait(); err != nil {
+				t.Fatalf("first commit: %v\n%s", err, firstOut.String())
 			}
 		})
 	}

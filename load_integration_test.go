@@ -42,7 +42,7 @@ tasks:
 	loadavg := filepath.Join(state, "loadavg")
 	writeFile(t, loadavg, "30.50 20.00 10.00 3/400 1234\n")
 	cfgDir := t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms}\n")
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms, swap_window: 10ms}\n")
 	f.env = append(append(f.env, "XDG_CONFIG_HOME="+cfgDir, "GRAFT_LOADAVG="+loadavg, "XDG_CACHE_HOME="+t.TempDir()), calmMachine(t)...)
 
 	read := func() string {
@@ -57,14 +57,7 @@ tasks:
 		t.Fatalf("a light task under load: %q", got)
 	}
 
-	cmd := exec.Command(graftBin, "build")
-	cmd.Dir = f.work
-	cmd.Env = append(slices.Clone(testEnv), f.env...)
-	log := &syncBuffer{}
-	cmd.Stdout, cmd.Stderr = log, log
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	cmd, log := f.start(f.work, "build")
 	waitFor(t, func() bool { return strings.Contains(log.String(), "waiting") })
 	if got := read(); got != "light\n" {
 		t.Errorf("the heavy task ran at load 30.50: %q", got)
@@ -94,7 +87,7 @@ func TestHeavyTaskWaitIsRecorded(t *testing.T) {
 	loadavg := filepath.Join(t.TempDir(), "loadavg")
 	writeFile(t, loadavg, "30.50 20.00 10.00 3/400 1234\n")
 	cfgDir, cache := t.TempDir(), t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {poll: 20ms, settle: 10ms}\n")
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {poll: 20ms, settle: 10ms, swap_window: 10ms}\n")
 	f.env = append(append(f.env, "XDG_CONFIG_HOME="+cfgDir, "GRAFT_LOADAVG="+loadavg, "XDG_CACHE_HOME="+cache), calmMachine(t)...)
 	cmd := exec.Command(graftBin, "outer")
 	cmd.Dir = f.work
@@ -134,7 +127,7 @@ func TestDeployPrioritySkipsTheQueue(t *testing.T) {
 	loadavg := filepath.Join(t.TempDir(), "loadavg")
 	writeFile(t, loadavg, "30.00 20.00 10.00 3/400 1234\n")
 	cfgDir := t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {poll: 20ms, settle: 1h}\n")
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {poll: 20ms, settle: 1h, swap_window: 10ms}\n")
 	cache := t.TempDir()
 	f.env = append(append(f.env, "XDG_CONFIG_HOME="+cfgDir, "GRAFT_LOADAVG="+loadavg, "XDG_CACHE_HOME="+cache), calmMachine(t)...)
 	queued := exec.Command(graftBin, "build")

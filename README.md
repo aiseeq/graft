@@ -613,7 +613,9 @@ in step for tests started from an IDE. In `migrate`, `${<dsn_var>}` (say
 holds; other `${KEY}` are looked up as usual. A container created with other
 settings, another `tmpfs` or listening elsewhere (`port` or `socket`) gets
 a warning; `graft testdb recreate` applies the config. `jit=off` is in the default settings since 2.15: a container
-made earlier without `settings` warns until it is recreated.
+made earlier without `settings` warns until it is recreated. graft creates the container with `initdb --no-sync`
+(`POSTGRES_INITDB_ARGS`): nothing in the cluster needs to survive a crash, and
+a busy disk takes some 8 seconds to sync a fresh one, against 1.5 without.
 
 With `migrations`, every set of migration files gets a database of its
 own: `app_test_source` becomes `app_test_<hash>_source`, the hash of the

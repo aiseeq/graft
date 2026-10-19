@@ -100,10 +100,11 @@ func TestCloningLeavesTemplateReadersAlone(t *testing.T) {
 	db.ensureTemplate(t)
 	stop := make(chan struct{})
 	errCh := make(chan error, 8)
+	read := make(chan struct{}, 8)
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Go(func() {
-			for {
+			for first := true; ; first = false {
 				select {
 				case <-stop:
 					return
@@ -113,10 +114,22 @@ func TestCloningLeavesTemplateReadersAlone(t *testing.T) {
 					errCh <- err
 					return
 				}
+				if first {
+					read <- struct{}{}
+				}
 			}
 		})
 	}
-	for range 20 {
+	// Every reader is at work before the copies: a copy that terminated
+	// them fails the test from the first one on.
+	for range 8 {
+		select {
+		case <-read:
+		case err := <-errCh:
+			t.Fatalf("a template reader: %v", err)
+		}
+	}
+	for range 3 {
 		db.NewDSN(t)
 	}
 	close(stop)

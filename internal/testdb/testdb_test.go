@@ -69,13 +69,13 @@ func TestDriftTmpfs(t *testing.T) {
 func TestRunArgs(t *testing.T) {
 	cfg := &config.TestDB{Image: "postgres:18-alpine", Container: "app-test-pg", Port: 55432, Settings: []string{"fsync=off"}}
 	want := []string{"run", "-d", "--name", "app-test-pg", "--restart", "unless-stopped",
-		"-e", "POSTGRES_USER", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB",
+		"-e", "POSTGRES_USER", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB", "-e", "POSTGRES_INITDB_ARGS",
 		"-p", "127.0.0.1:55432:5432", "postgres:18-alpine", "-c", "fsync=off"}
 	if got := (&DB{Cfg: cfg}).runArgs(nil); !slices.Equal(got, want) {
 		t.Errorf("on disk:\n got %q\nwant %q", got, want)
 	}
 	cfg.Tmpfs = "2g"
-	want = slices.Insert(want, 14, "--tmpfs", "/var/lib/postgresql:rw,size=2g", "--tmpfs", "/x:rw,size=2g")
+	want = slices.Insert(want, 16, "--tmpfs", "/var/lib/postgresql:rw,size=2g", "--tmpfs", "/x:rw,size=2g")
 	if got := (&DB{Cfg: cfg}).runArgs([]string{"/var/lib/postgresql", "/x"}); !slices.Equal(got, want) {
 		t.Errorf("tmpfs:\n got %q\nwant %q", got, want)
 	}
@@ -88,7 +88,7 @@ func TestRunArgsSocket(t *testing.T) {
 	cfg := &config.TestDB{Image: "postgres:18-alpine", Container: "app-test-pg", Socket: true, SocketDir: "/c/graft/testdb/app-test-pg",
 		Settings: []string{"fsync=off"}}
 	want := []string{"run", "-d", "--name", "app-test-pg", "--restart", "unless-stopped",
-		"-e", "POSTGRES_USER", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB",
+		"-e", "POSTGRES_USER", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB", "-e", "POSTGRES_INITDB_ARGS",
 		"--network", "none", "-v", "/c/graft/testdb/app-test-pg:/run/graft-testdb:z", "postgres:18-alpine",
 		"-c", "fsync=off", "-c", "unix_socket_directories=/var/run/postgresql,/run/graft-testdb"}
 	if got := (&DB{Cfg: cfg}).runArgs(nil); !slices.Equal(got, want) {
