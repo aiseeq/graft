@@ -212,6 +212,8 @@ func TestGoTestsAreRecordedPerTest(t *testing.T) {
 		"PACKAGE TEST TREES FAILED PASSED",
 		"example.com/p TestFlaky 1 1 1",
 		"example.com/p TestTable 1 1 1",
+		"flaky tasks: failed, then passed when the graft that ran them ran them again",
+		"none",
 	}
 	if strings.Join(rows(report), "\n") != strings.Join(wantRows, "\n") {
 		t.Errorf("graft stats --tests:\n%s\nwant\n%s", strings.Join(rows(report), "\n"), strings.Join(wantRows, "\n"))

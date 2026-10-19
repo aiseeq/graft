@@ -47,7 +47,7 @@ func (a *App) Stats(o StatsOptions) error {
 		where = f.Project
 	}
 	if o.Tests {
-		return a.statsTests(stats.TestsPath(path), stats.TestFilter{Since: since, Project: f.Project, Task: o.Task, MaxLoad: o.MaxLoad}, where+calmNote(o.MaxLoad))
+		return a.statsTests(path, stats.TestFilter{Since: since, Project: f.Project, Task: o.Task, MaxLoad: o.MaxLoad}, where+calmNote(o.MaxLoad))
 	}
 	recs, malformed, err := stats.Load(path)
 	if err != nil {
@@ -84,8 +84,11 @@ func calmNote(maxLoad float64) string {
 	return fmt.Sprintf(", runs with the load below %v", maxLoad)
 }
 
-// statsTests prints the slowest tests and packages and the flaky tests.
-func (a *App) statsTests(path string, f stats.TestFilter, where string) error {
+// statsTests prints the slowest tests and packages, the flaky tests and the
+// tasks a graft reran to a pass; statsPath is the stats file, the tests
+// file beside it.
+func (a *App) statsTests(statsPath string, f stats.TestFilter, where string) error {
+	path := stats.TestsPath(statsPath)
 	runs, malformed, err := stats.LoadTests(path)
 	if err != nil {
 		return err
@@ -93,13 +96,21 @@ func (a *App) statsTests(path string, f stats.TestFilter, where string) error {
 	if malformed > 0 {
 		fmt.Fprintf(a.Stderr, "graft: %s: %d malformed line(s) left out\n", path, malformed)
 	}
+	recs, malformed, err := stats.Load(statsPath)
+	if err != nil {
+		return err
+	}
+	if malformed > 0 {
+		fmt.Fprintf(a.Stderr, "graft: %s: %d malformed line(s) left out\n", statsPath, malformed)
+	}
 	what := "tests"
 	if f.Task != "" {
 		what = "tests of task " + f.Task
 	}
 	a.printf("%s in %s since %s, the %d slowest by median", what, where, f.Since.Format("2006-01-02 15:04"), testsLimit)
 	rep := stats.SummarizeTests(runs, f, testsLimit)
-	if len(rep.Packages) == 0 {
+	rep.Reruns = stats.Reruns(recs, f)
+	if len(rep.Packages) == 0 && len(rep.Reruns) == 0 {
 		a.printf("nothing recorded (%s); a task records its tests with tests: go", path)
 		return nil
 	}

@@ -372,3 +372,36 @@ func TestStatsNestedGraft(t *testing.T) {
 		t.Errorf("the breakdown names the inner graft's outermost task alone:\n%s", out)
 	}
 }
+
+// TestStatsRerunsAreFlaky: a task that a script around graft reran after it
+// failed, and that then passed, is a flaky task; two runs by hand are not a
+// rerun, nor is a task that failed every time.
+func TestStatsRerunsAreFlaky(t *testing.T) {
+	f, _ := statsRepo(t, "tasks:\n"+
+		"  retrying:\n    run:\n      - "+helperStep("touch", "m")+"\n      - {sh: 'graft flaky || { rm m; graft flaky; }'}\n"+
+		"  hopeless:\n    run: [{sh: 'graft broken || graft broken'}]\n"+
+		"  flaky:\n    run: ["+helperStep("failif", "m")+"]\n"+
+		"  broken:\n    run: ["+helperStep("fail")+"]\n"+
+		"  manual:\n    run: ["+helperStep("failif", "m")+"]\n")
+	f.mustGraft("retrying")
+	if _, code := f.graft("", "hopeless"); code == 0 {
+		t.Fatal("hopeless passed")
+	}
+	f.write("m", "")
+	if _, code := f.graft("", "manual"); code == 0 {
+		t.Fatal("manual passed with m")
+	}
+	if err := os.Remove(f.path("m")); err != nil {
+		t.Fatal(err)
+	}
+	f.mustGraft("manual")
+	out := strings.Join(strings.Fields(f.mustGraft("stats", "--tests")), " ")
+	if !strings.Contains(out, "flaky tasks: failed, then passed when the graft that ran them ran them again TASK RUNS FAILED flaky 1 1") {
+		t.Errorf("the rerun is not a flaky task:\n%s", out)
+	}
+	for _, task := range []string{"broken", "manual"} {
+		if strings.Contains(out, " "+task+" 1") {
+			t.Errorf("%s is not a rerun to a pass:\n%s", task, out)
+		}
+	}
+}

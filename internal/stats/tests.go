@@ -140,6 +140,8 @@ type FlakyRow struct {
 type TestReport struct {
 	Tests, Packages []TimingRow
 	Flaky           []FlakyRow
+	// Reruns are the tasks a graft reran to a pass (Reruns).
+	Reruns []RerunRow
 }
 
 // testKey names a test, or with Test empty a package, of a project.
@@ -279,7 +281,7 @@ func cmpFloat(a, b float64) int {
 	return 0
 }
 
-// RenderTests prints the report as three tables; withProject adds the
+// RenderTests prints the report as four tables; withProject adds the
 // project column.
 func RenderTests(w io.Writer, rep TestReport, withProject bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
@@ -311,12 +313,13 @@ func RenderTests(w io.Writer, rep TestReport, withProject bool) error {
 	fmt.Fprintln(tw, "\nflaky: failed and passed on the same tree")
 	if len(rep.Flaky) == 0 {
 		fmt.Fprintln(tw, "none")
-		return tw.Flush()
+	} else {
+		header("PACKAGE\tTEST\tTREES\tFAILED\tPASSED")
 	}
-	header("PACKAGE\tTEST\tTREES\tFAILED\tPASSED")
 	for _, r := range rep.Flaky {
 		project(r.Project)
 		fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d\n", r.Package, r.Test, r.Trees, r.Failed, r.Passed)
 	}
+	renderReruns(tw, rep.Reruns, withProject)
 	return tw.Flush()
 }

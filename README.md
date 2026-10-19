@@ -509,8 +509,13 @@ top-level tests and packages by median wall time, with their runs, maximum
 and share of failed runs, and the flaky tests: those that both failed and
 passed on the same tree, with how many trees saw that. A test that fails
 after a change and passes after the next one is not flaky; the same code
-failing and passing is. `--since`, `--project`, `--all` and `--task` select
-the runs as above.
+failing and passing is. The flaky tasks follow: a task that failed and then
+passed under the same graft, as when a test script run by a task reruns a
+failed stage `graft e2e`, is a retry that hides a flake the way a test
+runner's retry does; the table counts the runs of the outer graft that did
+it and the failed attempts. Two runs by hand are not a rerun, and lines
+written before graft 2.19 carry no run to tell. `--since`, `--project`,
+`--all` and `--task` select the runs as above.
 
 `--max-load 16`, in both reports, counts only the runs whose `load_max`
 stayed below 16; runs recorded without a load are left out with them.
