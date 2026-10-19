@@ -459,14 +459,17 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 	if t.Heavy {
 		// A heavy task inside a heavy task was admitted with it.
 		if r.heavy == 0 {
-			if err := r.admit(ctx, name); err != nil {
+			waited, err := r.admit(ctx, name)
+			r.waited(waited)
+			if err != nil {
 				return err
 			}
 		}
 		r.heavy++
 		defer func() { r.heavy-- }()
 	}
-	release, err := r.lock(ctx, name, t.Lock)
+	release, waited, err := r.lock(ctx, name, t.Lock)
+	r.waited(waited)
 	if err != nil {
 		return err
 	}
@@ -904,17 +907,26 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-// admit waits until the machine takes a heavy task.
-func (r *Runner) admit(ctx context.Context, name string) error {
+// admit waits until the machine takes a heavy task and returns how long it
+// waited.
+func (r *Runner) admit(ctx context.Context, name string) (time.Duration, error) {
 	l, err := r.Load()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	cache, err := os.UserCacheDir()
 	if err != nil {
-		return fmt.Errorf("locating the cache for the load queue: %w", err)
+		return 0, fmt.Errorf("locating the cache for the load queue: %w", err)
 	}
-	return loadgate.Wait(ctx, name, l, filepath.Join(cache, "graft", "load.lock"), r.Stderr)
+	return loadgate.Wait(ctx, name, os.Getenv(loadgate.EnvPriority), l, filepath.Join(cache, "graft", "load.lock"), r.Stderr)
+}
+
+// waited adds a wait before a task's steps to every running task: the
+// task's own and those it runs under, whose wall time holds it too.
+func (r *Runner) waited(d time.Duration) {
+	for _, f := range r.frames {
+		f.use.Wait += d
+	}
 }
 
 // ThreadsEnv carries the user config's load.threads into a heavy task.
@@ -946,16 +958,17 @@ func (r *Runner) threads(s config.Step, t *config.Task) (config.Step, string, er
 // Hold takes a named lock for who the way a task's lock is taken, so tasks
 // run while it is held reuse it instead of waiting for it.
 func (r *Runner) Hold(ctx context.Context, who string, l *config.TaskLock) (func() error, error) {
-	return r.lock(ctx, who, l)
+	release, _, err := r.lock(ctx, who, l)
+	return release, err
 }
 
 // lock takes the task's named lock. A lock this invocation already holds is
 // reused: a task inside a task under the same lock would otherwise wait for
 // itself. Upgrading read to write is refused for the same reason.
-func (r *Runner) lock(ctx context.Context, task string, l *config.TaskLock) (func() error, error) {
+func (r *Runner) lock(ctx context.Context, task string, l *config.TaskLock) (release func() error, waited time.Duration, err error) {
 	noop := func() error { return nil }
 	if l == nil {
-		return noop, nil
+		return noop, 0, nil
 	}
 	mode := lock.Shared
 	if l.Mode == "write" {
@@ -963,17 +976,17 @@ func (r *Runner) lock(ctx context.Context, task string, l *config.TaskLock) (fun
 	}
 	if held, ok := r.held[l.Name]; ok {
 		if held == lock.Shared && mode == lock.Exclusive {
-			return nil, fmt.Errorf("task %s needs the %s lock for writing, but it is held for reading by an outer task", task, l.Name)
+			return nil, 0, fmt.Errorf("task %s needs the %s lock for writing, but it is held for reading by an outer task", task, l.Name)
 		}
-		return noop, nil
+		return noop, 0, nil
 	}
 	lk, err := lock.AcquireMode(ctx, filepath.Join(r.LockDir, l.Name+".lock"), mode, r.Config.Lock.Timeout, "graft "+task, r.Stderr)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	r.held[l.Name] = mode
 	return func() error {
 		delete(r.held, l.Name)
 		return lk.Release()
-	}, nil
+	}, lk.Waited, nil
 }

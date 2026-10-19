@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 	"slices"
-	"strings"
+	"sort"
 	"text/tabwriter"
 	"time"
 )
@@ -83,7 +83,10 @@ type Row struct {
 	Runs    int
 	WallMed float64
 	WallMax float64
-	CPUMed  float64
+	// WaitMed and WaitMax are of the waits before the steps, part of the
+	// wall time.
+	WaitMed, WaitMax float64
+	CPUMed           float64
 	// MaxRSSMB is the largest peak of a run; nil when none was reported.
 	MaxRSSMB *float64
 	// TreeMemMB is the largest peak of a run's process tree as a whole;
@@ -204,20 +207,19 @@ func runLabel(r *Record, f Filter, runs map[string]bool) (string, bool) {
 // sortRows puts the heaviest in memory first; broken down, the whole-task
 // row leads.
 func sortRows(rows []Row, brokenDown bool) {
-	slices.SortStableFunc(rows, func(a, b Row) int {
+	// By index: a Row is too large to copy per comparison.
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := &rows[i], &rows[j]
 		if (a.Label == TaskLabel) != (b.Label == TaskLabel) && brokenDown {
-			if a.Label == TaskLabel {
-				return -1
-			}
-			return 1
+			return a.Label == TaskLabel
 		}
 		if c := compareRSS(b.TreeMemMB, a.TreeMemMB); c != 0 {
-			return c
+			return c < 0
 		}
 		if c := compareRSS(b.MaxRSSMB, a.MaxRSSMB); c != 0 {
-			return c
+			return c < 0
 		}
-		return strings.Compare(a.Project+"\x00"+a.Label, b.Project+"\x00"+b.Label)
+		return a.Project+"\x00"+a.Label < b.Project+"\x00"+b.Label
 	})
 }
 
@@ -240,13 +242,16 @@ func compareRSS(a, b *float64) int {
 func summarize(project, label string, recs []Record) Row {
 	row := Row{Project: project, Label: label, Runs: len(recs)}
 	walls := make([]float64, 0, len(recs))
+	waits := make([]float64, 0, len(recs))
 	cpus := make([]float64, 0, len(recs))
 	var dbCPUs []float64
 	for i := range recs {
 		r := &recs[i]
 		walls = append(walls, r.WallS)
+		waits = append(waits, r.WaitS)
 		cpus = append(cpus, r.UserS+r.SysS)
 		row.WallMax = max(row.WallMax, r.WallS)
+		row.WaitMax = max(row.WaitMax, r.WaitS)
 		row.MaxRSSMB = larger(row.MaxRSSMB, r.MaxRSSMB)
 		row.TreeMemMB = larger(row.TreeMemMB, r.TreeMemMB)
 		row.DBMemMB = larger(row.DBMemMB, r.DBMemMB)
@@ -258,6 +263,7 @@ func summarize(project, label string, recs []Record) Row {
 		}
 	}
 	row.WallMed = median(walls)
+	row.WaitMed = median(waits)
 	row.CPUMed = median(cpus)
 	if len(dbCPUs) > 0 {
 		m := median(dbCPUs)
@@ -310,12 +316,20 @@ func FormatSaved(s Saved) string {
 }
 
 // Render prints rows as a table; labelHeader names the first column after
-// the project, which is shown when withProject is set. The test database's
-// columns come last, when a row has them.
+// the project, which is shown when withProject is set. The waits follow the
+// wall time and the test database's columns come last, when a row has them.
 func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	withDB := slices.ContainsFunc(rows, func(r Row) bool { return r.DBCPUMed != nil })
-	header := labelHeader + "\tRUNS\tWALL MED\tWALL MAX\tCPU MED\tTREE MEM\tMEM MAX\tFAILED\tSAVED"
+	var withDB, withWait bool
+	for i := range rows {
+		withDB = withDB || rows[i].DBCPUMed != nil
+		withWait = withWait || rows[i].WaitMax > 0
+	}
+	header := labelHeader + "\tRUNS\tWALL MED\tWALL MAX"
+	if withWait {
+		header += "\tWAIT MED\tWAIT MAX"
+	}
+	header += "\tCPU MED\tTREE MEM\tMEM MAX\tFAILED\tSAVED"
 	if withProject {
 		header = "PROJECT\t" + header
 	}
@@ -323,7 +337,8 @@ func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error
 		header += "\tDB CPU\tDB MEM"
 	}
 	fmt.Fprintln(tw, header)
-	for _, r := range rows {
+	for i := range rows {
+		r := &rows[i]
 		if withProject {
 			fmt.Fprintf(tw, "%s\t", r.Project)
 		}
@@ -331,8 +346,11 @@ func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error
 		if r.Hits > 0 {
 			saved = fmt.Sprintf("%s in %d", formatSeconds(r.SavedS), r.Hits)
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%d%%\t%s", r.Label, r.Runs,
-			formatSeconds(r.WallMed), formatSeconds(r.WallMax), formatSeconds(r.CPUMed),
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s", r.Label, r.Runs, formatSeconds(r.WallMed), formatSeconds(r.WallMax))
+		if withWait {
+			fmt.Fprintf(tw, "\t%s\t%s", formatSeconds(r.WaitMed), formatSeconds(r.WaitMax))
+		}
+		fmt.Fprintf(tw, "\t%s\t%s\t%s\t%d%%\t%s", formatSeconds(r.CPUMed),
 			formatMB(r.TreeMemMB), formatMB(r.MaxRSSMB), (r.Failed*100+r.Runs/2)/r.Runs, saved)
 		if withDB {
 			dbCPU := "-"

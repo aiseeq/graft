@@ -22,6 +22,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/jira"
+	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/tasks"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
@@ -115,6 +116,13 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 	}
 	if err := deployPreflight(r); err != nil {
 		return err
+	}
+	// Its heavy tasks, and those of every graft its script starts, skip
+	// the queue of heavy tasks; a deploy inside a deploy keeps the outer's.
+	if os.Getenv(loadgate.EnvPriority) == "" {
+		if err := os.Setenv(loadgate.EnvPriority, "graft deploy "+o.Target); err != nil {
+			return fmt.Errorf("setting %s: %w", loadgate.EnvPriority, err)
+		}
 	}
 	path := filepath.Join(r.repo.CommonDir, "graft-locks", "deploy-"+o.Target+".lock")
 	lk, err := lock.AcquireMode(ctx, path, lock.Exclusive, r.cfg.Lock.Timeout, "graft deploy "+o.Target, a.Stderr)

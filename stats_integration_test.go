@@ -31,6 +31,7 @@ type statsLine struct {
 	LoadMax  *float64  `json:"load_max"`
 	DBCPUS   *float64  `json:"db_cpu_s"`
 	DBMemMB  *float64  `json:"db_mem_mb"`
+	WaitS    float64   `json:"wait_s"`
 	Exit     int       `json:"exit"`
 	Run      string    `json:"run"`
 	Parent   string    `json:"parent"`

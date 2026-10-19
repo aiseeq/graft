@@ -79,6 +79,11 @@ type Record struct {
 	// did not start the container or cannot see its cgroup.
 	DBCPUS  *float64 `json:"db_cpu_s,omitempty"`
 	DBMemMB *float64 `json:"db_mem_mb,omitempty"`
+	// WaitS is, on a task line, how long the task and the tasks it ran
+	// waited before their steps: in the queue of heavy tasks for the load
+	// (load gate) and for their locks. WallS includes it. Absent when
+	// nothing waited, and in lines written before graft 2.21.
+	WaitS float64 `json:"wait_s,omitempty"`
 	// Exit is the exit status; -1 when there is none (killed by a signal, or
 	// a task that failed outside its processes).
 	Exit int `json:"exit"`
@@ -110,6 +115,9 @@ func StartRun() error {
 // Usage is what one process or a group of them cost.
 type Usage struct {
 	Wall, User, Sys time.Duration
+	// Wait is the part of Wall a task spent waiting for the load and its
+	// locks.
+	Wait time.Duration
 	// MaxRSS is the peak resident memory in bytes; RSSKnown is false where
 	// the OS does not report it.
 	MaxRSS   int64
@@ -173,6 +181,7 @@ func (s Usage) Fill(rec *Record) {
 	rec.WallS = seconds(s.Wall)
 	rec.UserS = seconds(s.User)
 	rec.SysS = seconds(s.Sys)
+	rec.WaitS = seconds(s.Wait)
 	rec.MaxRSSMB, rec.TreeMemMB = nil, nil
 	if s.RSSKnown {
 		rec.MaxRSSMB = megabytes(s.MaxRSS)

@@ -47,6 +47,9 @@ func (m Mode) String() string {
 type Lock struct {
 	fl   *flock.Flock
 	note string
+	// Waited is how long taking it waited for other holders; 0 when it
+	// was free.
+	Waited time.Duration
 }
 
 // Acquire takes the exclusive lock at path. See AcquireMode.
@@ -70,7 +73,9 @@ func AcquireMode(ctx context.Context, path string, mode Mode, timeout time.Durat
 	if err != nil {
 		return nil, fmt.Errorf("locking %s: %w", path, err)
 	}
+	var waited time.Duration
 	if !ok {
+		start := time.Now()
 		fmt.Fprintf(log, "graft: waiting for the %s lock %s (%s), up to %s\n", mode, filepath.Base(path), Describe(path), timeout)
 		waitCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
@@ -84,6 +89,7 @@ func AcquireMode(ctx context.Context, path string, mode Mode, timeout time.Durat
 		if !ok {
 			return nil, fmt.Errorf("could not lock %s", path)
 		}
+		waited = time.Since(start)
 	}
 	// Holder notes live next to the lock, one per process: on Windows the
 	// locked file itself cannot be read by the processes waiting for it.
@@ -92,7 +98,7 @@ func AcquireMode(ctx context.Context, path string, mode Mode, timeout time.Durat
 	if err := os.WriteFile(note, []byte(text), 0o644); err != nil {
 		return nil, errors.Join(fmt.Errorf("writing lock holder note: %w", err), fl.Unlock())
 	}
-	return &Lock{fl: fl, note: note}, nil
+	return &Lock{fl: fl, note: note, Waited: waited}, nil
 }
 
 // Release gives the lock up.

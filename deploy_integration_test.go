@@ -453,7 +453,7 @@ func newDeployFixture(t *testing.T, config func(state string, q func(string) str
 		// The stand-in deploy script records what it was given.
 		"deploy.sh": `set -e
 STATE=` + state + `
-{ echo "target=$GRAFT_DEPLOY_TARGET env=$GRAFT_DEPLOY_ENV version=$GRAFT_DEPLOY_VERSION"; echo "sha=$GRAFT_DEPLOY_SHA"; echo "prev=$GRAFT_DEPLOY_PREVIOUS_SHA"; echo "args=$*"; } > "$STATE/$GRAFT_DEPLOY_TARGET-run"
+{ echo "target=$GRAFT_DEPLOY_TARGET env=$GRAFT_DEPLOY_ENV version=$GRAFT_DEPLOY_VERSION"; echo "sha=$GRAFT_DEPLOY_SHA"; echo "prev=$GRAFT_DEPLOY_PREVIOUS_SHA"; echo "args=$*"; echo "priority=$GRAFT_LOAD_PRIORITY"; } > "$STATE/$GRAFT_DEPLOY_TARGET-run"
 graft deploy check-head
 if [ -n "$MOVE_HEAD" ]; then git -c core.hooksPath=/dev/null commit -q --allow-empty -m moved; fi
 echo "$GRAFT_DEPLOY_VERSION" > "$STATE/$GRAFT_DEPLOY_TARGET-version"
@@ -565,7 +565,7 @@ func TestDeployRunsScriptAndPostsReleaseNotes(t *testing.T) {
 	out := d.mustGraft("deploy", "test", "--", "--skip-tests", "two words")
 	head := d.git("rev-parse", "HEAD")
 	run := d.stateFile("test-run")
-	for _, want := range []string{"target=test env=local version=1.0.1", "sha=" + head, "prev=\n", "args=--skip-tests two words"} {
+	for _, want := range []string{"target=test env=local version=1.0.1", "sha=" + head, "prev=\n", "args=--skip-tests two words", "priority=graft deploy test"} {
 		if !strings.Contains(run, want) {
 			t.Errorf("script did not get %q:\n%s", want, run)
 		}

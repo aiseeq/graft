@@ -54,6 +54,11 @@ A heavy task checks the 1-minute load average (`/proc/loadavg`; where there
 is none it starts and says so). Waiting heavy tasks of all projects queue
 under one lock in the user cache (`graft/load.lock`) and start one at a time;
 a heavy task inside a heavy task was admitted with it. Ctrl-C stops the wait.
+`graft deploy` gives its heavy tasks, and those of every graft its script
+starts, a priority (`GRAFT_LOAD_PRIORITY`): they skip the queue and the
+settling, a deploy not standing behind the test runs of every project, and
+wait for the load below `wait_above` at most 10 minutes, then start and say
+so. The wait shows in `graft stats` (`wait_s`).
 
 ## Commands
 
@@ -422,6 +427,9 @@ deps and inner tasks included.
   `GRAFT_RUN_ID`, so a `graft <task>` in a step or a deploy script records
   the outer graft as its parent. Lines of a graft started by no graft have
   no `parent`.
+- `wait_s`, on a task line, is the part of `wall_s` the task and the tasks
+  it ran waited before their steps: for the load in the queue of heavy
+  tasks and for their locks. Absent when nothing waited.
 - `step` is the step as written in `.graft.yaml`, on one line, cut to 200
   characters. `exit` is -1 when there is no exit status: killed by a signal,
   or a task that failed outside its processes.
@@ -493,7 +501,8 @@ CPU time of the run whose pass it reused: the time the skip saved.
 
 `graft stats` reports the current project for the last 7 days, one row per
 task, the heaviest in memory first: runs, median and maximum wall time,
-median CPU time (user + system), the largest peak of the process tree
+when some run waited the median and maximum wait within it (`WAIT MED`,
+`WAIT MAX`), median CPU time (user + system), the largest peak of the process tree
 (`TREE MEM`) and of a single process (`MEM MAX`), the share of failed
 runs, and the wall time the cache saved (`SAVED`, with the number of
 skips); a last line sums the skips, wall and CPU time. When tasks recorded
