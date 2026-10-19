@@ -701,9 +701,13 @@ template, readable by the owner only (mode 0600), and says so. An existing
 dotenv file is never overwritten. A template that does not exist is an error.
 
 The `.env` parser accepts `KEY=value`, `export KEY=value`, `'literal'` and
-`"escaped \" \\ \n \$"` values, blank lines and `#` comment lines. A `#` after
-an unquoted value is part of the value. Anything else is an error naming the
-line.
+`"escaped \" \\ \n \$"` values, blank lines and `#` comment lines. In an
+unquoted value a `#` after a blank starts a comment: `KEY=abc # note` is `abc`,
+as for the shell and the common dotenv parsers. Where those parsers disagree,
+graft refuses the line: `KEY=  # note` (empty to the shell and Node dotenv,
+`# note` to godotenv) and `KEY=abc#def` (`abc` to Node dotenv only). Write an
+empty value as `KEY=` with the comment on a line of its own, and quote a value
+that holds `#`. Anything else is an error naming the line too.
 
 ## Flags
 

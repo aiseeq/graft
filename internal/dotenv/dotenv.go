@@ -3,10 +3,11 @@
 // thing to every command that asks for it.
 //
 // Accepted lines: KEY=value, export KEY=value, blank lines and lines starting
-// with #. A value is taken as is to the end of the line (trailing blanks
-// trimmed), or quoted: '...' literally, "..." with \" \\ \n \$ escapes. A #
-// after an unquoted value is part of the value. Anything else is an error that
-// names the line.
+// with #. A value is taken as is to the end of the line or to a # after a
+// blank, which starts a comment (blanks around it trimmed), or quoted: '...'
+// literally, "..." with \" \\ \n \$ escapes. An unquoted value that starts
+// with # or holds a # inside a word is an error, as is anything else; the
+// error names the line.
 package dotenv
 
 import (
@@ -70,6 +71,20 @@ func (f *File) Keys() []string {
 
 // parseLine returns ok=false for blank and comment lines.
 func parseLine(line string) (key, value string, ok bool, err error) {
+	name, raw, ok, err := splitLine(line)
+	if err != nil || !ok {
+		return "", "", false, err
+	}
+	value, err = parseValue(raw)
+	if err != nil {
+		return "", "", false, fmt.Errorf("%s: %w", name, err)
+	}
+	return name, value, true, nil
+}
+
+// splitLine returns the key of a line and its raw value, blanks trimmed,
+// ok=false for blank and comment lines.
+func splitLine(line string) (key, raw string, ok bool, err error) {
 	trimmed := strings.TrimSpace(strings.TrimSuffix(line, "\r"))
 	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 		return "", "", false, nil
@@ -83,11 +98,7 @@ func parseLine(line string) (key, value string, ok bool, err error) {
 	if !keyRe.MatchString(name) {
 		return "", "", false, fmt.Errorf("invalid key %q", name)
 	}
-	value, err = parseValue(strings.TrimSpace(raw))
-	if err != nil {
-		return "", "", false, fmt.Errorf("%s: %w", name, err)
-	}
-	return name, value, true, nil
+	return name, strings.TrimSpace(raw), true, nil
 }
 
 func parseValue(raw string) (string, error) {
@@ -107,7 +118,27 @@ func parseValue(raw string) (string, error) {
 	case '"':
 		return parseDoubleQuoted(raw)
 	default:
+		return parseUnquoted(raw)
+	}
+}
+
+// parseUnquoted reads a value up to a # that follows a blank, where every
+// common dotenv parser and the shell start a comment. A # any parser reads
+// otherwise is an error: a value that starts with # is empty to the shell
+// and Node dotenv but the text itself to godotenv (and to python-dotenv when
+// no blank precedes it), and a # in a word ends the value for Node dotenv
+// only.
+func parseUnquoted(raw string) (string, error) {
+	i := strings.IndexByte(raw, '#')
+	switch {
+	case i < 0:
 		return raw, nil
+	case i == 0:
+		return "", errors.New(`the value starts with "#": write an empty value as KEY= with the comment on a line of its own, a value with # in quotes`)
+	case raw[i-1] == ' ' || raw[i-1] == '\t':
+		return strings.TrimSpace(raw[:i]), nil
+	default:
+		return "", errors.New(`"#" inside an unquoted value: dotenv parsers disagree whether it starts a comment, quote the value`)
 	}
 }
 
@@ -157,12 +188,18 @@ func Set(path, key, value string) error {
 	lines := strings.SplitAfter(string(data), "\n")
 	var out strings.Builder
 	replaced := false
-	for _, line := range lines {
+	for n, line := range lines {
 		if line == "" {
 			continue
 		}
-		k, _, ok, err := parseLine(strings.TrimSuffix(line, "\n"))
-		if err != nil || !ok || k != key {
+		// The value of the line is replaced, so only its key counts: a
+		// value Load refuses does not keep the line. A line without a key
+		// Load refuses too, and a file Load cannot read is not written.
+		k, _, ok, err := splitLine(strings.TrimSuffix(line, "\n"))
+		if err != nil {
+			return fmt.Errorf("setting %s: %s:%d: %w", key, path, n+1, err)
+		}
+		if !ok || k != key {
 			out.WriteString(line)
 			continue
 		}
