@@ -20,6 +20,7 @@ type statsLine struct {
 	Project  string    `json:"project"`
 	Task     string    `json:"task"`
 	Top      string    `json:"top"`
+	In       string    `json:"in"`
 	Step     string    `json:"step"`
 	Steps    int       `json:"steps"`
 	WallS    float64   `json:"wall_s"`
@@ -368,9 +369,15 @@ func TestStatsNestedGraft(t *testing.T) {
 	if outer.Run == "" || outer.Parent != "" || inner.Parent != outer.Run || inner.Run == outer.Run || leaf.Run != inner.Run {
 		t.Errorf("runs: outer %q (parent %q), inner %q (parent %q), leaf %q", outer.Run, outer.Parent, inner.Run, inner.Parent, leaf.Run)
 	}
+	if leaf.In != "inner" || inner.In != "" {
+		t.Errorf("leaf ran in %q, inner in %q", leaf.In, inner.In)
+	}
 	out := f.mustGraft("stats", "--task", "outer")
-	if !strings.Contains(out, "graft inner ") || strings.Contains(out, "graft leaf") {
+	if !strings.Contains(out, "graft inner ") || strings.Contains(out, "graft leaf") || strings.Contains(out, "task leaf") {
 		t.Errorf("the breakdown names the inner graft's outermost task alone:\n%s", out)
+	}
+	if out := f.mustGraft("stats", "--task", "inner"); !strings.Contains(out, "task leaf ") {
+		t.Errorf("the breakdown of inner lacks its dep:\n%s", out)
 	}
 }
 

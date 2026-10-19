@@ -1336,9 +1336,28 @@ deploy:
 	dsn := "postgres://app:app@127.0.0.1:5432/app_test"
 	f.env = append(f.env, "TEST_DB_DSN="+dsn)
 
+	cache := t.TempDir()
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache)
 	f.mustGraft("deploy", "staging")
 	if got := readFile(t, out); got != "lint\nTEST_DB_DSN="+dsn+"\ndeploy staging\n" {
 		t.Errorf("staging ran:\n%s", got)
+	}
+	// The deploy's line holds its deps, whose lines name it; its breakdown
+	// shows them beside the script.
+	in := map[string]string{}
+	for _, l := range readStats(t, filepath.Join(cache, "graft", "stats.jsonl")) {
+		if l.Kind == "task" {
+			in[l.Task] = l.In
+		}
+	}
+	if in["lint"] != "deploy staging" || in["dbsmoke"] != "deploy staging" || in["deploy staging"] != "" {
+		t.Errorf("the tasks ran in: %v", in)
+	}
+	rows := strings.Join(strings.Fields(f.mustGraft("stats", "--task", "deploy staging")), " ")
+	for _, want := range []string{"(task) 1 ", "sh deploy.sh 1 ", "task lint 1 ", "task dbsmoke 1 "} {
+		if !strings.Contains(rows, want) {
+			t.Errorf("the breakdown lacks %q:\n%s", want, rows)
+		}
 	}
 
 	if err := os.Remove(out); err != nil {

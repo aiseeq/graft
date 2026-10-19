@@ -207,18 +207,27 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	if err := a.checkIntegrations(ctx, r); err != nil {
 		return err
 	}
-	if len(r.target.Deps) > 0 {
-		a.printf("deploy %s: running %s first", r.name, strings.Join(r.target.Deps, ", "))
-		if err := r.tasks.RunDeps(ctx, r.target.Deps); err != nil {
-			return fmt.Errorf("deploy %s: nothing was deployed: %w", r.name, err)
+	// One unit: the deps' lines name it, and its line holds them, the
+	// confirmation and the script. Its name has a space no task name can
+	// have.
+	err = r.tasks.Unit("deploy "+r.name, func() error {
+		if len(r.target.Deps) > 0 {
+			a.printf("deploy %s: running %s first", r.name, strings.Join(r.target.Deps, ", "))
+			if err := r.tasks.RunDeps(ctx, r.target.Deps); err != nil {
+				return fmt.Errorf("deploy %s: nothing was deployed: %w", r.name, err)
+			}
 		}
-	}
-	if r.target.Confirm == "sudo" {
-		if err := deploy.ConfirmSudo(ctx, r.name, a.Stderr); err != nil {
-			return err
+		if r.target.Confirm == "sudo" {
+			start := time.Now()
+			err := deploy.ConfirmSudo(ctx, r.name, a.Stderr)
+			r.tasks.Waited(time.Since(start))
+			if err != nil {
+				return err
+			}
 		}
-	}
-	if err := a.runDeployScript(ctx, r, o.Args); err != nil {
+		return a.runDeployScript(ctx, r, o.Args)
+	})
+	if err != nil {
 		return err
 	}
 	if err := deploy.CheckHead(r.repo, r.cfg.Deploy, r.head); err != nil {
@@ -379,8 +388,7 @@ func (a *App) runDeployScript(ctx context.Context, r *deployRun, args []string) 
 		EnvDeployVersion+"="+r.version,
 		EnvDeployPrevious+"="+r.prev,
 	)
-	// The task name has a space no task name can have.
-	err = r.tasks.Measure("deploy "+r.name, r.target.Run.Source, cmd)
+	err = r.tasks.Measure(r.target.Run.Source, cmd)
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		return &ExitCodeError{Code: exitErr.ExitCode(), Err: fmt.Errorf("the deploy script failed with exit status %d; nothing recorded", exitErr.ExitCode())}

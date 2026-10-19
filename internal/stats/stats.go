@@ -51,7 +51,11 @@ type Record struct {
 	Task    string `json:"task"`
 	// Top is what the task ran under: the graft command (commit, gate,
 	// deploy, ...) or, for graft <task>, the outermost task.
-	Top  string `json:"top"`
+	Top string `json:"top"`
+	// In is, on a task line, the task or deploy it ran in, as a dep or a
+	// step; absent for the outermost, and in lines written before graft
+	// 2.22.
+	In   string `json:"in,omitempty"`
 	Step string `json:"step,omitempty"`
 	// Steps is, on a task line, how many processes it ran.
 	Steps int     `json:"steps,omitempty"`

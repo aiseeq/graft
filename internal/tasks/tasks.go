@@ -87,7 +87,9 @@ type Runner struct {
 
 // frame is a running task as the stats see it.
 type frame struct {
-	task  string
+	task string
+	// in is the task or unit it runs in; "" for the outermost.
+	in    string
 	start time.Time
 	steps int
 	use   stats.Usage
@@ -460,7 +462,7 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 		// A heavy task inside a heavy task was admitted with it.
 		if r.heavy == 0 {
 			waited, err := r.admit(ctx, name)
-			r.waited(waited)
+			r.Waited(waited)
 			if err != nil {
 				return err
 			}
@@ -469,7 +471,7 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 		defer func() { r.heavy-- }()
 	}
 	release, waited, err := r.lock(ctx, name, t.Lock)
-	r.waited(waited)
+	r.Waited(waited)
 	if err != nil {
 		return err
 	}
@@ -668,12 +670,19 @@ func (r *Runner) top(outermost string) string {
 	return outermost
 }
 
-// Measure runs cmd as the one step of name, a unit of work that is not a
-// task (the deploy script), and records it the way task steps are recorded.
-func (r *Runner) Measure(name, source string, cmd *exec.Cmd) (err error) {
+// Unit runs fn as name, a unit of work that is not a task (a deploy), and
+// records it the way a task is recorded: the tasks fn runs are recorded as
+// run in it, and Measure records its steps.
+func (r *Runner) Unit(name string, fn func() error) (err error) {
 	f := r.begin(name)
 	defer func() { r.end(f, err != nil) }()
-	_, err = r.measure(cmd, source)
+	return fn()
+}
+
+// Measure runs cmd as a step of the unit or task running, and records it
+// the way task steps are recorded.
+func (r *Runner) Measure(source string, cmd *exec.Cmd) error {
+	_, err := r.measure(cmd, source)
 	return err
 }
 
@@ -710,6 +719,9 @@ func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
 // begin opens the stats frame of a task.
 func (r *Runner) begin(task string) *frame {
 	f := &frame{task: task, start: time.Now()}
+	if len(r.frames) > 0 {
+		f.in = r.frames[len(r.frames)-1].task
+	}
 	r.frames = append(r.frames, f)
 	if r.Stats == nil {
 		return f
@@ -728,7 +740,7 @@ func (r *Runner) begin(task string) *frame {
 // what it cost; the task's error itself goes back to its caller.
 func (r *Runner) end(f *frame, failed bool) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
-	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Steps: f.steps}
+	rec := stats.Record{Kind: stats.KindTask, Task: f.task, In: f.in, Steps: f.steps}
 	if failed {
 		// A failure outside the processes (a missing key, a lock timeout)
 		// has no exit status of its own.
@@ -921,9 +933,10 @@ func (r *Runner) admit(ctx context.Context, name string) (time.Duration, error) 
 	return loadgate.Wait(ctx, name, os.Getenv(loadgate.EnvPriority), l, filepath.Join(cache, "graft", "load.lock"), r.Stderr)
 }
 
-// waited adds a wait before a task's steps to every running task: the
-// task's own and those it runs under, whose wall time holds it too.
-func (r *Runner) waited(d time.Duration) {
+// Waited adds a wait before steps (the load, a lock, a confirmation) to
+// every running task: the innermost's own and those it runs under, whose
+// wall time holds it too.
+func (r *Runner) Waited(d time.Duration) {
 	for _, f := range r.frames {
 		f.use.Wait += d
 	}

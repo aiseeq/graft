@@ -186,6 +186,10 @@ func (f Filter) taskRuns(recs []Record) map[string]bool {
 // script or a step that runs graft <task>): its outermost task as a whole.
 const NestedPrefix = "graft "
 
+// InnerPrefix labels, in a broken down task, a task it ran in the same
+// graft, as a dep or a step: that task as a whole.
+const InnerPrefix = "task "
+
 // runLabel is the row a task or step record belongs to; false leaves it out
 // of the report. runs are the grafts that ran the broken down task.
 func runLabel(r *Record, f Filter, runs map[string]bool) (string, bool) {
@@ -194,6 +198,8 @@ func runLabel(r *Record, f Filter, runs map[string]bool) (string, bool) {
 		return r.Task, true
 	case r.Kind == KindTask && runs[r.Parent] && r.Task == r.Top:
 		return NestedPrefix + r.Task, true
+	case r.Kind == KindTask && f.Task != "" && r.In == f.Task && r.Task != f.Task:
+		return InnerPrefix + r.Task, true
 	case f.Task == "" || r.Task != f.Task:
 		return "", false
 	case r.Kind == KindTask:
