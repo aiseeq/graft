@@ -23,6 +23,46 @@ type Config struct {
 	Leaks *Leaks `yaml:"leaks"`
 	// Load is how this machine takes heavy tasks.
 	Load MachineLoad `yaml:"load"`
+	// Limits are how long the gate and a task may take.
+	Limits Limits `yaml:"limits"`
+}
+
+// Limits are the times graft stats marks a gate or a task over, measured
+// without the waits for the load and the locks: the median run of the
+// period.
+type Limits struct {
+	Gate time.Duration `yaml:"gate"`
+	Task time.Duration `yaml:"task"`
+}
+
+// DefaultLimits keep the gate of a commit under a minute and a test run
+// before a deploy, merge or release under 8 minutes.
+var DefaultLimits = Limits{Gate: time.Minute, Task: 8 * time.Minute}
+
+// LimitSettings is the user's limits over the defaults; without a user
+// config it is the defaults.
+func LimitSettings() (Limits, error) {
+	cfg, _, err := Load()
+	if errors.Is(err, ErrNotFound) {
+		return DefaultLimits, nil
+	}
+	if err != nil {
+		return Limits{}, err
+	}
+	return cfg.Limits, nil
+}
+
+func (l *Limits) normalize(path string) error {
+	if l.Gate < 0 || l.Task < 0 {
+		return fmt.Errorf("%s: limits: gate and task must be positive", path)
+	}
+	if l.Gate == 0 {
+		l.Gate = DefaultLimits.Gate
+	}
+	if l.Task == 0 {
+		l.Task = DefaultLimits.Task
+	}
+	return nil
 }
 
 // MachineLoad is when a heavy task may start on this machine: the 1-minute
@@ -188,6 +228,9 @@ func Load() (*Config, string, error) {
 		if err := cfg.Leaks.normalize(path); err != nil {
 			return nil, path, err
 		}
+	}
+	if err := cfg.Limits.normalize(path); err != nil {
+		return nil, path, err
 	}
 	if err := cfg.Load.normalize(path); err != nil {
 		return nil, path, err

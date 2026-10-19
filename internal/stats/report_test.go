@@ -1,8 +1,10 @@
 package stats
 
 import (
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func ptr(v float64) *float64 { return &v }
@@ -56,5 +58,29 @@ func TestFormatSaved(t *testing.T) {
 	}
 	if got := FormatSaved(Saved{Hits: 3, WallS: 2, CPUS: 1}); !strings.HasPrefix(got, "3 runs skipped ") {
 		t.Errorf("three: %s", got)
+	}
+}
+
+// TestOverLimits: the gate row takes the gate's limit, the others the
+// task's, both by the median without the waits, so a run that only waited
+// long is not over.
+func TestOverLimits(t *testing.T) {
+	recs := []Record{
+		{Kind: KindTask, Task: GateTask, WallS: 70},
+		{Kind: KindTask, Task: GateTask, WallS: 79, WaitS: 5},
+		{Kind: KindTask, Task: "test", WallS: 400, WaitS: 300},
+		{Kind: KindTask, Task: "e2e", WallS: 500},
+	}
+	rows, _ := Summarize(recs, Filter{})
+	over := OverLimits(rows, time.Minute, 8*time.Minute)
+	var got []string
+	for _, o := range over {
+		got = append(got, FormatOverLimit(o))
+	}
+	// The gate is 20% over, e2e 4%: the farthest over first.
+	want := []string{"over the limit: gate takes 1m12s by median without waits, above 1m0s (user config limits.gate)",
+		"over the limit: e2e takes 8m20s by median without waits, above 8m0s (user config limits.task)"}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %q\nwant %q", got, want)
 	}
 }

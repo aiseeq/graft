@@ -413,3 +413,38 @@ func TestStatsRerunsAreFlaky(t *testing.T) {
 		}
 	}
 }
+
+// TestStatsMarkTasksOverTheLimits: graft stats marks the gate over
+// limits.gate and any other task over limits.task, by their median run
+// without the waits; a task under its limit and a broken down task carry no
+// mark.
+func TestStatsMarkTasksOverTheLimits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	f, _ := statsRepo(t, "gate:\n  - sh: sleep 0.3\ntasks:\n  slow:\n    run: [[sh, -c, 'sleep 0.5']]\n  quick:\n    run: ["+helperStep("ok")+"]\n")
+	cfgDir := t.TempDir()
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "limits: {gate: 200ms, task: 400ms}\n")
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
+	f.mustGraft("gate")
+	f.mustGraft("slow")
+	f.mustGraft("quick")
+	out := f.mustGraft("stats")
+	var marks []string
+	for l := range strings.SplitSeq(out, "\n") {
+		if strings.HasPrefix(l, "graft: over the limit: ") {
+			marks = append(marks, l)
+		}
+	}
+	if len(marks) != 2 || !strings.Contains(marks[0], "gate takes ") || !strings.Contains(marks[0], "above 200ms (user config limits.gate)") ||
+		!strings.Contains(marks[1], "slow takes ") || !strings.Contains(marks[1], "above 400ms (user config limits.task)") {
+		t.Errorf("marks %q:\n%s", marks, out)
+	}
+	if out := f.mustGraft("stats", "--task", "slow"); strings.Contains(out, "over the limit") {
+		t.Errorf("a broken down task is marked:\n%s", out)
+	}
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "limits: {gate: -1s}\n")
+	if out, code := f.graft("", "stats"); code == 0 || !strings.Contains(out, "limits: gate and task must be positive") {
+		t.Errorf("a negative limit: exit %d\n%s", code, out)
+	}
+}

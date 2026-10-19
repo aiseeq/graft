@@ -268,7 +268,7 @@ func (r *Runner) Gate(ctx context.Context) (err error) {
 	if err := r.preflight(all, &config.Task{}, "gate"); err != nil {
 		return err
 	}
-	f := r.begin("gate")
+	f := r.begin(stats.GateTask)
 	defer func() { r.end(f, err != nil) }()
 	for i, gs := range steps {
 		s, _, err := r.threads(gs.step, gs.task)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/stats"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
 // StatsOptions select what graft stats reports.
@@ -26,6 +27,10 @@ type StatsOptions struct {
 	// MaxLoad, when set, takes only the runs whose load stayed below it.
 	MaxLoad float64
 }
+
+// overLimitsShown is how many tasks over their limits a report names, the
+// farthest over first: every worktree of a project is a project of its own.
+const overLimitsShown = 10
 
 // testsLimit is how many tests and packages the tests report ranks.
 const testsLimit = 20
@@ -72,6 +77,20 @@ func (a *App) Stats(o StatsOptions) error {
 	}
 	if saved.Hits > 0 {
 		a.printf("%s", stats.FormatSaved(saved))
+	}
+	if o.Task != "" {
+		return nil
+	}
+	limits, err := userconfig.LimitSettings()
+	if err != nil {
+		return err
+	}
+	over := stats.OverLimits(rows, limits.Gate, limits.Task)
+	for _, o := range over[:min(len(over), overLimitsShown)] {
+		a.printf("%s", stats.FormatOverLimit(o))
+	}
+	if more := len(over) - overLimitsShown; more > 0 {
+		a.printf("and %d more over their limits", more)
 	}
 	return nil
 }

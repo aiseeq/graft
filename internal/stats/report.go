@@ -86,7 +86,9 @@ type Row struct {
 	// WaitMed and WaitMax are of the waits before the steps, part of the
 	// wall time.
 	WaitMed, WaitMax float64
-	CPUMed           float64
+	// OwnMed is the median wall time without the waits.
+	OwnMed float64
+	CPUMed float64
 	// MaxRSSMB is the largest peak of a run; nil when none was reported.
 	MaxRSSMB *float64
 	// TreeMemMB is the largest peak of a run's process tree as a whole;
@@ -249,12 +251,14 @@ func summarize(project, label string, recs []Record) Row {
 	row := Row{Project: project, Label: label, Runs: len(recs)}
 	walls := make([]float64, 0, len(recs))
 	waits := make([]float64, 0, len(recs))
+	owns := make([]float64, 0, len(recs))
 	cpus := make([]float64, 0, len(recs))
 	var dbCPUs []float64
 	for i := range recs {
 		r := &recs[i]
 		walls = append(walls, r.WallS)
 		waits = append(waits, r.WaitS)
+		owns = append(owns, r.WallS-r.WaitS)
 		cpus = append(cpus, r.UserS+r.SysS)
 		row.WallMax = max(row.WallMax, r.WallS)
 		row.WaitMax = max(row.WaitMax, r.WaitS)
@@ -270,6 +274,7 @@ func summarize(project, label string, recs []Record) Row {
 	}
 	row.WallMed = median(walls)
 	row.WaitMed = median(waits)
+	row.OwnMed = median(owns)
 	row.CPUMed = median(cpus)
 	if len(dbCPUs) > 0 {
 		m := median(dbCPUs)
@@ -310,6 +315,49 @@ func (s Saved) add(r *Record) Saved {
 	s.WallS += r.WallS
 	s.CPUS += r.UserS + r.SysS
 	return s
+}
+
+// GateTask is the task line of the gate as a whole.
+const GateTask = "gate"
+
+// OverLimit is a row whose median run without the waits is longer than its
+// limit.
+type OverLimit struct {
+	Project, Task string
+	OwnMed        float64
+	// Limit is the limit and Key its user config key.
+	Limit time.Duration
+	Key   string
+}
+
+// OverLimits are the task rows over their limits, the farthest over first:
+// the gate's over gate, every other task's over task. Rows of a broken down
+// task are steps and have none.
+func OverLimits(rows []Row, gate, task time.Duration) []OverLimit {
+	var out []OverLimit
+	for i := range rows {
+		r := &rows[i]
+		limit, key := task, "limits.task"
+		if r.Label == GateTask {
+			limit, key = gate, "limits.gate"
+		}
+		if r.OwnMed > limit.Seconds() {
+			out = append(out, OverLimit{Project: r.Project, Task: r.Label, OwnMed: r.OwnMed, Limit: limit, Key: key})
+		}
+	}
+	slices.SortStableFunc(out, func(a, b OverLimit) int {
+		return cmpFloat(b.OwnMed/b.Limit.Seconds(), a.OwnMed/a.Limit.Seconds())
+	})
+	return out
+}
+
+// FormatOverLimit is the line that marks a row over its limit.
+func FormatOverLimit(o OverLimit) string {
+	task := o.Task
+	if o.Project != "" {
+		task = o.Project + " " + task
+	}
+	return fmt.Sprintf("over the limit: %s takes %s by median without waits, above %s (user config %s)", task, formatSeconds(o.OwnMed), formatSeconds(o.Limit.Seconds()), o.Key)
 }
 
 // FormatSaved is the line a report ends with when the cache skipped runs.

@@ -74,3 +74,15 @@ func TestLoadNormalize(t *testing.T) {
 		}
 	}
 }
+
+func TestLimitsNormalize(t *testing.T) {
+	l := Limits{Task: time.Hour}
+	if err := l.normalize("cfg"); err != nil || l.Gate != time.Minute || l.Task != time.Hour {
+		t.Errorf("defaults: %+v, %v", l, err)
+	}
+	for _, bad := range []Limits{{Gate: -1}, {Task: -1}} {
+		if err := bad.normalize("cfg"); err == nil {
+			t.Errorf("%+v: want an error", bad)
+		}
+	}
+}
