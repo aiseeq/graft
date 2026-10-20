@@ -574,11 +574,13 @@ func TestReleaseMergeIntoTrunk(t *testing.T) {
 
 // TestDeployMergeIntoTrunkKeepsFixes: a fix made on a release branch that
 // the trunk lacks stops the merge into the trunk, which would drop it; once
-// the trunk has it by content, a commit of its own, the next deploy merges.
+// the trunk has it by content, a commit of its own, the next deploy merges,
+// and so does a port of trunk work that names the item the trunk worked on.
 func TestDeployMergeIntoTrunkKeepsFixes(t *testing.T) {
 	d := newDeployFixture(t, func(state string, q func(string) string) string {
 		return `schema: 1
 version: {mode: file, build_branches: ['release/*']}
+ticket: {pattern: 'PROJ-[0-9]+'}
 envs:
   local: {}
 deploy:
@@ -598,7 +600,7 @@ deploy:
 	fix := d.commitFile("fix.txt", "fix: found in the release")
 	out, code := d.graft("", "deploy", "prod")
 	if code == 0 || !strings.Contains(out, "deployed "+fix[:12]+" to prod") ||
-		!strings.Contains(out, "release/1 is not merged into "+trunk+": "+trunk+" lacks these of its commits by content") ||
+		!strings.Contains(out, "release/1 is not merged into "+trunk+": "+trunk+" lacks these of its commits, by content and by the items they name") ||
 		!strings.Contains(out, fix[:12]+" fix: found in the release") {
 		t.Errorf("a fix the trunk lacks: exit %d\n%s", code, out)
 	}
@@ -622,5 +624,23 @@ deploy:
 	d.git("fetch", "-q", "origin")
 	if got := d.git("rev-parse", "origin/"+trunk+"^2"); got != head {
 		t.Errorf("the trunk's merge has %s as its second parent, want %s", got, head)
+	}
+
+	// A port of trunk work the trunk has since reworked: by content it
+	// conflicts, by its item it is in the trunk, and the merge says so.
+	d.git("switch", "-q", trunk)
+	d.git("pull", "-q", "--ff-only", "origin", trunk)
+	d.commitFile("c.txt", "feat: PROJ-7 first take")
+	d.git("switch", "-q", "-c", "release/2")
+	d.git("push", "-q", "-u", "origin", "release/2")
+	d.git("switch", "-q", trunk)
+	d.commitFile("c.txt", "feat: PROJ-7 reworked")
+	d.git("switch", "-q", "release/2")
+	port := d.commitFile("c.txt", "fix: PROJ-7 ported from the trunk")
+	out = d.mustGraft("deploy", "prod")
+	if !strings.Contains(out, "merged release/2 into "+trunk) ||
+		!strings.Contains(out, "1 commits of release/2 count as ports of "+trunk+"'s work by the items they name, not by content") ||
+		!strings.Contains(out, port[:12]+" fix: PROJ-7 ported from the trunk") {
+		t.Errorf("a port by its item:\n%s", out)
 	}
 }

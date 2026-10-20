@@ -1168,11 +1168,15 @@ deploy:
   trunk) and then to the others, the local trunk following when it was where
   the remote was. It merges only when the trunk has all the branch's work
   by content: every commit of the branch the trunk lacks is a revert (work
-  the release withheld, which the trunk keeps) or picks onto the trunk
-  without changing it, the version files aside. A fix made on the branch
-  and not in the trunk would be dropped by such a merge: the deploy, live by
-  then, names those commits, prints the commands that merge after the trunk
-  has them, and exits 1. It needs `deployed_sha`.
+  the release withheld, which the trunk keeps), picks onto the trunk
+  without changing it, the version files aside, or is a port of trunk work:
+  every item it names (by `release_notes.jira.project_keys`, else
+  `ticket.pattern`) is named by a trunk commit since the branch left it,
+  the trunk having moved on and reworked the same lines. The merge lists the
+  commits that passed by their items alone. A fix made on the branch and not
+  in the trunk would be dropped by such a merge: the deploy, live by then,
+  names those commits, prints the commands that merge after the trunk has
+  them, and exits 1. It needs `deployed_sha`.
 - `release_version: {enabled: true, name: "Product {dd}.{mm}.{yy}", hotfix:
   "Product {dd}.{mm}.{yy} hotfix"}` on the windowed target keeps one Jira
   version per window (`enabled` is required; false leaves the Jira versions
