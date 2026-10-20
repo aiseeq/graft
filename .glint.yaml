@@ -6,3 +6,10 @@ settings:
     - vendor/**
   min_severity: medium
   output: console
+
+categories:
+  architecture:
+    rules:
+      # scripts are written in Go or shell: glint does not analyze Python
+      python-file:
+        enabled: true
