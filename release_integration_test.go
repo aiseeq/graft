@@ -524,3 +524,103 @@ func TestReleaseAttribute(t *testing.T) {
 		t.Errorf("the next page:\n%s", body)
 	}
 }
+
+// TestReleaseMergeIntoTrunk: with merge_into_trunk, the release from a
+// release branch is recorded on the trunk by the deploy itself, keeping the
+// trunk's tree, the withheld work with it; a fix made on the release branch
+// that the trunk lacks stops the merge, which would drop it.
+func TestReleaseMergeIntoTrunk(t *testing.T) {
+	d := newDeployFixture(t, func(state string, q func(string) string) string {
+		return strings.Replace(releaseConfig(state, q), "      deployed_sha: {path: "+q("prod-sha")+"}\n",
+			"      deployed_sha: {path: "+q("prod-sha")+"}\n      merge_into_trunk: true\n", 1)
+	})
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-8"] = "Ready for release"
+	d.jira.mu.Unlock()
+	trunk := d.git("branch", "--show-current")
+	d.git("remote", "set-head", "origin", trunk)
+	d.at("2026-10-16 10:00")
+	d.mustGraft("deploy", "test")
+	d.at("2026-10-19 15:30")
+	d.mustGraft("deploy", "--unapproved", "prod")
+
+	d.at("2026-10-20 10:00")
+	d.commitFile("checked.txt", "feat: PROJ-8 checked work")
+	d.commitFile("unchecked.txt", "feat: PROJ-1 unchecked work")
+	d.mustGraft("deploy", "test")
+	d.at("2026-10-21 18:30")
+	d.runCommands(d.mustGraft("deploy", "cutoff", "prod"), "goes out from release/22.10.26", "Then the candidate goes")
+	d.mustGraft("deploy", "test")
+	release := d.git("rev-parse", "HEAD")
+	before := d.git("rev-parse", "origin/"+trunk+"^{tree}")
+
+	d.at("2026-10-22 15:30")
+	out := d.mustGraft("deploy", "prod")
+	if !strings.Contains(out, "merged release/22.10.26 into "+trunk) {
+		t.Errorf("no merge into the trunk:\n%s", out)
+	}
+	d.git("fetch", "-q", "origin")
+	if got := d.git("rev-parse", "origin/"+trunk+"^{tree}"); got != before {
+		t.Errorf("the merge changed the trunk's tree: %s, was %s", got, before)
+	}
+	if got := d.git("rev-parse", "origin/"+trunk+"^2"); got != release {
+		t.Errorf("the trunk's merge has %s as its second parent, want %s", got, release)
+	}
+	if got := d.git("rev-parse", trunk); got != d.git("rev-parse", "origin/"+trunk) {
+		t.Errorf("the local trunk %s did not follow", got)
+	}
+
+}
+
+// TestDeployMergeIntoTrunkKeepsFixes: a fix made on a release branch that
+// the trunk lacks stops the merge into the trunk, which would drop it; once
+// the trunk has it by content, a commit of its own, the next deploy merges.
+func TestDeployMergeIntoTrunkKeepsFixes(t *testing.T) {
+	d := newDeployFixture(t, func(state string, q func(string) string) string {
+		return `schema: 1
+version: {mode: file, build_branches: ['release/*']}
+envs:
+  local: {}
+deploy:
+  remote: origin
+  targets:
+    prod:
+      env: local
+      run: [sh, deploy.sh]
+      deployed_sha: {path: ` + q("prod-sha") + `}
+      merge_into_trunk: true
+`
+	})
+	trunk := d.git("branch", "--show-current")
+	d.git("remote", "set-head", "origin", trunk)
+	d.git("switch", "-q", "-c", "release/1")
+	d.git("push", "-q", "-u", "origin", "release/1")
+	fix := d.commitFile("fix.txt", "fix: found in the release")
+	out, code := d.graft("", "deploy", "prod")
+	if code == 0 || !strings.Contains(out, "deployed "+fix[:12]+" to prod") ||
+		!strings.Contains(out, "release/1 is not merged into "+trunk+": "+trunk+" lacks these of its commits by content") ||
+		!strings.Contains(out, fix[:12]+" fix: found in the release") {
+		t.Errorf("a fix the trunk lacks: exit %d\n%s", code, out)
+	}
+	if got := strings.TrimSpace(d.stateFile("prod-sha")); got != fix {
+		t.Errorf("the deploy is not recorded: prod-sha %q", got)
+	}
+	d.git("fetch", "-q", "origin")
+	if _, code := d.exec(d.work, "", "git", "merge-base", "--is-ancestor", fix, "origin/"+trunk); code == 0 {
+		t.Fatal("the release branch with the fix was merged into the trunk")
+	}
+
+	// The trunk takes the fix as a commit of its own; the branch builds again.
+	d.git("switch", "-q", trunk)
+	d.commitFile("fix.txt", "fix: found in the release")
+	d.commitFile("b.txt", "feat: b")
+	d.git("switch", "-q", "release/1")
+	head := d.commitFile("b.txt", "feat: b")
+	if out := d.mustGraft("deploy", "prod"); !strings.Contains(out, "merged release/1 into "+trunk) {
+		t.Errorf("no merge once the trunk has the fix:\n%s", out)
+	}
+	d.git("fetch", "-q", "origin")
+	if got := d.git("rev-parse", "origin/"+trunk+"^2"); got != head {
+		t.Errorf("the trunk's merge has %s as its second parent, want %s", got, head)
+	}
+}

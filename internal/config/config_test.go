@@ -369,6 +369,7 @@ deploy:
 		"requires w/o version": strings.Replace(base, "version: 'cat /opt/app/VERSION', ", "", 1),
 		"bad confirm":          strings.Replace(base, "confirm: sudo", "confirm: yes", 1),
 		"notes w/o sha":        strings.Replace(base, "deployed_sha: {path: /opt/app/DEPLOYED_SHA}, ", "", 1),
+		"merge w/o sha":        strings.Replace(base, "deployed_sha: {path: /opt/app/DEPLOYED_SHA}, release_notes: {}", "merge_into_trunk: true", 1),
 		"notes w/o jira":       strings.Replace(base, "release_notes: {jira: {project_keys: [PROJ]}}\n", "", 1),
 		"bad project key":      strings.Replace(base, "[PROJ]", "[proj]", 1),
 		"no project keys":      strings.Replace(base, "{project_keys: [PROJ]}", "{comment: x}", 1),

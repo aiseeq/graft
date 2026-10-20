@@ -1126,6 +1126,7 @@ deploy:
         tz: Europe/Berlin
         cutoff: {days_before: 1, at: "18:00"}   # optional: when test starts holding the candidate
       approved_release: {statuses: [Ready for release, Done]}
+      merge_into_trunk: true    # optional: record the release branch on the trunk after the release
 ```
 
 - Outside its window a target refuses, before `requires`, deps and sudo,
@@ -1159,6 +1160,19 @@ deploy:
   `approved_release` do not apply; `requires` does. After the hotfix reaches
   `base`, graft prints how to merge it into the trunk; the next release from
   the trunk refuses until it has.
+- `merge_into_trunk: true` on a target makes the deploy record a branch
+  other than the trunk on the trunk once the target runs it, so that the
+  next deploy from the trunk finds what the target runs among its
+  ancestors: a merge commit keeping the trunk's tree, as `git merge -s ours`
+  makes, pushed to the trunk's remote (`deploy.remote`, whose HEAD names the
+  trunk) and then to the others, the local trunk following when it was where
+  the remote was. It merges only when the trunk has all the branch's work
+  by content: every commit of the branch the trunk lacks is a revert (work
+  the release withheld, which the trunk keeps) or picks onto the trunk
+  without changing it, the version files aside. A fix made on the branch
+  and not in the trunk would be dropped by such a merge: the deploy, live by
+  then, names those commits, prints the commands that merge after the trunk
+  has them, and exits 1. It needs `deployed_sha`.
 - `release_version: {enabled: true, name: "Product {dd}.{mm}.{yy}", hotfix:
   "Product {dd}.{mm}.{yy} hotfix"}` on the windowed target keeps one Jira
   version per window (`enabled` is required; false leaves the Jira versions

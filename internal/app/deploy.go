@@ -430,7 +430,7 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 	if err := deploy.WriteDeployedSHA(ctx, r.env, r.target.DeployedSHA, r.head); err != nil {
 		a.warn("the deployed commit is not recorded: %v", err)
 	}
-	withheldErr := a.recordWithheld(ctx, r)
+	withheldErr := errors.Join(a.recordWithheld(ctx, r), a.mergeIntoTrunk(r))
 	a.hotfixDone(r)
 	withheldErr = errors.Join(withheldErr, a.recordVersions(ctx, r), a.publishReleasePage(ctx, r))
 	if r.target.ReleaseNotes == nil {

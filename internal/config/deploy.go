@@ -62,6 +62,10 @@ type DeployTarget struct {
 	// ApprovedRelease lets out only commits that name an item in one of the
 	// statuses, of a version every approver approved, or both.
 	ApprovedRelease *ApprovedRelease `yaml:"approved_release"`
+	// MergeIntoTrunk records a branch other than the trunk on the trunk once
+	// the target runs it, by a merge keeping the trunk's tree, when the
+	// trunk has all the branch's work by content.
+	MergeIntoTrunk bool `yaml:"merge_into_trunk"`
 	// Window is when the target takes releases; a hotfix goes any time.
 	Window *Window `yaml:"window"`
 	// ReleaseVersion keeps the Jira versions of the windows.
@@ -346,6 +350,9 @@ func (c *Config) validateTarget(name string, t *DeployTarget) error {
 	}
 	if t.Confirm != "" && t.Confirm != "sudo" {
 		return fmt.Errorf("%s.confirm: only sudo is supported, got %q", where, t.Confirm)
+	}
+	if t.MergeIntoTrunk && t.DeployedSHA == nil {
+		return fmt.Errorf("%s.merge_into_trunk: needs deployed_sha: the next deploy reads what the target runs from it", where)
 	}
 	if t.DeployedSHA != nil && (t.DeployedSHA.Path == "" || strings.ContainsAny(t.DeployedSHA.Path, "\n\r")) {
 		return fmt.Errorf("%s.deployed_sha.path: required, one line", where)
