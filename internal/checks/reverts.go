@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -16,8 +17,8 @@ import (
 // commit's diff of the file applies to the staged tree and did not apply to
 // HEAD's. A tree from an old base committed on a fresh parent silently undoes
 // merged work that way, a deleted file as much as changed lines. A revert that
-// is meant names the commit (9 characters of its hash or more) or the file in
-// the message. Files moved by the commit, the version files graft bumps and
+// is meant names the commit (7 characters of its hash or more, as git prints
+// it short) or the file in the message. Files moved by the commit, the version files graft bumps and
 // the exceptions do not count. A partial take-back, part of the commit's diff
 // of a file, is not seen: the check is per file.
 func Reverts(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, message string) ([]Finding, error) {
@@ -49,7 +50,7 @@ func Reverts(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, message
 	}
 	var findings []Finding
 	for _, c := range recent {
-		if c.parent == "" || len(c.sha) >= 9 && strings.Contains(message, c.sha[:9]) {
+		if c.parent == "" || names(message, c.sha) {
 			continue
 		}
 		for _, f := range c.files {
@@ -61,11 +62,24 @@ func Reverts(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, message
 				return nil, err
 			}
 			if back {
-				findings = append(findings, Finding{Path: f, Reason: fmt.Sprintf("takes back %s %s; if that is meant, name the commit or the file in the message", gitx.Short(c.sha), c.subject)})
+				findings = append(findings, Finding{Path: f, Reason: fmt.Sprintf("takes back %s %s; if that is meant, name the commit (7 characters of its hash or more) or the file in the message", gitx.Short(c.sha), c.subject)})
 			}
 		}
 	}
 	return findings, nil
+}
+
+// hashRe is a word that can be a commit hash, short as git prints it or full.
+var hashRe = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
+
+// names tells whether message names the commit sha by a prefix of its hash.
+func names(message, sha string) bool {
+	for _, h := range hashRe.FindAllString(message, -1) {
+		if strings.HasPrefix(sha, h) {
+			return true
+		}
+	}
+	return false
 }
 
 // revertCandidates are the staged files that can take something back: not

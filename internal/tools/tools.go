@@ -1,7 +1,7 @@
-// Package tools checks and installs the project's pinned development tools.
-// A tool counts as present only when its check command prints what the
-// config expects, or, for a go_install tool without one, when its Go build
-// info matches the pin: a binary on PATH says nothing about its version.
+// Package tools checks and installs the project's development tools. A tool
+// counts as present only when its check command prints what the config
+// expects, or, for a go_install tool without one, when its Go build info
+// matches go_install: a binary on PATH says nothing about what it is.
 package tools
 
 import (
@@ -82,16 +82,17 @@ func Check(ctx context.Context, name string, t *config.Tool) (Result, error) {
 	return r, nil
 }
 
-// buildProblem compares a program's build info with the tool's pin: the
-// main package, the main module version and, when the tool sets tags, the
-// build tags. It returns what differs, empty when nothing does.
+// buildProblem compares a program's build info with go_install: the main
+// package, the main module version when a version is pinned and, when the
+// tool sets tags, the build tags. It returns what differs, empty when nothing
+// does.
 func buildProblem(bi *debug.BuildInfo, t *config.Tool) string {
 	pkg, version := t.Pin()
 	built := bi.Path + "@" + bi.Main.Version
 	switch {
 	case bi.Path != pkg:
-		return fmt.Sprintf("built from %s, pinned %s", built, t.GoInstall)
-	case !atLeast(bi.Main.Version, version):
+		return fmt.Sprintf("built from %s, go_install %s", built, t.GoInstall)
+	case version != "" && !atLeast(bi.Main.Version, version):
 		return fmt.Sprintf("built from %s, pinned %s", built, version)
 	case len(t.Tags) == 0:
 		return ""
@@ -179,7 +180,7 @@ func Install(ctx context.Context, name string, t *config.Tool, binDir string, lo
 	if len(t.Tags) > 0 {
 		args = append(args, "-tags", strings.Join(t.Tags, ","))
 	}
-	args = append(args, t.GoInstall)
+	args = append(args, t.InstallArg())
 	fmt.Fprintf(log, "graft: go %s\n", strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Env = append(os.Environ(), "GOBIN="+binDir)

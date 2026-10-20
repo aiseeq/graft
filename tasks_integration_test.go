@@ -398,7 +398,7 @@ func TestTools(t *testing.T) {
     check: `+helperStep("print", "rules: fallback-return")+`
     expect: fallback-return
   old:
-    go_install: example.com/old@v2.0.0
+    go_install: example.com/old
     check: `+helperStep("print", "old v1.0.0")+`
     expect: v2.0.0
 `, nil)
@@ -422,7 +422,8 @@ func TestTools(t *testing.T) {
 	if code != 1 || !strings.Contains(out, "installed into "+gobin+", but PATH finds "+helperBin+" first") {
 		t.Errorf("tools install: exit %d\n%s", code, out)
 	}
-	if got := f.read("go.txt"); got != gobin+" install example.com/old@v2.0.0\n" {
+	// Unpinned, the tool is installed at its latest release.
+	if got := f.read("go.txt"); got != gobin+" install example.com/old@latest\n" {
 		t.Errorf("go install calls:\n%s", got)
 	}
 
@@ -441,7 +442,7 @@ func TestTools(t *testing.T) {
 	if !strings.Contains(out, "installing into "+userBin+" puts it on PATH ahead of "+helperBin) {
 		t.Errorf("no shadowing warning:\n%s", out)
 	}
-	if got := f.lines("go.txt"); got[len(got)-1] != userBin+" install example.com/old@v2.0.0" {
+	if got := f.lines("go.txt"); got[len(got)-1] != userBin+" install example.com/old@latest" {
 		t.Errorf("GOBIN not set to bin_dir: %q", got)
 	}
 }
@@ -504,7 +505,7 @@ func TestToolsBuildInfo(t *testing.T) {
 	for _, want := range []string{
 		"tool: ok (" + filepath.Join(bin, "tool") + ")",
 		"newer: built from example.com/tool/cmd/tool@v1.2.0, pinned v1.3.0",
-		"foreign: built from example.com/tool/cmd/tool@v1.2.0, pinned example.com/other/cmd/tool@v1.2.0",
+		"foreign: built from example.com/tool/cmd/tool@v1.2.0, go_install example.com/other/cmd/tool@v1.2.0",
 		"untagged: built without tags postgres",
 		"script: " + filepath.Join(bin, "script") + " has no Go build info",
 		"absent: absent is not on PATH",

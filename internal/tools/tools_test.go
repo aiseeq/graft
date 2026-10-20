@@ -17,6 +17,7 @@ func TestBuildProblem(t *testing.T) {
 	}
 	const pkg = "example.com/tool/cmd/tool"
 	pinned := &config.Tool{GoInstall: pkg + "@v1.3.0"}
+	unpinned, latest := &config.Tool{GoInstall: pkg}, &config.Tool{GoInstall: pkg + "@latest"}
 	tagged := &config.Tool{GoInstall: pkg + "@v1.3.0", Tags: []string{"postgres", "netgo"}}
 	cases := []struct {
 		name string
@@ -31,7 +32,10 @@ func TestBuildProblem(t *testing.T) {
 		{"older version", pinned, info(pkg, "v1.2.0", ""), "built from example.com/tool/cmd/tool@v1.2.0, pinned v1.3.0"},
 		{"local build", pinned, info(pkg, "(devel)", ""), "built from example.com/tool/cmd/tool@(devel), pinned v1.3.0"},
 		{"dirty build", pinned, info(pkg, "v1.3.0+dirty", ""), "built from example.com/tool/cmd/tool@v1.3.0+dirty, pinned v1.3.0"},
-		{"other package", pinned, info("example.com/other/cmd/tool", "v1.3.0", ""), "built from example.com/other/cmd/tool@v1.3.0, pinned example.com/tool/cmd/tool@v1.3.0"},
+		{"other package", pinned, info("example.com/other/cmd/tool", "v1.3.0", ""), "built from example.com/other/cmd/tool@v1.3.0, go_install example.com/tool/cmd/tool@v1.3.0"},
+		{"unpinned: any build", unpinned, info(pkg, "(devel)", ""), ""},
+		{"@latest: any build", latest, info(pkg, "v0.1.0", ""), ""},
+		{"unpinned: other package", unpinned, info("example.com/other/cmd/tool", "v1.3.0", ""), "built from example.com/other/cmd/tool@v1.3.0, go_install example.com/tool/cmd/tool"},
 		{"tags in any order", tagged, info(pkg, "v1.3.0", "netgo,postgres"), ""},
 		{"no tags", tagged, info(pkg, "v1.3.0", ""), "built without tags netgo,postgres"},
 		{"other tags", tagged, info(pkg, "v1.3.0", "postgres"), "built with tags postgres, pinned netgo,postgres"},
@@ -40,6 +44,18 @@ func TestBuildProblem(t *testing.T) {
 	for _, c := range cases {
 		if got := buildProblem(c.bi, c.tool); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestInstallArg(t *testing.T) {
+	for goInstall, want := range map[string]string{
+		"example.com/tool":        "example.com/tool@latest",
+		"example.com/tool@latest": "example.com/tool@latest",
+		"example.com/tool@v1.3.0": "example.com/tool@v1.3.0",
+	} {
+		if got := (&config.Tool{GoInstall: goInstall}).InstallArg(); got != want {
+			t.Errorf("%s: %s, want %s", goInstall, got, want)
 		}
 	}
 }

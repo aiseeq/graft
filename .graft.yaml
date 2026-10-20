@@ -17,9 +17,9 @@ test_db:
 
 tools:
   glint:
-    go_install: github.com/aiseeq/glint/cmd/glint@v1.73.0
+    go_install: github.com/aiseeq/glint/cmd/glint
     check: [glint, rules]
-    expect: large-value-copied-per-element
+    expect: python-file
 
 tasks:
   build:

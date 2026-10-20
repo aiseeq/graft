@@ -732,7 +732,7 @@ leaves the empty ones alone: a fresh copy holds only what the template had.
 ```yaml
 tools:
   linter:
-    go_install: example.com/linter/cmd/linter@v1.4.2   # pinned; @latest is refused
+    go_install: example.com/linter/cmd/linter   # installed @latest; @vX.Y.Z pins the oldest release that works
     tags: [netgo]
     check: [linter, rules]       # its output must contain expect
     expect: some-rule
@@ -748,7 +748,10 @@ tools:
 
 A binary on PATH says nothing about its version, so a tool counts as present
 only when `check` prints `expect`: a version, or a capability such as a rule
-the project relies on. `graft tools` reports, `graft tools install` and
+the project relies on. Leave the version out of `go_install`, or write
+`@latest`, unless the project cannot work with an older release: `expect`
+already says what it needs, and a pin nobody raises only grows stale. Without
+a version graft installs `@latest`; with one it installs that release. `graft tools` reports, `graft tools install` and
 `graft init` run `go install` for the failing ones into `tools.bin_dir` from
 the user config (by default where go install puts binaries) and check again.
 Before installing, graft warns when the new copy will come ahead of another
@@ -763,14 +766,15 @@ Some Go tools print no real version (`dev`). A `go_install` tool may then
 leave out `check` and `expect`: graft finds the program on PATH (`binary`, or
 the name go install gives it: the last element of the package path, a `/vN`
 suffix skipped) and reads its Go build info. The main package must be the
-`go_install` path, the main module version the pinned release or a later
-one (the pin is the oldest release that works: a newer copy on PATH is
-never replaced by an older one) and, with `tags`, the build tags exactly
+`go_install` path, the main module version, when `go_install` pins one,
+the pinned release or a later one (the pin is the oldest release that works:
+a newer copy on PATH is never replaced by an older one) and, with `tags`, the build tags exactly
 those. A mismatch is reported as such (`built from
 example.com/migrator/cmd/migrator@v2.2.0, pinned v2.3.0`, `built without tags
 postgres`), and so is a program with no Go build info. A copy built from a
 local checkout carries `(devel)` or a `+dirty` version, a pre-release
-`-rc1`, and never matches a pin. `check` and `expect` go together; a `manual` tool needs both.
+`-rc1`, and never matches a pin; without a pin any build of the package
+counts. `check` and `expect` go together; a `manual` tool needs both.
 
 ## Environments and .env
 
@@ -1272,14 +1276,16 @@ deploy:
 - **Large files**: a binary file (NUL byte in the first 8000 bytes, git's own
   test) is refused unless its extension is in `binary_extensions`; binary
   files over `max_binary_bytes` and text files over `max_text_bytes` are
-  refused.
+  refused, and so is a symlink to an absolute path (`/x`, `C:\x`), which
+  leads into this machine and nowhere in another clone: one made by mistake
+  inside the tree is staged by a commit that stages all.
 - **Reverts**: a commit must not silently take back merged work, a tree from
   an old base committed on a fresh parent say. For each staged file and each
   of the `depth` recent commits of HEAD's first-parent line that changed it:
   when that commit's diff of the file applies to the staged tree and did not
   apply to HEAD's, the file takes it back, a deleted file as much as changed
-  lines. A revert that is meant names the commit (9 characters of its hash
-  or more) or the file in the message; `git revert` names the commit, and in
+  lines. A revert that is meant names the commit (7 characters of its hash
+  or more, the short form git prints) or the file in the message; `git revert` names the commit, and in
   a rebase, merge, cherry-pick or revert the message git prepared counts.
   Moves, the version files and `exceptions` do not count. A partial
   take-back, part of a commit's diff of a file, is not seen.

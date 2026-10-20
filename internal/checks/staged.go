@@ -13,6 +13,8 @@ import (
 type StagedFile struct {
 	// Path is slash-separated, relative to the work tree root.
 	Path string
+	// Symlink marks a symbolic link; its content is the target.
+	Symlink bool
 	gitx.Blob
 }
 
@@ -42,6 +44,7 @@ func Staged(repo *gitx.Repo) ([]StagedFile, error) {
 		return nil, err
 	}
 	var paths, oids []string
+	var links []bool
 	for entry := range strings.SplitSeq(index, "\x00") {
 		// "<mode> <oid> <stage>\t<path>"
 		meta, p, ok := strings.Cut(entry, "\t")
@@ -57,6 +60,7 @@ func Staged(repo *gitx.Repo) ([]StagedFile, error) {
 		}
 		paths = append(paths, p)
 		oids = append(oids, fields[1])
+		links = append(links, fields[0] == "120000")
 	}
 	blobs, err := repo.ReadBlobs(oids, maxScanBytes)
 	if err != nil {
@@ -64,7 +68,7 @@ func Staged(repo *gitx.Repo) ([]StagedFile, error) {
 	}
 	files := make([]StagedFile, len(blobs))
 	for i, b := range blobs {
-		files[i] = StagedFile{Path: paths[i], Blob: b}
+		files[i] = StagedFile{Path: paths[i], Symlink: links[i], Blob: b}
 	}
 	return files, nil
 }

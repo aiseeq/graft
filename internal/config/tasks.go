@@ -364,8 +364,8 @@ func (t *TestDB) SourceName(hash string) string {
 // MigrationHashLen is how many hex characters of the hash name a source.
 const MigrationHashLen = 8
 
-// Tool is a pinned development tool: installed with go install, or by hand
-// when go install cannot provide it (a system package).
+// Tool is a development tool: installed with go install, or by hand when go
+// install cannot provide it (a system package).
 type Tool struct {
 	GoInstall string   `yaml:"go_install"`
 	Tags      []string `yaml:"tags"`
@@ -374,7 +374,7 @@ type Tool struct {
 	Manual string `yaml:"manual"`
 	// Check runs the tool; its output must contain Expect (a version, or a
 	// capability such as a rule name). A go_install tool may leave both out:
-	// its Go build info is checked against the pin instead.
+	// its Go build info is checked against the package and any pin instead.
 	Check  []string `yaml:"check"`
 	Expect string   `yaml:"expect"`
 	// Binary names the program on PATH whose build info is checked, when it
@@ -386,10 +386,24 @@ type Tool struct {
 // rather than by running a check command.
 func (t *Tool) UsesBuildInfo() bool { return t.GoInstall != "" && len(t.Check) == 0 }
 
-// Pin splits go_install into the package path and the pinned version.
+// Pin splits go_install into the package path and the pinned version, the
+// oldest release that works; version is empty when go_install has none or
+// @latest.
 func (t *Tool) Pin() (pkg, version string) {
 	pkg, version, _ = strings.Cut(t.GoInstall, "@")
+	if version == "latest" {
+		version = ""
+	}
 	return pkg, version
+}
+
+// InstallArg is what go install gets: the package at its pin, else @latest.
+func (t *Tool) InstallArg() string {
+	pkg, version := t.Pin()
+	if version == "" {
+		version = "latest"
+	}
+	return pkg + "@" + version
 }
 
 // Program is the program the check looks up on PATH: the check command, the
@@ -427,12 +441,12 @@ func isMajorVersion(s string) bool {
 var builtinNames = []string{
 	"commit", "amend", "release", "version", "init", "check", "gate", "hook", "flags", "deploy",
 	"run", "help", "start", "stop", "restart", "status", "locks", "testdb", "tools", "tasks", "logs",
-	"stats",
+	"stats", "leaks", "worktree", "exec",
 }
 
 var (
 	taskNameRe  = regexp.MustCompile(`^[a-z][a-z0-9_:.-]*$`)
-	pinnedRe    = regexp.MustCompile(`^[a-zA-Z0-9._/-]+@v[0-9][0-9A-Za-z.+-]*$`)
+	goInstallRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+(@latest|@v[0-9][0-9A-Za-z.+-]*)?$`)
 	dbIdentRe   = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 	containerRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`)
 )
@@ -810,8 +824,8 @@ func (c *Config) validateTools() error {
 			return fmt.Errorf("%s: go_install or manual is required: how the tool gets installed", where)
 		case t.GoInstall != "" && t.Manual != "":
 			return fmt.Errorf("%s: go_install and manual are exclusive", where)
-		case t.GoInstall != "" && !pinnedRe.MatchString(t.GoInstall):
-			return fmt.Errorf("%s.go_install: a module path pinned to a version (path@vX.Y.Z), not @latest", where)
+		case t.GoInstall != "" && !goInstallRe.MatchString(t.GoInstall):
+			return fmt.Errorf("%s.go_install: a package path, alone or with @latest or @vX.Y.Z (the oldest release that works)", where)
 		case t.Manual != "" && len(t.Tags) > 0:
 			return fmt.Errorf("%s.tags: build tags apply to go_install only", where)
 		}
@@ -831,7 +845,7 @@ func (t *Tool) validateCheck(where string) error {
 	case t.Manual != "" && t.Binary != "":
 		return fmt.Errorf("%s.binary: names the program whose Go build info is checked, go_install tools only", where)
 	case (len(t.Check) == 0) != (t.Expect == ""):
-		return fmt.Errorf("%s: check and expect go together; leave both out to check the Go build info against the pin", where)
+		return fmt.Errorf("%s: check and expect go together; leave both out to check the Go build info against go_install", where)
 	case t.Binary != "" && len(t.Check) > 0:
 		return fmt.Errorf("%s.binary: with check, check names the program", where)
 	case strings.ContainsAny(t.Binary, `/\`):

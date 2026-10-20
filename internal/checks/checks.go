@@ -75,13 +75,21 @@ func Secrets(files []StagedFile, cfg config.Secrets) []Finding {
 	return findings
 }
 
-// LargeFiles rejects binaries that are not an expected asset type and files
-// over the size limits. Binary content does not diff and stays in the history
-// forever, so its limit is stricter.
+// LargeFiles rejects binaries that are not an expected asset type, files
+// over the size limits and symlinks to absolute paths. Binary content does
+// not diff and stays in the history forever, so its limit is stricter. An
+// absolute symlink leads into this machine, nowhere in another clone: one
+// made by mistake inside the tree is staged by a commit that stages all.
 func LargeFiles(files []StagedFile, cfg config.LargeFiles) []Finding {
 	var findings []Finding
 	for _, f := range files {
 		if config.Matches(cfg.Exceptions, f.Path) {
+			continue
+		}
+		if f.Symlink {
+			if target := string(f.Content); isAbs(target) {
+				findings = append(findings, Finding{Path: f.Path, Reason: fmt.Sprintf("symlink to the absolute path %s, which leads nowhere in another clone", target)})
+			}
 			continue
 		}
 		binary := f.IsBinary()
@@ -99,6 +107,14 @@ func LargeFiles(files []StagedFile, cfg config.LargeFiles) []Finding {
 		}
 	}
 	return findings
+}
+
+// isAbs tells whether a symlink target is absolute on any system, /x, \x
+// or C:x, whichever system made the link.
+func isAbs(target string) bool {
+	drive := len(target) >= 2 && target[1] == ':' &&
+		('a' <= target[0] && target[0] <= 'z' || 'A' <= target[0] && target[0] <= 'Z')
+	return drive || strings.HasPrefix(target, "/") || strings.HasPrefix(target, `\`)
 }
 
 func formatSize(n int64) string {

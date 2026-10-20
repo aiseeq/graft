@@ -455,6 +455,30 @@ func TestBinaryFileBlocked(t *testing.T) {
 	}
 }
 
+// A symlink to an absolute path, made by mistake inside the tree, is
+// refused; a relative one is a link the repository carries.
+func TestAbsoluteSymlinkBlocked(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need a privilege on Windows")
+	}
+	f := fileModeRepo(t, gateStep("ok"))
+	lib := t.TempDir()
+	if err := os.Symlink(lib, f.path("lib")); err != nil {
+		t.Fatal(err)
+	}
+	out, code := f.graft("", "commit", "-m", "feat: x")
+	if code == 0 || !strings.Contains(out, "lib: symlink to the absolute path "+lib+", which leads nowhere in another clone") {
+		t.Errorf("absolute: exit %d:\n%s", code, out)
+	}
+	if err := os.Remove(f.path("lib")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("docs", f.path("lib")); err != nil {
+		t.Fatal(err)
+	}
+	f.mustGraft("commit", "-m", "feat: x")
+}
+
 func TestConcurrentCommitsTakeTurns(t *testing.T) {
 	state := t.TempDir()
 	logFile, release := filepath.Join(state, "gate.log"), filepath.Join(state, "release")

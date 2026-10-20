@@ -113,6 +113,9 @@ func TestParseTestDBSocket(t *testing.T) {
 func TestParseTasksErrors(t *testing.T) {
 	cases := map[string]string{
 		"reserved name":     strings.Replace(tasksBase, "  lint:\n    desc", "  commit:\n    desc", 1),
+		"reserved exec":     strings.Replace(tasksBase, "  lint:\n    desc", "  exec:\n    desc", 1),
+		"reserved worktree": strings.Replace(tasksBase, "  lint:\n    desc", "  worktree:\n    desc", 1),
+		"reserved leaks":    strings.Replace(tasksBase, "  lint:\n    desc", "  leaks:\n    desc", 1),
 		"bad name":          strings.Replace(tasksBase, "  lint:\n    desc", "  Lint:\n    desc", 1),
 		"unknown dep":       strings.Replace(tasksBase, "deps: [lint]", "deps: [nosuch]", 1),
 		"unknown step task": strings.Replace(tasksBase, "run: [{task: lint}]", "run: [{task: nosuch}]", 1),
@@ -137,7 +140,7 @@ func TestParseTasksErrors(t *testing.T) {
 		"tmpfs zero":        strings.Replace(tasksBase, "tmpfs: 2G", "tmpfs: 0g", 1),
 		"tmpfs too small":   strings.Replace(tasksBase, "tmpfs: 2G", "tmpfs: 32m", 1),
 		"tmpfs options":     strings.Replace(tasksBase, "tmpfs: 2G", "tmpfs: '2g,mode=777'", 1),
-		"tool latest":       strings.Replace(tasksBase, "@v1.2.0", "@latest", 1),
+		"tool other query":  strings.Replace(tasksBase, "@v1.2.0", "@master", 1),
 		"tool w/o expect":   strings.Replace(tasksBase, "    expect: v1.2.0\n", "", 1),
 		"tool w/o install":  strings.Replace(tasksBase, "    go_install: example.com/linter/cmd/linter@v1.2.0\n", "", 1),
 		"tool two installs": strings.Replace(tasksBase, "    go_install: example.com/linter/cmd/linter@v1.2.0\n", "    go_install: example.com/linter/cmd/linter@v1.2.0\n    manual: sudo dnf install linter\n", 1),
@@ -168,6 +171,10 @@ func TestToolBuildInfoMode(t *testing.T) {
     go_install: example.com/versioned/v2@v2.0.1
   first:
     go_install: example.com/first/v1@v1.0.0
+  unpinned:
+    go_install: example.com/unpinned/cmd/unpinned
+  latest:
+    go_install: example.com/latest/cmd/latest@latest
 `
 	cfg, err := Parse([]byte(data))
 	if err != nil {
@@ -178,6 +185,8 @@ func TestToolBuildInfoMode(t *testing.T) {
 		"pg":        {"pgtool", "example.com/pg/v3/cmd/pg-tool", "v3.1.0"},
 		"versioned": {"versioned", "example.com/versioned/v2", "v2.0.1"},
 		"first":     {"v1", "example.com/first/v1", "v1.0.0"},
+		"unpinned":  {"unpinned", "example.com/unpinned/cmd/unpinned", ""},
+		"latest":    {"latest", "example.com/latest/cmd/latest", ""},
 	} {
 		tool := cfg.Tools[name]
 		pkg, version := tool.Pin()

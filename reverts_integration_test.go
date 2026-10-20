@@ -38,6 +38,7 @@ func TestCommitRefusesSilentRevert(t *testing.T) {
 	f.write("a.txt", "1\ntwo\nthree\n")
 	f.write("gen/out.txt", "x\n")
 	f.mustGraft("commit", "-m", "feat: other work")
+	y := f.git("rev-parse", "HEAD")
 
 	// Deleting a file a recent commit added takes it back too.
 	f.git("rm", "-q", "b.txt")
@@ -46,6 +47,9 @@ func TestCommitRefusesSilentRevert(t *testing.T) {
 	}
 	// Naming the file or the commit says it is meant.
 	f.mustGraft("commit", "-m", "chore: b.txt is not needed")
+	// The short hash git prints names the commit as well.
+	f.git("rm", "-q", "c.txt")
+	f.mustGraft("commit", "-m", "chore: undo "+y[:7])
 
 	// git revert names the commit it reverts.
 	f.write("a.txt", "1\nTWO\nthree\n")

@@ -88,6 +88,9 @@ func TestLargeFiles(t *testing.T) {
 	bin := func(p string, size int64) StagedFile {
 		return StagedFile{Path: p, Blob: gitx.Blob{Size: size, Head: []byte{0x7f, 'E', 'L', 'F', 0}}}
 	}
+	link := func(p, target string) StagedFile {
+		return StagedFile{Path: p, Symlink: true, Blob: gitx.Blob{Size: int64(len(target)), Head: []byte(target), Content: []byte(target)}}
+	}
 	files := []StagedFile{
 		bin("app", 50),        // binary, not an asset type
 		bin("logo.PNG", 50),   // asset under the limit
@@ -95,18 +98,39 @@ func TestLargeFiles(t *testing.T) {
 		{Path: "data.json", Blob: gitx.Blob{Size: 2000, Head: []byte("{")}}, // text over the limit
 		{Path: "ok.go", Blob: gitx.Blob{Size: 900, Head: []byte("package x")}},
 		{Path: "vendor/big.js", Blob: gitx.Blob{Size: 5000, Head: []byte("x")}},
+		link("root", "/opt/lib"),
+		link("drive", `C:\lib`),
+		link("unc", `\\server\lib`),
+		link("lib", "../lib"),
+		link("ratio", "ab:c"),
 	}
 	got := map[string]bool{}
 	for _, f := range LargeFiles(files, cfg.Checks.LargeFiles) {
 		got[f.Path] = true
 	}
-	want := map[string]bool{"app": true, "photo.jpg": true, "data.json": true}
+	want := map[string]bool{"app": true, "photo.jpg": true, "data.json": true, "root": true, "drive": true, "unc": true}
 	if len(got) != len(want) {
 		t.Errorf("findings %v, want %v", got, want)
 	}
 	for p := range want {
 		if !got[p] {
 			t.Errorf("%s not reported", p)
+		}
+	}
+}
+
+func TestNames(t *testing.T) {
+	sha := "917521cb6012aa83f2c4d5e6f708192a3b4c5d6e"
+	for msg, want := range map[string]bool{
+		"revert: undo 917521c":                             true,
+		"revert: undo 917521cb6012":                        true,
+		"Revert \"x\"\n\nThis reverts commit " + sha + ".": true,
+		"revert: undo 917521":                              false, // 6 characters name nothing
+		"revert: undo 917521d":                             false,
+		"revert: undo x917521c":                            false,
+	} {
+		if got := names(msg, sha); got != want {
+			t.Errorf("names(%q) = %v, want %v", msg, got, want)
 		}
 	}
 }
