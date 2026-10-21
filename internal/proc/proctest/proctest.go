@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -20,10 +21,12 @@ const childEnv = "GRAFT_TEST_NNP_CHILD"
 // Sandboxed runs the test name in a child with no_new_privs, where SELinux
 // refuses docker its domain, and tells whether this is that child: the
 // caller then tests, and otherwise returns. It skips where docker would not
-// be refused.
+// be refused. no_new_privs is set on one thread, so the child's test
+// goroutine stays on it: every process the test starts forks from it.
 func Sandboxed(t *testing.T, name string) bool {
 	t.Helper()
 	if _, child := os.LookupEnv(childEnv); child {
+		runtime.LockOSThread()
 		if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 			t.Fatal(err)
 		}

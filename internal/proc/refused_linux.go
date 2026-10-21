@@ -13,9 +13,10 @@ import (
 
 // Refused is a *RefusedError when the program at path may not start in this
 // process, nil when it may. Starting it anyway is no error for the program
-// alone: the kernel refuses it and SELinux raises an alert.
+// alone: the kernel refuses it and SELinux raises an alert. no_new_privs
+// belongs to a thread: the calling one is read, the one a start forks from.
 func Refused(path string) error {
-	status, err := os.ReadFile("/proc/self/status")
+	status, err := os.ReadFile("/proc/thread-self/status")
 	if err != nil {
 		return fmt.Errorf("the process status: %w", err)
 	}
