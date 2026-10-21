@@ -10,6 +10,8 @@ import (
 
 	"golang.org/x/mod/modfile"
 
+	"github.com/aiseeq/graft/v2/internal/atomicfile"
+	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 )
 
@@ -25,7 +27,7 @@ type WorktreeAddOptions struct {
 // the repositories live in, and links there the modules that go.work and
 // go.mod reach outside the repository, so the worktree builds as the
 // repository does.
-func (a *App) WorktreeAdd(_ context.Context, o WorktreeAddOptions) error {
+func (a *App) WorktreeAdd(ctx context.Context, o WorktreeAddOptions) error {
 	repo, cfg, err := a.open()
 	if err != nil {
 		return err
@@ -85,7 +87,66 @@ func (a *App) WorktreeAdd(_ context.Context, o WorktreeAddOptions) error {
 		}
 		a.printf("linked %s -> %s", l.at, l.to)
 	}
+	return a.prepareWorktree(ctx, main, dir)
+}
+
+// prepareWorktree copies worktree.copy from the main worktree into the one
+// at dir and runs worktree.setup there, as the config at dir has them: the
+// branch's own.
+func (a *App) prepareWorktree(ctx context.Context, main, dir string) error {
+	repo, err := gitx.Open(dir)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(repo.Root)
+	if err != nil {
+		return err
+	}
+	if err := a.requireGraft(cfg); err != nil {
+		return err
+	}
+	for _, p := range cfg.Worktree.Copy {
+		if err := copyLocal(main, dir, p); err != nil {
+			return fmt.Errorf("worktree.copy %s: %w", p, err)
+		}
+		a.printf("copied %s from %s", p, main)
+	}
+	for _, t := range cfg.Worktree.Setup {
+		a.printf("setup: %s", t)
+		if err := a.runner(repo, cfg).Run(ctx, t, nil); err != nil {
+			return fmt.Errorf("worktree.setup %s in %s: %w", t, dir, err)
+		}
+	}
 	return nil
+}
+
+// copyLocal copies the file at rel from the main worktree into the one at
+// dir, with its permissions.
+func copyLocal(main, dir, rel string) error {
+	from, to := filepath.Join(main, filepath.FromSlash(rel)), filepath.Join(dir, filepath.FromSlash(rel))
+	info, err := os.Stat(from)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("not in the main worktree %s", main)
+	}
+	if err != nil {
+		return fmt.Errorf("reading the main worktree's: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a file", from)
+	}
+	if _, err := os.Lstat(to); err == nil {
+		return errors.New("the checkout has it: worktree.copy is for files git does not track")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("the new worktree's: %w", err)
+	}
+	data, err := os.ReadFile(from)
+	if err != nil {
+		return fmt.Errorf("reading the main worktree's: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+		return fmt.Errorf("its directory: %w", err)
+	}
+	return atomicfile.Write(to, data, info.Mode().Perm())
 }
 
 // link is a symlink to make beside a worktree.

@@ -1378,6 +1378,21 @@ repository (`../kit`) is linked at the same place beside the worktree, so the
 worktree builds as the repository does; a link already there must lead to the
 same directory, or nothing is made.
 
+A checkout lacks what git does not track: the local setup (`.env`) and the
+files the project generates. `worktree` in `.graft.yaml`, as the branch has
+it, brings them in, so the gate and the tasks run in the new worktree as in
+the main one:
+
+```yaml
+worktree:
+  copy: [.env]               # files of the main worktree, copied with their permissions
+  setup: [generate-config]   # tasks run in the new worktree after the copy
+```
+
+A file of `copy` missing in the main worktree, or one the checkout has
+(tracked), is an error, and so is a failing `setup` task; the worktree stays,
+for the fix and a rerun of the task there.
+
 `graft worktree clean` lists every worktree but the main one and every local
 branch no worktree holds; with `--apply` it removes the ones whose work is in
 the trunk:

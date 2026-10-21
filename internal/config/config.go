@@ -89,6 +89,7 @@ type Config struct {
 	Services     map[string]*Service `yaml:"services"`
 	TestDB       *TestDB             `yaml:"test_db"`
 	Tools        map[string]*Tool    `yaml:"tools"`
+	Worktree     Worktree            `yaml:"worktree"`
 }
 
 // Version describes where the project version lives.
@@ -308,6 +309,7 @@ func (c *Config) validate() error {
 		c.validateCache,
 		c.validateServices,
 		c.validateTools,
+		c.validateWorktree,
 	}
 	for _, validate := range validators {
 		if err := validate(); err != nil {

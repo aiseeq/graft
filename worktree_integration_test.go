@@ -235,3 +235,58 @@ func TestWorktreeSync(t *testing.T) {
 		t.Errorf("the changes are not kept in the stash: %q", got)
 	}
 }
+
+// TestWorktreeAddCopiesAndSetsUp: worktree.copy brings the main worktree's
+// untracked local files into a new worktree with their permissions, and
+// worktree.setup runs there after, so the gate finds what the main worktree
+// has; a file missing in the main worktree, or one the checkout has, fails.
+func TestWorktreeAddCopiesAndSetsUp(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none}\nworktree:\n  copy: [.env, conf/local.yaml]\n  setup: [generate]\n" +
+			"tasks:\n  generate:\n    run: [" + helperStep("touch", "generated.txt") + "]\n",
+		".gitignore": ".env\nconf/\ngenerated.txt\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustGraft("commit", "-m", "feat: base")
+	f.git("remote", "set-head", "origin", "main")
+	writeFile(t, filepath.Join(f.work, ".env"), "SECRET=local\n")
+	if err := os.Chmod(filepath.Join(f.work, ".env"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(f.work, "conf", "local.yaml"), "a: 1\n")
+	cache := t.TempDir()
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache)
+
+	out := f.mustGraft("worktree", "add", "w/ready")
+	dir := filepath.Join(cache, "worktrees", "work", "w-ready")
+	if !strings.Contains(out, "copied .env from "+f.work) || !strings.Contains(out, "setup: generate") {
+		t.Errorf("add:\n%s", out)
+	}
+	if got := readFile(t, filepath.Join(dir, ".env")); got != "SECRET=local\n" {
+		t.Errorf(".env = %q", got)
+	}
+	if info, err := os.Stat(filepath.Join(dir, ".env")); err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Errorf(".env: %v %v", info, err)
+	}
+	if got := readFile(t, filepath.Join(dir, "conf", "local.yaml")); got != "a: 1\n" {
+		t.Errorf("conf/local.yaml = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "generated.txt")); err != nil {
+		t.Errorf("setup did not run in the worktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.work, "generated.txt")); err == nil {
+		t.Error("setup ran in the main worktree")
+	}
+
+	if err := os.Remove(filepath.Join(f.work, "conf", "local.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := f.graft("", "worktree", "add", "w/missing"); code == 0 || !strings.Contains(out, "worktree.copy conf/local.yaml: not in the main worktree "+f.work) {
+		t.Errorf("a missing file: exit %d\n%s", code, out)
+	}
+	writeFile(t, filepath.Join(f.work, ".graft.yaml"), "schema: 1\nversion: {mode: none}\nworktree:\n  copy: [.gitignore]\n")
+	f.mustGraft("commit", "-m", "chore: copy a tracked file")
+	if out, code := f.graft("", "worktree", "add", "w/tracked", "main"); code == 0 || !strings.Contains(out, "worktree.copy .gitignore: the checkout has it") {
+		t.Errorf("a tracked file: exit %d\n%s", code, out)
+	}
+}
