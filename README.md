@@ -703,7 +703,7 @@ seeing each other's rows:
 
 ```go
 func TestOrders(t *testing.T) {
-	pool := testdb.Connect(t)          // a pinged pgxpool on a fresh copy, dropped after the test
+	pool := testdb.Connect(t)          // a pinged pgxpool on a copy with the template's data
 	testdb.Truncate(t, pool, "orders") // empty tables the template's data would leak into the test
 	// testdb.NewDSN(t) gives the copy's DSN for another driver
 }
@@ -712,7 +712,7 @@ func TestOrders(t *testing.T) {
 `TEST_DB_DSN` names the source, the database `migrate` brings up; its name
 must contain `test` and end in `_source`, say `app_test_source`. The package
 copies it once into `app_test_template` and makes the copies
-`app_test_<test>_<random>` from the template; a binary that finds the
+`app_test_<test>_<owner>p<random>` from the template; a binary that finds the
 version in the source's `schema_migrations` changed rebuilds the template
 first. An advisory lock keyed by the source name lets copies be made side by
 side and keeps them off a template being rebuilt.
@@ -726,6 +726,22 @@ writing the whole template to the WAL and costs less CPU while tests write
 in parallel. `Truncate` empties the given tables and every table that
 references them, as `TRUNCATE ... CASCADE` does, in one statement, and
 leaves the empty ones alone: a fresh copy holds only what the template had.
+
+A copy a test is done with goes to the next test of the same binary once its
+data is as the template had it, which costs the server about half of what a
+new copy does (CPU and wall, 200 tests on a template of 525 relations). The
+reset sees in the cumulative statistics, flushed as the test's connections
+end, which tables the test wrote to, and in their files which it truncated;
+those and the tables referencing them are emptied, the template's rows are
+copied back and analyzed, and the sequences are set back. A test that
+changed the schema, a planner statistic, a materialized view or any other
+system catalog leaves its copy to be dropped, as every copy was before, with
+the reason in the test's log (`go test -v`). The reset needs PostgreSQL 15
+or later; older servers get a new copy per test. Each pooled copy keeps one
+connection open for the reset, whose catalog caches a new connection would
+read anew at a cost above the reset's. The copies outlive their binary in
+the pool: the next binary's first copy drops the copies of the binaries that
+are gone, whose owner key, an advisory lock, nobody holds.
 
 ## Tools
 

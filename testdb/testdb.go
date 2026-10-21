@@ -39,8 +39,9 @@ const (
 	templateSuffix = "_template"
 	// maxIdentifier is PostgreSQL's identifier length.
 	maxIdentifier = 63
-	// randomBytes are hex-encoded into a copy's name.
-	randomBytes = 12
+	// suffixLen is the length of the end of a copy's name that makes it
+	// unique: the owner key, p, and random hex digits.
+	suffixLen = 24
 	// maxTestPart caps the part of a copy's name taken from the test's.
 	maxTestPart = 16
 )
@@ -58,6 +59,25 @@ type DB struct {
 	// serverVersion is the server's server_version_num, read with the
 	// template.
 	serverVersion int
+
+	// adminDB is the binary's connections to the server's postgres database.
+	adminOnce sync.Once
+	adminDB   *sql.DB
+	adminErr  error
+
+	// The pool of copies the binary's tests are done with.
+	poolMu sync.Mutex
+	free   []*pooled
+
+	snapOnce sync.Once
+	snap     *snapshot
+	snapErr  error
+
+	ownerOnce sync.Once
+	ownerErr  error
+	// owner is the binary's key in the names of its copies, an advisory lock
+	// a connection of the admin pool holds.
+	owner int64
 }
 
 var (
@@ -101,7 +121,7 @@ func newDB(dsn string) (*DB, error) {
 	if !ok || prefix == "" {
 		return nil, fmt.Errorf("%s: database %q must be named <prefix>%s, the template and the copies take the prefix", DSNEnv, name, sourceSuffix)
 	}
-	if room := maxIdentifier - len(prefix) - 2 - 2*randomBytes; room < 1 {
+	if room := maxIdentifier - len(prefix) - 2 - suffixLen; room < 1 {
 		return nil, fmt.Errorf("%s: prefix %q is too long for copy names within %d characters", DSNEnv, prefix, maxIdentifier)
 	}
 	h := fnv.New64a()
@@ -133,59 +153,89 @@ func NewDSN(t *testing.T) string {
 	return db.NewDSN(t)
 }
 
-// NewDSN makes a copy of the source for the test and returns its DSN.
+// NewDSN gives the test a copy of the source, one another test of the binary
+// is done with and whose data was put back, or a new one, and returns its
+// DSN.
 func (db *DB) NewDSN(t *testing.T) string {
 	t.Helper()
 	db.ensureTemplate(t)
-	name, err := db.copyName(t.Name())
-	if err != nil {
-		t.Fatalf("testdb: %v", err)
+	c := db.take()
+	if c == nil {
+		var err error
+		if c, err = db.create(t.Context(), t.Name()); err != nil {
+			t.Fatalf("testdb: %v", err)
+		}
 	}
-	admin, err := sql.Open("pgx", db.dsn("postgres"))
-	if err != nil {
-		t.Fatalf("testdb: %v", err)
+	t.Cleanup(func() {
+		// The test's context is done by now; the reset or the drop must
+		// still run.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
+		defer cancel()
+		err := db.reuse(ctx, c)
+		if err == nil {
+			db.put(c)
+			return
+		}
+		t.Logf("testdb: dropping %s, not reused: %v", c.name, err)
+		if c.keeper != nil {
+			_ = c.keeper.Close(ctx) // the drop ends the session anyway
+		}
+		if err := db.drop(ctx, c.name); err != nil {
+			t.Errorf("testdb: dropping %s: %v", c.name, err)
+		}
+	})
+	return db.dsn(c.name)
+}
+
+// create makes a new copy of the template.
+func (db *DB) create(ctx context.Context, test string) (*pooled, error) {
+	if err := db.own(ctx); err != nil {
+		return nil, err
 	}
-	defer admin.Close()
+	name, err := db.copyName(test)
+	if err != nil {
+		return nil, err
+	}
+	admin, err := db.admin()
+	if err != nil {
+		return nil, err
+	}
+	c := &pooled{name: name}
 	// Shared: copies are made side by side, never while another binary holds
 	// the exclusive lock to rebuild the template. The template's connections
 	// are left alone: since PostgreSQL 15 a template with readers copies fine,
 	// and terminating them kills the parallel binaries reading its version.
-	err = db.withLock(t.Context(), admin, shared, func() error {
-		_, err := admin.ExecContext(t.Context(), createStatement(name, db.template, db.serverVersion))
-		return err
+	err = db.withLock(ctx, admin, shared, func() error {
+		if _, err := admin.ExecContext(ctx, createStatement(name, db.template, db.serverVersion)); err != nil {
+			return err
+		}
+		return admin.QueryRowContext(ctx, "SELECT oid FROM pg_database WHERE datname = $1", db.template).Scan(&c.template)
 	})
 	if err != nil {
-		t.Fatalf("testdb: creating %s: %v", name, err)
+		return nil, fmt.Errorf("creating %s: %w", name, err)
 	}
-	t.Cleanup(func() {
-		// The test's context is done by now; the drop must still run.
-		if err := db.drop(context.WithoutCancel(t.Context()), name); err != nil {
-			t.Errorf("testdb: dropping %s: %v", name, err)
-		}
-	})
-	return db.dsn(name)
+	return c, nil
 }
 
 var nonAlphaNum = regexp.MustCompile(`[^a-z0-9]+`)
 
-// copyName is <prefix>_<test>_<random>, within PostgreSQL's identifier
-// length.
+// copyName is <prefix>_<test>_<owner>p<random>, within PostgreSQL's
+// identifier length: the owner key tells whose pool the copy is in.
 func (db *DB) copyName(test string) (string, error) {
 	part := nonAlphaNum.ReplaceAllString(strings.ToLower(test), "_")
-	part = part[:min(len(part), maxTestPart, maxIdentifier-len(db.prefix)-2-2*randomBytes)]
-	b := make([]byte, randomBytes)
+	part = part[:min(len(part), maxTestPart, maxIdentifier-len(db.prefix)-2-suffixLen)]
+	b := make([]byte, 6)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("a random name: %w", err)
 	}
-	return db.prefix + "_" + part + "_" + hex.EncodeToString(b), nil
+	return fmt.Sprintf("%s_%s_%012xp%s", db.prefix, part, db.owner, hex.EncodeToString(b)[:11]), nil
 }
 
 func (db *DB) drop(ctx context.Context, name string) error {
-	admin, err := sql.Open("pgx", db.dsn("postgres"))
+	admin, err := db.admin()
 	if err != nil {
-		return fmt.Errorf("connect to drop %s: %w", name, err)
+		return err
 	}
-	defer admin.Close()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	_, err = admin.ExecContext(ctx, "DROP DATABASE IF EXISTS "+ident(name)+" WITH (FORCE)")
