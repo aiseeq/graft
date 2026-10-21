@@ -55,4 +55,15 @@ func TestCommitRefusesSilentRevert(t *testing.T) {
 	f.write("a.txt", "1\nTWO\nthree\n")
 	f.mustGraft("commit", "-m", "feat: louder")
 	f.git("revert", "--no-edit", "HEAD")
+
+	// Appending to a file whose recent commit appended too is no take-back,
+	// though that commit's patch, anchored at the end by its leading context,
+	// fits the new end, which repeats the old one.
+	tail := "\t}))\n}\n"
+	f.write("g.go", "func A() {\n\tf(`\n`,\n"+tail)
+	f.mustGraft("commit", "-m", "feat: A")
+	f.write("g.go", "func A() {\n\tf(`\n`,\n"+tail+"\nfunc B() {\n\ty()\n}\n")
+	f.mustGraft("commit", "-m", "feat: B")
+	f.write("g.go", "func A() {\n\tf(`\n`,\n"+tail+"\nfunc B() {\n\ty()\n}\n\nfunc C() {\n\tf(`\n`,\n"+tail)
+	f.mustGraft("commit", "-m", "feat: C")
 }

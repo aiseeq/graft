@@ -142,11 +142,22 @@ func recentCommits(repo *gitx.Repo, depth int) ([]recentCommit, error) {
 }
 
 // takesBack tells whether the commit's diff of the file applies to the staged
-// tree and did not apply to HEAD's.
+// tree and did not apply to HEAD's, and the staged change undoes some of it:
+// removes a line the commit added or brings back one it removed. A patch
+// with no context after it is anchored at the end of the file, so appending
+// to a file whose end repeats what the commit appended after lets the
+// commit's patch apply again, with nothing taken back.
 func takesBack(repo *gitx.Repo, c recentCommit, file, now, before string) (bool, error) {
 	diff, err := repo.Git("diff", "--no-renames", "--no-ext-diff", "--binary", c.parent, c.sha, "--", file)
 	if err != nil || diff == "" {
 		return false, err
+	}
+	staged, err := repo.Git("diff", "--cached", "--no-renames", "--no-ext-diff", "--binary", "HEAD", "--", file)
+	if err != nil {
+		return false, err
+	}
+	if !undoes(diff, staged) {
+		return false, nil
 	}
 	fits := func(index string) (bool, error) {
 		_, err := repo.GitInput(bytes.NewReader([]byte(diff)), []string{"GIT_INDEX_FILE=" + index}, "apply", "--cached", "--check")
@@ -163,4 +174,51 @@ func takesBack(repo *gitx.Repo, c recentCommit, file, now, before string) (bool,
 	}
 	ok, err := fits(before)
 	return !ok, err
+}
+
+// undoes tells whether the staged diff removes a line the commit's diff added
+// or adds one it removed; blank lines do not count. A commit's diff with no
+// such lines, binary, an empty file or a mode, counts as undone: the patch
+// applying is all there is to go by.
+func undoes(commit, staged string) bool {
+	added, removed := changedLines(commit)
+	if len(added)+len(removed) == 0 {
+		return true
+	}
+	stagedAdded, stagedRemoved := changedLines(staged)
+	for l := range stagedRemoved {
+		if added[l] {
+			return true
+		}
+	}
+	for l := range stagedAdded {
+		if removed[l] {
+			return true
+		}
+	}
+	return false
+}
+
+// changedLines are the non-blank lines a unified diff adds and removes; nil
+// for a binary diff.
+func changedLines(diff string) (added, removed map[string]bool) {
+	if strings.Contains(diff, "\nGIT binary patch\n") || strings.Contains(diff, "\nBinary files ") {
+		return nil, nil
+	}
+	added, removed = map[string]bool{}, map[string]bool{}
+	inHunk := false
+	for l := range strings.SplitSeq(diff, "\n") {
+		switch {
+		case strings.HasPrefix(l, "@@"):
+			inHunk = true
+		case strings.HasPrefix(l, "diff --git "):
+			inHunk = false
+		case !inHunk || strings.TrimSpace(l[min(1, len(l)):]) == "":
+		case l[0] == '+':
+			added[l[1:]] = true
+		case l[0] == '-':
+			removed[l[1:]] = true
+		}
+	}
+	return added, removed
 }
