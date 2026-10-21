@@ -232,8 +232,10 @@ and not when the message already names it:
 - the `Worker` trailers of the commits a merge (`MERGE_HEAD`) or
   `git merge --squash` brings in.
 
-A marker that does not parse or names no model, dir or base is an error; one
-whose worktree is gone is reported and passed over. Without markers the
+A marker is a hint and never stops a commit: one that cannot be read, does
+not parse or names no model, dir or base, and one whose worktree is gone or
+cannot be read, is reported and passed over. The job's worktree is read
+without the variables git sets for a hook (`GIT_INDEX_FILE`, `GIT_DIR`, ...). Without markers the
 message is left as it is. The second rule matches by file: a file both sides
 change for their own reasons (go.sum, a changelog) names the job's models, and
 work moved to other paths, or carried over after the marker is removed, does

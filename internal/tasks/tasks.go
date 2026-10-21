@@ -933,17 +933,8 @@ func BaseEnv() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing git environment variables: %w", err)
 	}
-	drop := append(gitVars, MarkerEnv)
 	// Non-nil even when empty: the runner caches it and nil means not read yet.
-	env := []string{}
-	for _, kv := range os.Environ() {
-		name, _, _ := strings.Cut(kv, "=")
-		// Windows treats variable names case-insensitively.
-		if !slices.ContainsFunc(drop, func(d string) bool { return strings.EqualFold(d, name) }) {
-			env = append(env, kv)
-		}
-	}
-	return env, nil
+	return append([]string{}, gitx.Without(os.Environ(), append(gitVars, MarkerEnv))...), nil
 }
 
 func sortedKeys(m map[string]string) []string {

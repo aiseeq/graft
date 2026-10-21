@@ -23,14 +23,29 @@ type Repo struct {
 	GitDir string
 	// CommonDir is shared by all worktrees of the repository (refs, config).
 	CommonDir string
+	// drop are the environment variables its git calls do not inherit.
+	drop []string
 }
 
 // ErrNotRepo is returned by Open outside a git work tree.
 var ErrNotRepo = errors.New("not inside a git work tree")
 
 // Open resolves the repository that contains dir.
-func Open(dir string) (*Repo, error) {
-	out, err := run(dir, nil, nil, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir")
+func Open(dir string) (*Repo, error) { return open(dir, nil) }
+
+// OpenOther resolves the repository that contains dir, a work tree other
+// than the one a hook may run in: its git calls drop the variables git sets
+// for the hook (LocalEnvVars), which would bind them to the hook's index.
+func OpenOther(dir string) (*Repo, error) {
+	drop, err := LocalEnvVars()
+	if err != nil {
+		return nil, fmt.Errorf("listing git environment variables: %w", err)
+	}
+	return open(dir, drop)
+}
+
+func open(dir string, drop []string) (*Repo, error) {
+	out, err := run(dir, drop, nil, nil, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrNotRepo, err)
 	}
@@ -42,22 +57,23 @@ func Open(dir string) (*Repo, error) {
 		Root:      filepath.FromSlash(lines[0]),
 		GitDir:    filepath.FromSlash(lines[1]),
 		CommonDir: filepath.FromSlash(lines[2]),
+		drop:      drop,
 	}, nil
 }
 
 // Git runs git in the work tree root and returns its stdout.
 func (r *Repo) Git(args ...string) (string, error) {
-	return run(r.Root, nil, nil, args...)
+	return run(r.Root, r.drop, nil, nil, args...)
 }
 
 // GitEnv runs git with extra environment entries (KEY=VALUE).
 func (r *Repo) GitEnv(env []string, args ...string) (string, error) {
-	return run(r.Root, env, nil, args...)
+	return run(r.Root, r.drop, env, nil, args...)
 }
 
 // GitInput runs git with stdin fed from input.
 func (r *Repo) GitInput(input io.Reader, env []string, args ...string) (string, error) {
-	return run(r.Root, env, input, args...)
+	return run(r.Root, r.drop, env, input, args...)
 }
 
 // Command builds a git command in the work tree root for callers that need to
@@ -65,6 +81,9 @@ func (r *Repo) GitInput(input io.Reader, env []string, args ...string) (string, 
 func (r *Repo) Command(args ...string) *exec.Cmd {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = r.Root
+	if len(r.drop) > 0 {
+		cmd.Env = Without(os.Environ(), r.drop)
+	}
 	return cmd
 }
 
@@ -85,11 +104,11 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error { return e.Err }
 
-func run(dir string, env []string, input io.Reader, args ...string) (string, error) {
+func run(dir string, drop, env []string, input io.Reader, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
+	if len(drop) > 0 || len(env) > 0 {
+		cmd.Env = append(Without(os.Environ(), drop), env...)
 	}
 	cmd.Stdin = input
 	var stdout, stderr bytes.Buffer
@@ -264,11 +283,24 @@ func (r *Repo) RemotesContaining(rev string) ([]string, error) {
 // this repository (GIT_DIR, GIT_INDEX_FILE, ...). Child processes that may run
 // git against other repositories must not inherit them.
 func LocalEnvVars() ([]string, error) {
-	out, err := run("", nil, nil, "rev-parse", "--local-env-vars")
+	out, err := run("", nil, nil, nil, "rev-parse", "--local-env-vars")
 	if err != nil {
 		return nil, err
 	}
 	return splitLines(out), nil
+}
+
+// Without is environ but the variables named in drop, case aside: Windows
+// treats names so.
+func Without(environ, drop []string) []string {
+	var kept []string
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		if !slices.ContainsFunc(drop, func(d string) bool { return strings.EqualFold(d, name) }) {
+			kept = append(kept, kv)
+		}
+	}
+	return kept
 }
 
 // ShowFile returns the content of path at rev.

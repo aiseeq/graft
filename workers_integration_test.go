@@ -47,7 +47,8 @@ func workerRepo(t *testing.T, versionMode string) *fixture {
 
 // TestWorkerTrailersInTheJobsWorktree: a commit in the worktree a job runs
 // in names each of its models once, the ones the message names already
-// too; a commit with no job names none.
+// too; a commit with no job names none; a marker that does not parse is
+// reported and passed over.
 func TestWorkerTrailersInTheJobsWorktree(t *testing.T) {
 	f := workerRepo(t, "file")
 	f.write("a.txt", "a1\n")
@@ -69,8 +70,11 @@ func TestWorkerTrailersInTheJobsWorktree(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(f.markers(), "job3"), "{")
 	f.write("a.txt", "a4\n")
-	if out, code := f.graft("", "commit", "-m", "feat: broken marker"); code == 0 || !strings.Contains(out, "the worker marker ") {
-		t.Errorf("a broken marker: exit %d\n%s", code, out)
+	if out := f.mustGraft("commit", "-m", "feat: broken marker"); !strings.Contains(out, "job3: not JSON: unexpected EOF: passed over") {
+		t.Errorf("a broken marker:\n%s", out)
+	}
+	if got := f.workers("HEAD"); got != "vendor/model-a,vendor/model-b" {
+		t.Errorf("next to a broken marker, trailers %q", got)
 	}
 }
 
@@ -137,5 +141,39 @@ func TestWorkerTrailersOfMergedCommits(t *testing.T) {
 	}
 	if _, err := os.Stat(f.markers()); err == nil {
 		t.Error("a marker was left")
+	}
+}
+
+// TestWorkerTrailersInGitsOwnCommits: a commit git makes itself in the
+// main worktree, a merge or git commit --no-verify, while a job runs in
+// another one, names its models when it carries the job's files: the job's
+// tree is read without the variables git binds the hook to its own index
+// with. A marker that cannot be read is reported and passed over.
+func TestWorkerTrailersInGitsOwnCommits(t *testing.T) {
+	f := workerRepo(t, "none")
+	job := filepath.Join(f.base, "job")
+	f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
+	writeMarker(t, f, "job1", job, f.git("rev-parse", "HEAD"), "vendor/model-a")
+	writeFile(t, filepath.Join(job, "d.txt"), "by the job\n")
+
+	f.git("switch", "-q", "-c", "side")
+	f.write("d.txt", "by the job\n")
+	f.mustGraft("commit", "-m", "feat: carried over")
+	f.git("switch", "-q", "main")
+	f.git("merge", "-q", "--no-ff", "--no-edit", "side")
+	if got := f.workers("HEAD"); got != "vendor/model-a" {
+		t.Errorf("merge, trailers %q\n%s", got, f.git("log", "-1", "--format=%B"))
+	}
+
+	writeFile(t, filepath.Join(job, "e.txt"), "by the job\n")
+	writeFile(t, filepath.Join(f.markers(), "job2"), "{")
+	f.write("e.txt", "by the job\n")
+	f.git("add", "e.txt")
+	out, code := f.exec(f.work, "", "git", "commit", "-q", "--no-verify", "-m", "feat: by hand")
+	if code != 0 || !strings.Contains(out, "the worker marker ") {
+		t.Errorf("git commit: exit %d\n%s", code, out)
+	}
+	if got := f.workers("HEAD"); got != "vendor/model-a" {
+		t.Errorf("git commit, trailers %q\n%s", got, f.git("log", "-1", "--format=%B"))
 	}
 }

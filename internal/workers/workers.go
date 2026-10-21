@@ -38,15 +38,16 @@ type Marker struct {
 func markerDir(repo *gitx.Repo) string { return filepath.Join(repo.CommonDir, "worker") }
 
 // Markers reads the live markers; names starting with a dot are files being
-// written. A marker that does not parse, or names no model, is an error: a
-// commit would lose who wrote its code.
-func Markers(repo *gitx.Repo) ([]Marker, error) {
+// written. A marker is a hint, not a part of the commit: one that cannot be
+// read, does not parse or names no model is reported to warn and passed over.
+func Markers(repo *gitx.Repo, warn io.Writer) []Marker {
 	entries, err := os.ReadDir(markerDir(repo))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("the worker markers: %w", err)
+		passOver(warn, markerDir(repo), err)
+		return nil
 	}
 	var markers []Marker
 	for _, e := range entries {
@@ -54,22 +55,35 @@ func Markers(repo *gitx.Repo) ([]Marker, error) {
 			continue
 		}
 		file := filepath.Join(markerDir(repo), e.Name())
-		data, err := os.ReadFile(file)
+		m, err := readMarker(file)
 		if err != nil {
-			return nil, fmt.Errorf("the worker marker: %w", err)
+			passOver(warn, file, err)
+			continue
 		}
-		var m Marker
-		dec := json.NewDecoder(bytes.NewReader(data))
-		if err := dec.Decode(&m); err != nil {
-			return nil, fmt.Errorf("the worker marker %s: %w", file, err)
-		}
-		if len(m.Models) == 0 || slices.Contains(m.Models, "") || m.Dir == "" || m.Base == "" {
-			return nil, fmt.Errorf("the worker marker %s: models, dir and base are required", file)
-		}
-		m.file = file
 		markers = append(markers, m)
 	}
-	return markers, nil
+	return markers
+}
+
+func readMarker(file string) (Marker, error) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return Marker{}, fmt.Errorf("reading: %w", err)
+	}
+	var m Marker
+	if err := json.NewDecoder(bytes.NewReader(data)).Decode(&m); err != nil {
+		return Marker{}, fmt.Errorf("not JSON: %w", err)
+	}
+	if len(m.Models) == 0 || slices.Contains(m.Models, "") || m.Dir == "" || m.Base == "" {
+		return Marker{}, errors.New("models, dir and base are required")
+	}
+	m.file = file
+	return m, nil
+}
+
+// passOver reports a marker the commit goes without.
+func passOver(warn io.Writer, file string, err error) {
+	fmt.Fprintf(warn, "graft: the worker marker %s: %v: passed over, the commit names no model of it\n", file, err)
 }
 
 // Models are the models whose work the commit being made in repo carries,
@@ -81,12 +95,10 @@ func Markers(repo *gitx.Repo) ([]Marker, error) {
 //     count, every commit touches them;
 //   - the Worker trailers of the commits a merge or a squash brings in.
 //
-// A marker whose worktree is gone is reported to warn and passed over.
+// A marker whose worktree is gone or cannot be read is reported to warn
+// and passed over.
 func Models(repo *gitx.Repo, skip []string, warn io.Writer) ([]string, error) {
-	markers, err := Markers(repo)
-	if err != nil {
-		return nil, err
-	}
+	markers := Markers(repo, warn)
 	var models []string
 	add := func(ms ...string) {
 		for _, m := range ms {
@@ -107,7 +119,8 @@ func Models(repo *gitx.Repo, skip []string, warn io.Writer) ([]string, error) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			passOver(warn, m.file, err)
+			continue
 		}
 		if dir == root {
 			add(m.Models...)
@@ -120,7 +133,8 @@ func Models(repo *gitx.Repo, skip []string, warn io.Writer) ([]string, error) {
 		}
 		changed, err := changedSince(dir, m.Base)
 		if err != nil {
-			return nil, fmt.Errorf("the worker marker %s: %w", m.file, err)
+			passOver(warn, m.file, err)
+			continue
 		}
 		if slices.ContainsFunc(staged, func(f string) bool { return changed[f] }) {
 			add(m.Models...)
@@ -163,9 +177,10 @@ func stagedFiles(repo *gitx.Repo, skip []string) ([]string, error) {
 }
 
 // changedSince are the files the worktree at dir changed since base: in
-// its commits and not yet committed, untracked ones too.
+// its commits and not yet committed, untracked ones too. The tree is
+// another worktree: git there must not inherit a hook's index.
 func changedSince(dir, base string) (map[string]bool, error) {
-	tree, err := gitx.Open(dir)
+	tree, err := gitx.OpenOther(dir)
 	if err != nil {
 		return nil, err
 	}
