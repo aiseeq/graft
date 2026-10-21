@@ -1345,9 +1345,13 @@ the trunk:
 
 - the trunk is `--trunk`, or the HEAD branch (`refs/remotes/<remote>/HEAD`) of
   `deploy.remote`, or of the only remote; every remote is fetched first;
-- in work, left alone: locked, a process works in it (its working directory,
-  read from /proc, so Linux only), used within `--min-age` (its HEAD reflog),
-  or uncommitted changes;
+- in work, left alone: locked (`git worktree lock --reason`, the reason
+  shown), a process works in it (its working directory or a file it has open
+  there, read from /proc, so Linux only), used within `--min-age` (its HEAD
+  reflog), or uncommitted changes. A tool that runs in a worktree in turns,
+  with pauses where no process is there, locks it for the whole job and
+  unlocks it when the job is done: between the turns nothing else shows the
+  worktree is taken, and `git worktree remove` refuses a locked one too;
 - in the trunk: merging it into the trunk (`git merge-tree --write-tree`)
   gives the trunk's tree, the version files graft bumps aside. Ancestry and
   patch ids are no measure: a rewritten commit has another hash, and a commit

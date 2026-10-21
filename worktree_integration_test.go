@@ -44,8 +44,12 @@ func TestWorktreeClean(t *testing.T) {
 	// Merged, but with an uncommitted file.
 	dirty := add("dirty")
 	writeFile(t, filepath.Join(dirty, "scratch.txt"), "s\n")
-	// Merged, but a process works in it.
+	// Merged, but a process works in it; another holds a file of one open
+	// from elsewhere; a third waits between its runs and locked it.
 	busy := add("busy")
+	held := add("held")
+	locked := add("locked")
+	f.git("worktree", "lock", "--reason", "job 7 runs here until it is done", locked)
 	// A commit whose subject the trunk has, with other content.
 	commitIn(add("look"), "shared.txt", "two\n", "feat: shared change")
 	// Branches without a worktree.
@@ -66,6 +70,17 @@ func TestWorktreeClean(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sleep.Process.Kill(); _ = sleep.Wait() })
+	writeFile(t, filepath.Join(held, "notes.txt"), "n\n")
+	f.git("-C", held, "add", "notes.txt")
+	f.git("-C", held, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "feat: notes")
+	f.write("notes.txt", "n\n")
+	f.mustGraft("commit", "-m", "feat: notes")
+	reader := exec.Command("sh", "-c", "exec 3<notes.txt; cd / && exec sleep 60 3<&3")
+	reader.Dir = held
+	if err := reader.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Process.Kill(); _ = reader.Wait() })
 
 	// Fresh worktrees wait an hour by default.
 	out := f.mustGraft("worktree", "clean")
@@ -79,6 +94,8 @@ func TestWorktreeClean(t *testing.T) {
 		"unmerged  " + wt("open") + " (w/open): adds +1 -0 lines to origin/main",
 		"in work   " + dirty + " (w/dirty): 1 uncommitted change",
 		"in work   " + busy + " (w/busy): a process works in it (sleep, pid ",
+		"in work   " + held + " (w/held): a process works in it (sleep, pid ",
+		"in work   " + locked + " (w/locked): locked: job 7 runs here until it is done (git worktree unlock to let it go)",
 		"check     " + wt("look") + " (w/look): its commits are all in origin/main by subject, but it adds +1 -1 lines to origin/main: looks merged, check",
 		"would remove branch b/old: in origin/main",
 		"unmerged  branch b/new: adds +1 -0 lines to origin/main",
@@ -107,7 +124,7 @@ func TestWorktreeClean(t *testing.T) {
 	if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/w/merged"); code == 0 {
 		t.Error("w/merged is still on origin")
 	}
-	for _, kept := range []string{wt("open"), dirty, busy, wt("look")} {
+	for _, kept := range []string{wt("open"), dirty, busy, held, locked, wt("look")} {
 		if _, err := os.Stat(kept); err != nil {
 			t.Errorf("%s is gone: %v", kept, err)
 		}

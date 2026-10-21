@@ -31,6 +31,8 @@ type WorktreeCleanOptions struct {
 type worktree struct {
 	path, head, branch string
 	locked, prunable   bool
+	// lockReason is what git worktree lock --reason gave, if anything.
+	lockReason string
 }
 
 // cleaner holds what one graft worktree clean works with.
@@ -44,7 +46,8 @@ type cleaner struct {
 	exclude []string
 	// subjects are the trunk's commit subjects.
 	subjects map[string]bool
-	// cwds maps a directory to the processes working in it.
+	// cwds maps a directory or an open file to the processes working in
+	// it or holding it.
 	cwds    map[string][]string
 	remotes []string
 	now     time.Time
@@ -73,7 +76,7 @@ func (a *App) WorktreeClean(_ context.Context, o WorktreeCleanOptions) error {
 	for _, f := range cfg.VersionFiles() {
 		c.exclude = append(c.exclude, ":(exclude)"+f)
 	}
-	if c.cwds, err = processCwds(); err != nil {
+	if c.cwds, err = processPaths(); err != nil {
 		return err
 	}
 	if err := c.readSubjects(); err != nil {
@@ -172,7 +175,7 @@ func listWorktrees(repo *gitx.Repo) ([]worktree, error) {
 		case "branch":
 			w.branch = strings.TrimPrefix(value, "refs/heads/")
 		case "locked":
-			w.locked = true
+			w.locked, w.lockReason = true, value
 		case "prunable":
 			w.prunable = true
 		}
@@ -180,9 +183,10 @@ func listWorktrees(repo *gitx.Repo) ([]worktree, error) {
 	return trees, nil
 }
 
-// processCwds maps each directory a process works in to the processes, from
-// /proc: the only way to see that a session or a build works in a worktree.
-func processCwds() (map[string][]string, error) {
+// processPaths maps each directory a process works in, and each file it has
+// open, to the processes, from /proc: a process may work on a worktree from
+// elsewhere (git -C, go -C, an editor). It errs off Linux.
+func processPaths() (map[string][]string, error) {
 	if runtime.GOOS != "linux" {
 		return nil, fmt.Errorf("graft worktree clean reads the processes' working directories from /proc, which %s lacks", runtime.GOOS)
 	}
@@ -190,7 +194,7 @@ func processCwds() (map[string][]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	cwds := map[string][]string{}
+	paths := map[string][]string{}
 	for _, e := range entries {
 		if strings.ContainsFunc(e.Name(), func(r rune) bool { return r < '0' || r > '9' }) {
 			continue
@@ -210,9 +214,29 @@ func processCwds() (map[string][]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		cwds[dir] = append(cwds[dir], strings.TrimSpace(string(comm))+", pid "+e.Name())
+		who := strings.TrimSpace(string(comm)) + ", pid " + e.Name()
+		paths[dir] = append(paths[dir], who)
+		fds, err := os.ReadDir(filepath.Join(proc, "fd"))
+		if gone(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, fd := range fds {
+			file, err := os.Readlink(filepath.Join(proc, "fd", fd.Name()))
+			switch {
+			case gone(err):
+				// Closed while being read.
+			case err != nil:
+				return nil, err
+			case filepath.IsAbs(file):
+				// Sockets, pipes and the like are not paths.
+				paths[file] = append(paths[file], who+" (a file open)")
+			}
+		}
 	}
-	return cwds, nil
+	return paths, nil
 }
 
 // gone tells a process that ended while being read, or another user's,
@@ -221,7 +245,8 @@ func gone(err error) bool {
 	return errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission)
 }
 
-// busy names the processes working in the directory or below it.
+// busy names the processes working in the directory or below it, or holding
+// a file there open.
 func (c *cleaner) busy(dir string) []string {
 	if real, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = real
@@ -233,7 +258,7 @@ func (c *cleaner) busy(dir string) []string {
 		}
 	}
 	slices.Sort(procs)
-	return procs
+	return slices.Compact(procs)
 }
 
 func (c *cleaner) line(kind, what, why string) {
@@ -258,7 +283,11 @@ func (c *cleaner) worktree(w worktree) error {
 		c.line("would prune", what, "its directory is gone")
 		return nil
 	case w.locked:
-		c.line("in work", what, "locked (git worktree unlock to let it go)")
+		why := "locked"
+		if w.lockReason != "" {
+			why += ": " + w.lockReason
+		}
+		c.line("in work", what, why+" (git worktree unlock to let it go)")
 		return nil
 	}
 	if procs := c.busy(w.path); len(procs) > 0 {
