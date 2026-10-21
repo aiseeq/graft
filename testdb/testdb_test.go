@@ -284,11 +284,14 @@ func TestTruncateSkipsEmptyTables(t *testing.T) {
 // loose sequence and an empty table.
 func richSource(t *testing.T) *DB {
 	t.Helper()
-	source(t, 3,
+	source(t, 4,
 		"CREATE TABLE parent (id serial PRIMARY KEY, name text)",
 		"INSERT INTO parent (name) VALUES ('a'), ('b')",
 		"CREATE TABLE child (parent_id int REFERENCES parent, note text)",
 		"INSERT INTO child VALUES (1, 'x')",
+		"CREATE TABLE tag (parent_id int REFERENCES parent, label text)",
+		"INSERT INTO tag VALUES (2, 't')",
+		"CREATE TABLE watcher (parent_id int REFERENCES parent)",
 		"CREATE TABLE empty_one (id int)",
 		"CREATE SEQUENCE loose",
 	)
@@ -300,7 +303,7 @@ func richSource(t *testing.T) *DB {
 }
 
 // state is what a test of the copy can see of richSource's data: rows,
-// sequences and the planner's row counts.
+// sequences and the planner's row and page counts.
 func state(t *testing.T, dsn string) string {
 	t.Helper()
 	conn, err := sql.Open("pgx", dsn)
@@ -308,25 +311,28 @@ func state(t *testing.T, dsn string) string {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	var parent, child, seqs, tuples string
+	var parent, child, tag, seqs, tuples string
 	var items, empty int
 	err = conn.QueryRow(`SELECT
 		(SELECT string_agg(id || ':' || name, ',' ORDER BY id) FROM parent),
 		(SELECT string_agg(parent_id || ':' || note, ',') FROM child),
+		(SELECT string_agg(parent_id || ':' || label, ',') FROM tag),
 		(SELECT count(*) FROM items), (SELECT count(*) FROM empty_one),
 		(SELECT format('%s/%s %s/%s', p.last_value, p.is_called, l.last_value, l.is_called) FROM parent_id_seq p, loose l),
-		(SELECT string_agg(relname || '=' || reltuples, ',' ORDER BY relname) FROM pg_class WHERE relname IN ('parent', 'child', 'items', 'empty_one'))`,
-	).Scan(&parent, &child, &items, &empty, &seqs, &tuples)
+		(SELECT string_agg(relname || '=' || reltuples || '/' || relpages, ',' ORDER BY relname) FROM pg_class
+			WHERE relname IN ('parent', 'child', 'tag', 'watcher', 'items', 'empty_one'))`,
+	).Scan(&parent, &child, &tag, &items, &empty, &seqs, &tuples)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fmt.Sprintf("parent %s; child %s; items %d; empty_one %d; sequences %s; reltuples %s", parent, child, items, empty, seqs, tuples)
+	return fmt.Sprintf("parent %s; child %s; tag %s; items %d; empty_one %d; sequences %s; reltuples/relpages %s", parent, child, tag, items, empty, seqs, tuples)
 }
 
 // TestReusedCopyIsLikeAFreshOne: a copy a test is done with goes to the next
 // test of the binary with its rows, sequences and planner statistics put
 // back as a fresh copy has them, whatever the test wrote, emptied or left
-// connected.
+// connected; the tables it did not write keep their rows, a reference to a
+// table it wrote among them, and the rows it wrote leave no dead pages.
 func TestReusedCopyIsLikeAFreshOne(t *testing.T) {
 	db := richSource(t)
 	db.ensureTemplate(t)
@@ -334,7 +340,11 @@ func TestReusedCopyIsLikeAFreshOne(t *testing.T) {
 	t.Run("dirty", func(t *testing.T) {
 		// A connection the test leaves open: closed after the reset.
 		var left *sql.DB
-		t.Cleanup(func() { left.Close() })
+		t.Cleanup(func() {
+			if left != nil {
+				left.Close()
+			}
+		})
 		first = db.NewDSN(t)
 		fresh = state(t, first)
 		var err error
@@ -346,7 +356,7 @@ func TestReusedCopyIsLikeAFreshOne(t *testing.T) {
 			"UPDATE child SET note = 'y'",
 			"TRUNCATE items",
 			"SELECT nextval('loose')",
-			"INSERT INTO empty_one VALUES (1)",
+			"INSERT INTO empty_one SELECT generate_series(1, 10000)",
 		} {
 			if _, err := left.Exec(q); err != nil {
 				t.Fatal(err)

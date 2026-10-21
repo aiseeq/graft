@@ -27,8 +27,10 @@ import (
 // What a test changed comes from the cumulative statistics, flushed when the
 // test's connections end: the tables with rows inserted, updated or deleted,
 // and the tables whose files changed (TRUNCATE leaves no row counts). Those
-// and every table referencing them are emptied, the template's rows copied
-// back and analyzed, and the sequences set back.
+// are emptied with the foreign keys off, the template's rows copied back, the
+// tables vacuumed and analyzed, and the sequences set back. The tables the
+// test did not write keep the template's rows, which reference the template's
+// rows of the others, put back.
 
 // reuseSince is the server_version_num of PostgreSQL 15, which added
 // pg_stat_force_next_flush: the reset's own changes must reach the statistics
@@ -284,7 +286,7 @@ func (db *DB) endSessions(ctx context.Context, name string, keeper uint32) error
 // catalog other than pg_class, a pg_class that differs from the template's
 // beyond the tables' files, or a changed materialized view make the copy
 // unfit.
-func (db *DB) changedTables(ctx context.Context, conn *pgx.Conn, c *pooled) ([]uint32, error) {
+func (db *DB) changedTables(ctx context.Context, conn *pgx.Conn, c *pooled) ([]userTable, error) {
 	rows, err := conn.Query(ctx, `SELECT s.relname FROM pg_stat_sys_tables s JOIN pg_class c ON c.oid = s.relid
 		WHERE s.schemaname = 'pg_catalog' AND NOT c.relisshared AND s.n_tup_ins + s.n_tup_upd + s.n_tup_del > 0`)
 	if err != nil {
@@ -319,7 +321,7 @@ func (db *DB) changedTables(ctx context.Context, conn *pgx.Conn, c *pooled) ([]u
 	if err != nil {
 		return nil, fmt.Errorf("the written tables: %w", err)
 	}
-	var changed []uint32
+	var changed []userTable
 	for _, tb := range tables {
 		if !slices.Contains(written, tb.OID) && tb.File == c.filenodes[tb.OID] {
 			continue
@@ -327,7 +329,7 @@ func (db *DB) changedTables(ctx context.Context, conn *pgx.Conn, c *pooled) ([]u
 		if tb.View {
 			return nil, fmt.Errorf("the test changed the materialized view %s", tb.Name)
 		}
-		changed = append(changed, tb.OID)
+		changed = append(changed, tb)
 	}
 	return changed, nil
 }
@@ -355,11 +357,12 @@ func equalLast(a, b *int64) bool {
 	return a == nil && b == nil || a != nil && b != nil && *a == *b
 }
 
-// putBack empties the changed tables and every table that references them,
-// as TRUNCATE ... CASCADE would reach, copies the template's rows back with
-// the foreign keys and triggers off, analyzes the tables as the template was,
-// and sets the sequences back.
-func (db *DB) putBack(ctx context.Context, conn *pgx.Conn, changed []uint32, seqs map[string]sequenceState) error {
+// putBack empties the changed tables and copies the template's rows back
+// with the foreign keys and triggers off, sets the sequences back, and
+// vacuums and analyzes the tables as the template was. DELETE, unlike
+// TRUNCATE, needs no table referencing them emptied too, which costs a reset
+// a new file and an ANALYZE for each; VACUUM takes the deleted rows away.
+func (db *DB) putBack(ctx context.Context, conn *pgx.Conn, changed []userTable, seqs map[string]sequenceState) error {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the reset: %w", err)
@@ -368,39 +371,18 @@ func (db *DB) putBack(ctx context.Context, conn *pgx.Conn, changed []uint32, seq
 	if _, err := tx.Exec(ctx, "SET LOCAL session_replication_role = replica; SET LOCAL lock_timeout = '5s'"); err != nil {
 		return fmt.Errorf("the reset's settings: %w", err)
 	}
-	var names []string
-	if len(changed) > 0 {
-		rows, err := tx.Query(ctx, `WITH RECURSIVE c(rel) AS (
-				SELECT unnest($1::oid[])::regclass
-				UNION
-				SELECT k.conrelid::regclass FROM pg_constraint k JOIN c ON k.confrelid = c.rel WHERE k.contype = 'f'
-			)
-			SELECT c.rel::oid, c.rel::text FROM c JOIN pg_class r ON r.oid = c.rel WHERE r.relkind = 'r'`, changed)
-		if err != nil {
-			return fmt.Errorf("the tables referencing the changed ones: %w", err)
+	names := make([]string, 0, len(changed))
+	for _, tb := range changed {
+		names = append(names, tb.Name)
+		if _, err := tx.Exec(ctx, "DELETE FROM ONLY "+tb.Name); err != nil { //nolint:sql-injection // a regclass name, quoted by the catalog
+			return fmt.Errorf("emptying %s: %w", tb.Name, err)
 		}
-		type table struct {
-			OID  uint32
-			Name string
+		seed, ok := db.snap.seeds[tb.OID]
+		if !ok {
+			continue
 		}
-		closure, err := pgx.CollectRows(rows, pgx.RowToStructByPos[table])
-		if err != nil {
-			return fmt.Errorf("the tables referencing the changed ones: %w", err)
-		}
-		for _, tb := range closure {
-			names = append(names, tb.Name)
-		}
-		if _, err := tx.Exec(ctx, "TRUNCATE ONLY "+strings.Join(names, ", ")); err != nil {
-			return fmt.Errorf("emptying the changed tables: %w", err)
-		}
-		for _, tb := range closure {
-			seed, ok := db.snap.seeds[tb.OID]
-			if !ok {
-				continue
-			}
-			if _, err := conn.PgConn().CopyFrom(ctx, bytes.NewReader(seed), "COPY "+tb.Name+" FROM STDIN (FORMAT binary)"); err != nil {
-				return fmt.Errorf("copying the rows of %s back: %w", tb.Name, err)
-			}
+		if _, err := conn.PgConn().CopyFrom(ctx, bytes.NewReader(seed), "COPY "+tb.Name+" FROM STDIN (FORMAT binary)"); err != nil { //nolint:sql-injection // a regclass name, quoted by the catalog
+			return fmt.Errorf("copying the rows of %s back: %w", tb.Name, err)
 		}
 	}
 	for name, want := range db.snap.sequences {
@@ -419,8 +401,8 @@ func (db *DB) putBack(ctx context.Context, conn *pgx.Conn, changed []uint32, seq
 		return fmt.Errorf("commit the reset: %w", err)
 	}
 	if len(names) > 0 {
-		if _, err := conn.Exec(ctx, "ANALYZE "+strings.Join(names, ", ")); err != nil {
-			return fmt.Errorf("analyzing the reset tables: %w", err)
+		if _, err := conn.Exec(ctx, "VACUUM (ANALYZE) "+strings.Join(names, ", ")); err != nil {
+			return fmt.Errorf("vacuuming the reset tables: %w", err)
 		}
 	}
 	return nil

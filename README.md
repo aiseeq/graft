@@ -728,12 +728,13 @@ references them, as `TRUNCATE ... CASCADE` does, in one statement, and
 leaves the empty ones alone: a fresh copy holds only what the template had.
 
 A copy a test is done with goes to the next test of the same binary once its
-data is as the template had it, which costs the server about half of what a
-new copy does (CPU and wall, 200 tests on a template of 525 relations). The
+data is as the template had it, which costs the server a third to a half of
+what a new copy does (200 tests on templates of 184 and 525 relations). The
 reset sees in the cumulative statistics, flushed as the test's connections
 end, which tables the test wrote to, and in their files which it truncated;
-those and the tables referencing them are emptied, the template's rows are
-copied back and analyzed, and the sequences are set back. A test that
+those alone are emptied, with the foreign keys off, the template's rows are
+copied back, the tables vacuumed and analyzed, and the sequences set back.
+The tables the test did not write keep the template's rows. A test that
 changed the schema, a planner statistic, a materialized view or any other
 system catalog leaves its copy to be dropped, as every copy was before, with
 the reason in the test's log (`go test -v`). The reset needs PostgreSQL 15
