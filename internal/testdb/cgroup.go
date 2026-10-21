@@ -28,6 +28,9 @@ func (d *DB) Cgroup(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if s.Refused != nil {
+		return "", ErrNoCgroup // docker, which knows the server's process, is out of reach
+	}
 	if !s.Running || s.Pid == 0 {
 		return "", fmt.Errorf("%s is not running", d.Cfg.Container)
 	}

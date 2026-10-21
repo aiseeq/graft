@@ -49,10 +49,20 @@ type State struct {
 	// Network is the container's network mode; Binds are its bind mounts.
 	Network string
 	Binds   []string
+	// Refused is set when docker may not start in this process: the state
+	// is then what the server answered on the DSN, and Settings the
+	// values of the configured settings, by name. Unreachable is why the
+	// server did not answer.
+	Refused     *RefusedError
+	Settings    map[string]string
+	Unreachable error
 }
 
 // Inspect asks docker about the container.
 func (d *DB) Inspect(ctx context.Context) (State, error) {
+	if r := refused(); r != nil {
+		return d.serverState(ctx, r)
+	}
 	cmd, err := dockerCommand(ctx, "inspect", "--type", "container", d.Cfg.Container)
 	if err != nil {
 		return State{}, err
@@ -131,6 +141,9 @@ func (d *DB) Drift(s State) string {
 	if !s.Exists {
 		return ""
 	}
+	if s.Refused != nil {
+		return d.settingsDrift(s.Settings)
+	}
 	var drift []string
 	got := s.Cmd
 	if len(got) > 0 && got[0] == "postgres" {
@@ -185,8 +198,12 @@ func (d *DB) Up(ctx context.Context, migrate func(context.Context) error) error 
 		return err
 	}
 	switch {
+	case s.Running && s.Refused != nil:
+		fmt.Fprintf(d.Log, "graft: %s answers on %s; %v\n", d.Cfg.Container, d.Cfg.Where(), s.Refused)
 	case s.Running:
 		fmt.Fprintf(d.Log, "graft: %s is running\n", d.Cfg.Container)
+	case s.Refused != nil:
+		return d.Unreachable(s)
 	case s.Exists:
 		fmt.Fprintf(d.Log, "graft: starting %s\n", d.Cfg.Container)
 		if err := docker(ctx, "start", d.Cfg.Container); err != nil {
@@ -202,8 +219,11 @@ func (d *DB) Up(ctx context.Context, migrate func(context.Context) error) error 
 		fmt.Fprintf(d.Log, "graft: warning: %s was created with other %s; graft testdb recreate applies the config\n",
 			d.Cfg.Container, drift)
 	}
-	if err := d.waitReady(ctx); err != nil {
-		return err
+	// A server that answered without docker is ready: serverState asked.
+	if s.Refused == nil {
+		if err := d.waitReady(ctx); err != nil {
+			return err
+		}
 	}
 	if err := d.prepareSource(ctx, d.Source); err != nil {
 		return err
@@ -336,6 +356,9 @@ func (d *DB) Down(ctx context.Context) error {
 	s, err := d.Inspect(ctx)
 	if err != nil {
 		return err
+	}
+	if s.Refused != nil {
+		return fmt.Errorf("removing %s: %w; run graft testdb down outside the sandbox", d.Cfg.Container, s.Refused)
 	}
 	if !s.Exists {
 		fmt.Fprintf(d.Log, "graft: %s does not exist\n", d.Cfg.Container)

@@ -102,6 +102,10 @@ func (a *App) testDBStatus(ctx context.Context, db *testdb.DB) error {
 		return err
 	}
 	switch {
+	case s.Refused != nil && s.Running:
+		a.printf("%s answers, %s; %v", db.Cfg.Container, db.DSN(), s.Refused)
+	case s.Refused != nil:
+		a.printf("%v", db.Unreachable(s))
 	case !s.Exists:
 		a.printf("%s does not exist (graft testdb up creates it)", db.Cfg.Container)
 	case s.Running:

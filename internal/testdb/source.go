@@ -1,7 +1,6 @@
 package testdb
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 )
@@ -61,7 +62,12 @@ func (d *DB) prepareSource(ctx context.Context, source string) error {
 	if source == d.Cfg.Database {
 		return nil
 	}
-	rows, err := d.psql(ctx, "SELECT datname, coalesce(shobj_description(oid, 'pg_database'), '') FROM pg_database")
+	conn, err := d.connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(context.WithoutCancel(ctx))
+	rows, err := query(ctx, conn, "SELECT datname, coalesce(shobj_description(oid, 'pg_database'), '') FROM pg_database")
 	if err != nil {
 		return err
 	}
@@ -71,20 +77,20 @@ func (d *DB) prepareSource(ctx context.Context, source string) error {
 	}
 	if _, ok := comments[source]; !ok {
 		fmt.Fprintf(d.Log, "graft: creating %s for this set of migrations\n", source)
-		if _, err := d.psql(ctx, "CREATE DATABASE "+source); err != nil {
+		if _, err := query(ctx, conn, "CREATE DATABASE "+source); err != nil {
 			return err
 		}
 	}
-	if _, err := d.psql(ctx, fmt.Sprintf("COMMENT ON DATABASE %s IS '%s%s'", source, usedMark, time.Now().UTC().Format(time.RFC3339))); err != nil {
+	if _, err := query(ctx, conn, fmt.Sprintf("COMMENT ON DATABASE %s IS '%s%s'", source, usedMark, time.Now().UTC().Format(time.RFC3339))); err != nil {
 		return err
 	}
-	return d.dropStale(ctx, source, comments)
+	return d.dropStale(ctx, conn, source, comments)
 }
 
 // dropStale drops the sources of other migration sets that were not used for
 // staleAfter, and the databases made from them (the template and copies the
 // testdb package names after the source).
-func (d *DB) dropStale(ctx context.Context, source string, comments map[string]string) error {
+func (d *DB) dropStale(ctx context.Context, conn *pgx.Conn, source string, comments map[string]string) error {
 	hash := "[0-9a-f]{" + fmt.Sprint(config.MigrationHashLen) + "}"
 	stem, derived := strings.CutSuffix(d.Cfg.Database, config.SourceSuffix)
 	// family matches a database of a migration set; its first group names
@@ -113,32 +119,10 @@ func (d *DB) dropStale(ctx context.Context, source string, comments map[string]s
 		}
 		for _, db := range names {
 			fmt.Fprintf(d.Log, "graft: dropping %s: its migration set was not used for %s\n", db, staleAfter)
-			if _, err := d.psql(ctx, "DROP DATABASE IF EXISTS "+db+" WITH (FORCE)"); err != nil {
+			if _, err := query(ctx, conn, "DROP DATABASE IF EXISTS "+db+" WITH (FORCE)"); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
-}
-
-// psql runs one statement in the container, connected to the configured
-// database, and returns the rows, fields split on |.
-func (d *DB) psql(ctx context.Context, sql string) ([][]string, error) {
-	cmd, err := dockerCommand(ctx, "exec", d.Cfg.Container, "psql", "-U", d.Cfg.User, "-d", d.Cfg.Database,
-		"-v", "ON_ERROR_STOP=1", "-tAc", sql)
-	if err != nil {
-		return nil, err
-	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("psql in %s: %s: %w: %s", d.Cfg.Container, sql, err, strings.TrimSpace(stderr.String()))
-	}
-	var rows [][]string
-	for line := range strings.SplitSeq(strings.TrimSpace(stdout.String()), "\n") {
-		if line != "" {
-			rows = append(rows, strings.Split(line, "|"))
-		}
-	}
-	return rows, nil
 }

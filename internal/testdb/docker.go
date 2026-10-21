@@ -2,6 +2,7 @@ package testdb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -19,10 +20,25 @@ var dockerCheck = sync.OnceValues(func() (string, error) {
 		return "", err
 	}
 	if why != "" {
-		return "", fmt.Errorf("the test database needs docker, which cannot start here: %s; run the tests that need the database outside this sandbox", why)
+		return "", &RefusedError{Why: why}
 	}
 	return path, nil
 })
+
+// RefusedError: docker may not start in this process. The server, brought
+// up from outside, may still answer on the DSN.
+type RefusedError struct{ Why string }
+
+func (e *RefusedError) Error() string { return "docker cannot start here: " + e.Why }
+
+// refused is why docker may not start, nil when it may or when it is missing.
+func refused() *RefusedError {
+	var r *RefusedError
+	if _, err := dockerCheck(); errors.As(err, &r) {
+		return r
+	}
+	return nil
+}
 
 // dockerCommand is docker with args, or why docker cannot start: refused,
 // the attempt would only raise an SELinux alert on the desktop each time.

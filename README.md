@@ -688,9 +688,16 @@ A process running with no_new_privs, as sandboxes run the commands of a coding
 agent, cannot start docker where SELinux labels it a container runtime
 (`container_runtime_exec_t`): SELinux refuses the move into the runtime's
 domain and the desktop shows an alert each time. graft checks
-`/proc/self/status` and the label before the first docker command and stops
-with an error that says so, without starting docker; the tests that need the
-database then run outside the sandbox.
+`/proc/self/status` and the label before the first docker command and does
+not start docker there. It uses the server as it answers on the DSN instead:
+`graft testdb up` and every `test_db` task find it running once it listens
+where the config asks, compare the configured settings with what the server
+reports, create the source of a migration set over the connection and run
+`migrate`. So a database brought up outside the sandbox (`graft testdb up`)
+serves the tests run inside it, on a unix socket as well (the sandbox must
+allow connecting to sockets; Codex does with network access on). A server
+that does not answer is an error that says to bring it up outside the
+sandbox, and so are `down` and `recreate`; the stats get no database CPU.
 
 `tmpfs` mounts a tmpfs of that size in place of the image's data volume
 (`/var/lib/postgresql` for postgres 18 and later, `/var/lib/postgresql/data`
