@@ -470,10 +470,16 @@ func hookCmd(ctx context.Context, a *app.App, args []string) error {
 		return fmt.Errorf("%w: hook needs a name: %s", errUsage, strings.Join(hooks.Names, " or "))
 	}
 	// Git passes hook-specific arguments (post-merge gets the squash flag);
-	// graft decides from the repository state instead.
+	// graft decides from the repository state instead, and takes only the
+	// message file of prepare-commit-msg.
 	switch args[0] {
 	case hooks.PreCommit:
 		return a.HookPreCommit(ctx)
+	case hooks.PrepareCommitMsg:
+		if len(args) < 2 {
+			return fmt.Errorf("%w: hook %s needs the message file git passes", errUsage, hooks.PrepareCommitMsg)
+		}
+		return a.HookPrepareCommitMsg(args[1])
 	case hooks.PostMerge:
 		return a.HookPostMerge(ctx)
 	default:

@@ -111,7 +111,7 @@ stats` (`wait_s`).
 | `graft check` | run the content checks on the index |
 | `graft leaks <revision range>` | scan commits for the private names and terms of the user config (`leaks`) |
 | `graft gate` | run the gate commands (`go vet ./...` in every Go module first, see `go_vet`) |
-| `graft hook pre-commit` / `post-merge` | what the installed hooks call |
+| `graft hook pre-commit` / `prepare-commit-msg` / `post-merge` | what the installed hooks call |
 | `graft flags [status]` | is the flag raised: open journal events no exception mutes |
 | `graft flags show <id>` | one event in full |
 | `graft flags ack <id> --reason R` | close an open event with a reason |
@@ -177,7 +177,8 @@ stats` (`wait_s`).
    a work item key (`ticket.pattern`) and the message does not mention it yet,
    the key is added as a paragraph of its own, before a closing trailer block
    (`Co-Authored-By: ...`) so git still sees the trailers; a branch in
-   `ticket.skip_branches` lends no key. graft adds no trailers itself.
+   `ticket.skip_branches` lends no key. The only trailers graft adds are
+   `Worker` ones (see [Worker trailers](#worker-trailers)).
 8. Push to each remote in turn, with `--force-with-lease` on a branch in
    `push.force_with_lease`. A failing remote does not stop the others; the
    summary names every failure with the command to retry, and the exit status
@@ -185,7 +186,7 @@ stats` (`wait_s`).
 
 ### Hooks
 
-`graft init` writes two small `sh` shims into `hooks.dir` (`.githooks` by
+`graft init` writes small `sh` shims into `hooks.dir` (`.githooks` by
 default) and points `core.hooksPath` at it with a relative path. Commit the
 shims; every clone runs `graft init` once. The shim exits with an error and an
 install hint when `graft` is not on `PATH`, so a missing binary never lets a
@@ -195,6 +196,8 @@ commit through unchecked.
   everything). For a commit git's machinery drives (merge, rebase, cherry-pick,
   revert) it runs the checks and the gate. A hand-written `git commit` is
   refused with the graft commands this project's config allows.
+- **prepare-commit-msg**: adds the `Worker` trailers to a message git
+  commits itself (`git commit`, a merge, `git merge --squash`).
 - **post-merge**: after a real merge commit (one with a second parent) it runs
   the gate. A merge without text conflicts can still break the build; the hook
   says so and points at `graft amend`. Fast-forwards are not gated.
@@ -204,6 +207,37 @@ write and to repoint a
 `core.hooksPath` that leads elsewhere. An absolute `core.hooksPath` to the same
 directory is rewritten as relative. On Windows, keep the shims LF:
 add `.githooks/* text eol=lf` to `.gitattributes`.
+
+### Worker trailers
+
+A tool that runs a coding agent on a job leaves a marker while the job
+lives: the file `<git common dir>/worker/<id>`, a JSON object
+
+```json
+{"id": "job1", "models": ["vendor/model-a"], "client": "cli-a",
+ "dir": "/abs/path/of/the/worktree", "base": "<full sha of HEAD at the start>",
+ "started": "2026-01-02T03:04:05Z"}
+```
+
+written under a name starting with a dot and renamed (such names are skipped),
+and removed when the job is over. `models` lists the exact model ids, in
+order. `graft commit`, `graft amend` and the `prepare-commit-msg` hook add a
+`Worker: <model>` trailer for each model whose work the commit carries, once,
+and not when the message already names it:
+
+- a marker whose `dir` is this worktree: the job runs here;
+- a marker of another worktree whose changes since `base`, committed or not,
+  touch a file the commit changes (the version files aside): its work carried
+  over by hand;
+- the `Worker` trailers of the commits a merge (`MERGE_HEAD`) or
+  `git merge --squash` brings in.
+
+A marker that does not parse or names no model, dir or base is an error; one
+whose worktree is gone is reported and passed over. Without markers the
+message is left as it is. The second rule matches by file: a file both sides
+change for their own reasons (go.sum, a changelog) names the job's models, and
+work moved to other paths, or carried over after the marker is removed, does
+not.
 
 ## .graft.yaml
 

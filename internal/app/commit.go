@@ -142,7 +142,11 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	if err := runChecks(repo, cfg, plan.message, a.Stderr); err != nil {
 		return undo(err)
 	}
-	if _, err := repo.GitInput(strings.NewReader(plan.message), markerEnv, "commit", "--cleanup=verbatim", "-F", "-"); err != nil {
+	msg, err := a.withWorkers(repo, cfg, plan.message)
+	if err != nil {
+		return undo(err)
+	}
+	if _, err := repo.GitInput(strings.NewReader(msg), markerEnv, "commit", "--cleanup=verbatim", "-F", "-"); err != nil {
 		return undo(err)
 	}
 

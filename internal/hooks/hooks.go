@@ -15,12 +15,13 @@ import (
 
 // Names of the hooks graft installs.
 const (
-	PreCommit = "pre-commit"
-	PostMerge = "post-merge"
+	PreCommit        = "pre-commit"
+	PrepareCommitMsg = "prepare-commit-msg"
+	PostMerge        = "post-merge"
 )
 
 // Names lists every hook graft installs.
-var Names = []string{PreCommit, PostMerge}
+var Names = []string{PreCommit, PrepareCommitMsg, PostMerge}
 
 // InstallCommand gets graft onto PATH: the latest release, whatever version
 // a project needs at least, as graft versions are not pinned.

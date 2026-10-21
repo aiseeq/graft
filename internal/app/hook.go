@@ -7,8 +7,11 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/hooks"
 	"github.com/aiseeq/graft/v2/internal/tasks"
+	"github.com/aiseeq/graft/v2/internal/workers"
 )
 
 // HookPreCommit decides whether git may create a commit.
@@ -19,14 +22,8 @@ import (
 // resolution. A hand-written git commit is refused: it skips the version bump,
 // the work item key and the push.
 func (a *App) HookPreCommit(ctx context.Context) error {
-	if v := os.Getenv(tasks.MarkerEnv); v != "" {
-		marked, err := strconv.ParseBool(v)
-		if err != nil {
-			return fmt.Errorf("%s=%q: %w", tasks.MarkerEnv, v, err)
-		}
-		if marked {
-			return nil
-		}
+	if own, err := graftsOwn(); err != nil || own {
+		return err
 	}
 	repo, cfg, err := a.open()
 	if err != nil {
@@ -47,6 +44,55 @@ func (a *App) HookPreCommit(ctx context.Context) error {
 		return fmt.Errorf("%w\nresolve the %s so that the gate passes, then continue", err, kind)
 	}
 	return nil
+}
+
+// HookPrepareCommitMsg adds the Worker trailers to the message git is
+// about to commit (a git commit, a merge, a squash): graft's own commits add
+// them themselves.
+func (a *App) HookPrepareCommitMsg(file string) error {
+	if own, err := graftsOwn(); err != nil || own {
+		return err
+	}
+	repo, cfg, err := a.open()
+	if err != nil {
+		return err
+	}
+	msg, err := os.ReadFile(file)
+	if err != nil {
+		return fmt.Errorf("the commit message: %w", err)
+	}
+	with, err := a.withWorkers(repo, cfg, string(msg))
+	if err != nil || with == string(msg) {
+		return err
+	}
+	if err := os.WriteFile(file, []byte(with), 0o644); err != nil {
+		return fmt.Errorf("the commit message: %w", err)
+	}
+	return nil
+}
+
+// graftsOwn tells whether graft itself runs the git command the hook is
+// called from.
+func graftsOwn() (bool, error) {
+	v := os.Getenv(tasks.MarkerEnv)
+	if v == "" {
+		return false, nil
+	}
+	own, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s=%q: %w", tasks.MarkerEnv, v, err)
+	}
+	return own, nil
+}
+
+// withWorkers is msg with a Worker trailer per model whose work the commit
+// being made carries (workers.Models).
+func (a *App) withWorkers(repo *gitx.Repo, cfg *config.Config, msg string) (string, error) {
+	models, err := workers.Models(repo, cfg.VersionFiles(), a.Stderr)
+	if err != nil {
+		return "", err
+	}
+	return workers.WithTrailers(repo, msg, models)
 }
 
 // HookPostMerge runs the gate after a real merge commit. A merge without text

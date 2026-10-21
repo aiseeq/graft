@@ -42,7 +42,10 @@ func (a *App) Amend(ctx context.Context) error {
 		if err := runChecks(repo, cfg, "", a.Stderr); err != nil {
 			return err
 		}
-		if _, err := repo.GitEnv(markerEnv, "commit", "--amend", "--no-edit"); err != nil {
+		if message, err = a.withWorkers(repo, cfg, strings.TrimRight(message, "\n")+"\n"); err != nil {
+			return err
+		}
+		if _, err := repo.GitInput(strings.NewReader(message), markerEnv, "commit", "--amend", "--cleanup=verbatim", "-F", "-"); err != nil {
 			return err
 		}
 		head, err := repo.Git("rev-parse", "--short", "HEAD")
