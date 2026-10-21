@@ -21,6 +21,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/dotenv"
 	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/lintcache"
 	"github.com/aiseeq/graft/v2/internal/loadavg"
 	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/lock"
@@ -70,12 +71,16 @@ type Runner struct {
 	// NoCache runs the tasks with cache as if they had none.
 	NoCache bool
 
-	lookup  *dotenv.Lookup
-	base    []string
-	version *string
-	testDB  *TestDB
-	done    map[string]bool
-	held    map[string]lock.Mode
+	lookup *dotenv.Lookup
+	base   []string
+	// lintCache is the work tree's golangci-lint cache, once looked for;
+	// lintCacheErr says why there is none.
+	lintCache    string
+	lintCacheErr error
+	version      *string
+	testDB       *TestDB
+	done         map[string]bool
+	held         map[string]lock.Mode
 	// Load reads this machine's load settings for heavy tasks.
 	Load func() (userconfig.MachineLoad, error)
 	// heavy counts the heavy tasks running, admitted by the outermost.
@@ -876,7 +881,8 @@ func (r *Runner) watchDB() {
 }
 
 // env is the base environment (without graft's marker and git's hook
-// variables) plus the task's .env keys and vars.
+// variables) plus the task's .env keys and vars, and the work tree's own
+// golangci-lint cache unless one is set (lintcache).
 func (r *Runner) env(t *config.Task, vars map[string]string) ([]string, error) {
 	if r.base == nil {
 		base, err := BaseEnv()
@@ -894,7 +900,39 @@ func (r *Runner) env(t *config.Task, vars map[string]string) ([]string, error) {
 	for _, k := range sortedKeys(vars) {
 		env = append(env, k+"="+vars[k])
 	}
-	return env, nil
+	if v, set := lookupEnv(env, lintcache.Env); set {
+		owned, err := lintcache.Owned(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s=%s: %w", lintcache.Env, v, err)
+		}
+		if !owned {
+			return env, nil
+		}
+	}
+	env = gitx.Without(env, []string{lintcache.Env})
+	if r.lintCache == "" && r.lintCacheErr == nil {
+		r.lintCache, r.lintCacheErr = lintcache.Dir(r.Root)
+		if r.lintCacheErr != nil {
+			// Once: a failover, which tasks without golangci-lint need not stop on.
+			fmt.Fprintf(r.Stderr, "graft: no golangci-lint cache of this work tree, steps share golangci-lint's own: %v\n", r.lintCacheErr)
+		}
+	}
+	if r.lintCacheErr != nil {
+		return env, nil
+	}
+	return append(env, lintcache.Env+"="+r.lintCache), nil
+}
+
+// lookupEnv is the last value of the variable in env, which is the one a
+// process sees.
+func lookupEnv(env []string, name string) (string, bool) {
+	for i := len(env) - 1; i >= 0; i-- {
+		k, v, _ := strings.Cut(env[i], "=")
+		if strings.EqualFold(k, name) {
+			return v, true
+		}
+	}
+	return "", false
 }
 
 // KeyValues resolves .env keys into KEY=VALUE entries; optional keys set

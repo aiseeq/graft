@@ -267,6 +267,10 @@ func TestStatsFailureDoesNotFailTheTask(t *testing.T) {
 	if n := strings.Count(out, "resource stats not recorded"); n != 1 {
 		t.Errorf("want one warning, got %d:\n%s", n, out)
 	}
+	// Nor does the lint cache, which lives there too.
+	if n := strings.Count(out, "no golangci-lint cache of this work tree"); n != 1 {
+		t.Errorf("want one lint cache warning, got %d:\n%s", n, out)
+	}
 }
 
 func TestStatsCommand(t *testing.T) {

@@ -235,8 +235,8 @@ and not when the message already names it:
 A marker is a hint and never stops a commit: one that cannot be read, does
 not parse or names no model, dir or base, and one whose worktree is gone or
 cannot be read, is reported and passed over. The job's worktree is read
-without the variables git sets for a hook (`GIT_INDEX_FILE`, `GIT_DIR`, ...). Without markers the
-message is left as it is. The second rule matches by file: a file both sides
+without the variables git sets for a hook (`GIT_INDEX_FILE`, `GIT_DIR`, ...).
+Without markers the message is left as it is. The second rule matches by file: a file both sides
 change for their own reasons (go.sum, a changelog) names the job's models, and
 work moved to other paths, or carried over after the marker is removed, does
 not.
@@ -414,6 +414,19 @@ dotenv_sets:                   # key lists several tasks and services share
   being made (the final text, work item key included), for checks that hold
   the message to what the change does; it is removed after the gate. Argv
   words see all of them as `${KEY}`.
+- Each work tree gets a golangci-lint cache of its own:
+  `GOLANGCI_LINT_CACHE` is set to a directory under the user cache
+  (`~/.cache/graft/golangci-lint/<hash of the tree's path>`) unless the
+  environment or the task's `env` sets it. golangci-lint keys a package's
+  results by content but keeps the paths of the tree that produced them, so a
+  shared cache hands one worktree another's findings and reads their
+  `//nolint` there: once that tree is changed or removed, suppressed findings
+  fail the lint ([golangci-lint#6695](https://github.com/golangci/golangci-lint/issues/6695)).
+  A new worktree's first lint runs cold; where the directory cannot be made,
+  graft says so once and the steps share golangci-lint's own cache. A value
+  graft set itself, inherited by a graft in another work tree, is replaced.
+  `graft worktree clean --apply` removes the caches of work trees that are
+  gone.
 - Before the first step, deps included, graft fits the arguments into the
   steps and checks every required key and `${KEY}` the task and all its deps
   need, listing everything missing at once. An optional `KEY?` set nowhere is
@@ -1451,6 +1464,8 @@ the trunk:
 - the rest is listed: `unmerged` with the lines or conflicts it adds, and
   `check` when its commit subjects are all in the trunk but its content is
   not: it looks merged, a look decides.
+- with `--apply`, the golangci-lint caches (see Tasks) of work trees that
+  are gone, in any repository, are removed too.
 
 `graft worktree sync [--trunk <ref>]`, run in a worktree, moves its work onto
 the fresh trunk: it fetches every remote, rebases the branch's own commits

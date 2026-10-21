@@ -92,7 +92,7 @@ func isolatedEnv(gitconfig, userConfig, cache string) ([]string, error) {
 		return nil, err
 	}
 	drop := append(strings.Fields(string(out)), "GRAFT_COMMIT", "GRAFT_RUN_ID", "GRAFT_LOAD_PRIORITY", "GRAFT_LOAD_BUDGET", "GRAFT_LOAD_THEN", "GRAFT_LOADAVG", "GRAFT_PRESSURE_IO", "GRAFT_VMSTAT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "PATH", "XDG_CONFIG_HOME", "APPDATA",
-		"XDG_CACHE_HOME", "LOCALAPPDATA", "GOCACHE")
+		"XDG_CACHE_HOME", "LOCALAPPDATA", "GOCACHE", "GOLANGCI_LINT_CACHE")
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")

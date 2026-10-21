@@ -14,6 +14,7 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/lintcache"
 )
 
 // WorktreeCleanOptions are the arguments of graft worktree clean.
@@ -101,6 +102,16 @@ func (a *App) WorktreeClean(_ context.Context, o WorktreeCleanOptions) error {
 	}
 	if err := c.branches(held); err != nil {
 		return err
+	}
+	if o.Apply {
+		// The lint caches of work trees gone, here or removed otherwise.
+		gone, err := lintcache.Prune()
+		for _, root := range gone {
+			a.printf("%-9s the lint cache of %s: its work tree is gone", "removed", root)
+		}
+		if err != nil {
+			return err
+		}
 	}
 	c.summary()
 	return nil
