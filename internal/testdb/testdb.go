@@ -53,10 +53,11 @@ type State struct {
 
 // Inspect asks docker about the container.
 func (d *DB) Inspect(ctx context.Context) (State, error) {
-	if _, err := exec.LookPath("docker"); err != nil {
-		return State{}, fmt.Errorf("docker is needed for the test database: %w", err)
+	cmd, err := dockerCommand(ctx, "inspect", "--type", "container", d.Cfg.Container)
+	if err != nil {
+		return State{}, err
 	}
-	out, err := exec.CommandContext(ctx, "docker", "inspect", "--type", "container", d.Cfg.Container).Output()
+	out, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && strings.Contains(string(exitErr.Stderr), "No such") {
@@ -236,7 +237,10 @@ func (d *DB) create(ctx context.Context) error {
 			return fmt.Errorf("the socket directory: %w", err)
 		}
 	}
-	cmd := exec.CommandContext(ctx, "docker", d.runArgs(volumes)...)
+	cmd, err := dockerCommand(ctx, d.runArgs(volumes)...)
+	if err != nil {
+		return err
+	}
 	// initdb --no-sync: a cluster nothing needs to survive a crash of, as
 	// fsync=off already says, is ready in about a second and a half instead
 	// of eight on a busy disk.
@@ -269,7 +273,11 @@ func (d *DB) runArgs(tmpfsVolumes []string) []string {
 // A tmpfs at any other path would leave the data in a volume on disk.
 func (d *DB) imageVolumes(ctx context.Context) ([]string, error) {
 	inspect := func() ([]byte, error) {
-		return exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{json .Config.Volumes}}", d.Cfg.Image).Output()
+		cmd, err := dockerCommand(ctx, "image", "inspect", "--format", "{{json .Config.Volumes}}", d.Cfg.Image)
+		if err != nil {
+			return nil, err
+		}
+		return cmd.Output()
 	}
 	out, err := inspect()
 	if err != nil {
@@ -302,7 +310,10 @@ func (d *DB) readyArgs() []string {
 func (d *DB) waitReady(ctx context.Context) error {
 	deadline := time.Now().Add(d.Cfg.ReadyTimeout)
 	for {
-		cmd := exec.CommandContext(ctx, "docker", d.readyArgs()...)
+		cmd, err := dockerCommand(ctx, d.readyArgs()...)
+		if err != nil {
+			return err
+		}
 		if cmd.Run() == nil {
 			return nil
 		}
@@ -343,7 +354,11 @@ func (d *DB) Down(ctx context.Context) error {
 }
 
 func docker(ctx context.Context, args ...string) error {
-	return runDocker(exec.CommandContext(ctx, "docker", args...))
+	cmd, err := dockerCommand(ctx, args...)
+	if err != nil {
+		return err
+	}
+	return runDocker(cmd)
 }
 
 func runDocker(cmd *exec.Cmd) error {

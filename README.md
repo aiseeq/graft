@@ -684,6 +684,14 @@ Linux allows (graft refuses a config that does not). Tools in the container
 loopback. Moving an existing container to the socket takes `graft testdb
 recreate`; `graft testdb down` removes the socket's directory too.
 
+A process running with no_new_privs, as sandboxes run the commands of a coding
+agent, cannot start docker where SELinux labels it a container runtime
+(`container_runtime_exec_t`): SELinux refuses the move into the runtime's
+domain and the desktop shows an alert each time. graft checks
+`/proc/self/status` and the label before the first docker command and stops
+with an error that says so, without starting docker; the tests that need the
+database then run outside the sandbox.
+
 `tmpfs` mounts a tmpfs of that size in place of the image's data volume
 (`/var/lib/postgresql` for postgres 18 and later, `/var/lib/postgresql/data`
 before), so no volume is created on disk. It pays off when tests write a lot:

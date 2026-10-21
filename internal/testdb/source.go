@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -125,8 +124,11 @@ func (d *DB) dropStale(ctx context.Context, source string, comments map[string]s
 // psql runs one statement in the container, connected to the configured
 // database, and returns the rows, fields split on |.
 func (d *DB) psql(ctx context.Context, sql string) ([][]string, error) {
-	cmd := exec.CommandContext(ctx, "docker", "exec", d.Cfg.Container, "psql", "-U", d.Cfg.User, "-d", d.Cfg.Database,
+	cmd, err := dockerCommand(ctx, "exec", d.Cfg.Container, "psql", "-U", d.Cfg.User, "-d", d.Cfg.Database,
 		"-v", "ON_ERROR_STOP=1", "-tAc", sql)
+	if err != nil {
+		return nil, err
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
