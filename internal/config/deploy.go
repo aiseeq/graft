@@ -137,9 +137,8 @@ type TargetNotes struct {
 	// that gets a note.
 	FixVersion *FixVersion `yaml:"fix_version"`
 	// Subtasks follow their parent: when a delivered item is in, or reaches,
-	// the status a transition leads to, its open subtasks move there by that
-	// transition, whatever its from says, and so does a delivered subtask
-	// whose parent is in such a status.
+	// the status a transition leads to, its subtasks in that transition's
+	// from move there by it.
 	Subtasks bool `yaml:"subtasks"`
 }
 
@@ -274,6 +273,9 @@ type JiraNotes struct {
 	Comment     string   `yaml:"comment"`
 	// SkipStatuses leaves items in these statuses alone: no note, no move.
 	SkipStatuses []string `yaml:"skip_statuses"`
+	// SkipKeys leaves these items alone, and their subtasks: a standing item
+	// that collects small work and that commits name, say.
+	SkipKeys []string `yaml:"skip_keys"`
 }
 
 // DefaultNoteComment is the release note text; {target}, {version}, {short}
@@ -593,6 +595,11 @@ func (c *Config) validateReleaseNotes() error {
 	for _, k := range n.Jira.ProjectKeys {
 		if !projectKeyRe.MatchString(k) {
 			return fmt.Errorf("release_notes.jira.project_keys: %q is not a project key like PROJ", k)
+		}
+	}
+	for _, k := range n.Jira.SkipKeys {
+		if !c.isProjectKey(k) {
+			return fmt.Errorf("release_notes.jira.skip_keys: %q is not an item of release_notes.jira.project_keys, such as PROJ-123", k)
 		}
 	}
 	if n.Jira.Comment == "" {

@@ -75,10 +75,10 @@ func (a *App) requireGraft(cfg *config.Config) error {
 	have, err := version.ParseBuild(a.ToolVersion)
 	if err != nil {
 		return fmt.Errorf("this project needs graft >= %s and this build cannot tell its version (%w); install a release: %s",
-			need, err, hooks.InstallHint(cfg.MinGraft))
+			need, err, hooks.InstallCommand)
 	}
 	if have.Less(need) {
-		return fmt.Errorf("this project needs graft >= %s, this is graft %s; install it: %s", need, a.ToolVersion, hooks.InstallHint(cfg.MinGraft))
+		return fmt.Errorf("this project needs graft >= %s, this is graft %s; install it: %s", need, a.ToolVersion, hooks.InstallCommand)
 	}
 	return nil
 }
@@ -342,8 +342,29 @@ func pushArgs(remote string, lease bool) []string {
 	return []string{"push", remote}
 }
 
-// requireNormalContext refuses to start a graft commit on top of an operation
-// git is in the middle of.
+// mergeOrNormalContext tells whether a merge is in progress, which a graft
+// commit finishes once its conflicts are resolved, and refuses the other
+// operations git can be in the middle of.
+func mergeOrNormalContext(repo *gitx.Repo) (bool, error) {
+	ctx, err := hooks.Detect(repo.GitDir)
+	if err != nil || ctx == hooks.Normal {
+		return false, err
+	}
+	if ctx != hooks.Merge {
+		return false, fmt.Errorf("a %s is in progress: finish it with git (the pre-commit hook gates it) or abort it first", ctx)
+	}
+	out, err := repo.Git("diff", "--name-only", "--diff-filter=U", "-z")
+	if err != nil {
+		return false, err
+	}
+	if unmerged := strings.Split(strings.TrimRight(out, "\x00"), "\x00"); unmerged[0] != "" {
+		return false, fmt.Errorf("the merge has unresolved conflicts in %s: resolve them and git add the files, then graft commit", strings.Join(unmerged, ", "))
+	}
+	return true, nil
+}
+
+// requireNormalContext refuses to start on top of an operation git is in the
+// middle of.
 func requireNormalContext(repo *gitx.Repo) error {
 	ctx, err := hooks.Detect(repo.GitDir)
 	if err != nil {

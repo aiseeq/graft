@@ -408,7 +408,7 @@ func (a *App) Init(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	changes, err := hooks.Install(repo, cfg.Hooks.Dir, cfg.MinGraft)
+	changes, err := hooks.Install(repo, cfg.Hooks.Dir)
 	if err != nil {
 		return err
 	}

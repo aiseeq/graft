@@ -514,6 +514,7 @@ release_notes:
   jira:
     project_keys: [PROJ]
     skip_statuses: [Blocked]
+    skip_keys: [PROJ-40]
 `
 }
 
@@ -1020,38 +1021,49 @@ func TestDeployApprovedReleaseAttribute(t *testing.T) {
 }
 
 // TestDeploySubtasksFollowParents: with subtasks, a parent that reaches a
-// transition's status takes its open subtasks along by that transition, the
-// reviewer included, and a delivered subtask follows its parent into a status
-// a transition leads to whatever from says.
+// transition's status takes along its subtasks in that transition's from,
+// the reviewer included; a subtask further on, or elsewhere, stays, and an
+// item of skip_keys is left alone with its subtasks.
 func TestDeploySubtasksFollowParents(t *testing.T) {
 	d := deployRepo(t)
 	d.jira.mu.Lock()
-	for k, st := range map[string]string{"PROJ-20": "In Progress", "PROJ-21": "In Progress", "PROJ-22": "Done", "PROJ-23": "In Progress", "PROJ-24": "In Progress", "PROJ-30": "Done", "PROJ-31": "Paused", "PROJ-40": "In Progress", "PROJ-41": "In Progress"} {
+	for k, st := range map[string]string{"PROJ-20": "In Progress", "PROJ-21": "In Progress", "PROJ-22": "Done", "PROJ-23": "In Progress", "PROJ-24": "In Progress",
+		"PROJ-25": "Ready for release", "PROJ-30": "Ready for release", "PROJ-31": "Paused", "PROJ-32": "Ready for release", "PROJ-33": "Testing",
+		"PROJ-40": "In Progress", "PROJ-41": "In Progress"} {
 		d.jira.statuses[k] = st
 	}
 	d.jira.assignees["PROJ-23"] = "colleague"
 	d.jira.assignees["PROJ-24"] = "qa"
 	d.jira.handedOver = append(d.jira.handedOver, "PROJ-24")
-	d.jira.parents = map[string]string{"PROJ-21": "PROJ-20", "PROJ-22": "PROJ-20", "PROJ-23": "PROJ-20", "PROJ-24": "PROJ-20", "PROJ-31": "PROJ-30", "PROJ-41": "PROJ-40"}
+	d.jira.parents = map[string]string{"PROJ-21": "PROJ-20", "PROJ-22": "PROJ-20", "PROJ-23": "PROJ-20", "PROJ-24": "PROJ-20", "PROJ-25": "PROJ-20",
+		"PROJ-31": "PROJ-30", "PROJ-32": "PROJ-30", "PROJ-33": "PROJ-30", "PROJ-41": "PROJ-40"}
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "sub")
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-20 parent work\n\nAlso PROJ-31")
+	d.mustGraft("commit", "-m", "feat: PROJ-20 parent work\n\nAlso PROJ-30, PROJ-31 and PROJ-40")
 	out := d.mustGraft("deploy", "sub")
 	_, moved := d.jira.snapshot()
 	slices.Sort(moved)
-	if !slices.Equal(moved, []string{"PROJ-20", "PROJ-21", "PROJ-24", "PROJ-31"}) {
+	if !slices.Equal(moved, []string{"PROJ-20", "PROJ-21", "PROJ-24", "PROJ-30", "PROJ-32"}) {
 		t.Errorf("moved = %v\n%s", moved, out)
 	}
 	d.jira.mu.Lock()
 	assigned := slices.Sorted(slices.Values(d.jira.assigned))
-	statuses := map[string]string{"PROJ-20": d.jira.statuses["PROJ-20"], "PROJ-21": d.jira.statuses["PROJ-21"], "PROJ-24": d.jira.statuses["PROJ-24"], "PROJ-31": d.jira.statuses["PROJ-31"]}
+	statuses := map[string]string{}
+	for _, k := range []string{"PROJ-20", "PROJ-21", "PROJ-24", "PROJ-25", "PROJ-30", "PROJ-31", "PROJ-32", "PROJ-33", "PROJ-40", "PROJ-41"} {
+		statuses[k] = d.jira.statuses[k]
+	}
+	comments := d.jira.comments["PROJ-40"]
 	d.jira.mu.Unlock()
 	if !slices.Equal(assigned, []string{"PROJ-20 to qa", "PROJ-21 to qa"}) {
 		t.Errorf("assigned = %v (PROJ-24 is on qa already)\n%s", assigned, out)
 	}
-	if want := map[string]string{"PROJ-20": "Testing", "PROJ-21": "Testing", "PROJ-24": "Testing", "PROJ-31": "Done"}; !maps.Equal(statuses, want) {
+	if want := map[string]string{"PROJ-20": "Testing", "PROJ-21": "Testing", "PROJ-24": "Testing", "PROJ-25": "Ready for release",
+		"PROJ-30": "Done", "PROJ-31": "Paused", "PROJ-32": "Done", "PROJ-33": "Testing", "PROJ-40": "In Progress", "PROJ-41": "In Progress"}; !maps.Equal(statuses, want) {
 		t.Errorf("statuses = %v, want %v", statuses, want)
+	}
+	if len(comments) > 0 {
+		t.Errorf("a note on an item of skip_keys: %v", comments)
 	}
 	for _, want := range []string{
 		"PROJ-20 moved to Testing\n",
@@ -1059,8 +1071,12 @@ func TestDeploySubtasksFollowParents(t *testing.T) {
 		"PROJ-21 moved to Testing after its parent PROJ-20\n",
 		"PROJ-21 assigned to qa",
 		"PROJ-24 moved to Testing after its parent PROJ-20\n",
-		"PROJ-31 moved to Done after its parent PROJ-30",
+		"PROJ-25 stays Ready for release after its parent PROJ-20: the transition to Testing moves only from In Progress",
+		"PROJ-32 moved to Done after its parent PROJ-30",
+		"PROJ-33 stays Testing after its parent PROJ-30: the transition to Done moves only from Ready for release",
+		"PROJ-31 stays Paused",
 		"PROJ-23 left alone: assigned to Colleague colleague",
+		"release note for PROJ-40 not posted, PROJ-40 left alone: release_notes.jira.skip_keys",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q:\n%s", want, out)

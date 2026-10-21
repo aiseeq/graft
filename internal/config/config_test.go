@@ -373,6 +373,8 @@ deploy:
 		"notes w/o jira":       strings.Replace(base, "release_notes: {jira: {project_keys: [PROJ]}}\n", "", 1),
 		"bad project key":      strings.Replace(base, "[PROJ]", "[proj]", 1),
 		"no project keys":      strings.Replace(base, "{project_keys: [PROJ]}", "{comment: x}", 1),
+		"skip key elsewhere":   strings.Replace(base, "{project_keys: [PROJ]}", "{project_keys: [PROJ], skip_keys: [OTHER-1]}", 1),
+		"skip key no number":   strings.Replace(base, "{project_keys: [PROJ]}", "{project_keys: [PROJ], skip_keys: [PROJ]}", 1),
 		"reserved target name": strings.Replace(base, "    prod:", "    status:", 1),
 		"no run":               strings.Replace(base, "run: [sh, deploy.sh], requires", "requires", 1),
 		"requires without ver": strings.Replace(base, "mode: file", "mode: none", 1),

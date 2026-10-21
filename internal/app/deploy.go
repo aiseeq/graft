@@ -535,6 +535,10 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 			a.printf("release note for %s not posted: this deploy reverts its work from the candidate", key)
 			continue
 		}
+		if slices.Contains(notes.SkipKeys, key) {
+			a.printf("release note for %s not posted, %s left alone: release_notes.jira.skip_keys", key, key)
+			continue
+		}
 		issue, err := client.Issue(ctx, key)
 		if err != nil {
 			a.warn("release note for %s not posted: %v", key, err)
@@ -631,38 +635,23 @@ type subtaskRun struct {
 	reached map[string]string
 }
 
-// follow moves the open subtasks of the delivered items that are in a status
-// a transition leads to, and the delivered subtasks whose parent is.
+// follow moves the subtasks of the delivered items that are in a status a
+// transition leads to.
 func (s *subtaskRun) follow(ctx context.Context) {
-	conf := s.mover.conf
 	seen := map[string]bool{}
 	for i := range s.delivered {
 		issue := &s.delivered[i]
-		if t := conf.Leading(s.reached[issue.Key]); t != nil {
+		if t := s.mover.conf.Leading(s.reached[issue.Key]); t != nil {
 			for _, key := range issue.Subtasks {
 				s.move(ctx, key, issue.Key, t, seen)
 			}
 		}
-		if issue.Parent == "" || seen[issue.Key] {
-			continue
-		}
-		status, ok := s.reached[issue.Parent]
-		if !ok {
-			parent, err := s.mover.client.Issue(ctx, issue.Parent)
-			if err != nil {
-				s.mover.app.warn("%s not moved after its parent %s: %v", issue.Key, issue.Parent, err)
-				continue
-			}
-			status = parent.Status
-		}
-		if t := conf.Leading(status); t != nil {
-			s.move(ctx, issue.Key, issue.Parent, t, seen)
-		}
 	}
 }
 
-// move takes one subtask by the transition unless it is there or done
-// already, or is not the token owner's.
+// move takes one subtask by the transition when it is in the transition's
+// from, as a delivered item, and is the token owner's: a subtask further on
+// stays, Ready for release when its parent comes to Testing, say.
 func (s *subtaskRun) move(ctx context.Context, key, parent string, t *config.NoteTransition, seen map[string]bool) {
 	if seen[key] {
 		return
@@ -675,6 +664,14 @@ func (s *subtaskRun) move(ctx context.Context, key, parent string, t *config.Not
 		return
 	}
 	if issue.Done || issue.Status == t.To {
+		return
+	}
+	if slices.Contains(s.notes.SkipKeys, key) {
+		app.printf("%s stays %s after its parent %s: release_notes.jira.skip_keys", key, issue.Status, parent)
+		return
+	}
+	if !slices.Contains(t.From, issue.Status) {
+		app.printf("%s stays %s after its parent %s: the transition to %s moves only from %s", key, issue.Status, parent, t.To, strings.Join(t.From, ", "))
 		return
 	}
 	yours, err := app.noteable(ctx, s.mover.client, s.notes, s.me, issue)

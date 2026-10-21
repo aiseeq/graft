@@ -22,8 +22,8 @@ go install github.com/aiseeq/graft/v2@latest
 
 or, from a checkout, `go run . install` (atomically replaces `~/bin/graft`).
 Requires git 2.31 or newer. A project can require a graft version with
-`graft: ">=X.Y.Z"` in `.graft.yaml`: an older graft refuses to work on it and
-the hooks' install hint names that version.
+`graft: ">=X.Y.Z"` in `.graft.yaml`: an older graft refuses to work on it.
+The install hints name `@latest`: graft versions are not pinned.
 
 Settings that belong to the person rather than to a project live in
 `<user config dir>/graft/config.yaml` (`~/.config/graft/config.yaml` on
@@ -144,16 +144,19 @@ stats` (`wait_s`).
 1. Read the message (`-m`, repeatable, one paragraph each; `-F file`; `-F -`).
    An empty message is refused: there is no default subject. Warn when the
    hooks are not what `graft init` would install now: `core.hooksPath` not
-   set to `hooks.dir` as written, or a shim missing or written for another
-   `graft:` pin.
+   set to `hooks.dir` as written, or a shim missing or written by another
+   graft.
 2. Take the repository lock. A second graft in the same repository (or in
    another worktree of it) waits for the first, up to `lock.timeout`, and says
    who holds the lock. The lock is an OS file lock and dies with its process.
    With `lock.scope: worktree` each worktree has its own commit lock, so
    agents in separate worktrees commit in parallel; `graft release` still
    takes the repository lock, which the main worktree's commits share.
-3. Refuse if a merge, rebase, cherry-pick or revert is in progress, if HEAD is
-   detached, or if there is nothing to commit. With `ticket.required`, refuse
+3. Refuse if a rebase, cherry-pick or revert is in progress, if HEAD is
+   detached, or if there is nothing to commit. A merge in progress, a
+   conflict or `git merge --no-commit`, is finished as a commit of its own
+   by every step below, once `git add` has marked its conflicts resolved;
+   files still in conflict are refused by name. With `ticket.required`, refuse
    a commit that names no work item, in the message or by the branch: only a
    revert and a commit whose files (the version bump aside) all match some
    target's `approved_release.ignore_paths` need none, and so does every
@@ -196,8 +199,7 @@ commit through unchecked.
   the gate. A merge without text conflicts can still break the build; the hook
   says so and points at `graft amend`. Fast-forwards are not gated.
 
-`graft init` rewrites shims an older graft wrote (the install hint follows
-the project's `graft:` version). It refuses to overwrite hooks it did not
+`graft init` rewrites shims an older graft wrote. It refuses to overwrite hooks it did not
 write and to repoint a
 `core.hooksPath` that leads elsewhere. An absolute `core.hooksPath` to the same
 directory is rewritten as relative. On Windows, keep the shims LF:
@@ -970,6 +972,7 @@ release_notes:
     project_keys: [PROJ]        # required: SHA-256 is shaped like a key too
     comment: "Deployed to {target}, version {version}, commit {short}"   # default
     skip_statuses: [On Hold]    # leave these items alone: no note, no move
+    skip_keys: [PROJ-100]       # these too, with their subtasks: a standing item commits name
 ```
 
 `graft deploy [--redeploy] [--unapproved] <target> [-- args]`:
@@ -1076,10 +1079,10 @@ release_notes:
    as a warning and does not change the exit status.
    With `subtasks: true` (it needs `transitions`), subtasks follow their
    parent: when a delivered item is in, or has just reached, the `to` of a
-   transition, its open subtasks move there by that transition, `assign`
-   included, and so does a delivered subtask whose parent is in such a
-   status, whatever `from` says; subtasks that are not yours are left alone
-   as above. The single `transition` and `from` of graft 1.x are replaced by
+   transition, its subtasks in that transition's `from` move there by it,
+   `assign` included. A subtask further on, Ready for release when its
+   parent comes to Testing, say, stays, and so do subtasks that are not
+   yours, as above. The single `transition` and `from` of graft 1.x are replaced by
    `transitions`; the old keys are a config error that shows the rewrite.
    With `release_page`, the release is published in Confluence; see Release
    pages below.

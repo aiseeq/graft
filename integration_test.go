@@ -591,6 +591,68 @@ func TestHookGatesConflictResolution(t *testing.T) {
 	}
 }
 
+// TestCommitFinishesAMerge: graft commit finishes a merge git left open, a
+// conflict resolved or a merge made with --no-commit, as any commit: the
+// gate, the version bump and the push; a conflict not resolved yet is
+// refused with its files.
+func TestCommitFinishesAMerge(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "gate-ran")
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\ngate:\n" + gateStep("touch", marker),
+		"VERSION":     "1.0.0\n",
+		"shared.txt":  "base\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustGraft("init")
+	f.mustGraft("commit", "-m", "chore: base")
+	f.git("switch", "-q", "-c", "side")
+	f.write("shared.txt", "side\n")
+	f.write("side.txt", "s\n")
+	f.mustGraft("commit", "-m", "feat: side")
+	f.git("switch", "-q", "main")
+	f.write("shared.txt", "main\n")
+	f.mustGraft("commit", "-m", "feat: main")
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, code := f.tryGit("merge", "side"); code == 0 {
+		t.Fatal("expected a conflict")
+	}
+	if out, code := f.graft("", "commit", "-m", "merge: side"); code == 0 || !strings.Contains(out, "the merge has unresolved conflicts in shared.txt") {
+		t.Errorf("an unresolved conflict: exit %d\n%s", code, out)
+	}
+	f.write("shared.txt", "resolved\n")
+	f.git("add", "shared.txt")
+	out := f.mustGraft("commit", "-m", "merge: side")
+	if parents := strings.Fields(f.git("log", "-1", "--format=%P")); len(parents) != 2 {
+		t.Errorf("not a merge commit: %v\n%s", parents, out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("the gate did not run:\n%s", out)
+	}
+	if got := f.read("VERSION"); got != "1.0.3\n" {
+		t.Errorf("VERSION = %q", got)
+	}
+	if !strings.Contains(out, "pushed to origin") || f.git("rev-parse", "origin/main") != f.git("rev-parse", "HEAD") {
+		t.Errorf("not pushed:\n%s", out)
+	}
+	if got := f.git("log", "-1", "--format=%s"); got != "merge: side" {
+		t.Errorf("subject %q", got)
+	}
+
+	// A merge git stopped before committing, with nothing to resolve.
+	f.git("switch", "-q", "side")
+	f.write("other.txt", "o\n")
+	f.mustGraft("commit", "-m", "feat: other")
+	f.git("switch", "-q", "main")
+	f.git("merge", "--no-commit", "--no-ff", "side")
+	f.mustGraft("commit", "-m", "merge: side again")
+	if parents := strings.Fields(f.git("log", "-1", "--format=%P")); len(parents) != 2 {
+		t.Errorf("not a merge commit: %v", parents)
+	}
+}
+
 func TestHookBlocksConflictResolutionWithFailingGate(t *testing.T) {
 	flag := filepath.Join(t.TempDir(), "broken")
 	f := hookRepo(t, gateStep("failif", flag))

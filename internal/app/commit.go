@@ -23,7 +23,8 @@ type CommitOptions struct {
 
 // Commit is the one way a change enters the repository: gate, version bump,
 // stage everything, content checks, commit with the work item key, push to
-// every remote. The whole run holds the repository lock.
+// every remote. It finishes a merge git left open the same way, once its
+// conflicts are resolved. The whole run holds the repository lock.
 func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 	repo, cfg, err := a.open()
 	if err != nil {
@@ -45,7 +46,7 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 	if opts.Level != version.Patch && cfg.Version.Mode != config.ModeFile {
 		return fmt.Errorf("--%s needs version.mode %s; with %s, versions come from graft release", opts.Level, config.ModeFile, cfg.Version.Mode)
 	}
-	stale, err := hooks.Outdated(repo, cfg.Hooks.Dir, cfg.MinGraft)
+	stale, err := hooks.Outdated(repo, cfg.Hooks.Dir)
 	if err != nil {
 		return err
 	}
@@ -72,7 +73,8 @@ type commitPlan struct {
 
 func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level version.Level) (commitPlan, error) {
 	var plan commitPlan
-	if err := requireNormalContext(repo); err != nil {
+	merge, err := mergeOrNormalContext(repo)
+	if err != nil {
 		return plan, err
 	}
 	branch, err := repo.Branch()
@@ -87,7 +89,7 @@ func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level versio
 	if err != nil {
 		return plan, err
 	}
-	if clean {
+	if clean && !merge {
 		return plan, errNothingToCommit
 	}
 	bump, err := planBump(repo, cfg, level, branch)

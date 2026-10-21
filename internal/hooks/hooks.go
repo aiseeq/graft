@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/gitx"
-	"github.com/aiseeq/graft/v2/internal/version"
 )
 
 // Names of the hooks graft installs.
@@ -23,27 +22,9 @@ const (
 // Names lists every hook graft installs.
 var Names = []string{PreCommit, PostMerge}
 
-// firstV2 is the first release the module path of v2 reaches: the earlier
-// tags carry the path without /v2, which go install refuses for v2 and up.
-var firstV2 = version.Semver{Major: 2, Minor: 3, Patch: 1}
-
-// InstallHint tells how to get graft onto PATH: the version the project
-// needs (X.Y.Z from its graft: key, validated with the config), or the latest
-// one when it names none or one from before firstV2.
-func InstallHint(minVersion string) string {
-	latest := "go install github.com/aiseeq/graft/v2@latest"
-	if minVersion == "" {
-		return latest
-	}
-	need, err := version.Parse(minVersion)
-	if err != nil {
-		return latest + " (graft: " + err.Error() + ")"
-	}
-	if need.Less(firstV2) {
-		return latest
-	}
-	return "go install github.com/aiseeq/graft/v2@v" + minVersion
-}
+// InstallCommand gets graft onto PATH: the latest release, whatever version
+// a project needs at least, as graft versions are not pinned.
+const InstallCommand = "go install github.com/aiseeq/graft/v2@latest"
 
 // shimMarker is the line that tells graft's shims from somebody else's hooks.
 const shimMarker = "# Installed by graft init. The hook logic lives in graft itself."
@@ -51,12 +32,12 @@ const shimMarker = "# Installed by graft init. The hook logic lives in graft its
 // Shim is the hook file content: a POSIX sh stub that hands over to graft.
 // Git for Windows runs hooks through its own sh, so the same file works there.
 // A missing graft fails the hook rather than letting the commit through.
-func Shim(name, minVersion string) []byte {
+func Shim(name string) []byte {
 	return []byte(`#!/bin/sh
 ` + shimMarker + `
 if ! command -v graft >/dev/null 2>&1; then
 	echo "graft: not found in PATH, the ` + name + ` hook cannot run." >&2
-	echo "Install it: ` + InstallHint(minVersion) + `" >&2
+	echo "Install it: ` + InstallCommand + `" >&2
 	exit 1
 fi
 exec graft hook ` + name + ` "$@"
@@ -72,9 +53,9 @@ func isShim(content []byte, name string) bool {
 
 // Outdated lists what graft init would change: core.hooksPath not pointing
 // at dir as written in the config, and shims that are missing or differ from
-// the ones this graft writes for minVersion. Line endings do not count: a
+// the ones this graft writes. Line endings do not count: a
 // Windows checkout may convert them.
-func Outdated(repo *gitx.Repo, dir, minVersion string) ([]string, error) {
+func Outdated(repo *gitx.Repo, dir string) ([]string, error) {
 	var stale []string
 	current, err := hooksPath(repo)
 	if err != nil {
@@ -91,7 +72,7 @@ func Outdated(repo *gitx.Repo, dir, minVersion string) ([]string, error) {
 			stale = append(stale, filepath.ToSlash(filepath.Join(dir, name))+" is missing")
 		case err != nil:
 			return nil, err
-		case !bytes.Equal(bytes.ReplaceAll(existing, []byte("\r\n"), []byte("\n")), Shim(name, minVersion)):
+		case !bytes.Equal(bytes.ReplaceAll(existing, []byte("\r\n"), []byte("\n")), Shim(name)):
 			stale = append(stale, filepath.ToSlash(filepath.Join(dir, name))+" differs from the shim of this graft")
 		}
 	}
@@ -143,7 +124,7 @@ type Change struct {
 // points core.hooksPath at it. It is idempotent. It refuses to overwrite a hook
 // that is not a graft shim and to repoint core.hooksPath away from a different
 // hooks directory: both hold somebody's hooks that would silently stop running.
-func Install(repo *gitx.Repo, dir, minVersion string) ([]Change, error) {
+func Install(repo *gitx.Repo, dir string) ([]Change, error) {
 	hooksDir := filepath.Join(repo.Root, filepath.FromSlash(dir))
 	current, err := hooksPath(repo)
 	if err != nil {
@@ -161,7 +142,7 @@ func Install(repo *gitx.Repo, dir, minVersion string) ([]Change, error) {
 	}
 	var changes []Change
 	for _, name := range Names {
-		changed, err := writeShim(filepath.Join(hooksDir, name), Shim(name, minVersion))
+		changed, err := writeShim(filepath.Join(hooksDir, name), Shim(name))
 		if err != nil {
 			return nil, err
 		}
