@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/proc"
 )
 
 // DB is the configured test database.
@@ -53,7 +54,7 @@ type State struct {
 	// is then what the server answered on the DSN, and Settings the
 	// values of the configured settings, by name. Unreachable is why the
 	// server did not answer.
-	Refused     *RefusedError
+	Refused     *proc.RefusedError
 	Settings    map[string]string
 	Unreachable error
 }

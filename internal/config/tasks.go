@@ -758,6 +758,16 @@ const socketFile = ".s.PGSQL.5432"
 // less its terminating NUL).
 const maxSocketPath = 107
 
+// TestDBDir holds what belongs to the test database containers of the user,
+// shared by all worktrees and sessions: their socket directories and locks.
+func TestDBDir() (string, error) {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("the user's cache directory: %w", err)
+	}
+	return filepath.Join(cache, "graft", "testdb"), nil
+}
+
 // validateListen checks the port of a TCP database, or places the socket of
 // a Socket one.
 func (t *TestDB) validateListen() error {
@@ -778,11 +788,11 @@ func (t *TestDB) validateListen() error {
 			return fmt.Errorf("test_db.settings: %s: socket: true sets the socket directories", s)
 		}
 	}
-	cache, err := os.UserCacheDir()
+	dir, err := TestDBDir()
 	if err != nil {
 		return fmt.Errorf("test_db.socket: the directory of the socket: %w", err)
 	}
-	t.SocketDir = filepath.Join(cache, "graft", "testdb", t.Container)
+	t.SocketDir = filepath.Join(dir, t.Container)
 	if n := len(t.SocketDir) + 1 + len(socketFile); n > maxSocketPath {
 		return fmt.Errorf("test_db.socket: the socket %s is %d bytes, over the %d a unix socket allows; shorten test_db.container",
 			filepath.Join(t.SocketDir, socketFile), n, maxSocketPath)

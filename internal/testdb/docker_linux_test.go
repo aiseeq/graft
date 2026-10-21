@@ -8,60 +8,25 @@ import (
 	"errors"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/proc/proctest"
 )
 
 // TestDockerRefusedUnderNoNewPrivs: a process with no_new_privs, as a
 // sandbox runs it, is told docker cannot start, without starting it: the
-// attempt would raise an SELinux alert. The check runs in a child of the
-// test, as no_new_privs cannot be dropped once set.
+// attempt would raise an SELinux alert.
 func TestDockerRefusedUnderNoNewPrivs(t *testing.T) {
-	if os.Getenv("GRAFT_TEST_NNP_CHILD") == "1" {
-		if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
-			t.Fatal(err)
-		}
-		_, err := dockerCommand(t.Context(), "version")
-		if err == nil || !strings.Contains(err.Error(), "cannot start here") {
-			t.Fatalf("docker under no_new_privs: %v", err)
-		}
+	if !proctest.Sandboxed(t, "TestDockerRefusedUnderNoNewPrivs") {
 		return
 	}
-	needRefusal(t)
-	inChild(t, "TestDockerRefusedUnderNoNewPrivs")
-}
-
-// needRefusal skips a test of what docker's refusal under no_new_privs does
-// where docker would not be refused.
-func needRefusal(t *testing.T) {
-	t.Helper()
-	path, err := exec.LookPath("docker")
-	if err != nil {
-		t.Skip("no docker")
-	}
-	if !runtimeLabeled(path) {
-		t.Skipf("docker carries no %s label", runtimeExecType)
-	}
-	if _, err := os.Stat("/sys/fs/selinux/enforce"); errors.Is(err, os.ErrNotExist) {
-		t.Skip("no SELinux")
-	}
-}
-
-// inChild runs the test in a child of this test binary, with
-// GRAFT_TEST_NNP_CHILD set, the child's cue to set no_new_privs.
-func inChild(t *testing.T, name string) {
-	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^"+name+"$", "-test.count=1", "-test.v")
-	cmd.Env = append(os.Environ(), "GRAFT_TEST_NNP_CHILD=1")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Errorf("%v\n%s", err, out)
+	_, err := dockerCommand(t.Context(), "version")
+	if err == nil || !strings.Contains(err.Error(), "cannot start here") {
+		t.Fatalf("docker under no_new_privs: %v", err)
 	}
 }
 
@@ -73,13 +38,8 @@ func TestServerWithoutDocker(t *testing.T) {
 	if dsn == "" {
 		t.Skip("GRAFT_TEST_PG_DSN is not set: run graft test")
 	}
-	if os.Getenv("GRAFT_TEST_NNP_CHILD") != "1" {
-		needRefusal(t)
-		inChild(t, "TestServerWithoutDocker")
+	if !proctest.Sandboxed(t, "TestServerWithoutDocker") {
 		return
-	}
-	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
-		t.Fatal(err)
 	}
 	cfg := socketConfig(t, dsn)
 	migrations := t.TempDir()
@@ -152,12 +112,4 @@ func socketConfig(t *testing.T, dsn string) *config.TestDB {
 	password, _ := u.User.Password()
 	return &config.TestDB{Container: "graft-test-pg", Socket: true, SocketDir: host, User: u.User.Username(), Password: password,
 		Database: strings.TrimPrefix(u.Path, "/"), Settings: config.DefaultTestDBSettings, ReadyTimeout: 10 * time.Second}
-}
-
-// runtimeLabeled tells whether the file carries the SELinux label of a
-// container runtime, the environment the test needs.
-func runtimeLabeled(path string) bool {
-	buf := make([]byte, 256)
-	n, err := unix.Getxattr(path, "security.selinux", buf)
-	return err == nil && strings.Contains(string(buf[:n]), ":"+runtimeExecType+":")
 }

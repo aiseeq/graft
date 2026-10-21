@@ -17,6 +17,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/taskcache"
 )
@@ -188,6 +189,11 @@ func (r *Runner) keyInputs(ctx context.Context, add func(...string), c *config.T
 		}
 	}
 	for _, c := range c.Commands {
+		// A command that may not start here leaves the task uncached:
+		// starting it would only raise an SELinux alert.
+		if err := proc.RefusedCommand(r.Root, c.Argv[0]); err != nil {
+			return fmt.Errorf("cache.commands %s: %w", c.Source, err)
+		}
 		cmd := exec.CommandContext(ctx, c.Argv[0], c.Argv[1:]...)
 		cmd.Dir = r.Root
 		var stderr strings.Builder

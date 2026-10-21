@@ -18,8 +18,17 @@ import (
 	"github.com/aiseeq/graft/v2/internal/testdb"
 )
 
-// testDBLock serializes container changes between worktrees and sessions.
-const testDBLock = "test-db"
+// testDBLock serializes the changes of a container between worktrees and
+// sessions. It lives by the container's socket directory, not in the
+// repository: a sandbox that lets graft write its cache and the worktree
+// (Codex) may not let it write the main worktree's .git.
+func testDBLock(cfg *config.TestDB) (string, error) {
+	dir, err := config.TestDBDir()
+	if err != nil {
+		return "", fmt.Errorf("the test database lock: %w", err)
+	}
+	return filepath.Join(dir, cfg.Container+".lock"), nil
+}
 
 // ErrUnknownTestDBAction marks a graft testdb action that testDBActions does not name.
 var ErrUnknownTestDBAction = errors.New("unknown testdb action")
@@ -85,13 +94,17 @@ func (a *App) TestDB(ctx context.Context, name string) error {
 }
 
 func (a *App) withTestDBLock(ctx context.Context, repo *gitx.Repo, cfg *config.Config, fn func() error) error {
-	lk, err := lock.AcquireMode(ctx, filepath.Join(lockDir(repo), testDBLock+".lock"), lock.Exclusive, cfg.Lock.Timeout, "graft testdb", a.Stderr)
+	path, err := testDBLock(cfg.TestDB)
+	if err != nil {
+		return err
+	}
+	lk, err := lock.AcquireMode(ctx, path, lock.Exclusive, cfg.Lock.Timeout, "graft testdb", a.Stderr)
 	if err != nil {
 		return err
 	}
 	err = fn()
 	if releaseErr := lk.Release(); releaseErr != nil {
-		err = errors.Join(err, fmt.Errorf("releasing the %s lock: %w", testDBLock, releaseErr))
+		err = errors.Join(err, fmt.Errorf("releasing the %s lock: %w", path, releaseErr))
 	}
 	return err
 }

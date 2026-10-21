@@ -165,6 +165,15 @@ func (a *App) Locks() error {
 		return fmt.Errorf("listing named locks: %w", err)
 	}
 	paths = append(paths, named...)
+	dir, err := config.TestDBDir()
+	if err != nil {
+		return fmt.Errorf("the test database locks: %w", err)
+	}
+	dbs, err := filepath.Glob(filepath.Join(dir, "*.lock"))
+	if err != nil {
+		return fmt.Errorf("listing the test database locks: %w", err)
+	}
+	paths = append(paths, dbs...)
 	held := 0
 	for _, p := range paths {
 		holders, err := lock.Holders(p)

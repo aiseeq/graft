@@ -423,8 +423,10 @@ dotenv_sets:                   # key lists several tasks and services share
   shared by every worktree and clone of the machine: one that holds the same
   content skips what another one passed. A pass is not kept when the tree
   or an input changed while the task ran. A command of `commands` that fails
-  runs the task. `--no-cache` on `graft <task>`, `graft commit` and
-  `graft deploy`, or `GRAFT_NO_CACHE=1`, runs everything. A skip is recorded
+  runs the task, and so does one that may not start in a sandbox (docker
+  under no_new_privs, see the test database), which graft does not start.
+  `--no-cache` on `graft <task>`, `graft commit` and `graft deploy`, or
+  `GRAFT_NO_CACHE=1`, runs everything. A skip is recorded
   in the stats (see below) with what the passed run cost.
 
   Cache only checks that change nothing outside the work tree. A task that
@@ -695,8 +697,10 @@ where the config asks, compare the configured settings with what the server
 reports, create the source of a migration set over the connection and run
 `migrate`. So a database brought up outside the sandbox (`graft testdb up`)
 serves the tests run inside it, on a unix socket as well (the sandbox must
-allow connecting to sockets; Codex does with network access on). A server
-that does not answer is an error that says to bring it up outside the
+allow connecting to sockets; Codex does with network access on). The
+sandbox must also let graft write its cache: the lock that keeps worktrees
+from changing a container at once is
+`<user cache>/graft/testdb/<container>.lock`. A server that does not answer is an error that says to bring it up outside the
 sandbox, and so are `down` and `recreate`; the stats get no database CPU.
 
 `tmpfs` mounts a tmpfs of that size in place of the image's data volume

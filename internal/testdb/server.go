@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/aiseeq/graft/v2/internal/proc"
 )
 
 // connect opens a connection to the configured database, the one the
@@ -44,7 +46,7 @@ func query(ctx context.Context, conn *pgx.Conn, sql string) ([][]string, error) 
 // answers on the DSN: running once it listens where the config asks. While
 // the image's entrypoint initializes a cluster, a temporary server answers
 // on the socket with listen_addresses empty and then stops.
-func (d *DB) serverState(ctx context.Context, r *RefusedError) (State, error) {
+func (d *DB) serverState(ctx context.Context, r *proc.RefusedError) (State, error) {
 	s := State{Refused: r}
 	ctx, cancel := context.WithTimeout(ctx, d.Cfg.ReadyTimeout)
 	defer cancel()
