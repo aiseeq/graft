@@ -196,7 +196,7 @@ func (r *Runner) goModules() ([]string, error) {
 			continue // tracked, but deleted in the work tree
 		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("module %s: %w", dir, err)
 		}
 		dirs = append(dirs, dir)
 	}
@@ -528,7 +528,7 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	if reportFile(t) {
 		dir, err := os.MkdirTemp("", "graft-tests-")
 		if err != nil {
-			return err
+			return fmt.Errorf("a directory for the test report: %w", err)
 		}
 		defer os.RemoveAll(dir)
 		report = filepath.Join(dir, "report.json")
@@ -727,7 +727,7 @@ func (r *Runner) Measure(source string, cmd *exec.Cmd) error {
 func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
-		return stats.Usage{}, err
+		return stats.Usage{}, fmt.Errorf("start %s: %w", cmd.Path, err)
 	}
 	watch := stats.WatchProcess(cmd.Process.Pid)
 	err := cmd.Wait()

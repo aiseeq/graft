@@ -86,7 +86,7 @@ func cgroupCPU(dir string) (time.Duration, error) {
 	path := filepath.Join(dir, "cpu.stat")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("the cgroup's CPU time: %w", err)
 	}
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	for sc.Scan() {
@@ -106,7 +106,7 @@ func cgroupMemory(dir string) (int64, error) {
 	path := filepath.Join(dir, "memory.current")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("the cgroup's memory: %w", err)
 	}
 	v, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
 	if err != nil {

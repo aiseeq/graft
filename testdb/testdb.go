@@ -183,7 +183,7 @@ func (db *DB) copyName(test string) (string, error) {
 func (db *DB) drop(ctx context.Context, name string) error {
 	admin, err := sql.Open("pgx", db.dsn("postgres"))
 	if err != nil {
-		return err
+		return fmt.Errorf("connect to drop %s: %w", name, err)
 	}
 	defer admin.Close()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -207,7 +207,7 @@ func (db *DB) ensureTemplate(t *testing.T) {
 func (db *DB) refreshTemplate(ctx context.Context) error {
 	admin, err := sql.Open("pgx", db.dsn("postgres"))
 	if err != nil {
-		return err
+		return fmt.Errorf("connect to refresh the template: %w", err)
 	}
 	defer admin.Close()
 	if err := admin.QueryRowContext(ctx, "SELECT current_setting('server_version_num')::int").Scan(&db.serverVersion); err != nil {
@@ -241,7 +241,7 @@ func (db *DB) refreshTemplate(ctx context.Context) error {
 func (db *DB) analyzeSource(ctx context.Context) error {
 	conn, err := sql.Open("pgx", db.dsn(db.source))
 	if err != nil {
-		return err
+		return fmt.Errorf("connect to analyze %s: %w", db.source, err)
 	}
 	defer conn.Close()
 	if _, err := conn.ExecContext(ctx, "ANALYZE"); err != nil {
@@ -271,7 +271,7 @@ func createStatement(name, template string, serverVersion int) string {
 func (db *DB) templateFresh(ctx context.Context, admin *sql.DB) (bool, error) {
 	var exists bool
 	if err := admin.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", db.template).Scan(&exists); err != nil {
-		return false, err
+		return false, fmt.Errorf("look up the template %s: %w", db.template, err)
 	}
 	if !exists {
 		return false, nil
@@ -291,7 +291,7 @@ func (db *DB) templateFresh(ctx context.Context, admin *sql.DB) (bool, error) {
 func (db *DB) migrationVersion(ctx context.Context, dsn string) (int64, error) {
 	conn, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("connect to read the migration version: %w", err)
 	}
 	defer conn.Close()
 	var v int64
@@ -313,7 +313,7 @@ var (
 func (db *DB) withLock(ctx context.Context, admin *sql.DB, mode lockMode, fn func() error) (err error) {
 	conn, err := admin.Conn(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("a connection for the lock: %w", err)
 	}
 	defer conn.Close()
 	if _, err := conn.ExecContext(ctx, mode.acquire, db.lockID); err != nil {

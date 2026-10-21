@@ -28,7 +28,7 @@ tasks:
       - [go, build, -ldflags, '-X main.buildVersion=${GRAFT_VERSION}', -o, bin/graft, .]
   install:
     desc: install to ~/bin atomically (a running graft keeps its file)
-    deps: [build]
+    deps: [build, glint]
     run:
       - sh: |
           set -eu
@@ -70,11 +70,11 @@ tasks:
     run: ['go test -json -p {threads} -race -count=1 ./...']
   smoke:
     desc: the commit gate
-    run: [{task: fmt-check}, {task: vet}, {task: test}]
+    run: [{task: fmt-check}, {task: vet}, {task: glint}, {task: test}]
   glint:
     desc: static analysis
     heavy: true
     run: [glint check ./...]
   all:
     desc: everything, before install
-    run: [{task: smoke}, {task: test-race}, {task: glint}]
+    run: [{task: smoke}, {task: test-race}]

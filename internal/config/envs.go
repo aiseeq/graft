@@ -42,6 +42,9 @@ type EnvCommand struct {
 // IsSet reports whether the command was given.
 func (c EnvCommand) IsSet() bool { return c.Shell != "" || len(c.Argv) > 0 }
 
+// TakesArgs reports whether the command has an {args} placeholder.
+func (c EnvCommand) TakesArgs() bool { return takesArgs(c.Shell, c.Argv) }
+
 // UnmarshalYAML accepts a string or a list of strings.
 func (c *EnvCommand) UnmarshalYAML(node *yaml.Node) error {
 	switch node.Kind {

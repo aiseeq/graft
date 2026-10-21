@@ -78,7 +78,7 @@ func (a *App) WorktreeAdd(_ context.Context, o WorktreeAddOptions) error {
 	}
 	for _, l := range links {
 		if err := os.MkdirAll(filepath.Dir(l.at), 0o755); err != nil {
-			return err
+			return fmt.Errorf("the link's directory: %w", err)
 		}
 		if err := os.Symlink(l.to, l.at); err != nil {
 			return fmt.Errorf("linking %s: %w", l.at, err)
@@ -105,7 +105,7 @@ func neighbours(repo *gitx.Repo, main, dir, rev string) ([]link, error) {
 	if found {
 		work, err := modfile.ParseWork("go.work", data, nil)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("go.work at %s: %w", rev, err)
 		}
 		for _, u := range work.Use {
 			paths = append(paths, reach{"go.work uses " + u.Path, u.Path})
@@ -119,7 +119,7 @@ func neighbours(repo *gitx.Repo, main, dir, rev string) ([]link, error) {
 	} else if found {
 		mod, err := modfile.ParseLax("go.mod", data, nil)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("go.mod at %s: %w", rev, err)
 		}
 		for _, r := range mod.Replace {
 			paths = append(paths, reach{"go.mod replaces with " + r.New.Path, r.New.Path})

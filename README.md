@@ -1378,8 +1378,8 @@ the trunk adds stops it before anything changes.
 graft builds, tests and commits itself through its own `.graft.yaml`:
 
 ```sh
-go run . smoke     # the gate: gofmt check, vet (host and windows), all tests
-go run . all       # smoke + race + glint
+go run . smoke     # the gate: gofmt check, vet (host and windows), glint, all tests
+go run . all       # smoke + race
 go run . install   # ~/bin/graft
 go run . commit -m "..."
 ```

@@ -79,7 +79,7 @@ func (a *App) DeployCheckIntegrations(ctx context.Context, staged string) error 
 	}
 	marker := integrationsMarker(repo, name)
 	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
-		return err
+		return fmt.Errorf("the integrations marker: %w", err)
 	}
 	return os.WriteFile(marker, []byte(sha+"\n"), 0o644)
 }

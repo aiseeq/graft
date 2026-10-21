@@ -115,7 +115,7 @@ func run(args []string) error {
 		}
 		data, err := os.ReadFile(src)
 		if err != nil {
-			return err
+			return fmt.Errorf("copyenv: %w", err)
 		}
 		return os.WriteFile(args[2], data, 0o644)
 	case "print":
@@ -125,7 +125,7 @@ func run(args []string) error {
 		// cat FILE [EXIT]: print the file, then exit with EXIT.
 		data, err := os.ReadFile(args[1])
 		if err != nil {
-			return err
+			return fmt.Errorf("cat: %w", err)
 		}
 		os.Stdout.Write(data)
 		if len(args) > 2 {

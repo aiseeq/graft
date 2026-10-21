@@ -316,13 +316,12 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 
 // execCmd runs graft exec [--heavy] -- <command> [args].
 func execCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := fmt.Errorf("%w: graft exec [--heavy] -- <command> [args]", errUsage)
 	heavy := len(args) > 0 && args[0] == "--heavy"
 	if heavy {
 		args = args[1:]
 	}
 	if len(args) < 2 || args[0] != "--" {
-		return usage
+		return fmt.Errorf("%w: graft exec [--heavy] -- <command> [args]", errUsage)
 	}
 	return a.Exec(ctx, args[1:], heavy)
 }
@@ -357,7 +356,7 @@ func parseError(fs *flag.FlagSet, err error) error {
 	if errors.Is(err, flag.ErrHelp) {
 		if out, ok := fs.Output().(*heldOutput); ok {
 			if _, werr := out.WriteTo(out.w); werr != nil {
-				return werr
+				return fmt.Errorf("print the usage: %w", werr)
 			}
 		}
 		return err

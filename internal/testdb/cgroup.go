@@ -36,7 +36,7 @@ func (d *DB) Cgroup(ctx context.Context) (string, error) {
 		return "", ErrNoCgroup // the process lives in another machine
 	}
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("the container's cgroup: %w", err)
 	}
 	rel, err := unifiedPath(string(data))
 	if err != nil {

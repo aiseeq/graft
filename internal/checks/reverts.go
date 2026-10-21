@@ -18,9 +18,10 @@ import (
 // HEAD's. A tree from an old base committed on a fresh parent silently undoes
 // merged work that way, a deleted file as much as changed lines. A revert that
 // is meant names the commit (7 characters of its hash or more, as git prints
-// it short) or the file in the message. Files moved by the commit, the version files graft bumps and
-// the exceptions do not count. A partial take-back, part of the commit's diff
-// of a file, is not seen: the check is per file.
+// it short) or the file in the message. Files moved by the commit, the
+// version files graft bumps and the exceptions do not count. A partial
+// take-back, part of the commit's diff of a file, is not seen: the check is
+// per file.
 func Reverts(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, message string) ([]Finding, error) {
 	if ok, err := repo.HasHead(); err != nil || !ok {
 		return nil, err
@@ -39,7 +40,7 @@ func Reverts(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, message
 	}
 	tmp, err := os.MkdirTemp("", "graft-reverts-")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("a directory for the revert check: %w", err)
 	}
 	defer os.RemoveAll(tmp)
 	now, before := filepath.Join(tmp, "staged"), filepath.Join(tmp, "head")

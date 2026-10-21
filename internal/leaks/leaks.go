@@ -194,7 +194,7 @@ func isTestName(s string) bool {
 func (r *Rules) readModule(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("a private module: %w", err)
 	}
 	for line := range strings.SplitSeq(string(data), "\n") {
 		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {

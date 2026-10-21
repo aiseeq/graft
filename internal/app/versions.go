@@ -98,22 +98,13 @@ func (w *windowVersions) versions(ctx context.Context, project string, write boo
 	return vs, nil
 }
 
-// named finds the unreleased version of the name.
-func named(versions []jira.Version, name string) (jira.Version, bool) {
-	i := slices.IndexFunc(versions, func(v jira.Version) bool { return v.Name == name && !v.Released && !v.Archived })
-	if i < 0 {
-		return jira.Version{}, false
-	}
-	return versions[i], true
-}
-
 // ensure finds the unreleased version of the name or creates it.
 func (w *windowVersions) ensure(ctx context.Context, project, name, date string) (jira.Version, error) {
 	vs, err := w.versions(ctx, project, true)
 	if err != nil {
 		return jira.Version{}, err
 	}
-	if v, ok := named(vs, name); ok {
+	if v, ok := jira.Unreleased(vs, name); ok {
 		return v, nil
 	}
 	id, err := w.client.ProjectID(ctx, project)
@@ -178,7 +169,7 @@ func (a *App) moveToNextWindow(ctx context.Context, r *deployRun) error {
 			errs = append(errs, err)
 			continue
 		}
-		cur, hasCur := named(w.read[project], from)
+		cur, hasCur := jira.Unreleased(w.read[project], from)
 		for _, key := range keys {
 			if err := a.moveItem(ctx, w.client, key, cur, hasCur, target); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", key, err))
@@ -227,7 +218,7 @@ func (a *App) checkVersionContents(ctx context.Context, r *deployRun) error {
 		if err != nil {
 			return fmt.Errorf("deploy %s: nothing was deployed: %w", r.name, err)
 		}
-		v, ok := named(vs, name)
+		v, ok := jira.Unreleased(vs, name)
 		if !ok {
 			continue
 		}
@@ -288,7 +279,7 @@ func (a *App) releaseWindowVersion(ctx context.Context, w *windowVersions, proje
 		return err
 	}
 	name := w.conf.Template.Format(occ.Start)
-	if v, ok := named(vs, name); ok {
+	if v, ok := jira.Unreleased(vs, name); ok {
 		return w.release(ctx, v, "", occ.Date, build)
 	}
 	if v, err := jira.NextDatedVersion(project, vs, w.conf.Template); err == nil {

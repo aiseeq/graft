@@ -42,7 +42,7 @@ func Lookup(dir, key string) (Entry, bool, error) {
 		return Entry{}, false, nil
 	}
 	if err != nil {
-		return Entry{}, false, err
+		return Entry{}, false, fmt.Errorf("a cached pass: %w", err)
 	}
 	var e Entry
 	if err := json.Unmarshal(data, &e); err != nil {
@@ -57,15 +57,15 @@ func Lookup(dir, key string) (Entry, bool, error) {
 // Store keeps the pass of key and removes the passes older than keep.
 func Store(dir, key string, e Entry) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return fmt.Errorf("the task cache: %w", err)
 	}
 	data, err := json.Marshal(e)
 	if err != nil {
-		return err
+		return fmt.Errorf("the pass of %s: %w", key, err)
 	}
 	tmp, err := os.CreateTemp(dir, key+".*.tmp")
 	if err != nil {
-		return err
+		return fmt.Errorf("the pass of %s: %w", key, err)
 	}
 	_, werr := tmp.Write(data)
 	if err := errors.Join(werr, tmp.Close()); err != nil {
@@ -73,7 +73,7 @@ func Store(dir, key string, e Entry) error {
 		return err
 	}
 	if err := os.Rename(tmp.Name(), filepath.Join(dir, key+".json")); err != nil {
-		return err
+		return fmt.Errorf("the pass of %s: %w", key, err)
 	}
 	return prune(dir)
 }
@@ -81,7 +81,7 @@ func Store(dir, key string, e Entry) error {
 func prune(dir string) error {
 	files, err := os.ReadDir(dir)
 	if err != nil {
-		return err
+		return fmt.Errorf("prune the task cache: %w", err)
 	}
 	var errs []error
 	for _, f := range files {

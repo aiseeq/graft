@@ -51,7 +51,7 @@ func gone(err error) bool {
 func processMemory(pid int) (int64, error) {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("process %d memory: %w", pid, err)
 	}
 	var kb int64
 	sc := bufio.NewScanner(bytes.NewReader(data))
@@ -74,11 +74,11 @@ func processMemory(pid int) (int64, error) {
 func children(pid int) ([]int, error) {
 	tasks, err := filepath.Glob(fmt.Sprintf("/proc/%d/task/*/children", pid))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("process %d threads: %w", pid, err)
 	}
 	if len(tasks) == 0 {
 		if _, err := os.Stat(fmt.Sprintf("/proc/%d/task", pid)); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("process %d: %w", pid, err)
 		}
 		return nil, errors.New("/proc has no task/*/children: the kernel lacks CONFIG_PROC_CHILDREN")
 	}
@@ -89,7 +89,7 @@ func children(pid int) ([]int, error) {
 			continue // the thread ended
 		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("process %d children: %w", pid, err)
 		}
 		for f := range strings.FieldsSeq(string(data)) {
 			kid, err := strconv.Atoi(f)

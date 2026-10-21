@@ -671,12 +671,13 @@ func (t *Task) UsageText() string {
 
 // TakesArgs reports whether any step of the task receives {args}.
 func (t *Task) TakesArgs() bool {
-	for _, s := range t.Run {
-		if strings.Contains(s.Shell, ArgsPlaceholder) || slices.ContainsFunc(s.Argv, func(w string) bool { return strings.Contains(w, ArgsPlaceholder) }) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(t.Run, func(s Step) bool { return takesArgs(s.Shell, s.Argv) })
+}
+
+// takesArgs reports whether a command has an {args} placeholder.
+func takesArgs(shell string, argv []string) bool {
+	return strings.Contains(shell, ArgsPlaceholder) ||
+		slices.ContainsFunc(argv, func(w string) bool { return strings.Contains(w, ArgsPlaceholder) })
 }
 
 var unitRe = regexp.MustCompile(`^[A-Za-z0-9@._-]+\.service$`)

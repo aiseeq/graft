@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 func setup(m *testing.M) (int, error) {
 	dir, err := os.MkdirTemp("", "graft-it-")
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("a directory for the tests: %w", err)
 	}
 	defer os.RemoveAll(dir)
 	binDir = filepath.Join(dir, "bin")
@@ -64,7 +64,7 @@ func setup(m *testing.M) (int, error) {
 	}
 	gitconfig := filepath.Join(dir, "gitconfig")
 	if err := os.WriteFile(gitconfig, []byte("[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n[protocol \"file\"]\n\tallow = always\n"), 0o644); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("the tests' git config: %w", err)
 	}
 	testEnv, err = isolatedEnv(gitconfig, filepath.Join(dir, "userconfig"), filepath.Join(dir, "cache"))
 	if err != nil {

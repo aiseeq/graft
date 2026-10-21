@@ -29,7 +29,7 @@ func Read() (float64, error) {
 		return 0, ErrNone
 	}
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("the load average: %w", err)
 	}
 	fields := strings.Fields(string(data))
 	if len(fields) == 0 {

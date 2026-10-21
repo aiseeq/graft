@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -59,7 +58,7 @@ func (e *Env) Command(ctx context.Context, c config.EnvCommand) (*exec.Cmd, erro
 // CommandArgs is Command with the user's arguments put in at {args},
 // verbatim (see ExpandArgv and ShellArgs).
 func (e *Env) CommandArgs(ctx context.Context, c config.EnvCommand, args []string) (*exec.Cmd, error) {
-	if len(args) > 0 && !TakesArgs(c) {
+	if len(args) > 0 && !c.TakesArgs() {
 		return nil, fmt.Errorf("%q takes no arguments (no %s in it)", c.Source, config.ArgsPlaceholder)
 	}
 	if len(c.Argv) > 0 && !e.IsRemote() {
@@ -83,12 +82,6 @@ func (e *Env) CommandArgs(ctx context.Context, c config.EnvCommand, args []strin
 		return nil, err
 	}
 	return e.Shell(ctx, line), nil
-}
-
-// TakesArgs reports whether a command has an {args} placeholder.
-func TakesArgs(c config.EnvCommand) bool {
-	return strings.Contains(c.Shell, config.ArgsPlaceholder) ||
-		slices.ContainsFunc(c.Argv, func(w string) bool { return strings.Contains(w, config.ArgsPlaceholder) })
 }
 
 // ExpandArgv expands ${KEY} in the configured words (when l is not nil) and

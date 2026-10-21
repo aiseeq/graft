@@ -4,7 +4,7 @@ version: 1
 settings:
   exclude:
     - vendor/**
-  min_severity: medium
+  min_severity: low
   output: console
 
 categories:

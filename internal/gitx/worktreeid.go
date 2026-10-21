@@ -114,7 +114,7 @@ func (r *Repo) hashChanged(entries map[string]string, paths []string) error {
 		case st.Mode()&os.ModeSymlink != 0:
 			target, err := os.Readlink(full)
 			if err != nil {
-				return err
+				return fmt.Errorf("symlink %s: %w", full, err)
 			}
 			entries[p] = "120000 link:" + target
 		case st.IsDir():

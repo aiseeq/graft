@@ -27,6 +27,15 @@ type Version struct {
 	Frozen bool `json:"-"`
 }
 
+// Unreleased finds the unreleased version of the name.
+func Unreleased(versions []Version, name string) (Version, bool) {
+	i := slices.IndexFunc(versions, func(v Version) bool { return v.Name == name && !v.Released && !v.Archived })
+	if i < 0 {
+		return Version{}, false
+	}
+	return versions[i], true
+}
+
 // Approver is one approver of a version and where they stand: PENDING,
 // APPROVED or DECLINED.
 type Approver struct {

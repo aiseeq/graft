@@ -192,7 +192,7 @@ func processPaths() (map[string][]string, error) {
 	}
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list the processes: %w", err)
 	}
 	paths := map[string][]string{}
 	for _, e := range entries {
@@ -205,14 +205,14 @@ func processPaths() (map[string][]string, error) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("a process's working directory: %w", err)
 		}
 		comm, err := os.ReadFile(filepath.Join(proc, "comm"))
 		if gone(err) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("a process's name: %w", err)
 		}
 		who := strings.TrimSpace(string(comm)) + ", pid " + e.Name()
 		paths[dir] = append(paths[dir], who)
@@ -221,7 +221,7 @@ func processPaths() (map[string][]string, error) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("a process's open files: %w", err)
 		}
 		for _, fd := range fds {
 			file, err := os.Readlink(filepath.Join(proc, "fd", fd.Name()))
@@ -229,7 +229,7 @@ func processPaths() (map[string][]string, error) {
 			case gone(err):
 				// Closed while being read.
 			case err != nil:
-				return nil, err
+				return nil, fmt.Errorf("a process's open file: %w", err)
 			case filepath.IsAbs(file):
 				// Sockets, pipes and the like are not paths.
 				paths[file] = append(paths[file], who+" (a file open)")
@@ -353,7 +353,7 @@ func (c *cleaner) lastUse(dir string) (time.Time, error) {
 			continue
 		}
 		if err != nil {
-			return time.Time{}, err
+			return time.Time{}, fmt.Errorf("the worktree's last use: %w", err)
 		}
 		if st.ModTime().After(last) {
 			last = st.ModTime()

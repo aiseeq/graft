@@ -104,7 +104,7 @@ func (r *Runner) cacheKey(ctx context.Context, name string, args []string) (stri
 	if path, ok := r.Extra[MessageFileEnv]; ok && readsMessage {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("the commit message for the cache key: %w", err)
 		}
 		add("message", string(data))
 	}
@@ -126,7 +126,7 @@ func (r *Runner) keyDefinitions(add func(...string), name string, seen map[strin
 	t := r.Config.Tasks[name]
 	def, err := json.Marshal(t)
 	if err != nil {
-		return err
+		return fmt.Errorf("task %s for the cache key: %w", name, err)
 	}
 	add("task", name, string(def))
 	if strings.Contains(string(def), MessageFileEnv) {
@@ -147,7 +147,7 @@ func (r *Runner) keyDefinitions(add func(...string), name string, seen map[strin
 	if t.TestDB {
 		db, err := json.Marshal(r.Config.TestDB)
 		if err != nil {
-			return err
+			return fmt.Errorf("test_db for the cache key: %w", err)
 		}
 		add("test_db", string(db))
 	}
@@ -207,7 +207,7 @@ func (r *Runner) inputPath(f string) (string, error) {
 	if rest, ok := strings.CutPrefix(f, "~/"); ok {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("input %s: %w", f, err)
 		}
 		return filepath.Join(home, rest), nil
 	}
