@@ -139,14 +139,24 @@ func NewRunner(root string, cfg *config.Config, stdout, stderr io.Writer) *Runne
 // the output; a module below the root adds its directory in parentheses.
 const GoVetSource = "go vet ./..."
 
-// gateStep is a step of the gate with the task that sets its directory.
+// GoFixSource is how a go_fix step reads, as GoVetSource does.
+const GoFixSource = "go fix -diff ./..."
+
+// goFixHint follows a failing go_fix step.
+const goFixHint = "go fix has rewrites to make: run go fix ./... in the module, again until go fix -diff ./... is empty (one pass leaves rewrites that overlap), and commit them. " +
+	"A new Go release brings new rewrites: after a Go upgrade this step fails in every project that turns it on, whatever the change"
+
+// gateStep is a step of the gate with the task that sets its directory,
+// and what to do when it fails.
 type gateStep struct {
 	step config.Step
 	task *config.Task
+	hint string
 }
 
 // gateSteps is the gate: go vet ./... in every Go module of the tree first,
-// unless go_vet is turned off, then the steps of the config. A module is the
+// unless go_vet is turned off, then go fix -diff ./... in each with go_fix,
+// then the steps of the config. A module is the
 // root when it has go.mod, and every directory below it with a go.mod that
 // git lists (tracked, or not ignored); testdata, vendor and node_modules are
 // skipped, and so are the directories of go_vet.exclude. The steps take
@@ -154,31 +164,50 @@ type gateStep struct {
 // build, which the build cache does not share.
 func (r *Runner) gateSteps() ([]gateStep, error) {
 	var steps []gateStep
+	if !r.Config.GoVet.IsEnabled() && !r.Config.GoFix.Enabled {
+		return r.configSteps(steps), nil
+	}
 	mods, err := r.goModules()
 	if err != nil {
 		return nil, err
 	}
-	for _, dir := range mods {
-		src := GoVetSource
+	inModule := func(src, dir string) string {
 		if dir != "." {
 			src += " (" + dir + ")"
 		}
-		steps = append(steps, gateStep{
-			step: config.Step{Argv: []string{"go", "vet", "./..."}, Source: src},
-			task: &config.Task{Dir: dir, Env: r.Config.GoVet.Env},
-		})
+		return src
 	}
+	if r.Config.GoVet.IsEnabled() {
+		for _, dir := range mods {
+			steps = append(steps, gateStep{
+				step: config.Step{Argv: []string{"go", "vet", "./..."}, Source: inModule(GoVetSource, dir)},
+				task: &config.Task{Dir: dir, Env: r.Config.GoVet.Env},
+			})
+		}
+	}
+	if r.Config.GoFix.Enabled {
+		// The build flags of go_vet.env: go fix analyzes the same build.
+		for _, dir := range mods {
+			steps = append(steps, gateStep{
+				step: config.Step{Argv: []string{"go", "fix", "-diff", "./..."}, Source: inModule(GoFixSource, dir)},
+				task: &config.Task{Dir: dir, Env: r.Config.GoVet.Env},
+				hint: goFixHint,
+			})
+		}
+	}
+	return r.configSteps(steps), nil
+}
+
+// configSteps are steps with the gate steps of the config after them.
+func (r *Runner) configSteps(steps []gateStep) []gateStep {
 	for _, s := range r.Config.Gate {
 		steps = append(steps, gateStep{step: s, task: &config.Task{}})
 	}
-	return steps, nil
+	return steps
 }
 
 // goModules lists the directories to vet, relative to the root, "." first.
 func (r *Runner) goModules() ([]string, error) {
-	if !r.Config.GoVet.IsEnabled() {
-		return nil, nil
-	}
 	var dirs []string
 	// Any other error than a missing file leaves vet in: it fails visibly.
 	if _, err := os.Stat(filepath.Join(r.Root, "go.mod")); !errors.Is(err, os.ErrNotExist) && !vetSkipped(".", r.Config.GoVet.Exclude) {
@@ -283,6 +312,9 @@ func (r *Runner) Gate(ctx context.Context) (err error) {
 		}
 		fmt.Fprintf(r.Stdout, "graft: gate %d/%d: %s\n", i+1, len(steps), s.Source)
 		if err := r.step(ctx, s, gs.task, nil, ""); err != nil {
+			if gs.hint != "" {
+				return fmt.Errorf("gate failed at %q: %w\n%s", s.Source, err, gs.hint)
+			}
 			return fmt.Errorf("gate failed at %q: %w", s.Source, err)
 		}
 	}

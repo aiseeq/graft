@@ -113,7 +113,7 @@ stats` (`wait_s`).
 | `graft init` | install the hooks and set `core.hooksPath`, create the `.env` file from `dotenv_template` when it is missing, install pinned tools that fail their check; safe to repeat |
 | `graft check` | run the content checks on the index |
 | `graft leaks <revision range>` | scan commits for the private names and terms of the user config (`leaks`) |
-| `graft gate` | run the gate commands (`go vet ./...` in every Go module first, see `go_vet`) |
+| `graft gate` | run the gate commands (`go vet ./...` in every Go module first, see `go_vet`, then `go fix -diff ./...` with `go_fix`) |
 | `graft hook pre-commit` / `prepare-commit-msg` / `post-merge` | what the installed hooks call |
 | `graft flags [status]` | is the flag raised: open journal events no exception mutes |
 | `graft flags show <id>` | one event in full |
@@ -276,6 +276,16 @@ go_vet:
   # env: {GOFLAGS: -tags=foo}   # variables of the vet steps, as a task's env
   # exclude: [tools/gen]        # module directories left unvetted (with everything below)
   # reason: ...                 # required with enabled: false or exclude
+
+# go fix -diff ./... after the vet steps, in the same modules with go_vet.env,
+# shown as "go fix -diff ./... (backend)" below the root: a rewrite go fix
+# would make fails the gate with its diff. Run go fix ./... in the module
+# until go fix -diff ./... is empty (one pass skips rewrites that overlap)
+# and commit them. Off by default: a new Go release brings new rewrites, and
+# after a Go upgrade the step fails in every project that turns it on at
+# once, whatever the change; the failure says so.
+go_fix:
+  enabled: false                # default false
 
 version:
   mode: file                    # required: file | git-tag | none

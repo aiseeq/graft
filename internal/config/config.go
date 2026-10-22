@@ -63,6 +63,7 @@ type Config struct {
 
 	Gate    []Step  `yaml:"gate"`
 	GoVet   GoVet   `yaml:"go_vet"`
+	GoFix   GoFix   `yaml:"go_fix"`
 	Version Version `yaml:"version"`
 	Ticket  *Ticket `yaml:"ticket"`
 	Push    Push    `yaml:"push"`
@@ -169,6 +170,13 @@ type GoVet struct {
 
 // IsEnabled reports whether the gate runs go vet; it is on by default.
 func (g GoVet) IsEnabled() bool { return g.Enabled == nil || *g.Enabled }
+
+// GoFix turns on the gate steps go fix -diff ./... after the vet steps, in
+// the modules go vet checks: rewrites go fix would make fail the gate. It is
+// off by default: a new Go release brings new rewrites to every project.
+type GoFix struct {
+	Enabled bool `yaml:"enabled"`
+}
 
 // Checks configures the content checks run on the staged changes.
 type Checks struct {
