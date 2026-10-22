@@ -226,13 +226,25 @@ func (a *App) checkHeldFor(ctx context.Context, r *deployRun, wname string) erro
 	if err != nil {
 		return refuse("%v", err)
 	}
-	if released != "" && released == r.prev {
-		a.printf("%s already runs %s, the candidate of the %s window: the hold is over", wname, gitx.Short(released), occ.Name())
-		return nil
-	}
 	candidate, err := r.heldCandidate(ctx, r.env, r.target.DeployedSHA, r.prev, occ)
 	if err != nil {
 		return refuse("%v", err)
+	}
+	// The hold is over once the windowed target runs the candidate, or work
+	// on top of it. The candidate is recorded then: the next deploy here
+	// runs on top of it, and is past the hold too.
+	over, err := runsCandidate(r.repo, wname, released, candidate)
+	if err != nil {
+		return refuse("%v", err)
+	}
+	if over {
+		if !r.dryRun {
+			if err := recordCandidate(ctx, r, occ, candidate); err != nil {
+				return refuse("%v", err)
+			}
+		}
+		a.printf("%s already runs %s, the candidate of the %s window: the hold is over", wname, gitx.Short(candidate), occ.Name())
+		return nil
 	}
 	if candidate == "" {
 		return refuse("%s holds the release candidate of %s from %s, but runs no recorded commit to hold", r.name, wname, occ.Cutoff.Format("Mon 02.01 15:04"))
@@ -259,6 +271,25 @@ func (a *App) checkHeldFor(ctx context.Context, r *deployRun, wname string) erro
 		return refuse("%v", err)
 	}
 	return nil
+}
+
+// runsCandidate tells whether the windowed target wname, which runs
+// released, has the candidate.
+func runsCandidate(repo *gitx.Repo, wname, released, candidate string) (bool, error) {
+	if released == "" || candidate == "" {
+		return false, nil
+	}
+	if released == candidate {
+		return true, nil
+	}
+	known, err := repo.RevExists(released)
+	if err != nil {
+		return false, err
+	}
+	if !known {
+		return false, fmt.Errorf("%s runs %s, which is not in the local repository (git fetch?)", wname, gitx.Short(released))
+	}
+	return repo.IsAncestor(candidate, released)
 }
 
 // heldCandidate is the candidate recorded for the window, or, before any

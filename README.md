@@ -1239,9 +1239,11 @@ deploy:
 - Outside its window a target refuses, before `requires`, deps and sudo,
   naming the next window. A hotfix branch goes any time.
 - From the cutoff until the window closes, or until the windowed target
-  runs what the held target runs, the target named in `requires` holds the
-  release candidate: the commit it ran at the cutoff, recorded beside its
-  `deployed_sha` (`.candidate`) on the first deploy there after the cutoff.
+  runs the candidate or work on top of it, the target named in `requires`
+  holds the release candidate: the commit it ran at the cutoff, recorded
+  beside its `deployed_sha` (`.candidate`) on the first deploy there after
+  the cutoff, or when the hold is over. Every deploy there after the release
+  in the window passes the hold, not only the first.
   Meanwhile it takes only commits on top of the candidate that revert, that
   change only the windowed target's `ignore_paths`, or that the windowed
   target already runs (a merged hotfix); a hotfix branch goes there too.

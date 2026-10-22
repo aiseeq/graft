@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -191,6 +192,38 @@ func TestReleaseCutoffHoldAndWithheld(t *testing.T) {
 	d.mustGraft("deploy", "prod")
 	if got := strings.TrimSpace(d.stateFile("prod-sha.withheld")); got != "" {
 		t.Errorf("withheld after it passed = %q", got)
+	}
+}
+
+// TestReleaseHoldOverOncePushedOnTop: once prod runs the candidate, the hold
+// is over for every later deploy to test in the window, not only for the
+// first one on top of the candidate; whether a deploy during the hold
+// recorded the candidate or none did.
+func TestReleaseHoldOverOncePushedOnTop(t *testing.T) {
+	for _, recorded := range []bool{true, false} {
+		t.Run(fmt.Sprintf("recorded=%v", recorded), func(t *testing.T) {
+			d := releaseRepo(t)
+
+			d.at("2026-10-20 10:00")
+			d.commitFile("work.txt", "feat: PROJ-8 checked work")
+			d.mustGraft("deploy", "test")
+			candidate := d.git("rev-parse", "HEAD")
+			if recorded {
+				d.at("2026-10-21 18:30")
+				d.mustGraft("deploy", "--redeploy", "test")
+			}
+
+			d.at("2026-10-22 15:26")
+			d.mustGraft("deploy", "--unapproved", "prod")
+			for i, at := range []string{"2026-10-22 15:46", "2026-10-22 16:08"} {
+				d.at(at)
+				d.commitFile(fmt.Sprintf("next%d.txt", i), fmt.Sprintf("feat: PROJ-1 next work %d", i))
+				out, code := d.graft("", "deploy", "test")
+				if code != 0 || !strings.Contains(out, "prod already runs "+candidate[:12]+", the candidate of the 22.10.26 window: the hold is over") {
+					t.Fatalf("deploy %d to test after prod took the candidate: exit %d\n%s", i+1, code, out)
+				}
+			}
+		})
 	}
 }
 
