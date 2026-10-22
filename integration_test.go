@@ -916,7 +916,7 @@ func TestShimFailsClosedWithoutGraft(t *testing.T) {
 	if err == nil {
 		t.Fatalf("commit went through without graft on PATH:\n%s", out)
 	}
-	if !strings.Contains(string(out), "go install github.com/aiseeq/graft/v2@latest") {
+	if !strings.Contains(string(out), "git pull && go run . install") {
 		t.Errorf("no install hint:\n%s", out)
 	}
 }
@@ -978,7 +978,7 @@ func TestCommitWarnsAboutOutdatedHooks(t *testing.T) {
 		t.Errorf("warning after init:\n%s", out)
 	}
 	// A shim of an older pin still runs, but init would rewrite it.
-	f.write(".githooks/pre-commit", strings.Replace(f.read(".githooks/pre-commit"), "/v2@latest", "@v0.0.9", 1))
+	f.write(".githooks/pre-commit", strings.Replace(f.read(".githooks/pre-commit"), "git pull && ", "", 1))
 	f.write("a.txt", "c\n")
 	if out := f.mustGraft("commit", "-m", "feat: stale shim"); !strings.Contains(out, ".githooks/pre-commit differs from the shim of this graft") {
 		t.Errorf("stale shim not reported:\n%s", out)

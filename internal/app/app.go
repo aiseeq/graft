@@ -74,11 +74,11 @@ func (a *App) requireGraft(cfg *config.Config) error {
 	}
 	have, err := version.ParseBuild(a.ToolVersion)
 	if err != nil {
-		return fmt.Errorf("this project needs graft >= %s and this build cannot tell its version (%w); install a release: %s",
-			need, err, hooks.InstallCommand)
+		return fmt.Errorf("this project needs graft >= %s and this build cannot tell its version (%w); install it, %s",
+			need, err, hooks.InstallHint)
 	}
 	if have.Less(need) {
-		return fmt.Errorf("this project needs graft >= %s, this is graft %s; install it: %s", need, a.ToolVersion, hooks.InstallCommand)
+		return fmt.Errorf("this project needs graft >= %s, this is graft %s; install it, %s", need, a.ToolVersion, hooks.InstallHint)
 	}
 	return nil
 }

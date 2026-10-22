@@ -23,9 +23,11 @@ const (
 // Names lists every hook graft installs.
 var Names = []string{PreCommit, PrepareCommitMsg, PostMerge}
 
-// InstallCommand gets graft onto PATH: the latest release, whatever version
-// a project needs at least, as graft versions are not pinned.
-const InstallCommand = "go install github.com/aiseeq/graft/v2@latest"
+// InstallHint gets graft onto PATH: the latest, whatever version a project
+// needs at least, as graft versions are not pinned. It installs into ~/bin,
+// where every graft of the user is: go install would put a second one in
+// GOBIN, and the hooks would run whichever comes first on PATH.
+const InstallHint = "in a checkout of github.com/aiseeq/graft: git pull && go run . install"
 
 // shimMarker is the line that tells graft's shims from somebody else's hooks.
 const shimMarker = "# Installed by graft init. The hook logic lives in graft itself."
@@ -38,7 +40,7 @@ func Shim(name string) []byte {
 ` + shimMarker + `
 if ! command -v graft >/dev/null 2>&1; then
 	echo "graft: not found in PATH, the ` + name + ` hook cannot run." >&2
-	echo "Install it: ` + InstallCommand + `" >&2
+	echo "Install it, ` + InstallHint + `" >&2
 	exit 1
 fi
 exec graft hook ` + name + ` "$@"

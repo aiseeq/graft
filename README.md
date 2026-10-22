@@ -17,13 +17,16 @@ same on Linux, macOS and Windows (Git for Windows).
 ## Install
 
 ```sh
-go install github.com/aiseeq/graft/v2@latest
+git clone https://github.com/aiseeq/graft && cd graft
+go run . install    # builds, checks and atomically replaces ~/bin/graft
 ```
 
-or, from a checkout, `go run . install` (atomically replaces `~/bin/graft`).
-Requires git 2.31 or newer. A project can require a graft version with
+and later `git pull && go run . install` in that checkout. Put `~/bin` on
+`PATH`. `go install github.com/aiseeq/graft/v2@latest` works too, but puts a
+second graft in GOBIN (`~/go/bin`): the hooks run whichever comes first on
+`PATH`, so keep one. Requires git 2.31 or newer. A project can require a graft version with
 `graft: ">=X.Y.Z"` in `.graft.yaml`: an older graft refuses to work on it.
-The install hints name `@latest`: graft versions are not pinned.
+The install hints install the latest: graft versions are not pinned.
 
 Settings that belong to the person rather than to a project live in
 `<user config dir>/graft/config.yaml` (`~/.config/graft/config.yaml` on

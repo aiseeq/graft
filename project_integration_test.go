@@ -71,13 +71,13 @@ func TestVersionDescribeFileMode(t *testing.T) {
 func TestMinimumGraftVersion(t *testing.T) {
 	f := tasksRepo(t, "graft: '>=1.2.3'\n", nil)
 	f.mustGraft("init")
-	if shim := f.read(".githooks/pre-commit"); !strings.Contains(shim, "go install github.com/aiseeq/graft/v2@latest") {
+	if shim := f.read(".githooks/pre-commit"); !strings.Contains(shim, "git pull && go run . install") {
 		t.Errorf("shim hint:\n%s", shim)
 	}
 	f.write(".graft.yaml", strings.Replace(f.read(".graft.yaml"), ">=1.2.3", ">=1.3.0", 1))
 	out, code := f.graft("", "version", "--describe")
 	if code != 1 || !strings.Contains(out, "this project needs graft >= 1.3.0, this is graft "+testGraftVersion) ||
-		!strings.Contains(out, "graft/v2@latest") {
+		!strings.Contains(out, "install it, in a checkout of github.com/aiseeq/graft: git pull && go run . install") {
 		t.Errorf("older graft: exit %d\n%s", code, out)
 	}
 	f.write(".graft.yaml", strings.Replace(f.read(".graft.yaml"), ">=1.3.0", "1.3", 1))
