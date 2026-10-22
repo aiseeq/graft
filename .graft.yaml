@@ -4,6 +4,9 @@ version:
 gate:
   - task: smoke
 
+# go fix -diff ./... after go vet: a rewrite go fix would make fails the gate.
+go_fix: {enabled: true}
+
 # Tests of the flags SQL adapter run against this container; graft passes
 # its DSN to test_db tasks. A unix socket: no network device per container.
 test_db:
