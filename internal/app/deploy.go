@@ -218,6 +218,11 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 		if r.prev, err = r.readSHA(ctx, r.env, r.target.DeployedSHA); err != nil {
 			return err
 		}
+	}
+	if err := a.showDeployed(ctx, r); err != nil {
+		return err
+	}
+	if r.target.DeployedSHA != nil {
 		if err := a.refuseSameCommit(r, o.Redeploy); err != nil {
 			return err
 		}
@@ -305,6 +310,46 @@ func (a *App) checkReleaseFlow(ctx context.Context, r *deployRun, unapproved boo
 
 // refuseSameCommit refuses to deploy the commit the target already runs,
 // unless redeploy asks for exactly that.
+// showDeployed prints what the target runs and what the deploy changes
+// there, before a check can refuse: the version, the commit and its branch
+// the target runs, then the commits the deploy brings and those it takes
+// back.
+func (a *App) showDeployed(ctx context.Context, r *deployRun) error {
+	s, err := readDeployed(ctx, r.repo, r.cfg, r.env, r.target, r.prev)
+	if err != nil {
+		return err
+	}
+	a.printf("%s runs version %s; commit %s", r.name, s.version, s.commit)
+	if r.prev == "" || r.prev == r.head {
+		return nil
+	}
+	known, err := r.repo.RevExists(r.prev)
+	if err != nil || !known {
+		return err
+	}
+	count := func(rng string) (int, error) {
+		out, err := r.repo.Git("rev-list", "--count", rng)
+		if err != nil {
+			return 0, err
+		}
+		return strconv.Atoi(strings.TrimSpace(out))
+	}
+	brings, err := count(r.prev + ".." + r.head)
+	if err != nil {
+		return err
+	}
+	takes, err := count(r.head + ".." + r.prev)
+	if err != nil {
+		return err
+	}
+	if takes == 0 {
+		a.printf("deploying %s over it brings %s, takes none back", gitx.Short(r.head), plural(brings, "commit"))
+		return nil
+	}
+	a.printf("deploying %s over it brings %s and takes back %d it runs: git log %s..%s", gitx.Short(r.head), plural(brings, "commit"), takes, gitx.Short(r.head), gitx.Short(r.prev))
+	return nil
+}
+
 func (a *App) refuseSameCommit(r *deployRun, redeploy bool) error {
 	if r.prev != r.head {
 		return nil

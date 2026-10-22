@@ -1589,7 +1589,7 @@ func TestDeployVersions(t *testing.T) {
 	subject := d.git("log", "-1", "--format=%h %s (%cs)")
 	out := d.mustGraft("deploy", "versions")
 	for _, want := range []string{
-		"test (local): version 1.0.1; commit " + subject + "\n",
+		"test (local): version 1.0.1; commit " + subject + ", at origin/" + d.git("rev-parse", "--abbrev-ref", "HEAD") + "\n",
 		"live (local): version no version command; commit none recorded\n",
 		"stage (local): version no version command; commit no deployed_sha\n",
 	} {
@@ -1604,5 +1604,53 @@ func TestDeployVersions(t *testing.T) {
 	if out, code := d.graft("", "deploy", "versions"); code == 0 || !strings.Contains(out, "test (local): version unknown: the version command on local printed nothing") ||
 		!strings.Contains(out, "could not read test") {
 		t.Errorf("an unreadable version: exit %d\n%s", code, out)
+	}
+}
+
+// TestDeployShowsWhatTheTargetRuns: before its checks, graft deploy and
+// graft deploy check print the version, the commit and the branch the
+// target runs, then the commits the deploy brings and those it takes back.
+func TestDeployShowsWhatTheTargetRuns(t *testing.T) {
+	d := deployRepo(t)
+	trunk := d.git("rev-parse", "--abbrev-ref", "HEAD")
+
+	out := d.mustGraft("deploy", "--unapproved", "live")
+	if !strings.Contains(out, "live runs version no version command; commit none recorded\n") {
+		t.Errorf("a first deploy:\n%s", out)
+	}
+	deployed := d.git("log", "-1", "--format=%h %s (%cs)")
+	deployedVersion := strings.TrimSpace(d.git("show", "HEAD:VERSION"))
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "feat: next")
+	d.write("b.txt", "b\n")
+	d.mustGraft("commit", "-m", "feat: after next")
+	// The commits name no item: the check refuses after the lines.
+	out, _ = d.graft("", "deploy", "check", "live")
+	for _, want := range []string{
+		"live runs version " + deployedVersion + " by its commit; commit " + deployed + ", in origin/" + trunk + "\n",
+		"deploying " + d.git("rev-parse", "--short=12", "HEAD") + " over it brings 2 commits, takes none back\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
+	}
+
+	// A target with a version command shows its answer, or why there is none.
+	out = d.mustGraft("deploy", "test")
+	if !strings.Contains(out, "test runs version unknown: reading the deployed version on local: ") {
+		t.Errorf("an unreadable version:\n%s", out)
+	}
+	runs := d.git("log", "-1", "--format=%h %s (%cs)")
+	d.git("switch", "-q", "-c", "side", "HEAD~1")
+	d.write("c.txt", "c\n")
+	d.mustGraft("commit", "-m", "feat: side work")
+	out = d.mustGraft("deploy", "check", "test")
+	for _, want := range []string{
+		"test runs version " + strings.TrimSpace(d.stateFile("test-version")) + "; commit " + runs + ", at origin/" + trunk + "\n",
+		"over it brings 1 commit and takes back 1 it runs: git log ",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
 	}
 }

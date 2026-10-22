@@ -160,21 +160,47 @@ func requirePublished(repo *gitx.Repo, remotes []string) error {
 	return nil
 }
 
+// fileVersionAt is the version the version file holds in rev.
+func fileVersionAt(repo *gitx.Repo, cfg *config.Config, rev string) (version.Semver, error) {
+	content, err := repo.ShowFile(rev, cfg.Version.File)
+	if err != nil {
+		return version.Semver{}, err
+	}
+	raw, err := version.Targets(cfg.Version)[0].Extract(content)
+	if err != nil {
+		return version.Semver{}, err
+	}
+	return version.ParseFile(raw)
+}
+
+// versionAt is the project version of commit rev: its version file, or the
+// version tags before it.
+func versionAt(repo *gitx.Repo, cfg *config.Config, rev string) (string, error) {
+	switch cfg.Version.Mode {
+	case config.ModeFile:
+		v, err := fileVersionAt(repo, cfg, rev)
+		if err != nil {
+			return "", err
+		}
+		return v.String(), nil
+	case config.ModeGitTag:
+		out, err := repo.Git("describe", "--tags", "--match", cfg.Version.TagPrefix+"*", rev)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(out), nil
+	default:
+		return "", fmt.Errorf("version.mode is %s: the project has no version", cfg.Version.Mode)
+	}
+}
+
 func releaseVersion(repo *gitx.Repo, cfg *config.Config, opts ReleaseOptions) (version.Semver, error) {
 	switch cfg.Version.Mode {
 	case config.ModeFile:
 		if opts.Level != version.Patch || opts.Version != "" {
 			return version.Semver{}, errors.New("in version.mode file the version is bumped by graft commit; release takes no --minor, --major or --version")
 		}
-		content, err := repo.ShowFile("HEAD", cfg.Version.File)
-		if err != nil {
-			return version.Semver{}, err
-		}
-		raw, err := version.Targets(cfg.Version)[0].Extract(content)
-		if err != nil {
-			return version.Semver{}, err
-		}
-		return version.ParseFile(raw)
+		return fileVersionAt(repo, cfg, "HEAD")
 	case config.ModeGitTag:
 		latest, found, err := latestTag(repo, cfg.Version.TagPrefix)
 		if err != nil {

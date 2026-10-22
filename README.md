@@ -121,7 +121,7 @@ stats` (`wait_s`).
 | `graft flags mute <id> --reason R [--match S] [--all-envs]` | add an exception for it, then close it |
 | `graft deploy [--redeploy] [--unapproved] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--unapproved` skips the `approved_release` check |
 | `graft deploy check <target>` | what `graft deploy <target>` would refuse now, read only: unpublished work, the window, `requires`, the hold, `approved_release` with the items of the commits outside it (summary, status, fix versions); exit 1 when it would refuse |
-| `graft deploy versions` | the version and the commit each target runs, required targets first |
+| `graft deploy versions` | the version and the commit each target runs, with the remote branches at it, required targets first |
 | `graft deploy cutoff <target>` | the release candidate of the target's window: its unchecked commits and the commands that revert them on a release branch |
 | `graft deploy status <target>` / `logs <target> [--lines N] [--grep RE]` | the target's status and logs commands |
 | `graft deploy check-head` | for deploy scripts: HEAD is still the commit being deployed |
@@ -1071,8 +1071,14 @@ release_notes:
    are not counted, the commits they bring are.
 2. With `requires`, the required target's `version` must print the version
    being deployed: a quick read-only check, so it fails before a long deps run.
-3. With `deployed_sha`, read the commit the target runs. When it is the one
-   being deployed, the deploy is refused (`test already runs <sha> <subject>;
+3. With `deployed_sha`, read the commit the target runs. Then, before any
+   refusal, two lines show what changes there: what the target runs, its
+   version (from `version`, or else the version files of that commit), the
+   commit and the remote branches at it (or else containing it), as
+   `graft deploy versions` shows it; then the commits the deploy brings and
+   those it takes back (`git log <deploying>..<deployed>`), the hotfix a
+   deploy from another branch would drop. `graft deploy check` prints them too.
+   When the commit the target runs is the one being deployed, the deploy is refused (`test already runs <sha> <subject>;
    pass --redeploy to deploy it again`) before deps, sudo and the script;
    `--redeploy` deploys it again. With `deployed_sha.sudo`, this read runs
    `sudo` in the target environment before the confirmation prompt: on this
