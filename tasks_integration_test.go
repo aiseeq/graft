@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -27,9 +28,7 @@ func helperStep(args ...string) string {
 func tasksRepo(t *testing.T, config string, files map[string]string) *fixture {
 	t.Helper()
 	all := map[string]string{".graft.yaml": "schema: 1\nversion:\n  mode: git-tag\n" + config}
-	for k, v := range files {
-		all[k] = v
-	}
+	maps.Copy(all, files)
 	return newRepo(t, all)
 }
 

@@ -1341,7 +1341,7 @@ func logCommits(repo *gitx.Repo, args ...string) ([]deliveredCommit, error) {
 		return nil, err
 	}
 	var commits []deliveredCommit
-	for _, rec := range strings.Split(out, "\x1e") {
+	for rec := range strings.SplitSeq(out, "\x1e") {
 		rec = strings.TrimLeft(rec, "\n")
 		if rec == "" {
 			continue

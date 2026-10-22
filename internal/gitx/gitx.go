@@ -314,7 +314,7 @@ func (r *Repo) ShowFile(rev, path string) ([]byte, error) {
 
 func splitLines(s string) []string {
 	var lines []string
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" {
 			lines = append(lines, line)

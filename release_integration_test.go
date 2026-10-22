@@ -70,7 +70,7 @@ func (d *deployFixture) commitFile(name, msg string) string {
 func (d *deployFixture) runCommands(out, from, to string) {
 	d.t.Helper()
 	on := false
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		switch {
 		case strings.Contains(line, from):
 			on = true

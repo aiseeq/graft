@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
@@ -191,7 +192,7 @@ func (r *Runner) goModules() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing Go modules: %w", err)
 	}
-	for _, f := range strings.Split(out, "\x00") {
+	for f := range strings.SplitSeq(out, "\x00") {
 		dir, ok := strings.CutSuffix(strings.TrimSpace(f), "/go.mod")
 		if !ok || vetSkipped(dir, r.Config.GoVet.Exclude) {
 			continue
@@ -244,7 +245,7 @@ func (r *Runner) inWorkspace(dirs []string) ([]string, error) {
 // vendor or node_modules segment in the path, or a go_vet.exclude directory
 // that is the module or contains it.
 func vetSkipped(dir string, exclude []string) bool {
-	for _, seg := range strings.Split(dir, "/") {
+	for seg := range strings.SplitSeq(dir, "/") {
 		if seg == "testdata" || seg == "vendor" || seg == "node_modules" {
 			return true
 		}
@@ -843,9 +844,7 @@ func (r *Runner) vars(ctx context.Context, t *config.Task) (map[string]string, e
 	if r.version != nil {
 		vars[VersionEnv] = *r.version
 	}
-	for k, v := range r.Extra {
-		vars[k] = v
-	}
+	maps.Copy(vars, r.Extra)
 	if t.TestDB {
 		if r.TestDB == nil {
 			return nil, errors.New("test_db is set but no test database is configured")

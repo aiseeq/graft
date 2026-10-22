@@ -7,16 +7,14 @@ import (
 	"time"
 )
 
-func ptr(v float64) *float64 { return &v }
-
 // TestReportShowsTheDatabase: the DB CPU and DB MEM columns appear when a
 // task recorded its test database, the median CPU and the largest memory of
 // its runs, and stay out of a report without one.
 func TestReportShowsTheDatabase(t *testing.T) {
 	recs := []Record{
-		{Kind: KindTask, Task: "test", WallS: 10, DBCPUS: ptr(30), DBMemMB: ptr(300)},
-		{Kind: KindTask, Task: "test", WallS: 12, DBCPUS: ptr(50), DBMemMB: ptr(700)},
-		{Kind: KindTask, Task: "test", WallS: 11, DBCPUS: ptr(40), DBMemMB: ptr(500)},
+		{Kind: KindTask, Task: "test", WallS: 10, DBCPUS: new(float64(30)), DBMemMB: new(float64(300))},
+		{Kind: KindTask, Task: "test", WallS: 12, DBCPUS: new(float64(50)), DBMemMB: new(float64(700))},
+		{Kind: KindTask, Task: "test", WallS: 11, DBCPUS: new(float64(40)), DBMemMB: new(float64(500))},
 		{Kind: KindTask, Task: "lint", WallS: 3},
 	}
 	render := func(recs []Record) string {

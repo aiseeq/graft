@@ -213,7 +213,7 @@ func requireUnreleased(repo *gitx.Repo, prefix string) error {
 	if err != nil {
 		return err
 	}
-	for _, tag := range strings.Fields(out) {
+	for tag := range strings.FieldsSeq(out) {
 		if version.IsPlain(strings.TrimPrefix(tag, prefix)) {
 			return fmt.Errorf("HEAD is already released as %s: commit the change first, or pass --version to tag the same commit again", tag)
 		}
@@ -237,7 +237,7 @@ func latestTag(repo *gitx.Repo, prefix string) (version.Semver, bool, error) {
 		best  version.Semver
 		found bool
 	)
-	for _, tag := range strings.Fields(out) {
+	for tag := range strings.FieldsSeq(out) {
 		raw := strings.TrimPrefix(tag, prefix)
 		if !version.IsPlain(raw) {
 			continue

@@ -53,7 +53,7 @@ func (s *HTTPSource) Ready(context.Context) (bool, error) { return true, nil }
 func (s *HTTPSource) Open(ctx context.Context) ([]Event, error) {
 	l := s.cfg.List
 	var events []Event
-	for page := 0; page < maxPages; page++ {
+	for page := range maxPages {
 		q := url.Values{}
 		for k, v := range l.Query {
 			q.Set(k, v)

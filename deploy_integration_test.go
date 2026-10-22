@@ -1027,11 +1027,9 @@ func TestDeployApprovedReleaseAttribute(t *testing.T) {
 func TestDeploySubtasksFollowParents(t *testing.T) {
 	d := deployRepo(t)
 	d.jira.mu.Lock()
-	for k, st := range map[string]string{"PROJ-20": "In Progress", "PROJ-21": "In Progress", "PROJ-22": "Done", "PROJ-23": "In Progress", "PROJ-24": "In Progress",
+	maps.Copy(d.jira.statuses, map[string]string{"PROJ-20": "In Progress", "PROJ-21": "In Progress", "PROJ-22": "Done", "PROJ-23": "In Progress", "PROJ-24": "In Progress",
 		"PROJ-25": "Ready for release", "PROJ-30": "Ready for release", "PROJ-31": "Paused", "PROJ-32": "Ready for release", "PROJ-33": "Testing",
-		"PROJ-40": "In Progress", "PROJ-41": "In Progress"} {
-		d.jira.statuses[k] = st
-	}
+		"PROJ-40": "In Progress", "PROJ-41": "In Progress"})
 	d.jira.assignees["PROJ-23"] = "colleague"
 	d.jira.assignees["PROJ-24"] = "qa"
 	d.jira.handedOver = append(d.jira.handedOver, "PROJ-24")
