@@ -1473,7 +1473,9 @@ the trunk:
   patch ids are no measure: a rewritten commit has another hash, and a commit
   with the same subject may carry other content;
 - a worktree is removed with `git worktree remove`, then its branch, and the
-  branch of the same name on every remote whose copy is in the trunk too;
+  branch of the same name on every remote whose copy is in the trunk too,
+  only while it is still at the commit checked (`--force-with-lease`):
+  commits pushed there after the fetch keep it, listed as `kept`;
 - the rest is listed: `unmerged` with the lines or conflicts it adds, and
   `check` when its commit subjects are all in the trunk but its content is
   not: it looks merged, a look decides.

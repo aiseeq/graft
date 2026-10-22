@@ -131,6 +131,47 @@ func TestWorktreeClean(t *testing.T) {
 	}
 }
 
+// TestWorktreeCleanKeepsPushedBranch: a merged branch goes from the remote
+// only while it is at the commit checked. Commits another agent pushes there
+// between the fetch of clean and its push keep it there.
+func TestWorktreeCleanKeepsPushedBranch(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustGraft("commit", "-m", "feat: base")
+	f.git("remote", "set-head", "origin", "main")
+	f.git("switch", "-q", "-c", "b/raced")
+	f.write("raced.txt", "r\n")
+	f.mustGraft("commit", "-m", "feat: raced work")
+	later := f.git("commit-tree", "-p", "HEAD", "-m", "feat: more raced work", "HEAD^{tree}")
+	f.git("push", "-q", "--no-verify", "origin", later+":refs/heads/later")
+	f.git("switch", "-q", "main")
+	f.write("raced.txt", "r\n")
+	f.mustGraft("commit", "-m", "feat: raced work")
+
+	// The other agent pushes as the push of clean reaches the remote, after
+	// its fetch.
+	race := filepath.Join(f.base, "race.sh")
+	writeFile(t, race, "#!/bin/sh\ngit --git-dir=\"$1\" update-ref refs/heads/b/raced refs/heads/later\nexec git receive-pack \"$1\"\n")
+	if err := os.Chmod(race, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.git("config", "remote.origin.receivepack", race)
+
+	out := f.mustGraft("worktree", "clean", "--min-age", "0s", "--apply")
+	if !strings.Contains(out, "kept      origin/b/raced: new commits on origin since the check at ") {
+		t.Errorf("apply:\n%s", out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/b/raced"); got != later {
+		t.Errorf("b/raced on origin is at %q, want the pushed %s", got, later)
+	}
+}
+
 // TestWorktreeAdd: graft worktree add puts the worktree under the user's
 // cache, out of the directory the repositories live in, on a new branch from
 // the trunk, and links the modules go.work uses beside the repository next to

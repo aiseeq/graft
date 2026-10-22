@@ -494,7 +494,9 @@ func (c *cleaner) branchUse(name string) (time.Time, error) {
 }
 
 // deleteBranch deletes the local branch and the branch of the same name on
-// every remote whose copy is in the trunk too.
+// every remote whose copy is in the trunk too. The remote deletes the branch
+// only while it is still at the commit checked: commits pushed there after
+// the fetch keep it.
 func (c *cleaner) deleteBranch(name string) error {
 	for _, r := range c.remotes {
 		ref := "refs/remotes/" + r + "/" + name
@@ -505,7 +507,12 @@ func (c *cleaner) deleteBranch(name string) error {
 		if !ok {
 			continue
 		}
-		v, err := c.verdict(ref)
+		sha, err := c.repo.Git("rev-parse", ref)
+		if err != nil {
+			return err
+		}
+		sha = strings.TrimSpace(sha)
+		v, err := c.verdict(sha)
 		if err != nil {
 			return err
 		}
@@ -513,7 +520,12 @@ func (c *cleaner) deleteBranch(name string) error {
 			c.line(v.kind, r+"/"+name, v.why+"; kept on "+r)
 			continue
 		}
-		if _, err := c.repo.Git("push", "--quiet", r, "--delete", name); err != nil {
+		out, err := c.repo.Git("push", "--porcelain", r, "--force-with-lease=refs/heads/"+name+":"+sha, "--delete", name)
+		if err != nil {
+			if strings.Contains(out, "\t[rejected] (stale info)") {
+				c.line("kept", r+"/"+name, "new commits on "+r+" since the check at "+sha[:12])
+				continue
+			}
 			return err
 		}
 	}
