@@ -526,8 +526,8 @@ func (c *cleaner) deleteBranch(name string) error {
 				c.line("kept", r+"/"+name, "new commits on "+r+" since the check at "+sha[:12])
 				continue
 			}
-			// Deleted there after the fetch: git says so only in stderr,
-			// in the user's language, so the remote is asked.
+			// Gone from the remote since the fetch: git tells only in
+			// stderr, in the user's language, so the remote is asked.
 			if _, lsErr := c.repo.Git("ls-remote", "--exit-code", r, "refs/heads/"+name); gitx.ExitCode(lsErr) == 2 {
 				c.line("already gone", r+"/"+name, "deleted on "+r+" since the fetch")
 				continue

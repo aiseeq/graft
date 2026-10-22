@@ -212,23 +212,8 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	if err := a.requireDeployed(ctx, r); err != nil {
 		return err
 	}
-	// The deployed commit is read before deps, sudo and the script: a target
-	// that already runs HEAD has nothing to gain from them.
-	if r.target.DeployedSHA != nil {
-		if r.prev, err = r.readSHA(ctx, r.env, r.target.DeployedSHA); err != nil {
-			return err
-		}
-	}
-	if err := a.showDeployed(ctx, r); err != nil {
+	if err := a.checkTargetRuns(ctx, r, o); err != nil {
 		return err
-	}
-	if r.target.DeployedSHA != nil {
-		if err := a.refuseSameCommit(r, o.Redeploy); err != nil {
-			return err
-		}
-		if err := a.checkReleaseFlow(ctx, r, o.Unapproved); err != nil {
-			return err
-		}
 	}
 	if err := a.checkIntegrations(ctx, r); err != nil {
 		return err
@@ -310,6 +295,28 @@ func (a *App) checkReleaseFlow(ctx context.Context, r *deployRun, unapproved boo
 
 // refuseSameCommit refuses to deploy the commit the target already runs,
 // unless redeploy asks for exactly that.
+// checkTargetRuns reads what the target runs, shows it and refuses a deploy
+// it does not take. The deployed commit is read before deps, sudo and the
+// script: a target that already runs HEAD has nothing to gain from them.
+func (a *App) checkTargetRuns(ctx context.Context, r *deployRun, o DeployOptions) error {
+	if r.target.DeployedSHA != nil {
+		var err error
+		if r.prev, err = r.readSHA(ctx, r.env, r.target.DeployedSHA); err != nil {
+			return err
+		}
+	}
+	if err := a.showDeployed(ctx, r); err != nil {
+		return err
+	}
+	if r.target.DeployedSHA == nil {
+		return nil
+	}
+	if err := a.refuseSameCommit(r, o.Redeploy); err != nil {
+		return err
+	}
+	return a.checkReleaseFlow(ctx, r, o.Unapproved)
+}
+
 // showDeployed prints what the target runs and what the deploy changes
 // there, before a check can refuse: the version, the commit and its branch
 // the target runs, then the commits the deploy brings and those it takes
