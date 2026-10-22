@@ -1475,7 +1475,8 @@ the trunk:
 - a worktree is removed with `git worktree remove`, then its branch, and the
   branch of the same name on every remote whose copy is in the trunk too,
   only while it is still at the commit checked (`--force-with-lease`):
-  commits pushed there after the fetch keep it, listed as `kept`;
+  commits pushed there after the fetch keep it, listed as `kept`; one
+  deleted there after the fetch is listed as `already gone`, no error;
 - the rest is listed: `unmerged` with the lines or conflicts it adds, and
   `check` when its commit subjects are all in the trunk but its content is
   not: it looks merged, a look decides.
