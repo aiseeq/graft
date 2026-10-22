@@ -77,11 +77,20 @@ that waited holds the queue for `settle`, since the load average is a
 minute's. A heavy task inside a heavy task was admitted with it. Ctrl-C stops
 the wait.
 
+Once started, a heavy task yields to what the user does: its steps, and
+those of the tasks it runs, start at nice 19 and in the idle I/O class, and
+everything they start inherits both. On Linux with a user systemd each step
+runs in its own transient scope with `CPUWeight=idle` (`systemd-run --user
+--scope`), since the scheduler shares the CPU between cgroups before nice
+counts, and a nice 19 build in the terminal's cgroup still takes its share
+against a video player in its own; without one graft says so once and the
+steps run at nice 19 alone. On Windows they start in the idle priority class.
+
 A heavy command that is no task of the project (a one-off `go test`, a
 build, an e2e run) takes the same queue with `graft exec --heavy -- <command>
 [args]`: it runs in the current directory once the machine admits it, `{threads}`
-in its arguments and `GRAFT_THREADS` set to `threads`, and graft exits with
-its exit status. `graft stats` records it as the task `exec` of the work tree
+in its arguments and `GRAFT_THREADS` set to `threads`, at the priority of a
+heavy task, and graft exits with its exit status. `graft stats` records it as the task `exec` of the work tree
 around (`--task exec` lists the commands); without `--heavy` it runs at once
 and is only recorded.
 

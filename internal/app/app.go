@@ -104,7 +104,7 @@ func (a *App) withLock(ctx context.Context, path string, cfg *config.Config, hol
 func repoLock(repo *gitx.Repo) string { return filepath.Join(repo.CommonDir, lockFile) }
 
 // commitLock is the lock commits and amends take: the repository's, or with
-// lock.scope worktree the worktree's own. The main worktree's git directory is
+// the config's lock: {scope: worktree} the worktree's own. The main worktree's git directory is
 // the common one, so its commits still exclude a release.
 func commitLock(repo *gitx.Repo, cfg *config.Config) string {
 	if cfg.Lock.Scope == config.LockWorktree {

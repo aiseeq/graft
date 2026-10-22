@@ -208,3 +208,51 @@ func TestExecHeavyWaitsForLoad(t *testing.T) {
 		t.Errorf("without --: exit %d\n%s", code, out)
 	}
 }
+
+// TestHeavyRunsAtLowPriority: graft exec --heavy, the steps of a heavy task
+// and of the tasks it runs start at nice 19 and the idle I/O class, in an
+// idle CPU scope where the user's systemd starts scopes; a task that is not
+// heavy keeps graft's priority.
+func TestHeavyRunsAtLowPriority(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("reads nice, the I/O class and the cgroup of Linux processes")
+	}
+	if _, err := exec.LookPath("ionice"); err != nil {
+		t.Skip("no ionice:", err)
+	}
+	line := `echo "$0 ni=$(ps -o ni= -p $$ | tr -d " ") io=$(ionice -p $$) cg=$(cat /sys/fs/cgroup$(cut -d: -f3 /proc/$$/cgroup)/cpu.idle 2>/dev/null)"`
+	// graft expands $ in task steps, $$ is a literal one.
+	show := func(name string) string {
+		return "[sh, -c, '" + strings.ReplaceAll(line, "$", "$$") + "', " + name + "]"
+	}
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\ntasks:\n" +
+		"  build:\n    heavy: true\n    run: [" + show("build") + ", {task: inner}]\n" +
+		"  inner:\n    run: [" + show("inner") + "]\n" +
+		"  light:\n    run: [" + show("light") + "]\n"})
+	loadavg := filepath.Join(t.TempDir(), "loadavg")
+	writeFile(t, loadavg, "1.00 1.00 1.00 3/400 1234\n")
+	f.env = append(append(f.env, "GRAFT_LOADAVG="+loadavg, "XDG_CACHE_HOME="+t.TempDir()), calmMachine(t)...)
+
+	own, err := exec.Command("ps", "-o", "ni=", "-p", fmt.Sprint(os.Getpid())).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idle := "1"
+	if err := exec.Command("systemd-run", "--user", "--scope", "--quiet", "--collect", "--expand-environment=no", "-p", "CPUWeight=idle", "--", "true").Run(); err != nil {
+		idle = "" // the warning names why
+	}
+	out := f.mustGraft("build") + f.mustGraft("light") + f.mustGraft("exec", "--heavy", "--", "sh", "-c", line, "exec")
+	for _, want := range []string{
+		"build ni=19 io=idle cg=" + idle + "\n",
+		"inner ni=19 io=idle cg=" + idle + "\n",
+		"exec ni=19 io=idle cg=" + idle + "\n",
+		"light ni=" + strings.TrimSpace(string(own)) + " io=",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "without an idle CPU scope") != (idle == "") {
+		t.Errorf("the warning about the scope does not match systemd-run here (idle=%q):\n%s", idle, out)
+	}
+}

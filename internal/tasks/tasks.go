@@ -26,6 +26,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/loadavg"
 	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/lock"
+	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/testreport"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
@@ -607,7 +608,7 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		tree := r.treeID()
 		report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
 		cmd.Stdout = report
-		use, err := r.measure(cmd, s.Source)
+		use, err := r.measure(cmd, s.Source, r.heavy > 0)
 		runs, cerr := report.Close()
 		if cerr != nil {
 			fmt.Fprintf(r.Stderr, "graft: printing the test output: %v\n", cerr)
@@ -620,7 +621,7 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	case config.TestsJest, config.TestsPlaywright:
 		return r.reportFileStep(cmd, s.Source, t.Tests, report)
 	}
-	_, err = r.measure(cmd, s.Source)
+	_, err = r.measure(cmd, s.Source, r.heavy > 0)
 	return err
 }
 
@@ -634,7 +635,7 @@ func reportFile(t *config.Task) bool {
 // path, the file in GRAFT_TEST_REPORT, then records the tests in it.
 func (r *Runner) reportFileStep(cmd *exec.Cmd, source, runner, path string) error {
 	tree := r.treeID()
-	use, err := r.measure(cmd, source)
+	use, err := r.measure(cmd, source, r.heavy > 0)
 	data, rerr := os.ReadFile(path)
 	switch {
 	case errors.Is(rerr, os.ErrNotExist):
@@ -740,7 +741,7 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 	cmd := exec.CommandContext(ctx, s.Argv[0], s.Argv[1:]...)
 	cmd.Dir, cmd.Env = dir, env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
-	_, err = r.measure(cmd, s.Source)
+	_, err = r.measure(cmd, s.Source, heavy)
 	return err
 }
 
@@ -756,16 +757,25 @@ func (r *Runner) Unit(name string, fn func() error) (err error) {
 // Measure runs cmd as a step of the unit or task running, and records it
 // the way task steps are recorded.
 func (r *Runner) Measure(source string, cmd *exec.Cmd) error {
-	_, err := r.measure(cmd, source)
+	_, err := r.measure(cmd, source, false)
 	return err
 }
 
 // measure runs cmd and records what it cost against every running task.
-// A command that never started records nothing: no process ran.
-func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
+// A heavy one, a step of a heavy task or of a task it runs, starts at
+// the lowest priority: the load gate only lets it start, and once started
+// it must not slow down what the user is doing. A command that never
+// started records nothing: no process ran.
+func (r *Runner) measure(cmd *exec.Cmd, source string, heavy bool) (stats.Usage, error) {
 	start := time.Now()
-	if err := cmd.Start(); err != nil {
-		return stats.Usage{}, fmt.Errorf("start %s: %w", cmd.Path, err)
+	path, run := cmd.Path, cmd.Start
+	if heavy {
+		run = func() error {
+			return proc.StartLow(cmd, func(s string) { fmt.Fprintf(r.Stderr, "graft: %s\n", s) })
+		}
+	}
+	if err := run(); err != nil {
+		return stats.Usage{}, fmt.Errorf("start %s: %w", path, err)
 	}
 	watch := stats.WatchProcess(cmd.Process.Pid)
 	err := cmd.Wait()

@@ -155,7 +155,7 @@ func (a *App) Locks() error {
 		return err
 	}
 	paths := []string{repoLock(repo)}
-	// A worktree's own commit lock (lock.scope worktree); in the main
+	// A worktree's own commit lock (lock: {scope: worktree}); in the main
 	// worktree it is the repository lock itself.
 	if own := filepath.Join(repo.GitDir, lockFile); own != paths[0] {
 		paths = append(paths, own)
