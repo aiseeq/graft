@@ -57,26 +57,54 @@ func (j *Journal) muted(e Event) bool {
 	return false
 }
 
-// Status prints whether the flag is raised: any open event no exception mutes.
-func (j *Journal) Status(ctx context.Context) error {
+// Count is what an environment's journal holds against the flag.
+type Count struct {
+	// Ready is false before the journal exists.
+	Ready         bool
+	Review, Muted []Event
+}
+
+// Count reads the open events and splits them by the exceptions.
+func (j *Journal) Count(ctx context.Context) (Count, error) {
 	ready, err := j.Source.Ready(ctx)
-	if err != nil {
-		return err
-	}
-	if !ready {
-		fmt.Fprintf(j.Out, "flag down (%s): the journal does not exist yet\n", j.Env)
-		return nil
+	if err != nil || !ready {
+		return Count{}, err
 	}
 	events, err := j.Source.Open(ctx)
 	if err != nil {
-		return err
+		return Count{}, err
 	}
 	review, muted := j.Split(events)
-	if len(review) == 0 {
-		fmt.Fprintf(j.Out, "flag down (%s): nothing to review, %d muted by exceptions\n", j.Env, len(muted))
+	return Count{Ready: true, Review: review, Muted: muted}, nil
+}
+
+// Raised tells whether any open event is left after the exceptions.
+func (c Count) Raised() bool { return len(c.Review) > 0 }
+
+// Headline is the one line that says whether the flag of env is raised.
+func (c Count) Headline(env string) string {
+	switch {
+	case !c.Ready:
+		return fmt.Sprintf("flag down (%s): the journal does not exist yet", env)
+	case !c.Raised():
+		return fmt.Sprintf("flag down (%s): nothing to review, %d muted by exceptions", env, len(c.Muted))
+	default:
+		return fmt.Sprintf("flag RAISED (%s): %d events to review, %d muted by exceptions", env, len(c.Review), len(c.Muted))
+	}
+}
+
+// Status prints whether the flag is raised: any open event no exception mutes.
+func (j *Journal) Status(ctx context.Context) error {
+	c, err := j.Count(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(j.Out, c.Headline(j.Env))
+	if !c.Raised() {
 		return nil
 	}
-	fmt.Fprintf(j.Out, "flag RAISED (%s): %d events to review, %d muted by exceptions\n\n", j.Env, len(review), len(muted))
+	fmt.Fprintln(j.Out)
+	review := c.Review
 	for i := range review {
 		if i == maxListed {
 			fmt.Fprintf(j.Out, "  ... and %d more\n", len(review)-maxListed)

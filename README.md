@@ -927,6 +927,20 @@ events with a reason. Every command takes `--env` (default
 `timestamp` column without a time zone is read in the database session's
 zone, as PostgreSQL itself reads it.
 
+The flag is meant to be looked at daily, and graft takes that look for whoever
+forgot it: once a day per repository and environment, `graft commit` (after
+its push) prints the flag of `flags.default_env` and `graft deploy` (after a
+deploy that succeeded) the flag of the target's environment, in one line:
+
+```
+graft: flag RAISED (prod): 2 events to review, 1 muted by exceptions: graft flags --env prod
+```
+
+`graft flags` itself counts as that day's look. The read is bounded by 15
+seconds; a journal it cannot read is a warning that fails neither the commit
+nor the deploy, and the next try is a day later all the same. An environment
+the adapter has no way to (no `psql` or `transport` entry) is skipped.
+
 The exceptions file has one rule per line:
 
 ```

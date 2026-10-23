@@ -53,13 +53,18 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 	if len(stale) > 0 {
 		a.warn("the hooks are out of date (%s); run graft init", strings.Join(stale, "; "))
 	}
-	return a.withLock(ctx, commitLock(repo, cfg), cfg, "graft commit", func() error {
+	err = a.withLock(ctx, commitLock(repo, cfg), cfg, "graft commit", func() error {
 		plan, err := prepareCommit(repo, cfg, msg, opts.Level)
 		if err != nil {
 			return err
 		}
 		return a.commit(ctx, repo, cfg, plan)
 	})
+	if err != nil {
+		return err
+	}
+	a.dailyFlags(ctx, repo, cfg, "")
+	return nil
 }
 
 // commitPlan is everything a commit needs, worked out before the gate runs so

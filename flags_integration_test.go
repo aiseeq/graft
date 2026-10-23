@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -15,11 +16,21 @@ type journalServer struct {
 	mu     sync.Mutex
 	events map[string]map[string]any
 	order  []string
+	// broken makes every request fail; reads counts the listings.
+	broken bool
+	reads  int
 }
 
 func (s *journalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if r.URL.Path == "/journal" {
+		s.reads++
+	}
+	if s.broken {
+		http.Error(w, "down", http.StatusInternalServerError)
+		return
+	}
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/journal":
 		var items []any
@@ -42,7 +53,9 @@ func (s *journalServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func flagsRepo(t *testing.T) (*fixture, *journalServer) {
+// startJournal serves three open events, one of them muted by the
+// exceptions flagsRepo writes.
+func startJournal(t *testing.T) (*journalServer, string) {
 	api := &journalServer{events: map[string]map[string]any{}}
 	for _, e := range []map[string]any{
 		{"id": "ev1", "type": "job_stalled", "subject": "job 17 stalled for 2h", "status": "open", "body": "worker log tail"},
@@ -54,14 +67,17 @@ func flagsRepo(t *testing.T) (*fixture, *journalServer) {
 	}
 	srv := httptest.NewServer(api)
 	t.Cleanup(srv.Close)
-	f := newRepo(t, map[string]string{
-		".graft.yaml": `schema: 1
-version: {mode: none}
-envs:
-  local: {}
-  prod: {ssh: {host: 10.0.0.2}}
-flags:
-  default_env: local
+	return api, srv.URL
+}
+
+const flagsExceptions = "# env|class|substring|reason\n*|log_error|known noise|harmless, logged by the cron wrapper\n"
+
+// flagsSection is the flags section of .graft.yaml over the journal at url
+// for each of envs, the first the default.
+func flagsSection(url string, envs ...string) string {
+	var s strings.Builder
+	s.WriteString(`flags:
+  default_env: ` + envs[0] + `
   exceptions: flags-exceptions.conf
   http:
     list: {path: /journal, items: items, total: total, page_size: 100}
@@ -70,11 +86,100 @@ flags:
     fields: {id: id, class: type, subject: subject, body: body, status: status, last_seen: seen}
     open_statuses: [open]
     transport:
-      local: {base_url: '` + srv.URL + `'}
-`,
-		"flags-exceptions.conf": "# env|class|substring|reason\n*|log_error|known noise|harmless, logged by the cron wrapper\n",
-	})
+`)
+	for _, env := range envs {
+		s.WriteString("      " + env + ": {base_url: '" + url + "'}\n")
+	}
+	return s.String()
+}
+
+func flagsRepo(t *testing.T) (*fixture, *journalServer) {
+	api, url := startJournal(t)
+	f := newRepo(t, map[string]string{
+		".graft.yaml": `schema: 1
+version: {mode: none}
+envs:
+  local: {}
+  prod: {ssh: {host: 10.0.0.2}}
+` + flagsSection(url, "local"),
+		"flags-exceptions.conf": flagsExceptions,
+	}, "origin")
 	return f, api
+}
+
+func (s *journalServer) listings() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reads
+}
+
+func TestCommitShowsTheFlagOnceADay(t *testing.T) {
+	f, api := flagsRepo(t)
+	out := f.mustGraft("commit", "-m", "feat: base")
+	if !strings.Contains(out, "graft: flag RAISED (local): 2 events to review, 1 muted by exceptions: graft flags --env local") {
+		t.Errorf("first commit of the day:\n%s", out)
+	}
+	f.write("a.txt", "a\n")
+	if out := f.mustGraft("commit", "-m", "feat: a"); strings.Contains(out, "flag") || api.listings() != 1 {
+		t.Errorf("the flag read again within the day (%d listings):\n%s", api.listings(), out)
+	}
+}
+
+func TestFlagsStatusCountsAsTheDailyLook(t *testing.T) {
+	f, api := flagsRepo(t)
+	f.mustGraft("flags")
+	if out := f.mustGraft("commit", "-m", "feat: base"); strings.Contains(out, "flag") || api.listings() != 1 {
+		t.Errorf("commit read the flag graft flags had just read (%d listings):\n%s", api.listings(), out)
+	}
+}
+
+func TestCommitSurvivesAnUnreadableJournal(t *testing.T) {
+	f, api := flagsRepo(t)
+	api.mu.Lock()
+	api.broken = true
+	api.mu.Unlock()
+	out := f.mustGraft("commit", "-m", "feat: base")
+	if !strings.Contains(out, "graft: warning: flags (local) not read:") || !strings.Contains(out, "graft flags --env local reads them") {
+		t.Errorf("unreadable journal:\n%s", out)
+	}
+	// Without the network a commit does not wait for the journal each time.
+	f.write("a.txt", "a\n")
+	if out := f.mustGraft("commit", "-m", "feat: a"); strings.Contains(out, "flags") || api.listings() != 1 {
+		t.Errorf("tried again within the day (%d listings):\n%s", api.listings(), out)
+	}
+}
+
+func TestDeployShowsTheFlagOfItsEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("deploy scripts use sh")
+	}
+	_, url := startJournal(t)
+	f := newRepo(t, map[string]string{
+		".graft.yaml": `schema: 1
+version: {mode: none}
+envs:
+  local: {}
+  side: {}
+deploy:
+  remote: origin
+  targets:
+    side: {env: side, run: [sh, deploy.sh]}
+` + flagsSection(url, "local", "side"),
+		"flags-exceptions.conf": flagsExceptions,
+		"deploy.sh":             "exit \"${DEPLOY_EXIT:-0}\"\n",
+	}, "origin")
+	f.mustGraft("commit", "-m", "feat: base")
+	// A failed deploy says nothing of the flag.
+	env := f.env
+	f.env = append(slices.Clip(env), "DEPLOY_EXIT=3")
+	if out, code := f.graft("", "deploy", "side"); code == 0 || strings.Contains(out, "flag") {
+		t.Errorf("failed deploy: %d\n%s", code, out)
+	}
+	f.env = env
+	out := f.mustGraft("deploy", "side")
+	if !strings.Contains(out, "graft: flag RAISED (side): 2 events to review, 1 muted by exceptions: graft flags --env side") {
+		t.Errorf("deploy:\n%s", out)
+	}
 }
 
 func TestFlagsCommands(t *testing.T) {

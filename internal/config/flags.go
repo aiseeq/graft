@@ -16,6 +16,16 @@ type Flags struct {
 	HTTP       *FlagsHTTP `yaml:"http"`
 }
 
+// Reads tells whether the adapter has a way to the journal of env.
+func (f *Flags) Reads(env string) bool {
+	if f.SQL != nil {
+		_, ok := f.SQL.Psql[env]
+		return ok
+	}
+	_, ok := f.HTTP.Transport[env]
+	return ok
+}
+
 // FlagFields maps graft's event fields to the source's column (sql) or JSON
 // field (http) names. id, class, subject, status and last_seen are required.
 type FlagFields struct {

@@ -35,7 +35,10 @@ func (a *App) Flags(ctx context.Context, o FlagsOptions) error {
 	}
 	switch o.Command {
 	case "status":
-		return j.Status(ctx)
+		if err := j.Status(ctx); err != nil {
+			return err
+		}
+		return markFlagsRead(repo, j.Env)
 	case "show":
 		return j.Show(ctx, o.ID)
 	case "ack":

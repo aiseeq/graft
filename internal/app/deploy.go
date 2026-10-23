@@ -154,7 +154,11 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 	if releaseErr := lk.Release(); releaseErr != nil {
 		err = errors.Join(err, fmt.Errorf("releasing the deploy lock: %w", releaseErr))
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	a.dailyFlags(ctx, r.repo, r.cfg, r.env.Name)
+	return nil
 }
 
 func (a *App) deployTarget(name string) (*deployRun, error) {
