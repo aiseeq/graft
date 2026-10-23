@@ -18,10 +18,16 @@ same on Linux, macOS and Windows (Git for Windows).
 
 ```sh
 git clone https://github.com/aiseeq/graft && cd graft
-go run . install    # builds, checks and atomically replaces ~/bin/graft
+echo GRAFT_PILOT=$HOME/src/some-project > .env   # a project of yours that uses graft
+go run . install    # builds, checks, runs the pilot's gate, atomically replaces ~/bin/graft
 ```
 
-and later `git pull && go run . install` in that checkout. Put `~/bin` on
+and later `git pull && go run . install` in that checkout. Every project's
+hooks run `~/bin/graft`, so before replacing it `install` runs the gate of
+one project, the pilot (`GRAFT_PILOT` in `.env`, which git ignores), with
+the new binary first on `PATH`; a failing gate leaves `~/bin/graft` as it
+was. Without a pilot it refuses; `go run . install -- --no-pilot` skips it,
+for a first install or a machine with no project yet. Put `~/bin` on
 `PATH`. `go install github.com/aiseeq/graft/v2@latest` works too, but puts a
 second graft in GOBIN (`~/go/bin`): the hooks run whichever comes first on
 `PATH`, so keep one. Requires git 2.31 or newer. A project can require a graft version with
@@ -1509,7 +1515,7 @@ graft builds, tests and commits itself through its own `.graft.yaml`:
 ```sh
 go run . smoke     # the gate: gofmt check, vet (host and windows), glint, all tests
 go run . all       # smoke + race
-go run . install   # ~/bin/graft
+go run . install   # ~/bin/graft, after the pilot's gate (see Install)
 go run . commit -m "..."
 ```
 

@@ -30,11 +30,33 @@ tasks:
     run:
       - [go, build, -ldflags, '-X main.buildVersion=${GRAFT_VERSION}', -o, bin/graft, .]
   install:
-    desc: install to ~/bin atomically (a running graft keeps its file)
+    desc: install to ~/bin atomically (a running graft keeps its file) once the gate of the pilot passes with the new binary
+    usage: '[--no-pilot]'
     deps: [build, glint]
+    # The pilot is a project of the user's whose gate the new binary runs
+    # before it replaces the one every project's hooks run: GRAFT_PILOT in
+    # .env, a path outside this repository.
+    dotenv: ['GRAFT_PILOT?']
     run:
       - sh: |
           set -eu
+          set -- {args}
+          if [ "$*" = --no-pilot ]; then
+            echo "install: no pilot, as asked"
+          elif [ $# -gt 0 ]; then
+            echo "install: unknown arguments: $*; the one there is: --no-pilot" >&2
+            exit 2
+          elif [ -z "${GRAFT_PILOT:-}" ]; then
+            echo "install: no pilot: set GRAFT_PILOT in .env to a project whose gate the new graft passes first, or install -- --no-pilot" >&2
+            exit 1
+          else
+            new="$PWD/bin"
+            echo "install: the gate of the pilot $GRAFT_PILOT with the new graft"
+            if ! (cd "$GRAFT_PILOT" && PATH="$new:$PATH" "$new/graft" gate); then
+              echo "install: refused: the gate of the pilot $GRAFT_PILOT failed with the new graft; ~/bin/graft is left as it was (install -- --no-pilot skips the pilot)" >&2
+              exit 1
+            fi
+          fi
           mkdir -p "$HOME/bin"
           tmp=$(mktemp "$HOME/bin/.graft.XXXXXX")
           trap 'rm -f "$tmp"' EXIT
