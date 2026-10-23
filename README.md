@@ -1528,7 +1528,7 @@ graft builds, tests and commits itself through its own `.graft.yaml`:
 
 ```sh
 go run . smoke     # the gate: gofmt check, vet (host and windows), glint, all tests
-go run . all       # smoke + race
+go run . all       # the gate (go vet, go fix, smoke) + race
 go run . install   # ~/bin/graft, after the pilot's gate (see Install)
 go run . commit -m "..."
 ```

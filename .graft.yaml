@@ -102,4 +102,6 @@ tasks:
     run: [glint check ./...]
   all:
     desc: everything, before install
-    run: [{task: smoke}, {task: test-race}]
+    # The gate itself, not only its task: go vet in every module and go fix
+    # are steps of the gate, so a green all is a gate a commit passes.
+    run: ['go run . gate', {task: test-race}]
