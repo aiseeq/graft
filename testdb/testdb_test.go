@@ -11,6 +11,37 @@ import (
 	"testing"
 )
 
+// testPrefix names the databases of this test binary: the test runs of two
+// checkouts share the server, and a common name would have each drop the
+// other's databases.
+var testPrefix = fmt.Sprintf("graft_testdb_test_%d", os.Getpid())
+
+// TestMain drops the source and the template of this binary after its tests.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if admin := os.Getenv("GRAFT_TEST_PG_DSN"); admin != "" {
+		if err := dropTestDatabases(admin); err != nil {
+			fmt.Fprintln(os.Stderr, "testdb:", err)
+			code = 1
+		}
+	}
+	os.Exit(code)
+}
+
+func dropTestDatabases(admin string) error {
+	db, err := sql.Open("pgx", admin)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	for _, name := range []string{testPrefix + templateSuffix, testPrefix + sourceSuffix} {
+		if _, err := db.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)"); err != nil {
+			return fmt.Errorf("dropping %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 // source prepares a source database with a migration version and the extra
 // statements, the way a project's migrate step leaves it, and points
 // TEST_DB_DSN at it. graft test starts PostgreSQL and exports
@@ -26,7 +57,7 @@ func source(t *testing.T, version int, extra ...string) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	const name = "graft_testdb_test_source"
+	name := testPrefix + sourceSuffix
 	if _, err := db.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)"); err != nil {
 		t.Fatal(err)
 	}
