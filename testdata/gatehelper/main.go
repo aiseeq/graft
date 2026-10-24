@@ -13,6 +13,7 @@
 //	gatehelper stubborn <addr>      listen on addr, ignoring SIGTERM
 //	gatehelper sleep                run until terminated
 //	gatehelper print <text>         print text
+//	gatehelper pwd <file>           write the working directory to file
 //	gatehelper alloc <mb>           touch mb megabytes of memory, then exit
 package main
 
@@ -121,6 +122,12 @@ func run(args []string) error {
 	case "print":
 		fmt.Println(args[1])
 		return nil
+	case "pwd":
+		wd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("getting the working directory: %w", err)
+		}
+		return os.WriteFile(args[1], []byte(wd+"\n"), 0o644)
 	case "cat":
 		// cat FILE [EXIT]: print the file, then exit with EXIT.
 		data, err := os.ReadFile(args[1])

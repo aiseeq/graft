@@ -235,6 +235,25 @@ func TestWorktreeAdd(t *testing.T) {
 	}
 }
 
+func TestWorktreeAddExplicitTrunk(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none}\n",
+	})
+	f.git("checkout", "-q", "-b", "main")
+	f.mustGraft("commit", "-m", "feat: base")
+	if out, code := f.graft("", "worktree", "add", "w/implicit"); code != 1 || !strings.Contains(out, "graft worktree add w/implicit <base>") || !strings.Contains(out, "graft worktree add --trunk <ref> w/implicit") {
+		t.Fatalf("unknown trunk guidance: exit %d\n%s", code, out)
+	}
+	f.env = append(f.env, "XDG_CACHE_HOME="+t.TempDir())
+	out, code := f.graft("", "worktree", "add", "--trunk", "main", "w/explicit")
+	if code != 0 || !strings.Contains(out, "from main") {
+		t.Fatalf("explicit trunk: exit %d\n%s", code, out)
+	}
+	if out, code := f.graft("", "worktree", "add", "--trunk", "main", "w/conflict", "main"); code != 2 || !strings.Contains(out, "--trunk") {
+		t.Errorf("trunk and base: exit %d\n%s", code, out)
+	}
+}
+
 // TestWorktreeSync: graft worktree sync puts the worktree's own commits on
 // the fresh trunk and brings its uncommitted changes, untracked files too,
 // back uncommitted, committing and pushing nothing; changes that conflict

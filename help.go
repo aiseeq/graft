@@ -97,7 +97,8 @@ func help(a *app.App) error {
 		}
 	}
 	var b strings.Builder
-	b.WriteString("graft - the development workflow of a git repository, as .graft.yaml describes\n\nUsage:\n")
+	b.WriteString("graft - the development workflow of a git repository, as .graft.yaml describes\n\nUsage:\n  graft [-C <directory> ...] <command>\n")
+	b.WriteString("  -C changes the working directory; repeated relative paths start from the previous directory.\n\n")
 	for _, c := range shown {
 		for _, line := range c.syntax(cfg) {
 			b.WriteString("  " + line + "\n")

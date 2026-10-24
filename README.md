@@ -141,12 +141,17 @@ stats` (`wait_s`).
 | `graft status` | services, the test database, held locks |
 | `graft locks` | who holds graft's locks |
 | `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |
-| `graft worktree add <branch> [<base>]` | a worktree under the user's cache, go.work's neighbours linked (see Worktrees) |
+| `graft worktree add [--trunk <ref>] <branch> [<base>]` | a worktree under the user's cache, go.work's neighbours linked (see Worktrees) |
 | `graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h]` | remove the worktrees and branches whose work is in the trunk by content; list the rest |
 | `graft worktree sync [--trunk <ref>]` | move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted (see Worktrees) |
 | `graft tools [install]` | check the pinned tools; install the failing ones |
 | `graft help` | the commands the project's `.graft.yaml` uses, its tasks (those with `desc`, with their arguments) and services |
 | `graft --version` | print graft's own version |
+
+Put `-C <directory>` before a command to run it as if graft had been started
+in that directory. Repeat `-C` to change directories in sequence; each relative
+path starts from the directory selected by the previous one. This applies to
+commands and tasks.
 
 ### graft commit, step by step
 
@@ -1460,10 +1465,12 @@ deploy:
 
 ## Worktrees
 
-`graft worktree add <branch> [<base>]` makes a worktree at
+`graft worktree add [--trunk <ref>] <branch> [<base>]` makes a worktree at
 `<user cache>/worktrees/<repository>/<branch, / as ->` (`~/.cache` on Linux),
 out of the directory the repositories live in, on the branch: a new one from
-`<base>`, by default the trunk (below), or the existing one. A relative path in
+`<base>`, by default the trunk (below), or the existing one. Use `--trunk` to
+select the starting ref when no `<base>` is given; `--trunk` and `<base>` cannot
+be combined. A relative path in
 go.work's `use` and `replace` or go.mod's `replace` that leads out of the
 repository (`../kit`) is linked at the same place beside the worktree, so the
 worktree builds as the repository does; a link already there must lead to the

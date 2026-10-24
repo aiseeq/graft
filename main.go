@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -64,7 +65,40 @@ func main() {
 }
 
 func run(ctx context.Context, a *app.App, args []string) int {
+	for len(args) > 0 && args[0] == "-C" {
+		if len(args) < 2 || args[1] == "" {
+			return runError(a, fmt.Errorf("%w: -C requires a directory", errUsage))
+		}
+		dir := args[1]
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(a.Dir, dir)
+		}
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return runError(a, fmt.Errorf("-C %q: %w", args[1], err))
+		}
+		info, err := os.Stat(abs)
+		if err != nil {
+			return runError(a, fmt.Errorf("-C %q: %w", abs, err))
+		}
+		if !info.IsDir() {
+			return runError(a, fmt.Errorf("-C %q: not a directory", abs))
+		}
+		if err := os.Chdir(abs); err != nil {
+			return runError(a, fmt.Errorf("-C %q: %w", abs, err))
+		}
+		wd, err := os.Getwd()
+		if err != nil {
+			return runError(a, fmt.Errorf("getting the working directory after -C %q: %w", abs, err))
+		}
+		a.Dir = wd
+		args = args[2:]
+	}
 	err := dispatch(ctx, a, args)
+	return runError(a, err)
+}
+
+func runError(a *app.App, err error) int {
 	var exitCode *app.ExitCodeError
 	switch {
 	case err == nil:
@@ -278,7 +312,7 @@ func testDBCmd(ctx context.Context, a *app.App, args []string) error {
 }
 
 func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := fmt.Errorf("%w: graft worktree add <branch> [<base>] | clean [--apply] [--trunk <ref>] [--min-age 1h] | sync [--trunk <ref>]", errUsage)
+	usage := fmt.Errorf("%w: graft worktree add [--trunk <ref>] <branch> [<base>] | clean [--apply] [--trunk <ref>] [--min-age 1h] | sync [--trunk <ref>]", errUsage)
 	switch {
 	case len(args) > 0 && args[0] == "sync":
 		fs := newFlags(a, "worktree sync")
@@ -292,10 +326,22 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 			return usage
 		}
 		return a.WorktreeSync(ctx, o)
-	case len(args) == 2 && args[0] == "add" && !strings.HasPrefix(args[1], "-"):
-		return a.WorktreeAdd(ctx, app.WorktreeAddOptions{Branch: args[1]})
-	case len(args) == 3 && args[0] == "add" && !strings.HasPrefix(args[1], "-"):
-		return a.WorktreeAdd(ctx, app.WorktreeAddOptions{Branch: args[1], Base: args[2]})
+	case len(args) > 0 && args[0] == "add":
+		fs := newFlags(a, "worktree add")
+		o := app.WorktreeAddOptions{}
+		fs.StringVar(&o.Trunk, "trunk", "", "the ref to create the branch from")
+		pos, err := parseInterspersed(fs, args[1:])
+		if err != nil {
+			return err
+		}
+		if len(pos) < 1 || len(pos) > 2 || (o.Trunk != "" && len(pos) == 2) {
+			return usage
+		}
+		o.Branch = pos[0]
+		if len(pos) == 2 {
+			o.Base = pos[1]
+		}
+		return a.WorktreeAdd(ctx, o)
 	case len(args) == 0 || args[0] != "clean":
 		return usage
 	}

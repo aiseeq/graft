@@ -68,6 +68,19 @@ func TestTaskDepsRunOnceInOrder(t *testing.T) {
 	}
 }
 
+func TestChangeDirectoryFlagRunsTaskInSelectedDirectory(t *testing.T) {
+	f := tasksRepo(t, `tasks:
+  working-directory:
+    run: [`+helperStep("pwd", "task-pwd.txt")+`]
+`, nil)
+	if out, code := f.exec(f.base, "", graftBin, "-C", f.work, "working-directory"); code != 0 {
+		t.Fatalf("task with -C: exit %d\n%s", code, out)
+	}
+	if got := strings.TrimSpace(f.read("task-pwd.txt")); got != f.work {
+		t.Errorf("task working directory = %q, want %q", got, f.work)
+	}
+}
+
 func TestTaskArguments(t *testing.T) {
 	f := tasksRepo(t, "", nil)
 	out := f.path("out.txt")

@@ -183,6 +183,20 @@ func (f *fixture) graft(stdin string, args ...string) (string, int) {
 	return f.exec(f.work, stdin, graftBin, args...)
 }
 
+func TestChangeDirectoryFlag(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"})
+	if out, code := f.graft("", "-C", f.work, "status"); code != 0 {
+		t.Fatalf("-C status: exit %d\n%s", code, out)
+	}
+	if out, code := f.graft("", "-C", f.base, "-C", "work", "status"); code != 0 {
+		t.Fatalf("repeated -C status: exit %d\n%s", code, out)
+	}
+	missing := filepath.Join(f.base, "missing-dir")
+	if out, code := f.graft("", "-C", missing, "status"); code != 1 || !strings.Contains(out, missing) {
+		t.Errorf("missing -C directory: exit %d\n%s", code, out)
+	}
+}
+
 func (f *fixture) exec(dir, stdin, name string, args ...string) (string, int) {
 	f.t.Helper()
 	cmd := exec.Command(name, args...)

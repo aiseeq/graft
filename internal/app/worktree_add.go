@@ -21,6 +21,8 @@ type WorktreeAddOptions struct {
 	Branch string
 	// Base is where a new branch starts, by default the trunk.
 	Base string
+	// Trunk is the trunk ref where a new branch starts when Base is empty.
+	Trunk string
 }
 
 // WorktreeAdd makes a worktree under the user's cache, out of the directory
@@ -42,13 +44,16 @@ func (a *App) WorktreeAdd(ctx context.Context, o WorktreeAddOptions) error {
 		return err
 	}
 	base := o.Base
+	if o.Trunk != "" && base != "" {
+		return errors.New("--trunk and <base> cannot be used together")
+	}
 	if base == "" && !exists {
 		remotes, err := repo.Remotes()
 		if err != nil {
 			return err
 		}
-		if base, err = trunkRef(repo, cfg, "", remotes); err != nil {
-			return err
+		if base, err = trunkRef(repo, cfg, o.Trunk, remotes); err != nil {
+			return fmt.Errorf("%w; choose the base with `graft worktree add %s <base>` or `graft worktree add --trunk <ref> %s`", err, o.Branch, o.Branch)
 		}
 	}
 	cache, err := os.UserCacheDir()
