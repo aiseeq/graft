@@ -9,6 +9,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Source says where the message comes from: exactly one of Parts and File is
@@ -78,6 +80,61 @@ func BranchKey(branch string, pattern *regexp.Regexp) string {
 	}
 	return pattern.FindString(branch)
 }
+
+// WordKeys returns the keys matching pattern in text, in order, each filling a
+// word once punctuation is trimmed from its ends. Words are split by spaces,
+// brackets and the marks around a key in prose or a scope: fix(PROJ-1): x.
+func WordKeys(text string, pattern *regexp.Regexp) []string {
+	if pattern == nil {
+		return nil
+	}
+	var keys []string
+	for word := range strings.FieldsFuncSeq(text, wordSeparator) {
+		if key := wordKey(word, pattern); key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+// wordKey returns the part of word, punctuation trimmed from its ends in every
+// amount, that the pattern matches whole, or "" when none does.
+func wordKey(word string, pattern *regexp.Regexp) string {
+	starts := []int{0}
+	for i, r := range word {
+		if !ticketPunctuation(r) {
+			break
+		}
+		starts = append(starts, i+utf8.RuneLen(r))
+	}
+	ends := []int{len(word)}
+	for i := len(word); i > 0; {
+		r, size := utf8.DecodeLastRuneInString(word[:i])
+		if !ticketPunctuation(r) {
+			break
+		}
+		i -= size
+		ends = append(ends, i)
+	}
+	for _, start := range starts {
+		for _, end := range ends {
+			if start >= end {
+				continue
+			}
+			candidate := word[start:end]
+			if loc := pattern.FindStringIndex(candidate); loc != nil && loc[0] == 0 && loc[1] == len(candidate) {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
+
+func wordSeparator(r rune) bool {
+	return unicode.IsSpace(r) || strings.ContainsRune("()[]{}<>:;,\"'`", r)
+}
+
+func ticketPunctuation(r rune) bool { return r != '_' && unicode.IsPunct(r) }
 
 // WithKey returns msg with key added as a paragraph of its own, unless the
 // message already mentions it. The key goes before a closing trailer block

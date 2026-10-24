@@ -107,10 +107,10 @@ stats` (`wait_s`).
 
 | Command | What it does |
 |---|---|
-| `graft commit -m "fix: ..."` | lock, gate, bump patch (version mode `file`), `git add -A`, checks, commit, push to every remote |
+| `graft commit -m "fix: ..."` | lock, stage work, gate, stage again, bump patch (version mode `file`), stage again, checks, commit, push to every remote |
 | `graft commit --minor` / `--major` | same with a minor / major bump (version mode `file` only) |
 | `graft commit -F msg.txt` / `-F -` | message from a file / from stdin, byte for byte |
-| `graft amend` | lock, gate, `git add -A`, checks, `git commit --amend --no-edit`, no push; refuses a commit that is already on a remote, unless only on branches in `push.force_with_lease` |
+| `graft amend` | lock, stage work before the gate, gate, stage again, `ticket.required` on the whole amended commit, checks, `git commit --amend --no-edit`, no push; restores the original index if the gate fails, and refuses a commit that is already on a remote unless only on branches in `push.force_with_lease` |
 | `graft release` | tag the pushed HEAD with the version, push the tag to every remote |
 | `graft release --minor` / `--major` / `--version X.Y.Z` | choose the next tag (version mode `git-tag` only) |
 | `graft version` | print the project version |
@@ -172,10 +172,15 @@ commands and tasks.
    by every step below, once `git add` has marked its conflicts resolved;
    files still in conflict are refused by name. With `ticket.required`, refuse
    a commit that names no work item, in the message or by the branch: only a
-   revert and a commit whose files (the version bump aside) all match some
-   target's `approved_release.ignore_paths` need none, and so does every
-   commit on a branch in `ticket.skip_branches`.
-4. Run the gate. A failure stops here, with the version untouched.
+   revert and a commit whose files all match every target's
+   `approved_release.ignore_paths` need none, and so does every commit on a
+   branch in `ticket.skip_branches`. The ticket check uses the staged result
+   after the gate, including files the gate writes.
+4. Stage the work tree with `git add -A`, then run the gate. This makes new
+   files visible to gate steps through `git ls-files`. If the gate fails, graft
+   restores the index to its state before the command; work tree changes remain.
+   After the gate, graft stages again so files written by gate steps are part
+   of both the ticket check and the commit.
 5. Bump the version file and every file synced with it, except on a branch
    in `version.skip_branches` (`--minor` and `--major` are refused there).
    On a branch in `version.build_branches` the bump counts builds in a fourth

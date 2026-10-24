@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -25,6 +26,24 @@ func TestBranchKey(t *testing.T) {
 	}
 	if got := BranchKey("feature/PROJ-1", nil); got != "" {
 		t.Errorf("no pattern must mean no key, got %q", got)
+	}
+}
+
+func TestWordKeys(t *testing.T) {
+	cases := map[string][]string{
+		"fix: SHA-256 digest for PROJ-12": {"SHA-256", "PROJ-12"},
+		"feat(PROJ-1): x":                 {"PROJ-1"},
+		"see [PROJ-2], \"PROJ-3\".":       {"PROJ-2", "PROJ-3"},
+		"fix: XPROJ_1 and PROJ-4x":        nil,
+		"fix: nothing":                    nil,
+	}
+	for text, want := range cases {
+		if got := WordKeys(text, keyRe); !slices.Equal(got, want) {
+			t.Errorf("WordKeys(%q) = %q, want %q", text, got, want)
+		}
+	}
+	if got := WordKeys("x #12.", regexp.MustCompile(`^#[0-9]+$`)); !slices.Equal(got, []string{"#12"}) {
+		t.Errorf("anchored hash pattern: %q", got)
 	}
 }
 

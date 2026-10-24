@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -103,41 +105,79 @@ func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level versio
 	}
 	if cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, branch) {
 		msg = message.WithKey(msg, message.BranchKey(branch, cfg.Ticket.Regexp))
-		if err := requireTicket(repo, cfg, msg); err != nil {
-			return plan, err
-		}
 	}
 	return commitPlan{branch: branch, remotes: remotes, message: msg, bump: bump}, nil
 }
 
 // requireTicket refuses, under ticket.required, a commit that names no work
 // item: a revert and a commit that changes only files that ship nothing pass.
-func requireTicket(repo *gitx.Repo, cfg *config.Config, msg string) error {
-	if !cfg.Ticket.Required || cfg.Ticket.Regexp.MatchString(msg) {
+// The commit's files are the index against base, HEAD when it is "".
+func requireTicket(repo *gitx.Repo, cfg *config.Config, msg, base string) error {
+	if !cfg.Ticket.Required || hasTicketKey(cfg, msg) {
 		return nil
 	}
 	if subject, _, _ := strings.Cut(msg, "\n"); isRevert(subject) {
 		return nil
 	}
-	changed, err := repo.ChangedFiles()
+	changed, err := repo.StagedFiles(base)
 	if err != nil {
 		return err
 	}
-	bumped := cfg.VersionFiles()
-	files := slices.DeleteFunc(changed, func(f string) bool { return slices.Contains(bumped, f) })
-	if cfg.ShipsNothing(files) {
+	if cfg.ShipsNothing(changed) {
 		return nil
 	}
-	return fmt.Errorf("the commit names no work item (ticket.required): put a key matching %s in the message or commit from a branch named for the item; only a revert and a change to approved_release ignore_paths need none", cfg.Ticket.Pattern)
+	return fmt.Errorf("the commit names no work item (ticket.required): put a key matching %s in the message or commit from a branch named for the item; only a revert and changes ignored by every approved_release target need none", cfg.Ticket.Pattern)
+}
+
+// hasTicketKey tells whether some whole word of msg is a work item key; with
+// release_notes.jira.project_keys, a KEY-123 key counts only for those projects.
+func hasTicketKey(cfg *config.Config, msg string) bool {
+	if cfg.Ticket == nil || cfg.Ticket.Regexp == nil {
+		return false
+	}
+	return slices.ContainsFunc(message.WordKeys(msg, cfg.Ticket.Regexp), func(key string) bool {
+		if cfg.ReleaseNotes == nil || cfg.ReleaseNotes.Jira == nil || len(cfg.ReleaseNotes.Jira.ProjectKeys) == 0 {
+			return true
+		}
+		prefix, _, ok := strings.Cut(key, "-")
+		return !ok || !uppercaseProjectPrefix(prefix) || slices.Contains(cfg.ReleaseNotes.Jira.ProjectKeys, prefix)
+	})
+}
+
+func uppercaseProjectPrefix(prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	for _, r := range prefix {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, plan commitPlan) error {
-	if err := a.gateForMessage(ctx, repo, cfg, plan.message); err != nil {
+	index, err := saveIndex(repo)
+	if err != nil {
 		return err
+	}
+	if _, err := repo.Git("add", "-A"); err != nil {
+		return errors.Join(err, restoreIndex(repo, index))
+	}
+	if err := a.gateForMessage(ctx, repo, cfg, plan.message); err != nil {
+		return errors.Join(err, restoreIndex(repo, index))
+	}
+	if _, err := repo.Git("add", "-A"); err != nil {
+		return errors.Join(err, restoreIndex(repo, index))
+	}
+	if cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, plan.branch) {
+		if err := requireTicket(repo, cfg, plan.message, ""); err != nil {
+			return errors.Join(err, restoreIndex(repo, index))
+		}
 	}
 	backup, err := plan.bump.apply(repo)
 	if err != nil {
-		return err
+		return errors.Join(err, restoreIndex(repo, index))
 	}
 	undo := func(cause error) error { return errors.Join(cause, restoreVersion(repo, backup)) }
 
@@ -154,7 +194,6 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	if _, err := repo.GitInput(strings.NewReader(msg), markerEnv, "commit", "--cleanup=verbatim", "-F", "-"); err != nil {
 		return undo(err)
 	}
-
 	refs := []string{"HEAD"}
 	if plan.bump.tag != "" {
 		if _, err := repo.Git("tag", "-a", plan.bump.tag, "-m", plan.bump.tag); err != nil {
@@ -168,6 +207,40 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	}
 	a.printf("committed %s on %s%s", strings.TrimSpace(head), plan.branch, plan.bump.describe())
 	return a.push(repo, plan.remotes, refs, config.BranchMatches(cfg.Push.Lease, plan.branch))
+}
+
+type savedIndex struct {
+	path   string
+	data   []byte
+	exists bool
+}
+
+func saveIndex(repo *gitx.Repo) (savedIndex, error) {
+	s := savedIndex{path: filepath.Join(repo.GitDir, "index")}
+	data, err := os.ReadFile(s.path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return s, fmt.Errorf("saving the git index: %w", err)
+	}
+	if err == nil {
+		s.data, s.exists = data, true
+	}
+	return s, nil
+}
+
+func restoreIndex(repo *gitx.Repo, s savedIndex) error {
+	if s.path == "" {
+		return nil
+	}
+	if !s.exists {
+		if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("restoring the git index: %w", err)
+		}
+		return nil
+	}
+	if err := os.WriteFile(s.path, s.data, 0o644); err != nil {
+		return fmt.Errorf("restoring the git index: %w", err)
+	}
+	return nil
 }
 
 // bumpPlan is the version change a commit will make.

@@ -12,6 +12,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/hooks"
+	commitmessage "github.com/aiseeq/graft/v2/internal/message"
 	"github.com/aiseeq/graft/v2/internal/version"
 )
 
@@ -33,16 +34,42 @@ func (a *App) Amend(ctx context.Context) error {
 			return err
 		}
 		// log appends a newline of its own after the message's.
-		if err := a.gateForMessage(ctx, repo, cfg, strings.TrimRight(message, "\n")+"\n"); err != nil {
+		message = strings.TrimRight(message, "\n") + "\n"
+		branch, err := repo.Branch()
+		if err != nil {
+			return err
+		}
+		ticketed := cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, branch)
+		if ticketed {
+			message = commitmessage.WithKey(message, commitmessage.BranchKey(branch, cfg.Ticket.Regexp))
+		}
+		index, err := saveIndex(repo)
+		if err != nil {
 			return err
 		}
 		if _, err := repo.Git("add", "-A"); err != nil {
-			return err
+			return errors.Join(err, restoreIndex(repo, index))
+		}
+		if err := a.gateForMessage(ctx, repo, cfg, message); err != nil {
+			return errors.Join(err, restoreIndex(repo, index))
+		}
+		if _, err := repo.Git("add", "-A"); err != nil {
+			return errors.Join(err, restoreIndex(repo, index))
+		}
+		if ticketed {
+			// The amended commit is checked whole, against its parent.
+			base, err := repo.ParentTree("HEAD")
+			if err != nil {
+				return errors.Join(err, restoreIndex(repo, index))
+			}
+			if err := requireTicket(repo, cfg, message, base); err != nil {
+				return errors.Join(err, restoreIndex(repo, index))
+			}
 		}
 		if err := runChecks(repo, cfg, "", a.Stderr); err != nil {
 			return err
 		}
-		if message, err = a.withWorkers(repo, strings.TrimRight(message, "\n")+"\n"); err != nil {
+		if message, err = a.withWorkers(repo, message); err != nil {
 			return err
 		}
 		if _, err := repo.GitInput(strings.NewReader(message), markerEnv, "commit", "--amend", "--cleanup=verbatim", "-F", "-"); err != nil {

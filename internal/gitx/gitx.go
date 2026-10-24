@@ -200,7 +200,7 @@ func (r *Repo) ChangedFiles() ([]string, error) {
 			continue
 		}
 		files = append(files, e[3:])
-		if e[0] == 'R' || e[0] == 'C' {
+		if e[0] == 'R' || e[0] == 'C' || e[1] == 'R' || e[1] == 'C' {
 			i++
 			if i < len(entries) && entries[i] != "" {
 				files = append(files, entries[i])
@@ -208,6 +208,47 @@ func (r *Repo) ChangedFiles() ([]string, error) {
 		}
 	}
 	return files, nil
+}
+
+// StagedFiles lists the paths that differ in the index from base, or, when
+// base is "", from HEAD (the empty tree when HEAD does not exist). A rename
+// contributes both paths.
+func (r *Repo) StagedFiles(base string) ([]string, error) {
+	args := []string{"diff", "--cached", "--name-only", "--no-renames", "-z"}
+	if base != "" {
+		args = append(args, base, "--")
+	}
+	out, err := r.Git(args...)
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for name := range strings.SplitSeq(out, "\x00") {
+		if name != "" {
+			files = append(files, name)
+		}
+	}
+	return files, nil
+}
+
+// ParentTree returns the tree of rev's first parent, or the empty tree when rev
+// is a root commit.
+func (r *Repo) ParentTree(rev string) (string, error) {
+	out, err := r.Git("rev-list", "--parents", "-n", "1", rev)
+	if err != nil {
+		return "", err
+	}
+	ids := strings.Fields(out)
+	if len(ids) == 0 {
+		return "", fmt.Errorf("git rev-list --parents %s: no commit", rev)
+	}
+	var tree string
+	if len(ids) > 1 {
+		tree, err = r.Git("rev-parse", ids[1]+"^{tree}")
+	} else {
+		tree, err = r.GitInput(strings.NewReader(""), nil, "hash-object", "-t", "tree", "--stdin")
+	}
+	return strings.TrimSpace(tree), err
 }
 
 // RemoteBranch is a branch on a remote, from its remote-tracking ref.
