@@ -102,22 +102,41 @@ func checkOtherRemotes(repo *gitx.Repo, deployRemote, branch string) error {
 		if r == deployRemote {
 			continue
 		}
-		if _, err := repo.Git("fetch", "--quiet", r); err != nil {
+		ref := "refs/remotes/" + r + "/" + branch
+		if _, err := repo.Git("ls-remote", "--exit-code", r, "refs/heads/"+branch); err != nil {
+			if gitx.ExitCode(err) == 2 {
+				if _, delErr := repo.Git("update-ref", "-d", ref); delErr != nil {
+					return fmt.Errorf("removing stale remote-tracking ref %s: %w", ref, delErr)
+				}
+				continue
+			}
+			return fmt.Errorf("git fetch %s failed, cannot check that %s has everything %s/%s has (checking branch existence): %w", r, base, r, branch, err)
+		}
+		if _, err := repo.Git("fetch", "--quiet", "--prune", r, "+refs/heads/"+branch+":"+ref); err != nil {
 			return fmt.Errorf("git fetch %s failed, cannot check that %s has everything %s/%s has: %w", r, base, r, branch, err)
 		}
 		other := r + "/" + branch
-		exists, err := repo.RevExists("refs/remotes/" + other)
+		exists, err := repo.RevExists(ref)
 		if err != nil {
 			return err
 		}
 		if !exists {
 			continue
 		}
-		out, err := repo.Git("rev-list", "--cherry-pick", "--right-only", "--no-merges", "--reverse", base+"..."+other)
+		out, err := repo.Git("rev-list", "--no-merges", "--reverse", ref, "^refs/remotes/"+base)
 		if err != nil {
 			return err
 		}
-		missing := strings.Fields(out)
+		missing := make([]string, 0)
+		for sha := range strings.FieldsSeq(out) {
+			present, err := ChangePresent(repo, base, sha)
+			if err != nil {
+				return fmt.Errorf("checking the change in %s: %w", gitx.Short(sha), err)
+			}
+			if !present {
+				missing = append(missing, sha)
+			}
+		}
 		if len(missing) == 0 {
 			continue
 		}
@@ -140,6 +159,138 @@ func checkOtherRemotes(repo *gitx.Repo, deployRemote, branch string) error {
 			other, len(missing), noun, base, strings.Join(lines, "; "), other, deployRemote, branch)
 	}
 	return nil
+}
+
+// ChangePresent reports whether commit's exact changed lines are present on
+// base. A temporary index lets the check inspect any commit without changing
+// the work tree or the caller's index.
+func ChangePresent(repo *gitx.Repo, base, commit string) (bool, error) {
+	return ChangePresentExcept(repo, base, commit)
+}
+
+// ChangePresentExcept checks the commit's changed lines while ignoring the
+// given paths, such as generated version files. A root commit's change is
+// against the empty tree.
+func ChangePresentExcept(repo *gitx.Repo, base, commit string, exclude ...string) (present bool, retErr error) {
+	parent, err := repo.ParentTree(commit)
+	if err != nil {
+		return false, err
+	}
+	args := []string{"diff", "--binary", "--no-ext-diff", "--no-renames", "--unified=0", parent, commit, "--"}
+	for _, path := range exclude {
+		args = append(args, ":(exclude)"+path)
+	}
+	diff, err := repo.Git(args...)
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(diff) == "" {
+		return true, nil
+	}
+	index, err := os.CreateTemp("", "graft-deploy-index-")
+	if err != nil {
+		return false, fmt.Errorf("creating temporary git index: %w", err)
+	}
+	path := index.Name()
+	if err := index.Close(); err != nil {
+		removeErr := os.Remove(path)
+		return false, errors.Join(fmt.Errorf("closing temporary git index: %w", err), removeErr)
+	}
+	defer func() {
+		if err := os.Remove(path); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("removing temporary git index: %w", err))
+		}
+	}()
+	env := []string{"GIT_INDEX_FILE=" + path, "LC_ALL=C"}
+	if _, err := repo.GitEnv(env, "read-tree", base); err != nil {
+		return false, err
+	}
+	for _, hunk := range diffHunks(diff) {
+		present, err := hunkPresent(repo, env, hunk.patch, hunk.hasAddedLines)
+		if err != nil {
+			return false, err
+		}
+		if !present {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+type diffHunk struct {
+	patch         string
+	hasAddedLines bool
+}
+
+// diffHunks keeps the file header with each hunk so git can check that hunk
+// against the same base independently of other changes in the commit. A file
+// with no line hunks, a binary or a mode-only change, is one patch whose
+// reverse must apply to the base for the change to be present.
+func diffHunks(diff string) []diffHunk {
+	var hunks []diffHunk
+	var header, current strings.Builder
+	inFile, fileHunks, hasHunk, hasAddedLines := false, 0, false, false
+	flushHunk := func() {
+		if hasHunk {
+			hunks = append(hunks, diffHunk{patch: current.String(), hasAddedLines: hasAddedLines})
+			fileHunks++
+			current.Reset()
+			current.WriteString(header.String())
+			hasHunk, hasAddedLines = false, false
+		}
+	}
+	flushFile := func() {
+		flushHunk()
+		if inFile && fileHunks == 0 {
+			hunks = append(hunks, diffHunk{patch: header.String(), hasAddedLines: true})
+		}
+	}
+	for line := range strings.SplitSeq(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			flushFile()
+			inFile, fileHunks = true, 0
+			header.Reset()
+			header.WriteString(line + "\n")
+			current.Reset()
+			current.WriteString(line + "\n")
+		case strings.HasPrefix(line, "@@ "):
+			flushHunk()
+			current.WriteString(line + "\n")
+			hasHunk = true
+		case hasHunk:
+			current.WriteString(line + "\n")
+			if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+				hasAddedLines = true
+			}
+		default:
+			header.WriteString(line + "\n")
+			current.WriteString(line + "\n")
+		}
+	}
+	flushFile()
+	return hunks
+}
+
+func hunkPresent(repo *gitx.Repo, env []string, patch string, hasAddedLines bool) (bool, error) {
+	args := []string{"apply", "--cached", "--check", "--unidiff-zero"}
+	if hasAddedLines {
+		args = append(args, "--reverse")
+	}
+	if _, err := repo.GitInput(strings.NewReader(patch), env, args...); err == nil {
+		return hasAddedLines, nil
+	} else {
+		var gitErr *gitx.Error
+		if gitx.ExitCode(err) == 1 && errors.As(err, &gitErr) && expectedPatchMismatch(gitErr.Stderr) {
+			return !hasAddedLines, nil
+		}
+		return false, err
+	}
+}
+
+func expectedPatchMismatch(stderr string) bool {
+	return strings.Contains(stderr, "patch failed") || strings.Contains(stderr, "patch does not apply") ||
+		strings.Contains(stderr, "does not exist in index") || strings.Contains(stderr, "already exists in index")
 }
 
 // CheckHead verifies, mid-deploy, that the tree is still clean and HEAD is

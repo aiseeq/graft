@@ -1113,9 +1113,10 @@ release_notes:
    deploy), and the deploy is refused while one's branch of the same name has
    commits whose change the deployed branch lacks, a pull request merged on a
    mirror say: the refusal names the remote, the count and the first commits,
-   with the merge and push that bring them in. Content counts, not ancestry: a
-   commit rebased or cherry-picked under another hash is there. Merge commits
-   are not counted, the commits they bring are.
+   with the merge and push that bring them in. Content counts, not ancestry:
+   the exact changed lines, including whitespace, must already be present for a
+   rebased or cherry-picked commit to count as there. Merge commits are not
+   counted, the non-merge commits they bring are.
 2. With `requires`, the required target's `version` must print the version
    being deployed: a quick read-only check, so it fails before a long deps run.
 3. With `deployed_sha`, read the commit the target runs. Then, before any
@@ -1307,6 +1308,10 @@ deploy:
   it names: they pass now, the trunk keeps them, and graft records them
   beside `deployed_sha` (`.withheld`). Every later release checks them with
   its own commits until they pass or a revert takes them out of the trunk.
+  In any deploy, a previously withheld commit that remains reverted in the
+  deployed history and is absent from its tree stays in `.withheld` and is not
+  checked again. Once its change is present in the deployed tree, it is checked
+  again.
   Release notes leave out withheld commits and the reverts that withheld
   them; a withheld commit that a later release lets out gets its notes
   there, though it is outside that release's range.

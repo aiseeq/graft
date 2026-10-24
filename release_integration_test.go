@@ -195,6 +195,41 @@ func TestReleaseCutoffHoldAndWithheld(t *testing.T) {
 	}
 }
 
+func TestWithheldRevertPersistsOnNonBuildBranch(t *testing.T) {
+	d := releaseRepo(t)
+	d.at("2026-10-20 10:00")
+	d.commitFile("checked.txt", "feat: PROJ-8 checked work")
+	unchecked := d.commitFile("unchecked.txt", "feat: PROJ-1 unchecked work")
+	d.mustGraft("deploy", "test")
+	d.at("2026-10-21 18:30")
+	d.runCommands(d.mustGraft("deploy", "cutoff", "prod"), "goes out from release/22.10.26", "Then the candidate goes")
+	d.mustGraft("deploy", "test")
+	d.at("2026-10-22 15:30")
+	d.mustGraft("deploy", "prod")
+	if got := strings.TrimSpace(d.stateFile("prod-sha.withheld")); got != unchecked {
+		t.Fatalf("initial withheld = %q, want %s", got, unchecked)
+	}
+
+	// This branch contains the release's revert but is outside build_branches.
+	d.git("switch", "-q", "-c", "maintenance/PROJ-8-followup")
+	d.write("followup.txt", "feat: PROJ-8 followup\n")
+	d.git("-c", "core.hooksPath=/dev/null", "add", "-A")
+	d.git("-c", "core.hooksPath=/dev/null", "commit", "-m", "feat: PROJ-8 followup")
+	d.git("push", "-q", "-u", "origin", "maintenance/PROJ-8-followup")
+	d.setStatus("PROJ-1", "Ready for release")
+	d.mustGraft("deploy", "test")
+	out := d.mustGraft("deploy", "prod")
+	if strings.Contains(out, "withheld from an earlier release, goes out now") {
+		t.Errorf("a reverted withheld commit was released on another branch:\n%s", out)
+	}
+	if got := strings.TrimSpace(d.stateFile("prod-sha.withheld")); got != unchecked {
+		t.Errorf("withheld after deploy = %q, want %s\n%s", got, unchecked, out)
+	}
+	if d.status("PROJ-1") != "Ready for release" {
+		t.Errorf("PROJ-1 moved to %s", d.status("PROJ-1"))
+	}
+}
+
 // TestReleaseHoldOverOncePushedOnTop: once prod runs the candidate, the hold
 // is over for every later deploy to test in the window, not only for the
 // first one on top of the candidate; whether a deploy during the hold

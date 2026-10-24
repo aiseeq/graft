@@ -875,8 +875,88 @@ func (a *App) approvalRun(ctx context.Context, r *deployRun) (gateOutcome, *gate
 	if err != nil {
 		return gateOutcome{}, nil, err
 	}
-	out, err := g.run(ctx, r.prev, r.head, withheld, config.BranchMatches(r.cfg.Version.Build, r.branch))
+	active, reverted, err := partitionWithheld(r.repo, r.head, withheld, r.cfg.VersionFiles())
+	if err != nil {
+		return gateOutcome{}, nil, err
+	}
+	buildBranch := config.BranchMatches(r.cfg.Version.Build, r.branch)
+	out, err := g.run(ctx, r.prev, r.head, active, buildBranch)
+	out.withheld = append(reverted, out.withheld...)
 	return out, g, err
+}
+
+// partitionWithheld separates commits whose changes remain reverted in the
+// deployed history. It also follows reverts of reverts, which make the
+// original change active again.
+func partitionWithheld(repo *gitx.Repo, head string, withheld, versionFiles []string) (active, reverted []string, retErr error) {
+	if len(withheld) == 0 {
+		return nil, nil, nil
+	}
+	out, err := repo.Git("log", "--reverse", "--format=%H%x00%s%x00%b%x00%x1e", head)
+	if err != nil {
+		return nil, nil, err
+	}
+	isReverted := map[string]bool{}
+	revertTargets := map[string]string{}
+	for record := range strings.SplitSeq(out, "\x1e") {
+		parts := strings.SplitN(strings.TrimSpace(record), "\x00", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		sha, subject, body := strings.TrimSpace(parts[0]), parts[1], parts[2]
+		if !isRevert(subject) {
+			continue
+		}
+		for _, match := range revertsRe.FindAllStringSubmatch(body, -1) {
+			target, ambiguous := withheldRevertTarget(match[1], withheld, revertTargets)
+			if ambiguous {
+				return nil, nil, fmt.Errorf("%s reverts ambiguous commit prefix %s", gitx.Short(sha), match[1])
+			}
+			if target == "" {
+				continue
+			}
+			isReverted[target] = !isReverted[target]
+			revertTargets[sha] = target
+		}
+	}
+	active = make([]string, 0, len(withheld))
+	reverted = make([]string, 0, len(withheld))
+	for _, sha := range withheld {
+		if isReverted[sha] {
+			present, err := deploy.ChangePresentExcept(repo, head, sha, versionFiles...)
+			if err != nil {
+				return nil, nil, fmt.Errorf("checking withheld commit %s in deployed history: %w", gitx.Short(sha), err)
+			}
+			if !present {
+				reverted = append(reverted, sha)
+				continue
+			}
+		}
+		active = append(active, sha)
+	}
+	return active, reverted, nil
+}
+
+func withheldRevertTarget(prefix string, withheld []string, revertTargets map[string]string) (string, bool) {
+	var target string
+	consider := func(candidate string) bool {
+		if target != "" && target != candidate {
+			return false
+		}
+		target = candidate
+		return true
+	}
+	for _, sha := range withheld {
+		if strings.HasPrefix(sha, prefix) && !consider(sha) {
+			return "", true
+		}
+	}
+	for _, revert := range slices.Sorted(maps.Keys(revertTargets)) {
+		if strings.HasPrefix(revert, prefix) && !consider(revertTargets[revert]) {
+			return "", true
+		}
+	}
+	return target, false
 }
 
 // passApproved records what an approved release with no failures lets out.
@@ -1092,6 +1172,19 @@ func attributionProblems(repo *gitx.Repo, cfg *config.Config) ([]string, error) 
 		return nil, nil
 	}
 	var problems []string
+	format, err := repo.Git("rev-parse", "--show-object-format")
+	if err != nil {
+		return nil, fmt.Errorf("reading repository object format: %w", err)
+	}
+	var wantHashLength int
+	switch strings.TrimSpace(format) {
+	case "sha1":
+		wantHashLength = sha1CommitHashLength
+	case "sha256":
+		wantHashLength = sha256CommitHashLength
+	default:
+		return nil, fmt.Errorf("unsupported repository object format %q", strings.TrimSpace(format))
+	}
 	for _, name := range slices.Sorted(maps.Keys(cfg.Deploy.Targets)) {
 		conf := cfg.Deploy.Targets[name].ApprovedRelease
 		if conf == nil {
@@ -1100,6 +1193,10 @@ func attributionProblems(repo *gitx.Repo, cfg *config.Config) ([]string, error) 
 		keyRe := projectKeyRe(cfg)
 		for i, at := range conf.Attribute {
 			where := fmt.Sprintf("deploy.targets.%s.approved_release.attribute[%d]", name, i)
+			if len(at.Commit) != wantHashLength {
+				problems = append(problems, fmt.Sprintf("%s: commit %s must be the full %d-digit hash for this repository", where, at.Commit, wantHashLength))
+				continue
+			}
 			known, err := repo.RevExists(at.Commit)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", where, err)
@@ -1119,6 +1216,11 @@ func attributionProblems(repo *gitx.Repo, cfg *config.Config) ([]string, error) 
 	}
 	return problems, nil
 }
+
+const (
+	sha1CommitHashLength   = 40
+	sha256CommitHashLength = 64
+)
 
 // shipsNothing tells whether a commit changes only approved_release's
 // ignore_paths, besides the version bump graft commit puts into every commit.
