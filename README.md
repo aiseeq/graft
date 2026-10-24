@@ -94,6 +94,41 @@ its exit status. `graft stats` records it as the task `exec` of the work tree
 around (`--task exec` lists the commands); without `--heavy` it runs at once
 and is only recorded.
 
+A project with another machine for heavy work names it in `.graft.yaml`, and
+the steps of its heavy tasks and its `graft exec --heavy` go there first,
+skipping this machine's queue:
+
+```yaml
+remote_heavy:
+  host: pc                       # the machine, in graft's lines and in stats
+  up: [scripts/remote.sh, up]          # exits 0 when the host takes commands, within 30s
+  run: [scripts/remote.sh, run]        # runs the appended argv on the host from the work tree root
+  threads: 16                    # {threads} and GRAFT_THREADS there; 0 leaves GRAFT_THREADS unset and refuses {threads}
+```
+
+The project's `run` carries the tree to the host and runs the command there;
+graft only decides where a step runs and appends `env GRAFT_HEAVY=local
+K=V… <argv>`: the variables it sets for the step (`env`, `GRAFT_VERSION`,
+`GRAFT_THREADS`), since the host does not get this machine's environment,
+and `GRAFT_HEAVY=local`, so that a graft the step starts there keeps its heavy
+work. `up` runs once per graft, at the first heavy task. Each heavy task
+says where it runs, `graft: build: heavy, on pc`, or why it stays here and
+queues as before, `graft: build: heavy, on this machine: <why>`:
+
+- `GRAFT_HEAVY=local` in the environment (any other value is an error), or
+  `graft exec --heavy --local`, which sets it for the command too;
+- `remote: false` in the task (only a heavy task takes `remote`): its steps
+  write files needed here;
+- the task uses the test database, a jest or playwright report file, `.env`
+  keys (`dotenv`, `dotenv_sets`) or a `${KEY}` that is no variable of the
+  task, or runs outside the work tree root (`dir`, `graft exec` in a
+  subdirectory), or names `GRAFT_COMMIT_MESSAGE_FILE` in a gate: none of these
+  is on the host;
+- `up` failed or timed out; its first line of output is in the reason.
+
+A heavy task inside a heavy task decides for itself, and a task that is not
+heavy runs here wherever its caller runs.
+
 `graft deploy` gives its heavy tasks, and those of every graft its script
 starts, a priority (`GRAFT_LOAD_PRIORITY`, `GRAFT_LOAD_BUDGET`,
 `GRAFT_LOAD_THEN`): they skip the queue and the settling, a deploy not
@@ -139,7 +174,7 @@ stats` (`wait_s`).
 | `graft tasks` | every task, building blocks and deps included |
 | `graft start` / `stop` / `restart [service]` | background services, all of them without a name |
 | `graft logs <service> [--lines N] [-f]` | the end of a service's log, or its journal; `-f` follows until Ctrl-C |
-| `graft exec [--heavy] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config) |
+| `graft exec [--heavy [--local]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local` |
 | `graft stats [--since 7d] [--project <root>\|--all] [--task <name>]` | recorded resource use of tasks (see [Resource stats](#resource-stats)) |
 | `graft status` | services, the test database, held locks |
 | `graft locks` | who holds graft's locks |
@@ -393,6 +428,7 @@ tasks:
     deps: [build]              # run first, each task at most once per invocation
     test_db: true              # pass the test database DSN (see below)
     heavy: true                # wait while the machine is loaded (user config load), GRAFT_THREADS set
+    remote: false              # heavy only: stay on this machine though the project has remote_heavy
     tests: go                  # read go test -json: print plain go test output, record every test
     dotenv: [API_KEY!, 'LOG_DIR?']  # only these .env keys reach the steps; KEY? optional, KEY! must not be empty
     dotenv_sets: [db]          # plus the keys of named sets
@@ -572,6 +608,9 @@ deps and inner tasks included.
   the time between two readings goes to what the first found), `settle`
   (the hold after a wait), `lock` (a task lock) and `sudo` (a deploy's
   confirmation). Absent when nothing waited.
+- `host`, on the lines of a task run on the host of `remote_heavy` and of
+  its steps, names that host; absent for this machine. Their CPU time and
+  memory are those of the command that sent the step there, not of the work.
 - `step` is the step as written in `.graft.yaml`, on one line, cut to 200
   characters. `exit` is -1 when there is no exit status: killed by a signal,
   or a task that failed outside its processes.

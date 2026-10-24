@@ -129,6 +129,9 @@ type Task struct {
 	// Heavy holds the task back while the machine is loaded (the user
 	// config's load) and passes it GRAFT_THREADS.
 	Heavy bool `yaml:"heavy"`
+	// Remote false keeps a heavy task on this machine though the project
+	// has remote_heavy: a task whose steps write files it needs here.
+	Remote *bool `yaml:"remote"`
 	// Tests names the test report of the steps: TestsGo reads go test -json
 	// on stdout, records every test and prints what plain go test would;
 	// TestsJest and TestsPlaywright read the JSON report the runner writes

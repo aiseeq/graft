@@ -61,7 +61,7 @@ var commands = []command{
 		applies: func(c *config.Config) bool { return len(c.Tasks) > 0 }},
 	{name: "start", syntax: fixed("graft start|stop|restart [service]", "graft logs <service> [--lines N] [-f]"), summary: text("start services in the background or through systemd --user; stop, restart, logs"),
 		applies: func(c *config.Config) bool { return len(c.Services) > 0 }},
-	{name: "exec", syntax: fixed("graft exec [--heavy] -- <command> [args]"),
+	{name: "exec", syntax: fixed("graft exec [--heavy [--local]] -- <command> [args]"),
 		summary: text("run a command that is not a task, recorded in the stats as exec; --heavy: queue for the machine as heavy tasks do, {threads} and GRAFT_THREADS from load.threads")},
 	{name: "stats", syntax: fixed("graft stats [--tests] [--since 7d] [--project <root>|--all] [--task <name>] [--max-load N]"),
 		summary: text("resource use recorded for tasks: runs, wall and CPU time, peak memory, failures; --tests: the slowest tests, the skipped and the flaky ones")},

@@ -86,6 +86,10 @@ type Runner struct {
 	Load func() (userconfig.MachineLoad, error)
 	// heavy counts the heavy tasks running, admitted by the outermost.
 	heavy int
+	// remoteDown is why remote_heavy's host did not answer, once asked:
+	// remoteAsked; "" when it did.
+	remoteAsked bool
+	remoteDown  string
 	// frames are the tasks running now, outermost first; every process a
 	// step runs counts in all of them.
 	frames []*frame
@@ -104,6 +108,8 @@ type frame struct {
 	// db follows the test database's container in a test_db task.
 	db   *stats.CgroupWatch
 	load *stats.LoadWatch
+	// remote runs the steps of a heavy task on remote_heavy's host.
+	remote bool
 }
 
 // TestDB is the test database of test_db tasks.
@@ -469,6 +475,13 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 		return err
 	}
 	if t.Heavy {
+		remote, err := r.placeHeavy(ctx, name, t, r.Root)
+		if err != nil {
+			return err
+		}
+		f.remote = remote
+	}
+	if t.Heavy && !f.remote {
 		// A heavy task inside a heavy task was admitted with it.
 		if r.heavy == 0 {
 			waits, err := r.admit(ctx, name)
@@ -571,6 +584,9 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		cmd.Dir = filepath.Join(r.Root, filepath.FromSlash(t.Dir))
 	}
 	cmd.Env = env
+	if r.frames[len(r.frames)-1].remote {
+		cmd = r.remoteCmd(ctx, cmd, vars, threads)
+	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
 	switch t.Tests {
 	case config.TestsGo:
@@ -690,6 +706,11 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 	f := r.begin(ExecTask)
 	defer func() { r.end(f, err != nil) }()
 	if heavy {
+		if f.remote, err = r.placeHeavy(ctx, ExecTask, t, dir); err != nil {
+			return err
+		}
+	}
+	if heavy && !f.remote {
 		waits, err := r.admit(ctx, ExecTask)
 		r.waitedFor(waits)
 		if err != nil {
@@ -709,6 +730,9 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 	}
 	cmd := exec.CommandContext(ctx, s.Argv[0], s.Argv[1:]...)
 	cmd.Dir, cmd.Env = dir, env
+	if f.remote {
+		cmd = r.remoteCmd(ctx, cmd, nil, threads)
+	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
 	_, err = r.measure(cmd, s.Source)
 	return err
@@ -756,7 +780,7 @@ func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
 		}
 	}
 	inner := r.frames[len(r.frames)-1]
-	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Step: stats.StepText(source), Exit: code}, use, r.frames[0].task)
+	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Step: stats.StepText(source), Exit: code, Host: r.hostOf(inner)}, use, r.frames[0].task)
 	return use, err
 }
 
@@ -785,7 +809,7 @@ func (r *Runner) begin(task string) *frame {
 // what it cost; the task's error itself goes back to its caller.
 func (r *Runner) end(f *frame, failed bool) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
-	rec := stats.Record{Kind: stats.KindTask, Task: f.task, In: f.in, Steps: f.steps}
+	rec := stats.Record{Kind: stats.KindTask, Task: f.task, In: f.in, Steps: f.steps, Host: r.hostOf(f)}
 	if failed {
 		// A failure outside the processes (a missing key, a lock timeout)
 		// has no exit status of its own.
@@ -1123,11 +1147,23 @@ func (r *Runner) threads(s config.Step, t *config.Task) (config.Step, string, er
 	if !uses && !t.Heavy {
 		return s, "", nil
 	}
-	l, err := r.Load()
-	if err != nil {
-		return s, "", err
+	var n string
+	if len(r.frames) > 0 && r.frames[len(r.frames)-1].remote {
+		rh := r.Config.RemoteHeavy
+		if rh.Threads == 0 {
+			if uses {
+				return s, "", fmt.Errorf("%s in a step run on %s: set remote_heavy.threads", config.ThreadsPlaceholder, rh.Host)
+			}
+			return s, "", nil
+		}
+		n = strconv.Itoa(rh.Threads)
+	} else {
+		l, err := r.Load()
+		if err != nil {
+			return s, "", err
+		}
+		n = strconv.Itoa(l.Threads)
 	}
-	n := strconv.Itoa(l.Threads)
 	s.Shell = strings.ReplaceAll(s.Shell, config.ThreadsPlaceholder, n)
 	s.Source = strings.ReplaceAll(s.Source, config.ThreadsPlaceholder, n)
 	s.Argv = slices.Clone(s.Argv)

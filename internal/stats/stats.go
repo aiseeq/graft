@@ -94,6 +94,10 @@ type Record struct {
 	// deploy's sudo confirmation (sudo). Absent when nothing waited, and in
 	// lines written before graft 2.40.
 	WaitWhy map[string]float64 `json:"wait_why,omitempty"`
+	// Host names the machine of remote_heavy the steps ran on; absent for
+	// this one. Their CPU time and memory are of the command that sent them
+	// there, not of the work.
+	Host string `json:"host,omitempty"`
 	// Exit is the exit status; -1 when there is none (killed by a signal, or
 	// a task that failed outside its processes).
 	Exit int `json:"exit"`

@@ -369,12 +369,27 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 
 // execCmd runs graft exec [--heavy] -- <command> [args].
 func execCmd(ctx context.Context, a *app.App, args []string) error {
-	heavy := len(args) > 0 && args[0] == "--heavy"
-	if heavy {
+	usage := fmt.Errorf("%w: graft exec [--heavy [--local]] -- <command> [args]", errUsage)
+	var heavy, local bool
+	for len(args) > 0 && args[0] != "--" {
+		switch args[0] {
+		case "--heavy":
+			heavy = true
+		case "--local":
+			local = true
+		default:
+			return usage
+		}
 		args = args[1:]
 	}
-	if len(args) < 2 || args[0] != "--" {
-		return fmt.Errorf("%w: graft exec [--heavy] -- <command> [args]", errUsage)
+	if len(args) < 2 || (local && !heavy) {
+		return usage
+	}
+	if local {
+		// The graft the command starts stays here too.
+		if err := os.Setenv(tasks.HeavyEnv, "local"); err != nil {
+			return fmt.Errorf("exec --local: %w", err)
+		}
 	}
 	return a.Exec(ctx, args[1:], heavy)
 }

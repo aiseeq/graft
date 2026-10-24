@@ -34,6 +34,7 @@ type statsLine struct {
 	DBMemMB  *float64           `json:"db_mem_mb"`
 	WaitS    float64            `json:"wait_s"`
 	WaitWhy  map[string]float64 `json:"wait_why"`
+	Host     string             `json:"host"`
 	Exit     int                `json:"exit"`
 	Run      string             `json:"run"`
 	Parent   string             `json:"parent"`

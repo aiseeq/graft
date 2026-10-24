@@ -130,7 +130,7 @@ func (r *Runner) keyDefinitions(add func(...string), name string, seen map[strin
 		return fmt.Errorf("task %s for the cache key: %w", name, err)
 	}
 	add("task", name, string(def))
-	if strings.Contains(string(def), MessageFileEnv) {
+	if namesMessage(def) {
 		*readsMessage = true
 	}
 	for _, k := range sortedKeys(t.Env) {
@@ -221,4 +221,10 @@ func (r *Runner) inputPath(f string) (string, error) {
 		return f, nil
 	}
 	return filepath.Join(r.Root, filepath.FromSlash(f)), nil
+}
+
+// namesMessage says whether a task's JSON definition names the commit
+// message file: a step may read it.
+func namesMessage(def []byte) bool {
+	return strings.Contains(string(def), MessageFileEnv)
 }
