@@ -306,7 +306,6 @@ func latestTag(repo *gitx.Repo, prefix string) (version.Semver, bool, error) {
 	return best, found, nil
 }
 
-// Version prints the project version.
 // BumpVersion raises the version in the version file and its synced files
 // without committing: for scripts that fold the bump into a commit they make
 // themselves, such as merging a work branch whose commits skipped it.
@@ -343,6 +342,7 @@ func (a *App) BumpVersion(ctx context.Context, level version.Level) error {
 	})
 }
 
+// Version prints the project version.
 func (a *App) Version(describe bool) error {
 	repo, cfg, err := a.open()
 	if err != nil {

@@ -297,8 +297,6 @@ func (a *App) checkReleaseFlow(ctx context.Context, r *deployRun, unapproved boo
 	return errors.Join(errs...)
 }
 
-// refuseSameCommit refuses to deploy the commit the target already runs,
-// unless redeploy asks for exactly that.
 // checkTargetRuns reads what the target runs, shows it and refuses a deploy
 // it does not take. The deployed commit is read before deps, sudo and the
 // script: a target that already runs HEAD has nothing to gain from them.
@@ -361,6 +359,8 @@ func (a *App) showDeployed(ctx context.Context, r *deployRun) error {
 	return nil
 }
 
+// refuseSameCommit refuses to deploy the commit the target already runs,
+// unless redeploy asks for exactly that.
 func (a *App) refuseSameCommit(r *deployRun, redeploy bool) error {
 	if r.prev != r.head {
 		return nil
@@ -403,41 +403,10 @@ func (a *App) requireDeployed(ctx context.Context, r *deployRun) error {
 // the target's deps is set, and lists all that are not.
 func deployPreflight(r *deployRun) error {
 	lookup := dotenv.NewLookup(filepath.Join(r.repo.Root, r.cfg.DotEnv))
-	var problems []string
-	seen := map[string]bool{}
-	check := func(key string) {
-		if seen[key] {
-			return
-		}
-		seen[key] = true
-		if _, err := lookup.Value(key); err != nil {
-			problems = append(problems, err.Error())
-		}
-	}
-	for _, k := range r.target.Keys {
-		switch {
-		case k.NonEmpty:
-			seen[k.Name] = true
-			if v, err := lookup.Value(k.Name); err != nil {
-				problems = append(problems, err.Error())
-			} else if v == "" {
-				problems = append(problems, k.Name+" is empty")
-			}
-		case !k.Optional:
-			check(k.Name)
-		}
-	}
-	for _, w := range r.target.Run.Argv {
-		refs, err := dotenv.Refs(w)
-		if err != nil {
-			problems = append(problems, err.Error())
-			continue
-		}
-		for _, key := range refs {
-			check(key)
-		}
-	}
-	problems = append(problems, r.tasks.DepsMissing(r.target.Deps)...)
+	c := tasks.NewKeyCheck(lookup, nil)
+	c.Keys(r.target.Keys)
+	c.Refs(r.target.Run.Argv)
+	problems := append(c.Problems(), r.tasks.DepsMissing(r.target.Deps)...)
 	if len(problems) > 0 {
 		return fmt.Errorf("deploy %s: nothing was done, missing:\n  %s", r.name, strings.Join(problems, "\n  "))
 	}

@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 func dropTestDatabases(admin string) error {
 	db, err := sql.Open("pgx", admin)
 	if err != nil {
-		return err
+		return fmt.Errorf("opening the admin database: %w", err)
 	}
 	defer db.Close()
 	for _, name := range []string{testPrefix + templateSuffix, testPrefix + sourceSuffix} {

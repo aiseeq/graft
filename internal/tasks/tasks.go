@@ -427,29 +427,8 @@ func (r *Runner) missing(t *config.Task, steps []config.Step) []string {
 	if reportFile(t) {
 		provided[config.TestReportEnv] = true
 	}
-	var problems []string
-	check := func(key string) {
-		if provided[key] {
-			return
-		}
-		provided[key] = true // report once
-		if _, err := r.lookup.Value(key); err != nil {
-			problems = append(problems, err.Error())
-		}
-	}
-	for _, k := range t.Keys {
-		switch {
-		case k.NonEmpty:
-			provided[k.Name] = true
-			if v, err := r.lookup.Value(k.Name); err != nil {
-				problems = append(problems, err.Error())
-			} else if v == "" {
-				problems = append(problems, k.Name+" is empty")
-			}
-		case !k.Optional:
-			check(k.Name)
-		}
-	}
+	c := NewKeyCheck(r.lookup, provided)
+	c.Keys(t.Keys)
 	var texts []string
 	for _, k := range sortedKeys(t.Env) {
 		texts = append(texts, t.Env[k])
@@ -457,17 +436,8 @@ func (r *Runner) missing(t *config.Task, steps []config.Step) []string {
 	for _, s := range steps {
 		texts = append(texts, s.Argv...)
 	}
-	for _, text := range texts {
-		refs, err := dotenv.Refs(text)
-		if err != nil {
-			problems = append(problems, err.Error())
-			continue
-		}
-		for _, key := range refs {
-			check(key)
-		}
-	}
-	return problems
+	c.Refs(texts)
+	return c.Problems()
 }
 
 func (r *Runner) run(ctx context.Context, name string, args []string) (err error) {
@@ -965,6 +935,65 @@ func lookupEnv(env []string, name string) (string, bool) {
 	}
 	return "", false
 }
+
+// KeyCheck collects what .env lacks for a command, each key reported once.
+type KeyCheck struct {
+	lookup   *dotenv.Lookup
+	seen     map[string]bool
+	problems []string
+}
+
+// NewKeyCheck starts a check; provided holds the keys that need no .env value.
+func NewKeyCheck(l *dotenv.Lookup, provided map[string]bool) *KeyCheck {
+	seen := map[string]bool{}
+	maps.Copy(seen, provided)
+	return &KeyCheck{lookup: l, seen: seen}
+}
+
+func (c *KeyCheck) require(key string) {
+	if c.seen[key] {
+		return
+	}
+	c.seen[key] = true
+	if _, err := c.lookup.Value(key); err != nil {
+		c.problems = append(c.problems, err.Error())
+	}
+}
+
+// Keys checks the declared keys: a required one is set, a "KEY!" one set and
+// not empty; an optional one may be missing.
+func (c *KeyCheck) Keys(keys []config.DotEnvKey) {
+	for _, k := range keys {
+		switch {
+		case k.NonEmpty:
+			c.seen[k.Name] = true
+			if v, err := c.lookup.Value(k.Name); err != nil {
+				c.problems = append(c.problems, err.Error())
+			} else if v == "" {
+				c.problems = append(c.problems, k.Name+" is empty")
+			}
+		case !k.Optional:
+			c.require(k.Name)
+		}
+	}
+}
+
+// Refs checks that every ${KEY} in texts is set.
+func (c *KeyCheck) Refs(texts []string) {
+	for _, text := range texts {
+		refs, err := dotenv.Refs(text)
+		if err != nil {
+			c.problems = append(c.problems, err.Error())
+			continue
+		}
+		for _, key := range refs {
+			c.require(key)
+		}
+	}
+}
+
+// Problems lists what is missing, in the order found.
+func (c *KeyCheck) Problems() []string { return c.problems }
 
 // KeyValues resolves .env keys into KEY=VALUE entries; optional keys set
 // nowhere are left out.
