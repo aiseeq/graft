@@ -44,7 +44,7 @@ func ParseJest(data []byte, dir string) ([]stats.PackageRun, error) {
 			return nil, err
 		}
 		run := newRun(pkg, stats.ResultPass, float64(file.EndTime-file.StartTime)/1000)
-		if file.Status != "passed" {
+		if file.Status == "failed" {
 			run.Result = stats.ResultFail
 		}
 		for _, a := range file.AssertionResults {
@@ -75,11 +75,14 @@ func ParseJest(data []byte, dir string) ([]stats.PackageRun, error) {
 // relative is name relative to dir, in slashes; a name outside dir stays
 // as it is.
 func relative(name, dir string) (string, error) {
+	if filepath.VolumeName(name) != filepath.VolumeName(dir) {
+		return filepath.ToSlash(name), nil
+	}
 	rel, err := filepath.Rel(dir, name)
 	if err != nil {
 		return "", fmt.Errorf("jest report: test file %s: %w", name, err)
 	}
-	if strings.HasPrefix(rel, "..") {
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return filepath.ToSlash(name), nil
 	}
 	return filepath.ToSlash(rel), nil
@@ -90,6 +93,12 @@ type playwrightSuite struct {
 	File   string
 	Specs  []playwrightSpec
 	Suites []playwrightSuite
+}
+
+type playwrightError struct {
+	Location struct {
+		File string
+	}
 }
 
 type playwrightSpec struct {
@@ -109,6 +118,8 @@ type playwrightSpec struct {
 func ParsePlaywright(data []byte) ([]stats.PackageRun, error) {
 	var rep struct {
 		Suites *[]playwrightSuite
+		Config struct{ RootDir string }
+		Errors []playwrightError
 	}
 	if err := json.Unmarshal(data, &rep); err != nil {
 		return nil, fmt.Errorf("a playwright JSON report: %w", err)
@@ -124,6 +135,18 @@ func ParsePlaywright(data []byte) ([]stats.PackageRun, error) {
 		}
 		run.WallS = round(run.WallS)
 		runs = append(runs, run)
+	}
+	for _, e := range rep.Errors {
+		pkg := "."
+		if e.Location.File != "" {
+			pkg = filepath.ToSlash(e.Location.File)
+			if rep.Config.RootDir != "" {
+				if rel, err := filepath.Rel(rep.Config.RootDir, e.Location.File); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+					pkg = filepath.ToSlash(rel)
+				}
+			}
+		}
+		runs = append(runs, newRun(pkg, stats.ResultFail, 0))
 	}
 	return runs, nil
 }

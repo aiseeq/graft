@@ -208,7 +208,7 @@ func (t *testTally) add(r *PackageRun, project string) {
 			t.skip(r, project, tr)
 			continue
 		}
-		if strings.Contains(tr.Name, "/") {
+		if r.Runner == "go" && strings.Contains(tr.Name, "/") {
 			continue
 		}
 		k := testKey{project, r.Package, tr.Name}

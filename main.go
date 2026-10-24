@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -248,7 +249,13 @@ func statsCmd(a *app.App, args []string) error {
 	if *all && *project != "" {
 		return fmt.Errorf("%w: --all and --project exclude each other", errUsage)
 	}
-	if *maxLoad < 0 {
+	maxLoadSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "max-load" {
+			maxLoadSet = true
+		}
+	})
+	if maxLoadSet && (*maxLoad <= 0 || math.IsNaN(*maxLoad) || math.IsInf(*maxLoad, 0)) {
 		return fmt.Errorf("%w: --max-load: want a positive load, got %v", errUsage, *maxLoad)
 	}
 	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task, Tests: *tests, MaxLoad: *maxLoad})

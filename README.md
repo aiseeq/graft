@@ -520,11 +520,15 @@ dotenv_sets:                   # key lists several tasks and services share
   `env`, `files` or `commands`, or go without cache.
 - `tests: jest` and `tests: playwright` read the JSON report the runner
   writes to the file named in `GRAFT_TEST_REPORT` (also `${GRAFT_TEST_REPORT}`
-  in argv); the terminal shows the runner's own output. A test file is a
-  package; a jest test is its full name, a playwright one
+  in argv and task `env` values); the terminal shows the runner's own output.
+  A test file is a package; a jest test is its full name, a playwright one
   `[project] describe › title` with the time of all its attempts. A test a
-  retry passed within the run is recorded as `flaky`. A step that names the
-  runner but writes no report gets a warning.
+  retry passed within the run is recorded as `flaky`. Playwright errors with
+  a file location fail that file's package; errors without a file location,
+  such as configuration errors, fail the `.` package. Each step of a task
+  configured with Jest or Playwright gets its own report path, task `env`
+  included. A step that names the runner but writes no report gets a
+  warning.
 
   ```yaml
   jest-unit:
@@ -671,7 +675,10 @@ written before graft 2.19 carry no run to tell. `--since`, `--project`,
 `--all` and `--task` select the runs as above.
 
 `--max-load 16`, in both reports, counts only the runs whose `load_max`
-stayed below 16; runs recorded without a load are left out with them.
+stayed below 16; task load includes waits before steps, and runs with an
+incomplete load sample are left out with runs recorded without a load. Pass
+a positive value when setting `--max-load`; zero and non-finite values are
+usage errors.
 
 ## Services
 

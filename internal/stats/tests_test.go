@@ -78,3 +78,24 @@ func TestTestResultJSON(t *testing.T) {
 		t.Error("a test of two elements reads")
 	}
 }
+
+func TestSlashNamesAndFlakyTestsRemainVisible(t *testing.T) {
+	at := time.Date(2026, 1, 5, 10, 0, 0, 0, time.UTC)
+	runs := []PackageRun{
+		{Time: at, Project: "projectA", Package: "web", Runner: "jest", Result: ResultPass, Tree: "tree", Tests: []TestResult{{Name: "api GET /login returns 200", Result: ResultFlaky, WallS: 2}}},
+		{Time: at.Add(time.Minute), Project: "projectA", Package: "web", Runner: "playwright", Result: ResultPass, Tree: "tree", Tests: []TestResult{{Name: "[chromium] opens /login", Result: ResultFlaky, WallS: 3}}},
+		{Time: at, Project: "projectA", Package: "go/pkg", Runner: "go", Result: ResultPass, Tests: []TestResult{{Name: "TestTable/case", Result: ResultFail}}},
+	}
+	report := SummarizeTests(runs, TestFilter{}, 10)
+	if len(report.Tests) != 2 || len(report.Flaky) != 2 {
+		t.Fatalf("slash tests missing: %+v", report)
+	}
+	for _, row := range report.Tests {
+		if row.Failed != 0 {
+			t.Errorf("flaky test counted as failed in slow tests: %+v", row)
+		}
+	}
+	if len(report.Flaky) != 2 || report.Flaky[0].Test == "TestTable/case" {
+		t.Errorf("Go subtest was counted or external flaky tests missing: %+v", report.Flaky)
+	}
+}

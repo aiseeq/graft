@@ -138,6 +138,51 @@ func TestTaskEnvironment(t *testing.T) {
 	}
 }
 
+func TestTestReportEnvironmentInTaskEnv(t *testing.T) {
+	f := tasksRepo(t, "", nil)
+	out := f.path("out.txt")
+	f.write(".graft.yaml", f.read(".graft.yaml")+`tasks:
+  reportenv:
+    tests: playwright
+    env: {PLAYWRIGHT_JSON_OUTPUT_FILE: '${GRAFT_TEST_REPORT}'}
+    run: [`+helperStep("env", out, "PLAYWRIGHT_JSON_OUTPUT_FILE")+`]
+`)
+	f.mustGraft("reportenv")
+	if got := strings.Split(strings.TrimSpace(f.read("out.txt")), "\n")[0]; !strings.HasPrefix(got, "PLAYWRIGHT_JSON_OUTPUT_FILE=") || !strings.HasSuffix(got, "/report.json") {
+		t.Errorf("test report env = %q", got)
+	}
+}
+
+func TestPreflightFindsMissingTaskEnvBeforeDeps(t *testing.T) {
+	f := tasksRepo(t, "", nil)
+	marker := f.path("dep-ran")
+	out := f.path("out.txt")
+	f.write(".graft.yaml", f.read(".graft.yaml")+`tasks:
+  dep:
+    run: [`+helperStep("touch", marker)+`]
+  reportenv:
+    tests: playwright
+    deps: [dep]
+    env: {PLAYWRIGHT_JSON_OUTPUT_FILE: '${MISSING_REPORT_PATH}'}
+    run: [`+helperStep("env", out, "PLAYWRIGHT_JSON_OUTPUT_FILE")+`]
+  reportenv-after-dep:
+    tests: playwright
+    deps: [dep]
+    env: {PLAYWRIGHT_JSON_OUTPUT_FILE: '${GRAFT_TEST_REPORT}'}
+    run: [`+helperStep("env", out, "PLAYWRIGHT_JSON_OUTPUT_FILE")+`]
+`)
+	if got, code := f.graft("", "reportenv"); code == 0 || !strings.Contains(got, "nothing was run") {
+		t.Errorf("a missing key in task env was not caught in preflight (exit %d):\n%s", code, got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("the dependency ran before the preflight failed: %v", err)
+	}
+	f.mustGraft("reportenv-after-dep")
+	if got := strings.Split(strings.TrimSpace(f.read("out.txt")), "\n")[0]; !strings.HasSuffix(got, "/report.json") {
+		t.Errorf("test report env after deps = %q", got)
+	}
+}
+
 func TestTaskKeepGoing(t *testing.T) {
 	f := tasksRepo(t, "", nil)
 	out := f.path("out.txt")

@@ -33,6 +33,39 @@ src/__tests__/broken.test.tsx fail null
 	}
 }
 
+func TestJestSkippedFilesAndRelativeNames(t *testing.T) {
+	data := []byte(`{"testResults":[{"name":"/src/app/..cache/x.test.js","status":"skipped","startTime":1,"endTime":1},{"name":"/src/app/skip.test.js","status":"focused","startTime":1,"endTime":1}]}`)
+	runs, err := ParseJest(data, "/src/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 || runs[0].Package != "..cache/x.test.js" || runs[0].Result != "pass" || runs[1].Result != "pass" {
+		t.Fatalf("unexpected runs: %+v", runs)
+	}
+}
+
+func TestPlaywrightReportsFilesWithLoadErrors(t *testing.T) {
+	data := []byte(`{"config":{"rootDir":"/src/app"},"suites":[],"errors":[{"location":{"file":"/src/app/broken.spec.ts"}}]}`)
+	runs, err := ParsePlaywright(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].Package != "broken.spec.ts" || runs[0].Result != "fail" || len(runs[0].Tests) != 0 {
+		t.Fatalf("unexpected runs: %+v", runs)
+	}
+}
+
+func TestPlaywrightReportsErrorsWithoutFileLocationAtRoot(t *testing.T) {
+	data := []byte(`{"config":{"rootDir":"/src/app"},"suites":[],"errors":[{"message":"invalid config"}]}`)
+	runs, err := ParsePlaywright(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].Package != "." || runs[0].Result != "fail" || len(runs[0].Tests) != 0 {
+		t.Fatalf("unexpected runs: %+v", runs)
+	}
+}
+
 // TestParsePlaywright: a playwright JSON report gives a run per spec file;
 // a test is named by its project, describes and title, takes the time of all
 // its attempts, and is flaky when a retry passed it.

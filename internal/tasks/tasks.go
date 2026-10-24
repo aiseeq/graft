@@ -102,7 +102,8 @@ type frame struct {
 	// exit is the first non-zero exit status of its processes.
 	exit int
 	// db follows the test database's container in a test_db task.
-	db *stats.CgroupWatch
+	db   *stats.CgroupWatch
+	load *stats.LoadWatch
 }
 
 // TestDB is the test database of test_db tasks.
@@ -528,10 +529,6 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		}
 		return r.Service(ctx, s.ServiceAction, s.ServiceName)
 	}
-	vars, err := r.vars(ctx, t)
-	if err != nil {
-		return err
-	}
 	var report string
 	if reportFile(t) {
 		dir, err := os.MkdirTemp("", "graft-tests-")
@@ -540,7 +537,10 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		}
 		defer os.RemoveAll(dir)
 		report = filepath.Join(dir, "report.json")
-		vars[config.TestReportEnv] = report
+	}
+	vars, err := r.vars(ctx, t, report)
+	if err != nil {
+		return err
 	}
 	env, err := r.env(t, vars)
 	if err != nil {
@@ -770,6 +770,7 @@ func (r *Runner) begin(task string) *frame {
 	if r.Stats == nil {
 		return f
 	}
+	f.load = stats.WatchLoad()
 	load, err := loadavg.Read()
 	switch {
 	case err == nil:
@@ -795,6 +796,11 @@ func (r *Runner) end(f *frame, failed bool) stats.Usage {
 	}
 	use := f.use
 	use.Wall = time.Since(f.start)
+	if f.load != nil {
+		if err := use.Watched(f.load.Stop()); err != nil {
+			r.Stats.Warn(err)
+		}
+	}
 	if f.db != nil {
 		if use.DB = f.db.Stop(); use.DB.Err == nil {
 			use.DBKnown = true
@@ -825,10 +831,14 @@ func (r *Runner) write(rec stats.Record, use stats.Usage, outermost string) {
 
 // vars are the variables graft sets for a task's steps: its env values, the
 // project version and the test database DSN. ${KEY} in argv sees them too.
-func (r *Runner) vars(ctx context.Context, t *config.Task) (map[string]string, error) {
+func (r *Runner) vars(ctx context.Context, t *config.Task, report string) (map[string]string, error) {
 	vars := map[string]string{}
+	lookup := r.lookup
+	if report != "" {
+		lookup = lookup.With(map[string]string{config.TestReportEnv: report})
+	}
 	for _, k := range sortedKeys(t.Env) {
-		v, err := dotenv.Expand(t.Env[k], r.lookup)
+		v, err := dotenv.Expand(t.Env[k], lookup)
 		if err != nil {
 			return nil, fmt.Errorf("env %s: %w", k, err)
 		}
@@ -847,6 +857,9 @@ func (r *Runner) vars(ctx context.Context, t *config.Task) (map[string]string, e
 		vars[VersionEnv] = *r.version
 	}
 	maps.Copy(vars, r.Extra)
+	if report != "" {
+		vars[config.TestReportEnv] = report
+	}
 	if t.TestDB {
 		if r.TestDB == nil {
 			return nil, errors.New("test_db is set but no test database is configured")

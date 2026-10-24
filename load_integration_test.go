@@ -24,6 +24,26 @@ func calmMachine(t *testing.T) []string {
 	return []string{"GRAFT_PRESSURE_IO=" + io, "GRAFT_VMSTAT=" + vmstat}
 }
 
+func replaceFile(t *testing.T, path, contents string) {
+	t.Helper()
+	f, err := os.CreateTemp(filepath.Dir(path), "loadavg-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	temp := f.Name()
+	t.Cleanup(func() { _ = os.Remove(temp) })
+	if _, err := f.WriteString(contents); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(temp, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestHeavyTaskWaitsForLoad: a heavy task starts only once the load is below
 // the user's wait threshold, gets the user's thread count as {threads}, and a
 // task that is not heavy never waits.
@@ -64,7 +84,7 @@ tasks:
 	if got := read(); got != "light\n" {
 		t.Errorf("the heavy task ran at load 30.50: %q", got)
 	}
-	writeFile(t, loadavg, "17.00 20.00 10.00 3/400 1234\n")
+	replaceFile(t, loadavg, "17.00 20.00 10.00 3/400 1234\n")
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("build: %v\n%s", err, log.String())
 	}
@@ -100,7 +120,7 @@ func TestHeavyTaskWaitIsRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return strings.Contains(log.String(), "waiting") })
-	writeFile(t, loadavg, "1.00 20.00 10.00 3/400 1234\n")
+	replaceFile(t, loadavg, "1.00 20.00 10.00 3/400 1234\n")
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("outer: %v\n%s", err, log.String())
 	}

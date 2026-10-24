@@ -147,9 +147,15 @@ func (s *Usage) Watched(w Sample) error {
 	} else if !Unsupported(w.TreeErr) {
 		errs = append(errs, fmt.Errorf("reading the memory of the process tree: %w", w.TreeErr))
 	}
-	if w.LoadErr == nil {
-		s.LoadStart, s.LoadMax, s.LoadKnown = w.LoadStart, w.LoadMax, true
-	} else if !Unsupported(w.LoadErr) {
+	if w.LoadKnown {
+		if !s.LoadKnown {
+			s.LoadStart = w.LoadStart
+		}
+		s.LoadMax, s.LoadKnown = max(s.LoadMax, w.LoadMax), true
+	} else {
+		s.LoadKnown = false
+	}
+	if w.LoadErr != nil && !Unsupported(w.LoadErr) {
 		errs = append(errs, fmt.Errorf("reading the load average: %w", w.LoadErr))
 	}
 	return errors.Join(errs...)
@@ -175,8 +181,14 @@ func (s *Usage) Add(u Usage) {
 		s.TreeMem = max(s.TreeMem, u.TreeMem)
 		s.TreeKnown = true
 	}
-	if u.LoadKnown {
+	if !u.LoadKnown {
+		s.LoadKnown = false
+	} else {
 		s.LoadMax = max(s.LoadMax, u.LoadMax)
+		if !s.LoadKnown {
+			s.LoadStart = u.LoadStart
+		}
+		s.LoadKnown = true
 	}
 }
 

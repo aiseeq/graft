@@ -29,6 +29,7 @@ type Sample struct {
 	// unknown.
 	LoadStart, LoadMax float64
 	LoadErr            error
+	LoadKnown          bool
 }
 
 // Watch samples a running step until it is stopped.
@@ -55,6 +56,65 @@ func WatchProcess(pid int) *Watch {
 	return w
 }
 
+// LoadWatch samples the machine for the whole life of a task, including waits
+// before its steps.
+type LoadWatch struct {
+	stop     chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
+	mu       sync.Mutex
+	sample   Sample
+}
+
+// WatchLoad starts sampling the machine load.
+func WatchLoad() *LoadWatch {
+	w := &LoadWatch{stop: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(w.done)
+		defer func() {
+			if p := recover(); p != nil {
+				w.mu.Lock()
+				w.sample.LoadErr = fmt.Errorf("sampling the task load panicked: %v", p)
+				w.mu.Unlock()
+			}
+		}()
+		t := time.NewTicker(watchInterval)
+		defer t.Stop()
+		for {
+			load, err := loadavg.Read()
+			w.mu.Lock()
+			if err != nil {
+				w.sample.LoadErr = err
+			} else {
+				w.sample.LoadErr = nil
+				if !w.sample.LoadKnown {
+					w.sample.LoadStart = load
+				}
+				w.sample.LoadMax = max(w.sample.LoadMax, load)
+				w.sample.LoadKnown = true
+			}
+			w.mu.Unlock()
+			select {
+			case <-w.stop:
+				return
+			case <-t.C:
+			}
+		}
+	}()
+	return w
+}
+
+// Stop ends task load sampling and returns its highest observed load.
+func (w *LoadWatch) Stop() Sample {
+	w.stopOnce.Do(func() { close(w.stop) })
+	<-w.done
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	s := w.sample
+	s.TreeErr = ErrNoTree
+	return s
+}
+
 // sample reads the tree and the load every watchInterval until stop is
 // closed; a source that fails once is not read again.
 func sample(pid int, stop <-chan struct{}) Sample {
@@ -71,7 +131,15 @@ func sample(pid int, stop <-chan struct{}) Sample {
 			if first {
 				s.LoadStart = load
 			}
-			s.LoadMax, s.LoadErr = max(s.LoadMax, load), err
+			if err == nil {
+				if !s.LoadKnown {
+					s.LoadStart = load
+				}
+				s.LoadMax = max(s.LoadMax, load)
+				s.LoadKnown = true
+			} else {
+				s.LoadErr = err
+			}
 		}
 		if s.TreeErr != nil && s.LoadErr != nil {
 			return s

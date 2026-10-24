@@ -1,9 +1,35 @@
 package stats
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
+
+func TestUsageKeepsPartialLoadPeakAndRejectsUnknownStep(t *testing.T) {
+	peak := Usage{}
+	if err := peak.Watched(Sample{LoadStart: 3, LoadMax: 30, LoadKnown: true, LoadErr: errors.New("temporary read failure")}); err == nil {
+		t.Fatal("load read failure was not reported")
+	}
+	if start, maxLoad := peak.Loads(); start == nil || maxLoad == nil || *start != 3 || *maxLoad != 30 {
+		t.Fatalf("partial load sample lost: %v %v", start, maxLoad)
+	}
+	whole := Usage{LoadStart: 3, LoadMax: 3, LoadKnown: true}
+	whole.Add(Usage{})
+	if start, maxLoad := whole.Loads(); start != nil || maxLoad != nil {
+		t.Fatalf("incomplete task retained a misleading load: %v %v", start, maxLoad)
+	}
+}
+
+func TestLoadSampleDoesNotEraseTreePeak(t *testing.T) {
+	usage := Usage{TreeMem: 64 << 20, TreeKnown: true}
+	if err := usage.Watched(Sample{LoadStart: 3, LoadMax: 30, LoadKnown: true, TreeErr: ErrNoTree}); err != nil {
+		t.Fatal(err)
+	}
+	if !usage.TreeKnown || usage.TreeMem != 64<<20 {
+		t.Errorf("load-only sample changed tree memory: %+v", usage)
+	}
+}
 
 func TestStepText(t *testing.T) {
 	if got := StepText("set -eu\n  go test \t./...\n"); got != "set -eu go test ./..." {
