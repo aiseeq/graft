@@ -84,7 +84,7 @@ func TestParseTasks(t *testing.T) {
 // TestParseTestDBSocket: a socket database has no port, its socket lives
 // under the user's cache and the DSN names that directory.
 func TestParseTestDBSocket(t *testing.T) {
-	cache := t.TempDir()
+	cache := filepath.Join(string(filepath.Separator), "cache")
 	t.Setenv("XDG_CACHE_HOME", cache)
 	data := strings.Replace(tasksBase, "  port: 55432\n", "  socket: true\n", 1)
 	cfg, err := Parse([]byte(data))
