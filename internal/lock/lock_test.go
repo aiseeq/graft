@@ -3,9 +3,11 @@ package lock
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -36,6 +38,124 @@ func TestAcquireWaitsForHolder(t *testing.T) {
 	}
 	if err := second.Release(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAcquireFIFO(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "load.lock")
+	holder, err := Acquire(context.Background(), path, time.Second, "occupant", &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan fifoResult, 2)
+	var firstLog, secondLog safeBuffer
+	start := func(name string, log *safeBuffer) {
+		go func() {
+			lk, err := AcquireFIFO(context.Background(), path, 5*time.Second, name, log)
+			results <- fifoResult{lk, err}
+		}()
+	}
+	start("early", &firstLog)
+	waitForTickets(t, path, 1)
+	start("late", &secondLog)
+	waitForTickets(t, path, 2)
+	if err := holder.Release(); err != nil {
+		t.Fatal(err)
+	}
+	first := receiveLock(t, results)
+	if first.err != nil {
+		t.Fatal(first.err)
+	}
+	select {
+	case second := <-results:
+		if second.lock != nil {
+			_ = second.lock.Release()
+		}
+		t.Fatalf("late ticket acquired before early ticket released: %v", second.err)
+	case <-time.After(250 * time.Millisecond):
+	}
+	if !strings.Contains(secondLog.String(), "behind early") {
+		t.Errorf("wait message does not name the earlier ticket: %q", secondLog.String())
+	}
+	if err := first.lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+	second := receiveLock(t, results)
+	if second.err != nil {
+		t.Fatal(second.err)
+	}
+	if err := second.lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAcquireFIFODropsDeadTicket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "load.lock")
+	stale := fmt.Sprintf("%s.queue.%020d.%d.ticket", path, 1, 1<<30)
+	if err := os.WriteFile(path+".queue.next", []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, []byte("1073741824\nghost"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lk, err := AcquireFIFO(context.Background(), path, time.Second, "live", &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Error("dead ticket kept")
+	}
+	if err := lk.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForTickets(t *testing.T, path string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		matches, err := filepath.Glob(path + ".queue.*.ticket")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("did not see %d queue tickets", want)
+}
+
+type fifoResult struct {
+	lock *Lock
+	err  error
+}
+
+type safeBuffer struct {
+	mu sync.Mutex
+	bytes.Buffer
+}
+
+func (b *safeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.Write(p)
+}
+
+func (b *safeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.String()
+}
+
+func receiveLock(t *testing.T, results <-chan fifoResult) fifoResult {
+	t.Helper()
+	select {
+	case got := <-results:
+		return got
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for queued lock")
+		return fifoResult{}
 	}
 }
 

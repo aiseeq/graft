@@ -57,6 +57,210 @@ func Acquire(ctx context.Context, path string, timeout time.Duration, holder str
 	return AcquireMode(ctx, path, Exclusive, timeout, holder, log)
 }
 
+// AcquireFIFO takes the exclusive lock at path in ticket order. Tickets are
+// shared by processes through files next to the lock and dead processes'
+// tickets are removed while inspecting the queue.
+func AcquireFIFO(ctx context.Context, path string, timeout time.Duration, holder string, log io.Writer) (lk *Lock, retErr error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("creating the lock directory: %w", err)
+	}
+	start := time.Now()
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticket, err := enqueue(waitCtx, path, holder)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := os.Remove(ticket); err != nil && !errors.Is(err, os.ErrNotExist) {
+			retErr = errors.Join(retErr, fmt.Errorf("removing queue ticket for %s: %w", path, err))
+			if lk != nil {
+				retErr = errors.Join(retErr, lk.Release())
+				lk = nil
+			}
+		}
+	}()
+	return waitFIFO(waitCtx, ctx, path, timeout, start, ticket, holder, log)
+}
+
+func waitFIFO(waitCtx, ctx context.Context, path string, timeout time.Duration, start time.Time, ticket, holder string, log io.Writer) (*Lock, error) {
+	var said string
+	for {
+		guard, err := queueGuard(waitCtx, path)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				return nil, fmt.Errorf("lock %s still queued after %s (%s)", filepath.Base(path), timeout, Describe(path))
+			}
+			return nil, err
+		}
+		queue, err := readQueue(path)
+		unlockErr := guard.Close()
+		if err := errors.Join(err, unlockErr); err != nil {
+			return nil, err
+		}
+		if len(queue) == 0 {
+			return nil, fmt.Errorf("ticket for lock %s disappeared", filepath.Base(path))
+		}
+		if queue[0].path == ticket {
+			remaining := timeout - time.Since(start)
+			if remaining <= 0 {
+				return nil, fmt.Errorf("lock %s still queued after %s (%s)", filepath.Base(path), timeout, Describe(path))
+			}
+			lk, err := Acquire(waitCtx, path, remaining, holder, log)
+			if err != nil {
+				return nil, err
+			}
+			return lk, nil
+		}
+		var ahead []string
+		for _, entry := range queue {
+			if entry.path == ticket {
+				break
+			}
+			ahead = append(ahead, entry.holder)
+		}
+		message := strings.Join(ahead, "; ")
+		if message != said {
+			fmt.Fprintf(log, "graft: waiting in the %s queue behind %s\n", filepath.Base(path), message)
+			said = message
+		}
+		if err := sleepRetry(waitCtx); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				return nil, fmt.Errorf("lock %s still queued after %s (%s)", filepath.Base(path), timeout, Describe(path))
+			}
+			return nil, err
+		}
+	}
+}
+
+type queueEntry struct {
+	path   string
+	holder string
+}
+
+func queueGuard(ctx context.Context, path string) (*flock.Flock, error) {
+	guard := flock.New(path + ".queue.lock")
+	ok, err := guard.TryLockContext(ctx, retryDelay)
+	if err != nil {
+		return nil, fmt.Errorf("locking the queue for %s: %w", path, err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("could not lock the queue for %s", path)
+	}
+	return guard, nil
+}
+
+func enqueue(ctx context.Context, path, holder string) (ticket string, retErr error) {
+	guard, err := queueGuard(ctx, path)
+	if err != nil {
+		return "", fmt.Errorf("joining the queue for %s: %w", path, err)
+	}
+	defer func() {
+		if err := guard.Close(); err != nil {
+			if ticket != "" {
+				removeErr := os.Remove(ticket)
+				if errors.Is(removeErr, os.ErrNotExist) {
+					removeErr = nil
+				}
+				err = errors.Join(err, removeErr)
+				ticket = ""
+			}
+			retErr = errors.Join(retErr, fmt.Errorf("closing the queue guard for %s: %w", path, err))
+		}
+	}()
+	sequencePath := path + ".queue.next"
+	var sequence uint64
+	data, err := os.ReadFile(sequencePath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("reading the queue sequence for %s: %w", path, err)
+	}
+	if len(data) != 0 {
+		sequence, err = strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("reading the queue sequence for %s: %w", path, err)
+		}
+	}
+	if sequence == ^uint64(0) {
+		return "", fmt.Errorf("queue sequence exhausted for %s", path)
+	}
+	sequence++
+	if err := writeQueueFile(sequencePath, []byte(strconv.FormatUint(sequence, 10))); err != nil {
+		return "", fmt.Errorf("writing the queue sequence for %s: %w", path, err)
+	}
+	ticket = fmt.Sprintf("%s.queue.%020d.%d.ticket", path, sequence, os.Getpid())
+	text := fmt.Sprintf("%d\n%s", os.Getpid(), holder)
+	if err := writeQueueFile(ticket, []byte(text)); err != nil {
+		return "", fmt.Errorf("writing a queue ticket for %s: %w", path, err)
+	}
+	return ticket, nil
+}
+
+func writeQueueFile(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-")
+	if err != nil {
+		return fmt.Errorf("creating a temporary queue file: %w", err)
+	}
+	temporary := f.Name()
+	_, writeErr := f.Write(data)
+	closeErr := f.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		return errors.Join(err, os.Remove(temporary))
+	}
+	if err := os.Rename(temporary, path); err != nil {
+		return errors.Join(err, os.Remove(temporary))
+	}
+	return nil
+}
+
+func readQueue(path string) ([]queueEntry, error) {
+	matches, err := filepath.Glob(path + ".queue.*.ticket")
+	if err != nil {
+		return nil, fmt.Errorf("listing the queue for %s: %w", path, err)
+	}
+	entries := make([]queueEntry, 0, len(matches))
+	for _, ticket := range matches {
+		data, err := os.ReadFile(ticket)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading a queue ticket: %w", err)
+		}
+		parts := strings.SplitN(string(data), "\n", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid queue ticket %s", ticket)
+		}
+		pid, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return nil, fmt.Errorf("invalid process in queue ticket %s: %w", ticket, err)
+		}
+		alive, err := proc.Alive(pid)
+		if err != nil {
+			return nil, err
+		}
+		if !alive {
+			if err := os.Remove(ticket); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("removing a dead queue ticket: %w", err)
+			}
+			continue
+		}
+		entries = append(entries, queueEntry{path: ticket, holder: strings.TrimSpace(parts[1])})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
+	return entries, nil
+}
+
+func sleepRetry(ctx context.Context) error {
+	t := time.NewTimer(retryDelay)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // AcquireMode takes the lock at path in mode, waiting up to timeout for
 // incompatible holders. Waiting stops early when ctx is cancelled. holder
 // describes this process and is shown to anyone who has to wait.

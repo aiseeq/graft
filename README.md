@@ -77,10 +77,13 @@ A heavy task checks whether the machine is busy: the 1-minute load average
 `max_io_full` or the swapping above `max_swap_kbs`; swap in use is no harm,
 swapping is. A measure the system lacks (no `/proc/loadavg`, a kernel without
 PSI) is skipped and said. On a busy machine heavy tasks of all projects queue
-under one lock in the user cache (`graft/load.lock`) and start one at a time,
-each once the load is below `wait_above` and the disk and swap are calm; one
+under one lock in the user cache (`graft/load.lock`) in ticket order and start
+one at a time, each once the load is below `wait_above` and the disk and swap
+are calm; one
 that waited holds the queue for `settle`, since the load average is a
-minute's. A heavy task inside a heavy task was admitted with it. Ctrl-C stops
+minute's. A heavy task inside a heavy task was admitted with it. Tasks that
+find the machine below `free_below` bypass the queue. Priority tasks from
+`graft deploy` bypass it too and may start ahead of queued tasks. Ctrl-C stops
 the wait.
 
 A heavy command that is no task of the project (a one-off `go test`, a

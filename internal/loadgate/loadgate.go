@@ -147,7 +147,7 @@ func Wait(ctx context.Context, name string, p *Priority, l userconfig.MachineLoa
 		err := m.admit(ctx, p)
 		return time.Since(start), err
 	}
-	lk, err := lock.Acquire(ctx, lockPath, queueTimeout, "graft "+name+" (waiting for the machine)", log)
+	lk, err := lock.AcquireFIFO(ctx, lockPath, queueTimeout, "graft "+name+" (waiting for the machine)", log)
 	if err != nil {
 		return time.Since(start), err
 	}
