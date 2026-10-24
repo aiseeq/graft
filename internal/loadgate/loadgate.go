@@ -24,6 +24,31 @@ import (
 // queueTimeout bounds the wait for the queue; Ctrl-C stops it sooner.
 const queueTimeout = 24 * time.Hour
 
+// Why a heavy task waited, the keys of Waits.
+const (
+	// WhyQueue is the wait behind other heavy tasks for the queue's lock.
+	WhyQueue = "queue"
+	// WhyLoad, WhyIO and WhySwap are the waits for the load, the IO
+	// pressure and the swapping to fall below their limits.
+	WhyLoad = "load"
+	WhyIO   = "io"
+	WhySwap = "swap"
+	// WhySettle is the hold after a wait, for the load average to catch up.
+	WhySettle = "settle"
+)
+
+// Waits is how long a heavy task waited, by why.
+type Waits map[string]time.Duration
+
+// Total is the whole wait.
+func (w Waits) Total() time.Duration {
+	var total time.Duration
+	for _, d := range w {
+		total += d
+	}
+	return total
+}
+
 // The environment of a priority: graft deploy sets it for itself and every
 // graft its script starts.
 const (
@@ -127,7 +152,7 @@ func (p *Priority) spend(d time.Duration) (left time.Duration, err error) {
 	return left, nil
 }
 
-// Wait admits a heavy task and returns how long it waited. A calm machine
+// Wait admits a heavy task and returns how long it waited and why. A calm machine
 // (MachineLoad) takes it at once. Otherwise it queues behind the other
 // heavy tasks of the machine, one at a time under a lock at lockPath, until
 // the machine is calm with the load below WaitAbove; a task that waited, or
@@ -135,24 +160,25 @@ func (p *Priority) spend(d time.Duration) (left time.Duration, err error) {
 // average is a minute's and every waiter would otherwise see the same low
 // figure and start together. A task with a priority skips the queue and the
 // settling, and waits no longer than its budget allows.
-func Wait(ctx context.Context, name string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (time.Duration, error) {
-	m := &machine{l: l, log: log, name: name}
-	busy, err := m.busy(ctx, l.FreeBelow, true)
-	if err != nil || busy == "" {
-		return 0, err
+func Wait(ctx context.Context, name string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (Waits, error) {
+	m := &machine{l: l, log: log, name: name, waits: Waits{}}
+	b, err := m.busy(ctx, l.FreeBelow, true)
+	if err != nil || b.why == "" {
+		return m.waits, err
+	}
+	if p != nil {
+		fmt.Fprintf(log, "graft: %s: %s, not queueing behind other heavy tasks: it runs for %s\n", name, b.text, p.For)
+		err := m.admit(ctx, p)
+		return m.waits, err
 	}
 	start := time.Now()
-	if p != nil {
-		fmt.Fprintf(log, "graft: %s: %s, not queueing behind other heavy tasks: it runs for %s\n", name, busy, p.For)
-		err := m.admit(ctx, p)
-		return time.Since(start), err
-	}
 	lk, err := lock.AcquireFIFO(ctx, lockPath, queueTimeout, "graft "+name+" (waiting for the machine)", log)
+	m.waits[WhyQueue] += time.Since(start)
 	if err != nil {
-		return time.Since(start), err
+		return m.waits, err
 	}
 	err = m.admit(ctx, nil)
-	return time.Since(start), errors.Join(err, lk.Release())
+	return m.waits, errors.Join(err, lk.Release())
 }
 
 // swapPages reads the swap count; tests count on their own.
@@ -169,41 +195,47 @@ type machine struct {
 	// pages and at are the last swap count and when it was read.
 	pages int64
 	at    time.Time
+	// waits is how long admit waited, by why.
+	waits Waits
 }
 
-// busy says why the machine cannot take a heavy task now, "" when it can:
+// busyness is why the machine cannot take a heavy task, one of the Why
+// constants, and the words that say it; a calm machine has neither.
+type busyness struct{ why, text string }
+
+// busy says why the machine cannot take a heavy task now, nothing when it can:
 // the load at or above maxLoad, the IO pressure or the swapping above their
 // limits. fresh measures the swapping over SwapWindow; otherwise since the
 // last call. A measure the system lacks is skipped and told once.
-func (m *machine) busy(ctx context.Context, maxLoad float64, fresh bool) (string, error) {
+func (m *machine) busy(ctx context.Context, maxLoad float64, fresh bool) (busyness, error) {
 	load, err := loadavg.Read()
 	if m.skip(err, loadavg.ErrNone) {
-		return "", nil // no load, and on such a system no pressure or swap either
+		return busyness{}, nil // no load, and on such a system no pressure or swap either
 	}
 	if err != nil {
-		return "", err
+		return busyness{}, err
 	}
 	m.load = load
 	if load >= maxLoad {
-		return fmt.Sprintf("load %.2f is at or above %v (user config load.wait_above)", load, maxLoad), nil
+		return busyness{WhyLoad, fmt.Sprintf("load %.2f is at or above %v (user config load.wait_above)", load, maxLoad)}, nil
 	}
 	ioFull, err := loadavg.IOFull()
 	switch {
 	case m.skip(err, loadavg.ErrNoPressure):
 	case err != nil:
-		return "", err
+		return busyness{}, err
 	case ioFull > m.l.MaxIOFull:
-		return fmt.Sprintf("IO pressure %.1f%% is above %v%% (user config load.max_io_full)", ioFull, m.l.MaxIOFull), nil
+		return busyness{WhyIO, fmt.Sprintf("IO pressure %.1f%% is above %v%% (user config load.max_io_full)", ioFull, m.l.MaxIOFull)}, nil
 	}
 	kbs, err := m.swapping(ctx, fresh)
 	switch {
 	case m.skip(err, loadavg.ErrNoVMStat):
 	case err != nil:
-		return "", err
+		return busyness{}, err
 	case kbs > m.l.MaxSwapKBs:
-		return fmt.Sprintf("swapping %.0f KB/s is above %v (user config load.max_swap_kbs)", kbs, m.l.MaxSwapKBs), nil
+		return busyness{WhySwap, fmt.Sprintf("swapping %.0f KB/s is above %v (user config load.max_swap_kbs)", kbs, m.l.MaxSwapKBs)}, nil
 	}
-	return "", nil
+	return busyness{}, nil
 }
 
 // skip tells whether err is none, the system lacking a measure, and says so
@@ -247,25 +279,38 @@ func (m *machine) swapping(ctx context.Context, fresh bool) (float64, error) {
 
 // admit waits for the machine to be calm with the load below WaitAbove,
 // then settles; a priority task does not settle and waits no longer than
-// its budget allows, spending it as it waits.
+// its budget allows, spending it as it waits. The time between two
+// readings goes to what the first of them found busy, the first reading's
+// own to what it found.
 func (m *machine) admit(ctx context.Context, p *Priority) error {
 	start := time.Now()
-	spent := start
+	spent, mark := start, start
 	var said time.Time
 	waited := false
+	why := ""
 	for {
-		busy, err := m.busy(ctx, m.l.WaitAbove, said.IsZero() && !waited)
+		b, err := m.busy(ctx, m.l.WaitAbove, said.IsZero() && !waited)
+		now := time.Now()
+		if why == "" {
+			why = b.why
+		}
+		if why != "" {
+			m.waits[why] += now.Sub(mark)
+		}
+		mark, why = now, b.why
 		if err != nil {
 			return err
 		}
-		if busy == "" {
+		if b.why == "" {
 			if waited {
 				fmt.Fprintf(m.log, "graft: %s: load %.2f, starting after %s\n", m.name, m.load, time.Since(start).Round(time.Second))
 			}
 			if p != nil || (!waited && m.load < m.l.FreeBelow) {
 				return nil
 			}
-			return sleep(ctx, m.l.Settle)
+			err := sleep(ctx, m.l.Settle)
+			m.waits[WhySettle] += time.Since(now)
+			return err
 		}
 		waited = true
 		var left time.Duration
@@ -278,13 +323,13 @@ func (m *machine) admit(ctx context.Context, p *Priority) error {
 		}
 		if p != nil && left <= 0 {
 			if p.Fail {
-				return fmt.Errorf("%s: %s after %s, past the wait %s allows (deploy.load_wait)", m.name, busy, time.Since(start).Round(time.Second), p.For)
+				return fmt.Errorf("%s: %s after %s, past the wait %s allows (deploy.load_wait)", m.name, b.text, time.Since(start).Round(time.Second), p.For)
 			}
-			fmt.Fprintf(m.log, "graft: %s: %s, starting after %s, all the wait %s allows (deploy.load_wait)\n", m.name, busy, time.Since(start).Round(time.Second), p.For)
+			fmt.Fprintf(m.log, "graft: %s: %s, starting after %s, all the wait %s allows (deploy.load_wait)\n", m.name, b.text, time.Since(start).Round(time.Second), p.For)
 			return nil
 		}
 		if time.Since(said) >= time.Minute {
-			fmt.Fprintf(m.log, "graft: %s: %s, waiting\n", m.name, busy)
+			fmt.Fprintf(m.log, "graft: %s: %s, waiting\n", m.name, b.text)
 			said = time.Now()
 		}
 		pause := m.l.Poll

@@ -471,8 +471,8 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 	if t.Heavy {
 		// A heavy task inside a heavy task was admitted with it.
 		if r.heavy == 0 {
-			waited, err := r.admit(ctx, name)
-			r.Waited(waited)
+			waits, err := r.admit(ctx, name)
+			r.waitedFor(waits)
 			if err != nil {
 				return err
 			}
@@ -481,7 +481,7 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 		defer func() { r.heavy-- }()
 	}
 	release, waited, err := r.lock(ctx, name, t.Lock)
-	r.Waited(waited)
+	r.Waited(WhyLock, waited)
 	if err != nil {
 		return err
 	}
@@ -690,8 +690,8 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 	f := r.begin(ExecTask)
 	defer func() { r.end(f, err != nil) }()
 	if heavy {
-		waited, err := r.admit(ctx, ExecTask)
-		r.Waited(waited)
+		waits, err := r.admit(ctx, ExecTask)
+		r.waitedFor(waits)
 		if err != nil {
 			return err
 		}
@@ -1058,20 +1058,20 @@ func sortedKeys(m map[string]string) []string {
 }
 
 // admit waits until the machine takes a heavy task and returns how long it
-// waited.
-func (r *Runner) admit(ctx context.Context, name string) (time.Duration, error) {
+// waited, by why.
+func (r *Runner) admit(ctx context.Context, name string) (loadgate.Waits, error) {
 	l, err := r.Load()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	cache, err := os.UserCacheDir()
 	if err != nil {
-		return 0, fmt.Errorf("locating the cache for the load queue: %w", err)
+		return nil, fmt.Errorf("locating the cache for the load queue: %w", err)
 	}
 	var priority *loadgate.Priority
 	p, ok, err := loadgate.PriorityFromEnv()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	if ok {
 		priority = &p
@@ -1079,12 +1079,35 @@ func (r *Runner) admit(ctx context.Context, name string) (time.Duration, error) 
 	return loadgate.Wait(ctx, name, priority, l, filepath.Join(cache, "graft", "load.lock"), r.Stderr)
 }
 
+// Why a task waited besides the machine, whose waits are loadgate's Why
+// constants.
+const (
+	// WhyLock is the wait for a task lock another graft holds.
+	WhyLock = "lock"
+	// WhySudo is the wait for a deploy's sudo confirmation.
+	WhySudo = "sudo"
+)
+
 // Waited adds a wait before steps (the load, a lock, a confirmation) to
 // every running task: the innermost's own and those it runs under, whose
-// wall time holds it too.
-func (r *Runner) Waited(d time.Duration) {
+// wall time holds it too. why says what it waited for.
+func (r *Runner) Waited(why string, d time.Duration) {
+	if d <= 0 {
+		return
+	}
 	for _, f := range r.frames {
 		f.use.Wait += d
+		if f.use.WaitWhy == nil {
+			f.use.WaitWhy = map[string]time.Duration{}
+		}
+		f.use.WaitWhy[why] += d
+	}
+}
+
+// waitedFor adds the waits of a heavy task's admission.
+func (r *Runner) waitedFor(w loadgate.Waits) {
+	for why, d := range w {
+		r.Waited(why, d)
 	}
 }
 

@@ -567,6 +567,11 @@ deps and inner tasks included.
 - `wait_s`, on a task line, is the part of `wall_s` the task and the tasks
   it ran waited before their steps: for the load in the queue of heavy
   tasks and for their locks. Absent when nothing waited.
+- `wait_why` splits `wait_s` by what was waited for, in seconds: `queue`
+  (behind other heavy tasks), `load`, `io`, `swap` (each over its limit;
+  the time between two readings goes to what the first found), `settle`
+  (the hold after a wait), `lock` (a task lock) and `sudo` (a deploy's
+  confirmation). Absent when nothing waited.
 - `step` is the step as written in `.graft.yaml`, on one line, cut to 200
   characters. `exit` is -1 when there is no exit status: killed by a signal,
   or a task that failed outside its processes.
@@ -640,7 +645,8 @@ CPU time of the run whose pass it reused: the time the skip saved.
 `graft stats` reports the current project for the last 7 days, one row per
 task, the heaviest in memory first: runs, median and maximum wall time,
 when some run waited the median and maximum wait within it (`WAIT MED`,
-`WAIT MAX`), median CPU time (user + system), the largest peak of the process tree
+`WAIT MAX`) and what the runs waited for, the longest first, with its total
+(`WAIT WHY`, from `wait_why`), median CPU time (user + system), the largest peak of the process tree
 (`TREE MEM`) and of a single process (`MEM MAX`), the share of failed
 runs, and the wall time the cache saved (`SAVED`, with the number of
 skips); a last line sums the skips, wall and CPU time. When tasks recorded

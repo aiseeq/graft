@@ -9,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strings"
 	"text/tabwriter"
 	"time"
 )
@@ -86,6 +87,9 @@ type Row struct {
 	// WaitMed and WaitMax are of the waits before the steps, part of the
 	// wall time.
 	WaitMed, WaitMax float64
+	// WaitWhy sums the waits of the runs by what they waited for, in
+	// seconds (Record.WaitWhy).
+	WaitWhy map[string]float64
 	// OwnMed is the median wall time without the waits.
 	OwnMed float64
 	CPUMed float64
@@ -262,6 +266,12 @@ func summarize(project, label string, recs []Record) Row {
 		cpus = append(cpus, r.UserS+r.SysS)
 		row.WallMax = max(row.WallMax, r.WallS)
 		row.WaitMax = max(row.WaitMax, r.WaitS)
+		for why, s := range r.WaitWhy {
+			if row.WaitWhy == nil {
+				row.WaitWhy = map[string]float64{}
+			}
+			row.WaitWhy[why] += s
+		}
 		row.MaxRSSMB = larger(row.MaxRSSMB, r.MaxRSSMB)
 		row.TreeMemMB = larger(row.TreeMemMB, r.TreeMemMB)
 		row.DBMemMB = larger(row.DBMemMB, r.DBMemMB)
@@ -381,7 +391,7 @@ func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error
 	}
 	header := labelHeader + "\tRUNS\tWALL MED\tWALL MAX"
 	if withWait {
-		header += "\tWAIT MED\tWAIT MAX"
+		header += "\tWAIT MED\tWAIT MAX\tWAIT WHY"
 	}
 	header += "\tCPU MED\tTREE MEM\tMEM MAX\tFAILED\tSAVED"
 	if withProject {
@@ -402,7 +412,7 @@ func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error
 		}
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s", r.Label, r.Runs, formatSeconds(r.WallMed), formatSeconds(r.WallMax))
 		if withWait {
-			fmt.Fprintf(tw, "\t%s\t%s", formatSeconds(r.WaitMed), formatSeconds(r.WaitMax))
+			fmt.Fprintf(tw, "\t%s\t%s\t%s", formatSeconds(r.WaitMed), formatSeconds(r.WaitMax), formatWhy(r.WaitWhy))
 		}
 		fmt.Fprintf(tw, "\t%s\t%s\t%s\t%d%%\t%s", formatSeconds(r.CPUMed),
 			formatMB(r.TreeMemMB), formatMB(r.MaxRSSMB), (r.Failed*100+r.Runs/2)/r.Runs, saved)
@@ -427,6 +437,29 @@ func formatSeconds(s float64) string {
 		return d.Round(100 * time.Millisecond).String()
 	}
 	return d.Round(time.Second).String()
+}
+
+// formatWhy names what the runs waited for, the longest first, with the
+// total of each: "swap 8m12s, load 40s"; "-" when no run recorded it.
+func formatWhy(why map[string]float64) string {
+	if len(why) == 0 {
+		return "-"
+	}
+	keys := make([]string, 0, len(why))
+	for k := range why {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if why[keys[i]] != why[keys[j]] {
+			return why[keys[i]] > why[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k + " " + formatSeconds(why[k])
+	}
+	return strings.Join(parts, ", ")
 }
 
 func formatMB(mb *float64) string {

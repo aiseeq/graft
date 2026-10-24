@@ -125,16 +125,22 @@ func TestHeavyTaskWaitIsRecorded(t *testing.T) {
 		t.Fatalf("outer: %v\n%s", err, log.String())
 	}
 	waits := map[string]float64{}
+	why := map[string]map[string]float64{}
 	for _, l := range readStats(t, filepath.Join(cache, "graft", "stats.jsonl")) {
 		if l.Kind == "task" {
-			waits[l.Task] = l.WaitS
+			waits[l.Task], why[l.Task] = l.WaitS, l.WaitWhy
 		}
 	}
 	// It waited at least the poll after it said so.
 	if waits["build"] < 0.02 || waits["prep"] != 0 || waits["outer"] < waits["build"] {
 		t.Errorf("waits: %v", waits)
 	}
-	if out := f.mustGraft("stats"); !strings.Contains(out, "WAIT MED") {
+	// The wait is told by why: the load most of it, the settling after it;
+	// the outer task holds the same.
+	if why["build"]["load"] < 0.02 || why["build"]["settle"] <= 0 || why["prep"] != nil || why["outer"]["load"] != why["build"]["load"] {
+		t.Errorf("wait_why: %v", why)
+	}
+	if out := f.mustGraft("stats"); !strings.Contains(out, "WAIT WHY") || !strings.Contains(out, "load ") {
 		t.Errorf("no wait columns:\n%s", out)
 	}
 }

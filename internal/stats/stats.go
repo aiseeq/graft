@@ -88,6 +88,12 @@ type Record struct {
 	// (load gate) and for their locks. WallS includes it. Absent when
 	// nothing waited, and in lines written before graft 2.21.
 	WaitS float64 `json:"wait_s,omitempty"`
+	// WaitWhy splits WaitS by what was waited for, in seconds: the queue of
+	// heavy tasks, the load, the IO pressure, the swapping, the settling
+	// after a wait (queue, load, io, swap, settle), a task lock (lock) and a
+	// deploy's sudo confirmation (sudo). Absent when nothing waited, and in
+	// lines written before graft 2.40.
+	WaitWhy map[string]float64 `json:"wait_why,omitempty"`
 	// Exit is the exit status; -1 when there is none (killed by a signal, or
 	// a task that failed outside its processes).
 	Exit int `json:"exit"`
@@ -120,8 +126,9 @@ func StartRun() error {
 type Usage struct {
 	Wall, User, Sys time.Duration
 	// Wait is the part of Wall a task spent waiting for the load and its
-	// locks.
-	Wait time.Duration
+	// locks; WaitWhy splits it by what was waited for.
+	Wait    time.Duration
+	WaitWhy map[string]time.Duration
 	// MaxRSS is the peak resident memory in bytes; RSSKnown is false where
 	// the OS does not report it.
 	MaxRSS   int64
@@ -198,6 +205,13 @@ func (s Usage) Fill(rec *Record) {
 	rec.UserS = seconds(s.User)
 	rec.SysS = seconds(s.Sys)
 	rec.WaitS = seconds(s.Wait)
+	rec.WaitWhy = nil
+	for why, d := range s.WaitWhy {
+		if rec.WaitWhy == nil {
+			rec.WaitWhy = map[string]float64{}
+		}
+		rec.WaitWhy[why] = seconds(d)
+	}
 	rec.MaxRSSMB, rec.TreeMemMB = nil, nil
 	if s.RSSKnown {
 		rec.MaxRSSMB = megabytes(s.MaxRSS)

@@ -43,7 +43,7 @@ func TestCalmMachineStartsAtOnce(t *testing.T) {
 	fakeMachine(t)
 	var log strings.Builder
 	waited, err := Wait(context.Background(), "build", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log)
-	if err != nil || waited != 0 || log.Len() != 0 {
+	if err != nil || waited.Total() != 0 || log.Len() != 0 {
 		t.Errorf("waited %s, %v:\n%s", waited, err, log.String())
 	}
 }
@@ -72,8 +72,12 @@ func TestBusyDiskAndSwapHoldTasks(t *testing.T) {
 			defer cancel()
 			var log strings.Builder
 			p := &Priority{For: "graft deploy prod", Budget: newBudget(t, time.Hour)}
-			if _, err := Wait(ctx, "build", p, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log); err == nil {
+			waits, err := Wait(ctx, "build", p, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log)
+			if err == nil {
 				t.Errorf("started on a busy machine:\n%s", log.String())
+			}
+			if waits[c.name] <= 0 || len(waits) != 1 {
+				t.Errorf("waits %v, want all of it for %s", waits, c.name)
 			}
 			if !strings.Contains(log.String(), c.want) {
 				t.Errorf("log lacks %q:\n%s", c.want, log.String())
@@ -103,7 +107,7 @@ func TestPriorityBudget(t *testing.T) {
 	// A task that finds the machine calm spends nothing, however long the
 	// deploy has run.
 	setLoad("1.00")
-	if waited, err := Wait(context.Background(), "lint", p, testLoad, lockPath, &log); err != nil || waited != 0 {
+	if waited, err := Wait(context.Background(), "lint", p, testLoad, lockPath, &log); err != nil || waited.Total() != 0 {
 		t.Fatalf("on a calm machine: waited %s, %v", waited, err)
 	}
 	if left, err := p.spend(0); err != nil || left != 100*time.Millisecond {
@@ -111,14 +115,14 @@ func TestPriorityBudget(t *testing.T) {
 	}
 	setLoad("30.00")
 	waited, err := Wait(context.Background(), "build", p, testLoad, lockPath, &log)
-	if err != nil || waited < 90*time.Millisecond || waited > time.Second {
-		t.Fatalf("waited %s, %v", waited, err)
+	if err != nil || waited.Total() < 90*time.Millisecond || waited.Total() > time.Second || waited[WhyLoad] != waited.Total() {
+		t.Fatalf("waited %v, %v", waited, err)
 	}
 	if !strings.Contains(log.String(), "starting after") || !strings.Contains(log.String(), "all the wait graft deploy prod allows") {
 		t.Errorf("log:\n%s", log.String())
 	}
 	// The next task of the deploy finds the budget spent.
-	if waited, err := Wait(context.Background(), "test", p, testLoad, lockPath, &log); err != nil || waited > 50*time.Millisecond {
+	if waited, err := Wait(context.Background(), "test", p, testLoad, lockPath, &log); err != nil || waited.Total() > 50*time.Millisecond {
 		t.Errorf("a task after the budget was spent waited %s, %v", waited, err)
 	}
 	p = &Priority{For: "graft deploy prod", Budget: newBudget(t, 100*time.Millisecond), Fail: true}
