@@ -1197,6 +1197,24 @@ func TestDeployConfirmWithoutTerminalAsksTheReaderAgain(t *testing.T) {
 	}
 }
 
+func TestDeployConfirmWithoutTerminalAsksAgainForRefusalOnStderr(t *testing.T) {
+	d := deployRepo(t)
+	d.mustGraft("deploy", "test")
+	calls := d.fakeSudoScript(t, `if [ "$n" -lt 3 ]; then echo "Failed to match fingerprint" >&2; exit 1; fi`)
+	out := d.mustGraft("deploy", "prod")
+	for _, want := range []string{"fingerprint attempt 1 refused, asking again", "fingerprint attempt 2 refused, asking again"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
+	}
+	if d.stateFile("prod-run") == "" {
+		t.Error("prod deploy did not run after the reader accepted")
+	}
+	if got := strings.Count(readFile(t, calls), "\n"); got != 3 {
+		t.Errorf("sudo asked %d times, want 3", got)
+	}
+}
+
 // A sudo refusal without a terminal that did not come from the fingerprint
 // reader ends the deploy after one attempt: asking again where nobody can type
 // would wait forever.

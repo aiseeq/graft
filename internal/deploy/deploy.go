@@ -182,9 +182,10 @@ func ConfirmSudo(ctx context.Context, target string, log io.Writer) error {
 		cmd := exec.CommandContext(ctx, "sudo", "-v", "-p", prompt)
 		// The reader's messages are matched in English.
 		cmd.Env = append(os.Environ(), "LC_ALL=C")
-		var out bytes.Buffer
-		cmd.Stdout, cmd.Stderr = io.MultiWriter(os.Stdout, &out), os.Stderr
-		return sudoResult(cmd.Run(), out.Bytes())
+		var out, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = io.MultiWriter(os.Stdout, &out), io.MultiWriter(os.Stderr, &stderr)
+		runErr := cmd.Run()
+		return sudoResult(runErr, append(out.Bytes(), stderr.Bytes()...))
 	})
 }
 

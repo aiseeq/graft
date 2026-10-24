@@ -103,10 +103,10 @@ func markFlagsRead(repo *gitx.Repo, env string) error {
 
 func touch(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return fmt.Errorf("creating flags stamp directory: %w", err)
 	}
 	if err := os.WriteFile(path, nil, 0o644); err != nil {
-		return err
+		return fmt.Errorf("writing flags stamp: %w", err)
 	}
 	now := time.Now()
 	return os.Chtimes(path, now, now)
