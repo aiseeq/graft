@@ -1,7 +1,7 @@
 // Package workers names the models whose work a commit carries. A tool that
 // runs a coding agent in a worktree leaves a marker in the repository while
-// the job lives, <git common dir>/worker/<id>, a JSON object; the commit
-// gets a Worker trailer per model.
+// the job lives, <git common dir>/worker/<id>, a JSON object; a commit in
+// that worktree gets a Worker trailer per model.
 package workers
 
 import (
@@ -17,19 +17,22 @@ import (
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/proc"
 )
 
 // TrailerKey is the trailer a model is named in.
 const TrailerKey = "Worker"
 
-// Marker is a live job: the models it ran, in order, in the worktree at Dir,
-// which started at the commit Base.
+// Marker is a job: the models it ran, in order, in the worktree at Dir,
+// while the process PID, whose command line names ID, lives, or after its
+// round is Finished, its work not yet taken.
 type Marker struct {
-	ID     string   `json:"id"`
-	Models []string `json:"models"`
-	Client string   `json:"client"`
-	Dir    string   `json:"dir"`
-	Base   string   `json:"base"`
+	ID       string   `json:"id"`
+	Models   []string `json:"models"`
+	Client   string   `json:"client"`
+	Dir      string   `json:"dir"`
+	PID      int      `json:"pid"`
+	Finished bool     `json:"finished"`
 	// file is where the marker was read, for messages.
 	file string
 }
@@ -74,8 +77,8 @@ func readMarker(file string) (Marker, error) {
 	if err := json.NewDecoder(bytes.NewReader(data)).Decode(&m); err != nil {
 		return Marker{}, fmt.Errorf("not JSON: %w", err)
 	}
-	if len(m.Models) == 0 || slices.Contains(m.Models, "") || m.Dir == "" || m.Base == "" {
-		return Marker{}, errors.New("models, dir and base are required")
+	if m.ID == "" || len(m.Models) == 0 || slices.Contains(m.Models, "") || m.Dir == "" || (m.PID <= 0 && !m.Finished) {
+		return Marker{}, errors.New("id, models, dir and a pid or finished are required")
 	}
 	m.file = file
 	return m, nil
@@ -88,17 +91,16 @@ func passOver(warn io.Writer, file string, err error) {
 
 // Models are the models whose work the commit being made in repo carries,
 // in order, each once:
-//   - the markers of this worktree, where the job runs;
-//   - the markers of other worktrees whose changes since their base, made
-//     or not yet committed, touch a staged file: the job's work carried over
-//     by hand. The files in skip (the version files a commit bumps) do not
-//     count, every commit touches them;
+//   - the markers of this worktree whose job runs or whose round is
+//     finished: the master commits its work after the job's process exits;
 //   - the Worker trailers of the commits a merge or a squash brings in.
 //
-// A marker whose worktree is gone or cannot be read is reported to warn
-// and passed over.
-func Models(repo *gitx.Repo, skip []string, warn io.Writer) ([]string, error) {
-	markers := Markers(repo, warn)
+// The markers of other worktrees name no model: two jobs changing the same
+// file for their own reasons is common, and the work of one carried over
+// by hand cannot be told from that. A marker whose worktree is gone or
+// cannot be read, and one of a round not finished whose process is gone,
+// the job killed and the marker left, is reported to warn and passed over.
+func Models(repo *gitx.Repo, warn io.Writer) ([]string, error) {
 	var models []string
 	add := func(ms ...string) {
 		for _, m := range ms {
@@ -111,8 +113,7 @@ func Models(repo *gitx.Repo, skip []string, warn io.Writer) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var staged []string
-	for _, m := range markers {
+	for _, m := range Markers(repo, warn) {
 		dir, err := realPath(m.Dir)
 		if errors.Is(err, os.ErrNotExist) {
 			fmt.Fprintf(warn, "graft: the worker marker %s names %s, which is gone: passed over\n", m.file, m.Dir)
@@ -122,23 +123,21 @@ func Models(repo *gitx.Repo, skip []string, warn io.Writer) ([]string, error) {
 			passOver(warn, m.file, err)
 			continue
 		}
-		if dir == root {
-			add(m.Models...)
+		if dir != root {
 			continue
 		}
-		if staged == nil {
-			if staged, err = stagedFiles(repo, skip); err != nil {
-				return nil, err
+		if !m.Finished {
+			runs, err := m.runs()
+			if err != nil {
+				passOver(warn, m.file, err)
+				continue
+			}
+			if !runs {
+				fmt.Fprintf(warn, "graft: the worker marker %s names the process %d, which is gone, and its round is not finished: the job was killed, passed over\n", m.file, m.PID)
+				continue
 			}
 		}
-		changed, err := changedSince(dir, m.Base)
-		if err != nil {
-			passOver(warn, m.file, err)
-			continue
-		}
-		if slices.ContainsFunc(staged, func(f string) bool { return changed[f] }) {
-			add(m.Models...)
-		}
+		add(m.Models...)
 	}
 	merged, err := mergedModels(repo)
 	if err != nil {
@@ -146,6 +145,26 @@ func Models(repo *gitx.Repo, skip []string, warn io.Writer) ([]string, error) {
 	}
 	add(merged...)
 	return models, nil
+}
+
+// runs reports whether the job's process lives. A pid reused by another
+// process after the job died is told apart where the platform can: the
+// command line of the job's process names its id.
+func (m Marker) runs() (bool, error) {
+	alive, err := proc.Alive(m.PID)
+	if err != nil || !alive {
+		return false, err
+	}
+	argv, err := proc.Cmdline(m.PID)
+	switch {
+	case errors.Is(err, errors.ErrUnsupported):
+		return true, nil
+	case errors.Is(err, os.ErrNotExist):
+		return false, nil // exited meanwhile
+	case err != nil:
+		return false, err
+	}
+	return slices.Contains(argv, m.ID), nil
 }
 
 func realPath(p string) (string, error) {
@@ -158,48 +177,6 @@ func realPath(p string) (string, error) {
 		return "", fmt.Errorf("the path %s: %w", p, err)
 	}
 	return real, nil
-}
-
-// stagedFiles are the files the commit changes, but those in skip; never
-// nil.
-func stagedFiles(repo *gitx.Repo, skip []string) ([]string, error) {
-	out, err := repo.Git("diff", "--cached", "--name-only", "--no-renames", "-z")
-	if err != nil {
-		return nil, err
-	}
-	files := []string{}
-	for f := range strings.SplitSeq(out, "\x00") {
-		if f != "" && !slices.Contains(skip, f) {
-			files = append(files, f)
-		}
-	}
-	return files, nil
-}
-
-// changedSince are the files the worktree at dir changed since base: in
-// its commits and not yet committed, untracked ones too. The tree is
-// another worktree: git there must not inherit a hook's index.
-func changedSince(dir, base string) (map[string]bool, error) {
-	tree, err := gitx.OpenOther(dir)
-	if err != nil {
-		return nil, err
-	}
-	changed := map[string]bool{}
-	for _, args := range [][]string{
-		{"diff", "--name-only", "--no-renames", "-z", base},
-		{"ls-files", "--others", "--exclude-standard", "-z"},
-	} {
-		out, err := tree.Git(args...)
-		if err != nil {
-			return nil, err
-		}
-		for f := range strings.SplitSeq(out, "\x00") {
-			if f != "" {
-				changed[f] = true
-			}
-		}
-	}
-	return changed, nil
 }
 
 // squashedCommit is a commit line of SQUASH_MSG, which git merge --squash

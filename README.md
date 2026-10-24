@@ -224,31 +224,32 @@ lives: the file `<git common dir>/worker/<id>`, a JSON object
 
 ```json
 {"id": "job1", "models": ["vendor/model-a"], "client": "cli-a",
- "dir": "/abs/path/of/the/worktree", "base": "<full sha of HEAD at the start>",
+ "dir": "/abs/path/of/the/worktree", "pid": 12345, "finished": false,
  "started": "2026-01-02T03:04:05Z"}
 ```
 
 written under a name starting with a dot and renamed (such names are skipped),
 and removed when the job is over. `models` lists the exact model ids, in
-order. `graft commit`, `graft amend` and the `prepare-commit-msg` hook add a
+order; `pid` is the process that lives as long as the job's round runs, its
+command line naming the `id`; `finished: true` marks a round that ended as it
+should, its work not yet taken: the marker stays until then, the process gone.
+`graft commit`, `graft amend` and the `prepare-commit-msg` hook add a
 `Worker: <model>` trailer for each model whose work the commit carries, once,
 and not when the message already names it:
 
-- a marker whose `dir` is this worktree: the job runs here;
-- a marker of another worktree whose changes since `base`, committed or not,
-  touch a file the commit changes (the version files aside): its work carried
-  over by hand;
+- a marker whose `dir` is this worktree and whose round is finished or
+  whose process lives: the job's work is here;
 - the `Worker` trailers of the commits a merge (`MERGE_HEAD`) or
   `git merge --squash` brings in.
 
-A marker is a hint and never stops a commit: one that cannot be read, does
-not parse or names no model, dir or base, and one whose worktree is gone or
-cannot be read, is reported and passed over. The job's worktree is read
-without the variables git sets for a hook (`GIT_INDEX_FILE`, `GIT_DIR`, ...).
-Without markers the message is left as it is. The second rule matches by file: a file both sides
-change for their own reasons (go.sum, a changelog) names the job's models, and
-work moved to other paths, or carried over after the marker is removed, does
-not.
+The marker of another worktree names no model, even when both change the same
+file: two jobs on the same code do that for their own reasons. A marker is a
+hint and never stops a commit: one that cannot be read, does not parse or
+names no id, model, dir or one of pid and finished, one whose worktree is gone
+or cannot be read, and one of a round not finished whose process is gone (the
+job was killed and left it) is reported and passed over. On Linux a pid whose
+command line does not name the `id` counts as gone: another program took it.
+Without markers the message is left as it is.
 
 ## .graft.yaml
 

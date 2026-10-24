@@ -2,21 +2,53 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 // writeMarker leaves the marker of a job running models in the worktree at
-// dir from base, as the tool running it would.
-func writeMarker(t *testing.T, f *fixture, id, dir, base string, models ...string) {
+// dir while the process pid lives, as the tool running it would.
+func writeMarker(t *testing.T, f *fixture, id, dir string, pid int, models ...string) {
 	t.Helper()
-	data, err := json.Marshal(map[string]any{"id": id, "models": models, "client": "cli", "dir": dir, "base": base, "started": "2026-01-02T03:04:05Z"})
+	writeMarkerJSON(t, f, map[string]any{"id": id, "models": models, "client": "cli", "dir": dir, "pid": pid, "started": "2026-01-02T03:04:05Z"})
+}
+
+// writeMarkerJSON leaves the marker m.
+func writeMarkerJSON(t *testing.T, f *fixture, m map[string]any) {
+	t.Helper()
+	data, err := json.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(f.markers(), id), string(data))
+	writeFile(t, filepath.Join(f.markers(), m["id"].(string)), string(data))
+}
+
+// liveJob is the pid of a running process whose command line names the job
+// id, as the job's process of a tool does.
+func liveJob(t *testing.T, id string) int {
+	t.Helper()
+	cmd := exec.Command(helperBin, "sleep", id)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	return cmd.Process.Pid
+}
+
+// deadPID is the pid of a process that has exited: the job of a marker
+// left behind.
+func deadPID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("git", "version")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	return cmd.Process.Pid
 }
 
 // markers is the directory of the repository's worker markers.
@@ -47,8 +79,12 @@ func workerRepo(t *testing.T, versionMode string) *fixture {
 
 // TestWorkerTrailersInTheJobsWorktree: a commit in the worktree a job runs
 // in names each of its models once, the ones the message names already
-// too; a commit with no job names none; a marker that does not parse is
-// reported and passed over.
+// too; a commit with no job names none; the marker of a finished round
+// names its models after its process exits: the master commits its work
+// then. A marker that does not parse or names no process, the marker of a
+// round not finished whose process is gone, the job killed but the marker
+// left, and one whose pid another program took are reported and passed
+// over.
 func TestWorkerTrailersInTheJobsWorktree(t *testing.T) {
 	f := workerRepo(t, "file")
 	f.write("a.txt", "a1\n")
@@ -56,7 +92,7 @@ func TestWorkerTrailersInTheJobsWorktree(t *testing.T) {
 	if got := f.workers("HEAD"); got != "" {
 		t.Errorf("no job, trailers %q", got)
 	}
-	writeMarker(t, f, "job1", f.work, f.git("rev-parse", "HEAD"), "vendor/model-a", "vendor/model-b", "vendor/model-a")
+	writeMarker(t, f, "job1", f.work, liveJob(t, "job1"), "vendor/model-a", "vendor/model-b", "vendor/model-a")
 	writeFile(t, filepath.Join(f.markers(), ".job2.x7k.tmp"), "{")
 	f.write("a.txt", "a2\n")
 	f.mustGraft("commit", "-m", "feat: by the job\n\nWorker: vendor/model-a\nCo-Authored-By: Someone <s@example.com>")
@@ -76,39 +112,69 @@ func TestWorkerTrailersInTheJobsWorktree(t *testing.T) {
 	if got := f.workers("HEAD"); got != "vendor/model-a,vendor/model-b" {
 		t.Errorf("next to a broken marker, trailers %q", got)
 	}
+
+	for _, m := range []string{"job1", "job3"} {
+		if err := os.Remove(filepath.Join(f.markers(), m)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeMarker(t, f, "job4", f.work, deadPID(t), "vendor/model-k")
+	writeMarker(t, f, "job5", f.work, 0, "vendor/model-p")
+	f.write("a.txt", "a5\n")
+	out := f.mustGraft("commit", "-m", "feat: after the job was killed")
+	if !strings.Contains(out, "is not finished: the job was killed, passed over") || !strings.Contains(out, "job5: id, models, dir and a pid or finished are required: passed over") {
+		t.Errorf("a killed job and a marker with no pid:\n%s", out)
+	}
+	if got := f.workers("HEAD"); got != "" {
+		t.Errorf("a killed job, trailers %q", got)
+	}
+	if runtime.GOOS == "linux" {
+		writeMarker(t, f, "job6", f.work, liveJob(t, "another-job"), "vendor/model-r")
+		f.write("a.txt", "a6\n")
+		f.mustGraft("commit", "-m", "feat: a pid reused")
+		if got := f.workers("HEAD"); got != "" {
+			t.Errorf("a pid another program took, trailers %q", got)
+		}
+	}
+
+	for _, m := range []string{"job4", "job5", "job6"} {
+		if err := os.Remove(filepath.Join(f.markers(), m)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+	writeMarkerJSON(t, f, map[string]any{"id": "job7", "models": []string{"vendor/model-f"}, "client": "cli", "dir": f.work, "pid": deadPID(t), "finished": true})
+	f.write("a.txt", "a7\n")
+	f.mustGraft("commit", "-m", "feat: the work of a finished round")
+	if got := f.workers("HEAD"); got != "vendor/model-f" {
+		t.Errorf("a finished round, trailers %q", got)
+	}
 }
 
-// TestWorkerTrailersForWorkCarriedOver: a commit in another worktree names
-// the job's models when it stages a file the job changed since its base,
-// committed or not; a commit of other files, the version file bumped by
-// both aside, names none; a job whose worktree is gone is passed over.
-func TestWorkerTrailersForWorkCarriedOver(t *testing.T) {
+// TestWorkerTrailersNotFromOtherWorktrees: a commit in one worktree names
+// no model of a job running in another, even when both change the same
+// file, committed or not, to the same text; a job whose worktree is gone
+// is reported and passed over.
+func TestWorkerTrailersNotFromOtherWorktrees(t *testing.T) {
 	f := workerRepo(t, "file")
 	job := filepath.Join(f.base, "job")
 	f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
-	writeMarker(t, f, "job1", job, f.git("rev-parse", "HEAD"), "vendor/model-a")
-	writeFile(t, filepath.Join(job, "a.txt"), "by the job\n")
+	writeMarker(t, f, "job1", job, liveJob(t, "job1"), "vendor/model-a")
+	writeFile(t, filepath.Join(job, "a.txt"), "shared\n")
 	if out, code := f.exec(job, "", graftBin, "commit", "-m", "feat: the job's work"); code != 0 {
 		t.Fatalf("commit in the job's worktree: exit %d\n%s", code, out)
 	}
-	writeFile(t, filepath.Join(job, "c.txt"), "not committed yet\n")
+	writeFile(t, filepath.Join(job, "b.txt"), "not committed yet\n")
 
-	f.write("b.txt", "b1\n")
-	f.mustGraft("commit", "-m", "feat: other work")
+	f.write("a.txt", "shared\n")
+	f.write("b.txt", "not committed yet\n")
+	f.mustGraft("commit", "-m", "feat: the same files")
 	if got := f.workers("HEAD"); got != "" {
-		t.Errorf("other files, trailers %q", got)
+		t.Errorf("files the job changed too, trailers %q", got)
 	}
-	f.write("a.txt", "by the job\n")
-	f.mustGraft("commit", "-m", "feat: carried over")
-	if got := f.workers("HEAD"); got != "vendor/model-a" {
-		t.Errorf("a committed file of the job, trailers %q", got)
+	if got := f.workers("w/job"); got != "vendor/model-a" {
+		t.Errorf("the job's own commit, trailers %q", got)
 	}
-	f.write("c.txt", "not committed yet\n")
-	f.mustGraft("commit", "-m", "feat: carried over uncommitted")
-	if got := f.workers("HEAD"); got != "vendor/model-a" {
-		t.Errorf("an uncommitted file of the job, trailers %q", got)
-	}
-	writeMarker(t, f, "job2", filepath.Join(f.base, "gone"), f.git("rev-parse", "HEAD"), "vendor/model-z")
+	writeMarker(t, f, "job2", filepath.Join(f.base, "gone"), os.Getpid(), "vendor/model-z")
 	f.write("b.txt", "b2\n")
 	if out := f.mustGraft("commit", "-m", "feat: a stale marker"); !strings.Contains(out, "which is gone: passed over") {
 		t.Errorf("a stale marker:\n%s", out)
@@ -144,36 +210,35 @@ func TestWorkerTrailersOfMergedCommits(t *testing.T) {
 	}
 }
 
-// TestWorkerTrailersInGitsOwnCommits: a commit git makes itself in the
-// main worktree, a merge or git commit --no-verify, while a job runs in
-// another one, names its models when it carries the job's files: the job's
-// tree is read without the variables git binds the hook to its own index
-// with. A marker that cannot be read is reported and passed over.
+// TestWorkerTrailersInGitsOwnCommits: a commit git makes itself, git
+// commit --no-verify through the prepare-commit-msg hook, names the models
+// of the job running in its worktree, and none of a job in another one. A
+// marker that cannot be read is reported and passed over.
 func TestWorkerTrailersInGitsOwnCommits(t *testing.T) {
 	f := workerRepo(t, "none")
 	job := filepath.Join(f.base, "job")
 	f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
-	writeMarker(t, f, "job1", job, f.git("rev-parse", "HEAD"), "vendor/model-a")
-	writeFile(t, filepath.Join(job, "d.txt"), "by the job\n")
+	writeMarker(t, f, "job1", job, liveJob(t, "job1"), "vendor/model-a")
+	writeFile(t, filepath.Join(f.markers(), "job2"), "{")
 
-	f.git("switch", "-q", "-c", "side")
-	f.write("d.txt", "by the job\n")
-	f.mustGraft("commit", "-m", "feat: carried over")
-	f.git("switch", "-q", "main")
-	f.git("merge", "-q", "--no-ff", "--no-edit", "side")
-	if got := f.workers("HEAD"); got != "vendor/model-a" {
-		t.Errorf("merge, trailers %q\n%s", got, f.git("log", "-1", "--format=%B"))
+	writeFile(t, filepath.Join(job, "d.txt"), "by the job\n")
+	if out, code := f.exec(job, "", "git", "add", "d.txt"); code != 0 {
+		t.Fatalf("git add: exit %d\n%s", code, out)
+	}
+	out, code := f.exec(job, "", "git", "commit", "-q", "--no-verify", "-m", "feat: by the job")
+	if code != 0 || !strings.Contains(out, "the worker marker ") {
+		t.Errorf("git commit in the job's worktree: exit %d\n%s", code, out)
+	}
+	if got := f.workers("w/job"); got != "vendor/model-a" {
+		t.Errorf("git commit in the job's worktree, trailers %q\n%s", got, f.git("log", "-1", "--format=%B", "w/job"))
 	}
 
-	writeFile(t, filepath.Join(job, "e.txt"), "by the job\n")
-	writeFile(t, filepath.Join(f.markers(), "job2"), "{")
-	f.write("e.txt", "by the job\n")
-	f.git("add", "e.txt")
-	out, code := f.exec(f.work, "", "git", "commit", "-q", "--no-verify", "-m", "feat: by hand")
-	if code != 0 || !strings.Contains(out, "the worker marker ") {
+	f.write("d.txt", "by the job\n")
+	f.git("add", "d.txt")
+	if out, code := f.exec(f.work, "", "git", "commit", "-q", "--no-verify", "-m", "feat: by hand"); code != 0 {
 		t.Errorf("git commit: exit %d\n%s", code, out)
 	}
-	if got := f.workers("HEAD"); got != "vendor/model-a" {
-		t.Errorf("git commit, trailers %q\n%s", got, f.git("log", "-1", "--format=%B"))
+	if got := f.workers("HEAD"); got != "" {
+		t.Errorf("git commit in another worktree, trailers %q\n%s", got, f.git("log", "-1", "--format=%B"))
 	}
 }

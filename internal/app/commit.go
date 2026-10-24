@@ -147,7 +147,7 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	if err := runChecks(repo, cfg, plan.message, a.Stderr); err != nil {
 		return undo(err)
 	}
-	msg, err := a.withWorkers(repo, cfg, plan.message)
+	msg, err := a.withWorkers(repo, plan.message)
 	if err != nil {
 		return undo(err)
 	}

@@ -7,7 +7,6 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/hooks"
 	"github.com/aiseeq/graft/v2/internal/tasks"
@@ -53,7 +52,7 @@ func (a *App) HookPrepareCommitMsg(file string) error {
 	if own, err := graftsOwn(); err != nil || own {
 		return err
 	}
-	repo, cfg, err := a.open()
+	repo, _, err := a.open()
 	if err != nil {
 		return err
 	}
@@ -61,7 +60,7 @@ func (a *App) HookPrepareCommitMsg(file string) error {
 	if err != nil {
 		return fmt.Errorf("the commit message: %w", err)
 	}
-	with, err := a.withWorkers(repo, cfg, string(msg))
+	with, err := a.withWorkers(repo, string(msg))
 	if err != nil || with == string(msg) {
 		return err
 	}
@@ -87,8 +86,8 @@ func graftsOwn() (bool, error) {
 
 // withWorkers is msg with a Worker trailer per model whose work the commit
 // being made carries (workers.Models).
-func (a *App) withWorkers(repo *gitx.Repo, cfg *config.Config, msg string) (string, error) {
-	models, err := workers.Models(repo, cfg.VersionFiles(), a.Stderr)
+func (a *App) withWorkers(repo *gitx.Repo, msg string) (string, error) {
+	models, err := workers.Models(repo, a.Stderr)
 	if err != nil {
 		return "", err
 	}
