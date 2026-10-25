@@ -84,6 +84,9 @@ type Runner struct {
 	held         map[string]lock.Mode
 	// Load reads this machine's load settings for heavy tasks.
 	Load func() (userconfig.MachineLoad, error)
+	// Limits are the user's limits, which the outermost task's run is
+	// held to when it ends.
+	Limits func() (userconfig.Limits, error)
 	// heavy counts the heavy tasks running, admitted by the outermost.
 	heavy int
 	// remoteDown is why remote_heavy's host did not answer, once asked:
@@ -139,6 +142,7 @@ func NewRunner(root string, cfg *config.Config, stdout, stderr io.Writer) *Runne
 		done:   map[string]bool{},
 		held:   map[string]lock.Mode{},
 		Load:   userconfig.LoadSettings,
+		Limits: userconfig.LimitSettings,
 	}
 }
 
@@ -837,7 +841,27 @@ func (r *Runner) end(f *frame, failed bool) stats.Usage {
 		outermost = r.frames[0].task
 	}
 	r.write(rec, use, outermost)
+	if len(r.frames) == 0 {
+		r.overLimit(f.task, use)
+	}
 	return use
+}
+
+// overLimit says when the outermost task took longer than its user config
+// limit without its waits, the line graft stats marks a slow task with.
+func (r *Runner) overLimit(task string, use stats.Usage) {
+	if r.Limits == nil {
+		return
+	}
+	limits, err := r.Limits()
+	if err != nil {
+		fmt.Fprintf(r.Stderr, "graft: %v\n", err)
+		return
+	}
+	limit, key := stats.LimitOf(task, limits.Gate, limits.Task)
+	if own := use.Wall - use.Wait; own > limit {
+		fmt.Fprintf(r.Stderr, "graft: %s\n", stats.FormatRunOverLimit(task, own, limit, key))
+	}
 }
 
 // write records rec with its usage; outermost names the top when the runner

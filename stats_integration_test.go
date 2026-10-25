@@ -422,8 +422,8 @@ func TestStatsRerunsAreFlaky(t *testing.T) {
 
 // TestStatsMarkTasksOverTheLimits: graft stats marks the gate over
 // limits.gate and any other task over limits.task, by their median run
-// without the waits; a task under its limit and a broken down task carry no
-// mark.
+// without the waits, and a run over its limit says so as it ends; a task
+// under its limit and a broken down task carry no mark.
 func TestStatsMarkTasksOverTheLimits(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses sh")
@@ -432,9 +432,16 @@ func TestStatsMarkTasksOverTheLimits(t *testing.T) {
 	cfgDir := t.TempDir()
 	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "limits: {gate: 200ms, task: 400ms}\n")
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
-	f.mustGraft("gate")
-	f.mustGraft("slow")
-	f.mustGraft("quick")
+	// A run over its limit says so as it ends.
+	if out := f.mustGraft("gate"); !strings.Contains(out, "graft: over the limit: gate took ") || !strings.Contains(out, " without waits, above 200ms (user config limits.gate)\n") {
+		t.Errorf("gate run:\n%s", out)
+	}
+	if out := f.mustGraft("slow"); !strings.Contains(out, "graft: over the limit: slow took ") || !strings.Contains(out, " without waits, above 400ms (user config limits.task)\n") {
+		t.Errorf("slow run:\n%s", out)
+	}
+	if out := f.mustGraft("quick"); strings.Contains(out, "over the limit") {
+		t.Errorf("quick run:\n%s", out)
+	}
 	out := f.mustGraft("stats")
 	var marks []string
 	for l := range strings.SplitSeq(out, "\n") {
@@ -452,5 +459,24 @@ func TestStatsMarkTasksOverTheLimits(t *testing.T) {
 	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "limits: {gate: -1s}\n")
 	if out, code := f.graft("", "stats"); code == 0 || !strings.Contains(out, "limits: gate and task must be positive") {
 		t.Errorf("a negative limit: exit %d\n%s", code, out)
+	}
+}
+
+// TestRunOverLimitOnce: only the outermost task of a run is held to its
+// limit, its deps counting in it, and a failed run is held too.
+func TestRunOverLimitOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	f, _ := statsRepo(t, "tasks:\n  outer:\n    deps: [slow]\n    run: ["+helperStep("ok")+"]\n  slow:\n    run: [[sh, -c, 'sleep 0.3']]\n  broken:\n    run: [[sh, -c, 'sleep 0.3; exit 3']]\n")
+	cfgDir := t.TempDir()
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "limits: {task: 200ms}\n")
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
+	out := f.mustGraft("outer")
+	if strings.Count(out, "over the limit") != 1 || !strings.Contains(out, "graft: over the limit: outer took ") {
+		t.Errorf("outer:\n%s", out)
+	}
+	if out, code := f.graft("", "broken"); code == 0 || !strings.Contains(out, "graft: over the limit: broken took ") {
+		t.Errorf("broken: exit %d\n%s", code, out)
 	}
 }

@@ -347,10 +347,7 @@ func OverLimits(rows []Row, gate, task time.Duration) []OverLimit {
 	var out []OverLimit
 	for i := range rows {
 		r := &rows[i]
-		limit, key := task, "limits.task"
-		if r.Label == GateTask {
-			limit, key = gate, "limits.gate"
-		}
+		limit, key := LimitOf(r.Label, gate, task)
 		if r.OwnMed > limit.Seconds() {
 			out = append(out, OverLimit{Project: r.Project, Task: r.Label, OwnMed: r.OwnMed, Limit: limit, Key: key})
 		}
@@ -361,13 +358,32 @@ func OverLimits(rows []Row, gate, task time.Duration) []OverLimit {
 	return out
 }
 
+// LimitOf is the limit of a task line and its user config key: gate for
+// the gate, task for every other task.
+func LimitOf(label string, gate, task time.Duration) (time.Duration, string) {
+	if label == GateTask {
+		return gate, "limits.gate"
+	}
+	return task, "limits.task"
+}
+
 // FormatOverLimit is the line that marks a row over its limit.
 func FormatOverLimit(o OverLimit) string {
 	task := o.Task
 	if o.Project != "" {
 		task = o.Project + " " + task
 	}
-	return fmt.Sprintf("over the limit: %s takes %s by median without waits, above %s (user config %s)", task, formatSeconds(o.OwnMed), formatSeconds(o.Limit.Seconds()), o.Key)
+	return overLimit(task, "takes", "by median ", o.OwnMed, o.Limit, o.Key)
+}
+
+// FormatRunOverLimit is the line a run of a task ends with when it took
+// longer than its limit without its waits.
+func FormatRunOverLimit(task string, own, limit time.Duration, key string) string {
+	return overLimit(task, "took", "", own.Seconds(), limit, key)
+}
+
+func overLimit(task, verb, measure string, own float64, limit time.Duration, key string) string {
+	return fmt.Sprintf("over the limit: %s %s %s %swithout waits, above %s (user config %s)", task, verb, formatSeconds(own), measure, formatSeconds(limit.Seconds()), key)
 }
 
 // FormatSaved is the line a report ends with when the cache skipped runs.

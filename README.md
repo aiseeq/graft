@@ -60,7 +60,7 @@ load:                            # heavy tasks on a shared machine (heavy: true 
   threads: 4                     # default 4: {threads} in steps, GRAFT_THREADS in heavy tasks
   settle: 30s                    # default 30s: a task that waited gives the load this long to show before the next
   poll: 5s                       # default 5s; 0 anywhere here means the default
-limits:                          # graft stats marks the tasks over them, by median without the waits
+limits:                          # graft stats marks the tasks over them, by median without the waits; a run over says so when it ends
   gate: 1m                       # default 1m: the gate of a commit as a whole
   task: 8m                       # default 8m: any other task, a test run before a deploy, merge or release
 commit:
@@ -703,6 +703,12 @@ waits, above 1m0s (user config limits.gate)` marks the gate over
 period's runs, the waits for the load and the locks taken out; the 10
 farthest over show, the rest counted. `--max-load` leaves the runs on a busy
 machine out of it too.
+
+A run says so itself as it ends: when graft's outermost task (the gate of
+`graft commit`, `graft <task>`, `graft exec`) took longer than its limit
+without its waits, graft prints `graft: over the limit: merge took 9m12s
+without waits, above 8m0s (user config limits.task)` after it, failed or
+not. Inner tasks and deps count in the outermost.
 
 `graft stats --tests` reports the tests file instead: the 20 slowest
 top-level tests and packages by median wall time, with their runs, maximum
