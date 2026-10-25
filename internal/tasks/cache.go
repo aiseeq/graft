@@ -16,7 +16,6 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
-	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/taskcache"
@@ -89,7 +88,7 @@ func (r *Runner) cacheKey(ctx context.Context, name string, args []string) (stri
 	}
 	add("graft task cache 1", r.GraftVersion, runtime.GOOS, runtime.GOARCH, name, fmt.Sprint(len(args)))
 	add(args...)
-	repo, err := gitx.Open(r.Root)
+	repo, err := r.repo()
 	if err != nil {
 		return "", err
 	}

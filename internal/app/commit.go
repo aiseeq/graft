@@ -181,8 +181,11 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	}
 	undo := func(cause error) error { return errors.Join(cause, restoreVersion(repo, backup)) }
 
-	if _, err := repo.Git("add", "-A"); err != nil {
-		return undo(err)
+	// The rest of the tree is staged already: only the bump is new.
+	if paths := backup.Paths(); len(paths) > 0 {
+		if _, err := repo.Git(append([]string{"add", "--"}, paths...)...); err != nil {
+			return undo(err)
+		}
 	}
 	if err := runChecks(repo, cfg, plan.message, "HEAD", a.Stderr); err != nil {
 		return undo(err)

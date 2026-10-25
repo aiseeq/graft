@@ -41,7 +41,9 @@ const ArgsPlaceholder = config.ArgsPlaceholder
 
 // Runner runs tasks of one project.
 type Runner struct {
-	Root   string
+	Root string
+	// Repo is the repository at Root; nil opens it when a step needs it.
+	Repo   *gitx.Repo
 	Config *config.Config
 	Stdout io.Writer
 	Stderr io.Writer
@@ -224,7 +226,7 @@ func (r *Runner) goModules() ([]string, error) {
 	if _, err := os.Stat(filepath.Join(r.Root, "go.mod")); !errors.Is(err, os.ErrNotExist) && !vetSkipped(".", r.Config.GoVet.Exclude) {
 		dirs = append(dirs, ".")
 	}
-	repo, err := gitx.Open(r.Root)
+	repo, err := r.repo()
 	if err != nil {
 		return nil, fmt.Errorf("listing Go modules: %w", err)
 	}
@@ -576,14 +578,7 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		cmd = exec.CommandContext(ctx, "sh", "-c", line)
 		words = strings.Fields(line)
 	} else {
-		own := s.Argv
-		if t.Tests == config.TestsGo {
-			var dropped []string
-			if own, dropped = ownPackages(s.Argv, args); len(dropped) > 0 {
-				fmt.Fprintf(r.Stderr, "graft: the packages after -- replace %s of the step\n", strings.Join(dropped, " "))
-			}
-		}
-		argv, err := envs.ExpandArgv(own, args, r.lookup.With(vars))
+		argv, err := r.argv(s, t, args, vars)
 		if err != nil {
 			return err
 		}
@@ -673,7 +668,7 @@ func (r *Runner) treeID() string {
 	if r.Stats == nil {
 		return ""
 	}
-	repo, err := gitx.Open(r.Root)
+	repo, err := r.repo()
 	if err == nil {
 		var id string
 		if id, err = repo.WorkTreeID(); err == nil {
@@ -1238,4 +1233,29 @@ func (r *Runner) lock(ctx context.Context, task string, l *config.TaskLock) (rel
 		delete(r.held, l.Name)
 		return lk.Release()
 	}, lk.Waited, nil
+}
+
+// argv is the command of a step that is not a shell line, the arguments in
+// it; in a tests: go step packages among them replace the step's own.
+func (r *Runner) argv(s config.Step, t *config.Task, args []string, vars map[string]string) ([]string, error) {
+	own := s.Argv
+	if t.Tests == config.TestsGo {
+		var dropped []string
+		if own, dropped = ownPackages(s.Argv, args); len(dropped) > 0 {
+			fmt.Fprintf(r.Stderr, "graft: the packages after -- replace %s of the step\n", strings.Join(dropped, " "))
+		}
+	}
+	return envs.ExpandArgv(own, args, r.lookup.With(vars))
+}
+
+// repo is the repository at Root, opened once.
+func (r *Runner) repo() (*gitx.Repo, error) {
+	if r.Repo == nil {
+		repo, err := gitx.Open(r.Root)
+		if err != nil {
+			return nil, err
+		}
+		r.Repo = repo
+	}
+	return r.Repo, nil
 }

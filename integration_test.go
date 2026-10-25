@@ -62,8 +62,10 @@ func setup(m *testing.M) (int, error) {
 			return 0, fmt.Errorf("go build %s: %v\n%s", pkg, err, out)
 		}
 	}
+	// maintenance.auto off: git would start a detached maintenance run after
+	// every commit and push, hundreds of processes the tests never look at.
 	gitconfig := filepath.Join(dir, "gitconfig")
-	if err := os.WriteFile(gitconfig, []byte("[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n[protocol \"file\"]\n\tallow = always\n"), 0o644); err != nil {
+	if err := os.WriteFile(gitconfig, []byte("[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n[protocol \"file\"]\n\tallow = always\n[maintenance]\n\tauto = false\n"), 0o644); err != nil {
 		return 0, fmt.Errorf("the tests' git config: %w", err)
 	}
 	testEnv, err = isolatedEnv(gitconfig, filepath.Join(dir, "userconfig"), filepath.Join(dir, "cache"))

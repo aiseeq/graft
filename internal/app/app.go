@@ -131,7 +131,7 @@ func (a *App) runner(repo *gitx.Repo, cfg *config.Config) *tasks.Runner {
 	r := a.newRunner(repo.Root, cfg)
 	r.GraftVersion = a.ToolVersion
 	r.NoCache = a.NoCache || a.NoCacheEnv
-	r.LockDir = lockDir(repo)
+	r.Repo, r.LockDir = repo, lockDir(repo)
 	if cfg.TestDB != nil {
 		r.TestDB = func(ctx context.Context) (tasks.TestDB, error) { return a.testDB(ctx, repo, cfg) }
 	}
