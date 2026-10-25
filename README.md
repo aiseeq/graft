@@ -516,7 +516,10 @@ dotenv_sets:                   # key lists several tasks and services share
   counts them all in a last line (`skipped 3 tests in 2 packages`): a test
   skipped for want of a file or a service looks green otherwise. Every package run is
   recorded in the tests file (see below). A step with `go test` in it that
-  prints no events gets a warning: `-json` is missing.
+  prints no events gets a warning: `-json` is missing. Packages after `--`
+  replace the ones a `go test … {args} ./...` step names itself, with a line
+  saying so: `graft test -- -run TestX ./cmd/x` tests `./cmd/x` alone, while
+  flags alone keep `./...`.
 - `cache: tree` skips a task that already passed on the same inputs, its
   deps and inner tasks with it: `graft: lint: passed on this tree
   2026-10-16 10:12, skipped`. The key covers the work tree by content (every

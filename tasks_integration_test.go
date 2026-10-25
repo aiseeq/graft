@@ -875,3 +875,32 @@ func TestTestDBTmpfs(t *testing.T) {
 		}
 	}
 }
+
+// TestGoTestPackagesFromArgs: packages after -- replace the ./... a tests: go
+// step names itself, so graft test -- ./cmd/x tests ./cmd/x alone; flags
+// after -- keep the step's packages, and so do the values of flags.
+func TestGoTestPackagesFromArgs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake go is a shell script")
+	}
+	f := tasksRepo(t, `tasks:
+  test:
+    tests: go
+    run: ['go test -p 2 -json {args} ./...']
+`, nil)
+	fakeBin := t.TempDir()
+	script := "#!/bin/sh\necho \"$*\" >> " + f.path("go.txt") + "\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = []string{"PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH")}
+	out := f.mustGraft("test", "--", "-run", "./x", "./cmd/worker/")
+	if !strings.Contains(out, "graft: the packages after -- replace ./... of the step") {
+		t.Errorf("no line on the replaced packages:\n%s", out)
+	}
+	f.mustGraft("test", "--", "-v", "-coverprofile", "c.out")
+	want := "test -p 2 -json -run ./x ./cmd/worker/,test -p 2 -json -v -coverprofile c.out ./..."
+	if got := strings.Join(f.lines("go.txt"), ","); got != want {
+		t.Errorf("go got\n%s\nwant\n%s", got, want)
+	}
+}

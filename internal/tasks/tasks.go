@@ -576,7 +576,14 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		cmd = exec.CommandContext(ctx, "sh", "-c", line)
 		words = strings.Fields(line)
 	} else {
-		argv, err := envs.ExpandArgv(s.Argv, args, r.lookup.With(vars))
+		own := s.Argv
+		if t.Tests == config.TestsGo {
+			var dropped []string
+			if own, dropped = ownPackages(s.Argv, args); len(dropped) > 0 {
+				fmt.Fprintf(r.Stderr, "graft: the packages after -- replace %s of the step\n", strings.Join(dropped, " "))
+			}
+		}
+		argv, err := envs.ExpandArgv(own, args, r.lookup.With(vars))
 		if err != nil {
 			return err
 		}
