@@ -234,6 +234,21 @@ func (r *Repo) StagedFiles(base string) ([]string, error) {
 // ParentTree returns the tree of rev's first parent, or the empty tree when rev
 // is a root commit.
 func (r *Repo) ParentTree(rev string) (string, error) {
+	parent, err := r.Parent(rev)
+	if err != nil {
+		return "", err
+	}
+	var tree string
+	if parent != "" {
+		tree, err = r.Git("rev-parse", parent+"^{tree}")
+	} else {
+		tree, err = r.GitInput(strings.NewReader(""), nil, "hash-object", "-t", "tree", "--stdin")
+	}
+	return strings.TrimSpace(tree), err
+}
+
+// Parent is the full hash of rev's first parent, "" for a root commit.
+func (r *Repo) Parent(rev string) (string, error) {
 	out, err := r.Git("rev-list", "--parents", "-n", "1", rev)
 	if err != nil {
 		return "", err
@@ -242,13 +257,10 @@ func (r *Repo) ParentTree(rev string) (string, error) {
 	if len(ids) == 0 {
 		return "", fmt.Errorf("git rev-list --parents %s: no commit", rev)
 	}
-	var tree string
-	if len(ids) > 1 {
-		tree, err = r.Git("rev-parse", ids[1]+"^{tree}")
-	} else {
-		tree, err = r.GitInput(strings.NewReader(""), nil, "hash-object", "-t", "tree", "--stdin")
+	if len(ids) == 1 {
+		return "", nil
 	}
-	return strings.TrimSpace(tree), err
+	return ids[1], nil
 }
 
 // RemoteBranch is a branch on a remote, from its remote-tracking ref.

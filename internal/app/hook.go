@@ -36,7 +36,7 @@ func (a *App) HookPreCommit(ctx context.Context) error {
 		return errors.New(commitHowTo(cfg))
 	}
 	a.printf("%s commit: running the checks and the gate", kind)
-	if err := runChecks(repo, cfg, "", a.Stderr); err != nil {
+	if err := runChecks(repo, cfg, "", "HEAD", a.Stderr); err != nil {
 		return err
 	}
 	if err := a.gate(ctx, repo, cfg); err != nil {

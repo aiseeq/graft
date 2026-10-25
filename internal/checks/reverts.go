@@ -21,16 +21,21 @@ import (
 // it short) or the file in the message. Files moved by the commit, the
 // version files graft bumps and the exceptions do not count. A partial
 // take-back, part of the commit's diff of a file, is not seen: the check is
-// per file.
-func Reverts(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, message string) ([]Finding, error) {
+// per file. base is the commit the staged tree is to follow: HEAD for a new
+// commit, HEAD's parent for an amend, whose own commit is the one being
+// rewritten; "" for an amend of a root commit, with nothing before it.
+func Reverts(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, message, base string) ([]Finding, error) {
+	if base == "" {
+		return nil, nil
+	}
 	if ok, err := repo.HasHead(); err != nil || !ok {
 		return nil, err
 	}
-	staged, err := revertCandidates(repo, cfg, versionFiles)
+	staged, err := revertCandidates(repo, cfg, versionFiles, base)
 	if err != nil || len(staged) == 0 {
 		return nil, err
 	}
-	recent, err := recentCommits(repo, cfg.Depth)
+	recent, err := recentCommits(repo, cfg.Depth, base)
 	if err != nil {
 		return nil, err
 	}
@@ -43,8 +48,8 @@ func Reverts(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, message
 		return nil, fmt.Errorf("a directory for the revert check: %w", err)
 	}
 	defer os.RemoveAll(tmp)
-	now, before := filepath.Join(tmp, "staged"), filepath.Join(tmp, "head")
-	for index, rev := range map[string]string{now: strings.TrimSpace(tree), before: "HEAD"} {
+	now, before := filepath.Join(tmp, "staged"), filepath.Join(tmp, "base")
+	for index, rev := range map[string]string{now: strings.TrimSpace(tree), before: base} {
 		if _, err := repo.GitEnv([]string{"GIT_INDEX_FILE=" + index}, "read-tree", rev); err != nil {
 			return nil, err
 		}
@@ -58,7 +63,7 @@ func Reverts(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, message
 			if !slices.Contains(staged, f) || strings.Contains(message, f) {
 				continue
 			}
-			back, err := takesBack(repo, c, f, now, before)
+			back, err := takesBack(repo, c, f, now, before, base)
 			if err != nil {
 				return nil, err
 			}
@@ -85,8 +90,8 @@ func names(message, sha string) bool {
 
 // revertCandidates are the staged files that can take something back: not
 // the paths of moves, the version files or the exceptions.
-func revertCandidates(repo *gitx.Repo, cfg config.Reverts, versionFiles []string) ([]string, error) {
-	out, err := repo.Git("diff", "--cached", "-M", "--name-status", "-z", "--no-ext-diff", "HEAD")
+func revertCandidates(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, base string) ([]string, error) {
+	out, err := repo.Git("diff", "--cached", "-M", "--name-status", "-z", "--no-ext-diff", base)
 	if err != nil {
 		return nil, err
 	}
@@ -107,16 +112,16 @@ func revertCandidates(repo *gitx.Repo, cfg config.Reverts, versionFiles []string
 	}), nil
 }
 
-// recentCommit is a commit of HEAD's first-parent line with the files it
-// changed.
+// recentCommit is a commit of the base's first-parent line with the files
+// it changed.
 type recentCommit struct {
 	sha, parent, subject string
 	files                []string
 }
 
-func recentCommits(repo *gitx.Repo, depth int) ([]recentCommit, error) {
+func recentCommits(repo *gitx.Repo, depth int, base string) ([]recentCommit, error) {
 	out, err := repo.Git("log", "--first-parent", "--no-merges", "--no-renames", fmt.Sprintf("--max-count=%d", depth),
-		"--format=%x01%H%x00%P%x00%s", "--name-only", "-z", "HEAD")
+		"--format=%x01%H%x00%P%x00%s", "--name-only", "-z", base)
 	if err != nil {
 		return nil, err
 	}
@@ -142,17 +147,17 @@ func recentCommits(repo *gitx.Repo, depth int) ([]recentCommit, error) {
 }
 
 // takesBack tells whether the commit's diff of the file applies to the staged
-// tree and did not apply to HEAD's, and the staged change undoes some of it:
+// tree and did not apply to the base's, and the staged change undoes some of it:
 // removes a line the commit added or brings back one it removed. A patch
 // with no context after it is anchored at the end of the file, so appending
 // to a file whose end repeats what the commit appended after lets the
 // commit's patch apply again, with nothing taken back.
-func takesBack(repo *gitx.Repo, c recentCommit, file, now, before string) (bool, error) {
+func takesBack(repo *gitx.Repo, c recentCommit, file, now, before, base string) (bool, error) {
 	diff, err := repo.Git("diff", "--no-renames", "--no-ext-diff", "--binary", c.parent, c.sha, "--", file)
 	if err != nil || diff == "" {
 		return false, err
 	}
-	staged, err := repo.Git("diff", "--cached", "--no-renames", "--no-ext-diff", "--binary", "HEAD", "--", file)
+	staged, err := repo.Git("diff", "--cached", "--no-renames", "--no-ext-diff", "--binary", base, "--", file)
 	if err != nil {
 		return false, err
 	}

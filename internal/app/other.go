@@ -66,7 +66,13 @@ func (a *App) Amend(ctx context.Context) error {
 				return errors.Join(err, restoreIndex(repo, index))
 			}
 		}
-		if err := runChecks(repo, cfg, "", a.Stderr); err != nil {
+		// The amended commit follows HEAD's parent: undoing part of HEAD is
+		// no revert.
+		parent, err := repo.Parent("HEAD")
+		if err != nil {
+			return errors.Join(err, restoreIndex(repo, index))
+		}
+		if err := runChecks(repo, cfg, message, parent, a.Stderr); err != nil {
 			return err
 		}
 		if message, err = a.withWorkers(repo, message); err != nil {
@@ -518,7 +524,7 @@ func (a *App) Check() error {
 	if err != nil {
 		return err
 	}
-	if err := runChecks(repo, cfg, "", a.Stderr); err != nil {
+	if err := runChecks(repo, cfg, "", "HEAD", a.Stderr); err != nil {
 		return err
 	}
 	a.printf("checks passed")

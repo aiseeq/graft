@@ -67,3 +67,31 @@ func TestCommitRefusesSilentRevert(t *testing.T) {
 	f.write("g.go", "func A() {\n\tf(`\n`,\n"+tail+"\nfunc B() {\n\ty()\n}\n\nfunc C() {\n\tf(`\n`,\n"+tail)
 	f.mustGraft("commit", "-m", "feat: C")
 }
+
+// TestAmendRevertsAgainstParent: amend checks the amended commit against its
+// parent, so undoing part of the commit being amended is no take-back, and
+// taking back the commit before it still is.
+func TestAmendRevertsAgainstParent(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none}\n",
+		"a.txt":       "1\n2\n3\n",
+		"b.txt":       "b\n",
+	})
+	f.mustGraft("commit", "-m", "feat: base")
+	f.write("b.txt", "b2\n")
+	f.mustGraft("commit", "-m", "feat: b")
+	x := f.git("rev-parse", "HEAD")
+	f.write("a.txt", "1\ntwo\n3\n")
+	f.mustGraft("commit", "-m", "feat: summary")
+
+	// The amend puts a.txt back as the parent has it: part of its own
+	// commit undone.
+	f.write("a.txt", "1\n2\n3\n")
+	f.write("c.txt", "c\n")
+	f.mustGraft("amend")
+	// Taking back the commit before the amended one is refused.
+	f.write("b.txt", "b\n")
+	if out, code := f.graft("", "amend"); code == 0 || !strings.Contains(out, "b.txt: takes back "+x[:12]+" feat: b") {
+		t.Errorf("amend taking back the parent: exit %d\n%s", code, out)
+	}
+}

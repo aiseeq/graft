@@ -208,7 +208,8 @@ func (e *ChecksError) Error() string {
 // runChecks inspects the index: secrets, binaries and sizes in the changed
 // files, the version files agreeing with each other, and in a public
 // repository, the user's private names in the added lines and in message.
-func runChecks(repo *gitx.Repo, cfg *config.Config, message string, log io.Writer) error {
+// revertBase is what the revert check holds the index to (checks.Reverts).
+func runChecks(repo *gitx.Repo, cfg *config.Config, message, revertBase string, log io.Writer) error {
 	staged, err := checks.Staged(repo)
 	if err != nil {
 		return err
@@ -226,7 +227,7 @@ func runChecks(repo *gitx.Repo, cfg *config.Config, message string, log io.Write
 				return err
 			}
 		}
-		back, err := checks.Reverts(repo, cfg.Checks.Reverts, cfg.VersionFiles(), message)
+		back, err := checks.Reverts(repo, cfg.Checks.Reverts, cfg.VersionFiles(), message, revertBase)
 		if err != nil {
 			return err
 		}
