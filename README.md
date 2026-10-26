@@ -512,7 +512,8 @@ dotenv_sets:                   # key lists several tasks and services share
   results and the output of failing tests; with `-v` in the command, every
   line. Lines that are not events pass through. Unlike plain `go test` it
   names the skipped tests, subtests included, under their package line
-  with what they printed as the reason (`skipped 2 tests in m/a:`, then
+  with the message of their t.Skip as the reason, not earlier logs nor the
+  stderr of parallel tests go test hands them (`skipped 2 tests in m/a:`, then
   `    TestCorpus: a_test.go:9: no corpus`), a cached package's too, and
   counts them all in a last line (`skipped 3 tests in 2 packages`): a test
   skipped for want of a file or a service looks green otherwise. Every package run is

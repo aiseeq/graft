@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -222,17 +223,41 @@ func (g *GoTest) result(pkg *goPackage, name string, elapsed float64, result str
 	}
 }
 
-// skipReason is what a skipped test printed, its --- SKIP line left out, one
-// line; empty when it gave no reason (t.SkipNow).
-func skipReason(lines []string) string {
-	var reason []string
-	for _, l := range lines {
-		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "--- SKIP: ") {
-			reason = append(reason, l)
+// skipReason is the message of t.Skip, one line: the last log entry the
+// test printed before its --- SKIP line ("    file.go:86: text" and its
+// continuation lines), else its last line. go test -json gives a test the
+// stderr of tests running beside it, before and after that line, and its
+// own earlier t.Log too: those are not the reason. Empty when it printed
+// nothing (t.SkipNow).
+func skipReason(output []string) string {
+	var lines []string
+	for l := range strings.SplitSeq(strings.Join(output, ""), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "--- SKIP: ") {
+			break
+		}
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
 		}
 	}
-	return strings.Join(reason, "; ")
+	end := len(lines)
+	for i := end - 1; i >= 0; i-- {
+		if logEntry.MatchString(lines[i]) {
+			var reason []string
+			for j := i; j < end && (j == i || strings.HasPrefix(lines[j], "        ")); j++ {
+				reason = append(reason, strings.TrimSpace(lines[j]))
+			}
+			return strings.Join(reason, "; ")
+		}
+	}
+	if end == 0 {
+		return ""
+	}
+	return strings.TrimSpace(lines[end-1])
 }
+
+// logEntry is the first line of a t.Log, t.Skip or t.Error message as go
+// test prints it: four spaces, then the file and line.
+var logEntry = regexp.MustCompile(`^    [^ \t]+\.go:\d+: `)
 
 // printSkipped names the skipped tests of a package under its line.
 func (g *GoTest) printSkipped(name string, skipped []stats.TestResult) {

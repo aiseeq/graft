@@ -156,7 +156,7 @@ func TestGoTestNamesSkippedTests(t *testing.T) {
 	runs := feed(t, NewGoTest(&out, false), stream)
 	want := "ok  \tm/a\t0.104s\n" +
 		"skipped 2 tests in m/a:\n" +
-		"    TestCorpus: a_test.go:7: reading testdata/corpus; a_test.go:9: no corpus: run make corpus\n" +
+		"    TestCorpus: a_test.go:9: no corpus: run make corpus\n" +
 		"    TestTable/traces: no reason given\n" +
 		"ok  \tm/b\t(cached)\n" +
 		"skipped 1 test in m/b:\n" +
@@ -165,7 +165,27 @@ func TestGoTestNamesSkippedTests(t *testing.T) {
 	if out.String() != want {
 		t.Errorf("output:\n%s\nwant\n%s", out.String(), want)
 	}
-	if got := summary(runs); got != `m/a pass [["TestCorpus",0,"skip","a_test.go:7: reading testdata/corpus; a_test.go:9: no corpus: run make corpus"],["TestTable/traces",0,"skip"],["TestTable",0.1,"pass"]]`+"\n" {
+	if got := summary(runs); got != `m/a pass [["TestCorpus",0,"skip","a_test.go:9: no corpus: run make corpus"],["TestTable/traces",0,"skip"],["TestTable",0.1,"pass"]]`+"\n" {
+		t.Errorf("runs:\n%s", got)
+	}
+}
+
+// TestGoTestSkipReasonAmongParallelOutput: a stream recorded from go test
+// -json, where a parallel test writes to stderr before and after the
+// skipped one's --- SKIP line and go test gives those lines to the skipped
+// test. Its reason is its t.Skipf message, the continuation line included,
+// not its earlier t.Log nor the neighbour's stderr.
+func TestGoTestSkipReasonAmongParallelOutput(t *testing.T) {
+	stream, err := os.ReadFile("testdata/go-test-skip-parallel.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	runs := feed(t, NewGoTest(&out, false), string(stream))
+	if want := "    TestDebt: a_test.go:22: debt (candidate groundPick):; second line\n"; !strings.Contains(out.String(), want) {
+		t.Errorf("output lacks %q:\n%s", want, out.String())
+	}
+	if got := summary(runs); !strings.Contains(got, `["TestDebt",0.01,"skip","a_test.go:22: debt (candidate groundPick):; second line"]`) {
 		t.Errorf("runs:\n%s", got)
 	}
 }

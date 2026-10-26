@@ -1,0 +1,43 @@
+{"Time":"2026-10-26T02:36:53.741026546+01:00","Action":"start","Package":"toy"}
+{"Time":"2026-10-26T02:36:53.742987034+01:00","Action":"run","Package":"toy","Test":"TestNoisy"}
+{"Time":"2026-10-26T02:36:53.743013697+01:00","Action":"output","Package":"toy","Test":"TestNoisy","Output":"=== RUN   TestNoisy\n"}
+{"Time":"2026-10-26T02:36:53.743045237+01:00","Action":"output","Package":"toy","Test":"TestNoisy","Output":"=== PAUSE TestNoisy\n"}
+{"Time":"2026-10-26T02:36:53.743049175+01:00","Action":"pause","Package":"toy","Test":"TestNoisy"}
+{"Time":"2026-10-26T02:36:53.743052914+01:00","Action":"run","Package":"toy","Test":"TestDebt"}
+{"Time":"2026-10-26T02:36:53.743056844+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"=== RUN   TestDebt\n"}
+{"Time":"2026-10-26T02:36:53.743062656+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"=== PAUSE TestDebt\n"}
+{"Time":"2026-10-26T02:36:53.743067529+01:00","Action":"pause","Package":"toy","Test":"TestDebt"}
+{"Time":"2026-10-26T02:36:53.743073149+01:00","Action":"cont","Package":"toy","Test":"TestNoisy"}
+{"Time":"2026-10-26T02:36:53.743077991+01:00","Action":"output","Package":"toy","Test":"TestNoisy","Output":"=== CONT  TestNoisy\n"}
+{"Time":"2026-10-26T02:36:53.74308326+01:00","Action":"output","Package":"toy","Test":"TestNoisy","Output":"window 0: diverged\n"}
+{"Time":"2026-10-26T02:36:53.743158738+01:00","Action":"cont","Package":"toy","Test":"TestDebt"}
+{"Time":"2026-10-26T02:36:53.743181693+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"=== CONT  TestDebt\n"}
+{"Time":"2026-10-26T02:36:53.74420271+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 1: diverged\n"}
+{"Time":"2026-10-26T02:36:53.745288541+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 2: diverged\n"}
+{"Time":"2026-10-26T02:36:53.746357813+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 3: diverged\n"}
+{"Time":"2026-10-26T02:36:53.747427137+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 4: diverged\n"}
+{"Time":"2026-10-26T02:36:53.748533452+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 5: diverged\n"}
+{"Time":"2026-10-26T02:36:53.748623793+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"    a_test.go:21: frame 14196: outside\n"}
+{"Time":"2026-10-26T02:36:53.748642366+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"    a_test.go:22: debt (candidate groundPick):\n"}
+{"Time":"2026-10-26T02:36:53.748652615+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"        second line\n"}
+{"Time":"2026-10-26T02:36:53.748672474+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"--- SKIP: TestDebt (0.01s)\n"}
+{"Time":"2026-10-26T02:36:53.749616358+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 6: diverged\n"}
+{"Time":"2026-10-26T02:36:53.750696316+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 7: diverged\n"}
+{"Time":"2026-10-26T02:36:53.751771261+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 8: diverged\n"}
+{"Time":"2026-10-26T02:36:53.752859029+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 9: diverged\n"}
+{"Time":"2026-10-26T02:36:53.753910889+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 10: diverged\n"}
+{"Time":"2026-10-26T02:36:53.754988033+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 11: diverged\n"}
+{"Time":"2026-10-26T02:36:53.756059676+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 12: diverged\n"}
+{"Time":"2026-10-26T02:36:53.757112601+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 13: diverged\n"}
+{"Time":"2026-10-26T02:36:53.758171876+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 14: diverged\n"}
+{"Time":"2026-10-26T02:36:53.759230812+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 15: diverged\n"}
+{"Time":"2026-10-26T02:36:53.760289784+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 16: diverged\n"}
+{"Time":"2026-10-26T02:36:53.761362139+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 17: diverged\n"}
+{"Time":"2026-10-26T02:36:53.762444083+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 18: diverged\n"}
+{"Time":"2026-10-26T02:36:53.763520842+01:00","Action":"output","Package":"toy","Test":"TestDebt","Output":"window 19: diverged\n"}
+{"Time":"2026-10-26T02:36:53.764621464+01:00","Action":"skip","Package":"toy","Test":"TestDebt","Elapsed":0.01}
+{"Time":"2026-10-26T02:36:53.764639852+01:00","Action":"output","Package":"toy","Test":"TestNoisy","Output":"--- PASS: TestNoisy (0.02s)\n"}
+{"Time":"2026-10-26T02:36:53.764645085+01:00","Action":"pass","Package":"toy","Test":"TestNoisy","Elapsed":0.02}
+{"Time":"2026-10-26T02:36:53.764654334+01:00","Action":"output","Package":"toy","Output":"PASS\n"}
+{"Time":"2026-10-26T02:36:53.765046092+01:00","Action":"output","Package":"toy","Output":"ok  \ttoy\t0.024s\n"}
+{"Time":"2026-10-26T02:36:53.765069542+01:00","Action":"pass","Package":"toy","Elapsed":0.024}
