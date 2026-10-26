@@ -644,6 +644,10 @@ func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTr
 	if t.Assign == "" || issue.AssigneeID == t.Assign {
 		return nil
 	}
+	if i := slices.IndexFunc(issue.Labels, func(l string) bool { return slices.Contains(t.KeepAssigneeLabels, l) }); i >= 0 {
+		m.app.printf("%s stays with its assignee: label %s (keep_assignee_labels)", issue.Key, issue.Labels[i])
+		return nil
+	}
 	if err := m.client.Assign(ctx, issue.Key, t.Assign); err != nil {
 		m.app.assignFailed(&m.unset, issue.Key, err)
 		return nil

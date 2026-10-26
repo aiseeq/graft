@@ -149,6 +149,9 @@ type NoteTransition struct {
 	// Assign is the account id the item is handed over to on the move: the
 	// reviewer of Testing, say.
 	Assign string `yaml:"assign"`
+	// KeepAssigneeLabels: an item with one of these labels moves but stays
+	// with its assignee, technical work nobody checks on a screen, say.
+	KeepAssigneeLabels []string `yaml:"keep_assignee_labels"`
 }
 
 // Leading returns the transition that leads to the status, nil for none.
@@ -575,6 +578,10 @@ func validateTransitions(where string, ts []NoteTransition) error {
 			return fmt.Errorf("%s.from: lists %q, the transition's own status", at, t.To)
 		case t.Assign != "" && strings.TrimSpace(t.Assign) == "":
 			return fmt.Errorf("%s.assign: blank", at)
+		case len(t.KeepAssigneeLabels) > 0 && t.Assign == "":
+			return fmt.Errorf("%s.keep_assignee_labels: needs assign, the account the other items go to", at)
+		case slices.ContainsFunc(t.KeepAssigneeLabels, func(l string) bool { return strings.TrimSpace(l) == "" }):
+			return fmt.Errorf("%s.keep_assignee_labels: a blank label", at)
 		}
 		for _, f := range t.From {
 			if j, ok := from[f]; ok {

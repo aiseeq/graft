@@ -353,6 +353,8 @@ deploy:
 		"from has transition":   notes("{transitions: [{from: [Testing], to: Testing}]}"),
 		"from twice":            notes("{transitions: [{from: [In Progress], to: Testing}, {from: [In Progress], to: Done}]}"),
 		"blank assign":          notes("{transitions: [{from: [In Progress], to: Testing, assign: ' '}]}"),
+		"keep without assign":   notes("{transitions: [{from: [In Progress], to: Testing, keep_assignee_labels: [internal]}]}"),
+		"blank keep label":      notes("{transitions: [{from: [In Progress], to: Testing, assign: qa, keep_assignee_labels: [' ']}]}"),
 		"old from":              notes("{from: [In Progress]}"),
 		"fix_version w/o pfx":   notes("{fix_version: {}}"),
 		"subtasks w/o move":     notes("{subtasks: true}"),

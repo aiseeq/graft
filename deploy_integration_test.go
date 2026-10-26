@@ -490,7 +490,7 @@ deploy:
       env: local
       run: [sh, deploy.sh]
       deployed_sha: {path: ` + q("sub-sha") + `}
-      release_notes: {transitions: [{from: [In Progress], to: Testing, assign: qa}, {from: [Ready for release], to: Done}], subtasks: true}
+      release_notes: {transitions: [{from: [In Progress], to: Testing, assign: qa, keep_assignee_labels: [internal]}, {from: [Ready for release], to: Done}], subtasks: true}
     stage:
       env: local
       run: [sh, deploy.sh]
@@ -1067,6 +1067,7 @@ func TestDeploySubtasksFollowParents(t *testing.T) {
 	d.jira.assignees["PROJ-23"] = "colleague"
 	d.jira.assignees["PROJ-24"] = "qa"
 	d.jira.handedOver = append(d.jira.handedOver, "PROJ-24")
+	d.jira.labels = map[string][]string{"PROJ-21": {"backend", "internal"}}
 	d.jira.parents = map[string]string{"PROJ-21": "PROJ-20", "PROJ-22": "PROJ-20", "PROJ-23": "PROJ-20", "PROJ-24": "PROJ-20", "PROJ-25": "PROJ-20",
 		"PROJ-31": "PROJ-30", "PROJ-32": "PROJ-30", "PROJ-33": "PROJ-30", "PROJ-41": "PROJ-40"}
 	d.jira.mu.Unlock()
@@ -1087,8 +1088,8 @@ func TestDeploySubtasksFollowParents(t *testing.T) {
 	}
 	comments := d.jira.comments["PROJ-40"]
 	d.jira.mu.Unlock()
-	if !slices.Equal(assigned, []string{"PROJ-20 to qa", "PROJ-21 to qa"}) {
-		t.Errorf("assigned = %v (PROJ-24 is on qa already)\n%s", assigned, out)
+	if !slices.Equal(assigned, []string{"PROJ-20 to qa"}) {
+		t.Errorf("assigned = %v (PROJ-21 is internal, PROJ-24 is on qa already)\n%s", assigned, out)
 	}
 	if want := map[string]string{"PROJ-20": "Testing", "PROJ-21": "Testing", "PROJ-24": "Testing", "PROJ-25": "Ready for release",
 		"PROJ-30": "Done", "PROJ-31": "Paused", "PROJ-32": "Done", "PROJ-33": "Testing", "PROJ-40": "In Progress", "PROJ-41": "In Progress"}; !maps.Equal(statuses, want) {
@@ -1101,7 +1102,7 @@ func TestDeploySubtasksFollowParents(t *testing.T) {
 		"PROJ-20 moved to Testing\n",
 		"PROJ-20 assigned to qa",
 		"PROJ-21 moved to Testing after its parent PROJ-20\n",
-		"PROJ-21 assigned to qa",
+		"PROJ-21 stays with its assignee: label internal (keep_assignee_labels)",
 		"PROJ-24 moved to Testing after its parent PROJ-20\n",
 		"PROJ-25 stays Ready for release after its parent PROJ-20: the transition to Testing moves only from In Progress",
 		"PROJ-32 moved to Done after its parent PROJ-30",

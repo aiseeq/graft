@@ -1140,7 +1140,7 @@ deploy:
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
       release_notes:
         transitions:            # In Progress moves to Testing and goes to the reviewer
-          - {from: [In Progress], to: Testing, assign: "<reviewer accountId>"}
+          - {from: [In Progress], to: Testing, assign: "<reviewer accountId>", keep_assignee_labels: [internal]}   # optional: items labelled internal move but stay with their assignee
         fix_version: {prefix: "Product v"}  # add the next unreleased "Product v…" version
       dotenv: [REGISTRY_TOKEN, 'SMTP_HOST?']        # .env keys the script gets, as for tasks
       dotenv_sets: [db]
@@ -1277,7 +1277,9 @@ release_notes:
    elsewhere, paused or not started, gets the comment and keeps its status.
    A transition with `assign` (an account id) hands the moved item over to
    that account, the reviewer of Testing say, unless it is assigned there
-   already. A key mentioned in a
+   already or has one of the transition's `keep_assignee_labels`: such an
+   item, technical work nobody checks on a screen say, moves and stays
+   with its assignee. A key mentioned in a
    commit does not make the item yours, so only open items of the owner of
    the Jira token get notes: not in a done-category status (Done, Won't do),
    a to-do-category one (To Do, Backlog: work not started) or `skip_statuses`, and assigned to the owner now or at some point in
