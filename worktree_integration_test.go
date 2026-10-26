@@ -241,10 +241,17 @@ func TestWorktreeAddExplicitTrunk(t *testing.T) {
 	})
 	f.git("checkout", "-q", "-b", "main")
 	f.mustGraft("commit", "-m", "feat: base")
+	// No remote, main and master both there, the main worktree on neither.
+	f.git("branch", "master")
+	f.git("switch", "-q", "-c", "feature/y")
 	if out, code := f.graft("", "worktree", "add", "w/implicit"); code != 1 || !strings.Contains(out, "graft worktree add w/implicit <base>") || !strings.Contains(out, "graft worktree add --trunk <ref> w/implicit") {
 		t.Fatalf("unknown trunk guidance: exit %d\n%s", code, out)
 	}
 	f.env = append(f.env, "XDG_CACHE_HOME="+t.TempDir())
+	f.git("branch", "-D", "master")
+	if out, code := f.graft("", "worktree", "add", "w/local"); code != 0 || !strings.Contains(out, "from main") {
+		t.Fatalf("the local trunk: exit %d\n%s", code, out)
+	}
 	out, code := f.graft("", "worktree", "add", "--trunk", "main", "w/explicit")
 	if code != 0 || !strings.Contains(out, "from main") {
 		t.Fatalf("explicit trunk: exit %d\n%s", code, out)
@@ -364,5 +371,44 @@ func TestWorktreeAddCopiesAndSetsUp(t *testing.T) {
 	f.mustGraft("commit", "-m", "chore: copy a tracked file")
 	if out, code := f.graft("", "worktree", "add", "w/tracked", "main"); code == 0 || !strings.Contains(out, "worktree.copy .gitignore: the checkout has it") {
 		t.Errorf("a tracked file: exit %d\n%s", code, out)
+	}
+}
+
+// TestWorktreeCleanNoRemote: without a remote the trunk is a local branch:
+// main or master when only one is there, else the branch of the main
+// worktree; both there with the main worktree on another branch is
+// ambiguous and asks for --trunk.
+func TestWorktreeCleanNoRemote(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	for _, tc := range []struct {
+		name, base, other, on, want string
+	}{
+		{"main only", "main", "", "feature/x", "removed   branch b/done: in main"},
+		{"master only", "master", "", "feature/x", "removed   branch b/done: in master"},
+		{"neither", "trunk", "", "trunk", "removed   branch b/done: in trunk"},
+		{"both, on master", "master", "main", "master", "removed   branch b/done: in master"},
+		{"both, on a feature", "main", "master", "feature/x", "no remote, and the trunk is ambiguous: both main and master are there and the main worktree is on feature/x: pass --trunk <branch>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRepo(t, map[string]string{
+				".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+				"VERSION":     "1.0.0\n",
+			})
+			f.git("checkout", "-q", "-b", tc.base)
+			f.mustGraft("commit", "-m", "feat: base")
+			if tc.other != "" {
+				f.git("branch", tc.other)
+			}
+			f.git("branch", "b/done")
+			if tc.on != tc.base {
+				f.git("switch", "-q", "-c", tc.on)
+			}
+			out, code := f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("exit %d:\n%s\nwant %q", code, out, tc.want)
+			}
+		})
 	}
 }

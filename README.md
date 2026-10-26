@@ -1649,6 +1649,10 @@ the trunk:
 
 - the trunk is `--trunk`, or the HEAD branch (`refs/remotes/<remote>/HEAD`) of
   `deploy.remote`, or of the only remote; every remote is fetched first;
+  without a remote it is the local `main` or `master` when only one of them
+  is there, else the branch of the main worktree, and `--trunk` is needed
+  only when both are there and the main worktree is on neither (the same
+  trunk serves `add`, `sync` and `deploy sweep`);
 - in work, left alone: locked (`git worktree lock --reason`, the reason
   shown), a process works in it (its working directory or a file it has open
   there, read from /proc, so Linux only), used within `--min-age` (its HEAD

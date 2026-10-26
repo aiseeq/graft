@@ -119,7 +119,7 @@ func (a *App) WorktreeClean(_ context.Context, o WorktreeCleanOptions) error {
 
 // trunkRef is the trunk, which merged work must be in and work is synced
 // onto: --trunk, or the HEAD branch of the deploy remote, or of the only
-// remote.
+// remote, or without a remote a local branch (localTrunk).
 func trunkRef(repo *gitx.Repo, cfg *config.Config, flag string, remotes []string) (string, error) {
 	if flag != "" {
 		if ok, err := repo.RevExists(flag); err != nil || !ok {
@@ -134,7 +134,7 @@ func trunkRef(repo *gitx.Repo, cfg *config.Config, flag string, remotes []string
 	case len(remotes) == 1:
 		remote = remotes[0]
 	case len(remotes) == 0:
-		return "", errors.New("no remote to take the trunk from: pass --trunk <branch>")
+		return localTrunk(repo)
 	default:
 		return "", fmt.Errorf("remotes %s and no deploy.remote: pass --trunk <remote>/<branch>", strings.Join(remotes, ", "))
 	}
@@ -143,6 +143,45 @@ func trunkRef(repo *gitx.Repo, cfg *config.Config, flag string, remotes []string
 		return "", fmt.Errorf("%s/HEAD is not set, the trunk is unknown: git remote set-head %s --auto, or pass --trunk: %w", remote, remote, err)
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// localTrunk is the trunk of a repository without a remote: main or master
+// when only one of them is there, else the branch of the main worktree when
+// it is one of them or neither is there. Both there and the main worktree on
+// another branch, or on none, is ambiguous.
+func localTrunk(repo *gitx.Repo) (string, error) {
+	var have []string
+	for _, b := range []string{"main", "master"} {
+		ok, err := repo.RefExists("refs/heads/" + b)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			have = append(have, b)
+		}
+	}
+	if len(have) == 1 {
+		return have[0], nil
+	}
+	trees, err := listWorktrees(repo)
+	if err != nil {
+		return "", err
+	}
+	var primary string
+	if len(trees) > 0 {
+		primary = trees[0].branch
+	}
+	if primary != "" && (len(have) == 0 || slices.Contains(have, primary)) {
+		return primary, nil
+	}
+	why := "the main worktree is on no branch"
+	if primary != "" {
+		why = "the main worktree is on " + primary
+	}
+	if len(have) == 2 {
+		why = "both main and master are there and " + why
+	}
+	return "", fmt.Errorf("no remote, and the trunk is ambiguous: %s: pass --trunk <branch>", why)
 }
 
 // trunkBranch is the trunk's branch name, its remote left out.
