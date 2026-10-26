@@ -1,6 +1,9 @@
 package tasks
 
 import (
+	"context"
+	"fmt"
+	"os/exec"
 	"slices"
 	"strings"
 
@@ -93,4 +96,29 @@ func trimPaths(argv, env []string) []string {
 		}
 	}
 	return slices.Concat(argv[:2], []string{"-trimpath"}, argv[2:])
+}
+
+// trimRun is trimPaths, and when it adds -trimpath to go run or go test and
+// env sets no GOROOT, GOROOT from go env in dir: a program or test built with
+// -trimpath takes runtime.GOROOT() from its environment only, and go/importer
+// and go/build find no standard library without it. go env runs in dir with
+// env, so a toolchain go.mod switches to answers for itself.
+func trimRun(ctx context.Context, dir string, argv, env []string) ([]string, []string, error) {
+	trimmed := trimPaths(argv, env)
+	if len(trimmed) == len(argv) || (argv[1] != "run" && argv[1] != "test") {
+		return trimmed, env, nil
+	}
+	if root, _ := lookupEnv(env, "GOROOT"); root != "" {
+		return trimmed, env, nil
+	}
+	cmd := exec.CommandContext(ctx, "go", "env", "GOROOT")
+	cmd.Dir, cmd.Env = dir, env
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, nil, fmt.Errorf("go env GOROOT, which a -trimpath build needs to find the standard library: %w", err)
+	}
+	if root := strings.TrimSpace(string(out)); root != "" {
+		env = append(slices.Clip(env), "GOROOT="+root)
+	}
+	return trimmed, env, nil
 }

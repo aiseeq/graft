@@ -890,7 +890,7 @@ func TestGoTestPackagesFromArgs(t *testing.T) {
     run: ['go test -p 2 -json {args} ./...']
 `, nil)
 	fakeBin := t.TempDir()
-	script := "#!/bin/sh\necho \"$*\" >> " + f.path("go.txt") + "\n"
+	script := "#!/bin/sh\n[ \"$1\" = env ] && exit 0\necho \"$*\" >> " + f.path("go.txt") + "\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -920,17 +920,22 @@ func TestGoBuildsTrimPaths(t *testing.T) {
   off:
     env: {GOFLAGS: -trimpath=false}
     run: ['go install ./cmd/x']
+  own:
+    env: {GOROOT: /own/goroot}
+    run: ['go test ./...']
 `, nil)
 	fakeBin := t.TempDir()
-	script := "#!/bin/sh\necho \"$*\" >> " + f.path("go.txt") + "\n"
+	// go env GOROOT answers; the rest log their words and GOROOT.
+	script := "#!/bin/sh\nif [ \"$1\" = env ]; then echo /fake/goroot; exit 0; fi\necho \"$*${GOROOT:+ GOROOT=$GOROOT}\" >> " + f.path("go.txt") + "\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	f.env = []string{"PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH")}
+	f.env = []string{"PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"), "GOROOT="}
 	f.mustGraft("build")
 	f.mustGraft("off")
 	f.mustGraft("exec", "--", "go", "run", "./cmd/x", "-trimpath")
-	want := []string{"build -trimpath -o bin/ ./...", "vet ./...", "fix -diff ./...", "test -trimpath=false ./...", "install ./cmd/x", "run -trimpath ./cmd/x -trimpath"}
+	f.mustGraft("own")
+	want := []string{"build -trimpath -o bin/ ./...", "vet ./...", "fix -diff ./...", "test -trimpath=false ./...", "install ./cmd/x", "run -trimpath ./cmd/x -trimpath GOROOT=/fake/goroot", "test -trimpath ./... GOROOT=/own/goroot"}
 	if got := f.lines("go.txt"); !slices.Equal(got, want) {
 		t.Errorf("go got\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}

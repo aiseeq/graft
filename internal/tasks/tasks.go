@@ -582,14 +582,13 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		if err != nil {
 			return err
 		}
-		argv = trimPaths(argv, env)
+		if argv, env, err = trimRun(ctx, r.taskDir(t), argv, env); err != nil {
+			return err
+		}
 		cmd = exec.CommandContext(ctx, argv[0], argv[1:]...)
 		words = argv
 	}
-	cmd.Dir = r.Root
-	if t.Dir != "" {
-		cmd.Dir = filepath.Join(r.Root, filepath.FromSlash(t.Dir))
-	}
+	cmd.Dir = r.taskDir(t)
 	cmd.Env = env
 	if r.frames[len(r.frames)-1].remote {
 		cmd = r.remoteCmd(ctx, cmd, vars, threads)
@@ -735,7 +734,9 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 	if heavy {
 		env = append(env, ThreadsEnv+"="+threads)
 	}
-	argv = trimPaths(s.Argv, env)
+	if argv, env, err = trimRun(ctx, dir, s.Argv, env); err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir, cmd.Env = dir, env
 	if f.remote {
@@ -1260,4 +1261,12 @@ func (r *Runner) repo() (*gitx.Repo, error) {
 		r.Repo = repo
 	}
 	return r.Repo, nil
+}
+
+// taskDir is the directory a task's steps run in.
+func (r *Runner) taskDir(t *config.Task) string {
+	if t.Dir != "" {
+		return filepath.Join(r.Root, filepath.FromSlash(t.Dir))
+	}
+	return r.Root
 }

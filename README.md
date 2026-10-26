@@ -512,7 +512,13 @@ dotenv_sets:                   # key lists several tasks and services share
   the others built. A test that finds files through `runtime.Caller` gets a
   path from the module root under it, not one on disk: take paths from the
   working directory, the package's own, instead; a step that cannot
-  sets `GOFLAGS: -trimpath=false`. `go vet` and `go fix` go without, and
+  sets `GOFLAGS: -trimpath=false`. Under `-trimpath` a program or test takes
+  `runtime.GOROOT()` from its environment only, so `go run` and `go test`
+  given it get `GOROOT` from `go env GOROOT`, run in the step's directory,
+  unless their environment sets it: `go/importer` and `go/build` find the
+  standard library through it. A binary `go build` or `go install` made
+  reports no `GOROOT` where it runs unless the environment sets it.
+  `go vet` and `go fix` go without, and
   `GOFLAGS` is left alone for the commands steps start themselves: under
   `-trimpath` both replay a result another worktree cached with that
   tree's paths, and `go fix` rewrites the files there.
