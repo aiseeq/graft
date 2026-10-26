@@ -181,6 +181,47 @@ func TestWorkerTrailersNotFromOtherWorktrees(t *testing.T) {
 	}
 }
 
+// TestWorkerTrailersOfCarriedOverWork: a commit in another worktree that
+// stages files as a finished job left them, its changes carried over by
+// hand while the trunk moved on, names the job's models, also when the
+// master changed some of them on top and when git makes the commit itself;
+// one that changes the job's files otherwise, or puts back a file the job
+// left as it found it, names none.
+func TestWorkerTrailersOfCarriedOverWork(t *testing.T) {
+	f := workerRepo(t, "none")
+	job := filepath.Join(f.base, "job")
+	f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
+	f.write("b.txt", "b2\n")
+	f.mustGraft("commit", "-m", "feat: the trunk moves on")
+	writeMarkerJSON(t, f, map[string]any{"id": "job1", "models": []string{"vendor/model-a"}, "client": "cli", "dir": job, "finished": true})
+	writeFile(t, filepath.Join(job, "a.txt"), "by the job\n")
+	writeFile(t, filepath.Join(job, "c.txt"), "new by the job\n")
+
+	f.write("a.txt", "by the master\n")
+	f.write("b.txt", "b\n")
+	f.mustGraft("commit", "-m", "feat: the master's own, b.txt put back")
+	if got := f.workers("HEAD"); got != "" {
+		t.Errorf("the job's files changed otherwise and one put back, trailers %q", got)
+	}
+
+	f.write("a.txt", "by the job\n")
+	f.write("c.txt", "new by the job, and by the master\n")
+	out := f.mustGraft("commit", "-m", "feat: the job's work carried over")
+	if got := f.workers("HEAD"); got != "vendor/model-a" || !strings.Contains(out, "as the finished job job1 left them") {
+		t.Errorf("the job's work carried over, trailers %q\n%s", got, out)
+	}
+
+	writeFile(t, filepath.Join(job, "d.txt"), "d by the job\n")
+	f.write("d.txt", "d by the job\n")
+	f.git("add", "d.txt")
+	if out, code := f.exec(f.work, "", "git", "commit", "-q", "--no-verify", "-m", "feat: more of the job's work"); code != 0 {
+		t.Fatalf("git commit: exit %d\n%s", code, out)
+	}
+	if got := f.workers("HEAD"); got != "vendor/model-a" {
+		t.Errorf("git commit of the job's work, trailers %q\n%s", got, f.git("log", "-1", "--format=%B"))
+	}
+}
+
 // TestWorkerTrailersOfMergedCommits: a merge, by git itself, and a squash
 // name the models of the commits they bring in, with no marker left.
 func TestWorkerTrailersOfMergedCommits(t *testing.T) {

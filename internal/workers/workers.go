@@ -1,7 +1,8 @@
 // Package workers names the models whose work a commit carries. A tool that
 // runs a coding agent in a worktree leaves a marker in the repository while
 // the job lives, <git common dir>/worker/<id>, a JSON object; a commit in
-// that worktree gets a Worker trailer per model.
+// that worktree, and one that stages the files of a finished job as it left
+// them, gets a Worker trailer per model.
 package workers
 
 import (
@@ -93,13 +94,17 @@ func passOver(warn io.Writer, file string, err error) {
 // in order, each once:
 //   - the markers of this worktree whose job runs or whose round is
 //     finished: the master commits its work after the job's process exits;
+//   - the markers of other worktrees whose round is finished and some of
+//     whose files the commit stages as the job left them (carried): the
+//     master carried the job's diff over by hand;
 //   - the Worker trailers of the commits a merge or a squash brings in.
 //
-// The markers of other worktrees name no model: two jobs changing the same
-// file for their own reasons is common, and the work of one carried over
-// by hand cannot be told from that. A marker whose worktree is gone or
-// cannot be read, and one of a round not finished whose process is gone,
-// the job killed and the marker left, is reported to warn and passed over.
+// The marker of another worktree whose job still runs names no model, nor
+// does one whose files the commit changes otherwise: two jobs changing the
+// same file for their own reasons is common. A marker whose worktree is
+// gone or cannot be read, and one of a round not finished whose process is
+// gone, the job killed and the marker left, is reported to warn and passed
+// over.
 func Models(repo *gitx.Repo, warn io.Writer) ([]string, error) {
 	var models []string
 	add := func(ms ...string) {
@@ -113,6 +118,7 @@ func Models(repo *gitx.Repo, warn io.Writer) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	var others []Marker
 	for _, m := range Markers(repo, warn) {
 		dir, err := realPath(m.Dir)
 		if errors.Is(err, os.ErrNotExist) {
@@ -124,6 +130,10 @@ func Models(repo *gitx.Repo, warn io.Writer) ([]string, error) {
 			continue
 		}
 		if dir != root {
+			if m.Finished {
+				m.Dir = dir
+				others = append(others, m)
+			}
 			continue
 		}
 		if !m.Finished {
@@ -138,6 +148,23 @@ func Models(repo *gitx.Repo, warn io.Writer) ([]string, error) {
 			}
 		}
 		add(m.Models...)
+	}
+	if len(others) > 0 {
+		staged, err := stagedBlobs(repo)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range others {
+			n, err := carried(repo, m.Dir, staged)
+			if err != nil {
+				passOver(warn, m.file, err)
+				continue
+			}
+			if n > 0 {
+				fmt.Fprintf(warn, "graft: the commit stages %d files as the finished job %s left them in %s: Worker %s\n", n, m.ID, m.Dir, strings.Join(m.Models, ", "))
+				add(m.Models...)
+			}
+		}
 	}
 	merged, err := mergedModels(repo)
 	if err != nil {
@@ -177,6 +204,109 @@ func realPath(p string) (string, error) {
 		return "", fmt.Errorf("the path %s: %w", p, err)
 	}
 	return real, nil
+}
+
+// stagedBlobs are the blobs of the regular files the commit adds or
+// changes, by path.
+func stagedBlobs(repo *gitx.Repo) (map[string]string, error) {
+	out, err := repo.Git("diff", "--cached", "--raw", "--no-renames", "--no-abbrev", "-z")
+	if err != nil {
+		return nil, err
+	}
+	blobs := map[string]string{}
+	fields := strings.Split(out, "\x00")
+	for i := 0; i+1 < len(fields); i += 2 {
+		// :<old mode> <new mode> <old blob> <new blob> <status>
+		meta := strings.Fields(fields[i])
+		if len(meta) == 5 && (meta[1] == "100644" || meta[1] == "100755") && meta[4] != "D" {
+			blobs[fields[i+1]] = meta[3]
+		}
+	}
+	return blobs, nil
+}
+
+// carried counts the files of staged the worktree at dir holds with the
+// same content and changed since it forked from HEAD: the job's work, not
+// a file it left as it found it.
+func carried(repo *gitx.Repo, dir string, staged map[string]string) (int, error) {
+	var paths []string
+	for p := range staged {
+		info, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(p)))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if info.Mode().IsRegular() && !strings.Contains(p, "\n") {
+			paths = append(paths, p)
+		}
+	}
+	if len(paths) == 0 {
+		return 0, nil
+	}
+	slices.Sort(paths)
+	out, err := gitx.InOther(dir, strings.NewReader(strings.Join(paths, "\n")+"\n"), "hash-object", "--stdin-paths")
+	if err != nil {
+		return 0, err
+	}
+	hashes := strings.Fields(out)
+	if len(hashes) != len(paths) {
+		return 0, fmt.Errorf("git hash-object hashed %d of %d files", len(hashes), len(paths))
+	}
+	var same []string
+	for i, p := range paths {
+		if hashes[i] == staged[p] {
+			same = append(same, p)
+		}
+	}
+	if len(same) == 0 {
+		return 0, nil
+	}
+	forked, err := forkBlobs(repo, dir, same)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, p := range same {
+		// A file not there at the fork is the job's own.
+		if blob, ok := forked[p]; !ok || blob != staged[p] {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// forkBlobs are the blobs of paths where the worktree at dir forked from
+// HEAD, by path; none when the two share no history.
+func forkBlobs(repo *gitx.Repo, dir string, paths []string) (map[string]string, error) {
+	if ok, err := repo.HasHead(); err != nil || !ok {
+		return map[string]string{}, err
+	}
+	head, err := gitx.InOther(dir, nil, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	fork, err := repo.Git("merge-base", "HEAD", strings.TrimSpace(head))
+	if gitx.ExitCode(err) == 1 {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out, err := repo.Git(append([]string{"ls-tree", "-z", "--full-tree", strings.TrimSpace(fork), "--"}, paths...)...)
+	if err != nil {
+		return nil, err
+	}
+	blobs := map[string]string{}
+	for entry := range strings.SplitSeq(out, "\x00") {
+		// <mode> <type> <object>\t<path>
+		meta, path, ok := strings.Cut(entry, "\t")
+		if f := strings.Fields(meta); ok && len(f) == 3 {
+			blobs[path] = f[2]
+		}
+	}
+	return blobs, nil
 }
 
 // squashedCommit is a commit line of SQUASH_MSG, which git merge --squash

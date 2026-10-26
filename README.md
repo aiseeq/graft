@@ -288,15 +288,22 @@ and not when the message already names it:
 
 - a marker whose `dir` is this worktree and whose round is finished or
   whose process lives: the job's work is here;
+- a marker of another worktree whose round is finished, when the commit
+  stages some file byte for byte as the job left it there, committed or not,
+  and the job changed that file since its worktree forked from `HEAD`: its
+  changes were carried over by hand (`git diff` there, `git apply` here),
+  the master's own edits on top of some files aside;
 - the `Worker` trailers of the commits a merge (`MERGE_HEAD`) or
   `git merge --squash` brings in.
 
-The marker of another worktree names no model, even when both change the same
-file: two jobs on the same code do that for their own reasons. A marker is a
-hint and never stops a commit: one that cannot be read, does not parse or
-names no id, model, dir or one of pid and finished, one whose worktree is gone
-or cannot be read, and one of a round not finished whose process is gone (the
-job was killed and left it) is reported and passed over. On Linux a pid whose
+The marker of another worktree whose job still runs names no model, nor does
+one whose files the commit changes to other text, or puts back as they were
+before the fork: two jobs on the same code do that for their own reasons. The
+commit says how many files it carries of which job. A marker is a hint and
+never stops a commit: one that cannot be read, does not parse or names no id,
+model, dir or one of pid and finished, one whose worktree is gone or cannot be
+read, and one of a round not finished whose process is gone (the job was
+killed and left it) is reported and passed over. On Linux a pid whose
 command line does not name the `id` counts as gone: another program took it.
 Without markers the message is left as it is.
 

@@ -85,12 +85,31 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error { return e.Err }
 
+// InOther runs git in dir, a work tree other than the one a hook may run in,
+// with stdin fed from input: without the variables git sets for the hook
+// (LocalEnvVars), which would bind it to the hook's repository and index.
+func InOther(dir string, input io.Reader, args ...string) (string, error) {
+	drop, err := LocalEnvVars()
+	if err != nil {
+		return "", fmt.Errorf("listing git environment variables: %w", err)
+	}
+	return runEnviron(dir, Without(os.Environ(), drop), input, args...)
+}
+
 func run(dir string, env []string, input io.Reader, args ...string) (string, error) {
+	var environ []string
+	if len(env) > 0 {
+		environ = append(os.Environ(), env...)
+	}
+	return runEnviron(dir, environ, input, args...)
+}
+
+// runEnviron runs git with the environment environ, nil inheriting this
+// process's.
+func runEnviron(dir string, environ []string, input io.Reader, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
-	}
+	cmd.Env = environ
 	cmd.Stdin = input
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
