@@ -360,9 +360,12 @@ func (c *cleaner) worktree(w worktree) error {
 	if err != nil {
 		return err
 	}
-	if n := len(changed); n > 0 {
-		c.line("in work", what, plural(n, "uncommitted change"))
+	switch {
+	case len(changed) > 0 && w.head == "":
+		c.line("in work", what, plural(len(changed), "uncommitted change")+", no commit yet")
 		return nil
+	case len(changed) > 0:
+		return c.dirtyWorktree(w, what, tree, changed)
 	}
 	v, err := c.verdict(w.head)
 	if err != nil {
@@ -372,11 +375,103 @@ func (c *cleaner) worktree(w worktree) error {
 		c.line(v.kind, what, v.why)
 		return nil
 	}
-	if !c.opts.Apply {
-		c.line("would remove", what, "clean, in "+c.trunk)
+	return c.removeWorktree(w, what, "clean, in "+c.trunk)
+}
+
+// dirtyWorktree handles a worktree with uncommitted changes. It goes like a
+// clean one when its work tree, changes and untracked files included, is in
+// the trunk by content: work merged by other commits, the copy left behind.
+// Otherwise it stays in work, with the files the trunk lacks.
+func (c *cleaner) dirtyWorktree(w worktree, what string, tree *gitx.Repo, changed []string) error {
+	n := plural(len(changed), "uncommitted change")
+	// HEAD moving is no measure of an edit in place.
+	for _, f := range changed {
+		st, err := os.Stat(filepath.Join(w.path, f))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("an uncommitted change: %w", err)
+		}
+		if c.now.Sub(st.ModTime()) < c.opts.MinAge {
+			c.line("in work", what, n+", changed less than "+c.opts.MinAge.String()+" ago")
+			return nil
+		}
+	}
+	snap, err := tree.WorkTreeTree()
+	if err != nil {
+		return err
+	}
+	commit, err := c.repo.GitEnv(snapshotIdentity, "commit-tree", snap, "-p", w.head, "-m", "graft worktree clean: uncommitted changes")
+	if err != nil {
+		return err
+	}
+	v, err := c.verdict(strings.TrimSpace(commit))
+	if err != nil {
+		return err
+	}
+	if !v.merged {
+		files, err := c.lacks(v)
+		if err != nil {
+			return err
+		}
+		c.line("in work", what, n+", not in "+c.trunk+": "+listSome(files, 5))
 		return nil
 	}
-	if _, err := c.repo.Git("worktree", "remove", w.path); err != nil {
+	why := n + ", all in " + c.trunk
+	if !c.opts.Apply {
+		c.line("would remove", what, why)
+		return nil
+	}
+	// The work tree as it was checked, or another look.
+	again, err := tree.WorkTreeTree()
+	if err != nil {
+		return err
+	}
+	if again != snap {
+		c.line("in work", what, n+", changed while checked")
+		return nil
+	}
+	return c.removeWorktree(w, what, why, "--force")
+}
+
+// snapshotIdentity lets commit-tree write the commit of uncommitted changes
+// without a configured user: the commit is only merged in memory and dropped.
+var snapshotIdentity = []string{
+	"GIT_AUTHOR_NAME=graft", "GIT_AUTHOR_EMAIL=graft@localhost",
+	"GIT_COMMITTER_NAME=graft", "GIT_COMMITTER_EMAIL=graft@localhost",
+}
+
+// lacks lists the files where merging the work into the trunk gives other
+// content than the trunk's, or conflicts, the version files aside.
+func (c *cleaner) lacks(v verdict) ([]string, error) {
+	out, err := c.repo.Git(append([]string{"diff", "--name-only", "-z", "--no-renames", c.trunk, v.tree, "--", "."}, c.exclude...)...)
+	if err != nil {
+		return nil, err
+	}
+	files := slices.DeleteFunc(strings.Split(out, "\x00"), func(f string) bool { return f == "" })
+	files = append(files, v.conflicts...)
+	slices.Sort(files)
+	return slices.Compact(files), nil
+}
+
+// listSome joins the first max names and counts the rest.
+func listSome(names []string, max int) string {
+	if len(names) <= max {
+		return strings.Join(names, ", ")
+	}
+	return strings.Join(names[:max], ", ") + fmt.Sprintf(" and %d more", len(names)-max)
+}
+
+// removeWorktree removes a worktree whose work is in the trunk, and its
+// branch.
+func (c *cleaner) removeWorktree(w worktree, what, why string, flags ...string) error {
+	if !c.opts.Apply {
+		c.line("would remove", what, why)
+		return nil
+	}
+	args := append(append([]string{"worktree", "remove"}, flags...), w.path)
+	if _, err := c.repo.Git(args...); err != nil {
 		return err
 	}
 	if w.branch != "" {
@@ -384,7 +479,7 @@ func (c *cleaner) worktree(w worktree) error {
 			return err
 		}
 	}
-	c.line("removed", what, "clean, in "+c.trunk)
+	c.line("removed", what, why)
 	return nil
 }
 
@@ -421,6 +516,10 @@ type verdict struct {
 	// kind and why describe work that is not: unmerged, or check when its
 	// commits are all in the trunk by subject.
 	kind, why string
+	// tree is the merge of the work into the trunk, conflicts the files
+	// it conflicts in.
+	tree      string
+	conflicts []string
 }
 
 // verdict tells whether merging rev into the trunk gives the trunk's tree,
@@ -460,7 +559,7 @@ func (c *cleaner) verdict(rev string) (verdict, error) {
 		added, deleted = added+a, deleted+d
 	}
 	if len(conflicts) == 0 && added == 0 && deleted == 0 {
-		return verdict{merged: true}, nil
+		return verdict{merged: true, tree: tree}, nil
 	}
 	why := fmt.Sprintf("adds +%d -%d lines to %s", added, deleted, c.trunk)
 	if len(conflicts) > 0 {
@@ -472,9 +571,9 @@ func (c *cleaner) verdict(rev string) (verdict, error) {
 	}
 	own := strings.Split(strings.TrimSpace(subjects), "\n")
 	if strings.TrimSpace(subjects) != "" && !slices.ContainsFunc(own, func(s string) bool { return !c.subjects[s] }) {
-		return verdict{kind: "check", why: "its commits are all in " + c.trunk + " by subject, but it " + why + ": looks merged, check"}, nil
+		return verdict{kind: "check", why: "its commits are all in " + c.trunk + " by subject, but it " + why + ": looks merged, check", tree: tree, conflicts: conflicts}, nil
 	}
-	return verdict{kind: "unmerged", why: why}, nil
+	return verdict{kind: "unmerged", why: why, tree: tree, conflicts: conflicts}, nil
 }
 
 // branches handles the local branches no worktree holds.

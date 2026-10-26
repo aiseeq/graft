@@ -7,13 +7,16 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
-// TestWorktreeClean: a worktree goes, with its branch, only when its tree is
-// clean, no process works in it and merging it into the trunk gives the
-// trunk's tree, the version files aside: content, not ancestry. A worktree
-// whose commit subjects are all in the trunk but whose content is not is
-// shown apart, for a look; branches without a worktree go the same way.
+// TestWorktreeClean: a worktree goes, with its branch, only when no process
+// works in it and merging it into the trunk, its uncommitted changes and
+// untracked files included, gives the trunk's tree, the version files aside:
+// content, not ancestry. Uncommitted changes the trunk lacks keep it, named;
+// so do changes made less than --min-age ago. A worktree whose commit
+// subjects are all in the trunk but whose content is not is shown apart, for
+// a look; branches without a worktree go the same way.
 func TestWorktreeClean(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the process check reads /proc")
@@ -22,6 +25,7 @@ func TestWorktreeClean(t *testing.T) {
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		"VERSION":     "1.0.0\n",
 		"shared.txt":  "one\n",
+		"doc.txt":     "a\n",
 	}, "origin")
 	f.git("checkout", "-q", "-b", "main")
 	f.mustGraft("commit", "-m", "feat: base")
@@ -41,9 +45,15 @@ func TestWorktreeClean(t *testing.T) {
 	commitIn(add("merged"), "merged.txt", "m\n", "feat: merged work")
 	// Not merged.
 	commitIn(add("open"), "open.txt", "o\n", "feat: open work")
-	// Merged, but with an uncommitted file.
+	// Uncommitted changes, one of them the trunk lacks.
 	dirty := add("dirty")
 	writeFile(t, filepath.Join(dirty, "scratch.txt"), "s\n")
+	writeFile(t, filepath.Join(dirty, "doc.txt"), "b\n")
+	// Uncommitted changes, a tracked file and an untracked one, that other
+	// commits merged into the trunk.
+	landed := add("landed")
+	writeFile(t, filepath.Join(landed, "doc.txt"), "b\n")
+	writeFile(t, filepath.Join(landed, "other.txt"), "three\n")
 	// Merged, but a process works in it; another holds a file of one open
 	// from elsewhere; a third waits between its runs and locked it.
 	busy := add("busy")
@@ -63,6 +73,8 @@ func TestWorktreeClean(t *testing.T) {
 	f.mustGraft("commit", "-m", "feat: merged work, rewritten")
 	f.write("other.txt", "three\n")
 	f.mustGraft("commit", "-m", "feat: shared change")
+	f.write("doc.txt", "b\n")
+	f.mustGraft("commit", "-m", "docs: b")
 
 	sleep := exec.Command("sleep", "60")
 	sleep.Dir = busy
@@ -82,24 +94,38 @@ func TestWorktreeClean(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = reader.Process.Kill(); _ = reader.Wait() })
 
-	// Fresh worktrees wait an hour by default.
+	// Fresh worktrees wait an hour by default, and so do fresh changes in
+	// one whose HEAD is old.
+	old := time.Now().Add(-2 * time.Hour)
+	gitDir := strings.TrimSpace(f.git("-C", landed, "rev-parse", "--path-format=absolute", "--git-dir"))
+	for _, p := range []string{filepath.Join(gitDir, "HEAD"), filepath.Join(gitDir, "logs", "HEAD")} {
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
 	out := f.mustGraft("worktree", "clean")
-	if !strings.Contains(out, "in work   "+wt("merged")+" (w/merged): used less than 1h0m0s ago") {
-		t.Errorf("a fresh worktree:\n%s", out)
+	for _, want := range []string{
+		"in work   " + wt("merged") + " (w/merged): used less than 1h0m0s ago",
+		"in work   " + landed + " (w/landed): 2 uncommitted changes, changed less than 1h0m0s ago",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("fresh work: no %q:\n%s", want, out)
+		}
 	}
 
 	out = f.mustGraft("worktree", "clean", "--min-age", "0s")
 	for _, want := range []string{
 		"would remove " + wt("merged") + " (w/merged): clean, in origin/main",
 		"unmerged  " + wt("open") + " (w/open): adds +1 -0 lines to origin/main",
-		"in work   " + dirty + " (w/dirty): 1 uncommitted change",
+		"in work   " + dirty + " (w/dirty): 2 uncommitted changes, not in origin/main: scratch.txt",
+		"would remove " + landed + " (w/landed): 2 uncommitted changes, all in origin/main",
 		"in work   " + busy + " (w/busy): a process works in it (sleep, pid ",
 		"in work   " + held + " (w/held): a process works in it (sleep, pid ",
 		"in work   " + locked + " (w/locked): locked: job 7 runs here until it is done (git worktree unlock to let it go)",
 		"check     " + wt("look") + " (w/look): its commits are all in origin/main by subject, but it adds +1 -1 lines to origin/main: looks merged, check",
 		"would remove branch b/old: in origin/main",
 		"unmerged  branch b/new: adds +1 -0 lines to origin/main",
-		"dry run: graft worktree clean --apply removes 2",
+		"dry run: graft worktree clean --apply removes 3",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("dry run: no %q:\n%s", want, out)
@@ -110,13 +136,17 @@ func TestWorktreeClean(t *testing.T) {
 	}
 
 	out = f.mustGraft("worktree", "clean", "--min-age", "0s", "--apply")
-	if !strings.Contains(out, "removed   "+wt("merged")+" (w/merged)") || !strings.Contains(out, "removed   branch b/old") {
-		t.Errorf("apply:\n%s", out)
+	for _, want := range []string{"removed   " + wt("merged") + " (w/merged)", "removed   " + landed + " (w/landed)", "removed   branch b/old"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("apply: no %q:\n%s", want, out)
+		}
 	}
-	if _, err := os.Stat(wt("merged")); !os.IsNotExist(err) {
-		t.Errorf("the merged worktree is still there: %v", err)
+	for _, gone := range []string{wt("merged"), landed} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s is still there: %v", gone, err)
+		}
 	}
-	for _, branch := range []string{"w/merged", "b/old"} {
+	for _, branch := range []string{"w/merged", "w/landed", "b/old"} {
 		if _, code := f.tryGit("rev-parse", "--verify", "-q", "refs/heads/"+branch); code == 0 {
 			t.Errorf("branch %s is still there", branch)
 		}

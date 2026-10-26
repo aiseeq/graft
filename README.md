@@ -1678,15 +1678,22 @@ the trunk:
 - in work, left alone: locked (`git worktree lock --reason`, the reason
   shown), a process works in it (its working directory or a file it has open
   there, read from /proc, so Linux only), used within `--min-age` (its HEAD
-  reflog), or uncommitted changes. A tool that runs in a worktree in turns,
-  with pauses where no process is there, locks it for the whole job and
+  reflog, and the changed files' times when there are uncommitted changes),
+  or uncommitted changes the trunk lacks, those files named. A tool that
+  runs in a worktree in turns, with pauses where no process is there, locks
+  it for the whole job and
   unlocks it when the job is done: between the turns nothing else shows the
   worktree is taken, and `git worktree remove` refuses a locked one too;
 - in the trunk: merging it into the trunk (`git merge-tree --write-tree`)
   gives the trunk's tree, the version files graft bumps aside. Ancestry and
   patch ids are no measure: a rewritten commit has another hash, and a commit
-  with the same subject may carry other content;
-- a worktree is removed with `git worktree remove`, then its branch, and the
+  with the same subject may carry other content. Uncommitted changes and
+  untracked files (ignored ones aside) count as a commit on HEAD: when the
+  trunk has them by content, merged there by other commits, the worktree
+  goes as a clean one, after a second look that nothing changed since the
+  check;
+- a worktree is removed with `git worktree remove` (`--force` for one whose
+  uncommitted changes are in the trunk), then its branch, and the
   branch of the same name on every remote whose copy is in the trunk too,
   only while it is still at the commit checked (`--force-with-lease`):
   commits pushed there after the fetch keep it, listed as `kept`; one
