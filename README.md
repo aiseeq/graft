@@ -1362,9 +1362,24 @@ the target, merges left out, and groups them by the item each is the work
 of: the first key of its subject, or else a line of its body that is a key
 alone, as graft commit adds the key of the branch, or its
 `approved_release.attribute`. A key the body only mentions ("after
-PROJ-12") refers to another item and counts for nothing. A revert and the
-commits it reverts deliver nothing; a commit withheld from the target is
-not on it, though its history has it. Of the token owner's items (assigned
+PROJ-12") refers to another item and counts for nothing; so does a key
+that opens the subject only as a mention ("answers on PROJ-12"): graft
+cannot tell it from work, give such a commit the key of its own item first.
+A revert and the commits it reverts deliver nothing; a commit withheld from
+the target is not on it, though its history has it.
+
+A commit of the trunk the target does not run by history is on it by
+content when, put onto the commit the target runs, it changes no file but
+the version files and those `approved_release.ignore_paths` names: a
+cherry-pick to a release branch, two commits taken in one, a commit of docs
+alone. A commit the target runs names what it took with the line `git
+cherry-pick -x` adds, `(cherry picked from commit <sha>)`, one per commit:
+the commits named are on the target and the pick is in the trunk once they
+are, whatever shape the release needed; without the line a pick of a
+change the trunk has changed further since is not recognised and stays
+listed. A commit the target runs is in the trunk by content the same way.
+
+Of the token owner's items (assigned
 to them now or once), not in `skip_keys` nor subtasks of an item there:
 
 - an item in the `from` of the target's transition to `done`, all of whose
@@ -1377,10 +1392,10 @@ to them now or once), not in `skip_keys` nor subtasks of an item there:
   transition or `approved_release` names (Paused), is listed instead: it
   was put aside by hand;
 - listed by hand, nothing moved: a done item with a commit outside the
-  trunk or not on the target yet; an item not started (To Do) with commits
-  in the trunk; an item in a status no transition or `approved_release`
-  names (Paused, Blocked) with commits in the trunk; an item in the `from`
-  of another transition (In Progress), all its work on the target, whose
+  trunk or not on the target yet; an item not started (To Do), or in
+  `skip_statuses` (put aside by hand: Blocked, On Hold), with commits in
+  the trunk; an item in any other status (In Progress, Testing, Paused
+  unless `skip_statuses` names it), all its work on the target, whose
   newest commit is `stale_days` old.
 
 Without `apply` the sweep only prints the moves it would make: start that

@@ -280,6 +280,12 @@ func (a *App) sweep(ctx context.Context, r *deployRun, head string, withheld []s
 	if ar := r.target.ApprovedRelease; ar != nil {
 		s.gate = &approvalGate{client: client, conf: ar, issues: s.issues, versions: map[string]bool{}}
 	}
+	s.judge(ctx, items)
+	return nil
+}
+
+// judge moves and lists the items, then prints what is to look at.
+func (s *sweepRun) judge(ctx context.Context, items map[string][]sweptCommit) {
 	keys := slices.Sorted(func(yield func(string) bool) {
 		for k := range items {
 			if !yield(k) {
@@ -296,11 +302,10 @@ func (a *App) sweep(ctx context.Context, r *deployRun, head string, withheld []s
 		}
 	}
 	if len(s.lines) > 0 {
-		a.printf("sweep %s: to look at by hand:\n  %s", r.name, strings.Join(s.lines, "\n  "))
+		s.app.printf("sweep %s: to look at by hand:\n  %s", s.r.name, strings.Join(s.lines, "\n  "))
 	} else if len(s.judged) == 0 {
-		a.printf("sweep %s: nothing to move or look at", r.name)
+		s.app.printf("sweep %s: nothing to move or look at", s.r.name)
 	}
-	return nil
 }
 
 // sweepItems groups the commits of the window, on any remote branch or on
@@ -309,29 +314,9 @@ func (a *App) sweep(ctx context.Context, r *deployRun, head string, withheld []s
 // Commits withheld from the target are not on it, though its history has
 // them.
 func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.Time) (map[string][]sweptCommit, error) {
-	out, err := r.repo.Git("log", "--no-merges", "--format=%H%x1f%ct%x1f%s%x1f%b%x1e", "--since="+since.Format(time.RFC3339), "--remotes", head)
+	commits, err := sweepLog(r, head, since)
 	if err != nil {
 		return nil, err
-	}
-	type logged struct {
-		deliveredCommit
-		when time.Time
-	}
-	var commits []logged
-	for rec := range strings.SplitSeq(out, "\x1e") {
-		rec = strings.TrimLeft(rec, "\n")
-		if rec == "" {
-			continue
-		}
-		f := strings.SplitN(rec, "\x1f", 4)
-		if len(f) != 4 {
-			return nil, fmt.Errorf("unexpected git log record %q", rec)
-		}
-		sec, err := strconv.ParseInt(f[1], 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("unexpected commit time %q of %s", f[1], f[0])
-		}
-		commits = append(commits, logged{deliveredCommit{sha: f[0], subject: f[2], body: f[3]}, time.Unix(sec, 0)})
 	}
 	onTarget, err := revSet(r.repo, head, since.Add(-sweepMargin))
 	if err != nil {
@@ -352,6 +337,10 @@ func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.
 			}
 		}
 	}
+	picks, err := pickedOnto(r, commits, onTarget, withheld)
+	if err != nil {
+		return nil, err
+	}
 	keyRe := projectKeyRe(r.cfg)
 	items := map[string][]sweptCommit{}
 	for _, c := range commits {
@@ -362,9 +351,130 @@ func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.
 		if key == "" {
 			continue
 		}
-		items[key] = append(items[key], sweptCommit{sha: c.sha, when: c.when, onTarget: onTarget[c.sha] && !slices.Contains(withheld, c.sha), inTrunk: inTrunk[c.sha]})
+		sc := sweptCommit{sha: c.sha, when: c.when, onTarget: onTarget[c.sha] && !slices.Contains(withheld, c.sha) || picks.onTarget[c.sha], inTrunk: inTrunk[c.sha]}
+		// A pick is in the trunk when what it took is.
+		if took := picks.took[c.sha]; len(took) > 0 && !sc.inTrunk {
+			sc.inTrunk = !slices.ContainsFunc(took, func(sha string) bool { return !inTrunk[sha] })
+		}
+		if err := sc.byContent(r, head, trunk, c.parent); err != nil {
+			return nil, err
+		}
+		items[key] = append(items[key], sc)
 	}
 	return items, nil
+}
+
+// pickedRe is the line git cherry-pick -x adds; a commit that takes another
+// in a shape of its own can name it the same way.
+var pickedRe = regexp.MustCompile(`(?m)^\(cherry picked from commit ([0-9a-f]{7,40})\)\s*$`)
+
+// picks are the commits the target runs as picks: onTarget the commits
+// picked, took what each pick on the target names.
+type picks struct {
+	onTarget map[string]bool
+	took     map[string][]string
+}
+
+// pickedOnto reads the picks among the commits the target runs; a name
+// that resolves to no commit counts for nothing.
+func pickedOnto(r *deployRun, commits []loggedCommit, onTarget map[string]bool, withheld []string) (picks, error) {
+	p := picks{onTarget: map[string]bool{}, took: map[string][]string{}}
+	for _, c := range commits {
+		if !onTarget[c.sha] || slices.Contains(withheld, c.sha) {
+			continue
+		}
+		for _, m := range pickedRe.FindAllStringSubmatch(c.body, -1) {
+			full, err := r.repo.Git("rev-parse", "--verify", "--quiet", m[1]+"^{commit}")
+			if gitx.ExitCode(err) == 1 {
+				continue
+			}
+			if err != nil {
+				return p, err
+			}
+			sha := strings.TrimSpace(full)
+			p.onTarget[sha] = true
+			p.took[c.sha] = append(p.took[c.sha], sha)
+		}
+	}
+	return p, nil
+}
+
+// loggedCommit is a commit of the sweep's window.
+type loggedCommit struct {
+	deliveredCommit
+	when time.Time
+	// parent is its parent, "" for a root commit.
+	parent string
+}
+
+// sweepLog lists the commits of the window on any remote branch or on head,
+// merges left out.
+func sweepLog(r *deployRun, head string, since time.Time) ([]loggedCommit, error) {
+	out, err := r.repo.Git("log", "--no-merges", "--format=%H%x1f%ct%x1f%P%x1f%s%x1f%b%x1e", "--since="+since.Format(time.RFC3339), "--remotes", head)
+	if err != nil {
+		return nil, err
+	}
+	var commits []loggedCommit
+	for rec := range strings.SplitSeq(out, "\x1e") {
+		rec = strings.TrimLeft(rec, "\n")
+		if rec == "" {
+			continue
+		}
+		f := strings.SplitN(rec, "\x1f", 5)
+		if len(f) != 5 {
+			return nil, fmt.Errorf("unexpected git log record %q", rec)
+		}
+		sec, err := strconv.ParseInt(f[1], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("unexpected commit time %q of %s", f[1], f[0])
+		}
+		commits = append(commits, loggedCommit{deliveredCommit{sha: f[0], subject: f[3], body: f[4]}, time.Unix(sec, 0), f[2]})
+	}
+	return commits, nil
+}
+
+// byContent completes where the commit is by content: one a release branch
+// took runs on the target, and is in the trunk, under another hash. Commits
+// of other branches are in neither, and not checked.
+func (sc *sweptCommit) byContent(r *deployRun, head, trunk, parent string) error {
+	if parent == "" {
+		return nil
+	}
+	var err error
+	if sc.onTarget && !sc.inTrunk {
+		if sc.inTrunk, err = landed(r, trunk, sc.sha, parent, nil); err != nil {
+			return err
+		}
+	}
+	if sc.inTrunk && !sc.onTarget {
+		sc.onTarget, err = landed(r, head, sc.sha, parent, r.target.ApprovedRelease)
+	}
+	return err
+}
+
+// landed tells whether rev has the change of commit sha by content: put onto
+// rev, the commit changes no file but the version files and, with conf, the
+// files it ignores; a conflict counts as a change. A cherry-pick, two
+// commits taken in one, a commit of docs alone land; a change rev has
+// changed further since conflicts, and does not.
+func landed(r *deployRun, rev, sha, parent string, conf *config.ApprovedRelease) (bool, error) {
+	out, err := r.repo.Git("merge-tree", "--write-tree", "-z", "--name-only", "--no-messages", "--merge-base="+parent, rev, sha)
+	if err != nil && gitx.ExitCode(err) != 1 {
+		return false, err
+	}
+	// The tree, then the files in conflict.
+	tree, conflicts, _ := strings.Cut(out, "\x00")
+	diff, err := r.repo.Git("diff", "-z", "--name-only", "--no-renames", rev, tree)
+	if err != nil {
+		return false, err
+	}
+	versions := r.cfg.VersionFiles()
+	for _, f := range slices.Concat(strings.Split(conflicts, "\x00"), strings.Split(diff, "\x00")) {
+		if f != "" && !slices.Contains(versions, f) && (conf == nil || !conf.Ignored([]string{f})) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // revSet is the set of commits rev reaches, back to since.
@@ -447,7 +557,8 @@ func (s *sweepRun) item(ctx context.Context, issue jira.Issue, commits []sweptCo
 		} else if i := slices.IndexFunc(commits, func(c sweptCommit) bool { return !c.onTarget }); i >= 0 {
 			s.list(ctx, issue, "%s is %s, but %s is not on %s yet", key, status, gitx.Short(commits[i].sha), s.r.name)
 		}
-	case issue.NotStarted:
+	case issue.NotStarted || slices.Contains(s.notes.SkipStatuses, status):
+		// Not started, or put aside by hand: work in the trunk says otherwise.
 		if inTrunk {
 			s.list(ctx, issue, "%s is %s, but its commits are in %s", key, status, s.trunk)
 		}
@@ -455,14 +566,11 @@ func (s *sweepRun) item(ctx context.Context, issue jira.Issue, commits []sweptCo
 		if allOn {
 			s.move(ctx, issue, fmt.Sprintf("its work of the last %d days is on %s (commits: %d)", s.conf.Days, s.r.name, len(commits)), true)
 		}
-	case s.inProgress(status):
+	default:
+		// In work, whether a transition names the status or not.
 		newest := slices.MaxFunc(commits, func(a, b sweptCommit) int { return a.when.Compare(b.when) })
 		if days := int(s.now.Sub(newest.when).Hours() / 24); allOn && days >= s.conf.StaleDays {
 			s.list(ctx, issue, "%s is %s, but all its work is on %s, the newest commit %d days old", key, status, s.r.name, days)
-		}
-	case !s.inFlow(status):
-		if inTrunk {
-			s.list(ctx, issue, "%s is %s, but its commits are in %s", key, status, s.trunk)
 		}
 	}
 }
@@ -516,19 +624,6 @@ func (s *sweepRun) parents(ctx context.Context, keys []string, items map[string]
 func (s *sweepRun) finishing(status string) bool {
 	t := s.r.target.ReleaseNotes.Moving(status)
 	return t != nil && t.To == s.conf.Done
-}
-
-// inProgress tells whether a transition of some target moves an item in
-// status elsewhere than to the done status: In Progress to Testing, say.
-func (s *sweepRun) inProgress(status string) bool {
-	for _, t := range s.r.cfg.Deploy.Targets {
-		if n := t.ReleaseNotes; n != nil {
-			if m := n.Moving(status); m != nil && m.To != s.conf.Done {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // inFlow tells whether some target's transitions or approved_release name

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -1771,7 +1772,8 @@ func TestDeploySweep(t *testing.T) {
 		"sweep swept: PROJ-11 would move to Done",
 		"sweep swept: PROJ-20 would move to Done: its subtasks are all done (2) and their work is on swept",
 		"PROJ-13 is To Do, but its commits are in origin/" + trunk,
-		"PROJ-6 is Paused, but its commits are in origin/" + trunk,
+		// Paused is not in skip_statuses: in work, as far as graft knows.
+		"PROJ-6 is Paused, but all its work is on swept, the newest commit 5 days old",
 		"PROJ-14 is In Progress, but all its work is on swept, the newest commit 5 days old",
 		"PROJ-60 is Paused, but its subtasks are all done (1) and their work is on swept",
 	} {
@@ -1911,5 +1913,91 @@ func TestDeploySkipKeysSubtaskOwnCommit(t *testing.T) {
 	}
 	if out := d.mustGraft("deploy", "sweep", "swept"); strings.Contains(out, "PROJ-41") {
 		t.Errorf("the sweep takes up PROJ-41:\n%s", out)
+	}
+}
+
+// TestDeploySweepByContent: a commit the target does not run by history but
+// does by content is on it: one that changes only files approved_release
+// ignores, and two commits of the trunk a release branch took in one; the
+// commit that took them is in the trunk by content too. A commit whose change
+// the target lacks stays listed.
+func TestDeploySweepByContent(t *testing.T) {
+	d := newDeployFixture(t, func(state string, q func(string) string) string {
+		return strings.Replace(deployConfig(state, q), `approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}`,
+			`approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}
+      release_notes: {transitions: [{from: [Ready for release], to: Done}], sweep: {}}`, 1)
+	})
+	d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+	trunk := d.git("branch", "--show-current")
+	d.git("remote", "set-head", "origin", trunk)
+	d.jira.mu.Lock()
+	maps.Copy(d.jira.statuses, map[string]string{"PROJ-80": "Done", "PROJ-81": "Done", "PROJ-82": "Done", "PROJ-83": "Done", "PROJ-84": "Done"})
+	d.jira.mu.Unlock()
+	d.mustGraft("deploy", "--unapproved", "live")
+	base := d.git("rev-parse", "HEAD")
+	d.write("docs/handover.md", "notes\n")
+	d.mustGraft("commit", "-m", "docs: PROJ-80 handover")
+	d.write("b.txt", "b\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-81 b")
+	d.write("c.txt", "c\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-82 c")
+	d.write("e.txt", "e\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-83 e")
+	d.write("g.txt", "g\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-84 g")
+	picked := d.git("rev-parse", "HEAD")
+	d.git("switch", "-q", "-c", "release/1.0", base)
+	d.write("b.txt", "b\n")
+	d.write("c.txt", "c\n")
+	d.mustGraft("commit", "-m", "chore: PROJ-81 and PROJ-82 to the release")
+	// Taken in another shape the release needs: it names what it took.
+	d.write("g.txt", "g for the release\n")
+	d.mustGraft("commit", "-m", "chore: PROJ-84 to the release\n\n(cherry picked from commit "+picked[:9]+")")
+	d.mustGraft("deploy", "--unapproved", "live")
+	out := d.mustGraft("deploy", "sweep", "live")
+	for _, key := range []string{"PROJ-80", "PROJ-81", "PROJ-82", "PROJ-84"} {
+		if strings.Contains(out, key+" is Done") {
+			t.Errorf("%s listed, though live runs its work:\n%s", key, out)
+		}
+	}
+	if !regexp.MustCompile(`PROJ-83 is Done, but [0-9a-f]+ is not on live yet`).MatchString(out) {
+		t.Errorf("PROJ-83 not listed:\n%s", out)
+	}
+}
+
+// TestDeploySweepStatusesNoTransitionNames: with no transition from In
+// Progress or Testing, an item there is judged as one in work, listed only
+// when all its work is on the target and stale_days old; an item in
+// skip_statuses, put aside by hand, is listed with commits in the trunk.
+func TestDeploySweepStatusesNoTransitionNames(t *testing.T) {
+	d := newDeployFixture(t, func(state string, q func(string) string) string {
+		c := strings.ReplaceAll(sweepConfig(state, q), "{from: [In Progress], to: Testing, assign: qa, keep_assignee_labels: [internal]}, ", "")
+		return strings.ReplaceAll(c, "{transitions: [{from: [In Progress], to: Testing}]", "{transitions: [{from: [Ready for release], to: Done}]")
+	})
+	if c, _ := os.ReadFile(d.path(".graft.yaml")); strings.Contains(string(c), "In Progress") {
+		t.Fatalf("a transition still names In Progress:\n%s", c)
+	}
+	d.env = append(d.env, "GRAFT_NOW="+time.Now().Add(5*24*time.Hour+time.Hour).UTC().Format(time.RFC3339), "XDG_CACHE_HOME="+t.TempDir())
+	d.git("remote", "set-head", "origin", d.git("branch", "--show-current"))
+	d.jira.mu.Lock()
+	maps.Copy(d.jira.statuses, map[string]string{"PROJ-90": "In Progress", "PROJ-91": "Testing", "PROJ-92": "Blocked"})
+	d.jira.mu.Unlock()
+	d.mustGraft("deploy", "swept")
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-90 a")
+	d.write("b.txt", "b\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-92 b")
+	d.mustGraft("deploy", "swept")
+	d.write("c.txt", "c\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-91 c")
+	out := d.mustGraft("deploy", "sweep", "swept")
+	if !strings.Contains(out, "PROJ-90 is In Progress, but all its work is on swept, the newest commit 5 days old") {
+		t.Errorf("PROJ-90 not listed as stale:\n%s", out)
+	}
+	if strings.Contains(out, "PROJ-91") {
+		t.Errorf("PROJ-91 listed, though its work is not on swept:\n%s", out)
+	}
+	if !strings.Contains(out, "PROJ-92 is Blocked, but its commits are in ") {
+		t.Errorf("PROJ-92 not listed:\n%s", out)
 	}
 }
