@@ -66,6 +66,7 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 		return err
 	}
 	a.dailyFlags(ctx, repo, cfg, "")
+	a.dailySweep(ctx, repo, cfg)
 	return nil
 }
 

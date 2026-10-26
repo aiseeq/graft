@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeJira records comments, transitions and fix version edits. The token
@@ -837,6 +839,28 @@ func TestDeployFixVersionPassesOverApproved(t *testing.T) {
 	out, code := d.graft("", "deploy", "uat")
 	if code == 0 || !strings.Contains(out, `every unreleased version of PROJ starting with "Product v" is being approved`) {
 		t.Errorf("exit %d:\n%s", code, out)
+	}
+}
+
+// TestDeployApprovedReleaseSubtaskByParentVersion: a subtask with no version
+// of its own goes out when its parent is in an approved version, and not when
+// the parent's version still waits for an approval.
+func TestDeployApprovedReleaseSubtaskByParentVersion(t *testing.T) {
+	d := deployRepo(t)
+	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-30": {"10030"}})
+	d.jira.setApprovers(map[string][]string{"10030": {"APPROVED", "PENDING"}})
+	d.jira.mu.Lock()
+	d.jira.parents = map[string]string{"PROJ-31": "PROJ-30"}
+	d.jira.mu.Unlock()
+	d.mustGraft("deploy", "--unapproved", "live")
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-31 part of the whole")
+	if out, code := d.graft("", "deploy", "live"); code == 0 || !strings.Contains(out, `PROJ-31 not in an approved "Product v" version, nor is its parent PROJ-30`) {
+		t.Fatalf("the parent's version is not approved yet: exit %d\n%s", code, out)
+	}
+	d.jira.setApprovers(map[string][]string{"10030": {"APPROVED", "APPROVED"}})
+	if out := d.mustGraft("deploy", "live"); !strings.Contains(out, "approved release: 1 commits since") {
+		t.Errorf("the subtask goes out by its parent's version:\n%s", out)
 	}
 }
 
@@ -1705,5 +1729,130 @@ func TestDeployShowsWhatTheTargetRuns(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q:\n%s", want, out)
 		}
+	}
+}
+
+// sweepConfig adds the target swept, whose release notes sweep.
+func sweepConfig(state string, q func(string) string) string {
+	return strings.Replace(deployConfig(state, q), "    gate:\n", `    swept:
+      env: local
+      run: [sh, deploy.sh]
+      deployed_sha: {path: `+q("swept-sha")+`}
+      release_notes: {transitions: [{from: [Ready for release], to: Done}], sweep: {}}
+    gate:
+`, 1)
+}
+
+// TestDeploySweep: the sweep moves to Done an item in Ready for release whose
+// commits the target runs, and a parent whose subtasks are done and on it;
+// it lists the items git contradicts, and leaves alone an item a commit only
+// refers to.
+func TestDeploySweep(t *testing.T) {
+	d := newDeployFixture(t, sweepConfig)
+	cache := t.TempDir()
+	d.env = append(d.env, "GRAFT_NOW="+time.Now().Add(5*24*time.Hour+time.Hour).UTC().Format(time.RFC3339), "XDG_CACHE_HOME="+cache)
+	trunk := d.git("branch", "--show-current")
+	d.git("remote", "set-head", "origin", trunk)
+	d.jira.mu.Lock()
+	maps.Copy(d.jira.statuses, map[string]string{"PROJ-10": "Ready for release", "PROJ-11": "Ready for release", "PROJ-12": "Done", "PROJ-13": "To Do",
+		"PROJ-14": "In Progress", "PROJ-15": "Ready for release", "PROJ-16": "Done", "PROJ-20": "In Progress", "PROJ-21": "Done", "PROJ-22": "Done"})
+	d.jira.parents = map[string]string{"PROJ-21": "PROJ-20", "PROJ-22": "PROJ-20"}
+	d.jira.mu.Unlock()
+	for i, msg := range []string{"feat: PROJ-10 a", "feat: PROJ-11 b", "fix: PROJ-14 c\n\nafter PROJ-15", "feat: PROJ-13 d", "feat: PROJ-6 e",
+		"feat: PROJ-21 f", "chore: g\n\nPROJ-22"} {
+		d.write(fmt.Sprintf("f%d.txt", i), "x\n")
+		d.mustGraft("commit", "-m", msg)
+	}
+	out := d.mustGraft("deploy", "swept")
+	for _, want := range []string{
+		"release notes skipped: no previously deployed commit recorded",
+		"sweep swept: PROJ-10 would move to Done: its work of the last 30 days is on swept (commits: 1)",
+		"sweep swept: PROJ-11 would move to Done",
+		"sweep swept: PROJ-20 would move to Done: its 2 subtasks are done and their work is on swept",
+		"PROJ-13 is To Do, but its commits are in origin/" + trunk,
+		"PROJ-6 is Paused, but its commits are in origin/" + trunk,
+		"PROJ-14 is In Progress, but all its work is on swept, the newest commit 5 days old",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "PROJ-15") {
+		t.Errorf("an item a commit only refers to:\n%s", out)
+	}
+	if _, moved := d.jira.snapshot(); len(moved) > 0 {
+		t.Errorf("moved without apply: %v", moved)
+	}
+
+	// PROJ-11 gets a commit the target does not run.
+	d.git("switch", "-q", "-c", "feature/x")
+	d.write("g1.txt", "x\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-11 more")
+	d.write("g2.txt", "x\n")
+	d.mustGraft("commit", "-m", "fix: PROJ-12 x")
+	branchSHA := d.git("rev-parse", "HEAD")
+	d.git("switch", "-q", trunk)
+	d.write("h.txt", "x\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-16 later")
+	later := d.git("rev-parse", "HEAD")
+	out = d.mustGraft("deploy", "sweep", "swept", "--apply")
+	for _, want := range []string{
+		"sweep swept: PROJ-10 moved to Done",
+		"sweep swept: PROJ-20 moved to Done",
+		"PROJ-12 is Done, but " + branchSHA[:12] + " is not in origin/" + trunk,
+		"PROJ-16 is Done, but " + later[:12] + " is not on swept yet",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
+	}
+	if _, moved := d.jira.snapshot(); !slices.Equal(slices.Sorted(slices.Values(moved)), []string{"PROJ-10", "PROJ-20"}) {
+		t.Errorf("moved = %v\n%s", moved, out)
+	}
+
+	// A commit sweeps by the commit the last deploy recorded, once a day.
+	d.write("i.txt", "x\n")
+	if out := d.mustGraft("commit", "-m", "feat: PROJ-16 still later"); strings.Contains(out, "sweep swept") {
+		t.Errorf("swept again within a day of the deploy:\n%s", out)
+	}
+	stamps, err := filepath.Glob(filepath.Join(cache, "graft", "sweep", "*"))
+	if err != nil || len(stamps) != 1 {
+		t.Fatalf("stamps = %v, %v", stamps, err)
+	}
+	day := time.Now().Add(-25 * time.Hour)
+	if err := os.Chtimes(stamps[0], day, day); err != nil {
+		t.Fatal(err)
+	}
+	d.write("j.txt", "x\n")
+	if out := d.mustGraft("commit", "-m", "feat: PROJ-16 a day on"); !strings.Contains(out, "PROJ-16 is Done, but "+d.git("rev-parse", "--short=12", "HEAD")+" is not on swept yet") {
+		t.Errorf("no daily sweep:\n%s", out)
+	}
+}
+
+// TestDeploySweepApprovedRelease: with approved_release.prefix, the sweep
+// moves an item whose work the target runs only once its version is
+// approved: code deployed past the check is not a release.
+func TestDeploySweepApprovedRelease(t *testing.T) {
+	d := newDeployFixture(t, func(state string, q func(string) string) string {
+		return strings.Replace(deployConfig(state, q), `approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}`,
+			`approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}
+      release_notes: {transitions: [{from: [Ready for release], to: Done}], sweep: {}}`, 1)
+	})
+	d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+	d.git("remote", "set-head", "origin", d.git("branch", "--show-current"))
+	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-50": {"10030"}})
+	d.jira.setApprovers(map[string][]string{"10030": {"APPROVED", "PENDING"}})
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-50"] = "Ready for release"
+	d.jira.mu.Unlock()
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-50 thing")
+	out := d.mustGraft("deploy", "--unapproved", "live")
+	if !strings.Contains(out, `PROJ-50 stays Ready for release though its work of the last 30 days is on live (commits: 1): PROJ-50 not in an approved "Product v" version`) {
+		t.Errorf("moved before its version is approved:\n%s", out)
+	}
+	d.jira.setApprovers(map[string][]string{"10030": {"APPROVED", "APPROVED"}})
+	if out := d.mustGraft("deploy", "sweep", "live"); !strings.Contains(out, "PROJ-50 would move to Done") {
+		t.Errorf("not moved once approved:\n%s", out)
 	}
 }

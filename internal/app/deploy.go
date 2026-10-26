@@ -462,6 +462,7 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 		return withheldErr
 	}
 	unset := a.releaseNotes(ctx, r)
+	a.deploySweep(ctx, r)
 	var missing []string
 	if len(unset.fixVersion) > 0 {
 		missing = append(missing, "the fix version is not set on "+strings.Join(unset.fixVersion, ", "))
@@ -473,6 +474,36 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 		return errors.Join(withheldErr, fmt.Errorf("deployed %s to %s, but %s (see above)", gitx.Short(r.head), r.name, strings.Join(missing, "; ")))
 	}
 	return withheldErr
+}
+
+// noteKeys lists the keys the deploy delivers, saying why when there are
+// none to note.
+func (a *App) noteKeys(r *deployRun) []string {
+	if r.prev == "" {
+		a.warn("release notes skipped: no previously deployed commit recorded (the next deploy will have one)")
+		return nil
+	}
+	known, err := r.repo.RevExists(r.prev)
+	if err != nil {
+		a.warn("release notes skipped: %v", err)
+		return nil
+	}
+	if !known {
+		a.warn("release notes skipped: the previously deployed commit %s is unknown here (git fetch?)", r.prev)
+		return nil
+	}
+	keys, reverted, err := deliveredKeys(r)
+	if err != nil {
+		a.warn("release notes skipped: %v", err)
+		return nil
+	}
+	for _, key := range reverted {
+		a.printf("release note for %s not posted: this deploy only takes its work out", key)
+	}
+	if len(keys) == 0 {
+		a.printf("release notes: no work item keys in %s..%s", gitx.Short(r.prev), gitx.Short(r.head))
+	}
+	return keys
 }
 
 // noteText is the release note of the target filled in.
@@ -508,29 +539,8 @@ func (a *App) warn(format string, args ...any) {
 // version or assignee, when the target asks for them, is not set.
 func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 	notes := r.cfg.ReleaseNotes.Jira
-	if r.prev == "" {
-		a.warn("release notes skipped: no previously deployed commit recorded (the next deploy will have one)")
-		return notesUnset{}
-	}
-	known, err := r.repo.RevExists(r.prev)
-	if err != nil {
-		a.warn("release notes skipped: %v", err)
-		return notesUnset{}
-	}
-	if !known {
-		a.warn("release notes skipped: the previously deployed commit %s is unknown here (git fetch?)", r.prev)
-		return notesUnset{}
-	}
-	keys, reverted, err := deliveredKeys(r)
-	if err != nil {
-		a.warn("release notes skipped: %v", err)
-		return notesUnset{}
-	}
-	for _, key := range reverted {
-		a.printf("release note for %s not posted: this deploy only takes its work out", key)
-	}
+	keys := a.noteKeys(r)
 	if len(keys) == 0 {
-		a.printf("release notes: no work item keys in %s..%s", gitx.Short(r.prev), gitx.Short(r.head))
 		return notesUnset{}
 	}
 	fix := &fixVersionRun{app: a, conf: r.target.ReleaseNotes.FixVersion}
@@ -1309,7 +1319,11 @@ func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 			return gatePass{}, err
 		}
 		if version == "" {
-			return gatePass{why: fmt.Sprintf("%s not in an approved %q version", key, g.conf.Prefix)}, nil
+			why := fmt.Sprintf("%s not in an approved %q version", key, g.conf.Prefix)
+			if issue.Parent != "" {
+				why += ", nor is its parent " + issue.Parent
+			}
+			return gatePass{why: why}, nil
 		}
 		pass.ok, pass.label = true, version
 	}
@@ -1348,8 +1362,21 @@ func (g *approvalGate) issue(ctx context.Context, key string) (jira.Issue, error
 }
 
 // approvedVersion names the item's fix version of the prefix that every
-// approver approved, "" when it has none.
+// approver approved, or else its parent's: a subtask goes out with the
+// item it is part of. It is "" when neither has one.
 func (g *approvalGate) approvedVersion(ctx context.Context, issue jira.Issue) (string, error) {
+	name, err := g.ownApprovedVersion(ctx, issue)
+	if err != nil || name != "" || issue.Parent == "" {
+		return name, err
+	}
+	parent, err := g.issue(ctx, issue.Parent)
+	if err != nil {
+		return "", err
+	}
+	return g.ownApprovedVersion(ctx, parent)
+}
+
+func (g *approvalGate) ownApprovedVersion(ctx context.Context, issue jira.Issue) (string, error) {
 	for _, v := range issue.FixVersions {
 		if !strings.HasPrefix(v.Name, g.conf.Prefix) {
 			continue

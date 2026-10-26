@@ -140,7 +140,35 @@ type TargetNotes struct {
 	// the status a transition leads to, its subtasks in that transition's
 	// from move there by it.
 	Subtasks bool `yaml:"subtasks"`
+	// Sweep reconciles the items with the commits the target runs, at each
+	// deploy and once a day: what the release notes of single deploys left
+	// behind.
+	Sweep *Sweep `yaml:"sweep"`
 }
+
+// Sweep moves to Done the items whose work the target runs in full, and
+// lists the items whose status git contradicts.
+type Sweep struct {
+	// Days is how far back the commits count: older history is left alone.
+	Days int `yaml:"days"`
+	// StaleDays is how long the newest commit of an item that is still in
+	// progress is old before the item, all its work on the target, is
+	// listed.
+	StaleDays int `yaml:"stale_days"`
+	// Done is the status a finished item moves to; a transition of the
+	// target must lead there.
+	Done string `yaml:"done"`
+	// Apply moves the items; without it the sweep only lists what it would
+	// move.
+	Apply bool `yaml:"apply"`
+}
+
+// Sweep defaults.
+const (
+	DefaultSweepDays      = 30
+	DefaultSweepStaleDays = 3
+	DefaultSweepDone      = "Done"
+)
 
 // NoteTransition moves an item in one of From to To.
 type NoteTransition struct {
@@ -331,7 +359,7 @@ func (c *Config) validateDeploy() error {
 }
 
 // DeploySubcommands are the words after graft deploy that are not targets.
-var DeploySubcommands = []string{"status", "logs", "check", "versions", "check-head", "check-integrations", "cutoff"}
+var DeploySubcommands = []string{"status", "logs", "check", "versions", "check-head", "check-integrations", "cutoff", "sweep"}
 
 func (c *Config) validateTarget(name string, t *DeployTarget) error {
 	where := "deploy.targets." + name
@@ -549,6 +577,9 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 	if err := c.validateReleaseName(where, t); err != nil {
 		return err
 	}
+	if err := validateSweep(where+".release_notes.sweep", n); err != nil {
+		return err
+	}
 	switch {
 	case n.Subtasks && len(n.Transitions) == 0:
 		return fmt.Errorf("%s.release_notes.subtasks: needs transitions to move them by", where)
@@ -561,6 +592,34 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 		if n.FixVersion.Template, err = ParseVersionName(n.FixVersion.Name); err != nil {
 			return fmt.Errorf("%s.release_notes.fix_version.name: %w", where, err)
 		}
+	}
+	return nil
+}
+
+// validateSweep fills in the defaults of a sweep and checks that a
+// transition leads to its done status.
+func validateSweep(where string, n *TargetNotes) error {
+	s := n.Sweep
+	if s == nil {
+		return nil
+	}
+	switch {
+	case s.Days < 0 || s.StaleDays < 0:
+		return fmt.Errorf("%s: days and stale_days count days, not %d and %d", where, s.Days, s.StaleDays)
+	case s.Done != "" && strings.TrimSpace(s.Done) == "":
+		return fmt.Errorf("%s.done: blank", where)
+	}
+	if s.Days == 0 {
+		s.Days = DefaultSweepDays
+	}
+	if s.StaleDays == 0 {
+		s.StaleDays = DefaultSweepStaleDays
+	}
+	if s.Done == "" {
+		s.Done = DefaultSweepDone
+	}
+	if n.Leading(s.Done) == nil {
+		return fmt.Errorf("%s: no transition leads to %s, the status a finished item moves to: add {from: [Ready for release], to: %s} to transitions, or name it in done", where, s.Done, s.Done)
 	}
 	return nil
 }

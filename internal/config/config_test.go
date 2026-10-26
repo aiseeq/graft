@@ -313,6 +313,12 @@ deploy:
 	if _, err := Parse([]byte(notes("{transition: Testing, from: [In Progress]}"))); err == nil || !strings.Contains(err.Error(), "release_notes.transition and from are replaced by transitions: [{from: [In Progress], to: Testing}]") {
 		t.Errorf("the old transition: %v", err)
 	}
+	cfg, err = Parse([]byte(notes("{transitions: [{from: [Ready for release], to: Done}], sweep: {apply: true}}")))
+	if err != nil {
+		t.Errorf("sweep: %v", err)
+	} else if s := cfg.Deploy.Targets["test"].ReleaseNotes.Sweep; s == nil || *s != (Sweep{Days: 30, StaleDays: 3, Done: "Done", Apply: true}) {
+		t.Errorf("sweep = %+v", s)
+	}
 	cfg, err = Parse([]byte(notes(`{transitions: [{from: [In Progress], to: Testing}], fix_version: {prefix: "Product v"}}`)))
 	if err != nil {
 		t.Errorf("fix_version: %v", err)
@@ -354,6 +360,9 @@ deploy:
 		"from twice":            notes("{transitions: [{from: [In Progress], to: Testing}, {from: [In Progress], to: Done}]}"),
 		"blank assign":          notes("{transitions: [{from: [In Progress], to: Testing, assign: ' '}]}"),
 		"keep without assign":   notes("{transitions: [{from: [In Progress], to: Testing, keep_assignee_labels: [internal]}]}"),
+		"sweep without done":    notes("{transitions: [{from: [In Progress], to: Testing}], sweep: {}}"),
+		"sweep negative days":   notes("{transitions: [{from: [Ready for release], to: Done}], sweep: {days: -1}}"),
+		"sweep blank done":      notes("{transitions: [{from: [Ready for release], to: Done}], sweep: {done: ' '}}"),
 		"blank keep label":      notes("{transitions: [{from: [In Progress], to: Testing, assign: qa, keep_assignee_labels: [' ']}]}"),
 		"old from":              notes("{from: [In Progress]}"),
 		"fix_version w/o pfx":   notes("{fix_version: {}}"),

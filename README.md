@@ -1205,8 +1205,9 @@ release_notes:
    every commit going out, merges aside, must name an item that passes:
    with `statuses`, the item is in one of them, or it is a subtask whose
    parent is; with `prefix`, the item has a fix version that begins with
-   `prefix` and that has approvers, every one of whom approved it in Jira;
-   with both, both. One passing item lets the commit out. A commit let out by
+   `prefix` and that has approvers, every one of whom approved it in Jira,
+   or it is a subtask whose parent has such a version; with both, both. One
+   passing item lets the commit out. A commit let out by
    a done-category item gets a line of its own: it may only refer to old
    work. A revert (`Revert "…"`, `revert:`) passes, but a revert of a revert
    (`Revert "Revert "…""`, `Reapply "…"`) brings the work back and is checked
@@ -1333,6 +1334,55 @@ the file with `sudo -n` so that it never waits on a password prompt.
 
 Jira credentials are the user's, not the project's: `jira.env_file` in the
 user config (see Install).
+
+### Sweep
+
+The release notes of a deploy see only its own commits: the first deploy
+of a target, an item whose last commit went out earlier, a parent whose
+commits all name its subtasks get no move. `release_notes.sweep` on a
+target reconciles the items with the commits the target runs, after each
+deploy to it, once a day after a `graft commit`, and on `graft deploy sweep
+<target> [--apply]`:
+
+```yaml
+    prod:
+      release_notes:
+        transitions: [{from: [Ready for release], to: Done}]
+        sweep: {apply: true}   # days: 30, stale_days: 3, done: Done by default
+```
+
+The sweep takes the commits of the last `days` on any remote branch or on
+the target, merges left out, and groups them by the item each is the work
+of: the first key of its subject, or else a line of its body that is a key
+alone, as graft commit adds the key of the branch, or its
+`approved_release.attribute`. A key the body only mentions ("after
+PROJ-12") refers to another item and counts for nothing. A revert and the
+commits it reverts deliver nothing; a commit withheld from the target is
+not on it, though its history has it. Of the token owner's items (assigned
+to them now or once), not in `skip_keys`:
+
+- an item in the `from` of the target's transition to `done`, all of whose
+  commits the target runs, moves to `done`; with `approved_release`, only
+  when it passes as a commit of it would (`statuses`, a version every
+  approver approved), otherwise it is listed with the reason;
+- a parent all of whose subtasks are done, whose work and its subtasks'
+  the target runs in full, moves to `done`; with `approved_release.prefix`,
+  only in an approved version;
+- listed by hand, nothing moved: a done item with a commit outside the
+  trunk or not on the target yet; an item not started (To Do) with commits
+  in the trunk; an item in a status no transition or `approved_release`
+  names (Paused, Blocked) with commits in the trunk; an item in the `from`
+  of another transition (In Progress), all its work on the target, whose
+  newest commit is `stale_days` old.
+
+Without `apply` the sweep only prints the moves it would make: start that
+way and switch it on once the list reads right. `graft deploy sweep` moves
+only with `--apply`, whatever `apply` says, and reads the commit the target
+runs with `sudo -n`, the record below standing in when that needs a
+password; the daily sweep reads no server
+and takes the commit the last deploy or `graft deploy sweep` from this
+repository recorded (in the user cache), so it waits for one of them. A
+failed sweep is a warning: the deploy and the commit go on.
 
 ### Release windows and hotfixes
 
