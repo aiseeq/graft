@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"os/signal"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/app"
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/hooks"
 	"github.com/aiseeq/graft/v2/internal/message"
 	"github.com/aiseeq/graft/v2/internal/stats"
@@ -95,8 +97,40 @@ func run(ctx context.Context, a *app.App, args []string) int {
 		a.Dir = wd
 		args = args[2:]
 	}
+	if err := misplacedDir(a, args); err != nil {
+		return runError(a, err)
+	}
 	err := dispatch(ctx, a, args)
 	return runError(a, err)
+}
+
+// misplacedDir refuses -C <directory> after the command, before any --, with
+// the form that works: as with git, -C goes first, and a task would otherwise
+// take it among its arguments.
+func misplacedDir(a *app.App, args []string) error {
+	for i := 1; i+1 < len(args) && args[i] != "--"; i++ {
+		if args[i] != "-C" {
+			continue
+		}
+		dir := args[i+1]
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(a.Dir, dir)
+		}
+		// No such directory: -C is some flag's value, not graft's.
+		info, err := os.Stat(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("-C %q: %w", dir, err)
+		}
+		if !info.IsDir() {
+			continue
+		}
+		rest := append(slices.Clone(args[:i]), args[i+2:]...)
+		return fmt.Errorf("%w: -C goes before the command: graft -C %s %s", errUsage, envs.Quote(args[i+1]), envs.QuoteArgs(rest))
+	}
+	return nil
 }
 
 func runError(a *app.App, err error) int {
@@ -223,7 +257,7 @@ func runTask(ctx context.Context, a *app.App, name string, args []string) error 
 	}
 	if len(args) > 0 {
 		if args[0] != "--" {
-			return fmt.Errorf("%w: task arguments go after --: graft %s -- %s", errUsage, name, strings.Join(args, " "))
+			return fmt.Errorf("%w: task arguments go after --: graft %s -- %s", errUsage, name, envs.QuoteArgs(args))
 		}
 		args = args[1:]
 	}

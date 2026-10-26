@@ -193,6 +193,22 @@ func TestChangeDirectoryFlag(t *testing.T) {
 	if out, code := f.graft("", "-C", f.base, "-C", "work", "status"); code != 0 {
 		t.Fatalf("repeated -C status: exit %d\n%s", code, out)
 	}
+	// After the command -C is refused with the form that works, before
+	// anything runs; after -- it belongs to the task.
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"commit", "-C", f.work, "-m", "feat: x"}, "graft: -C goes before the command: graft -C " + f.work + " commit -m 'feat: x' (see graft help)\n"},
+		{[]string{"test", "-C", f.work, "--", "-run", "TestA|TestB", "./cmd/x/"}, "graft: -C goes before the command: graft -C " + f.work + " test -- -run 'TestA|TestB' ./cmd/x/ (see graft help)\n"},
+	} {
+		if out, code := f.graft("", c.args...); code != 2 || out != c.want {
+			t.Errorf("graft %q: exit %d\n%s", c.args, code, out)
+		}
+	}
+	if out, _ := f.graft("", "test", "--", "-C", f.work); strings.Contains(out, "-C goes before") {
+		t.Errorf("-C after -- is the task's:\n%s", out)
+	}
 	missing := filepath.Join(f.base, "missing-dir")
 	if out, code := f.graft("", "-C", missing, "status"); code != 1 || !strings.Contains(out, missing) {
 		t.Errorf("missing -C directory: exit %d\n%s", code, out)

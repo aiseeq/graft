@@ -189,7 +189,8 @@ stats` (`wait_s`).
 Put `-C <directory>` before a command to run it as if graft had been started
 in that directory. Repeat `-C` to change directories in sequence; each relative
 path starts from the directory selected by the previous one. This applies to
-commands and tasks.
+commands and tasks. `-C <directory>` after the command (before any `--`) is
+refused with the form that works: `graft -C <directory> <command> …`.
 
 ### graft commit, step by step
 
