@@ -582,6 +582,7 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		if err != nil {
 			return err
 		}
+		argv = trimPaths(argv, env)
 		cmd = exec.CommandContext(ctx, argv[0], argv[1:]...)
 		words = argv
 	}
@@ -734,7 +735,8 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 	if heavy {
 		env = append(env, ThreadsEnv+"="+threads)
 	}
-	cmd := exec.CommandContext(ctx, s.Argv[0], s.Argv[1:]...)
+	argv = trimPaths(s.Argv, env)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir, cmd.Env = dir, env
 	if f.remote {
 		cmd = r.remoteCmd(ctx, cmd, nil, threads)

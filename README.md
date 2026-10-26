@@ -504,6 +504,18 @@ dotenv_sets:                   # key lists several tasks and services share
   graft set itself, inherited by a graft in another work tree, is replaced.
   `graft worktree clean --apply` removes the caches of work trees that are
   gone.
+- `go build`, `go install`, `go run` and `go test`, as a step's argv or a
+  `graft exec` command, get `-trimpath` after the subcommand unless their
+  flags or `GOFLAGS` name it already, `-trimpath=false` included: without it
+  the go command keys each package of the module by its directory, and every
+  worktree of a repository fills the build cache with its own copy of what
+  the others built. A test that finds files through `runtime.Caller` gets a
+  path from the module root under it, not one on disk: take paths from the
+  working directory, the package's own, instead; a step that cannot
+  sets `GOFLAGS: -trimpath=false`. `go vet` and `go fix` go without, and
+  `GOFLAGS` is left alone for the commands steps start themselves: under
+  `-trimpath` both replay a result another worktree cached with that
+  tree's paths, and `go fix` rewrites the files there.
 - Before the first step, deps included, graft fits the arguments into the
   steps and checks every required key and `${KEY}` the task and all its deps
   need, listing everything missing at once. An optional `KEY?` set nowhere is

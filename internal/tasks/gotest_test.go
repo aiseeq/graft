@@ -33,3 +33,21 @@ func TestOwnPackagesKeepsOtherSteps(t *testing.T) {
 		}
 	}
 }
+
+func TestTrimPaths(t *testing.T) {
+	for _, c := range []struct {
+		argv, env, want []string
+	}{
+		{[]string{"go", "test", "./..."}, nil, []string{"go", "test", "-trimpath", "./..."}},
+		{[]string{"go", "vet", "./..."}, nil, []string{"go", "vet", "./..."}},
+		{[]string{"go", "build", "--trimpath", "."}, nil, []string{"go", "build", "--trimpath", "."}},
+		{[]string{"go", "run", "."}, []string{"GOFLAGS=-p=2 -trimpath=false"}, []string{"go", "run", "."}},
+		{[]string{"go", "run", "."}, []string{"GOFLAGS=-trimpath", "GOFLAGS=-p=2"}, []string{"go", "run", "-trimpath", "."}},
+		{[]string{"go", "test", "-args", "-trimpath"}, nil, []string{"go", "test", "-trimpath", "-args", "-trimpath"}},
+		{[]string{"gotest", "test"}, nil, []string{"gotest", "test"}},
+	} {
+		if got := trimPaths(c.argv, c.env); !slices.Equal(got, c.want) {
+			t.Errorf("trimPaths(%q, %q) = %q, want %q", c.argv, c.env, got, c.want)
+		}
+	}
+}

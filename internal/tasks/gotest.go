@@ -61,3 +61,36 @@ func goPackages(words []string) []int {
 	}
 	return pkgs
 }
+
+// trimBuilds are the go commands that build the module's packages into the
+// build cache.
+var trimBuilds = []string{"build", "install", "run", "test"}
+
+// trimPaths puts -trimpath after go build, install, run and test unless the
+// go command's flags or GOFLAGS in env name -trimpath already, =false
+// included; the words after -args, and after the package of go run, are the
+// program's.
+// Without it the go command keys a package of the module by its directory,
+// and every worktree of a repository fills the build cache with its own copy
+// of what the others built. go vet and go fix go without: under -trimpath they
+// replay a result another worktree cached with that tree's paths, and go fix
+// rewrites the files there.
+func trimPaths(argv, env []string) []string {
+	if len(argv) < 2 || argv[0] != "go" || !slices.Contains(trimBuilds, argv[1]) {
+		return argv
+	}
+	flags, _ := lookupEnv(env, "GOFLAGS")
+	words := strings.Fields(flags)
+	for _, w := range argv[2:] {
+		if w == "-args" || w == "--args" || (argv[1] == "run" && !strings.HasPrefix(w, "-")) {
+			break
+		}
+		words = append(words, w)
+	}
+	for _, w := range words {
+		if name, _, _ := strings.Cut(strings.TrimLeft(w, "-"), "="); name == "trimpath" {
+			return argv
+		}
+	}
+	return slices.Concat(argv[:2], []string{"-trimpath"}, argv[2:])
+}

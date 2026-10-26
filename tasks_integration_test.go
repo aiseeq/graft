@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -899,8 +900,38 @@ func TestGoTestPackagesFromArgs(t *testing.T) {
 		t.Errorf("no line on the replaced packages:\n%s", out)
 	}
 	f.mustGraft("test", "--", "-v", "-coverprofile", "c.out")
-	want := "test -p 2 -json -run ./x ./cmd/worker/,test -p 2 -json -v -coverprofile c.out ./..."
+	want := "test -trimpath -p 2 -json -run ./x ./cmd/worker/,test -trimpath -p 2 -json -v -coverprofile c.out ./..."
 	if got := strings.Join(f.lines("go.txt"), ","); got != want {
 		t.Errorf("go got\n%s\nwant\n%s", got, want)
+	}
+}
+
+// TestGoBuildsTrimPaths: go build, install, run and test in steps and in
+// graft exec get -trimpath, so the worktrees of a repository share the build
+// cache; go vet and go fix do not, and neither does a command whose words or
+// GOFLAGS name -trimpath, =false too.
+func TestGoBuildsTrimPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake go is a shell script")
+	}
+	f := tasksRepo(t, `tasks:
+  build:
+    run: ['go build -o bin/ ./...', 'go vet ./...', 'go fix -diff ./...', 'go test -trimpath=false ./...']
+  off:
+    env: {GOFLAGS: -trimpath=false}
+    run: ['go install ./cmd/x']
+`, nil)
+	fakeBin := t.TempDir()
+	script := "#!/bin/sh\necho \"$*\" >> " + f.path("go.txt") + "\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = []string{"PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH")}
+	f.mustGraft("build")
+	f.mustGraft("off")
+	f.mustGraft("exec", "--", "go", "run", "./cmd/x", "-trimpath")
+	want := []string{"build -trimpath -o bin/ ./...", "vet ./...", "fix -diff ./...", "test -trimpath=false ./...", "install ./cmd/x", "run -trimpath ./cmd/x -trimpath"}
+	if got := f.lines("go.txt"); !slices.Equal(got, want) {
+		t.Errorf("go got\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }

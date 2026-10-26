@@ -236,7 +236,7 @@ func carried(repo *gitx.Repo, dir string, staged map[string]string) (int, error)
 			continue
 		}
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("the job's copy of %s: %w", p, err)
 		}
 		if info.Mode().IsRegular() && !strings.Contains(p, "\n") {
 			paths = append(paths, p)
