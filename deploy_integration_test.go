@@ -638,6 +638,40 @@ func TestDeployJiraFailureDoesNotFailTheDeploy(t *testing.T) {
 	}
 }
 
+// TestDeployReleaseNotesSkipReverts: a revert takes its item's work out, so
+// neither it nor a commit it reverts in the same deploy posts a release note;
+// an item another commit names still gets one.
+func TestDeployReleaseNotesSkipReverts(t *testing.T) {
+	d := deployRepo(t)
+	d.mustGraft("deploy", "test")
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-1 first thing")
+	d.mustGraft("deploy", "test")
+	revert := func(subject string) {
+		t.Helper()
+		sha := d.git("rev-parse", "HEAD")
+		d.git("revert", "--no-commit", "HEAD")
+		d.git("revert", "--quit")
+		d.mustGraft("commit", "-m", "Revert \""+subject+"\"\n\nThis reverts commit "+sha+".")
+	}
+	revert("feat: PROJ-1 first thing")
+	d.write("b.txt", "b\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-5 then taken out")
+	revert("feat: PROJ-5 then taken out")
+	d.write("c.txt", "c\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-6 stays")
+	out := d.mustGraft("deploy", "test")
+	comments, _ := d.jira.snapshot()
+	if len(comments["PROJ-1"]) != 1 || len(comments["PROJ-5"]) != 0 || len(comments["PROJ-6"]) != 1 {
+		t.Errorf("comments = %v\n%s", comments, out)
+	}
+	for _, key := range []string{"PROJ-1", "PROJ-5"} {
+		if want := "release note for " + key + " not posted: this deploy only takes its work out"; !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
+	}
+}
+
 // productVersions are the versions of PROJ: the nearest unreleased
 // "Product v" one is Product v1.2.10 (id 10010).
 func productVersions() []map[string]any {

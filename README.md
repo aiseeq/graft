@@ -1268,7 +1268,10 @@ release_notes:
 7. Check again that the tree is clean and HEAD has not moved.
 8. Record the deployed commit and post release notes: a comment on every
    `project_keys` item mentioned in the delivered commits (subjects and bodies)
-   or tied to one by the target's `approved_release.attribute`,
+   or tied to one by the target's `approved_release.attribute`, but not one
+   named only by reverts and the commits they revert among them: those take
+   the item's work out (a release branch's reverts reaching the target that
+   holds the candidate, say), and graft says so,
    and with `transitions`, a move of the items in one of a transition's `from`
    statuses to its `to` (a status is in one `from` at most); an item
    elsewhere, paused or not started, gets the comment and keeps its status.
