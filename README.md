@@ -1367,7 +1367,9 @@ to them now or once), not in `skip_keys`:
   approver approved), otherwise it is listed with the reason;
 - a parent all of whose subtasks are done, whose work and its subtasks'
   the target runs in full, moves to `done`; with `approved_release.prefix`,
-  only in an approved version;
+  only in an approved version. A parent not started, or in a status no
+  transition or `approved_release` names (Paused), is listed instead: it
+  was put aside by hand;
 - listed by hand, nothing moved: a done item with a commit outside the
   trunk or not on the target yet; an item not started (To Do) with commits
   in the trunk; an item in a status no transition or `approved_release`

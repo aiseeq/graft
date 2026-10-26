@@ -1755,11 +1755,12 @@ func TestDeploySweep(t *testing.T) {
 	d.git("remote", "set-head", "origin", trunk)
 	d.jira.mu.Lock()
 	maps.Copy(d.jira.statuses, map[string]string{"PROJ-10": "Ready for release", "PROJ-11": "Ready for release", "PROJ-12": "Done", "PROJ-13": "To Do",
-		"PROJ-14": "In Progress", "PROJ-15": "Ready for release", "PROJ-16": "Done", "PROJ-20": "In Progress", "PROJ-21": "Done", "PROJ-22": "Done"})
-	d.jira.parents = map[string]string{"PROJ-21": "PROJ-20", "PROJ-22": "PROJ-20"}
+		"PROJ-14": "In Progress", "PROJ-15": "Ready for release", "PROJ-16": "Done", "PROJ-20": "In Progress", "PROJ-21": "Done", "PROJ-22": "Done",
+		"PROJ-60": "Paused", "PROJ-61": "Done"})
+	d.jira.parents = map[string]string{"PROJ-21": "PROJ-20", "PROJ-22": "PROJ-20", "PROJ-61": "PROJ-60"}
 	d.jira.mu.Unlock()
 	for i, msg := range []string{"feat: PROJ-10 a", "feat: PROJ-11 b", "fix: PROJ-14 c\n\nafter PROJ-15", "feat: PROJ-13 d", "feat: PROJ-6 e",
-		"feat: PROJ-21 f", "chore: g\n\nPROJ-22"} {
+		"feat: PROJ-21 f", "chore: g\n\nPROJ-22", "feat: PROJ-61 k"} {
 		d.write(fmt.Sprintf("f%d.txt", i), "x\n")
 		d.mustGraft("commit", "-m", msg)
 	}
@@ -1768,10 +1769,11 @@ func TestDeploySweep(t *testing.T) {
 		"release notes skipped: no previously deployed commit recorded",
 		"sweep swept: PROJ-10 would move to Done: its work of the last 30 days is on swept (commits: 1)",
 		"sweep swept: PROJ-11 would move to Done",
-		"sweep swept: PROJ-20 would move to Done: its 2 subtasks are done and their work is on swept",
+		"sweep swept: PROJ-20 would move to Done: its subtasks are all done (2) and their work is on swept",
 		"PROJ-13 is To Do, but its commits are in origin/" + trunk,
 		"PROJ-6 is Paused, but its commits are in origin/" + trunk,
 		"PROJ-14 is In Progress, but all its work is on swept, the newest commit 5 days old",
+		"PROJ-60 is Paused, but its subtasks are all done (1) and their work is on swept",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q:\n%s", want, out)

@@ -224,10 +224,11 @@ type sweepRun struct {
 	now    time.Time
 	apply  bool
 	issues map[string]jira.Issue
-	// lines are the items to look at by hand; moved are the items moved, or
-	// that would be.
-	lines []string
-	moved map[string]bool
+	// lines are the items to look at by hand; judged are the items moved,
+	// or that would be, and the parents listed: their own commits say no
+	// more.
+	lines  []string
+	judged map[string]bool
 }
 
 // sweep moves to the done status the items whose work the target runs in
@@ -275,7 +276,7 @@ func (a *App) sweep(ctx context.Context, r *deployRun, head string, withheld []s
 		return fmt.Errorf("whose items are whose is unknown: %w", err)
 	}
 	s := &sweepRun{app: a, r: r, conf: conf, notes: r.cfg.ReleaseNotes.Jira, client: client, me: me, trunk: trunk, now: now, apply: apply,
-		issues: map[string]jira.Issue{}, moved: map[string]bool{}}
+		issues: map[string]jira.Issue{}, judged: map[string]bool{}}
 	if ar := r.target.ApprovedRelease; ar != nil {
 		s.gate = &approvalGate{client: client, conf: ar, issues: s.issues, versions: map[string]bool{}}
 	}
@@ -289,13 +290,13 @@ func (a *App) sweep(ctx context.Context, r *deployRun, head string, withheld []s
 	s.read(ctx, keys)
 	s.parents(ctx, keys, items)
 	for _, key := range keys {
-		if issue, ok := s.issues[key]; ok && !s.moved[key] && !slices.Contains(s.notes.SkipKeys, key) {
+		if issue, ok := s.issues[key]; ok && !s.judged[key] && !slices.Contains(s.notes.SkipKeys, key) {
 			s.item(ctx, issue, items[key])
 		}
 	}
 	if len(s.lines) > 0 {
 		a.printf("sweep %s: to look at by hand:\n  %s", r.name, strings.Join(s.lines, "\n  "))
-	} else if len(s.moved) == 0 {
+	} else if len(s.judged) == 0 {
 		a.printf("sweep %s: nothing to move or look at", r.name)
 	}
 	return nil
@@ -408,10 +409,13 @@ func (s *sweepRun) read(ctx context.Context, keys []string) {
 		wg  sync.WaitGroup
 		sem = make(chan struct{}, sweepReads)
 	)
-	for _, key := range keys {
-		if _, ok := s.issues[key]; ok {
-			continue
+	var missing []string
+	for _, key := range uniqueSorted(keys) {
+		if _, ok := s.issues[key]; !ok {
+			missing = append(missing, key)
 		}
+	}
+	for _, key := range missing {
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
@@ -464,7 +468,8 @@ func (s *sweepRun) item(ctx context.Context, issue jira.Issue, commits []sweptCo
 
 // parents moves to the done status a parent all of whose subtasks are done
 // and whose work, its own and its subtasks', the target runs in full: the
-// commits name the subtasks, so no deploy moves the parent.
+// commits name the subtasks, so no deploy moves the parent. A parent in a
+// status outside the flow, or not started, is listed instead.
 func (s *sweepRun) parents(ctx context.Context, keys []string, items map[string][]sweptCommit) {
 	var parents []string
 	for _, key := range keys {
@@ -492,8 +497,15 @@ func (s *sweepRun) parents(ctx context.Context, keys []string, items map[string]
 			issue, ok := s.issues[st]
 			done = done && ok && issue.Done && allOn(st)
 		}
-		if done {
-			s.move(ctx, parent, fmt.Sprintf("its %d subtasks are done and their work is on %s", len(parent.Subtasks), s.r.name), false)
+		why := fmt.Sprintf("its subtasks are all done (%d) and their work is on %s", len(parent.Subtasks), s.r.name)
+		switch {
+		case !done:
+		case parent.NotStarted || !s.inFlow(parent.Status):
+			// A parent put aside by hand, Paused say, stays there.
+			s.judged[key] = true
+			s.list(ctx, parent, "%s is %s, but %s", key, parent.Status, why)
+		default:
+			s.move(ctx, parent, why, false)
 		}
 	}
 }
@@ -554,7 +566,7 @@ func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, check
 			return
 		}
 	}
-	s.moved[key] = true
+	s.judged[key] = true
 	if !s.apply {
 		s.app.printf("sweep %s: %s would move to %s: %s", s.r.name, key, s.conf.Done, why)
 		return
