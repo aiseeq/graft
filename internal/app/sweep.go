@@ -290,7 +290,8 @@ func (a *App) sweep(ctx context.Context, r *deployRun, head string, withheld []s
 	s.read(ctx, keys)
 	s.parents(ctx, keys, items)
 	for _, key := range keys {
-		if issue, ok := s.issues[key]; ok && !s.judged[key] && !slices.Contains(s.notes.SkipKeys, key) {
+		// skip_keys leave an item alone with its subtasks.
+		if issue, ok := s.issues[key]; ok && !s.judged[key] && !slices.Contains(s.notes.SkipKeys, key) && !slices.Contains(s.notes.SkipKeys, issue.Parent) {
 			s.item(ctx, issue, items[key])
 		}
 	}

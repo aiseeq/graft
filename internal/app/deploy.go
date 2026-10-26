@@ -583,6 +583,10 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 			fix.failed(key, err)
 			continue
 		}
+		if slices.Contains(notes.SkipKeys, issue.Parent) {
+			a.printf("release note for %s not posted, %s left alone: its parent %s is in release_notes.jira.skip_keys", key, key, issue.Parent)
+			continue
+		}
 		sub.delivered = append(sub.delivered, issue)
 		sub.reached[issue.Key] = issue.Status
 		yours, err := a.noteable(ctx, client, notes, me, issue)

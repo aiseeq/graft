@@ -1884,3 +1884,32 @@ func TestDeployKeepAssigneeLabelOfParent(t *testing.T) {
 		t.Errorf("no word on the inherited label:\n%s", out)
 	}
 }
+
+// TestDeploySkipKeysSubtaskOwnCommit: a subtask of an item of skip_keys is
+// left alone when a commit names the subtask itself: no note, no move on the
+// deploy, nothing the sweep would move.
+func TestDeploySkipKeysSubtaskOwnCommit(t *testing.T) {
+	d := newDeployFixture(t, sweepConfig)
+	d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+	d.git("remote", "set-head", "origin", d.git("branch", "--show-current"))
+	d.jira.mu.Lock()
+	maps.Copy(d.jira.statuses, map[string]string{"PROJ-40": "In Progress", "PROJ-41": "Ready for release"})
+	d.jira.parents = map[string]string{"PROJ-41": "PROJ-40"}
+	d.jira.mu.Unlock()
+	d.mustGraft("deploy", "swept")
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-41 part of the standing item")
+	out := d.mustGraft("deploy", "swept")
+	d.jira.mu.Lock()
+	status, comments := d.jira.statuses["PROJ-41"], d.jira.comments["PROJ-41"]
+	d.jira.mu.Unlock()
+	if status != "Ready for release" || len(comments) > 0 {
+		t.Errorf("PROJ-41 is %s with notes %v\n%s", status, comments, out)
+	}
+	if want := "release note for PROJ-41 not posted, PROJ-41 left alone: its parent PROJ-40 is in release_notes.jira.skip_keys"; !strings.Contains(out, want) {
+		t.Errorf("no %q:\n%s", want, out)
+	}
+	if out := d.mustGraft("deploy", "sweep", "swept"); strings.Contains(out, "PROJ-41") {
+		t.Errorf("the sweep takes up PROJ-41:\n%s", out)
+	}
+}

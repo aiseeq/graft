@@ -1365,7 +1365,7 @@ alone, as graft commit adds the key of the branch, or its
 PROJ-12") refers to another item and counts for nothing. A revert and the
 commits it reverts deliver nothing; a commit withheld from the target is
 not on it, though its history has it. Of the token owner's items (assigned
-to them now or once), not in `skip_keys`:
+to them now or once), not in `skip_keys` nor subtasks of an item there:
 
 - an item in the `from` of the target's transition to `done`, all of whose
   commits the target runs, moves to `done`; with `approved_release`, only
