@@ -654,8 +654,13 @@ func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTr
 	if t.Assign == "" || issue.AssigneeID == t.Assign {
 		return nil
 	}
-	if i := slices.IndexFunc(issue.Labels, func(l string) bool { return slices.Contains(t.KeepAssigneeLabels, l) }); i >= 0 {
-		m.app.printf("%s stays with its assignee: label %s (keep_assignee_labels)", issue.Key, issue.Labels[i])
+	label, err := m.keptBy(ctx, issue, t)
+	if err != nil {
+		// Unknown labels hand the item over, as without the setting.
+		m.app.warn("%s: the labels of its parent %s are unknown: %v", issue.Key, issue.Parent, err)
+	}
+	if label != "" {
+		m.app.printf("%s stays with its assignee: %s (keep_assignee_labels)", issue.Key, label)
 		return nil
 	}
 	if err := m.client.Assign(ctx, issue.Key, t.Assign); err != nil {
@@ -664,6 +669,32 @@ func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTr
 	}
 	m.app.printf("%s assigned to %s", issue.Key, t.Assign)
 	return nil
+}
+
+// keptBy names the label of the transition's keep_assignee_labels that keeps
+// the item with its assignee, its own or its parent's: the subtasks of an
+// internal parent are internal. It is "" for none.
+func (m *noteMover) keptBy(ctx context.Context, issue jira.Issue, t *config.NoteTransition) (string, error) {
+	kept := func(labels []string) string {
+		if i := slices.IndexFunc(labels, func(l string) bool { return slices.Contains(t.KeepAssigneeLabels, l) }); i >= 0 {
+			return labels[i]
+		}
+		return ""
+	}
+	if label := kept(issue.Labels); label != "" {
+		return "label " + label, nil
+	}
+	if len(t.KeepAssigneeLabels) == 0 || issue.Parent == "" {
+		return "", nil
+	}
+	parent, err := m.client.Issue(ctx, issue.Parent)
+	if err != nil {
+		return "", err
+	}
+	if label := kept(parent.Labels); label != "" {
+		return "label " + label + " of its parent " + issue.Parent, nil
+	}
+	return "", nil
 }
 
 // subtaskRun moves subtasks after their parents once the notes are posted.

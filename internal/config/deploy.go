@@ -177,8 +177,9 @@ type NoteTransition struct {
 	// Assign is the account id the item is handed over to on the move: the
 	// reviewer of Testing, say.
 	Assign string `yaml:"assign"`
-	// KeepAssigneeLabels: an item with one of these labels moves but stays
-	// with its assignee, technical work nobody checks on a screen, say.
+	// KeepAssigneeLabels: an item with one of these labels, or whose parent
+	// has one, moves but stays with its assignee, technical work nobody
+	// checks on a screen, say.
 	KeepAssigneeLabels []string `yaml:"keep_assignee_labels"`
 }
 

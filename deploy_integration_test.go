@@ -1858,3 +1858,29 @@ func TestDeploySweepApprovedRelease(t *testing.T) {
 		t.Errorf("not moved once approved:\n%s", out)
 	}
 }
+
+// TestDeployKeepAssigneeLabelOfParent: a subtask without a label of its own
+// stays with its assignee when its parent has one of keep_assignee_labels;
+// one under an unlabelled parent goes to the reviewer.
+func TestDeployKeepAssigneeLabelOfParent(t *testing.T) {
+	d := deployRepo(t)
+	d.jira.mu.Lock()
+	maps.Copy(d.jira.statuses, map[string]string{"PROJ-70": "In Progress", "PROJ-71": "In Progress", "PROJ-72": "In Progress", "PROJ-73": "In Progress"})
+	d.jira.parents = map[string]string{"PROJ-71": "PROJ-70", "PROJ-73": "PROJ-72"}
+	d.jira.labels = map[string][]string{"PROJ-70": {"internal"}}
+	d.jira.mu.Unlock()
+	d.mustGraft("deploy", "sub")
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "chore: PROJ-71 tooling\n\nand PROJ-73 a screen")
+	out := d.mustGraft("deploy", "sub")
+	_, moved := d.jira.snapshot()
+	d.jira.mu.Lock()
+	assigned := slices.Clone(d.jira.assigned)
+	d.jira.mu.Unlock()
+	if slices.Sort(moved); !slices.Equal(moved, []string{"PROJ-71", "PROJ-73"}) || !slices.Equal(assigned, []string{"PROJ-73 to qa"}) {
+		t.Errorf("moved = %v, assigned = %v\n%s", moved, assigned, out)
+	}
+	if !strings.Contains(out, "PROJ-71 stays with its assignee: label internal of its parent PROJ-70 (keep_assignee_labels)") {
+		t.Errorf("no word on the inherited label:\n%s", out)
+	}
+}

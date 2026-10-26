@@ -1278,9 +1278,9 @@ release_notes:
    elsewhere, paused or not started, gets the comment and keeps its status.
    A transition with `assign` (an account id) hands the moved item over to
    that account, the reviewer of Testing say, unless it is assigned there
-   already or has one of the transition's `keep_assignee_labels`: such an
-   item, technical work nobody checks on a screen say, moves and stays
-   with its assignee. A key mentioned in a
+   already or has one of the transition's `keep_assignee_labels`, or its
+   parent has one: such an item, technical work nobody checks on a screen
+   say, moves and stays with its assignee. A key mentioned in a
    commit does not make the item yours, so only open items of the owner of
    the Jira token get notes: not in a done-category status (Done, Won't do),
    a to-do-category one (To Do, Backlog: work not started) or `skip_statuses`, and assigned to the owner now or at some point in
