@@ -49,7 +49,7 @@ func (a *App) DeploySweep(ctx context.Context, target string, apply bool) error 
 	if err != nil {
 		return err
 	}
-	return a.sweep(ctx, r, head, withheld, apply)
+	return a.sweep(ctx, r, head, withheld, apply, true)
 }
 
 // sweepHead reads the commit the target runs and the commits withheld from
@@ -92,7 +92,7 @@ func (a *App) deploySweep(ctx context.Context, r *deployRun) {
 	if err := writeSweepRecord(r.repo, r.name, r.head, r.withheld); err != nil {
 		a.warn("%v", err)
 	}
-	if err := a.sweep(ctx, r, r.head, r.withheld, conf.Apply); err != nil {
+	if err := a.sweep(ctx, r, r.head, r.withheld, conf.Apply, false); err != nil {
 		a.warn("sweep %s: %v", r.name, err)
 		return
 	}
@@ -147,7 +147,7 @@ func (a *App) dailySweepTarget(ctx context.Context, r *deployRun) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, sweepTimeout)
 	defer cancel()
-	if err := a.sweep(ctx, r, head, withheld, r.target.ReleaseNotes.Sweep.Apply); err != nil {
+	if err := a.sweep(ctx, r, head, withheld, r.target.ReleaseNotes.Sweep.Apply, false); err != nil {
 		a.warn("sweep %s: %v", r.name, err)
 	}
 	if err := touch(stamp); err != nil {
@@ -233,8 +233,9 @@ type sweepRun struct {
 
 // sweep moves to the done status the items whose work the target runs in
 // full, and lists those whose status git contradicts. A failure is the
-// caller's to report: the deploy and the commit go on.
-func (a *App) sweep(ctx context.Context, r *deployRun, head string, withheld []string, apply bool) error {
+// caller's to report: the deploy and the commit go on. A manual sweep, graft
+// deploy sweep, moves by its --apply alone.
+func (a *App) sweep(ctx context.Context, r *deployRun, head string, withheld []string, apply, manual bool) error {
 	known, err := r.repo.RevExists(head)
 	if err != nil {
 		return err
@@ -260,7 +261,13 @@ func (a *App) sweep(ctx context.Context, r *deployRun, head string, withheld []s
 		return err
 	}
 	how := "moves"
-	if !apply {
+	switch {
+	case apply:
+	case manual && conf.Apply:
+		how = "lists only: pass --apply to move (release_notes.sweep.apply: true moves after deploys and daily)"
+	case manual:
+		how = "lists only: pass --apply to move"
+	default:
 		how = "lists only (release_notes.sweep.apply is off; graft deploy sweep " + r.name + " --apply moves)"
 	}
 	a.printf("sweep %s: %d items in the commits of the last %d days on %s and %s; it %s", r.name, len(items), conf.Days, gitx.Short(head), trunk, how)
@@ -296,8 +303,7 @@ func (s *sweepRun) judge(ctx context.Context, items map[string][]sweptCommit) {
 	s.read(ctx, keys)
 	s.parents(ctx, keys, items)
 	for _, key := range keys {
-		// skip_keys leave an item alone with its subtasks.
-		if issue, ok := s.issues[key]; ok && !s.judged[key] && !slices.Contains(s.notes.SkipKeys, key) && !slices.Contains(s.notes.SkipKeys, issue.Parent) {
+		if issue, ok := s.issues[key]; ok && !s.judged[key] && !slices.Contains(s.notes.SkipKeys, key) {
 			s.item(ctx, issue, items[key])
 		}
 	}

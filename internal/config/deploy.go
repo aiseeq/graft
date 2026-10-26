@@ -307,8 +307,9 @@ type JiraNotes struct {
 	Comment     string   `yaml:"comment"`
 	// SkipStatuses leaves items in these statuses alone: no note, no move.
 	SkipStatuses []string `yaml:"skip_statuses"`
-	// SkipKeys leaves these items alone, and their subtasks: a standing item
-	// that collects small work and that commits name, say.
+	// SkipKeys leaves these items alone, a standing item that collects small
+	// work and that commits name, say: no subtask follows them, and a subtask
+	// a commit names by its own key goes as any item.
 	SkipKeys []string `yaml:"skip_keys"`
 }
 

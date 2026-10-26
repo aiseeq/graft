@@ -1175,7 +1175,7 @@ release_notes:
     project_keys: [PROJ]        # required: SHA-256 is shaped like a key too
     comment: "Deployed to {target}, version {version}, commit {short}"   # default
     skip_statuses: [On Hold]    # leave these items alone: no note, no move
-    skip_keys: [PROJ-100]       # these too, with their subtasks: a standing item commits name
+    skip_keys: [PROJ-100]       # these too, and no subtask follows them; a subtask named by its own key goes as any item
 ```
 
 `graft deploy [--redeploy] [--unapproved] <target> [-- args]`:
@@ -1380,7 +1380,8 @@ change the trunk has changed further since is not recognised and stays
 listed. A commit the target runs is in the trunk by content the same way.
 
 Of the token owner's items (assigned
-to them now or once), not in `skip_keys` nor subtasks of an item there:
+to them now or once), not in `skip_keys` (a subtask of an item there is
+judged by its own key):
 
 - an item in the `from` of the target's transition to `done`, all of whose
   commits the target runs, moves to `done`; with `approved_release`, only
