@@ -14,14 +14,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gofrs/flock"
-
-	"github.com/aiseeq/graft/v2/internal/proc"
 )
 
 // retryDelay is how often a waiting process retries the lock.
@@ -45,8 +44,9 @@ func (m Mode) String() string {
 
 // Lock is a held lock.
 type Lock struct {
-	fl   *flock.Flock
-	note string
+	fl       *flock.Flock
+	noteLock *flock.Flock
+	note     string
 	// Waited is how long taking it waited for other holders; 0 when it
 	// was free.
 	Waited time.Duration
@@ -58,8 +58,8 @@ func Acquire(ctx context.Context, path string, timeout time.Duration, holder str
 }
 
 // AcquireFIFO takes the exclusive lock at path in ticket order. Tickets are
-// shared by processes through files next to the lock and dead processes'
-// tickets are removed while inspecting the queue.
+// shared by processes through live files next to the lock (createLive), and
+// the tickets no process holds are removed while inspecting the queue.
 func AcquireFIFO(ctx context.Context, path string, timeout time.Duration, holder string, log io.Writer) (lk *Lock, retErr error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("creating the lock directory: %w", err)
@@ -67,12 +67,12 @@ func AcquireFIFO(ctx context.Context, path string, timeout time.Duration, holder
 	start := time.Now()
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	ticket, err := enqueue(waitCtx, path, holder)
+	ticketLock, ticket, err := enqueue(waitCtx, path, holder)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
-		if err := os.Remove(ticket); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := releaseLive(ticketLock, ticket); err != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("removing queue ticket for %s: %w", path, err))
 			if lk != nil {
 				retErr = errors.Join(retErr, lk.Release())
@@ -98,8 +98,8 @@ func waitFIFO(waitCtx, ctx context.Context, path string, timeout time.Duration, 
 		if err := errors.Join(err, unlockErr); err != nil {
 			return nil, err
 		}
-		if len(queue) == 0 {
-			return nil, fmt.Errorf("ticket for lock %s disappeared", filepath.Base(path))
+		if !slices.ContainsFunc(queue, func(e queueEntry) bool { return e.path == ticket }) {
+			return nil, fmt.Errorf("ticket for lock %s disappeared: %s", filepath.Base(path), ticket)
 		}
 		if queue[0].path == ticket {
 			remaining := timeout - time.Since(start)
@@ -150,20 +150,19 @@ func queueGuard(ctx context.Context, path string) (*flock.Flock, error) {
 	return guard, nil
 }
 
-func enqueue(ctx context.Context, path, holder string) (ticket string, retErr error) {
+// enqueue writes this process's ticket, holding it live until AcquireFIFO
+// is done. Tickets are .lticket files: graft before them judged a ticket by
+// its pid, which from another PID namespace finds every ticket dead.
+func enqueue(ctx context.Context, path, holder string) (ticketLock *flock.Flock, ticket string, retErr error) {
 	guard, err := queueGuard(ctx, path)
 	if err != nil {
-		return "", fmt.Errorf("joining the queue for %s: %w", path, err)
+		return nil, "", fmt.Errorf("joining the queue for %s: %w", path, err)
 	}
 	defer func() {
 		if err := guard.Close(); err != nil {
 			if ticket != "" {
-				removeErr := os.Remove(ticket)
-				if errors.Is(removeErr, os.ErrNotExist) {
-					removeErr = nil
-				}
-				err = errors.Join(err, removeErr)
-				ticket = ""
+				err = errors.Join(err, releaseLive(ticketLock, ticket))
+				ticketLock, ticket = nil, ""
 			}
 			retErr = errors.Join(retErr, fmt.Errorf("closing the queue guard for %s: %w", path, err))
 		}
@@ -172,27 +171,27 @@ func enqueue(ctx context.Context, path, holder string) (ticket string, retErr er
 	var sequence uint64
 	data, err := os.ReadFile(sequencePath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("reading the queue sequence for %s: %w", path, err)
+		return nil, "", fmt.Errorf("reading the queue sequence for %s: %w", path, err)
 	}
 	if len(data) != 0 {
 		sequence, err = strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
 		if err != nil {
-			return "", fmt.Errorf("reading the queue sequence for %s: %w", path, err)
+			return nil, "", fmt.Errorf("reading the queue sequence for %s: %w", path, err)
 		}
 	}
 	if sequence == ^uint64(0) {
-		return "", fmt.Errorf("queue sequence exhausted for %s", path)
+		return nil, "", fmt.Errorf("queue sequence exhausted for %s", path)
 	}
 	sequence++
 	if err := writeQueueFile(sequencePath, []byte(strconv.FormatUint(sequence, 10))); err != nil {
-		return "", fmt.Errorf("writing the queue sequence for %s: %w", path, err)
+		return nil, "", fmt.Errorf("writing the queue sequence for %s: %w", path, err)
 	}
-	ticket = fmt.Sprintf("%s.queue.%020d.%d.ticket", path, sequence, os.Getpid())
-	text := fmt.Sprintf("%d\n%s", os.Getpid(), holder)
-	if err := writeQueueFile(ticket, []byte(text)); err != nil {
-		return "", fmt.Errorf("writing a queue ticket for %s: %w", path, err)
+	pattern := fmt.Sprintf("%s.queue.%020d.*.lticket", filepath.Base(path), sequence)
+	ticketLock, ticket, err = createLive(filepath.Dir(path), pattern, []byte(holder))
+	if err != nil {
+		return nil, "", fmt.Errorf("writing a queue ticket for %s: %w", path, err)
 	}
-	return ticket, nil
+	return ticketLock, ticket, nil
 }
 
 func writeQueueFile(path string, data []byte) error {
@@ -213,12 +212,19 @@ func writeQueueFile(path string, data []byte) error {
 }
 
 func readQueue(path string) ([]queueEntry, error) {
-	matches, err := filepath.Glob(path + ".queue.*.ticket")
+	matches, err := filepath.Glob(path + ".queue.*.lticket")
 	if err != nil {
 		return nil, fmt.Errorf("listing the queue for %s: %w", path, err)
 	}
 	entries := make([]queueEntry, 0, len(matches))
 	for _, ticket := range matches {
+		dead, err := gone(ticket)
+		if err != nil {
+			return nil, fmt.Errorf("a queue ticket: %w", err)
+		}
+		if dead {
+			continue
+		}
 		data, err := os.ReadFile(ticket)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -226,25 +232,7 @@ func readQueue(path string) ([]queueEntry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading a queue ticket: %w", err)
 		}
-		parts := strings.SplitN(string(data), "\n", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid queue ticket %s", ticket)
-		}
-		pid, err := strconv.Atoi(parts[0])
-		if err != nil {
-			return nil, fmt.Errorf("invalid process in queue ticket %s: %w", ticket, err)
-		}
-		alive, err := proc.Alive(pid)
-		if err != nil {
-			return nil, err
-		}
-		if !alive {
-			if err := os.Remove(ticket); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return nil, fmt.Errorf("removing a dead queue ticket: %w", err)
-			}
-			continue
-		}
-		entries = append(entries, queueEntry{path: ticket, holder: strings.TrimSpace(parts[1])})
+		entries = append(entries, queueEntry{path: ticket, holder: strings.TrimSpace(string(data))})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
 	return entries, nil
@@ -295,52 +283,38 @@ func AcquireMode(ctx context.Context, path string, mode Mode, timeout time.Durat
 		}
 		waited = time.Since(start)
 	}
-	// Holder notes live next to the lock, one per process: on Windows the
+	// Holder notes live next to the lock, one per holder: on Windows the
 	// locked file itself cannot be read by the processes waiting for it.
-	note := notePath(path, os.Getpid())
+	// They are .lholder live files (createLive), not .holder ones named by a
+	// pid, which sandboxes in their own PID namespace share.
 	text := fmt.Sprintf("%s (%s), pid %d, since %s", holder, mode, os.Getpid(), time.Now().Format(time.RFC3339))
-	if err := os.WriteFile(note, []byte(text), 0o644); err != nil {
+	noteLock, note, err := createLive(filepath.Dir(path), filepath.Base(path)+".*.lholder", []byte(text))
+	if err != nil {
 		return nil, errors.Join(fmt.Errorf("writing lock holder note: %w", err), fl.Unlock())
 	}
-	return &Lock{fl: fl, note: note, Waited: waited}, nil
+	return &Lock{fl: fl, noteLock: noteLock, note: note, Waited: waited}, nil
 }
 
 // Release gives the lock up.
 func (l *Lock) Release() error {
-	noteErr := os.Remove(l.note)
-	if errors.Is(noteErr, os.ErrNotExist) {
-		noteErr = nil
-	}
-	return errors.Join(l.fl.Unlock(), noteErr)
+	return errors.Join(l.fl.Unlock(), releaseLive(l.noteLock, l.note))
 }
 
-func notePath(path string, pid int) string {
-	return path + "." + strconv.Itoa(pid) + ".holder"
-}
-
-// Holders returns the notes of the live processes holding the lock at path,
-// deleting notes left behind by processes that died.
+// Holders returns the notes of the processes holding the lock at path,
+// deleting notes no process holds.
 func Holders(path string) ([]string, error) {
-	matches, err := filepath.Glob(path + ".*.holder")
+	matches, err := filepath.Glob(path + ".*.lholder")
 	if err != nil {
 		return nil, fmt.Errorf("listing lock holders: %w", err)
 	}
 	sort.Strings(matches)
 	holders := []string{}
 	for _, m := range matches {
-		pidText := strings.TrimSuffix(strings.TrimPrefix(m, path+"."), ".holder")
-		pid, err := strconv.Atoi(pidText)
+		dead, err := gone(m)
 		if err != nil {
-			return nil, fmt.Errorf("unexpected file %s next to the lock: %w", m, err)
+			return nil, fmt.Errorf("a lock holder: %w", err)
 		}
-		alive, err := proc.Alive(pid)
-		if err != nil {
-			return nil, err
-		}
-		if !alive {
-			if err := os.Remove(m); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return nil, err
-			}
+		if dead {
 			continue
 		}
 		data, err := os.ReadFile(m)

@@ -89,24 +89,52 @@ func TestAcquireFIFO(t *testing.T) {
 	}
 }
 
+// TestAcquireFIFODropsDeadTicket: a ticket no process holds goes, one its
+// owner holds stays whatever pid it was written with: a graft in a sandbox
+// of its own PID namespace sees no host pid alive.
 func TestAcquireFIFODropsDeadTicket(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "load.lock")
-	stale := fmt.Sprintf("%s.queue.%020d.%d.ticket", path, 1, 1<<30)
-	if err := os.WriteFile(path+".queue.next", []byte("1"), 0o644); err != nil {
+	stale := fmt.Sprintf("%s.queue.%020d.x.lticket", path, 1)
+	if err := os.WriteFile(path+".queue.next", []byte("2"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(stale, []byte("1073741824\nghost"), 0o644); err != nil {
+	if err := os.WriteFile(stale, []byte("ghost"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	lk, err := AcquireFIFO(context.Background(), path, time.Second, "live", &bytes.Buffer{})
+	owner, held, err := createLive(filepath.Dir(path), filepath.Base(path)+fmt.Sprintf(".queue.%020d.*.lticket", 2), []byte("pid 2 of another namespace"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	results := make(chan fifoResult, 1)
+	var log safeBuffer
+	go func() {
+		lk, err := AcquireFIFO(context.Background(), path, 5*time.Second, "live", &log)
+		results <- fifoResult{lock: lk, err: err}
+	}()
+	for deadline := time.Now().Add(3 * time.Second); !strings.Contains(log.String(), "behind") && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Error("dead ticket kept")
 	}
-	if err := lk.Release(); err != nil {
+	if _, err := os.Stat(held); err != nil {
+		t.Errorf("held ticket removed: %v", err)
+	}
+	if !strings.Contains(log.String(), "behind pid 2 of another namespace") {
+		t.Errorf("not queued behind the held ticket: %q", log.String())
+	}
+	if err := releaseLive(owner, held); err != nil {
 		t.Fatal(err)
+	}
+	got := receiveLock(t, results)
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if err := got.lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if left, _ := filepath.Glob(path + ".queue.*.lticket"); len(left) != 0 {
+		t.Errorf("tickets left: %v", left)
 	}
 }
 
@@ -114,7 +142,7 @@ func waitForTickets(t *testing.T, path string, want int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		matches, err := filepath.Glob(path + ".queue.*.ticket")
+		matches, err := filepath.Glob(path + ".queue.*.lticket")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,8 +200,7 @@ func TestSharedAndExclusive(t *testing.T) {
 		t.Fatalf("readers must share: %v", err)
 	}
 	holders, err := Holders(path)
-	if err != nil || len(holders) != 1 {
-		// Both readers are this process: one note per pid.
+	if err != nil || len(holders) != 2 {
 		t.Errorf("holders = %v, %v", holders, err)
 	}
 	if _, err := AcquireMode(ctx, path, Exclusive, 300*time.Millisecond, "restart", &log); err == nil {
@@ -199,8 +226,8 @@ func TestSharedAndExclusive(t *testing.T) {
 
 func TestStaleNotesAreDropped(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "app.lock")
-	// A pid far above any pid_max stands for a process that died.
-	stale := notePath(path, 1<<30)
+	// No process holds it: its owner died.
+	stale := path + ".x.lholder"
 	if err := os.WriteFile(stale, []byte("ghost"), 0o644); err != nil {
 		t.Fatal(err)
 	}

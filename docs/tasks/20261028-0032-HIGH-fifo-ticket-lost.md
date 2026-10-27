@@ -1,0 +1,36 @@
+# A FIFO lock waiter fails: ticket for lock disappeared
+
+Статус: в работе
+Исполнитель: graft-master
+
+## Вход
+- Проблема: peers' `graft exec --heavy` and `graft commit` failed with
+  `graft: ticket for lock load.lock disappeared` (28.10 ~00:28 two at once,
+  ~00:29); a newcomer once showed up ahead of an older waiter.
+- Метод: measured — codex's sandbox (llmark workers, `~/.cache/graft`
+  writable for the heavy queue) has its own PID namespace: inside, `pid=2`,
+  `kill -0 <host pid>` fails. A graft there finds every host ticket's pid
+  dead and removes them all (`readQueue`); its own ticket, pid 2, is alive to
+  the host forever (kthreadd answers EPERM) once that graft dies unremoved.
+- Дешевле: none: a pid says nothing across namespaces.
+- Инструмент: internal/lock.
+- Цена: an hour.
+- Если не делать: heavy tasks fail at random while a worker queues; a killed
+  worker's ticket blocks the queue for 24h.
+
+## Что сделать
+1. A ticket (and a lock holder note) is alive while its owner holds a shared
+   flock on it; a reader that takes it exclusively removes it. No pid check.
+2. New ticket suffix `.lticket`, so a graft before the change neither reads
+   nor removes them (the lock itself stays shared by both).
+3. Test: a ticket whose pid is dead but whose lock is held stays; one whose
+   lock is free goes.
+
+## Приёмка
+- `go test ./internal/lock`; `go run . all`; install.
+
+## Журнал
+- 2026-10-28 00:32 открыт — graft-master
+- 2026-10-28 00:50 cause measured: `codex sandbox -- sh -c 'readlink /proc/self/ns/pid; echo $$'` → own ns, pid=2
+- 2026-10-28 00:41 fix: tickets and holder notes are live files (internal/lock/live.go): the owner holds a shared flock, a reader removes only what it can take exclusively; `.lticket`/`.lholder`, so old grafts neither read nor remove them; a waiter whose own ticket is missing says so (not only on an empty queue). Unit: TestAcquireFIFODropsDeadTicket (held ticket of "pid 2" stays, unheld goes)
+- 2026-10-28 00:42 live probe (scratchpad nsprobe.sh: A holds, B waits, D queued, C in `codex sandbox` workspace-write): ~/bin/graft (old) — tickets 2→1, D exit 1 «ticket for lock load.lock disappeared»; new build — tickets 2→3, D and C ran
