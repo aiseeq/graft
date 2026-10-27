@@ -109,7 +109,8 @@ func raiseFile(ctx context.Context, path, display, goPath string, env []string, 
 			if m.Err == "" {
 				m.Err = "go list -m gave no version"
 			}
-			warning("%s: %s: the latest version is unknown: %s", display, c.path, firstLine(m.Err))
+			reason, _, _ := strings.Cut(strings.TrimSpace(m.Err), "\n")
+			warning("%s: %s: the latest version is unknown: %s", display, c.path, reason)
 		}
 	}
 	var upgraded []candidate
@@ -214,14 +215,6 @@ func joinOutput(stderr, stdout string, err error) string {
 		return err.Error()
 	}
 	return strings.Join(output, "\n")
-}
-
-func firstLine(s string) string {
-	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
-	if line == "" {
-		return "(no output)"
-	}
-	return line
 }
 
 func goFailure(display, command, stderr, stdout string, err error) error {
