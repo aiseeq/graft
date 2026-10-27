@@ -109,9 +109,20 @@ func TestSQLSourceOpsJournal(t *testing.T) {
 	if open[1].Subject != "POST /pay: timeout | upstream" || open[1].Times != 3 || open[1].Severity != "warning" {
 		t.Errorf("fields: %+v", open[1])
 	}
+	if open[1].Body != "" {
+		t.Errorf("open lists the body: %q", open[1].Body)
+	}
 	e, err := src.Get(ctx, "00000000-0000-0000-0000-000000000001")
 	if err != nil || e.Body != "line one\nline two with 'quotes'" {
 		t.Errorf("get: %+v %v", e, err)
+	}
+	withBodies, err := src.OpenWithBodies(ctx, []string{"http_failure", "it's none"})
+	if err != nil || len(withBodies) != 2 || withBodies[1].Body != e.Body {
+		t.Errorf("open with the bodies of http_failure: %+v %v", withBodies, err)
+	}
+	rules := []Rule{{Class: "http_failure", In: InBody, Substring: "line two", Reason: "known"}}
+	if c, err := (&Journal{Env: "local", Source: src, Rules: rules}).Count(ctx); err != nil || len(c.Muted) != 1 {
+		t.Errorf("a body rule over the sql source: %+v %v", c, err)
 	}
 
 	if err := src.Resolve(ctx, "00000000-0000-0000-0000-000000000002", "it's fine; was a test"); err != nil {

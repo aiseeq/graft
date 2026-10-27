@@ -169,7 +169,7 @@ stats` (`wait_s`).
 | `graft flags [status]` | is the flag raised: open journal events no exception mutes |
 | `graft flags show <id>` | one event in full |
 | `graft flags ack <id> --reason R` | close an open event with a reason |
-| `graft flags mute <id> --reason R [--match S] [--all-envs]` | add an exception for it, then close it |
+| `graft flags mute <id> --reason R [--match S] [--in subject\|body\|key] [--all-envs]` | add an exception for it, then close it |
 | `graft deploy [--redeploy] [--unapproved] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--unapproved` skips the `approved_release` check |
 | `graft deploy check <target>` | what `graft deploy <target>` would refuse now, read only: unpublished work, the window, `requires`, the hold, `approved_release` with the items of the commits outside it (summary, status, fix versions); exit 1 when it would refuse |
 | `graft deploy versions` | the version and the commit each target runs, with the remote branches at it, required targets first |
@@ -1059,16 +1059,24 @@ The exceptions file has one rule per line:
 *|http_failure|timeout calling provider|provider retries on its own
 prod,test|log_error|disk almost full|disk alerts come from monitoring
 local|job_stalled|*|jobs stall while the laptop sleeps
+test|log_error|body:userID=0f1e2d3c|one account's data on test
 ```
 
 `env` is `*` or a comma-separated list of configured environments; `class` is
 the event class; `substring` is matched literally and case-sensitively against
 the subject (`*` mutes the whole class); the reason is required and may contain
-`|`. A malformed line is an error, and `graft check` validates the staged file.
+`|`. A substring `body:text` or `key:text` is looked for in the event's body or
+key instead, for a class whose subject is shared and whose object (an account,
+an order) is named only there; `subject:text` matches a subject that itself
+starts with such a word. The body of an event of a class with a body rule is
+read one event at a time when the listing leaves it out. A malformed line is
+an error, and `graft check` validates the staged file.
 `graft flags mute` appends a rule for the current environment (`--all-envs`
 for `*`), using the whole subject unless `--match` narrows it, and then closes
-the event. Closing refuses an event that is not open, so another person's note
-is never overwritten.
+the event; with `--in body` the rule matches `--match` in the body (`--match`
+is required), with `--in key` in the key (the whole key by default). Closing
+refuses an event that is not open, so another person's note is never
+overwritten.
 
 The journal is read through one adapter.
 

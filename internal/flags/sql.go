@@ -44,8 +44,9 @@ func (s *SQLSource) table() string {
 	return ident(schema)
 }
 
-// eventJSON builds json_build_object over the mapped columns.
-func (s *SQLSource) eventJSON(withBody bool) string {
+// eventJSON builds json_build_object over the mapped columns; bodyIf, a
+// condition on the row, adds the body alone where it holds.
+func (s *SQLSource) eventJSON(withBody bool, bodyIf string) string {
 	c := s.cfg.Columns
 	var parts []string
 	add := func(key, expr string) {
@@ -74,6 +75,9 @@ func (s *SQLSource) eventJSON(withBody bool) string {
 	}
 	stamp("first_seen", c.FirstSeen)
 	stamp("last_seen", c.LastSeen)
+	if bodyIf != "" && c.Body != "" {
+		add("body", "CASE WHEN "+bodyIf+" THEN "+ident(c.Body)+"::text END")
+	}
 	if withBody {
 		text("body", c.Body)
 		text("note", c.Note)
@@ -105,7 +109,21 @@ func (s *SQLSource) Ready(ctx context.Context) (bool, error) {
 
 // Open lists open events, most recently seen first.
 func (s *SQLSource) Open(ctx context.Context) ([]Event, error) {
-	q := "SELECT coalesce(json_agg(" + s.eventJSON(false) + " ORDER BY " + ident(s.cfg.Columns.LastSeen) +
+	return s.open(ctx, s.eventJSON(false, ""))
+}
+
+// OpenWithBodies lists open events as Open does, with the bodies of those of
+// the classes given, in the one query.
+func (s *SQLSource) OpenWithBodies(ctx context.Context, classes []string) ([]Event, error) {
+	quoted := make([]string, len(classes))
+	for i, c := range classes {
+		quoted[i] = pgsql.Literal(c)
+	}
+	return s.open(ctx, s.eventJSON(false, ident(s.cfg.Columns.Class)+"::text IN ("+strings.Join(quoted, ", ")+")"))
+}
+
+func (s *SQLSource) open(ctx context.Context, event string) ([]Event, error) {
+	q := "SELECT coalesce(json_agg(" + event + " ORDER BY " + ident(s.cfg.Columns.LastSeen) +
 		" DESC), '[]'::json) FROM " + s.table() + " WHERE " + s.openCondition() + ";"
 	var rows []jsonEvent
 	if err := s.query(ctx, q, &rows); err != nil {
@@ -119,7 +137,7 @@ func (s *SQLSource) Get(ctx context.Context, id string) (Event, error) {
 	if err := checkID(id); err != nil {
 		return Event{}, err
 	}
-	q := "SELECT coalesce(json_agg(" + s.eventJSON(true) + "), '[]'::json) FROM " + s.table() +
+	q := "SELECT coalesce(json_agg(" + s.eventJSON(true, "") + "), '[]'::json) FROM " + s.table() +
 		" WHERE " + ident(s.cfg.Columns.ID) + "::text = " + pgsql.Literal(id) + ";"
 	var rows []jsonEvent
 	if err := s.query(ctx, q, &rows); err != nil {

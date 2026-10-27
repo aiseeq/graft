@@ -620,7 +620,8 @@ func flagsCmd(ctx context.Context, a *app.App, args []string) error {
 	var o app.FlagsOptions
 	fs.StringVar(&o.Env, "env", "", "environment (default: flags.default_env)")
 	fs.StringVar(&o.Reason, "reason", "", "why the event is closed (ack, mute)")
-	fs.StringVar(&o.Match, "match", "", "mute: the part of the subject the rule matches (default: all of it, * for the whole class)")
+	fs.StringVar(&o.Match, "match", "", "mute: the part of the subject (or of --in) the rule matches (default: all of it, * for the whole class)")
+	fs.StringVar(&o.In, "in", "subject", "mute: the field --match is part of: subject, body or key")
 	fs.BoolVar(&o.AllEnvs, "all-envs", false, "mute: write the rule for every environment")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -644,8 +645,8 @@ func flagsCmd(ctx context.Context, a *app.App, args []string) error {
 	default:
 		return fmt.Errorf("%w: unknown flags command %q (status, show, ack, mute)", errUsage, o.Command)
 	}
-	if (o.Match != "" || o.AllEnvs) && o.Command != "mute" {
-		return fmt.Errorf("%w: --match and --all-envs apply to mute only", errUsage)
+	if (o.Match != "" || o.AllEnvs || o.In != "subject") && o.Command != "mute" {
+		return fmt.Errorf("%w: --match, --in and --all-envs apply to mute only", errUsage)
 	}
 	return a.Flags(ctx, o)
 }

@@ -20,6 +20,7 @@ type FlagsOptions struct {
 	ID      string
 	Reason  string
 	Match   string
+	In      string // subject, body or key
 	AllEnvs bool
 }
 
@@ -44,7 +45,11 @@ func (a *App) Flags(ctx context.Context, o FlagsOptions) error {
 	case "ack":
 		return j.Ack(ctx, o.ID, o.Reason)
 	case "mute":
-		return j.Mute(ctx, flags.MuteOptions{ID: o.ID, Reason: o.Reason, Match: o.Match, AllEnvs: o.AllEnvs})
+		in := o.In
+		if in == "subject" {
+			in = flags.InSubject
+		}
+		return j.Mute(ctx, flags.MuteOptions{ID: o.ID, Reason: o.Reason, Match: o.Match, In: in, AllEnvs: o.AllEnvs})
 	default:
 		return fmt.Errorf("unknown flags command %q", o.Command)
 	}

@@ -13,14 +13,40 @@ import (
 	"strings"
 )
 
-// Rule mutes events of a class whose subject contains Substring, in the
-// listed environments. Substring "*" mutes the whole class.
+// Rule mutes events of a class whose subject, or the field In names,
+// contains Substring, in the listed environments. Substring "*" mutes the
+// whole class.
 type Rule struct {
 	Envs      []string // nil means every environment ("*")
 	Class     string
+	In        string // InSubject (empty), InBody or InKey
 	Substring string
 	Reason    string
 	Line      int
+}
+
+// The fields a rule's substring is looked for in. In the file a substring
+// "body:text" or "key:text" looks in that field, and "subject:text" in the
+// subject, for a subject text that itself starts with such a word.
+const (
+	InSubject = ""
+	InBody    = "body"
+	InKey     = "key"
+)
+
+// fieldPrefixes are the words a substring in the file names its field with.
+var fieldPrefixes = []string{"subject", InBody, InKey}
+
+// field is the text of e the rule looks in.
+func (r Rule) field(e Event) string {
+	switch r.In {
+	case InBody:
+		return e.Body
+	case InKey:
+		return e.Key
+	default:
+		return e.Subject
+	}
 }
 
 // AllEnvs is the env field value that applies a rule everywhere.
@@ -38,7 +64,21 @@ func (r Rule) Matches(env string, e Event) bool {
 	if r.Class != e.Class {
 		return false
 	}
-	return r.Substring == WholeClass || strings.Contains(e.Subject, r.Substring)
+	return r.Substring == WholeClass || strings.Contains(r.field(e), r.Substring)
+}
+
+// substringField renders the substring with the word of its field, when it
+// has one or would otherwise read as having one.
+func (r Rule) substringField() string {
+	if r.In != InSubject {
+		return r.In + ":" + r.Substring
+	}
+	for _, p := range fieldPrefixes {
+		if strings.HasPrefix(r.Substring, p+":") {
+			return "subject:" + r.Substring
+		}
+	}
+	return r.Substring
 }
 
 // String renders the rule as a line of the exceptions file.
@@ -47,13 +87,15 @@ func (r Rule) String() string {
 	if r.Envs != nil {
 		env = strings.Join(r.Envs, ",")
 	}
-	return strings.Join([]string{env, r.Class, r.Substring, r.Reason}, "|")
+	return strings.Join([]string{env, r.Class, r.substringField(), r.Reason}, "|")
 }
 
 // ParseRules reads an exceptions file: one rule per line,
 // env|class|substring|reason, blank lines and # comments ignored. env is * or a
-// comma-separated list of known environments. Every field is required; the
-// reason may itself contain |. Any malformed line is an error: a rule that
+// comma-separated list of known environments. A substring "body:text" or
+// "key:text" is looked for in that field of the event, any other in its
+// subject. Every field is required; the reason may itself contain |. Any
+// malformed line is an error: a rule that
 // silently fails to parse leaves the event it was meant to mute raising the
 // flag, or worse, a rule meant for one environment muting all of them.
 func ParseRules(data []byte, knownEnvs []string) ([]Rule, error) {
@@ -99,6 +141,23 @@ func parseRule(line string, knownEnvs []string) (Rule, error) {
 		}
 	}
 	r := Rule{Class: parts[1], Substring: parts[2], Reason: parts[3]}
+	for _, p := range fieldPrefixes {
+		text, ok := strings.CutPrefix(r.Substring, p+":")
+		if !ok {
+			continue
+		}
+		if p != "subject" {
+			r.In = p
+		}
+		r.Substring = text
+		switch {
+		case text == "":
+			return Rule{}, fmt.Errorf("empty substring after %s: in %q", p, line)
+		case text == WholeClass:
+			return Rule{}, fmt.Errorf("%s:* in %q: a whole class is muted with substring *", p, line)
+		}
+		break
+	}
 	if parts[0] != AllEnvs {
 		for env := range strings.SplitSeq(parts[0], ",") {
 			env = strings.TrimSpace(env)
@@ -125,8 +184,8 @@ func LoadRules(path string, knownEnvs []string) ([]Rule, error) {
 	return rules, nil
 }
 
-// AppendRule adds r to the exceptions file unless an identical env, class and
-// substring are already there. It reports whether the file changed.
+// AppendRule adds r to the exceptions file unless an identical env, class,
+// field and substring are already there. It reports whether the file changed.
 func AppendRule(path string, r Rule, knownEnvs []string) (bool, error) {
 	if strings.Contains(r.Substring, "|") || strings.Contains(r.Class, "|") {
 		return false, errors.New("the rule's class and substring cannot contain |: pass a narrower --match")
@@ -139,7 +198,7 @@ func AppendRule(path string, r Rule, knownEnvs []string) (bool, error) {
 		return false, err
 	}
 	for _, e := range existing {
-		if e.Class == r.Class && e.Substring == r.Substring && slices.Equal(e.Envs, r.Envs) {
+		if e.Class == r.Class && e.In == r.In && e.Substring == r.Substring && slices.Equal(e.Envs, r.Envs) {
 			return false, nil
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 )
 
@@ -70,12 +71,56 @@ func (j *Journal) Count(ctx context.Context) (Count, error) {
 	if err != nil || !ready {
 		return Count{}, err
 	}
-	events, err := j.Source.Open(ctx)
+	classes := j.bodyClasses()
+	var events []Event
+	if bo, ok := j.Source.(BodiesOpener); ok && len(classes) > 0 {
+		events, err = bo.OpenWithBodies(ctx, classes)
+	} else {
+		events, err = j.Source.Open(ctx)
+	}
 	if err != nil {
+		return Count{}, err
+	}
+	if err := j.fillBodies(ctx, events, classes); err != nil {
 		return Count{}, err
 	}
 	review, muted := j.Split(events)
 	return Count{Ready: true, Review: review, Muted: muted}, nil
+}
+
+// BodiesOpener is a source that can list open events with the bodies of some
+// classes in one read, where reading them one at a time costs a call each.
+type BodiesOpener interface {
+	OpenWithBodies(ctx context.Context, classes []string) ([]Event, error)
+}
+
+// bodyClasses are the classes a body rule of this environment names.
+func (j *Journal) bodyClasses() []string {
+	var classes []string
+	for _, r := range j.Rules {
+		if r.In == InBody && (r.Envs == nil || slices.Contains(r.Envs, j.Env)) && !slices.Contains(classes, r.Class) {
+			classes = append(classes, r.Class)
+		}
+	}
+	return classes
+}
+
+// fillBodies reads the body of each event of the classes given where the
+// listing left it out: a source lists events without their bodies, and a body
+// rule would otherwise never match.
+func (j *Journal) fillBodies(ctx context.Context, events []Event, classes []string) error {
+	for i := range events {
+		e := &events[i]
+		if !slices.Contains(classes, e.Class) || e.Body != "" {
+			continue
+		}
+		full, err := j.Source.Get(ctx, e.ID)
+		if err != nil {
+			return fmt.Errorf("reading the body of %s for the exceptions: %w", e.ID, err)
+		}
+		e.Body = full.Body
+	}
+	return nil
 }
 
 // Raised tells whether any open event is left after the exceptions.
@@ -185,16 +230,19 @@ func (j *Journal) Ack(ctx context.Context, id, reason string) error {
 type MuteOptions struct {
 	ID     string
 	Reason string
-	// Match narrows the rule to part of the subject; empty means the whole
-	// subject.
+	// Match narrows the rule to part of the subject, or of the field In
+	// names; empty means the whole subject or key.
 	Match string
+	// In is the field Match is part of: InSubject (empty), InBody or InKey.
+	In string
 	// AllEnvs writes the rule for every environment instead of this one.
 	AllEnvs bool
 }
 
-// Mute records an exception for the event's class and subject, then closes
-// the event. The rule is written first: if closing fails, the rule still stops
-// the next occurrence from raising the flag, and the error says so.
+// Mute records an exception for the event's class and subject, or the part
+// of its body or key given, then closes the event. The rule is written first:
+// if closing fails, the rule still stops the next occurrence from raising the
+// flag, and the error says so.
 func (j *Journal) Mute(ctx context.Context, o MuteOptions) error {
 	if strings.TrimSpace(o.Reason) == "" {
 		return errors.New("--reason is required: say why this is noise")
@@ -203,14 +251,34 @@ func (j *Journal) Mute(ctx context.Context, o MuteOptions) error {
 	if err != nil {
 		return err
 	}
+	rule := Rule{Class: e.Class, In: o.In, Reason: strings.TrimSpace(o.Reason)}
+	in, text := "subject", e.Subject
+	switch o.In {
+	case InSubject:
+	case InBody:
+		if o.Match == "" {
+			return errors.New("--in body needs --match: the part of the body that tells this event from others of its class")
+		}
+		in, text = InBody, e.Body
+	case InKey:
+		in, text = InKey, e.Key
+	default:
+		return fmt.Errorf("--in %q: want subject, body or key", o.In)
+	}
 	match := o.Match
 	if match == "" {
-		match = e.Subject
+		match = text
 	}
-	if match != WholeClass && !strings.Contains(e.Subject, match) {
-		return fmt.Errorf("--match %q is not part of the subject %q", match, e.Subject)
+	if match == "" {
+		return fmt.Errorf("event %s has no %s to match", o.ID, in)
 	}
-	rule := Rule{Class: e.Class, Substring: strings.TrimSpace(match), Reason: strings.TrimSpace(o.Reason)}
+	if o.In != InSubject && match == WholeClass {
+		return fmt.Errorf("--match * mutes the whole class: drop --in %s", in)
+	}
+	if match != WholeClass && !strings.Contains(text, match) {
+		return fmt.Errorf("--match %q is not part of the %s %q", match, in, truncate(text, 300))
+	}
+	rule.Substring = strings.TrimSpace(match)
 	if !o.AllEnvs {
 		rule.Envs = []string{j.Env}
 	}

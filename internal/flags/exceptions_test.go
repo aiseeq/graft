@@ -52,6 +52,38 @@ local|job_stalled|*|local jobs stall on laptop sleep
 	}
 }
 
+func TestParseRulesField(t *testing.T) {
+	rules, err := ParseRules([]byte(`test|log_error|body:userID=f00d|one account
+*|log_error|key:balance:42|one key
+*|log_error|subject:body: of the request|a subject starting with body:
+`), knownEnvs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rules[0].In != InBody || rules[0].Substring != "userID=f00d" || rules[1].In != InKey || rules[1].Substring != "balance:42" {
+		t.Errorf("field rules: %+v", rules[:2])
+	}
+	if rules[2].In != InSubject || rules[2].Substring != "body: of the request" {
+		t.Errorf("subject: rule: %+v", rules[2])
+	}
+	ev := Event{Class: "log_error", Subject: "negative total", Body: "total=-1 userID=f00d", Key: "balance:42"}
+	if !rules[0].Matches("test", ev) || rules[0].Matches("test", Event{Class: "log_error", Subject: "userID=f00d", Body: "userID=beef"}) {
+		t.Error("a body rule looks in the body only")
+	}
+	if !rules[1].Matches("prod", ev) || rules[1].Matches("prod", Event{Class: "log_error", Subject: "balance:42"}) {
+		t.Error("a key rule looks in the key only")
+	}
+	if !rules[2].Matches("prod", Event{Class: "log_error", Subject: "body: of the request too big"}) {
+		t.Error("subject: rule")
+	}
+	for i, want := range []string{"test|log_error|body:userID=f00d|one account", "*|log_error|key:balance:42|one key",
+		"*|log_error|subject:body: of the request|a subject starting with body:"} {
+		if got := rules[i].String(); got != want {
+			t.Errorf("rule %d renders %q, want %q", i, got, want)
+		}
+	}
+}
+
 func TestParseRulesErrors(t *testing.T) {
 	for name, line := range map[string]string{
 		"three fields":    "log_error|disk|reason",
@@ -60,6 +92,8 @@ func TestParseRulesErrors(t *testing.T) {
 		"empty substring": "*|log_error||reason",
 		"empty reason":    "*|log_error|disk|",
 		"unknown env":     "staging|log_error|disk|reason",
+		"empty body":      "*|log_error|body:|reason",
+		"whole body":      "*|log_error|body:*|reason",
 	} {
 		if _, err := ParseRules([]byte(line+"\n"), knownEnvs); err == nil {
 			t.Errorf("%s: want an error", name)
