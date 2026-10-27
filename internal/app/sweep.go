@@ -204,11 +204,30 @@ func readSweepRecord(repo *gitx.Repo, target string) (head string, withheld []st
 }
 
 // sweptCommit is one commit of an item: whether the target runs it and
-// whether the trunk has it.
+// whether the trunk has it; shipsNothing, on the target only as it changes
+// nothing there but approved_release.ignore_paths.
 type sweptCommit struct {
-	sha               string
-	when              time.Time
-	onTarget, inTrunk bool
+	sha                             string
+	when                            time.Time
+	onTarget, inTrunk, shipsNothing bool
+}
+
+// onTargetWords says that the commits, all of them, are on the target, and
+// which of them only as they ship nothing to it.
+func onTargetWords(target string, commits []sweptCommit) string {
+	idle := 0
+	for _, c := range commits {
+		if c.shipsNothing {
+			idle++
+		}
+	}
+	switch idle {
+	case 0:
+		return "is on " + target
+	case len(commits):
+		return "ships nothing to " + target + ", changing only approved_release.ignore_paths"
+	}
+	return fmt.Sprintf("is on %s, but for %d commits that ship nothing to it, changing only approved_release.ignore_paths", target, idle)
 }
 
 // sweepRun reconciles the items of one target.
@@ -453,7 +472,11 @@ func (sc *sweptCommit) byContent(r *deployRun, head, trunk, parent string) error
 		}
 	}
 	if sc.inTrunk && !sc.onTarget {
+		if sc.onTarget, err = landed(r, head, sc.sha, parent, nil); err != nil || sc.onTarget || r.target.ApprovedRelease == nil {
+			return err
+		}
 		sc.onTarget, err = landed(r, head, sc.sha, parent, r.target.ApprovedRelease)
+		sc.shipsNothing = sc.onTarget
 	}
 	return err
 }
@@ -570,13 +593,13 @@ func (s *sweepRun) item(ctx context.Context, issue jira.Issue, commits []sweptCo
 		}
 	case s.finishing(status):
 		if allOn {
-			s.move(ctx, issue, fmt.Sprintf("its work of the last %d days is on %s (commits: %d)", s.conf.Days, s.r.name, len(commits)), true)
+			s.move(ctx, issue, fmt.Sprintf("its work of the last %d days %s (commits: %d)", s.conf.Days, onTargetWords(s.r.name, commits), len(commits)), true)
 		}
 	default:
 		// In work, whether a transition names the status or not.
 		newest := slices.MaxFunc(commits, func(a, b sweptCommit) int { return a.when.Compare(b.when) })
 		if days := int(s.now.Sub(newest.when).Hours() / 24); allOn && days >= s.conf.StaleDays {
-			s.list(ctx, issue, "%s is %s, but all its work is on %s, the newest commit %d days old", key, status, s.r.name, days)
+			s.list(ctx, issue, "%s is %s, but all its work %s, the newest commit %d days old", key, status, onTargetWords(s.r.name, commits), days)
 		}
 	}
 }

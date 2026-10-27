@@ -28,3 +28,4 @@
 ## Журнал
 - 2026-10-28 00:20 открыт — graft-master
 - 2026-10-28 00:21 cause measured (git show --stat of the 4 commits); answered the peer
+- 2026-10-28 00:26 shipsNothing in sweptCommit, onTargetWords; TestDeploySweepByContent PROJ-85; README; committing

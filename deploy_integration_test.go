@@ -1940,7 +1940,8 @@ func TestDeploySkipKeysSubtaskOwnCommit(t *testing.T) {
 // does by content is on it: one that changes only files approved_release
 // ignores, and two commits of the trunk a release branch took in one; the
 // commit that took them is in the trunk by content too. A commit whose change
-// the target lacks stays listed.
+// the target lacks stays listed. An item whose work ships nothing to the
+// target moves saying so.
 func TestDeploySweepByContent(t *testing.T) {
 	d := newDeployFixture(t, func(state string, q func(string) string) string {
 		return strings.Replace(deployConfig(state, q), `approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}`,
@@ -1951,12 +1952,14 @@ func TestDeploySweepByContent(t *testing.T) {
 	trunk := d.git("branch", "--show-current")
 	d.git("remote", "set-head", "origin", trunk)
 	d.jira.mu.Lock()
-	maps.Copy(d.jira.statuses, map[string]string{"PROJ-80": "Done", "PROJ-81": "Done", "PROJ-82": "Done", "PROJ-83": "Done", "PROJ-84": "Done"})
+	maps.Copy(d.jira.statuses, map[string]string{"PROJ-80": "Done", "PROJ-81": "Done", "PROJ-82": "Done", "PROJ-83": "Done", "PROJ-84": "Done", "PROJ-85": "Ready for release"})
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "--unapproved", "live")
 	base := d.git("rev-parse", "HEAD")
 	d.write("docs/handover.md", "notes\n")
 	d.mustGraft("commit", "-m", "docs: PROJ-80 handover")
+	d.write("docs/tools.md", "tools\n")
+	d.mustGraft("commit", "-m", "docs: PROJ-85 tools")
 	d.write("b.txt", "b\n")
 	d.mustGraft("commit", "-m", "feat: PROJ-81 b")
 	d.write("c.txt", "c\n")
@@ -1982,6 +1985,9 @@ func TestDeploySweepByContent(t *testing.T) {
 	}
 	if !regexp.MustCompile(`PROJ-83 is Done, but [0-9a-f]+ is not on live yet`).MatchString(out) {
 		t.Errorf("PROJ-83 not listed:\n%s", out)
+	}
+	if want := "PROJ-85 stays Ready for release though its work of the last 30 days ships nothing to live, changing only approved_release.ignore_paths (commits: 1)"; !strings.Contains(out, want) {
+		t.Errorf("no %q:\n%s", want, out)
 	}
 }
 
