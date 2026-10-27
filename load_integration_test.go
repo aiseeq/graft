@@ -240,8 +240,39 @@ func TestExecHeavyWaitsForLoad(t *testing.T) {
 	if want := "exec exec 0 wait=false,exec exec 3 wait=true"; strings.Join(tasks, ",") != want {
 		t.Errorf("task lines %q, want %q", strings.Join(tasks, ","), want)
 	}
-	if out, code := f.graft("", "exec", "--heavy", "sh"); code != 2 || !strings.Contains(out, "graft exec [--heavy [--local]] -- <command>") {
+	if out, code := f.graft("", "exec", "--heavy", "sh"); code != 125 || !strings.Contains(out, "graft exec [--heavy [--local]] -- <command>") {
 		t.Errorf("without --: exit %d\n%s", code, out)
+	}
+}
+
+// TestExecExitStatus: graft exec exits with the command's status, 128 and
+// the signal for one a signal ended, and its own failures as env does: 125
+// graft, 126 a command that cannot be started, 127 one not found.
+func TestExecExitStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n", "plain": "echo\n"})
+	f.env = append(f.env, "XDG_CACHE_HOME="+t.TempDir())
+	for _, c := range []struct {
+		name string
+		args []string
+		code int
+		says string
+	}{
+		{"the command's", []string{"exec", "--", "sh", "-c", "exit 3"}, 3, "exit status 3"},
+		{"a signal", []string{"exec", "--", "sh", "-c", "kill -TERM $$"}, 128 + 15, "signal: terminated"},
+		{"not found", []string{"exec", "--heavy", "--", "no-such-command-here"}, 127, "executable file not found"},
+		{"not executable", []string{"exec", "--", "./plain"}, 126, "permission denied"},
+		{"usage", []string{"exec", "sh"}, 125, "(see graft help)"},
+	} {
+		if out, code := f.graft("", c.args...); code != c.code || !strings.Contains(out, c.says) {
+			t.Errorf("%s: exit %d, want %d and %q:\n%s", c.name, code, c.code, c.says, out)
+		}
+	}
+	writeFile(t, filepath.Join(f.work, ".graft.yaml"), "schema: 1\nno_such_key: 1\n")
+	if out, code := f.graft("", "exec", "--heavy", "--", "true"); code != 125 || !strings.Contains(out, "graft:") {
+		t.Errorf("a config graft cannot read: exit %d\n%s", code, out)
 	}
 }
 

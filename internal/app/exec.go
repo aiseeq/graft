@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os/exec"
 	"strings"
+	"syscall"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/tasks"
 )
 
 // Exec runs argv in the directory graft started in, a command that is not a
@@ -17,8 +20,49 @@ import (
 // GRAFT_THREADS from the user config's load.threads. The stats record it as
 // the task exec of the work tree around the directory, or of the directory
 // outside one. A heavy one in a project with remote_heavy runs on its host
-// first, as a heavy task's steps do. The command's exit status is graft's.
+// first, as a heavy task's steps do. The command's exit status is graft's;
+// its own failures exit as env's do (ExitGraft, ExitCannotRun,
+// ExitNotFound), so a caller tells them from the command's.
 func (a *App) Exec(ctx context.Context, argv []string, heavy bool) error {
+	err := a.exec(ctx, argv, heavy)
+	var cmdErr *tasks.CommandError
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return nil
+	case !errors.As(err, &cmdErr):
+		return &ExitCodeError{Code: ExitGraft, Err: err}
+	case errors.As(cmdErr.Err, &exit):
+		return &ExitCodeError{Code: exitStatus(exit), Err: fmt.Errorf("exec: %s: %w", strings.Join(argv, " "), err)}
+	case cmdErr.Started:
+		return &ExitCodeError{Code: ExitGraft, Err: fmt.Errorf("exec: %s: %w", strings.Join(argv, " "), err)}
+	case errors.Is(cmdErr.Err, exec.ErrNotFound), errors.Is(cmdErr.Err, fs.ErrNotExist):
+		return &ExitCodeError{Code: ExitNotFound, Err: fmt.Errorf("exec: %w", err)}
+	default:
+		return &ExitCodeError{Code: ExitCannotRun, Err: fmt.Errorf("exec: %w", err)}
+	}
+}
+
+// The exit statuses of graft exec's own failures, those of env and timeout.
+const (
+	// ExitGraft is graft failing: its config, the queue, a usage error.
+	ExitGraft = 125
+	// ExitCannotRun is a command found but not started (not executable).
+	ExitCannotRun = 126
+	// ExitNotFound is a command not found.
+	ExitNotFound = 127
+)
+
+// exitStatus is the command's exit status, 128 and the signal for one a
+// signal ended, as a shell says.
+func exitStatus(exit *exec.ExitError) int {
+	if ws, ok := exit.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return exit.ExitCode()
+}
+
+func (a *App) exec(ctx context.Context, argv []string, heavy bool) error {
 	root := a.Dir
 	cfg := &config.Config{}
 	repo, err := gitx.Open(a.Dir)
@@ -37,12 +81,7 @@ func (a *App) Exec(ctx context.Context, argv []string, heavy bool) error {
 	case !errors.Is(err, gitx.ErrNotRepo):
 		return err
 	}
-	err = a.newRunner(root, cfg).Exec(ctx, a.Dir, argv, heavy)
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		return &ExitCodeError{Code: exit.ExitCode(), Err: fmt.Errorf("exec: %s: %w", strings.Join(argv, " "), err)}
-	}
-	return err
+	return a.newRunner(root, cfg).Exec(ctx, a.Dir, argv, heavy)
 }
 
 // projectConfig is the work tree's config, an empty one when it has none:

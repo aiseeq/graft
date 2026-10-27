@@ -226,7 +226,8 @@ func readQueue(path string) ([]queueEntry, error) {
 			continue
 		}
 		data, err := os.ReadFile(ticket)
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) || busy(err) {
+			// Removed, or being removed as dead.
 			continue
 		}
 		if err != nil {
@@ -318,8 +319,8 @@ func Holders(path string) ([]string, error) {
 			continue
 		}
 		data, err := os.ReadFile(m)
-		if errors.Is(err, os.ErrNotExist) {
-			continue // released meanwhile
+		if errors.Is(err, os.ErrNotExist) || busy(err) {
+			continue // released meanwhile, or being removed as dead
 		}
 		if err != nil {
 			return nil, fmt.Errorf("reading a lock holder: %w", err)

@@ -744,9 +744,23 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 		cmd = r.remoteCmd(ctx, cmd, nil, threads)
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
-	_, err = r.measure(cmd, s.Source)
-	return err
+	if _, err = r.measure(cmd, s.Source); err != nil {
+		return &CommandError{Started: cmd.Process != nil, Err: err}
+	}
+	return nil
 }
+
+// CommandError is how the command Exec runs failed, told apart from the
+// failures of graft around it.
+type CommandError struct {
+	// Started is false when the command could not be started.
+	Started bool
+	Err     error
+}
+
+func (e *CommandError) Error() string { return e.Err.Error() }
+
+func (e *CommandError) Unwrap() error { return e.Err }
 
 // Unit runs fn as name, a unit of work that is not a task (a deploy), and
 // records it the way a task is recorded: the tasks fn runs are recorded as

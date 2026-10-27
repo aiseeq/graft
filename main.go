@@ -140,12 +140,15 @@ func runError(a *app.App, err error) int {
 		return 0
 	case errors.Is(err, flag.ErrHelp):
 		return 0
+	case errors.Is(err, errUsage):
+		fmt.Fprintln(a.Stderr, "graft:", strings.TrimPrefix(err.Error(), errUsage.Error()+": ")+" (see graft help)")
+		if errors.As(err, &exitCode) {
+			return exitCode.Code
+		}
+		return 2
 	case errors.As(err, &exitCode):
 		fmt.Fprintln(a.Stderr, "graft:", err)
 		return exitCode.Code
-	case errors.Is(err, errUsage):
-		fmt.Fprintln(a.Stderr, "graft:", strings.TrimPrefix(err.Error(), errUsage.Error()+": ")+" (see graft help)")
-		return 2
 	default:
 		fmt.Fprintln(a.Stderr, "graft:", err)
 		return 1
@@ -402,8 +405,9 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 }
 
 // execCmd runs graft exec [--heavy] -- <command> [args].
+// execCmd is graft exec; its own failures, usage too, exit app.ExitGraft.
 func execCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := fmt.Errorf("%w: graft exec [--heavy [--local]] -- <command> [args]", errUsage)
+	usage := &app.ExitCodeError{Code: app.ExitGraft, Err: fmt.Errorf("%w: graft exec [--heavy [--local]] -- <command> [args]", errUsage)}
 	var heavy, local bool
 	for len(args) > 0 && args[0] != "--" {
 		switch args[0] {
@@ -422,7 +426,7 @@ func execCmd(ctx context.Context, a *app.App, args []string) error {
 	if local {
 		// The graft the command starts stays here too.
 		if err := os.Setenv(tasks.HeavyEnv, "local"); err != nil {
-			return fmt.Errorf("exec --local: %w", err)
+			return &app.ExitCodeError{Code: app.ExitGraft, Err: fmt.Errorf("exec --local: %w", err)}
 		}
 	}
 	return a.Exec(ctx, args[1:], heavy)

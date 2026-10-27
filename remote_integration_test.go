@@ -126,7 +126,7 @@ func TestExecHeavyRunsOnRemoteHost(t *testing.T) {
 	if out, code := f.exec(sub, "", graftBin, "exec", "--heavy", "--", "true"); code != 0 || !strings.Contains(out, "on this machine: it runs in a subdirectory") {
 		t.Errorf("exec --heavy in a subdirectory: exit %d\n%s", code, out)
 	}
-	if out, code := f.graft("", "exec", "--local", "--", "true"); code != 2 {
+	if out, code := f.graft("", "exec", "--local", "--", "true"); code != 125 {
 		t.Errorf("exec --local without --heavy: exit %d\n%s", code, out)
 	}
 }

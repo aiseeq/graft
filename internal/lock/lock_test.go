@@ -239,3 +239,32 @@ func TestStaleNotesAreDropped(t *testing.T) {
 		t.Error("stale note kept")
 	}
 }
+
+// TestCreateLiveRetriesRemoved: a reader that takes a new live file for dead
+// before its owner locks it costs the owner another name, not its lock.
+func TestCreateLiveRetriesRemoved(t *testing.T) {
+	dir := t.TempDir()
+	reaped := 0
+	beforeLock = func(name string) {
+		if reaped < 2 {
+			reaped++
+			if dead, err := gone(name); !dead || err != nil {
+				t.Errorf("gone(%s) = %v, %v", name, dead, err)
+			}
+		}
+	}
+	t.Cleanup(func() { beforeLock = func(string) {} })
+	fl, name, err := createLive(dir, "app.lock.*.lholder", []byte("note"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dead, err := gone(name); dead || err != nil {
+		t.Errorf("the live file taken for dead: %v, %v", dead, err)
+	}
+	if err := releaseLive(fl, name); err != nil {
+		t.Fatal(err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, "*")); len(left) != 0 {
+		t.Errorf("files left: %v", left)
+	}
+}
