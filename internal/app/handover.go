@@ -15,8 +15,8 @@ import (
 )
 
 // heldItem is an item a deploy left where it was for want of the comment
-// require_comment asks for; after is the parent it followed, "" for an item
-// delivered by its own key.
+// require_comment asks for, or for the glint findings; after is the parent it
+// followed, "" for an item delivered by its own key.
 type heldItem struct {
 	key, after string
 }
@@ -53,7 +53,7 @@ func (m *noteMover) uninstructed(ctx context.Context, issue jira.Issue, t *confi
 	return fmt.Sprintf("no comment with %q by the owner of the Jira token on %s since the work came into %s", t.RequireComment, where, strings.Join(t.From, ", "))
 }
 
-// retryHeld moves the items earlier deploys held for their comment, but for
+// retryHeld moves the items earlier deploys held, but for
 // those in done, the keys this deploy has just taken, and returns those it
 // could not read: they stay held, as do the items the mover holds again. An
 // item that has left the statuses the transitions move from, moved by hand
@@ -67,13 +67,13 @@ func (a *App) retryHeld(ctx context.Context, sub *subtaskRun, held []heldItem, d
 		}
 		issue, err := m.client.Issue(ctx, h.key)
 		if err != nil {
-			a.warn("%s still waits for its comment: %v", h.key, err)
+			a.warn("%s is still held: %v", h.key, err)
 			unread = append(unread, h)
 			continue
 		}
 		t := m.conf.Moving(issue.Status)
 		if t == nil || issue.Done {
-			a.printf("%s waits for its comment no more: it is %s", h.key, issue.Status)
+			a.printf("%s is held no more: it is %s", h.key, issue.Status)
 			continue
 		}
 		reached := issue.Status
@@ -91,22 +91,29 @@ func (a *App) retryHeld(ctx context.Context, sub *subtaskRun, held []heldItem, d
 }
 
 // DeployHandover is graft deploy handover <target>: it moves the items the
-// target's deploys held for want of their comment, now that it is written.
-// Items still held make it fail.
-func (a *App) DeployHandover(ctx context.Context, target string) error {
+// target's deploys held for want of their comment, now that it is written,
+// or for the glint findings of the deployed commit, now that glint finds
+// none or ticket, --glint-ticket, takes them. Items still held make it fail.
+func (a *App) DeployHandover(ctx context.Context, target, ticket string) error {
 	r, err := a.deployTarget(target)
 	if err != nil {
 		return err
 	}
-	if r.target.ReleaseNotes == nil || !slices.ContainsFunc(r.target.ReleaseNotes.Transitions, func(t config.NoteTransition) bool { return t.RequireComment != "" }) {
-		return fmt.Errorf("deploy.targets.%s.release_notes: no transition has require_comment", target)
+	n := r.target.ReleaseNotes
+	if n == nil || n.Glint == "" && !slices.ContainsFunc(n.Transitions, func(t config.NoteTransition) bool { return t.RequireComment != "" }) {
+		return fmt.Errorf("deploy.targets.%s.release_notes: neither glint nor a transition with require_comment holds items", target)
+	}
+	if r.glint, err = newGlintCheck(r, ticket, func(ctx context.Context) (string, error) {
+		return r.readSHA(ctx, r.env, r.target.DeployedSHA)
+	}); err != nil {
+		return err
 	}
 	held, err := readHeld(r)
 	if err != nil {
 		return err
 	}
 	if len(held) == 0 {
-		a.printf("no item of %s waits for its comment", target)
+		a.printf("no item of %s is held", target)
 		return nil
 	}
 	client, err := jiraClient()
@@ -117,7 +124,7 @@ func (a *App) DeployHandover(ctx context.Context, target string) error {
 	if err != nil {
 		return err
 	}
-	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name}
+	mover := &noteMover{app: a, client: client, conf: n, me: me, target: r.name, glint: r.glint}
 	sub := &subtaskRun{mover: mover, notes: r.cfg.ReleaseNotes.Jira, me: me, reached: map[string]string{}}
 	unread := a.retryHeld(ctx, sub, held, nil)
 	if r.target.ReleaseNotes.Subtasks {
@@ -128,7 +135,7 @@ func (a *App) DeployHandover(ctx context.Context, target string) error {
 		return err
 	}
 	if len(still) > 0 {
-		return fmt.Errorf("%d of %s still wait for their comment (see above)", len(still), target)
+		return fmt.Errorf("%d of %s are still held (see above)", len(still), target)
 	}
 	return nil
 }

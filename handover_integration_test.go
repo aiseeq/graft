@@ -58,7 +58,7 @@ func TestDeployRequireComment(t *testing.T) {
 	d.jira.written["PROJ-80"] = []fakeComment{{author: "me", created: time.Now(), text: "How to check: open the form"}}
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "handover", "sub")
-	if code == 0 || !strings.Contains(out, "PROJ-80 moved to Testing\n") || !strings.Contains(out, "PROJ-80 assigned to qa") || !strings.Contains(out, "2 of sub still wait for their comment") {
+	if code == 0 || !strings.Contains(out, "PROJ-80 moved to Testing\n") || !strings.Contains(out, "PROJ-80 assigned to qa") || !strings.Contains(out, "2 of sub are still held") {
 		t.Errorf("handover: %d\n%s", code, out)
 	}
 
@@ -69,12 +69,12 @@ func TestDeployRequireComment(t *testing.T) {
 	d.write("b.txt", "b\n")
 	d.mustGraft("commit", "-m", "chore: PROJ-86 tidy")
 	out = d.mustGraft("deploy", "sub")
-	for _, want := range []string{"PROJ-82 moved to Testing\n", "PROJ-82 assigned to qa", "PROJ-83 waits for its comment no more: it is Testing"} {
+	for _, want := range []string{"PROJ-82 moved to Testing\n", "PROJ-82 assigned to qa", "PROJ-83 is held no more: it is Testing"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q:\n%s", want, out)
 		}
 	}
-	if out := d.mustGraft("deploy", "handover", "sub"); !strings.Contains(out, "no item of sub waits for its comment") {
+	if out := d.mustGraft("deploy", "handover", "sub"); !strings.Contains(out, "no item of sub is held") {
 		t.Errorf("held after all moved:\n%s", out)
 	}
 }

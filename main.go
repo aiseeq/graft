@@ -670,20 +670,22 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	redeploy := fs.Bool("redeploy", false, "deploy the commit the target already runs")
 	unapproved := fs.Bool("unapproved", false, "skip the approved_release check")
 	apply := fs.Bool("apply", false, "sweep: move the items, not only list them")
+	glintTicket := fs.String("glint-ticket", "", "deploy, handover: the item that takes the glint findings of the deployed commit, at a release acceptance")
 	fs.BoolVar(&a.NoCache, "no-cache", false, "run the deps with cache even if they passed on this tree")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
 	}
-	usage := fmt.Errorf("%w: graft deploy [--redeploy] [--unapproved] <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | check <target> | versions | cutoff <target> | sweep <target> [--apply] | handover <target> | check-head | check-integrations [build]", errUsage)
+	usage := fmt.Errorf("%w: graft deploy [--redeploy] [--unapproved] [--glint-ticket KEY] <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | check <target> | versions | cutoff <target> | sweep <target> [--apply] | handover <target> [--glint-ticket KEY] | check-head | check-integrations [build]", errUsage)
 	if len(pos) == 0 {
 		return usage
 	}
 	logFlags := *lines != 200 || *grep != ""
-	if deployFlagsMisplaced(pos[0], scriptArgs != nil, logFlags, *redeploy || *unapproved) || *apply && pos[0] != "sweep" {
+	if deployFlagsMisplaced(pos[0], scriptArgs != nil, logFlags, *redeploy || *unapproved) || *apply && pos[0] != "sweep" ||
+		*glintTicket != "" && isDeploySubcommand(pos[0]) && pos[0] != "handover" {
 		return usage
 	}
-	if run := trackerDeployCmd(ctx, a, pos, scriptArgs != nil, *apply); run != nil {
+	if run := trackerDeployCmd(ctx, a, pos, scriptArgs != nil, *apply, *glintTicket); run != nil {
 		return run()
 	}
 	if run := readOnlyDeployCmd(ctx, a, pos, scriptArgs); run != nil {
@@ -696,7 +698,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 		}
 		return a.DeployLogs(ctx, pos[1], *lines, *grep, scriptArgs)
 	case !isDeploySubcommand(pos[0]) && len(pos) == 1:
-		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs, Redeploy: *redeploy, Unapproved: *unapproved})
+		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs, Redeploy: *redeploy, Unapproved: *unapproved, GlintTicket: *glintTicket})
 	default:
 		return usage
 	}
@@ -704,7 +706,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 
 // trackerDeployCmd is the graft deploy subcommand of pos that moves tracker
 // items, sweep or handover, nil for any other; neither takes script args.
-func trackerDeployCmd(ctx context.Context, a *app.App, pos []string, scriptArgs, apply bool) func() error {
+func trackerDeployCmd(ctx context.Context, a *app.App, pos []string, scriptArgs, apply bool, glintTicket string) func() error {
 	if len(pos) != 2 || scriptArgs {
 		return nil
 	}
@@ -712,7 +714,7 @@ func trackerDeployCmd(ctx context.Context, a *app.App, pos []string, scriptArgs,
 	case "sweep":
 		return func() error { return a.DeploySweep(ctx, pos[1], apply) }
 	case "handover":
-		return func() error { return a.DeployHandover(ctx, pos[1]) }
+		return func() error { return a.DeployHandover(ctx, pos[1], glintTicket) }
 	}
 	return nil
 }

@@ -144,7 +144,17 @@ type TargetNotes struct {
 	// deploy and once a day: what the release notes of single deploys left
 	// behind.
 	Sweep *Sweep `yaml:"sweep"`
+	// Glint is the lowest severity of a glint finding in the deployed commit
+	// that keeps the items from moving by Transitions: a work item is done
+	// only with the project clean. Held items move at a later deploy or graft
+	// deploy handover; graft deploy --glint-ticket names an item that takes
+	// the findings instead, at a release acceptance.
+	Glint string `yaml:"glint"`
 }
+
+// GlintSeverities are the values of release_notes.glint, as glint's
+// --min-severity takes them.
+var GlintSeverities = []string{"low", "medium", "high", "critical"}
 
 // Sweep moves to Done the items whose work the target runs in full, and
 // lists the items whose status git contradicts.
@@ -593,6 +603,9 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 	if err := validateSweep(where+".release_notes.sweep", n); err != nil {
 		return err
 	}
+	if err := validateGlint(where+".release_notes.glint", n); err != nil {
+		return err
+	}
 	switch {
 	case n.Subtasks && len(n.Transitions) == 0:
 		return fmt.Errorf("%s.release_notes.subtasks: needs transitions to move them by", where)
@@ -605,6 +618,19 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 		if n.FixVersion.Template, err = ParseVersionName(n.FixVersion.Name); err != nil {
 			return fmt.Errorf("%s.release_notes.fix_version.name: %w", where, err)
 		}
+	}
+	return nil
+}
+
+// validateGlint checks the severity of release_notes.glint and that there
+// are moves for it to hold.
+func validateGlint(where string, n *TargetNotes) error {
+	switch {
+	case n.Glint == "":
+	case !slices.Contains(GlintSeverities, n.Glint):
+		return fmt.Errorf("%s: %q, want one of %s", where, n.Glint, strings.Join(GlintSeverities, ", "))
+	case len(n.Transitions) == 0:
+		return fmt.Errorf("%s: needs transitions, the moves it holds", where)
 	}
 	return nil
 }

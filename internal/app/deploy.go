@@ -56,6 +56,10 @@ type DeployOptions struct {
 	Args []string
 	// Redeploy deploys the commit the target already runs (deployed_sha).
 	Redeploy bool
+	// GlintTicket is the item that takes the glint findings of the deployed
+	// commit, at a release acceptance: the items move with them
+	// (release_notes.glint).
+	GlintTicket string
 	// Unapproved skips the approved_release check.
 	Unapproved bool
 }
@@ -96,6 +100,8 @@ type deployRun struct {
 	// dryRun is graft deploy check: the checks record nothing and never
 	// wait for a sudo password.
 	dryRun bool
+	// glint holds the moves for the glint findings of the deployed commit.
+	glint *glintCheck
 }
 
 // readSHA reads a commit record of an environment, without a sudo prompt
@@ -116,6 +122,9 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 		return err
 	}
 	if err := deployPreflight(r); err != nil {
+		return err
+	}
+	if r.glint, err = newGlintCheck(r, o.GlintTicket, func(context.Context) (string, error) { return r.head, nil }); err != nil {
 		return err
 	}
 	// Its heavy tasks, and those of every graft its script starts, skip
@@ -572,7 +581,7 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 	if err != nil {
 		return skipAll("release notes skipped: whose items are whose is unknown: %v", err)
 	}
-	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name}
+	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name, glint: r.glint}
 	sub := &subtaskRun{mover: mover, notes: notes, me: me, reached: map[string]string{}}
 	for _, key := range keys {
 		if r.moveOut != nil && slices.Contains(r.moveOut.keys, key) {
@@ -633,13 +642,16 @@ type noteMover struct {
 	// asks for; target names the deploy target.
 	me, target string
 	unset      notesUnset
-	// held are the items left where they were for want of the comment.
+	// held are the items left where they were for want of the comment or
+	// for the glint findings.
 	held []heldItem
+	// glint is the check of release_notes.glint.
+	glint *glintCheck
 }
 
 // errHeld is a move withheld for want of the comment require_comment asks
-// for, reported already.
-var errHeld = errors.New("held for its comment")
+// for, or for the glint findings, reported already.
+var errHeld = errors.New("held")
 
 // delivered moves a delivered item along only from the statuses a transition
 // names: a paused item stays paused whatever its commits say. It returns the
@@ -664,11 +676,17 @@ func (m *noteMover) delivered(ctx context.Context, issue jira.Issue) string {
 // move takes the item by the transition and hands it over; after names the
 // parent a subtask follows. An item moved but not handed over is reported
 // and recorded, not returned: the move itself happened. An item to be handed
-// over without the comment require_comment asks for is not moved: errHeld.
+// over without the comment require_comment asks for, or any with the glint
+// findings release_notes.glint asks about, is not moved: errHeld.
 func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTransition, after string) error {
 	how := ""
 	if after != "" {
 		how = " after its parent " + after
+	}
+	if why := m.glint.held(ctx, m.client); why != "" {
+		fmt.Fprintf(m.app.Stderr, "graft: %s: NOT MOVED to %s%s: %s; once glint finds nothing in the deployed commit, the next deploy to %s or graft deploy handover %s moves it, at a release acceptance --glint-ticket KEY names an item for all the findings\n", issue.Key, t.To, how, why, m.target, m.target)
+		m.held = append(m.held, heldItem{key: issue.Key, after: after})
+		return errHeld
 	}
 	handover := t.Assign != "" && issue.AssigneeID != t.Assign
 	label := ""
@@ -689,7 +707,7 @@ func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTr
 	if err := m.client.Transition(ctx, issue, t.To); err != nil {
 		return fmt.Errorf("%s not moved to %s%s: %w", issue.Key, t.To, how, err)
 	}
-	m.app.printf("%s moved to %s%s", issue.Key, t.To, how)
+	m.app.printf("%s moved to %s%s%s", issue.Key, t.To, how, m.glint.takenBy())
 	if !handover {
 		return nil
 	}

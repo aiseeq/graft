@@ -192,7 +192,7 @@ stats` (`wait_s`).
 | `graft flags show <id>` | one event in full |
 | `graft flags ack <id> --reason R` | close an open event with a reason |
 | `graft flags mute <id> --reason R [--match S] [--in subject\|body\|key] [--all-envs]` | add an exception for it, then close it |
-| `graft deploy [--redeploy] [--unapproved] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--unapproved` skips the `approved_release` check |
+| `graft deploy [--redeploy] [--unapproved] [--glint-ticket KEY] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--unapproved` skips the `approved_release` check, `--glint-ticket` names the item that takes the glint findings of the deployed commit (`release_notes.glint`) |
 | `graft deploy check <target>` | what `graft deploy <target>` would refuse now, read only: unpublished work, the window, `requires`, the hold, `approved_release` with the items of the commits outside it (summary, status, fix versions); exit 1 when it would refuse |
 | `graft deploy versions` | the version and the commit each target runs, with the remote branches at it, required targets first |
 | `graft deploy cutoff <target>` | the release candidate of the target's window: its unchecked commits and the commands that revert them on a release branch |
@@ -1187,6 +1187,7 @@ deploy:
         transitions:            # In Progress moves to Testing and goes to the reviewer
           - {from: [In Progress], to: Testing, assign: "<reviewer accountId>", keep_assignee_labels: [internal], require_comment: "How to check"}   # optional: items labelled internal move but stay with their assignee; the others wait for a comment with "How to check"
         fix_version: {prefix: "Product v"}  # add the next unreleased "Product v…" version
+        glint: low              # optional: no item moves while glint finds anything of low and up in the deployed commit
       dotenv: [REGISTRY_TOKEN, 'SMTP_HOST?']        # .env keys the script gets, as for tasks
       dotenv_sets: [db]
       status: "cat /opt/app/state.json"
@@ -1336,6 +1337,24 @@ release_notes:
    deploy to the target, or `graft deploy handover <target>` once the
    comment is written, moves it, and an item that has left `from` by hand
    waits no more. `graft deploy handover` fails while any item still waits.
+   With `glint` (a severity: `low`, `medium`, `high`, `critical`) no item
+   moves by the transitions while `glint check . -s <severity> -o json`
+   reports anything in the deployed commit: an item is done only with the
+   project clean, the commit gate failing on the high findings alone. graft
+   runs glint once a deploy, in the work tree when it is at the deployed
+   commit and clean, else in a work tree of its own at that commit, and
+   counts the report's findings whatever glint's exit status; a run without
+   a report, or with rules that panicked, holds the items too. A held item
+   keeps its status and assignee, the deploy prints `graft: KEY: NOT MOVED
+   to Testing: glint: N findings of low and above in <commit>
+   (release_notes.glint); …` and goes on, and the item waits as for its
+   comment: the next deploy with the findings fixed, or `graft deploy
+   handover <target>`, which checks the commit the target runs again,
+   moves it. At a release acceptance, the findings left for an item of
+   their own, `--glint-ticket KEY` on the deploy or the handover names that
+   item, an open one of `project_keys`: the items move, each saying `KEY
+   moved to Testing with N glint findings in <commit>: PROJ-123 takes them
+   (--glint-ticket)`.
    The release note itself must not contain the text. A key mentioned in a
    commit does not make the item yours, so only open items of the owner of
    the Jira token get notes: not in a done-category status (Done, Won't do),

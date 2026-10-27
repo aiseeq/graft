@@ -366,6 +366,8 @@ deploy:
 		"blank keep label":      notes("{transitions: [{from: [In Progress], to: Testing, assign: qa, keep_assignee_labels: [' ']}]}"),
 		"comment w/o assign":    notes("{transitions: [{from: [In Progress], to: Testing, require_comment: How to check}]}"),
 		"blank comment":         notes("{transitions: [{from: [In Progress], to: Testing, assign: qa, require_comment: ' '}]}"),
+		"unknown glint":         notes("{transitions: [{from: [In Progress], to: Testing}], glint: info}"),
+		"glint w/o transitions": notes("{glint: low}"),
 		"comment in the note":   notes("{comment: 'Deployed to {target}, how to check: see above', transitions: [{from: [In Progress], to: Testing, assign: qa, require_comment: How to CHECK}]}"),
 		"old from":              notes("{from: [In Progress]}"),
 		"fix_version w/o pfx":   notes("{fix_version: {}}"),
