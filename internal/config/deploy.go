@@ -181,6 +181,12 @@ type NoteTransition struct {
 	// has one, moves but stays with its assignee, technical work nobody
 	// checks on a screen, say.
 	KeepAssigneeLabels []string `yaml:"keep_assignee_labels"`
+	// RequireComment is text, "How to check" say, that a comment of the
+	// owner of the Jira token must contain, written since the item came
+	// into one of From, before the item is handed over to Assign: without
+	// one the item stays where it is, with its assignee, until a later
+	// deploy or graft deploy handover finds the comment.
+	RequireComment string `yaml:"require_comment"`
 }
 
 // Leading returns the transition that leads to the status, nil for none.
@@ -361,7 +367,7 @@ func (c *Config) validateDeploy() error {
 }
 
 // DeploySubcommands are the words after graft deploy that are not targets.
-var DeploySubcommands = []string{"status", "logs", "check", "versions", "check-head", "check-integrations", "cutoff", "sweep"}
+var DeploySubcommands = []string{"status", "logs", "check", "versions", "check-head", "check-integrations", "cutoff", "sweep", "handover"}
 
 func (c *Config) validateTarget(name string, t *DeployTarget) error {
 	where := "deploy.targets." + name
@@ -579,6 +585,11 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 	if err := c.validateReleaseName(where, t); err != nil {
 		return err
 	}
+	for i, tr := range n.Transitions {
+		if tr.RequireComment != "" && tr.Instructs(c.NoteComment(t)) {
+			return fmt.Errorf("%s.release_notes.transitions[%d].require_comment: the release note itself contains %q, so it would pass for the comment", where, i, tr.RequireComment)
+		}
+	}
 	if err := validateSweep(where+".release_notes.sweep", n); err != nil {
 		return err
 	}
@@ -643,6 +654,10 @@ func validateTransitions(where string, ts []NoteTransition) error {
 			return fmt.Errorf("%s.keep_assignee_labels: needs assign, the account the other items go to", at)
 		case slices.ContainsFunc(t.KeepAssigneeLabels, func(l string) bool { return strings.TrimSpace(l) == "" }):
 			return fmt.Errorf("%s.keep_assignee_labels: a blank label", at)
+		case t.RequireComment != "" && t.Assign == "":
+			return fmt.Errorf("%s.require_comment: needs assign, the account the comment is for", at)
+		case t.RequireComment != "" && strings.TrimSpace(t.RequireComment) == "":
+			return fmt.Errorf("%s.require_comment: blank", at)
 		}
 		for _, f := range t.From {
 			if j, ok := from[f]; ok {
@@ -676,4 +691,10 @@ func (c *Config) validateReleaseNotes() error {
 		n.Jira.Comment = DefaultNoteComment
 	}
 	return nil
+}
+
+// Instructs tells whether the text of a comment has RequireComment in it,
+// in any case.
+func (t *NoteTransition) Instructs(text string) bool {
+	return strings.Contains(strings.ToLower(text), strings.ToLower(t.RequireComment))
 }

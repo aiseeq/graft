@@ -1163,7 +1163,7 @@ deploy:
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
       release_notes:
         transitions:            # In Progress moves to Testing and goes to the reviewer
-          - {from: [In Progress], to: Testing, assign: "<reviewer accountId>", keep_assignee_labels: [internal]}   # optional: items labelled internal move but stay with their assignee
+          - {from: [In Progress], to: Testing, assign: "<reviewer accountId>", keep_assignee_labels: [internal], require_comment: "How to check"}   # optional: items labelled internal move but stay with their assignee; the others wait for a comment with "How to check"
         fix_version: {prefix: "Product v"}  # add the next unreleased "Product v…" version
       dotenv: [REGISTRY_TOKEN, 'SMTP_HOST?']        # .env keys the script gets, as for tasks
       dotenv_sets: [db]
@@ -1303,7 +1303,18 @@ release_notes:
    that account, the reviewer of Testing say, unless it is assigned there
    already or has one of the transition's `keep_assignee_labels`, or its
    parent has one: such an item, technical work nobody checks on a screen
-   say, moves and stays with its assignee. A key mentioned in a
+   say, moves and stays with its assignee. With `require_comment` (text,
+   "How to check" say) an item to be handed over moves only when a comment
+   of the owner of the Jira token written since the item last came into
+   the transition's `from` from elsewhere (a return from review starts
+   anew) contains that text in any case; a subtask following its parent
+   counts the parent's comment too. Without one the item keeps its status
+   and assignee, the deploy prints `graft: KEY: NOT MOVED to Testing: …`
+   and goes on with its exit status unchanged, and the item waits: the next
+   deploy to the target, or `graft deploy handover <target>` once the
+   comment is written, moves it, and an item that has left `from` by hand
+   waits no more. `graft deploy handover` fails while any item still waits.
+   The release note itself must not contain the text. A key mentioned in a
    commit does not make the item yours, so only open items of the owner of
    the Jira token get notes: not in a done-category status (Done, Won't do),
    a to-do-category one (To Do, Backlog: work not started) or `skip_statuses`, and assigned to the owner now or at some point in

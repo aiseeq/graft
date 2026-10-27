@@ -54,6 +54,16 @@ type fakeJira struct {
 	types map[string]string
 	// pages are the Confluence pages by id; page 500 is the parent.
 	pages map[string]*fakePage
+	// written are the comments people wrote, beside graft's in comments;
+	// entered maps a key to when its history shows it come into In
+	// Progress.
+	written map[string][]fakeComment
+	entered map[string]time.Time
+}
+
+type fakeComment struct {
+	author, text string
+	created      time.Time
 }
 
 type fakePage struct {
@@ -135,7 +145,12 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if slices.Contains(j.handedOver, key) {
 			values = append(values, map[string]any{"items": []any{map[string]any{"fieldId": "assignee", "from": "me", "to": j.assignees[key]}}})
 		}
+		if when, ok := j.entered[key]; ok {
+			values = append(values, map[string]any{"created": when.Format(fakeTimeLayout), "items": []any{map[string]any{"fieldId": "status", "fromString": "Testing", "toString": "In Progress"}}})
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"isLast": true, "values": values})
+	case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "comment":
+		j.listComments(w, key)
 	case r.Method == http.MethodGet && len(parts) == 1:
 		var assignee any = map[string]string{"accountId": "me", "displayName": "Me"}
 		if a, ok := j.assignees[key]; ok {
@@ -2005,4 +2020,27 @@ func TestDeploySweepStatusesNoTransitionNames(t *testing.T) {
 	if !strings.Contains(out, "PROJ-92 is Blocked, but its commits are in ") {
 		t.Errorf("PROJ-92 not listed:\n%s", out)
 	}
+}
+
+// fakeTimeLayout is how Jira writes times.
+const fakeTimeLayout = "2006-01-02T15:04:05.000-0700"
+
+// listComments serves the comments of an item in one page: those people
+// wrote and graft's, written by "me" just now.
+func (j *fakeJira) listComments(w http.ResponseWriter, key string) {
+	all := slices.Clone(j.written[key])
+	for _, text := range j.comments[key] {
+		all = append(all, fakeComment{author: "me", text: text, created: time.Now()})
+	}
+	comments := []any{}
+	for _, c := range all {
+		comments = append(comments, map[string]any{
+			"author":  map[string]string{"accountId": c.author},
+			"created": c.created.Format(fakeTimeLayout),
+			"body": map[string]any{"type": "doc", "version": 1, "content": []any{map[string]any{
+				"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": c.text}},
+			}}},
+		})
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"total": len(comments), "comments": comments})
 }

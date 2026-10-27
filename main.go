@@ -675,7 +675,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	if err != nil {
 		return err
 	}
-	usage := fmt.Errorf("%w: graft deploy [--redeploy] [--unapproved] <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | check <target> | versions | cutoff <target> | sweep <target> [--apply] | check-head | check-integrations [build]", errUsage)
+	usage := fmt.Errorf("%w: graft deploy [--redeploy] [--unapproved] <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | check <target> | versions | cutoff <target> | sweep <target> [--apply] | handover <target> | check-head | check-integrations [build]", errUsage)
 	if len(pos) == 0 {
 		return usage
 	}
@@ -685,6 +685,9 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	}
 	if pos[0] == "sweep" && len(pos) == 2 && scriptArgs == nil {
 		return a.DeploySweep(ctx, pos[1], *apply)
+	}
+	if pos[0] == "handover" && len(pos) == 2 && scriptArgs == nil {
+		return a.DeployHandover(ctx, pos[1])
 	}
 	if run := readOnlyDeployCmd(ctx, a, pos, scriptArgs); run != nil {
 		return run()

@@ -540,7 +540,11 @@ func (a *App) warn(format string, args ...any) {
 func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 	notes := r.cfg.ReleaseNotes.Jira
 	keys := a.noteKeys(r)
-	if len(keys) == 0 {
+	held, err := readHeld(r)
+	if err != nil {
+		a.warn("%v", err)
+	}
+	if len(keys) == 0 && len(held) == 0 {
 		return notesUnset{}
 	}
 	fix := &fixVersionRun{app: a, conf: r.target.ReleaseNotes.FixVersion}
@@ -558,15 +562,17 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 		return skipAll("release notes skipped: %v", err)
 	}
 	fix.client = client
-	text, err := noteText(r)
-	if err != nil {
-		return skipAll("release notes skipped: %v", err)
+	text := ""
+	if len(keys) > 0 {
+		if text, err = noteText(r); err != nil {
+			return skipAll("release notes skipped: %v", err)
+		}
 	}
 	me, err := client.Myself(ctx)
 	if err != nil {
 		return skipAll("release notes skipped: whose items are whose is unknown: %v", err)
 	}
-	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes}
+	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name}
 	sub := &subtaskRun{mover: mover, notes: notes, me: me, reached: map[string]string{}}
 	for _, key := range keys {
 		if r.moveOut != nil && slices.Contains(r.moveOut.keys, key) {
@@ -607,8 +613,12 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 			sub.reached[issue.Key] = mover.delivered(ctx, issue)
 		}
 	}
+	unread := a.retryHeld(ctx, sub, held, keys)
 	if r.target.ReleaseNotes.Subtasks {
 		sub.follow(ctx)
+	}
+	if err := writeHeld(r, append(unread, mover.held...)); err != nil {
+		a.warn("%v", err)
 	}
 	return notesUnset{fixVersion: fix.unset, assignee: mover.unset.assignee}
 }
@@ -619,8 +629,17 @@ type noteMover struct {
 	app    *App
 	client *jira.Client
 	conf   *config.TargetNotes
-	unset  notesUnset
+	// me is the owner of the Jira token, whose comment require_comment
+	// asks for; target names the deploy target.
+	me, target string
+	unset      notesUnset
+	// held are the items left where they were for want of the comment.
+	held []heldItem
 }
+
+// errHeld is a move withheld for want of the comment require_comment asks
+// for, reported already.
+var errHeld = errors.New("held for its comment")
 
 // delivered moves a delivered item along only from the statuses a transition
 // names: a paused item stays paused whatever its commits say. It returns the
@@ -632,7 +651,9 @@ func (m *noteMover) delivered(ctx context.Context, issue jira.Issue) string {
 		m.app.printf("%s stays %s: release_notes.transitions move only from %s", issue.Key, issue.Status, strings.Join(m.conf.FromStatuses(), ", "))
 	default:
 		if err := m.move(ctx, issue, t, ""); err != nil {
-			m.app.warn("%v", err)
+			if !errors.Is(err, errHeld) {
+				m.app.warn("%v", err)
+			}
 			return issue.Status
 		}
 		return t.To
@@ -642,23 +663,35 @@ func (m *noteMover) delivered(ctx context.Context, issue jira.Issue) string {
 
 // move takes the item by the transition and hands it over; after names the
 // parent a subtask follows. An item moved but not handed over is reported
-// and recorded, not returned: the move itself happened.
+// and recorded, not returned: the move itself happened. An item to be handed
+// over without the comment require_comment asks for is not moved: errHeld.
 func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTransition, after string) error {
 	how := ""
 	if after != "" {
 		how = " after its parent " + after
 	}
+	handover := t.Assign != "" && issue.AssigneeID != t.Assign
+	label := ""
+	if handover {
+		var err error
+		if label, err = m.keptBy(ctx, issue, t); err != nil {
+			// Unknown labels hand the item over, as without the setting.
+			m.app.warn("%s: the labels of its parent %s are unknown: %v", issue.Key, issue.Parent, err)
+		}
+	}
+	if handover && label == "" && t.RequireComment != "" {
+		if why := m.uninstructed(ctx, issue, t, after); why != "" {
+			fmt.Fprintf(m.app.Stderr, "graft: %s: NOT MOVED to %s%s: %s; once it is written, graft deploy handover %s moves it\n", issue.Key, t.To, how, why, m.target)
+			m.held = append(m.held, heldItem{key: issue.Key, after: after})
+			return errHeld
+		}
+	}
 	if err := m.client.Transition(ctx, issue, t.To); err != nil {
 		return fmt.Errorf("%s not moved to %s%s: %w", issue.Key, t.To, how, err)
 	}
 	m.app.printf("%s moved to %s%s", issue.Key, t.To, how)
-	if t.Assign == "" || issue.AssigneeID == t.Assign {
+	if !handover {
 		return nil
-	}
-	label, err := m.keptBy(ctx, issue, t)
-	if err != nil {
-		// Unknown labels hand the item over, as without the setting.
-		m.app.warn("%s: the labels of its parent %s are unknown: %v", issue.Key, issue.Parent, err)
 	}
 	if label != "" {
 		m.app.printf("%s stays with its assignee: %s (keep_assignee_labels)", issue.Key, label)
@@ -754,7 +787,7 @@ func (s *subtaskRun) move(ctx context.Context, key, parent string, t *config.Not
 		return
 	}
 	if yours {
-		if err := s.mover.move(ctx, issue, t, parent); err != nil {
+		if err := s.mover.move(ctx, issue, t, parent); err != nil && !errors.Is(err, errHeld) {
 			app.warn("%v", err)
 		}
 	}
