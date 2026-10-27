@@ -248,6 +248,9 @@ type sweepRun struct {
 	// more.
 	lines  []string
 	judged map[string]bool
+	// glint holds the moves for the glint findings of the commit the
+	// target runs, as it holds the transitions'.
+	glint *glintCheck
 }
 
 // sweep moves to the done status the items whose work the target runs in
@@ -302,7 +305,12 @@ func (a *App) sweep(ctx context.Context, r *deployRun, head string, withheld []s
 		return fmt.Errorf("whose items are whose is unknown: %w", err)
 	}
 	s := &sweepRun{app: a, r: r, conf: conf, notes: r.cfg.ReleaseNotes.Jira, client: client, me: me, trunk: trunk, now: now, apply: apply,
-		issues: map[string]jira.Issue{}, judged: map[string]bool{}}
+		issues: map[string]jira.Issue{}, judged: map[string]bool{}, glint: r.glint}
+	if s.glint == nil {
+		if s.glint, err = newGlintCheck(r, "", func(context.Context) (string, error) { return head, nil }); err != nil {
+			return err
+		}
+	}
 	if ar := r.target.ApprovedRelease; ar != nil {
 		s.gate = &approvalGate{client: client, conf: ar, issues: s.issues, versions: map[string]bool{}}
 	}
@@ -691,6 +699,10 @@ func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, check
 			return
 		}
 	}
+	if held := s.glint.held(ctx, s.client); held != "" {
+		s.lines = append(s.lines, fmt.Sprintf("%s stays %s though %s: %s", key, issue.Status, why, held))
+		return
+	}
 	s.judged[key] = true
 	if !s.apply {
 		s.app.printf("sweep %s: %s would move to %s: %s", s.r.name, key, s.conf.Done, why)
@@ -700,7 +712,7 @@ func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, check
 		s.app.warn("sweep %s: %s not moved to %s: %v", s.r.name, key, s.conf.Done, err)
 		return
 	}
-	s.app.printf("sweep %s: %s moved to %s: %s", s.r.name, key, s.conf.Done, why)
+	s.app.printf("sweep %s: %s moved to %s: %s%s", s.r.name, key, s.conf.Done, why, s.glint.takenBy())
 }
 
 // gatePass checks an item against approved_release: a parent the sweep

@@ -40,7 +40,9 @@ type glintReport struct {
 	Summary struct {
 		Total *int `json:"total"`
 	} `json:"summary"`
-	RulesPanicked []string `json:"rulesPanicked"`
+	Stats struct {
+		RulesPanicked []string `json:"rulesPanicked"`
+	} `json:"stats"`
 }
 
 // held says why the items may not move, "" when they may: no findings, or
@@ -98,6 +100,24 @@ func newGlintCheck(r *deployRun, ticket string, sha func(ctx context.Context) (s
 	return g, nil
 }
 
+// checkTicket reads the ticket before a deploy, which a ticket that cannot
+// take the findings then refuses: after the deploy it would only hold the
+// items with a line.
+func (g *glintCheck) checkTicket(ctx context.Context) error {
+	if g.ticket == "" {
+		return nil
+	}
+	client, err := jiraClient()
+	if err != nil {
+		return fmt.Errorf("--glint-ticket: %w", err)
+	}
+	if err := g.readTicket(ctx, client); err != nil {
+		return fmt.Errorf("--glint-ticket %w", err)
+	}
+	g.taken = true
+	return nil
+}
+
 // readTicket checks that the ticket is an item still to be done.
 func (g *glintCheck) readTicket(ctx context.Context, client *jira.Client) error {
 	issue, err := client.Issue(ctx, g.ticket)
@@ -115,6 +135,9 @@ func (g *glintCheck) readTicket(ctx context.Context, client *jira.Client) error 
 func (g *glintCheck) count(ctx context.Context) (sha string, found int, err error) {
 	if sha, err = g.sha(ctx); err != nil {
 		return "", 0, fmt.Errorf("the deployed commit is unknown: %w", err)
+	}
+	if sha == "" {
+		return "", 0, errors.New("the deployed commit is unknown: the target has no record of it")
 	}
 	head, err := g.repo.Git("rev-parse", "HEAD")
 	if err != nil {
@@ -155,8 +178,8 @@ func (g *glintCheck) run(ctx context.Context, dir string) (int, error) {
 	if err := json.Unmarshal(stdout.Bytes(), &rep); err != nil || rep.Summary.Total == nil {
 		return 0, fmt.Errorf("glint check gave no report (%v): %s", errors.Join(runErr, err), strings.TrimSpace(stderr.String()))
 	}
-	if len(rep.RulesPanicked) > 0 {
-		return 0, fmt.Errorf("glint rules panicked: %s", strings.Join(rep.RulesPanicked, ", "))
+	if len(rep.Stats.RulesPanicked) > 0 {
+		return 0, fmt.Errorf("glint rules panicked: %s", strings.Join(rep.Stats.RulesPanicked, ", "))
 	}
 	return *rep.Summary.Total, nil
 }

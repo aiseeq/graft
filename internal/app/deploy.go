@@ -127,6 +127,9 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 	if r.glint, err = newGlintCheck(r, o.GlintTicket, func(context.Context) (string, error) { return r.head, nil }); err != nil {
 		return err
 	}
+	if err := r.glint.checkTicket(ctx); err != nil {
+		return err
+	}
 	// Its heavy tasks, and those of every graft its script starts, skip
 	// the queue of heavy tasks within one budget; a deploy inside a deploy
 	// keeps the outer's.
@@ -583,6 +586,9 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 	}
 	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name, glint: r.glint}
 	sub := &subtaskRun{mover: mover, notes: notes, me: me, reached: map[string]string{}}
+	// unsure are the keys this deploy could not read or post to: one held
+	// before stays held, moved when it may be.
+	var unsure []string
 	for _, key := range keys {
 		if r.moveOut != nil && slices.Contains(r.moveOut.keys, key) {
 			a.printf("release note for %s not posted: this deploy reverts its work from the candidate", key)
@@ -596,6 +602,7 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 		if err != nil {
 			a.warn("release note for %s not posted: %v", key, err)
 			fix.failed(key, err)
+			unsure = append(unsure, key)
 			continue
 		}
 
@@ -605,6 +612,7 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 		if err != nil {
 			a.warn("release note for %s not posted: %v", key, err)
 			fix.failed(key, err)
+			unsure = append(unsure, key)
 			continue
 		}
 		if !yours {
@@ -614,6 +622,7 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 		if err := client.Comment(ctx, key, text); err != nil {
 			a.warn("release note for %s not posted: %v", key, err)
 			posted = false
+			unsure = append(unsure, key)
 		} else {
 			a.printf("release note posted to %s", key)
 		}
@@ -622,7 +631,8 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 			sub.reached[issue.Key] = mover.delivered(ctx, issue)
 		}
 	}
-	unread := a.retryHeld(ctx, sub, held, keys)
+	judged := slices.DeleteFunc(slices.Clone(keys), func(k string) bool { return slices.Contains(unsure, k) })
+	unread := a.retryHeld(ctx, sub, held, judged)
 	if r.target.ReleaseNotes.Subtasks {
 		sub.follow(ctx)
 	}

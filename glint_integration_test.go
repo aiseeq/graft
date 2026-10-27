@@ -15,13 +15,20 @@ import (
 func glintRepo(t *testing.T) *deployFixture {
 	t.Helper()
 	d := newDeployFixture(t, func(state string, q func(string) string) string {
-		return strings.Replace(deployConfig(state, q), "release_notes: {transitions: [{from: [In Progress], to: Testing}]}\n      status:", "release_notes: {transitions: [{from: [In Progress], to: Testing}], glint: low}\n      status:", 1)
+		c := strings.Replace(deployConfig(state, q), "release_notes: {transitions: [{from: [In Progress], to: Testing}]}\n      status:", "release_notes: {transitions: [{from: [In Progress], to: Testing}], glint: low}\n      status:", 1)
+		return strings.Replace(c, "{from: [Ready for release], to: Done}], subtasks: true}", "{from: [Ready for release], to: Done}], subtasks: true, sweep: {apply: true}, glint: low}", 1)
 	})
 	bin := t.TempDir()
+	// With the file panicked a rule panicked: the report is whole, the
+	// findings of that rule missing.
 	writeFile(t, filepath.Join(bin, "glint"), `#!/bin/sh
 echo "$PWD $*" >> "`+filepath.Join(d.state, "glint-runs")+`"
 f="`+filepath.Join(d.state, "found")+`"
 [ -e "$f" ] || { echo "no config" >&2; exit 3; }
+if [ -e "`+filepath.Join(d.state, "panicked")+`" ]; then
+  echo "{\"summary\": {\"total\": 0}, \"stats\": {\"rulesPanicked\": [\"long-function\"]}}"
+  exit 1
+fi
 echo "{\"summary\": {\"total\": $(cat "$f")}}"
 exit 1
 `)
@@ -96,5 +103,44 @@ func TestDeployGlintHoldsItems(t *testing.T) {
 	}
 	if out, code := d.graft("", "deploy", "--glint-ticket", "PROJ-3", "uat"); code != 1 || !strings.Contains(out, "deploy.targets.uat.release_notes.glint is not set") {
 		t.Errorf("--glint-ticket on a target without glint: exit %d\n%s", code, out)
+	}
+	// A ticket that cannot take the findings refuses the deploy before it.
+	before := d.stateFile("test-run")
+	d.write("d.txt", "d\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-9 more")
+	if out, code := d.graft("", "deploy", "--glint-ticket", "PROJ-2", "test"); code == 0 || !strings.Contains(out, "--glint-ticket PROJ-2 is Done") || d.stateFile("test-run") != before {
+		t.Errorf("a done ticket on the deploy: exit %d\n%s", code, out)
+	}
+	writeFile(t, filepath.Join(d.state, "found"), "0\n")
+	writeFile(t, filepath.Join(d.state, "panicked"), "")
+	if out := d.mustGraft("deploy", "test"); !strings.Contains(out, "graft: PROJ-9: NOT MOVED to Testing: glint: glint rules panicked: long-function") {
+		t.Errorf("a panicked rule:\n%s", out)
+	}
+}
+
+// TestSweepGlintHoldsItems: the sweep moves nothing to its done status
+// while glint finds anything in the commit the target runs, listing the
+// items instead.
+func TestSweepGlintHoldsItems(t *testing.T) {
+	d := glintRepo(t)
+	d.git("remote", "set-head", "origin", d.git("branch", "--show-current"))
+	d.mustGraft("deploy", "sub")
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-70"] = "Ready for release"
+	d.jira.mu.Unlock()
+	writeFile(t, filepath.Join(d.state, "found"), "3\n")
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-70 the report")
+	out := d.mustGraft("deploy", "sub")
+	for _, want := range []string{
+		"graft: PROJ-70: NOT MOVED to Done: glint: 3 findings of low and above",
+		"PROJ-70 stays Ready for release though its work of the last 30 days is on sub (commits: 1): glint: 3 findings of low and above",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
+	}
+	if len(d.moved()) != 0 {
+		t.Errorf("moved %v:\n%s", d.moved(), out)
 	}
 }

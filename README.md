@@ -1352,9 +1352,13 @@ release_notes:
    handover <target>`, which checks the commit the target runs again,
    moves it. At a release acceptance, the findings left for an item of
    their own, `--glint-ticket KEY` on the deploy or the handover names that
-   item, an open one of `project_keys`: the items move, each saying `KEY
-   moved to Testing with N glint findings in <commit>: PROJ-123 takes them
-   (--glint-ticket)`.
+   item, an open one of `project_keys`, read before the deploy runs its script: one
+   not open refuses the deploy. The items move, each saying `KEY moved to
+   Testing with N glint findings in <commit>: PROJ-123 takes them
+   (--glint-ticket)`; graft cannot tell an acceptance from another deploy,
+   so naming the item is the acceptance's to do. The sweep (below) moves no
+   item to its done status either while glint finds anything in the commit
+   the target runs: it lists the item instead.
    The release note itself must not contain the text. A key mentioned in a
    commit does not make the item yours, so only open items of the owner of
    the Jira token get notes: not in a done-category status (Done, Won't do),
