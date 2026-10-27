@@ -60,6 +60,9 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 		if err != nil {
 			return err
 		}
+		if err := a.raiseOwnModules(ctx, repo); err != nil {
+			return err
+		}
 		return a.commit(ctx, repo, cfg, plan)
 	})
 	if err != nil {

@@ -209,6 +209,10 @@ func (a *App) checkTools(ctx context.Context, cfg *config.Config, install bool) 
 	if err != nil {
 		return err
 	}
+	moduleSettings, err := userconfig.ModulesSettings()
+	if err != nil {
+		return err
+	}
 	var failed []string
 	for _, name := range sortedNames(cfg.Tools) {
 		t := cfg.Tools[name]
@@ -231,7 +235,12 @@ func (a *App) checkTools(ctx context.Context, cfg *config.Config, install bool) 
 			continue
 		}
 		a.printf("%s: %s, installing", name, r.Problem)
-		if err := tools.Install(ctx, name, t, binDir, a.Stderr); err != nil {
+		installArg := t.InstallArg()
+		pkg, _ := t.Pin()
+		if moduleSettings.IsLatest(pkg) {
+			installArg = pkg + "@latest"
+		}
+		if err := tools.Install(ctx, name, t, binDir, a.Stderr, installArg); err != nil {
 			fmt.Fprintln(a.Stderr, "graft:", err)
 			failed = append(failed, name)
 			continue

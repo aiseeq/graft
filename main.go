@@ -683,11 +683,8 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	if deployFlagsMisplaced(pos[0], scriptArgs != nil, logFlags, *redeploy || *unapproved) || *apply && pos[0] != "sweep" {
 		return usage
 	}
-	if pos[0] == "sweep" && len(pos) == 2 && scriptArgs == nil {
-		return a.DeploySweep(ctx, pos[1], *apply)
-	}
-	if pos[0] == "handover" && len(pos) == 2 && scriptArgs == nil {
-		return a.DeployHandover(ctx, pos[1])
+	if run := trackerDeployCmd(ctx, a, pos, scriptArgs != nil, *apply); run != nil {
+		return run()
 	}
 	if run := readOnlyDeployCmd(ctx, a, pos, scriptArgs); run != nil {
 		return run()
@@ -703,6 +700,21 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	default:
 		return usage
 	}
+}
+
+// trackerDeployCmd is the graft deploy subcommand of pos that moves tracker
+// items, sweep or handover, nil for any other; neither takes script args.
+func trackerDeployCmd(ctx context.Context, a *app.App, pos []string, scriptArgs, apply bool) func() error {
+	if len(pos) != 2 || scriptArgs {
+		return nil
+	}
+	switch pos[0] {
+	case "sweep":
+		return func() error { return a.DeploySweep(ctx, pos[1], apply) }
+	case "handover":
+		return func() error { return a.DeployHandover(ctx, pos[1]) }
+	}
+	return nil
 }
 
 // readOnlyDeployCmd is the read-only graft deploy subcommand of pos, nil

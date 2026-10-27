@@ -27,6 +27,38 @@ type Config struct {
 	Limits Limits `yaml:"limits"`
 	// Commit is what graft commit asks of the user's messages.
 	Commit Commit `yaml:"commit"`
+	// Modules names module path prefixes graft keeps at their latest release.
+	Modules Modules `yaml:"modules"`
+}
+
+// Modules lists Go module path prefixes whose requirements graft raises to
+// their latest published versions before a commit or a manual gate.
+type Modules struct {
+	Latest []string `yaml:"latest"`
+}
+
+// IsLatest reports whether path is equal to a configured prefix or below it.
+func (m Modules) IsLatest(path string) bool {
+	for _, prefix := range m.Latest {
+		prefix = strings.TrimSuffix(prefix, "/")
+		if prefix != "" && (path == prefix || strings.HasPrefix(path, prefix+"/")) {
+			return true
+		}
+	}
+	return false
+}
+
+// ModulesSettings is the user's module settings; without a user config none
+// are enabled.
+func ModulesSettings() (Modules, error) {
+	cfg, _, err := Load()
+	if errors.Is(err, ErrNotFound) {
+		return Modules{}, nil
+	}
+	if err != nil {
+		return Modules{}, err
+	}
+	return cfg.Modules, nil
 }
 
 // Commit is what graft commit asks of the messages in every project of the

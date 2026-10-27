@@ -22,6 +22,21 @@ func TestRemoteIsPublic(t *testing.T) {
 	}
 }
 
+func TestModulesIsLatest(t *testing.T) {
+	m := Modules{Latest: []string{"example.com/own/", "example.org/team"}}
+	for path, want := range map[string]bool{
+		"example.com/own":       true,
+		"example.com/own/lib":   true,
+		"example.com/ownish":    false,
+		"example.org/team/tool": true,
+		"example.org/teams":     false,
+	} {
+		if got := m.IsLatest(path); got != want {
+			t.Errorf("IsLatest(%q): %v, want %v", path, got, want)
+		}
+	}
+}
+
 // A narrower private prefix wins over the public prefix it lies under.
 func TestRemoteIsPublicPrivateOverrides(t *testing.T) {
 	l := &Leaks{PublicRemotes: []string{"github.com/someone/"}, PrivateRemotes: []string{"github.com/someone/secret-tool"}}

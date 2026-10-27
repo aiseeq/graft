@@ -153,8 +153,9 @@ func firstLine(s string) string {
 // Install runs go install for one tool into binDir (empty: where go install
 // puts binaries) and checks it again. It warns before installing a copy that
 // PATH will find ahead of another one, and fails when the check still finds
-// another copy first.
-func Install(ctx context.Context, name string, t *config.Tool, binDir string, log io.Writer) error {
+// another copy first. installArg is what go install gets, the package at its
+// pin or at the version the caller wants; the check stays against the pin.
+func Install(ctx context.Context, name string, t *config.Tool, binDir string, log io.Writer, installArg string) error {
 	if t.GoInstall == "" {
 		return fmt.Errorf("%s: not installed with go install; install it yourself: %s", name, t.Manual)
 	}
@@ -180,7 +181,7 @@ func Install(ctx context.Context, name string, t *config.Tool, binDir string, lo
 	if len(t.Tags) > 0 {
 		args = append(args, "-tags", strings.Join(t.Tags, ","))
 	}
-	args = append(args, t.InstallArg())
+	args = append(args, installArg)
 	fmt.Fprintf(log, "graft: go %s\n", strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Env = append(os.Environ(), "GOBIN="+binDir)

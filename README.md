@@ -66,6 +66,8 @@ limits:                          # graft stats marks the tasks over them, by med
 commit:
   conventional: true             # default false: graft commit refuses a subject that is not Conventional Commits
   local_branches: ['nightly/*']  # a plain git commit on these passes the hook after the checks: no gate, version or push
+modules:
+  latest: [github.com/someone/, example.org/team/] # raise these modules before graft commit and graft gate
 ```
 
 With `commit.conventional` graft commit wants the subject as `type(scope)!:
@@ -78,6 +80,15 @@ the project merges them, such as a batch of edits a scheduled tool leaves for
 the project to look at: there a plain `git commit` passes the pre-commit hook
 after the checks (secrets, large files), without the gate and the version
 bump, and nothing is pushed. Merging the branch brings the gate (see Hooks).
+
+`modules.latest` lists Go module path prefixes. Before `graft commit` runs its
+gate and before a manual `graft gate`, graft raises matching requirements in
+tracked `go.mod` files to the latest versions visible through the user's Go
+proxy settings, then tidies the module and refreshes an existing vendor tree.
+Offline or otherwise unknown latest versions produce a warning and leave that
+module file alone. If a raised version makes the gate fail, the commit stops
+and the raised files stay in the work tree for repair. Without this setting,
+module versions are left alone.
 
 A heavy task checks whether the machine is busy: the 1-minute load average
 (`/proc/loadavg`) at or above `free_below`, the IO pressure above

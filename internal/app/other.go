@@ -11,8 +11,10 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/gomods"
 	"github.com/aiseeq/graft/v2/internal/hooks"
 	commitmessage "github.com/aiseeq/graft/v2/internal/message"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 	"github.com/aiseeq/graft/v2/internal/version"
 )
 
@@ -537,9 +539,22 @@ func (a *App) Gate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := a.raiseOwnModules(ctx, repo); err != nil {
+		return err
+	}
 	if err := a.gate(ctx, repo, cfg); err != nil {
 		return err
 	}
 	a.printf("gate passed")
 	return nil
+}
+
+// raiseOwnModules raises the modules of the user's modules.latest to their
+// latest versions in the work tree, before a commit or a gate checks it.
+func (a *App) raiseOwnModules(ctx context.Context, repo *gitx.Repo) error {
+	settings, err := userconfig.ModulesSettings()
+	if err != nil || len(settings.Latest) == 0 {
+		return err
+	}
+	return gomods.Raise(ctx, repo, settings.IsLatest, a.Stderr, a.warn)
 }
