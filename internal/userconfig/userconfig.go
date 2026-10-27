@@ -123,18 +123,21 @@ func (l *Limits) normalize(path string) error {
 	return nil
 }
 
-// MachineLoad is when a heavy task may start on this machine: the 1-minute
-// load average below FreeBelow, the IO pressure at most MaxIOFull and the
-// swapping at most MaxSwapKBs. Otherwise heavy tasks queue, one at a time,
-// until the load is below WaitAbove and the IO and swap are calm; a task
-// that waited, or starts above FreeBelow, gives the load Settle to show it
-// before the next one.
+// MachineLoad is when a heavy task may start on this machine: the tasks
+// ready to run below WaitAbove, the IO pressure at most MaxIOFull, and not
+// the memory pressure above MaxMemSome while it swaps more than MaxSwapKBs.
+// Heavy tasks start one at a time, each giving
+// its load Settle to show before the next one measures the machine.
 type MachineLoad struct {
-	FreeBelow float64 `yaml:"free_below"`
+	// WaitAbove 0 is the machine's thread count.
 	WaitAbove float64 `yaml:"wait_above"`
 	// MaxIOFull is the share of the last minute, in percent, during which
 	// every running process stalled on the disk (/proc/pressure/io).
 	MaxIOFull float64 `yaml:"max_io_full"`
+	// MaxMemSome is the share of the last 10 seconds, in percent, during
+	// which some process stalled on memory (/proc/pressure/memory); 0 is the
+	// rule's own default.
+	MaxMemSome float64 `yaml:"max_mem_some"`
 	// MaxSwapKBs is the swap traffic in and out, in KB per second, measured
 	// over SwapWindow: swap in use is no harm, swapping is.
 	MaxSwapKBs float64       `yaml:"max_swap_kbs"`
@@ -144,11 +147,11 @@ type MachineLoad struct {
 	Poll       time.Duration `yaml:"poll"`
 }
 
-// DefaultLoad is a shared laptop's with 22 threads: heavy tasks start freely
-// below a load of 22 and queue at or above it, with the disk and the swap
-// calm.
-var DefaultLoad = MachineLoad{FreeBelow: 22, WaitAbove: 22, MaxIOFull: 10, MaxSwapKBs: 1024, SwapWindow: time.Second,
-	Threads: 4, Settle: 30 * time.Second, Poll: 5 * time.Second}
+// DefaultLoad is a shared machine's: heavy tasks start while fewer tasks are
+// ready to run than it has threads, with the disk and the swap calm. The
+// count is of this moment, so a start shows to the next one within seconds.
+var DefaultLoad = MachineLoad{MaxIOFull: 10, MaxSwapKBs: 1024, SwapWindow: time.Second,
+	Threads: 4, Settle: 10 * time.Second, Poll: 5 * time.Second}
 
 // LoadSettings is the user's load settings over the defaults; without a user
 // config it is the defaults.
@@ -168,7 +171,7 @@ func (l *MachineLoad) normalize(path string) error {
 	for _, f := range []struct {
 		v   *float64
 		def float64
-	}{{&l.FreeBelow, d.FreeBelow}, {&l.WaitAbove, d.WaitAbove}, {&l.MaxIOFull, d.MaxIOFull}, {&l.MaxSwapKBs, d.MaxSwapKBs}} {
+	}{{&l.MaxIOFull, d.MaxIOFull}, {&l.MaxSwapKBs, d.MaxSwapKBs}} {
 		if *f.v == 0 {
 			*f.v = f.def
 		}
@@ -186,10 +189,8 @@ func (l *MachineLoad) normalize(path string) error {
 		l.Poll = d.Poll
 	}
 	switch {
-	case l.FreeBelow < 0 || l.WaitAbove < l.FreeBelow:
-		return fmt.Errorf("%s: load: free_below %v must not be above wait_above %v", path, l.FreeBelow, l.WaitAbove)
-	case l.MaxIOFull < 0 || l.MaxSwapKBs < 0:
-		return fmt.Errorf("%s: load: max_io_full and max_swap_kbs must be positive", path)
+	case l.WaitAbove < 0 || l.MaxIOFull < 0 || l.MaxMemSome < 0 || l.MaxSwapKBs < 0:
+		return fmt.Errorf("%s: load: wait_above, max_io_full, max_mem_some and max_swap_kbs must be positive", path)
 	case l.Threads < 0:
 		return fmt.Errorf("%s: load.threads: %d is negative", path, l.Threads)
 	case l.Settle < 0 || l.Poll < 0 || l.SwapWindow < 0:

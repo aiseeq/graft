@@ -89,10 +89,11 @@ type Record struct {
 	// nothing waited, and in lines written before graft 2.21.
 	WaitS float64 `json:"wait_s,omitempty"`
 	// WaitWhy splits WaitS by what was waited for, in seconds: the queue of
-	// heavy tasks, the load, the IO pressure, the swapping, the settling
-	// after a wait (queue, load, io, swap, settle), a task lock (lock) and a
-	// deploy's sudo confirmation (sudo). Absent when nothing waited, and in
-	// lines written before graft 2.40.
+	// heavy tasks, the tasks ready to run, the IO pressure, the swapping
+	// (queue, load, io, swap; lines before graft 2.43 also have settle, the
+	// hold after a wait, and load is the load average there), a task lock
+	// (lock) and a deploy's sudo confirmation (sudo). Absent when nothing
+	// waited, and in lines written before graft 2.40.
 	WaitWhy map[string]float64 `json:"wait_why,omitempty"`
 	// Host names the machine of remote_heavy the steps ran on; absent for
 	// this one. Their CPU time and memory are of the command that sent them

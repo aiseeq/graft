@@ -150,6 +150,9 @@ func (r *Runner) remoteCmd(ctx context.Context, cmd *exec.Cmd, vars map[string]s
 	}
 	if threads != "" {
 		words = append(words, ThreadsEnv+"="+threads)
+		if _, set := vars["GOMAXPROCS"]; !set {
+			words = append(words, "GOMAXPROCS="+threads)
+		}
 	}
 	words = append(words, cmd.Args...)
 	remote := exec.CommandContext(ctx, words[0], words[1:]...)

@@ -12,11 +12,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/aiseeq/akit/pressure"
 	"github.com/gofrs/flock"
 
-	"github.com/aiseeq/graft/v2/internal/loadavg"
 	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
@@ -33,8 +34,6 @@ const (
 	WhyLoad = "load"
 	WhyIO   = "io"
 	WhySwap = "swap"
-	// WhySettle is the hold after a wait, for the load average to catch up.
-	WhySettle = "settle"
 )
 
 // Waits is how long a heavy task waited, by why.
@@ -152,134 +151,125 @@ func (p *Priority) spend(d time.Duration) (left time.Duration, err error) {
 	return left, nil
 }
 
-// Wait admits a heavy task and returns how long it waited and why. A calm machine
-// (MachineLoad) takes it at once. Otherwise it queues behind the other
-// heavy tasks of the machine, one at a time under a lock at lockPath, until
-// the machine is calm with the load below WaitAbove; a task that waited, or
-// starts above FreeBelow, then holds the lock for Settle, since the load
-// average is a minute's and every waiter would otherwise see the same low
-// figure and start together. A task with a priority skips the queue and the
-// settling, and waits no longer than its budget allows.
-func Wait(ctx context.Context, name string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (Waits, error) {
-	m := &machine{l: l, log: log, name: name, waits: Waits{}}
-	b, err := m.busy(ctx, l.FreeBelow, true)
-	if err != nil || b.why == "" {
-		return m.waits, err
-	}
+// Wait admits a heavy task and returns how long it waited and why, and the
+// release the task calls when it ends. Every heavy task of the machine, on a
+// calm machine too, queues under a lock at lockPath and starts once the
+// machine is calm (MachineLoad), one at a time; it keeps the lock for Settle
+// after it starts, or until its release if it ends sooner, so the next one
+// measures the machine with this one's load on it: tasks that measure
+// together all find the same calm machine and start together. A task with a
+// priority skips the queue and the settling, and waits no longer than its
+// budget allows.
+func Wait(ctx context.Context, name string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (Waits, func() error, error) {
+	m := newMachine(l, log, name)
 	if p != nil {
-		fmt.Fprintf(log, "graft: %s: %s, not queueing behind other heavy tasks: it runs for %s\n", name, b.text, p.For)
-		err := m.admit(ctx, p)
-		return m.waits, err
+		return m.waits, released, m.admit(ctx, p)
 	}
 	start := time.Now()
-	lk, err := lock.AcquireFIFO(ctx, lockPath, queueTimeout, "graft "+name+" (waiting for the machine)", log)
+	lk, err := lock.AcquireFIFO(ctx, lockPath, queueTimeout, "graft "+name+" (starting a heavy task)", log)
 	m.waits[WhyQueue] += time.Since(start)
 	if err != nil {
-		return m.waits, err
+		return m.waits, released, err
 	}
-	err = m.admit(ctx, nil)
-	return m.waits, errors.Join(err, lk.Release())
+	if err := m.admit(ctx, nil); err != nil {
+		return m.waits, released, errors.Join(err, lk.Release())
+	}
+	return m.waits, settle(lk, l.Settle), nil
 }
 
-// swapPages reads the swap count; tests count on their own.
-var swapPages = loadavg.SwapPages
+// released is the release of a task that holds nothing.
+func released() error { return nil }
+
+// settle keeps the queue's lock for d and returns the release that gives it
+// up sooner, when the task ends: its load ends with it. The lock's error
+// comes back from the release, whichever of them gave it up.
+func settle(lk *lock.Lock, d time.Duration) func() error {
+	var once sync.Once
+	var err error
+	unlock := func() { err = lk.Release() }
+	timer := time.AfterFunc(d, func() { once.Do(unlock) })
+	return func() error {
+		timer.Stop()
+		once.Do(unlock)
+		return err
+	}
+}
+
+// ProcEnv, when set, is the directory read instead of /proc to measure the
+// machine: for tests.
+const ProcEnv = "GRAFT_PROC"
 
 // machine reads what makes the machine busy for one task.
 type machine struct {
-	l    userconfig.MachineLoad
-	log  io.Writer
-	name string
-	load float64
+	l     userconfig.MachineLoad
+	log   io.Writer
+	name  string
+	meter *pressure.Meter
+	// runnable is the last count of the tasks ready to run.
+	runnable float64
 	// unchecked holds the measures the system does not have, told once.
 	unchecked map[error]bool
-	// pages and at are the last swap count and when it was read.
-	pages int64
-	at    time.Time
 	// waits is how long admit waited, by why.
 	waits Waits
+}
+
+func newMachine(l userconfig.MachineLoad, log io.Writer, name string) *machine {
+	proc := "/proc"
+	if dir := os.Getenv(ProcEnv); dir != "" {
+		proc = dir
+	}
+	return &machine{l: l, log: log, name: name, meter: pressure.NewMeter(proc), waits: Waits{}}
 }
 
 // busyness is why the machine cannot take a heavy task, one of the Why
 // constants, and the words that say it; a calm machine has neither.
 type busyness struct{ why, text string }
 
-// busy says why the machine cannot take a heavy task now, nothing when it can:
-// the load at or above maxLoad, the IO pressure or the swapping above their
-// limits. fresh measures the swapping over SwapWindow; otherwise since the
-// last call. A measure the system lacks is skipped and told once.
-func (m *machine) busy(ctx context.Context, maxLoad float64, fresh bool) (busyness, error) {
-	load, err := loadavg.Read()
-	if m.skip(err, loadavg.ErrNone) {
-		return busyness{}, nil // no load, and on such a system no pressure or swap either
-	}
+// measures are the rule's measures as the waits name them, with the
+// setting of each limit.
+var measures = map[string]struct{ why, setting string }{
+	pressure.CPU:  {WhyLoad, "load.wait_above"},
+	pressure.IO:   {WhyIO, "load.max_io_full"},
+	pressure.Swap: {WhySwap, "load.max_mem_some, load.max_swap_kbs"},
+}
+
+// busy says why the machine cannot take a heavy task now, nothing when it
+// can, by the rule of a busy machine (akit's pressure): the tasks ready to
+// run at or above WaitAbove, read once, the IO pressure above its limit, or
+// the memory pressure above its limit while the machine swaps. fresh measures the swapping over SwapWindow; otherwise since
+// the last call. A measure the system lacks is skipped and told once.
+func (m *machine) busy(ctx context.Context, fresh bool) (busyness, error) {
+	v, err := m.meter.Check(ctx, pressure.Limits{Runnable: m.l.WaitAbove, MaxIOFull: m.l.MaxIOFull, MaxMemSome: m.l.MaxMemSome,
+		MaxSwapKBs: m.l.MaxSwapKBs, SwapWindow: m.l.SwapWindow}, fresh)
 	if err != nil {
-		return busyness{}, err
+		return busyness{}, fmt.Errorf("measuring the machine: %w", err)
 	}
-	m.load = load
-	if load >= maxLoad {
-		return busyness{WhyLoad, fmt.Sprintf("load %.2f is at or above %v (user config load.wait_above)", load, maxLoad)}, nil
+	for _, none := range v.Skipped {
+		m.skip(none)
 	}
-	ioFull, err := loadavg.IOFull()
-	switch {
-	case m.skip(err, loadavg.ErrNoPressure):
-	case err != nil:
-		return busyness{}, err
-	case ioFull > m.l.MaxIOFull:
-		return busyness{WhyIO, fmt.Sprintf("IO pressure %.1f%% is above %v%% (user config load.max_io_full)", ioFull, m.l.MaxIOFull)}, nil
+	m.runnable = float64(v.Load.Runnable)
+	var b busyness
+	if v.Busy() {
+		ms := measures[v.Measure]
+		b = busyness{ms.why, fmt.Sprintf("%s (user config %s)", v.Why(), ms.setting)}
 	}
-	kbs, err := m.swapping(ctx, fresh)
-	switch {
-	case m.skip(err, loadavg.ErrNoVMStat):
-	case err != nil:
-		return busyness{}, err
-	case kbs > m.l.MaxSwapKBs:
-		return busyness{WhySwap, fmt.Sprintf("swapping %.0f KB/s is above %v (user config load.max_swap_kbs)", kbs, m.l.MaxSwapKBs)}, nil
-	}
-	return busyness{}, nil
+	return b, nil
 }
 
-// skip tells whether err is none, the system lacking a measure, and says so
-// the first time.
-func (m *machine) skip(err, none error) bool {
-	if !errors.Is(err, none) {
-		return false
+// skip says the first time that the system lacks a measure.
+func (m *machine) skip(none error) {
+	if m.unchecked[none] {
+		return
 	}
-	if !m.unchecked[none] {
-		if m.unchecked == nil {
-			m.unchecked = map[error]bool{}
-		}
-		m.unchecked[none] = true
-		fmt.Fprintf(m.log, "graft: %s: %v, not checked\n", m.name, none)
+	if m.unchecked == nil {
+		m.unchecked = map[error]bool{}
 	}
-	return true
+	m.unchecked[none] = true
+	fmt.Fprintf(m.log, "graft: %s: %v, not checked\n", m.name, none)
 }
 
-// swapping is the swap traffic in KB/s: over SwapWindow when fresh, else
-// since the last reading.
-func (m *machine) swapping(ctx context.Context, fresh bool) (float64, error) {
-	if fresh || m.at.IsZero() {
-		pages, err := swapPages()
-		if err != nil {
-			return 0, err
-		}
-		m.pages, m.at = pages, time.Now()
-		if err := sleep(ctx, m.l.SwapWindow); err != nil {
-			return 0, err
-		}
-	}
-	pages, err := swapPages()
-	if err != nil {
-		return 0, err
-	}
-	elapsed := time.Since(m.at).Seconds()
-	kbs := float64(pages-m.pages) * float64(os.Getpagesize()) / 1024 / elapsed
-	m.pages, m.at = pages, time.Now()
-	return kbs, nil
-}
-
-// admit waits for the machine to be calm with the load below WaitAbove,
-// then settles; a priority task does not settle and waits no longer than
-// its budget allows, spending it as it waits. The time between two
+// admit waits for the machine to be calm; a priority task waits no longer
+// than its budget allows, spending it as it waits. The time between two
 // readings goes to what the first of them found busy, the first reading's
 // own to what it found.
 func (m *machine) admit(ctx context.Context, p *Priority) error {
@@ -289,7 +279,7 @@ func (m *machine) admit(ctx context.Context, p *Priority) error {
 	waited := false
 	why := ""
 	for {
-		b, err := m.busy(ctx, m.l.WaitAbove, said.IsZero() && !waited)
+		b, err := m.busy(ctx, said.IsZero() && !waited)
 		now := time.Now()
 		if why == "" {
 			why = b.why
@@ -303,14 +293,12 @@ func (m *machine) admit(ctx context.Context, p *Priority) error {
 		}
 		if b.why == "" {
 			if waited {
-				fmt.Fprintf(m.log, "graft: %s: load %.2f, starting after %s\n", m.name, m.load, time.Since(start).Round(time.Second))
+				fmt.Fprintf(m.log, "graft: %s: runnable %.0f, starting after %s\n", m.name, m.runnable, time.Since(start).Round(time.Second))
 			}
-			if p != nil || (!waited && m.load < m.l.FreeBelow) {
-				return nil
-			}
-			err := sleep(ctx, m.l.Settle)
-			m.waits[WhySettle] += time.Since(now)
-			return err
+			return nil
+		}
+		if p != nil && !waited {
+			fmt.Fprintf(m.log, "graft: %s: %s, not queueing behind other heavy tasks: it runs for %s\n", m.name, b.text, p.For)
 		}
 		waited = true
 		var left time.Duration

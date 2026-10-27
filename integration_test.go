@@ -75,7 +75,38 @@ func setup(m *testing.M) (int, error) {
 	if coverDir != "" {
 		testEnv = append(testEnv, "GOCOVERDIR="+coverDir)
 	}
+	// Every gate and heavy task queues for the machine: the tests' graft
+	// finds a calm one unless a test fakes another, and does not wait out the
+	// load of the machine the tests run on.
+	machine := filepath.Join(dir, "machine")
+	for name, content := range map[string]string{
+		"stat":            "cpu  1 1 1 1\ncpu0 1 1 1 1\nprocs_running 1\n",
+		"pressure/io":     "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n",
+		"pressure/memory": "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n",
+		"vmstat":          "pswpin 0\npswpout 0\n",
+	} {
+		if err := writeTestFile(filepath.Join(machine, filepath.FromSlash(name)), content); err != nil {
+			return 0, err
+		}
+	}
+	testEnv = append(testEnv, "GRAFT_PROC="+machine)
+	// Short settling: the tests' heavy tasks and gates, one at a time, do
+	// not wait out a laptop's 30s for each other.
+	if err := writeTestFile(filepath.Join(dir, "userconfig", "graft", "config.yaml"), "load: {settle: 10ms, poll: 20ms, swap_window: 10ms}\n"); err != nil {
+		return 0, err
+	}
 	return m.Run(), nil
+}
+
+// writeTestFile writes a file of the tests' setup, its directory too.
+func writeTestFile(path, content string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("the tests' %s: %w", path, err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("the tests' %s: %w", path, err)
+	}
+	return nil
 }
 
 // isolatedEnv keeps the tests away from the user's git config, from the
@@ -93,7 +124,7 @@ func isolatedEnv(gitconfig, userConfig, cache string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	drop := append(strings.Fields(string(out)), "GRAFT_COMMIT", "GRAFT_RUN_ID", "GRAFT_LOAD_PRIORITY", "GRAFT_LOAD_BUDGET", "GRAFT_LOAD_THEN", "GRAFT_LOADAVG", "GRAFT_PRESSURE_IO", "GRAFT_VMSTAT", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "PATH", "XDG_CONFIG_HOME", "APPDATA",
+	drop := append(strings.Fields(string(out)), "GRAFT_COMMIT", "GRAFT_RUN_ID", "GRAFT_LOAD_PRIORITY", "GRAFT_LOAD_BUDGET", "GRAFT_LOAD_THEN", "GRAFT_LOADAVG", "GRAFT_PROC", "GRAFT_ADMITTED", "GRAFT_THREADS", "GOMAXPROCS", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "PATH", "XDG_CONFIG_HOME", "APPDATA",
 		"XDG_CACHE_HOME", "LOCALAPPDATA", "GOCACHE", "GOLANGCI_LINT_CACHE")
 	var env []string
 	for _, kv := range os.Environ() {

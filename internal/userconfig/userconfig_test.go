@@ -79,11 +79,11 @@ func TestLeaksNormalize(t *testing.T) {
 
 func TestLoadNormalize(t *testing.T) {
 	l := MachineLoad{Threads: 8}
-	if err := l.normalize("cfg"); err != nil || l.FreeBelow != 22 || l.WaitAbove != 22 || l.MaxIOFull != 10 || l.MaxSwapKBs != 1024 ||
+	if err := l.normalize("cfg"); err != nil || l.WaitAbove != 0 || l.MaxIOFull != 10 || l.MaxSwapKBs != 1024 ||
 		l.SwapWindow != time.Second || l.Threads != 8 || l.Settle != DefaultLoad.Settle {
 		t.Errorf("defaults: %+v, %v", l, err)
 	}
-	for _, bad := range []MachineLoad{{FreeBelow: 22, WaitAbove: 16}, {Threads: -1}, {Poll: -1}, {MaxIOFull: -1}, {SwapWindow: -1}} {
+	for _, bad := range []MachineLoad{{WaitAbove: -1}, {Threads: -1}, {Poll: -1}, {MaxIOFull: -1}, {SwapWindow: -1}} {
 		if err := bad.normalize("cfg"); err == nil {
 			t.Errorf("%+v: want an error", bad)
 		}

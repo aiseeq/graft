@@ -25,16 +25,15 @@ func remoteRepo(t *testing.T, threads int, tasks string) (f *fixture, state stri
 			"remote_heavy: {host: pc, up: [sh, " + yamlQuote(filepath.Join(state, "up.sh")) + "], run: [sh, " + yamlQuote(filepath.Join(state, "run.sh")) + "], threads: " + strconv.Itoa(threads) + "}\n" +
 			"tasks:\n" + tasks,
 	})
-	writeFile(t, filepath.Join(state, "loadavg"), "30.50 20.00 10.00 3/400 1234\n")
 	cfgDir := t.TempDir()
 	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms, swap_window: 10ms}\n")
-	f.env = append(append(f.env, "XDG_CONFIG_HOME="+cfgDir, "GRAFT_LOADAVG="+filepath.Join(state, "loadavg"), "XDG_CACHE_HOME="+filepath.Join(state, "cache")), calmMachine(t)...)
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, filepath.Join(state, "proc"), 30), "XDG_CACHE_HOME="+filepath.Join(state, "cache"))
 	return f, state
 }
 
 func calm(t *testing.T, state string) {
 	t.Helper()
-	replaceFile(t, filepath.Join(state, "loadavg"), "0.10 0.10 0.10 1/400 1234\n")
+	setRunnable(t, filepath.Join(state, "proc"), 0)
 }
 
 const remoteTasks = `  build:
@@ -60,7 +59,7 @@ func TestHeavyTaskRunsOnRemoteHost(t *testing.T) {
 		t.Errorf("the step on the host: %q", got)
 	}
 	calls := readFile(t, filepath.Join(state, "calls"))
-	if want := "env GRAFT_HEAVY=local MODE=fast GRAFT_THREADS=8 sh -c echo threads=8"; !strings.HasPrefix(calls, want) {
+	if want := "env GRAFT_HEAVY=local MODE=fast GRAFT_THREADS=8 GOMAXPROCS=8 sh -c echo threads=8"; !strings.HasPrefix(calls, want) {
 		t.Errorf("run got %q, want it to start %q", calls, want)
 	}
 	hosts := map[string]string{}

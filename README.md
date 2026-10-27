@@ -52,13 +52,13 @@ leaks:                           # keep private names out of public repositories
   allow:
     - {term: SomeName, reason: why this name is fine everywhere}
 load:                            # heavy tasks on a shared machine (heavy: true in a task)
-  free_below: 22                 # default 22: below it, the disk and swap calm, a heavy task starts at once
-  wait_above: 22                 # default 22: queued heavy tasks start one at a time once the load is below it
+  wait_above: 22                 # default: the machine's threads; heavy tasks start while fewer tasks are ready to run
   max_io_full: 10                # default 10: % of the last minute all processes stalled on the disk (/proc/pressure/io)
-  max_swap_kbs: 1024             # default 1024: swap traffic in and out, KB/s (pswpin + pswpout of /proc/vmstat)
+  max_mem_some: 10               # default 10: % of the last 10s some process stalled on memory (/proc/pressure/memory)
+  max_swap_kbs: 1024             # default 1024: swap traffic in and out, KB/s (pswpin + pswpout of /proc/vmstat), busy only with memory pressure
   swap_window: 1s                # default 1s: how long a starting task measures the swapping
-  threads: 4                     # default 4: {threads} in steps, GRAFT_THREADS in heavy tasks
-  settle: 30s                    # default 30s: a task that waited gives the load this long to show before the next
+  threads: 4                     # default 4: {threads} in steps, GRAFT_THREADS and GOMAXPROCS in heavy tasks
+  settle: 10s                    # default 10s: a heavy task that starts gives its load this long to show before the next
   poll: 5s                       # default 5s; 0 anywhere here means the default
 limits:                          # graft stats marks the tasks over them, by median without the waits; a run over says so when it ends
   gate: 1m                       # default 1m: the gate of a commit as a whole
@@ -90,19 +90,30 @@ module file alone. If a raised version makes the gate fail, the commit stops
 and the raised files stay in the work tree for repair. Without this setting,
 module versions are left alone.
 
-A heavy task checks whether the machine is busy: the 1-minute load average
-(`/proc/loadavg`) at or above `free_below`, the IO pressure above
-`max_io_full` or the swapping above `max_swap_kbs`; swap in use is no harm,
-swapping is. A measure the system lacks (no `/proc/loadavg`, a kernel without
-PSI) is skipped and said. On a busy machine heavy tasks of all projects queue
-under one lock in the user cache (`graft/load.lock`) in ticket order and start
-one at a time, each once the load is below `wait_above` and the disk and swap
-are calm; one
-that waited holds the queue for `settle`, since the load average is a
-minute's. A heavy task inside a heavy task was admitted with it. Tasks that
-find the machine below `free_below` bypass the queue. Priority tasks from
-`graft deploy` bypass it too and may start ahead of queued tasks. Ctrl-C stops
-the wait.
+A heavy task, and the gate as a whole, starts when the machine is not busy,
+by the rule of `github.com/aiseeq/akit/pressure`: the tasks ready to run at
+this moment (`procs_running` of `/proc/stat`, one reading, not an average
+that lags a minute behind) below `wait_above`, the IO pressure at most
+`max_io_full`, and not the memory pressure above `max_mem_some` while the
+machine swaps more than `max_swap_kbs`: swap in use is no harm, and swapping
+without memory pressure neither. A measure the system lacks (no `/proc/stat`,
+a kernel without PSI) is skipped and said. Heavy tasks of
+all projects, on a calm machine too, queue under one lock in the user cache
+(`graft/load.lock`) in ticket order and start one at a time: a task that
+starts holds the queue for `settle`, or until it ends if sooner, so the next
+one measures the machine with its load on it; tasks that measured together
+would all find the same calm machine and start together. A heavy task inside
+a heavy task or the gate was admitted with it, and so is a graft that the
+steps of an admitted task start (they carry `GRAFT_ADMITTED`). Priority tasks
+from `graft deploy` bypass the queue and may start ahead of queued tasks.
+Ctrl-C stops the wait.
+
+The steps of a heavy task and of the gate, and a step with `{threads}`, get `GOMAXPROCS` set to `threads`
+unless the task's `env` or the environment sets it: one Go program does not take every thread of
+the machine, the go command running a compile per package at once, each with
+as many threads as `GOMAXPROCS`. `GOFLAGS` in a task's `env` comes after the
+user's (the environment's, else the go env file's), which it would otherwise
+replace; a later flag wins, so the task's still override them.
 
 A heavy command that is no task of the project (a one-off `go test`, a
 build, an e2e run) takes the same queue with `graft exec --heavy -- <command>

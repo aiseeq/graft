@@ -940,3 +940,33 @@ func TestGoBuildsTrimPaths(t *testing.T) {
 		t.Errorf("go got\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
+
+// TestTaskGoFlagsKeepTheUsers: GOFLAGS in a task's env comes after the
+// user's, from the environment or else from the go env file, which a GOFLAGS
+// of its own would drop; ${GOFLAGS} in the value, which sees the environment
+// only, does not lose the go env file's.
+func TestTaskGoFlagsKeepTheUsers(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	f := tasksRepo(t, `tasks:
+  tags:
+    env: {GOFLAGS: -tags=special}
+    run: [[sh, -c, 'echo "tags $GOFLAGS" >> out']]
+  own:
+    env: {GOFLAGS: '-tags=own ${GOFLAGS}'}
+    run: [[sh, -c, 'echo "own $GOFLAGS" >> out']]
+`, nil)
+	goenv := filepath.Join(t.TempDir(), "go.env")
+	writeFile(t, goenv, "GOFLAGS=-p=2\n")
+	f.env = []string{"GOENV=" + goenv, "GOFLAGS=-p=3 -mod=mod"}
+	f.mustGraft("tags")
+	f.mustGraft("own")
+	f.env = []string{"GOENV=" + goenv, "GOFLAGS="}
+	f.mustGraft("tags")
+	f.mustGraft("own")
+	want := []string{"tags -p=3 -mod=mod -tags=special", "own -p=3 -mod=mod -tags=own -p=3 -mod=mod", "tags -p=2 -tags=special", "own -p=2 -tags=own"}
+	if got := f.lines("out"); !slices.Equal(got, want) {
+		t.Errorf("got\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}

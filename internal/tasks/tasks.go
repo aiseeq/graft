@@ -80,10 +80,13 @@ type Runner struct {
 	// lintCacheErr says why there is none.
 	lintCache    string
 	lintCacheErr error
-	version      *string
-	testDB       *TestDB
-	done         map[string]bool
-	held         map[string]lock.Mode
+	// goEnvFlags is GOFLAGS of the go env file, once read: goEnvRead.
+	goEnvFlags string
+	goEnvRead  bool
+	version    *string
+	testDB     *TestDB
+	done       map[string]bool
+	held       map[string]lock.Mode
 	// Load reads this machine's load settings for heavy tasks.
 	Load func() (userconfig.MachineLoad, error)
 	// Limits are the user's limits, which the outermost task's run is
@@ -318,13 +321,20 @@ func (r *Runner) Gate(ctx context.Context) (err error) {
 	}
 	f := r.begin(stats.GateTask)
 	defer func() { r.end(f, err != nil) }()
+	// The gate builds and tests: it is heavy as a whole, its heavy tasks
+	// admitted with it.
+	leave, err := r.enterHeavy(ctx, stats.GateTask)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, leave()) }()
 	for i, gs := range steps {
-		s, _, err := r.threads(gs.step, gs.task)
+		s, threads, err := r.threads(gs.step, gs.task)
 		if err != nil {
 			return fmt.Errorf("gate: %w", err)
 		}
 		fmt.Fprintf(r.Stdout, "graft: gate %d/%d: %s\n", i+1, len(steps), s.Source)
-		if err := r.step(ctx, s, gs.task, nil, ""); err != nil {
+		if err := r.step(ctx, s, gs.task, nil, threads); err != nil {
 			if gs.hint != "" {
 				return fmt.Errorf("gate failed at %q: %w\n%s", s.Source, err, gs.hint)
 			}
@@ -488,16 +498,11 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 		f.remote = remote
 	}
 	if t.Heavy && !f.remote {
-		// A heavy task inside a heavy task was admitted with it.
-		if r.heavy == 0 {
-			waits, err := r.admit(ctx, name)
-			r.waitedFor(waits)
-			if err != nil {
-				return err
-			}
+		leave, herr := r.enterHeavy(ctx, name)
+		if herr != nil {
+			return herr
 		}
-		r.heavy++
-		defer func() { r.heavy-- }()
+		defer func() { err = errors.Join(err, leave()) }()
 	}
 	release, waited, err := r.lock(ctx, name, t.Lock)
 	r.Waited(WhyLock, waited)
@@ -565,9 +570,7 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	if err != nil {
 		return err
 	}
-	if t.Heavy {
-		env = append(env, ThreadsEnv+"="+threads)
-	}
+	env = r.heavyEnv(env, t, threads)
 	var cmd *exec.Cmd
 	var words []string
 	if s.Shell != "" {
@@ -717,11 +720,11 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 		}
 	}
 	if heavy && !f.remote {
-		waits, err := r.admit(ctx, ExecTask)
-		r.waitedFor(waits)
-		if err != nil {
-			return err
+		leave, herr := r.enterHeavy(ctx, ExecTask)
+		if herr != nil {
+			return herr
 		}
+		defer func() { err = errors.Join(err, leave()) }()
 	}
 	s, threads, err := r.threads(config.Step{Argv: argv, Source: strings.Join(argv, " ")}, t)
 	if err != nil {
@@ -731,9 +734,7 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 	if err != nil {
 		return err
 	}
-	if heavy {
-		env = append(env, ThreadsEnv+"="+threads)
-	}
+	env = r.heavyEnv(env, t, threads)
 	if argv, env, err = trimRun(ctx, dir, s.Argv, env); err != nil {
 		return err
 	}
@@ -965,7 +966,13 @@ func (r *Runner) env(t *config.Task, vars map[string]string) ([]string, error) {
 	}
 	env = append(env, keys...)
 	for _, k := range sortedKeys(vars) {
-		env = append(env, k+"="+vars[k])
+		v := vars[k]
+		if k == goFlagsEnv && t.Env[k] != "" {
+			if v, err = r.goFlags(v); err != nil {
+				return nil, err
+			}
+		}
+		env = append(env, k+"="+v)
 	}
 	if v, set := lookupEnv(env, lintcache.Env); set {
 		owned, err := lintcache.Owned(v)
@@ -988,6 +995,37 @@ func (r *Runner) env(t *config.Task, vars map[string]string) ([]string, error) {
 		return env, nil
 	}
 	return append(env, lintcache.Env+"="+r.lintCache), nil
+}
+
+const goFlagsEnv = "GOFLAGS"
+
+// goFlags is v, the GOFLAGS a task's env sets, after the user's: GOFLAGS in
+// the environment replaces the go env file's, and the task's would replace
+// both, dropping what the user set for every build (-p of a shared machine).
+// A later flag wins in GOFLAGS, so the task's flags still override the
+// user's, and a value with ${GOFLAGS}, which sees the environment only, just
+// repeats some of them.
+func (r *Runner) goFlags(v string) (string, error) {
+	// An empty GOFLAGS, as go has it, is none: the go env file's holds.
+	user, _ := lookupEnv(r.base, goFlagsEnv)
+	if user == "" {
+		if !r.goEnvRead {
+			// The go env file's, read by the go of this machine:
+			// GOTOOLCHAIN=local keeps a go.mod from switching it.
+			cmd := exec.Command("go", "env", goFlagsEnv)
+			cmd.Dir, cmd.Env = r.Root, append(slices.Clone(r.base), "GOTOOLCHAIN=local")
+			out, err := cmd.Output()
+			if err != nil && !errors.Is(err, exec.ErrNotFound) {
+				return "", fmt.Errorf("go env GOFLAGS, the user's flags that env GOFLAGS keeps: %w", err)
+			}
+			r.goEnvFlags, r.goEnvRead = strings.TrimSpace(string(out)), true
+		}
+		user = r.goEnvFlags
+	}
+	if user = strings.TrimSpace(user); user == "" {
+		return v, nil
+	}
+	return user + " " + v, nil
 }
 
 // lookupEnv is the last value of the variable in env, which is the one a
@@ -1110,26 +1148,74 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
+// enterHeavy admits a heavy task run on this machine, unless a running one
+// was admitted and took it in, and counts it running; leave, when the task
+// ends, gives its admission up.
+func (r *Runner) enterHeavy(ctx context.Context, name string) (leave func() error, err error) {
+	release := func() error { return nil }
+	if r.heavy == 0 {
+		waits, admitted, err := r.admit(ctx, name)
+		r.waitedFor(waits)
+		if err != nil {
+			return nil, err
+		}
+		release = admitted
+	}
+	r.heavy++
+	return func() error {
+		r.heavy--
+		return release()
+	}, nil
+}
+
+// AdmittedEnv marks the steps of a heavy task this machine admitted: a graft
+// they start was admitted with them and does not queue again.
+const AdmittedEnv = "GRAFT_ADMITTED"
+
 // admit waits until the machine takes a heavy task and returns how long it
-// waited, by why.
-func (r *Runner) admit(ctx context.Context, name string) (loadgate.Waits, error) {
+// waited, by why, and the release the task calls when it ends.
+func (r *Runner) admit(ctx context.Context, name string) (loadgate.Waits, func() error, error) {
+	none := func() error { return nil }
+	if os.Getenv(AdmittedEnv) != "" {
+		return nil, none, nil
+	}
 	l, err := r.Load()
 	if err != nil {
-		return nil, err
+		return nil, none, err
 	}
 	cache, err := os.UserCacheDir()
 	if err != nil {
-		return nil, fmt.Errorf("locating the cache for the load queue: %w", err)
+		return nil, none, fmt.Errorf("locating the cache for the load queue: %w", err)
 	}
 	var priority *loadgate.Priority
 	p, ok, err := loadgate.PriorityFromEnv()
 	if err != nil {
-		return nil, err
+		return nil, none, err
 	}
 	if ok {
 		priority = &p
 	}
 	return loadgate.Wait(ctx, name, priority, l, filepath.Join(cache, "graft", "load.lock"), r.Stderr)
+}
+
+// heavyEnv adds to the environment of a step what an admitted heavy task
+// gives: GRAFT_THREADS and GOMAXPROCS of threads, one Go program not taking
+// every thread of the machine (the go command runs as many compiles at once,
+// each as many threads), unless the task's env or the environment sets
+// GOMAXPROCS; and AdmittedEnv when the task runs on this machine.
+func (r *Runner) heavyEnv(env []string, t *config.Task, threads string) []string {
+	if threads != "" {
+		if t.Heavy || r.heavy > 0 {
+			env = append(env, ThreadsEnv+"="+threads)
+		}
+		if _, set := lookupEnv(env, "GOMAXPROCS"); !set {
+			env = append(env, "GOMAXPROCS="+threads)
+		}
+	}
+	if r.heavy > 0 && !r.frames[len(r.frames)-1].remote {
+		env = append(env, AdmittedEnv+"=1")
+	}
+	return env
 }
 
 // Why a task waited besides the machine, whose waits are loadgate's Why
@@ -1173,7 +1259,7 @@ const ThreadsEnv = "GRAFT_THREADS"
 func (r *Runner) threads(s config.Step, t *config.Task) (config.Step, string, error) {
 	uses := strings.Contains(s.Shell, config.ThreadsPlaceholder) ||
 		slices.ContainsFunc(s.Argv, func(w string) bool { return strings.Contains(w, config.ThreadsPlaceholder) })
-	if !uses && !t.Heavy {
+	if !uses && !t.Heavy && r.heavy == 0 {
 		return s, "", nil
 	}
 	var n string
