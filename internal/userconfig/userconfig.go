@@ -34,6 +34,10 @@ type Config struct {
 type Commit struct {
 	// Conventional asks for a Conventional Commits subject.
 	Conventional bool `yaml:"conventional"`
+	// LocalBranches are branch globs whose commits stay on this machine
+	// until someone merges them: a plain git commit there passes the hook
+	// after the checks, with no gate, no version bump and no push.
+	LocalBranches []string `yaml:"local_branches"`
 }
 
 // CommitSettings is the user's commit settings; without a user config none

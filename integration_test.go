@@ -590,6 +590,44 @@ func TestHookRefusesPlainCommit(t *testing.T) {
 	}
 }
 
+// TestHookLetsLocalBranchCommit: on a branch of the user's
+// commit.local_branches a plain git commit passes after the checks, without
+// the gate; a secret is still refused, and other branches still refuse it.
+func TestHookLetsLocalBranchCommit(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "gate-ran")
+	f := hookRepo(t, gateStep("touch", marker))
+	cfgDir := t.TempDir()
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "commit: {local_branches: ['nightly/*']}\n")
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
+	// The base commit ran the gate.
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+
+	f.git("switch", "-q", "-c", "nightly/2026-01-02")
+	f.write("shared.txt", "nightly\n")
+	f.git("add", "-A")
+	if out, code := f.tryGit("commit", "-q", "-m", "notes of the night"); code != 0 {
+		t.Fatalf("a commit on a local branch: exit %d\n%s", code, out)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("the gate ran on a local branch: %v", err)
+	}
+	f.write("config.go", "package main\n\nconst id = \"AKIA"+strings.Repeat("Q", 16)+"\"\n")
+	f.git("add", "-A")
+	if out, code := f.tryGit("commit", "-q", "-m", "a key"); code == 0 {
+		t.Errorf("a secret went in on a local branch:\n%s", out)
+	}
+	f.git("reset", "-q", "--hard")
+
+	f.git("switch", "-q", "-c", "nightlyish")
+	f.write("shared.txt", "other\n")
+	f.git("add", "-A")
+	if out, code := f.tryGit("commit", "-q", "-m", "raw"); code == 0 {
+		t.Errorf("a plain commit on another branch went through:\n%s", out)
+	}
+}
+
 func TestHookGatesConflictResolution(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "gate-ran")
 	f := hookRepo(t, gateStep("touch", marker))

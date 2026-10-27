@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
+	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/hooks"
 	"github.com/aiseeq/graft/v2/internal/tasks"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 	"github.com/aiseeq/graft/v2/internal/workers"
 )
 
@@ -19,7 +22,10 @@ import (
 // Commits git's machinery drives (merge, rebase, cherry-pick, revert) pass
 // through the checks and the gate: refusing them would strand a conflict
 // resolution. A hand-written git commit is refused: it skips the version bump,
-// the work item key and the push.
+// the work item key and the push. On a branch of the user's
+// commit.local_branches it passes through the checks alone: such a branch is
+// no work to ship but a batch for its project to look at and merge, which
+// brings the gate.
 func (a *App) HookPreCommit(ctx context.Context) error {
 	if own, err := graftsOwn(); err != nil || own {
 		return err
@@ -33,7 +39,15 @@ func (a *App) HookPreCommit(ctx context.Context) error {
 		return err
 	}
 	if kind == hooks.Normal {
-		return errors.New(commitHowTo(cfg))
+		local, err := localBranch(repo)
+		if err != nil {
+			return err
+		}
+		if local == "" {
+			return errors.New(commitHowTo(cfg))
+		}
+		a.printf("commit on %s, a local branch (commit.local_branches of the user config): the checks only, no gate, version or push", local)
+		return runChecks(repo, cfg, "", "HEAD", a.Stderr)
 	}
 	a.printf("%s commit: running the checks and the gate", kind)
 	if err := runChecks(repo, cfg, "", "HEAD", a.Stderr); err != nil {
@@ -43,6 +57,34 @@ func (a *App) HookPreCommit(ctx context.Context) error {
 		return fmt.Errorf("%w\nresolve the %s so that the gate passes, then continue", err, kind)
 	}
 	return nil
+}
+
+// localBranch is the branch HEAD is on when it is one of the user's
+// commit.local_branches, else "".
+func localBranch(repo *gitx.Repo) (string, error) {
+	uc, err := userconfig.CommitSettings()
+	if err != nil || len(uc.LocalBranches) == 0 {
+		return "", err
+	}
+	out, err := repo.Git("symbolic-ref", "--short", "-q", "HEAD")
+	if gitx.ExitCode(err) == 1 {
+		// Detached: no branch.
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	branch := strings.TrimSpace(out)
+	for i, g := range uc.LocalBranches {
+		re, err := config.CompileGlob(g)
+		if err != nil {
+			return "", fmt.Errorf("the user config's commit.local_branches[%d]: %w", i, err)
+		}
+		if re.MatchString(branch) {
+			return branch, nil
+		}
+	}
+	return "", nil
 }
 
 // HookPrepareCommitMsg adds the Worker trailers to the message git is

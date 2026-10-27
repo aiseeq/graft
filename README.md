@@ -65,12 +65,19 @@ limits:                          # graft stats marks the tasks over them, by med
   task: 8m                       # default 8m: any other task, a test run before a deploy, merge or release
 commit:
   conventional: true             # default false: graft commit refuses a subject that is not Conventional Commits
+  local_branches: ['nightly/*']  # a plain git commit on these passes the hook after the checks: no gate, version or push
 ```
 
 With `commit.conventional` graft commit wants the subject as `type(scope)!:
 description`, the type one of build, chore, ci, docs, feat, fix, perf,
 refactor, revert, style, test; git's own `Revert "..."` passes. It is the
 user's, so it holds in every project they commit to.
+
+`commit.local_branches` are branches whose commits stay on the machine until
+the project merges them, such as a batch of edits a scheduled tool leaves for
+the project to look at: there a plain `git commit` passes the pre-commit hook
+after the checks (secrets, large files), without the gate and the version
+bump, and nothing is pushed. Merging the branch brings the gate (see Hooks).
 
 A heavy task checks whether the machine is busy: the 1-minute load average
 (`/proc/loadavg`) at or above `free_below`, the IO pressure above
@@ -253,7 +260,9 @@ commit through unchecked.
 - **pre-commit**: lets graft's own commits through (graft already ran
   everything). For a commit git's machinery drives (merge, rebase, cherry-pick,
   revert) it runs the checks and the gate. A hand-written `git commit` is
-  refused with the graft commands this project's config allows.
+  refused with the graft commands this project's config allows, except on a
+  branch of the user config's `commit.local_branches`, where it runs the
+  checks alone.
 - **prepare-commit-msg**: adds the `Worker` trailers to a message git
   commits itself (`git commit`, a merge, `git merge --squash`).
 - **post-merge**: after a real merge commit (one with a second parent) it runs
