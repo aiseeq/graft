@@ -50,3 +50,4 @@ at a load of 22 or more, the load reaching 52. Causes:
 - 2026-10-27 23:50 akit v1.2.0 memory rule adopted, `load.max_mem_some`
 - 2026-10-27 23:48 в работе — graft-master
 - 2026-10-27 23:58 `go run . all` green on akit v1.2.0 (23:49–23:58); committing --minor
+- 2026-10-28 00:12 committed 2204657, tagged v2.42.14 (patch: release got no --minor), installed; TestSwappingAloneStarts for akit-master; committing

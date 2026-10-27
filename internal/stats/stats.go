@@ -90,7 +90,7 @@ type Record struct {
 	WaitS float64 `json:"wait_s,omitempty"`
 	// WaitWhy splits WaitS by what was waited for, in seconds: the queue of
 	// heavy tasks, the tasks ready to run, the IO pressure, the swapping
-	// (queue, load, io, swap; lines before graft 2.43 also have settle, the
+	// (queue, load, io, swap; lines before graft 2.42.14 also have settle, the
 	// hold after a wait, and load is the load average there), a task lock
 	// (lock) and a deploy's sudo confirmation (sudo). Absent when nothing
 	// waited, and in lines written before graft 2.40.

@@ -109,26 +109,11 @@ func TestBusyDiskAndSwapHoldTasks(t *testing.T) {
 			func(_ *testing.T, setIO func(string), _ func(int64)) { setIO("35.00") }},
 		{"swap", "memory pressure 25.0% is above 10% while swapping",
 			func(t *testing.T, _ func(string), setSwap func(int64)) {
-				// Memory pressure, and a million pages more every few
-				// milliseconds: far above 1024 KB/s.
 				dir := os.Getenv(ProcEnv)
 				if err := os.WriteFile(filepath.Join(dir, "pressure", "memory"), []byte("some avg10=25.00 avg60=0.00 avg300=0.00 total=1\n"), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				done := make(chan struct{})
-				stopped := make(chan struct{})
-				go func() {
-					defer close(stopped)
-					for pages := int64(1e6); ; pages += 1e6 {
-						select {
-						case <-done:
-							return
-						case <-time.After(2 * time.Millisecond):
-							setSwap(pages)
-						}
-					}
-				}()
-				t.Cleanup(func() { close(done); <-stopped })
+				swapping(t, setSwap)
 			}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -149,6 +134,41 @@ func TestBusyDiskAndSwapHoldTasks(t *testing.T) {
 				t.Errorf("log lacks %q:\n%s", c.want, log.String())
 			}
 		})
+	}
+}
+
+// swapping adds a million pages to the swapped ones every few milliseconds,
+// far above 1024 KB/s, until the test ends.
+func swapping(t *testing.T, setSwap func(int64)) {
+	t.Helper()
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for pages := int64(1e6); ; pages += 1e6 {
+			select {
+			case <-done:
+				return
+			case <-time.After(2 * time.Millisecond):
+				setSwap(pages)
+			}
+		}
+	}()
+	t.Cleanup(func() { close(done); <-stopped })
+}
+
+// TestSwappingAloneStarts: swapping without memory pressure, pages going out
+// to make room for the cache, does not hold a task.
+func TestSwappingAloneStarts(t *testing.T) {
+	_, _, setSwap := fakeMachine(t)
+	swapping(t, setSwap)
+	var log strings.Builder
+	waits, release, err := Wait(context.Background(), "build", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log)
+	if err != nil || waits[WhySwap] != 0 || log.Len() != 0 {
+		t.Fatalf("waits %v, %v:\n%s", waits, err, log.String())
+	}
+	if err := release(); err != nil {
+		t.Fatal(err)
 	}
 }
 
