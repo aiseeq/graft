@@ -7,7 +7,7 @@
 - Проблема: peers' `graft exec --heavy` and `graft commit` failed with
   `graft: ticket for lock load.lock disappeared` (28.10 ~00:28 two at once,
   ~00:29); a newcomer once showed up ahead of an older waiter.
-- Метод: measured — codex's sandbox (llmark workers, `~/.cache/graft`
+- Метод: measured — codex's sandbox (agent workers, `~/.cache/graft`
   writable for the heavy queue) has its own PID namespace: inside, `pid=2`,
   `kill -0 <host pid>` fails. A graft there finds every host ticket's pid
   dead and removes them all (`readQueue`); its own ticket, pid 2, is alive to
@@ -31,6 +31,7 @@
 
 ## Журнал
 - 2026-10-28 00:32 открыт — graft-master
-- 2026-10-28 00:50 cause measured: `codex sandbox -- sh -c 'readlink /proc/self/ns/pid; echo $$'` → own ns, pid=2
+- 2026-10-28 00:35 cause measured: `codex sandbox -- sh -c 'readlink /proc/self/ns/pid; echo $$'` → own ns, pid=2
 - 2026-10-28 00:41 fix: tickets and holder notes are live files (internal/lock/live.go): the owner holds a shared flock, a reader removes only what it can take exclusively; `.lticket`/`.lholder`, so old grafts neither read nor remove them; a waiter whose own ticket is missing says so (not only on an empty queue). Unit: TestAcquireFIFODropsDeadTicket (held ticket of "pid 2" stays, unheld goes)
 - 2026-10-28 00:42 live probe (scratchpad nsprobe.sh: A holds, B waits, D queued, C in `codex sandbox` workspace-write): ~/bin/graft (old) — tickets 2→1, D exit 1 «ticket for lock load.lock disappeared»; new build — tickets 2→3, D and C ran
+- 2026-10-28 00:47 committed b870ada (`go run . all` green before); the ticket text named a private project, removed in the next commit
