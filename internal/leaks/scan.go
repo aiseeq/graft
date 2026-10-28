@@ -17,8 +17,8 @@ type Line struct {
 }
 
 // diffArgs make git print every added and removed line, the added with its
-// number in the new file, paths unquoted. Deleted files are in it: their
-// lines may move to another file.
+// number in the new file, paths unquoted. Files the change removes are in it
+// too: their lines may move to another file.
 var diffArgs = []string{"-U0", "--no-color", "--no-ext-diff", "--no-renames", "--diff-filter=AMTD", "--src-prefix=a/", "--dst-prefix=b/"}
 
 // StagedLines returns the lines the index adds to HEAD.
@@ -76,10 +76,10 @@ func ParseDiff(out string) ([]Line, error) {
 			}
 			var err error
 			if _, oldLeft, err = hunkRange(fields[1][1:]); err != nil {
-				return nil, fmt.Errorf("diff of %s: bad hunk header %q", path, raw)
+				return nil, fmt.Errorf("diff of %s: hunk header %q: %w", path, raw, err)
 			}
 			if no, left, err = hunkRange(fields[2][1:]); err != nil {
-				return nil, fmt.Errorf("diff of %s: bad hunk header %q", path, raw)
+				return nil, fmt.Errorf("diff of %s: hunk header %q: %w", path, raw, err)
 			}
 		}
 	}
@@ -99,12 +99,12 @@ func ParseDiff(out string) ([]Line, error) {
 func hunkRange(text string) (start, count int, err error) {
 	startText, countText, hasCount := strings.Cut(text, ",")
 	if start, err = strconv.Atoi(startText); err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("start of %q: %w", text, err)
 	}
 	count = 1
 	if hasCount {
 		if count, err = strconv.Atoi(countText); err != nil {
-			return 0, 0, err
+			return 0, 0, fmt.Errorf("count of %q: %w", text, err)
 		}
 	}
 	return start, count, nil
