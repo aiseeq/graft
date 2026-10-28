@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -1548,9 +1549,11 @@ func installAtomic(dest string, data []byte) (err error) {
 	// Windows does not replace a running program, but renames it: the old
 	// file moves aside under a name of its own and is removed when nothing
 	// runs it any more, by this install or a later one.
-	oldPattern := filepath.Join(dir, "."+filepath.Base(dest)+".old-*")
-	removeOld(oldPattern)
-	old := filepath.Join(dir, fmt.Sprintf(".%s.old-%d", filepath.Base(dest), time.Now().UnixNano()))
+	oldPrefix := "." + filepath.Base(dest) + ".old-"
+	if removeErr := removeOld(dir, oldPrefix); removeErr != nil {
+		return errors.Join(fmt.Errorf("replacing destination: %w", err), removeErr)
+	}
+	old := filepath.Join(dir, fmt.Sprintf("%s%d", oldPrefix, time.Now().UnixNano()))
 	if moveErr := os.Rename(dest, old); moveErr != nil {
 		return errors.Join(fmt.Errorf("replacing destination: %w", err), fmt.Errorf("moving current destination: %w", moveErr))
 	}
@@ -1558,17 +1561,32 @@ func installAtomic(dest string, data []byte) (err error) {
 		restoreErr := os.Rename(old, dest)
 		return errors.Join(fmt.Errorf("replacing destination: %w", err), fmt.Errorf("installing new file: %w", moveErr), restoreErr)
 	}
-	removeOld(oldPattern)
+	if removeErr := removeOld(dir, oldPrefix); removeErr != nil {
+		return fmt.Errorf("installed %s, but: %w", dest, removeErr)
+	}
 	return nil
 }
 
-// removeOld removes the replaced programs matching pattern that nothing
-// runs any more; one still running stays for a later install to remove.
-func removeOld(pattern string) {
-	old, _ := filepath.Glob(pattern) // the pattern is graft's own and well formed
-	for _, f := range old {
-		_ = os.Remove(f) // still running: left for a later install
+// removeOld removes the replaced programs in dir named with prefix that
+// nothing runs any more. Windows refuses to remove a running one with a
+// permission error: that one stays for a later install to remove, and any
+// other failure is returned.
+func removeOld(dir, prefix string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("listing replaced programs in %s: %w", dir, err)
 	}
+	var errs []error
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		err := os.Remove(filepath.Join(dir, e.Name()))
+		if err != nil && !errors.Is(err, fs.ErrPermission) && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("removing the replaced program: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // taskDir is the directory a task's steps run in.
