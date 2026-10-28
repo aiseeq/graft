@@ -1,6 +1,6 @@
 # heavy overflow to PC (D) and thread sharing (C)
 
-Статус: в работе
+Статус: готово
 Исполнитель: graft-master
 
 ## Вход
@@ -42,3 +42,4 @@
 - 2026-10-28 13:09 note — graft-master: Проверка v2.48.0: {root}/SIGTERM PASS; слабое место: kill через 30 с бил только run, дети (ssh) оставались. Исправлено: proc.StopOnCancel(cmd, grace, warn) — после grace kill потомков (/proc children, через pidfd-safe Signal(0)) и run; proc.Children перенесён из stats; юнит-тест TestStopOnCancelKillsTheTreeAfterGrace (красный без killTree).
 - 2026-10-28 14:43 note — graft-master: 14:45 v2.48.4 (GOROOT на хосте, cache.files остаётся на ноуте) установлена; живой гейт glint с when: always — зелёный, 27 с, test-short остался на ноуте по cache.files; graft exec go test ./internal/gitx → on pc, 8 с; remote_heavy (when: busy) возвращён в ~/.config/graft/config.yaml
 - 2026-10-28 15:01 note — graft-master: 15:1x независимая проверка (суб-агент): 338dff6, a2aada6 trimRun, cache.files — мутации краснеют, подтверждено. Дыры: (1) BusyNow считает очередь занятой и для процесса, который в неё не встал бы (GRAFT_ADMITTED, приоритет, вложенная heavy) → лишний перелив; (2) путь graft exec в trimRun без теста; (3) integration_test drop без GRAFT_HEAVY — тесты под graft exec --heavy / на хосте висят. Чиню в тикете remote-args вместе с {args}.
+- 2026-10-28 15:54 готово — verify-subagent: живые замеры: ноут занят → pc 7,5 с; PC занят → ждал 27 с; обрыв → ноут + remote-broken.jsonl, aguard наблюдатель efd5508 прислал письмо 14:58 (aguard-master); гейт glint и test на PC зелёные; суб-агенты: 338dff6/a2aada6 подтверждены мутациями, дыры (admitted/вложенная/приоритет, exec-путь trimRun, GRAFT_HEAVY в тестах, {args}) закрыты в c3b67a0/15af99c; v2.49.1 на ноуте и pc; remote_heavy when: busy включён в пользовательском конфиге
