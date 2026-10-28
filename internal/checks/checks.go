@@ -95,7 +95,7 @@ func LargeFiles(files []StagedFile, cfg config.LargeFiles) []Finding {
 		binary := f.IsBinary()
 		ext := strings.TrimPrefix(strings.ToLower(path.Ext(f.Path)), ".")
 		if binary && !slices.Contains(cfg.BinaryExtensions, ext) {
-			findings = append(findings, Finding{Path: f.Path, Reason: fmt.Sprintf("binary file (%s); build outputs belong in .gitignore", formatSize(f.Size))})
+			findings = append(findings, Finding{Path: f.Path, Reason: fmt.Sprintf("binary file (%s); build outputs belong in .gitignore", FormatSize(f.Size))})
 			continue
 		}
 		limit := cfg.MaxTextBytes
@@ -103,7 +103,7 @@ func LargeFiles(files []StagedFile, cfg config.LargeFiles) []Finding {
 			limit = cfg.MaxBinaryBytes
 		}
 		if f.Size > limit {
-			findings = append(findings, Finding{Path: f.Path, Reason: fmt.Sprintf("%s exceeds the limit of %s", formatSize(f.Size), formatSize(limit))})
+			findings = append(findings, Finding{Path: f.Path, Reason: fmt.Sprintf("%s exceeds the limit of %s", FormatSize(f.Size), FormatSize(limit))})
 		}
 	}
 	return findings
@@ -117,8 +117,11 @@ func isAbs(target string) bool {
 	return drive || strings.HasPrefix(target, "/") || strings.HasPrefix(target, `\`)
 }
 
-func formatSize(n int64) string {
+// FormatSize writes a byte count in the largest binary unit it reaches.
+func FormatSize(n int64) string {
 	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GiB", float64(n)/(1<<30))
 	case n >= 1<<20:
 		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
 	case n >= 1<<10:

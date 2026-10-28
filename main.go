@@ -27,6 +27,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/app"
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/envs"
+	"github.com/aiseeq/graft/v2/internal/gocache"
 	"github.com/aiseeq/graft/v2/internal/hooks"
 	"github.com/aiseeq/graft/v2/internal/message"
 	"github.com/aiseeq/graft/v2/internal/stats"
@@ -235,6 +236,8 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		return statsCmd(a, rest)
 	case "worktree":
 		return worktreeCmd(ctx, a, rest)
+	case "gocache":
+		return gocacheCmd(ctx, a, rest)
 	case "exec":
 		return execCmd(ctx, a, rest)
 	default:
@@ -403,6 +406,30 @@ func testDBCmd(ctx context.Context, a *app.App, args []string) error {
 		return fmt.Errorf("%w: %s", errUsage, app.TestDBUsage())
 	}
 	return err
+}
+
+// gocacheCmd is graft gocache trim [--older 25h] [--apply].
+func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
+	usage := fmt.Errorf("%w: graft gocache trim [--older 25h] [--apply]", errUsage)
+	if len(args) == 0 || args[0] != "trim" {
+		return usage
+	}
+	fs := newFlags(a, "gocache trim")
+	apply := fs.Bool("apply", false, "remove; without it only report")
+	older := fs.Duration("older", 25*time.Hour, "remove the entries unused for longer than this")
+	pos, err := parseInterspersed(fs, args[1:])
+	if err != nil {
+		return err
+	}
+	if len(pos) != 0 {
+		return usage
+	}
+	// go refreshes an entry's mtime only once an hour: an age below that
+	// would take entries in use.
+	if *older <= gocache.MarkInterval {
+		return fmt.Errorf("%w: --older %s: want more than %s, how seldom go marks an entry used", errUsage, *older, gocache.MarkInterval)
+	}
+	return a.GocacheTrim(ctx, *older, *apply)
 }
 
 func worktreeCmd(ctx context.Context, a *app.App, args []string) error {

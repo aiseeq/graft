@@ -265,6 +265,7 @@ stats` (`wait_s`).
 | `graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h]` | remove the worktrees and branches whose work is in the trunk by content; list the rest |
 | `graft worktree sync [--trunk <ref>]` | move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted (see Worktrees) |
 | `graft tools [install]` | check the pinned tools; install the failing ones |
+| `graft gocache trim [--older 25h] [--apply]` | remove the Go build cache entries unused for longer than `--older` (see [Go build cache](#go-build-cache)) |
 | `graft help` | the commands the project's `.graft.yaml` uses, its tasks (those with `desc`, with their arguments) and services |
 | `graft help <command>`, `graft <command> -h` | one command's part of `graft help`, with details such as the exit codes of `exec`; a command with flags lists them after it |
 | `graft --version` | print graft's own version |
@@ -1890,6 +1891,23 @@ conflict with the trunk are left with their markers and kept in the stash
 too (resolve, then `git stash drop`); a commit of the branch that conflicts
 stops the rebase (`git rebase --continue` or `--abort`); an untracked file
 the trunk adds stops it before anything changes.
+
+## Go build cache
+
+The go command keeps a build cache entry for five days after its last use and
+gives no way to shorten that; on a machine that builds many projects and
+worktrees the cache holds days of builds nobody will repeat. `graft gocache
+trim` removes the entries of `go env GOCACHE` unused for longer than
+`--older` (25h by default: a day, plus the hour go waits before it marks an
+entry used again), the way go's own trim does: files `<hash>-a` and
+`<hash>-d` in the subdirectories `00`…`ff`. The fuzz corpus and the cache's
+own files stay, and a directory without the README go writes there is
+refused. Without `--apply` it only reports what it would remove and what it
+keeps. A removed entry is a cache miss: go rebuilds the package the next time
+it is needed, so a project not built for a day builds cold once, and a
+project in use stays warm. Run it daily from a timer, for instance a
+systemd user unit with `ExecStart=graft gocache trim --apply` and
+`OnCalendar=daily`.
 
 ## Development
 
