@@ -1,6 +1,6 @@
 # install step keeps a destination symlink to the built file and calls it unchanged
 
-Статус: в работе
+Статус: на проверке
 Исполнитель: graft-master
 
 ## Вход
@@ -16,3 +16,4 @@
 - 2026-10-28 03:21 открыт — graft-master
 - 2026-10-28 03:21 в работе — graft-master
 - 2026-10-28 03:21 note — graft-master: fix: sameFile Lstat's the destination, a symlink is never unchanged; TestInstallStepReplacesSymlink red before ("unchanged"), green after; README
+- 2026-10-28 03:25 на проверке — graft-master — v2.45.2 installed; independent check: the reporter re-runs install on a symlinked destination
