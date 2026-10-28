@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/aiseeq/graft/v2/internal/version"
 )
 
 // The integration tests drive the built graft binary against throwaway
@@ -20,10 +23,12 @@ import (
 const testGraftVersion = "v1.2.3-4-gabcdef0"
 
 var (
-	binDir    string
-	graftBin  string
-	helperBin string
-	testEnv   []string
+	binDir       string
+	graftBin     string
+	helperBin    string
+	testEnv      []string
+	repoTemplate string
+	bareTemplate string
 )
 
 func TestMain(m *testing.M) {
@@ -90,6 +95,29 @@ func setup(m *testing.M) (int, error) {
 		}
 	}
 	testEnv = append(testEnv, "GRAFT_PROC="+machine)
+	repoTemplate = filepath.Join(dir, "repo-template")
+	bareTemplate = filepath.Join(dir, "bare-template.git")
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "feature/PROJ-42-thing", repoTemplate},
+		{"init", "-q", "--bare", bareTemplate},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Env = testEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return 0, fmt.Errorf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(repoTemplate, ".git", "hooks"),
+		filepath.Join(bareTemplate, "hooks"),
+	} {
+		if err := os.RemoveAll(path); err != nil {
+			return 0, fmt.Errorf("removing unused template hooks: %w", err)
+		}
+		if err := os.Mkdir(path, 0o755); err != nil {
+			return 0, fmt.Errorf("creating template hooks directory: %w", err)
+		}
+	}
 	// Short settling: the tests' heavy tasks and gates, one at a time, do
 	// not wait out a laptop's 30s for each other.
 	if err := writeTestFile(filepath.Join(dir, "userconfig", "graft", "config.yaml"), "load: {settle: 10ms, poll: 20ms, swap_window: 10ms}\n"); err != nil {
@@ -160,10 +188,14 @@ func newRepo(t *testing.T, files map[string]string, remotes ...string) *fixture 
 	t.Helper()
 	f := &fixture{t: t, base: t.TempDir()}
 	f.work = filepath.Join(f.base, "work")
-	f.run(f.base, "git", "init", "-q", "-b", "feature/PROJ-42-thing", "work")
+	if err := os.CopyFS(f.work, os.DirFS(repoTemplate)); err != nil {
+		t.Fatalf("copying the repository template: %v", err)
+	}
 	for _, r := range remotes {
-		f.run(f.base, "git", "init", "-q", "--bare", r+".git")
-		f.git("remote", "add", r, filepath.Join(f.base, r+".git"))
+		if err := os.CopyFS(filepath.Join(f.base, r+".git"), os.DirFS(bareTemplate)); err != nil {
+			t.Fatalf("copying the bare repository template: %v", err)
+		}
+		f.addRemote(r, filepath.Join(f.base, r+".git"))
 	}
 	for name, content := range files {
 		f.write(name, content)
@@ -172,6 +204,21 @@ func newRepo(t *testing.T, files map[string]string, remotes ...string) *fixture 
 }
 
 func yamlQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+
+func (f *fixture) addRemote(name, path string) {
+	f.t.Helper()
+	config := filepath.Join(f.work, ".git", "config")
+	file, err := os.OpenFile(config, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	_, writeErr := fmt.Fprintf(file, "\n[remote %s]\n\turl = %s\n\tfetch = +refs/heads/*:refs/remotes/%s/*\n",
+		strconv.Quote(name), strconv.Quote(filepath.ToSlash(path)), name)
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		f.t.Fatalf("writing remote %s: %v", name, errors.Join(writeErr, closeErr))
+	}
+}
 
 // skipGoToolchainInShort skips, under -short, a test whose seconds go to the
 // go command fetching, tidying or installing modules: the gate's test-gate
@@ -297,6 +344,40 @@ func (f *fixture) mustGraft(args ...string) string {
 		f.t.Fatalf("graft %s: exit %d\n%s", strings.Join(args, " "), code, out)
 	}
 	return out
+}
+
+// mustVersionedCommit commits the work tree of dir with plain git as graft
+// commit does in version mode file, without its checks: VERSION's build part
+// raised when build, its patch otherwise, then pushed to origin. A build
+// version off a build branch fails the test, as graft commit refuses it.
+func (f *fixture) mustVersionedCommit(dir, msg string, build bool) {
+	f.t.Helper()
+	path := filepath.Join(dir, "VERSION")
+	v, err := version.ParseFile(strings.TrimSpace(readFile(f.t, path)))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if !build && v.Build != 0 {
+		f.t.Fatalf("a build version %s off a build branch", v)
+	}
+	if build {
+		v = v.BumpBuild()
+	} else {
+		v = v.Bump(version.Patch)
+	}
+	writeFile(f.t, path, v.String()+"\n")
+	for _, args := range [][]string{{"add", "-A"}, {"-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", msg}, {"push", "-q", "-u", "origin", "HEAD"}} {
+		if out, code := f.exec(dir, "", "git", args...); code != 0 {
+			f.t.Fatalf("git %s: exit %d\n%s", args[0], code, out)
+		}
+	}
+}
+
+// mustPlainCommit makes setup history when the test does not check graft commit behavior.
+func (f *fixture) mustPlainCommit(message string) {
+	f.t.Helper()
+	f.git("add", "-A")
+	f.run(f.work, "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", message)
 }
 
 func (f *fixture) write(name, content string) {
@@ -470,7 +551,10 @@ func TestGateFailureLeavesVersionAlone(t *testing.T) {
 
 func TestNothingToCommit(t *testing.T) {
 	f := fileModeRepo(t, gateStep("ok"))
-	f.mustGraft("commit", "-m", "feat: x")
+	f.write("VERSION", "1.2.4\n")
+	f.write("web/package.json", "{\n  \"name\": \"web\",\n  \"version\": \"1.2.4\"\n}\n")
+	f.write("app.yaml", "name: app\nversion: \"1.2.4\"\n")
+	f.mustPlainCommit("feat: x")
 	out, code := f.graft("", "commit", "-m", "feat: again")
 	if code == 0 || !strings.Contains(out, "nothing to commit") {
 		t.Errorf("exit %d:\n%s", code, out)
@@ -556,19 +640,13 @@ func TestConcurrentCommitsTakeTurns(t *testing.T) {
 	state := t.TempDir()
 	logFile, release := filepath.Join(state, "gate.log"), filepath.Join(state, "release")
 	f := fileModeRepo(t, gateStep("await", logFile, release), "origin")
-	writeFile(t, release, "")
-	f.mustGraft("commit", "-m", "feat: base")
+	f.mustPlainCommit("feat: base")
 	// A second worktree shares the repository and therefore the lock, but has
 	// its own changes, so both commits have something to do.
 	other := filepath.Join(f.base, "other")
 	f.git("worktree", "add", "-q", "-b", "feature/PROJ-43-other", other)
 	f.write("a.txt", "a\n")
 	writeFile(t, filepath.Join(other, "b.txt"), "b\n")
-	for _, done := range []string{logFile, release} {
-		if err := os.Remove(done); err != nil {
-			t.Fatal(err)
-		}
-	}
 
 	// The first gate holds until one commit waits for the other's lock.
 	type run struct {
@@ -606,12 +684,24 @@ func TestConcurrentCommitsTakeTurns(t *testing.T) {
 }
 
 func hookRepo(t *testing.T, gate string) *fixture {
+	return newHookRepo(t, gate, false)
+}
+
+func hookRepoWithGraftedBase(t *testing.T, gate string) *fixture {
+	return newHookRepo(t, gate, true)
+}
+
+func newHookRepo(t *testing.T, gate string, graftBase bool) *fixture {
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion:\n  mode: none\ngate:\n" + gate,
 		"shared.txt":  "base\n",
 	})
 	f.mustGraft("init")
-	f.mustGraft("commit", "-m", "chore: base")
+	if graftBase {
+		f.mustGraft("commit", "-m", "chore: base")
+	} else {
+		f.mustPlainCommit("chore: base")
+	}
 	return f
 }
 
@@ -636,7 +726,7 @@ func TestHookRefusesPlainCommit(t *testing.T) {
 // the gate; a secret is still refused, and other branches still refuse it.
 func TestHookLetsLocalBranchCommit(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "gate-ran")
-	f := hookRepo(t, gateStep("touch", marker))
+	f := hookRepoWithGraftedBase(t, gateStep("touch", marker))
 	cfgDir := t.TempDir()
 	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "commit: {local_branches: ['nightly/*']}\n")
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
@@ -671,13 +761,13 @@ func TestHookLetsLocalBranchCommit(t *testing.T) {
 
 func TestHookGatesConflictResolution(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "gate-ran")
-	f := hookRepo(t, gateStep("touch", marker))
+	f := hookRepoWithGraftedBase(t, gateStep("touch", marker))
 	f.git("switch", "-q", "-c", "side")
 	f.write("shared.txt", "side\n")
-	f.mustGraft("commit", "-m", "feat: side")
+	f.mustPlainCommit("feat: side")
 	f.git("switch", "-q", "feature/PROJ-42-thing")
 	f.write("shared.txt", "main\n")
-	f.mustGraft("commit", "-m", "feat: main")
+	f.mustPlainCommit("feat: main")
 	if err := os.Remove(marker); err != nil {
 		t.Fatal(err)
 	}
@@ -715,17 +805,15 @@ func TestCommitFinishesAMerge(t *testing.T) {
 	}, "origin")
 	f.git("checkout", "-q", "-b", "main")
 	f.mustGraft("init")
-	f.mustGraft("commit", "-m", "chore: base")
+	f.mustPlainCommit("chore: base")
 	f.git("switch", "-q", "-c", "side")
 	f.write("shared.txt", "side\n")
 	f.write("side.txt", "s\n")
-	f.mustGraft("commit", "-m", "feat: side")
+	f.write("VERSION", "1.0.2\n")
+	f.mustPlainCommit("feat: side")
 	f.git("switch", "-q", "main")
 	f.write("shared.txt", "main\n")
-	f.mustGraft("commit", "-m", "feat: main")
-	if err := os.Remove(marker); err != nil {
-		t.Fatal(err)
-	}
+	f.mustPlainCommit("feat: main")
 
 	if _, code := f.tryGit("merge", "side"); code == 0 {
 		t.Fatal("expected a conflict")
@@ -755,7 +843,7 @@ func TestCommitFinishesAMerge(t *testing.T) {
 	// A merge git stopped before committing, with nothing to resolve.
 	f.git("switch", "-q", "side")
 	f.write("other.txt", "o\n")
-	f.mustGraft("commit", "-m", "feat: other")
+	f.mustPlainCommit("feat: other")
 	f.git("switch", "-q", "main")
 	f.git("merge", "--no-commit", "--no-ff", "side")
 	f.mustGraft("commit", "-m", "merge: side again")
@@ -769,10 +857,10 @@ func TestHookBlocksConflictResolutionWithFailingGate(t *testing.T) {
 	f := hookRepo(t, gateStep("failif", flag))
 	f.git("switch", "-q", "-c", "side")
 	f.write("shared.txt", "side\n")
-	f.mustGraft("commit", "-m", "feat: side")
+	f.mustPlainCommit("feat: side")
 	f.git("switch", "-q", "feature/PROJ-42-thing")
 	f.write("shared.txt", "main\n")
-	f.mustGraft("commit", "-m", "feat: main")
+	f.mustPlainCommit("feat: main")
 	if _, code := f.tryGit("merge", "side"); code == 0 {
 		t.Fatal("expected a conflict")
 	}
@@ -791,10 +879,10 @@ func TestPostMergeReportsSemanticConflict(t *testing.T) {
 	f := hookRepo(t, gateStep("failif", flag))
 	f.git("switch", "-q", "-c", "side")
 	f.write("side.txt", "side\n")
-	f.mustGraft("commit", "-m", "feat: side")
+	f.mustPlainCommit("feat: side")
 	f.git("switch", "-q", "feature/PROJ-42-thing")
 	f.write("main.txt", "main\n")
-	f.mustGraft("commit", "-m", "feat: main")
+	f.mustPlainCommit("feat: main")
 	if err := os.WriteFile(flag, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -825,7 +913,7 @@ func TestPostMergeIgnoresFastForward(t *testing.T) {
 	f := hookRepo(t, gateStep("failif", flag))
 	f.git("switch", "-q", "-c", "side")
 	f.write("side.txt", "side\n")
-	f.mustGraft("commit", "-m", "feat: side")
+	f.mustPlainCommit("feat: side")
 	f.git("switch", "-q", "feature/PROJ-42-thing")
 	if err := os.WriteFile(flag, nil, 0o644); err != nil {
 		t.Fatal(err)
@@ -838,7 +926,8 @@ func TestPostMergeIgnoresFastForward(t *testing.T) {
 
 func TestAmendRefusesPublishedCommit(t *testing.T) {
 	f := fileModeRepo(t, gateStep("ok"), "origin")
-	f.mustGraft("commit", "-m", "feat: x")
+	f.mustPlainCommit("feat: x")
+	f.git("push", "-u", "origin", "HEAD")
 	f.write("main.go", "package main // changed\n")
 	out, code := f.graft("", "amend")
 	if code == 0 || !strings.Contains(out, "already on origin") || !strings.Contains(out, "graft commit") {
@@ -848,7 +937,10 @@ func TestAmendRefusesPublishedCommit(t *testing.T) {
 
 func TestAmendFoldsIntoLocalCommit(t *testing.T) {
 	f := fileModeRepo(t, gateStep("ok"))
-	f.mustGraft("commit", "-m", "feat: x")
+	f.write("VERSION", "1.2.4\n")
+	f.write("web/package.json", "{\n  \"name\": \"web\",\n  \"version\": \"1.2.4\"\n}\n")
+	f.write("app.yaml", "name: app\nversion: \"1.2.4\"\n")
+	f.mustPlainCommit("feat: x\n\nPROJ-42")
 	f.write("extra.go", "package main\n")
 	f.mustGraft("amend")
 	if n := f.commitCount(); n != 1 {
@@ -887,10 +979,12 @@ func TestGitTagMode(t *testing.T) {
 	}
 
 	f.write("main.go", "package main // 2\n")
-	f.mustGraft("commit", "-m", "feat: y")
+	f.mustPlainCommit("feat: y")
+	f.git("push", "-q", "origin", "HEAD")
 	f.mustGraft("release", "--minor")
 	f.write("main.go", "package main // 3\n")
-	f.mustGraft("commit", "-m", "fix: z")
+	f.mustPlainCommit("fix: z")
+	f.git("push", "-q", "origin", "HEAD")
 	f.mustGraft("release")
 	if got := strings.Fields(f.gitIn(f.remote("origin"), "tag", "--list")); !slices.Equal(got, []string{"v0.1.0", "v0.2.0", "v0.2.1"}) {
 		t.Errorf("remote tags: %v", got)
@@ -914,7 +1008,8 @@ func TestReleaseNeedsPushedHead(t *testing.T) {
 		".graft.yaml": "schema: 1\nversion:\n  mode: git-tag\ngate: []\n",
 		"main.go":     "package main\n",
 	}, "origin")
-	f.mustGraft("commit", "-m", "feat: x")
+	f.mustPlainCommit("feat: x")
+	f.git("push", "-u", "origin", "HEAD")
 	f.write("main.go", "package main // local\n")
 	f.git("add", "-A")
 	f.run(f.work, "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "local only")

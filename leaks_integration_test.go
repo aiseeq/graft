@@ -36,7 +36,7 @@ func leakRepo(t *testing.T, publicPrefix, extra string) *fixture {
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, "APPDATA="+cfgDir,
 		"XDG_CACHE_HOME="+filepath.Join(root, "cache"), "LOCALAPPDATA="+filepath.Join(root, "cache"),
 		"GOROOT="+goroot, "GOMODCACHE="+filepath.Join(root, "mod"))
-	f.mustGraft("commit", "-m", "feat: base")
+	f.mustPlainCommit("feat: base")
 	return f
 }
 

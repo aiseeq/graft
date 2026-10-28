@@ -17,11 +17,12 @@ func TestCommitRefusesSilentRevert(t *testing.T) {
 		"gen/out.txt": "x\n",
 	}, "origin")
 	f.git("checkout", "-q", "-b", "main")
-	f.mustGraft("commit", "-m", "feat: base")
+	f.write("VERSION", "1.0.1\n")
+	f.mustPlainCommit("feat: base")
 	f.write("a.txt", "1\ntwo\n3\n")
 	f.write("b.txt", "b\n")
 	f.write("gen/out.txt", "y\n")
-	f.mustGraft("commit", "-m", "feat: merged work")
+	f.mustPlainCommit("feat: merged work")
 	x := f.git("rev-parse", "HEAD")
 
 	// The tree of before the merged work, committed on top of it.
@@ -63,7 +64,7 @@ func TestCommitRefusesSilentRevert(t *testing.T) {
 	f.write("g.go", "func A() {\n\tf(`\n`,\n"+tail)
 	f.mustGraft("commit", "-m", "feat: A")
 	f.write("g.go", "func A() {\n\tf(`\n`,\n"+tail+"\nfunc B() {\n\ty()\n}\n")
-	f.mustGraft("commit", "-m", "feat: B")
+	f.mustPlainCommit("feat: B")
 	f.write("g.go", "func A() {\n\tf(`\n`,\n"+tail+"\nfunc B() {\n\ty()\n}\n\nfunc C() {\n\tf(`\n`,\n"+tail)
 	f.mustGraft("commit", "-m", "feat: C")
 }
@@ -77,12 +78,12 @@ func TestAmendRevertsAgainstParent(t *testing.T) {
 		"a.txt":       "1\n2\n3\n",
 		"b.txt":       "b\n",
 	})
-	f.mustGraft("commit", "-m", "feat: base")
+	f.mustPlainCommit("feat: base")
 	f.write("b.txt", "b2\n")
-	f.mustGraft("commit", "-m", "feat: b")
+	f.mustPlainCommit("feat: b")
 	x := f.git("rev-parse", "HEAD")
 	f.write("a.txt", "1\ntwo\n3\n")
-	f.mustGraft("commit", "-m", "feat: summary")
+	f.mustPlainCommit("feat: summary")
 
 	// The amend puts a.txt back as the parent has it: part of its own
 	// commit undone.

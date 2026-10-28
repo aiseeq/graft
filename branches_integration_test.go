@@ -18,7 +18,10 @@ func workBranchRepo(t *testing.T) *fixture {
 		"version.go": "package main\n\nconst Version = \"1.0.0\"\n",
 	}, "origin")
 	f.git("checkout", "-q", "-b", "main")
-	f.mustGraft("commit", "-m", "feat: base")
+	f.write("VERSION", "1.0.1\n")
+	f.write("version.go", "package main\n\nconst Version = \"1.0.1\"\n")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-u", "origin", "HEAD")
 	return f
 }
 
@@ -85,15 +88,8 @@ func TestCommitLockScope(t *testing.T) {
 				".graft.yaml": "schema: 1\nversion:\n  mode: none\nlock:\n  timeout: 300ms\n  scope: " + scope + "\ngate:\n" +
 					gateStep("await", filepath.Join(state, "gate.log"), release),
 			}, "origin")
-			// The base commit's gate passes at once; only the first
-			// commit's gate holds, until release appears.
-			writeFile(t, release, "")
-			f.mustGraft("commit", "-m", "feat: base")
-			for _, done := range []string{"gate.log", "release"} {
-				if err := os.Remove(filepath.Join(state, done)); err != nil {
-					t.Fatal(err)
-				}
-			}
+			// The first commit's gate holds until release appears.
+			f.mustPlainCommit("feat: base")
 			second := filepath.Join(f.base, "second")
 			f.git("worktree", "add", "-q", "-b", "w/two", second)
 
@@ -199,7 +195,9 @@ func TestBuildBranchBumpsFourthPart(t *testing.T) {
 		"package.json": "{\"name\": \"app\", \"version\": \"1.0.0\"}\n",
 	}, "origin")
 	f.git("checkout", "-q", "-b", "main")
-	f.mustGraft("commit", "-m", "feat: base")
+	f.write("VERSION", "1.0.1\n")
+	f.write("package.json", "{\"name\": \"app\", \"version\": \"1.0.1\"}\n")
+	f.mustPlainCommit("feat: base")
 	f.git("checkout", "-q", "-b", "hotfix/PROJ-7")
 	f.write("a.txt", "a\n")
 	out := f.mustGraft("commit", "-m", "fix: PROJ-7 one")
@@ -249,7 +247,8 @@ gate: []
 		"VERSION": "1.0.0\n",
 	}, "origin")
 	f.git("checkout", "-q", "-b", "main")
-	f.mustGraft("commit", "-m", "feat: PROJ-1 base")
+	f.write("VERSION", "1.0.1\n")
+	f.mustPlainCommit("feat: PROJ-1 base")
 	f.write("a.txt", "a\n")
 	out, code := f.graft("", "commit", "-m", "fix: no item")
 	if code == 0 || !strings.Contains(out, "names no work item (ticket.required)") {

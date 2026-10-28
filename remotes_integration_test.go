@@ -31,7 +31,10 @@ deploy:
 		"deploy.sh": "echo deployed >> " + out + "\n",
 	}, "origin", "mirror")
 	f.git("checkout", "-q", "-b", "main")
-	f.mustGraft("commit", "-m", "feat: base")
+	f.write("VERSION", "1.0.1\n")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "origin", "main")
+	f.git("push", "-q", "mirror", "main")
 
 	// A pull request merged on the mirror: a merge commit and its commit.
 	clone := filepath.Join(f.base, "clone")

@@ -61,7 +61,16 @@ func (d *deployFixture) status(key string) string {
 
 func (d *deployFixture) commitFile(name, msg string) string {
 	d.write(name, msg+"\n")
-	d.mustGraft("commit", "-m", msg)
+	// The build branches of the deploy fixtures.
+	branch := d.git("branch", "--show-current")
+	d.mustVersionedCommit(d.work, msg, strings.HasPrefix(branch, "hotfix/") || strings.HasPrefix(branch, "release/"))
+	return d.git("rev-parse", "HEAD")
+}
+
+func (d *deployFixture) plainCommitFile(name, msg string) string {
+	d.write(name, msg+"\n")
+	d.mustPlainCommit(msg)
+	d.git("push", "-q", "origin", "HEAD")
 	return d.git("rev-parse", "HEAD")
 }
 
@@ -117,7 +126,7 @@ func TestReleaseCutoffHoldAndWithheld(t *testing.T) {
 	d.commitFile("checked.txt", "feat: PROJ-8 checked work")
 	unchecked := d.commitFile("unchecked.txt", "feat: PROJ-1 unchecked work")
 	d.write("docs/notes.md", "n\n")
-	d.mustGraft("commit", "-m", "docs: notes")
+	d.mustFixtureCommit("docs: notes")
 	d.mustGraft("deploy", "test")
 	candidate := d.git("rev-parse", "HEAD")
 
@@ -240,7 +249,7 @@ func TestReleaseHoldOverOncePushedOnTop(t *testing.T) {
 			d := releaseRepo(t)
 
 			d.at("2026-10-20 10:00")
-			d.commitFile("work.txt", "feat: PROJ-8 checked work")
+			d.plainCommitFile("work.txt", "feat: PROJ-8 checked work")
 			d.mustGraft("deploy", "test")
 			candidate := d.git("rev-parse", "HEAD")
 			if recorded {
@@ -252,7 +261,7 @@ func TestReleaseHoldOverOncePushedOnTop(t *testing.T) {
 			d.mustGraft("deploy", "--unapproved", "prod")
 			for i, at := range []string{"2026-10-22 15:46", "2026-10-22 16:08"} {
 				d.at(at)
-				d.commitFile(fmt.Sprintf("next%d.txt", i), fmt.Sprintf("feat: PROJ-1 next work %d", i))
+				d.plainCommitFile(fmt.Sprintf("next%d.txt", i), fmt.Sprintf("feat: PROJ-1 next work %d", i))
 				out, code := d.graft("", "deploy", "test")
 				if code != 0 || !strings.Contains(out, "prod already runs "+candidate[:12]+", the candidate of the 22.10.26 window: the hold is over") {
 					t.Fatalf("deploy %d to test after prod took the candidate: exit %d\n%s", i+1, code, out)
@@ -472,7 +481,7 @@ func TestReleasePageApprovedVersions(t *testing.T) {
 		t.Errorf("an unapproved release: exit %d\n%s", code, out)
 	}
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-1 approved thing")
+	d.mustFixtureCommit("feat: PROJ-1 approved thing")
 	out := d.mustGraft("deploy", "live")
 	body := d.jira.page("Product v1.2.10: notes")
 	if !strings.Contains(out, `release page "Product v1.2.10: notes" published: `+d.jiraURL()+"/wiki/spaces/S/pages/") ||
@@ -540,7 +549,7 @@ func TestReleaseAttribute(t *testing.T) {
 	keyless := d.commitFile("keyless.txt", "feat: forgot the key")
 	d.write(".graft.yaml", strings.Replace(d.read(".graft.yaml"), `ignore_paths: ["docs/**"]}`,
 		`ignore_paths: ["docs/**"], attribute: [{commit: `+keyless+`, item: PROJ-1, reason: key left out}]}`, 1))
-	d.mustGraft("commit", "-m", "chore: PROJ-8 attribute the keyless commit")
+	d.mustFixtureCommit("chore: PROJ-8 attribute the keyless commit")
 	d.mustGraft("deploy", "test")
 
 	d.at("2026-10-21 18:30")

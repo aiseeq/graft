@@ -28,7 +28,14 @@ func TestWorktreeClean(t *testing.T) {
 		"doc.txt":     "a\n",
 	}, "origin")
 	f.git("checkout", "-q", "-b", "main")
-	f.mustGraft("commit", "-m", "feat: base")
+	commitSetup := func(dir, file, content, msg string) {
+		t.Helper()
+		if file != "" {
+			writeFile(t, filepath.Join(dir, file), content)
+		}
+		f.mustVersionedCommit(dir, msg, false)
+	}
+	commitSetup(f.work, "", "", "feat: base")
 	f.git("remote", "set-head", "origin", "main")
 
 	wt := func(name string) string { return filepath.Join(f.base, "wt-"+name) }
@@ -36,10 +43,7 @@ func TestWorktreeClean(t *testing.T) {
 		f.git("worktree", "add", "-q", "-b", "w/"+name, wt(name), "main")
 		return wt(name)
 	}
-	commitIn := func(dir, file, content, msg string) {
-		writeFile(t, filepath.Join(dir, file), content)
-		f.exec(dir, "", graftBin, "commit", "-m", msg)
-	}
+	commitIn := commitSetup
 
 	// Merged by content under another hash and another version.
 	commitIn(add("merged"), "merged.txt", "m\n", "feat: merged work")
@@ -66,15 +70,11 @@ func TestWorktreeClean(t *testing.T) {
 	f.git("branch", "b/old", "main")
 	f.git("branch", "b/new", "main")
 	f.git("switch", "-q", "b/new")
-	f.write("new.txt", "n\n")
-	f.mustGraft("commit", "-m", "feat: new work")
+	commitSetup(f.work, "new.txt", "n\n", "feat: new work")
 	f.git("switch", "-q", "main")
-	f.write("merged.txt", "m\n")
-	f.mustGraft("commit", "-m", "feat: merged work, rewritten")
-	f.write("other.txt", "three\n")
-	f.mustGraft("commit", "-m", "feat: shared change")
-	f.write("doc.txt", "b\n")
-	f.mustGraft("commit", "-m", "docs: b")
+	commitSetup(f.work, "merged.txt", "m\n", "feat: merged work, rewritten")
+	commitSetup(f.work, "other.txt", "three\n", "feat: shared change")
+	commitSetup(f.work, "doc.txt", "b\n", "docs: b")
 
 	sleep := exec.Command("sleep", "60")
 	sleep.Dir = busy
@@ -85,8 +85,7 @@ func TestWorktreeClean(t *testing.T) {
 	writeFile(t, filepath.Join(held, "notes.txt"), "n\n")
 	f.git("-C", held, "add", "notes.txt")
 	f.git("-C", held, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "feat: notes")
-	f.write("notes.txt", "n\n")
-	f.mustGraft("commit", "-m", "feat: notes")
+	commitSetup(f.work, "notes.txt", "n\n", "feat: notes")
 	reader := exec.Command("sh", "-c", "exec 3<notes.txt; cd / && exec sleep 60 3<&3")
 	reader.Dir = held
 	if err := reader.Start(); err != nil {
@@ -182,16 +181,20 @@ func TestWorktreeCleanRemoteRace(t *testing.T) {
 				"VERSION":     "1.0.0\n",
 			}, "origin")
 			f.git("checkout", "-q", "-b", "main")
-			f.mustGraft("commit", "-m", "feat: base")
+			commitSetup := func(msg string) {
+				t.Helper()
+				f.mustVersionedCommit(f.work, msg, false)
+			}
+			commitSetup("feat: base")
 			f.git("remote", "set-head", "origin", "main")
 			f.git("switch", "-q", "-c", "b/raced")
 			f.write("raced.txt", "r\n")
-			f.mustGraft("commit", "-m", "feat: raced work")
+			commitSetup("feat: raced work")
 			later := f.git("commit-tree", "-p", "HEAD", "-m", "feat: more raced work", "HEAD^{tree}")
 			f.git("push", "-q", "--no-verify", "origin", later+":refs/heads/later")
 			f.git("switch", "-q", "main")
 			f.write("raced.txt", "r\n")
-			f.mustGraft("commit", "-m", "feat: raced work")
+			commitSetup("feat: raced work")
 
 			// The other agent acts as the push of clean reaches the remote,
 			// after its fetch.
@@ -234,7 +237,9 @@ func TestWorktreeAdd(t *testing.T) {
 	}, "origin")
 	writeFile(t, filepath.Join(f.base, "kit", "go.mod"), "module example.com/kit\n\ngo 1.22\n")
 	f.git("checkout", "-q", "-b", "main")
-	f.mustGraft("commit", "-m", "feat: base")
+	f.write("VERSION", "1.0.1\n")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
 	f.git("remote", "set-head", "origin", "main")
 	cache := t.TempDir()
 	f.env = append(f.env, "XDG_CACHE_HOME="+cache)
@@ -270,7 +275,7 @@ func TestWorktreeAddExplicitTrunk(t *testing.T) {
 		".graft.yaml": "schema: 1\nversion: {mode: none}\n",
 	})
 	f.git("checkout", "-q", "-b", "main")
-	f.mustGraft("commit", "-m", "feat: base")
+	f.mustPlainCommit("feat: base")
 	// No remote, main and master both there, the main worktree on neither.
 	f.git("branch", "master")
 	f.git("switch", "-q", "-c", "feature/y")
@@ -301,7 +306,8 @@ func TestWorktreeSync(t *testing.T) {
 		"shared.txt":  "one\ntwo\nthree\n",
 	}, "origin")
 	f.git("checkout", "-q", "-b", "main")
-	f.mustGraft("commit", "-m", "feat: base")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
 	f.git("remote", "set-head", "origin", "main")
 	wt := filepath.Join(f.base, "wt-sync")
 	f.git("worktree", "add", "-q", "-b", "w/sync", wt, "main")
@@ -312,7 +318,8 @@ func TestWorktreeSync(t *testing.T) {
 	writeFile(t, filepath.Join(wt, "shared.txt"), "one\ntwo\nTHREE\n")
 	writeFile(t, filepath.Join(wt, "notes.txt"), "notes\n")
 	f.write("shared.txt", "ONE\ntwo\nthree\n")
-	f.mustGraft("commit", "-m", "feat: trunk moves")
+	f.mustPlainCommit("feat: trunk moves")
+	f.git("push", "-q", "origin", "HEAD")
 	trunk := f.gitIn(f.work, "rev-parse", "HEAD")
 
 	out, code := f.exec(wt, "", graftBin, "worktree", "sync")
@@ -339,7 +346,8 @@ func TestWorktreeSync(t *testing.T) {
 	}
 
 	f.write("shared.txt", "ONE\ntwo\nthree, trunk\n")
-	f.mustGraft("commit", "-m", "feat: trunk conflicts")
+	f.mustPlainCommit("feat: trunk conflicts")
+	f.git("push", "-q", "origin", "HEAD")
 	out, code = f.exec(wt, "", graftBin, "worktree", "sync")
 	if code == 0 || !strings.Contains(out, "the uncommitted changes conflict with it in shared.txt") {
 		t.Errorf("a conflict: exit %d\n%s", code, out)
@@ -360,7 +368,8 @@ func TestWorktreeAddCopiesAndSetsUp(t *testing.T) {
 		".gitignore": ".env\nconf/\ngenerated.txt\n",
 	}, "origin")
 	f.git("checkout", "-q", "-b", "main")
-	f.mustGraft("commit", "-m", "feat: base")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
 	f.git("remote", "set-head", "origin", "main")
 	writeFile(t, filepath.Join(f.work, ".env"), "SECRET=local\n")
 	if err := os.Chmod(filepath.Join(f.work, ".env"), 0o600); err != nil {
@@ -398,7 +407,7 @@ func TestWorktreeAddCopiesAndSetsUp(t *testing.T) {
 		t.Errorf("a missing file: exit %d\n%s", code, out)
 	}
 	writeFile(t, filepath.Join(f.work, ".graft.yaml"), "schema: 1\nversion: {mode: none}\nworktree:\n  copy: [.gitignore]\n")
-	f.mustGraft("commit", "-m", "chore: copy a tracked file")
+	f.mustPlainCommit("chore: copy a tracked file")
 	if out, code := f.graft("", "worktree", "add", "w/tracked", "main"); code == 0 || !strings.Contains(out, "worktree.copy .gitignore: the checkout has it") {
 		t.Errorf("a tracked file: exit %d\n%s", code, out)
 	}
@@ -427,7 +436,8 @@ func TestWorktreeCleanNoRemote(t *testing.T) {
 				"VERSION":     "1.0.0\n",
 			})
 			f.git("checkout", "-q", "-b", tc.base)
-			f.mustGraft("commit", "-m", "feat: base")
+			f.write("VERSION", "1.0.1\n")
+			f.mustPlainCommit("feat: base")
 			if tc.other != "" {
 				f.git("branch", tc.other)
 			}

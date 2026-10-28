@@ -441,6 +441,11 @@ func deployRepo(t *testing.T) *deployFixture {
 	return newDeployFixture(t, deployConfig)
 }
 
+func (d *deployFixture) mustFixtureCommit(msg string) {
+	d.t.Helper()
+	d.mustVersionedCommit(d.work, msg, false)
+}
+
 // newDeployFixture builds a repository whose .graft.yaml is config(state, q),
 // q quoting a path in the state directory, beside a fake Jira and a stand-in
 // deploy script.
@@ -479,7 +484,11 @@ exit "${DEPLOY_EXIT:-0}"
 `,
 	}, "origin")
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
-	f.mustGraft("commit", "-m", "feat: base")
+	// The fixture needs the version bump and published base for deploy tests.
+	f.write("VERSION", "1.0.1\n")
+	f.git("add", "-A")
+	f.run(f.work, "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "feat: base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
 	return &deployFixture{fixture: f, state: state, jira: jira, jiraURL: func() string { return srv.URL }}
 }
 
@@ -607,9 +616,9 @@ func TestDeployRunsScriptAndPostsReleaseNotes(t *testing.T) {
 	}
 
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-1 first thing, hashes with SHA-256")
+	d.mustFixtureCommit("feat: PROJ-1 first thing, hashes with SHA-256")
 	d.write("b.txt", "b\n")
-	d.mustGraft("commit", "-m", "fix: second\n\nRefs PROJ-2 and OTHER-5, see also PROJ-3, PROJ-4, PROJ-5, PROJ-6 and PROJ-7")
+	d.mustFixtureCommit("fix: second\n\nRefs PROJ-2 and OTHER-5, see also PROJ-3, PROJ-4, PROJ-5, PROJ-6 and PROJ-7")
 	out = d.mustGraft("deploy", "test")
 	if !strings.Contains(d.stateFile("test-run"), "prev="+head) {
 		t.Errorf("previous sha not passed:\n%s", d.stateFile("test-run"))
@@ -648,7 +657,7 @@ func TestDeployJiraFailureDoesNotFailTheDeploy(t *testing.T) {
 	d := deployRepo(t)
 	d.mustGraft("deploy", "test")
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-1 x")
+	d.mustFixtureCommit("feat: PROJ-1 x")
 	d.jira.setFailing()
 	out, code := d.graft("", "deploy", "test")
 	if code != 0 || !strings.Contains(out, "release notes skipped") || !strings.Contains(out, "http 500") {
@@ -663,21 +672,21 @@ func TestDeployReleaseNotesSkipReverts(t *testing.T) {
 	d := deployRepo(t)
 	d.mustGraft("deploy", "test")
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-1 first thing")
+	d.mustFixtureCommit("feat: PROJ-1 first thing")
 	d.mustGraft("deploy", "test")
 	revert := func(subject string) {
 		t.Helper()
 		sha := d.git("rev-parse", "HEAD")
 		d.git("revert", "--no-commit", "HEAD")
 		d.git("revert", "--quit")
-		d.mustGraft("commit", "-m", "Revert \""+subject+"\"\n\nThis reverts commit "+sha+".")
+		d.mustFixtureCommit("Revert \"" + subject + "\"\n\nThis reverts commit " + sha + ".")
 	}
 	revert("feat: PROJ-1 first thing")
 	d.write("b.txt", "b\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-5 then taken out")
+	d.mustFixtureCommit("feat: PROJ-5 then taken out")
 	revert("feat: PROJ-5 then taken out")
 	d.write("c.txt", "c\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-6 stays")
+	d.mustFixtureCommit("feat: PROJ-6 stays")
 	out := d.mustGraft("deploy", "test")
 	comments, _ := d.jira.snapshot()
 	if len(comments["PROJ-1"]) != 1 || len(comments["PROJ-5"]) != 0 || len(comments["PROJ-6"]) != 1 {
@@ -708,7 +717,7 @@ func productVersions() []map[string]any {
 func (d *deployFixture) deliverAllKeys(target string) {
 	d.mustGraft("deploy", target)
 	d.write("b.txt", "b\n")
-	d.mustGraft("commit", "-m", "fix: second\n\nRefs PROJ-1, PROJ-2, PROJ-3, PROJ-4, PROJ-5, PROJ-6 and PROJ-7")
+	d.mustFixtureCommit("fix: second\n\nRefs PROJ-1, PROJ-2, PROJ-3, PROJ-4, PROJ-5, PROJ-6 and PROJ-7")
 }
 
 func (j *fakeJira) setVersions(versions []map[string]any, fixVersions map[string][]string, failEdit ...string) {
@@ -750,7 +759,7 @@ func TestDeployAddsFixVersion(t *testing.T) {
 
 	// The next deploy finds the version on PROJ-1 and asks for no edit.
 	d.write("c.txt", "c\n")
-	d.mustGraft("commit", "-m", "fix: PROJ-1 third")
+	d.mustFixtureCommit("fix: PROJ-1 third")
 	out = d.mustGraft("deploy", "uat")
 	if edits, _ := d.jira.editsSnapshot(); len(edits) != 2 {
 		t.Errorf("edits after the second deploy = %v\n%s", edits, out)
@@ -851,7 +860,7 @@ func TestDeployFixVersionPassesOverApproved(t *testing.T) {
 	// Every dated version approved, the undated one too: nothing to pick.
 	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED"}, "10030": {"APPROVED"}, "10200": {"APPROVED"}})
 	d.write("c.txt", "c\n")
-	d.mustGraft("commit", "-m", "fix: PROJ-1 third")
+	d.mustFixtureCommit("fix: PROJ-1 third")
 	out, code := d.graft("", "deploy", "uat")
 	if code == 0 || !strings.Contains(out, `every unreleased version of PROJ starting with "Product v" is being approved`) {
 		t.Errorf("exit %d:\n%s", code, out)
@@ -870,7 +879,7 @@ func TestDeployApprovedReleaseSubtaskByParentVersion(t *testing.T) {
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "--unapproved", "live")
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-31 part of the whole")
+	d.mustFixtureCommit("feat: PROJ-31 part of the whole")
 	if out, code := d.graft("", "deploy", "live"); code == 0 || !strings.Contains(out, `PROJ-31 not in an approved "Product v" version, nor is its parent PROJ-30`) {
 		t.Fatalf("the parent's version is not approved yet: exit %d\n%s", code, out)
 	}
@@ -898,21 +907,21 @@ func TestDeployApprovedRelease(t *testing.T) {
 	deployed := d.git("rev-parse", "HEAD")
 
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-1 approved thing")
+	d.mustFixtureCommit("feat: PROJ-1 approved thing")
 	d.write("b.txt", "b\n")
-	d.mustGraft("commit", "-m", "fix: PROJ-5 half approved")
+	d.mustFixtureCommit("fix: PROJ-5 half approved")
 	d.write("c.txt", "c\n")
-	d.mustGraft("commit", "-m", "fix: PROJ-6 in another product")
+	d.mustFixtureCommit("fix: PROJ-6 in another product")
 	d.write("d.txt", "d\n")
-	d.mustGraft("commit", "-m", "chore: tidy up")
+	d.mustFixtureCommit("chore: tidy up")
 	d.write("e.txt", "e\n")
-	d.mustGraft("commit", "-m", "revert: PROJ-5 half approved")
+	d.mustFixtureCommit("revert: PROJ-5 half approved")
 	d.write("docs/guide with space.md", "g\n")
 	d.write("NOTES.md", "n\n")
-	d.mustGraft("commit", "-m", "docs: the guide")
+	d.mustFixtureCommit("docs: the guide")
 	d.write("docs/more.md", "m\n")
 	d.write("code.txt", "c\n")
-	d.mustGraft("commit", "-m", "docs: PROJ-5 the guide and some code")
+	d.mustFixtureCommit("docs: PROJ-5 the guide and some code")
 	out, code = d.graft("", "deploy", "live")
 	if code == 0 {
 		t.Fatalf("exit 0:\n%s", out)
@@ -942,7 +951,7 @@ func TestDeployApprovedRelease(t *testing.T) {
 	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "APPROVED"}, "10030": {"APPROVED", "APPROVED"}})
 	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-1": {"10010"}, "PROJ-5": {"10030"}, "PROJ-6": {"10001", "10010"}})
 	d.write("f.txt", "f\n")
-	d.mustGraft("commit", "-m", "chore: PROJ-1 tidy up again")
+	d.mustFixtureCommit("chore: PROJ-1 tidy up again")
 	out, code = d.graft("", "deploy", "live")
 	if code == 0 || !strings.Contains(out, "chore: tidy up: names no item") || strings.Contains(out, "PROJ-5 not in") || strings.Contains(out, "PROJ-6 not in") {
 		t.Errorf("only the keyless commit stays outside: exit %d\n%s", code, out)
@@ -972,7 +981,7 @@ func TestDeployApprovedReleaseByStatus(t *testing.T) {
 		"Reapply \"feat: PROJ-5 still in testing\"",
 	} {
 		d.write("f"+strconv.Itoa(i)+".txt", msg+"\n")
-		d.mustGraft("commit", "-m", msg)
+		d.mustFixtureCommit(msg)
 	}
 	out, code := d.graft("", "deploy", "gate")
 	if code == 0 {
@@ -1006,7 +1015,7 @@ func TestDeployApprovedReleaseGoesOut(t *testing.T) {
 	d.mustGraft("deploy", "--unapproved", "live")
 	prev := d.git("rev-parse", "HEAD")[:12]
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-1 approved thing")
+	d.mustFixtureCommit("feat: PROJ-1 approved thing")
 	out := d.mustGraft("deploy", "live")
 	if !strings.Contains(out, "approved release: 1 commits since "+prev+", all in Product v1.2.10") {
 		t.Errorf("no summary:\n%s", out)
@@ -1032,7 +1041,7 @@ func TestDeployApprovedReleaseAttribute(t *testing.T) {
 	d.mustGraft("deploy", "--unapproved", "gate")
 	d.mustGraft("deploy", "--unapproved", "live")
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: forgot the key")
+	d.mustFixtureCommit("feat: forgot the key")
 	keyless := d.git("rev-parse", "HEAD")
 	if out, code := d.graft("", "deploy", "gate"); code == 0 || !strings.Contains(out, "feat: forgot the key: names no item") {
 		t.Fatalf("the keyless commit: exit %d\n%s", code, out)
@@ -1047,7 +1056,7 @@ func TestDeployApprovedReleaseAttribute(t *testing.T) {
 	}
 	attribute("PROJ-9", "PROJ-6")
 	d.write("docs/attribute.md", "x\n")
-	d.mustGraft("commit", "-m", "docs: PROJ-2 attribute the keyless commit")
+	d.mustFixtureCommit("docs: PROJ-2 attribute the keyless commit")
 	out, code := d.graft("", "deploy", "gate")
 	if code == 0 || !strings.Contains(out, "feat: forgot the key: attributed to PROJ-9: key left out") ||
 		!strings.Contains(out, "feat: forgot the key: PROJ-9 is In Progress, not Ready for release or Done") {
@@ -1079,7 +1088,7 @@ func TestDeployApprovedReleaseAttribute(t *testing.T) {
 	// The repository contradicts an attribution: the commit is unknown, or
 	// it names an item already.
 	d.write("b.txt", "b\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-8 named")
+	d.mustFixtureCommit("feat: PROJ-8 named")
 	named := d.git("rev-parse", "HEAD")
 	unknown := strings.Repeat("ab", 20)
 	cfg := strings.Replace(d.read(".graft.yaml"), keyless+", item: PROJ-9", named+", item: PROJ-9", 1)
@@ -1113,7 +1122,7 @@ func TestDeploySubtasksFollowParents(t *testing.T) {
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "sub")
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-20 parent work\n\nAlso PROJ-30, PROJ-31 and PROJ-40")
+	d.mustFixtureCommit("feat: PROJ-20 parent work\n\nAlso PROJ-30, PROJ-31 and PROJ-40")
 	out := d.mustGraft("deploy", "sub")
 	_, moved := d.jira.snapshot()
 	slices.Sort(moved)
@@ -1166,7 +1175,7 @@ func TestDeployAssignFailureFailsTheDeploy(t *testing.T) {
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "sub")
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-1 work")
+	d.mustFixtureCommit("feat: PROJ-1 work")
 	out, code := d.graft("", "deploy", "sub")
 	if code == 0 || !strings.Contains(out, "PROJ-1: assignee NOT SET: ") || !strings.Contains(out, "the assignee is not set on PROJ-1") {
 		t.Errorf("exit %d\n%s", code, out)
@@ -1365,7 +1374,8 @@ deploy:
 		".gitignore": ".env\n",
 		"deploy.sh":  `echo "host=$SHIP_HOST port=${SHIP_PORT-unset} token=$SHIP_TOKEN other=${OTHER-unset}" > ` + filepath.Join(state, "out") + "\n",
 	}, "origin")
-	f.mustGraft("commit", "-m", "feat: base")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-u", "origin", "HEAD")
 
 	f.write(".env", "SHIP_HOST=h\nOTHER=o\n")
 	out, code := f.graft("", "deploy", "box")
@@ -1444,7 +1454,8 @@ deploy:
 `,
 		"deploy.sh": `echo "deploy $GRAFT_DEPLOY_TARGET" >> ` + out + "\n",
 	}, "origin")
-	f.mustGraft("commit", "-m", "feat: base")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-u", "origin", "HEAD")
 	// A DSN already in the environment (a CI service container) spares the
 	// docker container; the dep must still receive it.
 	dsn := "postgres://app:app@127.0.0.1:5432/app_test"
@@ -1527,7 +1538,9 @@ deploy:
 		"VERSION":   "1.0.0\n",
 		"deploy.sh": `echo "deploy $GRAFT_DEPLOY_TARGET" >> ` + out + "\n",
 	}, "origin")
-	f.mustGraft("commit", "-m", "feat: base")
+	f.write("VERSION", "1.0.1\n")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-u", "origin", "HEAD")
 	writeFile(t, filepath.Join(state, "staging-version"), "0.9.0\n")
 
 	got, code := f.graft("", "deploy", "production")
@@ -1576,7 +1589,8 @@ deploy:
 `,
 		"deploy.sh": `echo "deploy $GRAFT_DEPLOY_TARGET" >> ` + out + "\n",
 	}, "origin")
-	f.mustGraft("commit", "-m", "feat: base")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-u", "origin", "HEAD")
 	f.env = append(f.env, "PATH="+sudoDir+string(os.PathListSeparator)+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	reset := func() {
 		t.Helper()
@@ -1612,7 +1626,8 @@ deploy:
 
 	reset()
 	f.write("a.txt", "a\n")
-	f.mustGraft("commit", "-m", "fix: next")
+	f.mustPlainCommit("fix: next")
+	f.git("push", "-q", "origin", "HEAD")
 	f.mustGraft("deploy", "box")
 	if got := readFile(t, out); got != "lint\ndeploy box\n" {
 		t.Errorf("a new commit ran:\n%s", got)
@@ -1637,15 +1652,15 @@ func TestDeployCheck(t *testing.T) {
 	d.mustGraft("deploy", "--unapproved", "live")
 	deployed := d.git("rev-parse", "HEAD")
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-1 approved thing")
+	d.mustFixtureCommit("feat: PROJ-1 approved thing")
 	if out := d.mustGraft("deploy", "check", "live"); !strings.Contains(out, "approved release: 1 commits since") ||
 		!strings.Contains(out, "graft deploy live passes its checks now") {
 		t.Errorf("an approved release passes:\n%s", out)
 	}
 	d.write("b.txt", "b\n")
-	d.mustGraft("commit", "-m", "fix: PROJ-5 half approved")
+	d.mustFixtureCommit("fix: PROJ-5 half approved")
 	d.write("c.txt", "c\n")
-	d.mustGraft("commit", "-m", "chore: tidy up")
+	d.mustFixtureCommit("chore: tidy up")
 	d.write("dirty.txt", "uncommitted\n")
 	before := readFile(t, filepath.Join(d.state, "live-run"))
 
@@ -1714,9 +1729,9 @@ func TestDeployShowsWhatTheTargetRuns(t *testing.T) {
 	deployed := d.git("log", "-1", "--format=%h %s (%cs)")
 	deployedVersion := strings.TrimSpace(d.git("show", "HEAD:VERSION"))
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: next")
+	d.mustFixtureCommit("feat: next")
 	d.write("b.txt", "b\n")
-	d.mustGraft("commit", "-m", "feat: after next")
+	d.mustFixtureCommit("feat: after next")
 	// The commits name no item: the check refuses after the lines.
 	out, _ = d.graft("", "deploy", "check", "live")
 	for _, want := range []string{
@@ -1736,7 +1751,7 @@ func TestDeployShowsWhatTheTargetRuns(t *testing.T) {
 	runs := d.git("log", "-1", "--format=%h %s (%cs)")
 	d.git("switch", "-q", "-c", "side", "HEAD~1")
 	d.write("c.txt", "c\n")
-	d.mustGraft("commit", "-m", "feat: side work")
+	d.mustFixtureCommit("feat: side work")
 	out = d.mustGraft("deploy", "check", "test")
 	for _, want := range []string{
 		"test runs version " + strings.TrimSpace(d.stateFile("test-version")) + "; commit " + runs + ", at origin/" + trunk + "\n",
@@ -1778,8 +1793,9 @@ func TestDeploySweep(t *testing.T) {
 	for i, msg := range []string{"feat: PROJ-10 a", "feat: PROJ-11 b", "fix: PROJ-14 c\n\nafter PROJ-15", "feat: PROJ-13 d", "feat: PROJ-6 e",
 		"feat: PROJ-21 f", "chore: g\n\nPROJ-22", "feat: PROJ-61 k"} {
 		d.write(fmt.Sprintf("f%d.txt", i), "x\n")
-		d.mustGraft("commit", "-m", msg)
+		d.mustPlainCommit(msg)
 	}
+	d.git("push", "-q", "origin", trunk)
 	out := d.mustGraft("deploy", "swept")
 	for _, want := range []string{
 		"release notes skipped: no previously deployed commit recorded",
@@ -1806,13 +1822,15 @@ func TestDeploySweep(t *testing.T) {
 	// PROJ-11 gets a commit the target does not run.
 	d.git("switch", "-q", "-c", "feature/x")
 	d.write("g1.txt", "x\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-11 more")
+	d.mustPlainCommit("feat: PROJ-11 more")
 	d.write("g2.txt", "x\n")
-	d.mustGraft("commit", "-m", "fix: PROJ-12 x")
+	d.mustPlainCommit("fix: PROJ-12 x")
+	d.git("push", "-q", "-u", "origin", "HEAD")
 	branchSHA := d.git("rev-parse", "HEAD")
 	d.git("switch", "-q", trunk)
 	d.write("h.txt", "x\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-16 later")
+	d.mustPlainCommit("feat: PROJ-16 later")
+	d.git("push", "-q", "origin", trunk)
 	later := d.git("rev-parse", "HEAD")
 	out = d.mustGraft("deploy", "sweep", "swept", "--apply")
 	for _, want := range []string{
@@ -1865,7 +1883,7 @@ func TestDeploySweepApprovedRelease(t *testing.T) {
 	d.jira.statuses["PROJ-50"] = "Ready for release"
 	d.jira.mu.Unlock()
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-50 thing")
+	d.mustFixtureCommit("feat: PROJ-50 thing")
 	out := d.mustGraft("deploy", "--unapproved", "live")
 	if !strings.Contains(out, `PROJ-50 stays Ready for release though its work of the last 30 days is on live (commits: 1): PROJ-50 not in an approved "Product v" version`) {
 		t.Errorf("moved before its version is approved:\n%s", out)
@@ -1888,7 +1906,7 @@ func TestDeployKeepAssigneeLabelOfParent(t *testing.T) {
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "sub")
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "chore: PROJ-71 tooling\n\nand PROJ-73 a screen")
+	d.mustFixtureCommit("chore: PROJ-71 tooling\n\nand PROJ-73 a screen")
 	out := d.mustGraft("deploy", "sub")
 	_, moved := d.jira.snapshot()
 	d.jira.mu.Lock()
@@ -1916,7 +1934,7 @@ func TestDeploySkipKeysSubtaskOwnCommit(t *testing.T) {
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "swept")
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-41 part of the standing item")
+	d.mustFixtureCommit("feat: PROJ-41 part of the standing item")
 	out := d.mustGraft("deploy", "swept")
 	d.jira.mu.Lock()
 	statuses := map[string]string{"PROJ-40": d.jira.statuses["PROJ-40"], "PROJ-41": d.jira.statuses["PROJ-41"]}
@@ -1926,7 +1944,7 @@ func TestDeploySkipKeysSubtaskOwnCommit(t *testing.T) {
 		t.Errorf("statuses = %v, want %v; notes on PROJ-41: %d\n%s", statuses, want, notes, out)
 	}
 	d.write("b.txt", "b\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-43 another part")
+	d.mustFixtureCommit("feat: PROJ-43 another part")
 	out = d.mustGraft("deploy", "sweep", "swept")
 	if !regexp.MustCompile(`PROJ-43 is Done, but [0-9a-f]+ is not on swept yet`).MatchString(out) {
 		t.Errorf("PROJ-43 not listed:\n%s", out)
@@ -1960,35 +1978,35 @@ func TestDeploySweepByContent(t *testing.T) {
 	d.mustGraft("deploy", "--unapproved", "live")
 	base := d.git("rev-parse", "HEAD")
 	d.write("docs/handover.md", "notes\n")
-	d.mustGraft("commit", "-m", "docs: PROJ-80 handover")
+	d.mustFixtureCommit("docs: PROJ-80 handover")
 	d.write("docs/tools.md", "tools\n")
-	d.mustGraft("commit", "-m", "docs: PROJ-85 tools")
+	d.mustFixtureCommit("docs: PROJ-85 tools")
 	d.write("b.txt", "b\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-81 b")
+	d.mustFixtureCommit("feat: PROJ-81 b")
 	d.write("c.txt", "c\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-82 c")
+	d.mustFixtureCommit("feat: PROJ-82 c")
 	d.write("e.txt", "e\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-83 e")
+	d.mustFixtureCommit("feat: PROJ-83 e")
 	d.write("h.txt", "h\n")
 	d.write("docs/h.md", "h\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-86 h with its docs")
+	d.mustFixtureCommit("feat: PROJ-86 h with its docs")
 	d.write("docs/k.md", "k\n")
-	d.mustGraft("commit", "-m", "docs: PROJ-87 k")
+	d.mustFixtureCommit("docs: PROJ-87 k")
 	d.write("k.txt", "k\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-87 k")
+	d.mustFixtureCommit("feat: PROJ-87 k")
 	d.write("g.txt", "g\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-84 g")
+	d.mustFixtureCommit("feat: PROJ-84 g")
 	picked := d.git("rev-parse", "HEAD")
 	d.git("switch", "-q", "-c", "release/1.0", base)
 	d.write("b.txt", "b\n")
 	d.write("c.txt", "c\n")
-	d.mustGraft("commit", "-m", "chore: PROJ-81 and PROJ-82 to the release")
+	d.mustFixtureCommit("chore: PROJ-81 and PROJ-82 to the release")
 	d.write("h.txt", "h\n")
 	d.write("k.txt", "k\n")
-	d.mustGraft("commit", "-m", "chore: h and k to the release, without docs")
+	d.mustFixtureCommit("chore: h and k to the release, without docs")
 	// Taken in another shape the release needs: it names what it took.
 	d.write("g.txt", "g for the release\n")
-	d.mustGraft("commit", "-m", "chore: PROJ-84 to the release\n\n(cherry picked from commit "+picked[:9]+")")
+	d.mustFixtureCommit("chore: PROJ-84 to the release\n\n(cherry picked from commit " + picked[:9] + ")")
 	d.mustGraft("deploy", "--unapproved", "live")
 
 	out := d.mustGraft("deploy", "sweep", "live")
@@ -2030,12 +2048,12 @@ func TestDeploySweepStatusesNoTransitionNames(t *testing.T) {
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "swept")
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-90 a")
+	d.mustFixtureCommit("feat: PROJ-90 a")
 	d.write("b.txt", "b\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-92 b")
+	d.mustFixtureCommit("feat: PROJ-92 b")
 	d.mustGraft("deploy", "swept")
 	d.write("c.txt", "c\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-91 c")
+	d.mustFixtureCommit("feat: PROJ-91 c")
 	out := d.mustGraft("deploy", "sweep", "swept")
 	if !strings.Contains(out, "PROJ-90 is In Progress, but all its work is on swept, the newest commit 5 days old") {
 		t.Errorf("PROJ-90 not listed as stale:\n%s", out)

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -66,13 +67,20 @@ fi
 			f.env = append(f.env, "PATH="+bin+string(os.PathListSeparator)+p)
 		}
 	}
-	f.mustGraft("commit", "-m", "feat: base")
+	fixtureCommit := func(message, version string) {
+		f.write("VERSION", version+"\n")
+		f.mustPlainCommit(message)
+		f.git("push", "-q", "-u", "origin", "HEAD")
+	}
+	fixtureCommit("feat: base", "1.0.1")
+	exceptionVersion := 2
 	writeFile(t, list("uat-version"), "1.0.1\n")
 	writeFile(t, list("uat-list"), "alpha\nbeta\n")
 	writeFile(t, list("prod-list"), "alpha\n")
 	exceptions := func(content string) {
 		f.write("integration-exceptions.conf", content)
-		f.mustGraft("commit", "-m", "chore: integration exceptions")
+		fixtureCommit("chore: integration exceptions", "1.0."+strconv.Itoa(exceptionVersion))
+		exceptionVersion++
 		writeFile(t, list("uat-version"), f.read("VERSION"))
 	}
 	runs := func() string {

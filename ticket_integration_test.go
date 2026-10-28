@@ -26,7 +26,8 @@ func ticketRepo(t *testing.T, ticket, extraVersion, deploy, gate string, files m
 	maps.Copy(all, files)
 	f := newRepo(t, all, "origin")
 	f.git("checkout", "-q", "-b", "main")
-	f.mustGraft("commit", "-m", "feat: PROJ-1 base")
+	f.mustPlainCommit("feat: PROJ-1 base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
 	return f
 }
 
@@ -100,7 +101,7 @@ func TestTicketRequiredHashPattern(t *testing.T) {
 		"base.txt":    "base\n",
 	}, "origin")
 	f.git("checkout", "-q", "-b", "main")
-	f.mustGraft("commit", "-m", "chore: #1 base")
+	f.mustPlainCommit("chore: #1 base")
 	f.write("change.txt", "change\n")
 	f.mustGraft("commit", "-m", "feat: #123 task")
 }
@@ -234,7 +235,7 @@ func TestGateListsNewCommitFile(t *testing.T) {
 		".graft.yaml": "schema: 1\nversion: {mode: none}\ngate: [[sh, -c, 'test ! -e new.txt || git ls-files | grep -qx new.txt']]\n",
 	}, "origin")
 	f.git("checkout", "-q", "-b", "main")
-	f.mustGraft("commit", "-m", "chore: base")
+	f.mustPlainCommit("chore: base")
 	f.write("new.txt", "new\n")
 	f.mustGraft("commit", "-m", "feat: add file")
 	if !strings.Contains(f.git("show", "--name-only", "--format=", "HEAD"), "new.txt") {
@@ -247,7 +248,7 @@ func TestFailedGateRestoresIndex(t *testing.T) {
 		".graft.yaml": "schema: 1\nversion: {mode: none}\ngate: []\n",
 	}, "origin")
 	f.git("checkout", "-q", "-b", "main")
-	f.mustGraft("commit", "-m", "chore: base")
+	f.mustPlainCommit("chore: base")
 	f.write(".graft.yaml", "schema: 1\nversion: {mode: none}\ngate: [[sh, -c, 'exit 1']]\n")
 	f.write("new.txt", "new\n")
 	if out, code := f.graft("", "commit", "-m", "feat: fail gate"); code == 0 {
@@ -276,7 +277,7 @@ func TestTicketRequiredAmendChecksWholeCommit(t *testing.T) {
 	})
 	f.git("checkout", "-q", "-b", "wip/x")
 	f.write("code.txt", "c\n")
-	f.mustGraft("commit", "-m", "feat: code")
+	f.mustPlainCommit("feat: code")
 	f.git("branch", "-m", "feature-x")
 	f.write("docs/guide.md", "g\n")
 	if out, code := f.graft("", "amend"); code == 0 || !strings.Contains(out, "ticket.required") {

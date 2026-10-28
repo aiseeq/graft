@@ -54,7 +54,7 @@ func TestDeployGlintHoldsItems(t *testing.T) {
 	d := glintRepo(t)
 	writeFile(t, filepath.Join(d.state, "found"), "2\n")
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-1 the form")
+	d.mustFixtureCommit("feat: PROJ-1 the form")
 	sha := strings.TrimSpace(d.git("rev-parse", "--short=12", "HEAD"))
 	out := d.mustGraft("deploy", "test")
 	if want := "graft: PROJ-1: NOT MOVED to Testing: glint: 2 findings of low and above in " + sha + " (release_notes.glint); once glint finds nothing in the deployed commit, the next deploy to test or graft deploy handover test moves it"; !strings.Contains(out, want) || len(d.moved()) != 0 {
@@ -89,7 +89,7 @@ func TestDeployGlintHoldsItems(t *testing.T) {
 	d.jira.statuses["PROJ-8"], d.jira.statuses["PROJ-9"] = "In Progress", "In Progress"
 	d.jira.mu.Unlock()
 	writeFile(t, filepath.Join(d.state, "found"), "0\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-8 the list")
+	d.mustFixtureCommit("feat: PROJ-8 the list")
 	if out := d.mustGraft("deploy", "test"); !strings.Contains(out, "PROJ-8 moved to Testing\n") {
 		t.Errorf("clean:\n%s", out)
 	}
@@ -97,7 +97,7 @@ func TestDeployGlintHoldsItems(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.write("c.txt", "c\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-9 the menu")
+	d.mustFixtureCommit("feat: PROJ-9 the menu")
 	if out := d.mustGraft("deploy", "test"); !strings.Contains(out, "graft: PROJ-9: NOT MOVED to Testing: glint: glint check gave no report") || !strings.Contains(out, "no config") {
 		t.Errorf("no report:\n%s", out)
 	}
@@ -107,7 +107,7 @@ func TestDeployGlintHoldsItems(t *testing.T) {
 	// A ticket that cannot take the findings refuses the deploy before it.
 	before := d.stateFile("test-run")
 	d.write("d.txt", "d\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-9 more")
+	d.mustFixtureCommit("feat: PROJ-9 more")
 	if out, code := d.graft("", "deploy", "--glint-ticket", "PROJ-2", "test"); code == 0 || !strings.Contains(out, "--glint-ticket PROJ-2 is Done") || d.stateFile("test-run") != before {
 		t.Errorf("a done ticket on the deploy: exit %d\n%s", code, out)
 	}
@@ -130,7 +130,7 @@ func TestSweepGlintHoldsItems(t *testing.T) {
 	d.jira.mu.Unlock()
 	writeFile(t, filepath.Join(d.state, "found"), "3\n")
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-70 the report")
+	d.mustFixtureCommit("feat: PROJ-70 the report")
 	out := d.mustGraft("deploy", "sub")
 	for _, want := range []string{
 		"graft: PROJ-70: NOT MOVED to Done: glint: 3 findings of low and above",

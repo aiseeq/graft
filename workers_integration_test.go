@@ -73,7 +73,10 @@ func workerRepo(t *testing.T, versionMode string) *fixture {
 	})
 	f.git("checkout", "-q", "-b", "main")
 	f.mustGraft("init")
-	f.mustGraft("commit", "-m", "chore: base")
+	if versionMode == "file" {
+		f.write("VERSION", "1.0.1\n")
+	}
+	f.mustPlainCommit("chore: base")
 	return f
 }
 
@@ -192,7 +195,7 @@ func TestWorkerTrailersOfCarriedOverWork(t *testing.T) {
 	job := filepath.Join(f.base, "job")
 	f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
 	f.write("b.txt", "b2\n")
-	f.mustGraft("commit", "-m", "feat: the trunk moves on")
+	f.mustPlainCommit("feat: the trunk moves on")
 	writeMarkerJSON(t, f, map[string]any{"id": "job1", "models": []string{"vendor/model-a"}, "client": "cli", "dir": job, "finished": true})
 	writeFile(t, filepath.Join(job, "a.txt"), "by the job\n")
 	writeFile(t, filepath.Join(job, "c.txt"), "new by the job\n")

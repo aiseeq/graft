@@ -26,7 +26,8 @@ tasks:
     run: [[sh, -c, 'printf "cache=%s\n" "$GOLANGCI_LINT_CACHE"']]
 `}, "origin")
 	f.git("checkout", "-q", "-b", "main")
-	f.mustGraft("commit", "-m", "feat: base")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
 	f.git("remote", "set-head", "origin", "main")
 	job := filepath.Join(f.base, "job")
 	f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
