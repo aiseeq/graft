@@ -31,19 +31,9 @@ func (a *App) Amend(ctx context.Context) error {
 		if err := checkAmendable(repo, cfg); err != nil {
 			return err
 		}
-		message, err := repo.Git("log", "-1", "--format=%B", "HEAD")
+		message, ticketed, err := amendMessage(repo, cfg)
 		if err != nil {
 			return err
-		}
-		// log appends a newline of its own after the message's.
-		message = strings.TrimRight(message, "\n") + "\n"
-		branch, err := repo.Branch()
-		if err != nil {
-			return err
-		}
-		ticketed := cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, branch)
-		if ticketed {
-			message = commitmessage.WithKey(message, commitmessage.BranchKey(branch, cfg.Ticket.Regexp))
 		}
 		base, err := repo.ParentTree("HEAD")
 		if err != nil {
@@ -93,6 +83,26 @@ func (a *App) Amend(ctx context.Context) error {
 		a.printf("amended the last commit, now %s (not pushed)", strings.TrimSpace(head))
 		return nil
 	})
+}
+
+// amendMessage is the message of the amended commit: HEAD's, with the key of
+// the branch's ticket when the branch is ticketed.
+func amendMessage(repo *gitx.Repo, cfg *config.Config) (message string, ticketed bool, err error) {
+	message, err = repo.Git("log", "-1", "--format=%B", "HEAD")
+	if err != nil {
+		return "", false, err
+	}
+	// log appends a newline of its own after the message's.
+	message = strings.TrimRight(message, "\n") + "\n"
+	branch, err := repo.Branch()
+	if err != nil {
+		return "", false, err
+	}
+	ticketed = cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, branch)
+	if ticketed {
+		message = commitmessage.WithKey(message, commitmessage.BranchKey(branch, cfg.Ticket.Regexp))
+	}
+	return message, ticketed, nil
 }
 
 // checkAmendable refuses to amend a missing commit, one with nothing to fold

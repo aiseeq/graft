@@ -46,8 +46,10 @@ const killSettle = 5 * time.Second
 // signals through a pidfd, so a p already waited for is not taken for a new
 // process with its pid.
 func killTree(p *os.Process) error {
-	if err := p.Signal(syscall.Signal(0)); err != nil {
-		return nil // it ended
+	if err := p.Signal(syscall.Signal(0)); errors.Is(err, os.ErrProcessDone) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("probing process %d: %w", p.Pid, err)
 	}
 	kids, err := descendants(p.Pid)
 	for _, kid := range kids {
