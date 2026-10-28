@@ -177,7 +177,11 @@ and kills it 30 seconds later. `up` runs once per graft, at the first heavy task
 `remote_heavy`, only tasks whose every step is a `go test` or `go vet` command
 that writes no output file can use the host; a task with `remote: true` can
 send any heavy work. Output flags such as `-o`, `-coverprofile` and `-trace`
-keep the task here. Project configuration keeps its existing rule: every
+keep the task here, in the step or in the arguments given for `{args}`: a
+`go test -v {args} ./...` task goes with `-run TestX` and stays with
+`-coverprofile=c.out`. A heavy task that would not queue here (a graft a step
+of an admitted heavy task starts, a heavy task inside another) does not
+overflow under `when: busy`. Project configuration keeps its existing rule: every
 heavy task can go to its host except tasks that need local files or data.
 Each heavy task
 says where it runs, `graft: build: heavy, on pc`, or why it stays here and
