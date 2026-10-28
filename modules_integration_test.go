@@ -106,7 +106,7 @@ func consumerGoMod(module string) string {
 // consumerMain uses lib's call, so the gate's go vet passes only at the
 // release that has it.
 func consumerMain(call string) string {
-	return "package main\n\nimport (\n\t\"" + ownLib + "\"\n\t\"" + ownUntagged + "\"\n\t\"" + ownLocal + "\"\n\t\"" + otherDep + "\"\n)\n\n" +
+	return "package main\n\nimport (\n\t\"" + otherDep + "\"\n\t\"" + ownLib + "\"\n\t\"" + ownLocal + "\"\n\t\"" + ownUntagged + "\"\n)\n\n" +
 		"func main() { println(lib." + call + "(), untagged.A, local.Z, dep.X) }\n"
 }
 
