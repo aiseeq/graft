@@ -196,12 +196,8 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		return help(a)
 	}
 	cmd, rest := args[0], args[1:]
-	if v, ok := os.LookupEnv(tasks.NoCacheEnv); ok {
-		noCache, err := strconv.ParseBool(v)
-		if err != nil {
-			return fmt.Errorf("%w: %s=%q: want true or false", errUsage, tasks.NoCacheEnv, v)
-		}
-		a.NoCacheEnv = noCache
+	if err := readNoCacheEnv(a); err != nil {
+		return err
 	}
 	// The stats record tasks as run under the command; runTask clears it,
 	// so a task run directly names itself.
@@ -244,6 +240,21 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 	default:
 		return projectCmd(ctx, a, cmd, rest)
 	}
+}
+
+// readNoCacheEnv sets the app's no-cache switch from the environment, when
+// the variable is set.
+func readNoCacheEnv(a *app.App) error {
+	v, ok := os.LookupEnv(tasks.NoCacheEnv)
+	if !ok {
+		return nil
+	}
+	noCache, err := strconv.ParseBool(v)
+	if err != nil {
+		return fmt.Errorf("%w: %s=%q: want true or false", errUsage, tasks.NoCacheEnv, v)
+	}
+	a.NoCacheEnv = noCache
+	return nil
 }
 
 // projectCmd runs the commands that act on the project's tasks, services,
