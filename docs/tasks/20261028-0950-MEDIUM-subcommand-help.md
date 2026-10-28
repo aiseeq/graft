@@ -1,6 +1,7 @@
 # command -h prints its help section
 
-Статус: открыт
+Статус: на проверке
+Исполнитель: graft-master
 
 ## Вход
 - Проблема:
@@ -19,3 +20,4 @@
 ## Журнал
 - 2026-10-28 09:50 открыт — graft-master
 - 2026-10-28 09:57 note — graft-master: сделано в дереве: help.go (details, helpCmd, sectionOf, writeSection), main.go (newFlags.Usage → раздел + флаги, stdout; sectionHelp в dispatch для команд без своего flagset), тест TestEveryCommandAnswersHelpWithItsSection зелёный; README строка help. Дальше — graft commit.
+- 2026-10-28 10:18 на проверке — graft-master — v2.46.0 (3425212), установлено 4908be6; ждёт независимой проверки

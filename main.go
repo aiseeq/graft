@@ -206,10 +206,8 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 	// The stats record tasks as run under the command; runTask clears it,
 	// so a task run directly names itself.
 	a.Command = cmd
-	if !parsesItsFlags[cmd] {
-		if ok, err := sectionHelp(a, cmd, rest); ok {
-			return err
-		}
+	if ok, err := sectionHelp(a, cmd, rest); ok {
+		return err
 	}
 	switch cmd {
 	case "commit":
@@ -501,13 +499,16 @@ func newFlags(a *app.App, name string) *flag.FlagSet {
 	out := &heldOutput{w: a.Stdout}
 	fs.SetOutput(out)
 	fs.Usage = func() {
-		if out.err = writeSection(out, a, name); out.err != nil {
+		var b strings.Builder
+		if out.err = writeSection(&b, a, name); out.err != nil {
 			return
 		}
 		flags := 0
 		fs.VisitAll(func(*flag.Flag) { flags++ })
 		if flags > 0 {
-			out.WriteString("\nFlags:\n")
+			b.WriteString("\nFlags:\n")
+		}
+		if _, out.err = out.WriteString(b.String()); out.err == nil {
 			fs.PrintDefaults()
 		}
 	}
@@ -515,9 +516,10 @@ func newFlags(a *app.App, name string) *flag.FlagSet {
 }
 
 // sectionHelp answers graft <command> -h for a command that parses no
-// flags of its own; false when args ask for something else.
+// flags of its own; false when args ask for something else or the
+// command's flag set answers.
 func sectionHelp(a *app.App, cmd string, args []string) (bool, error) {
-	if len(args) != 1 || (args[0] != "-h" && args[0] != "--help") {
+	if parsesItsFlags[cmd] || len(args) != 1 || (args[0] != "-h" && args[0] != "--help") {
 		return false, nil
 	}
 	if _, ok := sectionOf(cmd); !ok {
