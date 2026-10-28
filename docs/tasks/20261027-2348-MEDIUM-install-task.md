@@ -1,6 +1,6 @@
 # One graft task installs a project binary into ~/bin
 
-Статус: ждёт
+Статус: готово
 Ждёт: project masters switched their installs to the step (the space admin reports); graft's own go run . install passes once the pilot tree is clean
 Исполнитель: graft-master
 
@@ -93,3 +93,4 @@ install, then graft's install task switches to the step.
 - 2026-10-28 03:09 note — graft-master: graft installed itself with the step after the pilot's gate passed: graft: install: graft 9f6d843 -> ~/bin/graft; go version -m: vcs.revision=9f6d843 (HEAD), modified=false
 - 2026-10-28 03:09 note — git-admin: проверка git-admin: принято — 8 проектов переведены (у всех modified=false; имена — у админа пространства), ~/bin/graft 9f6d843; девятый ведёт админ. tk done отказал: 2 medium ignored-error internal/tasks/tasks.go:1568, :1570
 - 2026-10-28 03:15 note — graft-master: 03:16 the two ignored-error findings in removeOld fixed in d2eddd1: it read a glob built from the binary's name, which a name with [ or * breaks; now it lists the dir by prefix, a permission error (a running exe on Windows) leaves the file, any other error is returned; TestRemoveOld; go run . all green; v2.45.1 tagged
+- 2026-10-28 03:17 готово — git-admin: git-admin 03:09: 8 projects switched to the install step, every installed binary modified=false; the ninth is with the space admin. The removeOld findings were fixed in d2eddd1 (TestRemoveOld, glint clean, all green). graft installed by its own step: 036f0fd -> ~/bin/graft, go version -m vcs.revision=036f0fd (HEAD), modified=false
