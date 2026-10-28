@@ -150,32 +150,24 @@ func (r *Repo) HasHead() (bool, error) {
 
 // RevExists reports whether rev resolves to a commit.
 func (r *Repo) RevExists(rev string) (bool, error) {
-	_, err := r.Git("rev-parse", "--verify", "--quiet", rev+"^{commit}")
-	if err == nil {
-		return true, nil
-	}
-	if ExitCode(err) == 1 {
-		return false, nil
-	}
-	return false, err
+	return r.gitTest("rev-parse", "--verify", "--quiet", rev+"^{commit}")
 }
 
 // IsAncestor reports whether ancestor is reachable from rev (a commit is its
 // own ancestor).
 func (r *Repo) IsAncestor(ancestor, rev string) (bool, error) {
-	_, err := r.Git("merge-base", "--is-ancestor", ancestor, rev)
-	if err == nil {
-		return true, nil
-	}
-	if ExitCode(err) == 1 {
-		return false, nil
-	}
-	return false, err
+	return r.gitTest("merge-base", "--is-ancestor", ancestor, rev)
 }
 
 // RefExists reports whether the fully qualified ref exists.
 func (r *Repo) RefExists(ref string) (bool, error) {
-	_, err := r.Git("rev-parse", "--verify", "--quiet", ref)
+	return r.gitTest("rev-parse", "--verify", "--quiet", ref)
+}
+
+// gitTest runs a git command that answers by its status: 0 yes, 1 no, any
+// other a failure.
+func (r *Repo) gitTest(args ...string) (bool, error) {
+	_, err := r.Git(args...)
 	if err == nil {
 		return true, nil
 	}
