@@ -1,6 +1,7 @@
 # graft tools keeps stale binaries of unpinned tools
 
-Статус: открыт
+Статус: в работе
+Исполнитель: graft-master
 
 ## Вход
 - Проблема:
@@ -18,3 +19,7 @@
 
 ## Журнал
 - 2026-10-28 10:04 открыт — graft-master
+- 2026-10-28 11:33 в работе — graft-master
+- 2026-10-28 11:33 note — graft-master: воспроизведено: buildProblem сверяет версию только при пине, check/expect — только expect. Репро tools_latest_integration_test.go (worktree ~/.cache/worktrees/graft/tools-latest, sha256 539ef8f4…): v0.1.0 при v0.2.0 в прокси — «ok», tools install не меняет. Решение: непиненный go_install сверять с @latest модуля (go list общий с gomods), (devel)/+dirty — как сейчас, офлайн — предупреждение, сеть только в graft tools/init. Бриф — scratchpad graft-master tools-latest/brief.md; боец Luna, багфикс-по-тикету.
+- 2026-10-28 11:34 note — graft-master: задание бойцу (Luna), приёмка: sha теста + graft gate в дереве бойца.
+- 2026-10-28 11:50 note — graft-master: влито c78d4d6 (боец, ревью мастера без правок). Дальше: релиз, install, независимая проверка, итог work-admin.

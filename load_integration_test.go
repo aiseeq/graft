@@ -240,7 +240,7 @@ func TestExecHeavyWaitsForLoad(t *testing.T) {
 	if want := "exec exec 0 wait=false,exec exec 3 wait=true"; strings.Join(tasks, ",") != want {
 		t.Errorf("task lines %q, want %q", strings.Join(tasks, ","), want)
 	}
-	if out, code := f.graft("", "exec", "--heavy", "sh"); code != 125 || !strings.Contains(out, "graft exec [--heavy [--local]] -- <command>") {
+	if out, code := f.graft("", "exec", "--heavy", "sh"); code != 125 || !strings.Contains(out, "graft exec [--heavy [--local] [--settle <duration>]] -- <command>") {
 		t.Errorf("without --: exit %d\n%s", code, out)
 	}
 }

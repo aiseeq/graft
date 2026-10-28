@@ -66,9 +66,10 @@ var commands = []command{
 		applies: func(c *config.Config) bool { return len(c.Tasks) > 0 }},
 	{name: "start", syntax: fixed("graft start|stop|restart [service]", "graft logs <service> [--lines N] [-f]"), summary: text("start services in the background or through systemd --user; stop, restart, logs"),
 		applies: func(c *config.Config) bool { return len(c.Services) > 0 }},
-	{name: "exec", syntax: fixed("graft exec [--heavy [--local]] -- <command> [args]"),
+	{name: "exec", syntax: fixed("graft exec [--heavy [--local] [--settle <duration>]] -- <command> [args]"),
 		summary: text("run a command that is not a task, recorded in the stats as exec; --heavy: queue for the machine as heavy tasks do, {threads} and GRAFT_THREADS from load.threads"),
-		details: "--local: with --heavy, run on this machine though the project has remote_heavy (GRAFT_HEAVY=local, for the grafts the command starts too).\n\n" +
+		details: "--local: with --heavy, run on this machine though the project has remote_heavy (GRAFT_HEAVY=local, for the grafts the command starts too).\n" +
+			"--settle: with --heavy, keep the queue for this long after the command starts, or until it ends if sooner, in place of load.settle: for a command whose load comes later than its start.\n\n" +
 			"Exit status: the command's, 128 and the signal for one a signal ended; on remote_heavy's host, the one its run gives.\n" +
 			"  125  graft itself: a usage error, -C, the config, the queue, remote_heavy's run that does not start, an interrupt that ended the command\n" +
 			"  126  the command was found but not started\n" +

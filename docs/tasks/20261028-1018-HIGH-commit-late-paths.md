@@ -1,6 +1,7 @@
 # commit sweeps in paths written during the gate
 
-Статус: открыт
+Статус: в работе
+Исполнитель: graft-master
 
 ## Вход
 - Проблема:
@@ -18,3 +19,8 @@
 
 ## Журнал
 - 2026-10-28 10:18 открыт — graft-master
+- 2026-10-28 11:24 в работе — graft-master
+- 2026-10-28 11:24 note — graft-master: намерение изменено: не отказ, а «оставить вне коммита». Перепись .graft.yaml потребителей: гейты пишут файлы законно (gofmt -w, goimports -w, go mod tidy — у нескольких потребителей, graft в их числе), modules.latest пишет до первого add -A. Правило: в коммит — пути, грязные на старте (индекс против HEAD после первого add -A), в виде, в каком их оставил гейт, со строкой «<path> changed while the gate ran»; путь, изменённый только во время гейта, — не индексируется, остаётся в дереве, строка «left out <path>: …»; следующий коммит берёт его со старта. То же в amend (internal/app/other.go). Остаток риска: чужая правка уже грязного пути во время гейта уходит в коммит, но со строкой.
+- 2026-10-28 11:24 note — graft-master: репро: worktree ~/.cache/worktrees/graft/late-paths (ветка late-paths от 132e5a9), commit_late_paths_integration_test.go sha256 ab69cf99…, оба теста красные по нужной причине (late.txt и правка clean.txt в коммите, строк нет). Бриф — scratchpad graft-master late-paths/brief.md; задание бойцу Luna, класс багфикс-по-тикету.
+- 2026-10-28 11:24 note — graft-master: задание бойцу 1028-1124-late-paths (Luna, приёмка: sha теста + graft gate в дереве бойца). Итог — worker wait.
+- 2026-10-28 11:53 note — graft-master: влито c53b67c (боец + правки ревью). Дальше: релиз, install, независимая проверка, итог git-admin.

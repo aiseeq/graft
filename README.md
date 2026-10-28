@@ -138,7 +138,10 @@ that exits 126 or 127 has none. On the
 host of `remote_heavy` the status is the one its `run` gives, so a failing
 `ssh` says 255. `graft stats` records it as the task `exec` of the work tree
 around (`--task exec` lists the commands); without `--heavy` it runs at once
-and is only recorded.
+and is only recorded. `--settle <duration>` keeps the queue for that long
+after the command starts, or until it ends if sooner, in place of
+`load.settle`, for one command whose load comes later than its start, such as
+an agent that takes a minute to get going.
 
 A project with another machine for heavy work names it in `.graft.yaml`, and
 the steps of its heavy tasks and its `graft exec --heavy` go there first,
@@ -240,7 +243,7 @@ stats` (`wait_s`).
 | `graft tasks` | every task, building blocks and deps included |
 | `graft start` / `stop` / `restart [service]` | background services, all of them without a name |
 | `graft logs <service> [--lines N] [-f]` | the end of a service's log, or its journal; `-f` follows until Ctrl-C |
-| `graft exec [--heavy [--local]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local` |
+| `graft exec [--heavy [--local] [--settle <duration>]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local`; `--settle` holds the queue after it starts in place of `load.settle` |
 | `graft stats [--since 7d] [--project <root>\|--all] [--task <name>]` | recorded resource use of tasks (see [Resource stats](#resource-stats)) |
 | `graft status` | services, the test database, held locks |
 | `graft locks` | who holds graft's locks |

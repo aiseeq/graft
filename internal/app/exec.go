@@ -8,10 +8,12 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/tasks"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
 // Exec runs argv in the directory graft started in, a command that is not a
@@ -23,8 +25,8 @@ import (
 // first, as a heavy task's steps do. The command's exit status is graft's;
 // its own failures exit as env's do (ExitGraft, ExitCannotRun,
 // ExitNotFound), so a caller tells them from the command's.
-func (a *App) Exec(ctx context.Context, argv []string, heavy bool) error {
-	err := a.exec(ctx, argv, heavy)
+func (a *App) Exec(ctx context.Context, argv []string, opts ExecOptions) error {
+	err := a.exec(ctx, argv, opts)
 	var cmdErr *tasks.CommandError
 	var exit *exec.ExitError
 	switch {
@@ -63,7 +65,16 @@ func exitStatus(exit *exec.ExitError) int {
 	return exit.ExitCode()
 }
 
-func (a *App) exec(ctx context.Context, argv []string, heavy bool) error {
+// ExecOptions are graft exec's flags.
+type ExecOptions struct {
+	// Heavy queues the command as a heavy task.
+	Heavy bool
+	// Settle, when set, replaces load.settle for this command.
+	Settle time.Duration
+}
+
+func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
+	heavy := opts.Heavy
 	root := a.Dir
 	cfg := &config.Config{}
 	repo, err := gitx.Open(a.Dir)
@@ -82,7 +93,16 @@ func (a *App) exec(ctx context.Context, argv []string, heavy bool) error {
 	case !errors.Is(err, gitx.ErrNotRepo):
 		return err
 	}
-	return a.newRunner(root, cfg).Exec(ctx, a.Dir, argv, heavy)
+	r := a.newRunner(root, cfg)
+	if opts.Settle > 0 {
+		load := r.Load
+		r.Load = func() (userconfig.MachineLoad, error) {
+			l, err := load()
+			l.Settle = opts.Settle
+			return l, err
+		}
+	}
+	return r.Exec(ctx, a.Dir, argv, heavy)
 }
 
 // projectConfig is the work tree's config, an empty one when it has none:

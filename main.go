@@ -458,20 +458,31 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 // execCmd is graft exec; its own failures, usage too, exit app.ExitGraft
 // (run).
 func execCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := fmt.Errorf("%w: graft exec [--heavy [--local]] -- <command> [args]", errUsage)
-	var heavy, local bool
+	usage := fmt.Errorf("%w: graft exec [--heavy [--local] [--settle <duration>]] -- <command> [args]", errUsage)
+	var opts app.ExecOptions
+	var local bool
 	for len(args) > 0 && args[0] != "--" {
 		switch args[0] {
 		case "--heavy":
-			heavy = true
+			opts.Heavy = true
 		case "--local":
 			local = true
+		case "--settle":
+			if len(args) < 2 {
+				return usage
+			}
+			d, err := time.ParseDuration(args[1])
+			if err != nil || d <= 0 {
+				return fmt.Errorf("%w: exec --settle %q: want a duration above 0, such as 60s", errUsage, args[1])
+			}
+			opts.Settle = d
+			args = args[1:]
 		default:
 			return usage
 		}
 		args = args[1:]
 	}
-	if len(args) < 2 || (local && !heavy) {
+	if len(args) < 2 || ((local || opts.Settle > 0) && !opts.Heavy) {
 		return usage
 	}
 	if local {
@@ -480,7 +491,7 @@ func execCmd(ctx context.Context, a *app.App, args []string) error {
 			return fmt.Errorf("exec --local: %w", err)
 		}
 	}
-	return a.Exec(ctx, args[1:], heavy)
+	return a.Exec(ctx, args[1:], opts)
 }
 
 func toolsCmd(ctx context.Context, a *app.App, args []string) error {
