@@ -2,6 +2,7 @@ package leaks
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -15,9 +16,10 @@ type Line struct {
 	Text string
 }
 
-// diffArgs make git print every added line with its number in the new file,
-// paths unquoted.
-var diffArgs = []string{"-U0", "--no-color", "--no-ext-diff", "--no-renames", "--diff-filter=AMT", "--src-prefix=a/", "--dst-prefix=b/"}
+// diffArgs make git print every added and removed line, the added with its
+// number in the new file, paths unquoted. Deleted files are in it: their
+// lines may move to another file.
+var diffArgs = []string{"-U0", "--no-color", "--no-ext-diff", "--no-renames", "--diff-filter=AMTD", "--src-prefix=a/", "--dst-prefix=b/"}
 
 // StagedLines returns the lines the index adds to HEAD.
 func StagedLines(repo *gitx.Repo) ([]Line, error) {
@@ -39,20 +41,24 @@ func CommitLines(repo *gitx.Repo, commit string) ([]Line, error) {
 
 // ParseDiff reads the added lines of a unified diff with zero context. Hunk
 // line counts, not prefixes, delimit the content: an added "++ x" line looks
-// like a file header.
+// like a file header. A line the diff removes, in any file, is moved where
+// it is added, not added: once for each removal.
 func ParseDiff(out string) ([]Line, error) {
 	var lines []Line
+	removed := map[string]int{}
 	var path string
-	no, left := 0, 0
+	no, left, oldLeft := 0, 0, 0
 	for raw := range strings.SplitSeq(out, "\n") {
-		if left > 0 {
+		if left > 0 || oldLeft > 0 {
 			switch {
-			case strings.HasPrefix(raw, "+"):
+			case strings.HasPrefix(raw, "+") && left > 0:
 				lines = append(lines, Line{Path: path, No: no, Text: raw[1:]})
 				no++
 				left--
+			case strings.HasPrefix(raw, "-") && oldLeft > 0:
+				removed[raw[1:]]++
+				oldLeft--
 			case strings.HasPrefix(raw, `\`): // \ No newline at end of file
-			case strings.HasPrefix(raw, "-"):
 			default:
 				return nil, fmt.Errorf("diff of %s: unexpected line %q inside a hunk", path, raw)
 			}
@@ -64,34 +70,41 @@ func ParseDiff(out string) ([]Line, error) {
 		case strings.HasPrefix(raw, "+++ "):
 			path = ""
 		case strings.HasPrefix(raw, "@@ "):
-			start, count, err := hunkNew(raw)
-			if err != nil {
-				return nil, fmt.Errorf("diff of %s: %w", path, err)
+			fields := strings.Fields(raw)
+			if len(fields) < 3 || !strings.HasPrefix(fields[1], "-") || !strings.HasPrefix(fields[2], "+") {
+				return nil, fmt.Errorf("diff of %s: bad hunk header %q", path, raw)
 			}
-			no, left = start, count
+			var err error
+			if _, oldLeft, err = hunkRange(fields[1][1:]); err != nil {
+				return nil, fmt.Errorf("diff of %s: bad hunk header %q", path, raw)
+			}
+			if no, left, err = hunkRange(fields[2][1:]); err != nil {
+				return nil, fmt.Errorf("diff of %s: bad hunk header %q", path, raw)
+			}
 		}
 	}
-	if left > 0 {
+	if left > 0 || oldLeft > 0 {
 		return nil, fmt.Errorf("diff of %s ends inside a hunk", path)
 	}
-	return lines, nil
+	return slices.DeleteFunc(lines, func(l Line) bool {
+		if removed[l.Text] == 0 {
+			return false
+		}
+		removed[l.Text]--
+		return true
+	}), nil
 }
 
-// hunkNew reads "+start,count" from "@@ -a,b +c,d @@".
-func hunkNew(header string) (int, int, error) {
-	fields := strings.Fields(header)
-	if len(fields) < 3 || !strings.HasPrefix(fields[2], "+") {
-		return 0, 0, fmt.Errorf("bad hunk header %q", header)
+// hunkRange reads "start,count" of a hunk header; count is 1 when left out.
+func hunkRange(text string) (start, count int, err error) {
+	startText, countText, hasCount := strings.Cut(text, ",")
+	if start, err = strconv.Atoi(startText); err != nil {
+		return 0, 0, err
 	}
-	startText, countText, hasCount := strings.Cut(fields[2][1:], ",")
-	start, err := strconv.Atoi(startText)
-	if err != nil {
-		return 0, 0, fmt.Errorf("bad hunk header %q", header)
-	}
-	count := 1
+	count = 1
 	if hasCount {
 		if count, err = strconv.Atoi(countText); err != nil {
-			return 0, 0, fmt.Errorf("bad hunk header %q", header)
+			return 0, 0, err
 		}
 	}
 	return start, count, nil

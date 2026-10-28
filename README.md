@@ -1776,8 +1776,9 @@ deploy:
   take-back, part of a commit's diff of a file, is not seen.
 - **Leaks**: with `leaks` in the user config, a commit to a repository that
   has a remote under `public_remotes` is checked for private names in the
-  lines it adds and in its message. A remote under `private_remotes` is
-  private even under a public prefix. The lists live in the user config, never
+  lines it adds and in its message; a line the commit removes elsewhere,
+  in the same or another file, is moved, not added. A remote under
+  `private_remotes` is private even under a public prefix. The lists live in the user config, never
   in the public repository:
   - **names**: camel-case functions, methods and types of at least
     `min_name_length` characters declared in `private_sources` (parts of test

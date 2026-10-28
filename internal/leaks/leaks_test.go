@@ -174,3 +174,42 @@ func TestCorpusExcludesOwnModules(t *testing.T) {
 		t.Errorf("incremental load: %q", log.String())
 	}
 }
+
+// TestParseDiffMoves: a line the change removes elsewhere is moved, not
+// added, once for each removal.
+func TestParseDiffMoves(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/old/x.go b/old/x.go",
+		"--- a/old/x.go",
+		"+++ /dev/null",
+		"@@ -1,4 +0,0 @@",
+		"-moved a",
+		"--- moved b",
+		"-twice",
+		"-moved c",
+		"diff --git a/new/x.go b/new/x.go",
+		"--- /dev/null",
+		"+++ b/new/x.go",
+		"@@ -0,0 +1,5 @@",
+		"+moved a",
+		"+-- moved b",
+		"+twice",
+		"+twice",
+		"+fresh",
+		"diff --git a/y.go b/y.go",
+		"--- a/y.go",
+		"+++ b/y.go",
+		"@@ -2 +2 @@",
+		"-moved c",
+		"+moved c, changed",
+		"",
+	}, "\n")
+	lines, err := ParseDiff(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Line{{"new/x.go", 4, "twice"}, {"new/x.go", 5, "fresh"}, {"y.go", 2, "moved c, changed"}}
+	if !slices.Equal(lines, want) {
+		t.Errorf("lines = %v, want %v", lines, want)
+	}
+}
