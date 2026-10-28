@@ -23,6 +23,7 @@
 ## Перепись (28.10 02:40, по `go version -m` установленных бинарей)
 The full census with project names is kept outside this public repository.
 It goes to the space admin with the handover. Here it is by kind:
+
 - 3 projects use their own install.sh. It refuses a dirty tree, builds to
   `.next`, mv's it into place, refuses vcs.modified and prints the revision.
   One of them also skips a binary already at HEAD. Another installs one
@@ -89,5 +90,6 @@ install, then graft's install task switches to the step.
 - 2026-10-28 02:59 note — graft-master: 70724d7 step committed; v2.45.0 tagged and installed (~/bin/graft vcs.revision=70724d7, modified=false). 0a5c73a: graft's install task uses the step. The dogfood install is refused by the pilot: the pilot project's uncommitted work has its own glint High finding. That is not graft — the same code passed the pilot at v2.45.0. Retry go run . install when the pilot tree is clean. Next: handovers to consumer masters.
 - 2026-10-28 02:59 note — graft-master: 03:01 handover with the per-project list sent to the space admin (it distributes to the project masters); worker outcome recorded (merged)
 - 2026-10-28 02:59 ждёт — graft-master — project masters switched their installs to the step (the space admin reports); graft's own go run . install passes once the pilot tree is clean
-- 2026-10-28 03:09 note — graft-master: 03:20 graft installed itself with the step after the pilot's gate passed: graft: install: graft 9f6d843 -> ~/bin/graft; go version -m: vcs.revision=9f6d843 (HEAD), modified=false
-- 2026-10-28 03:09 note — git-admin: проверка git-admin: принято — 8 проектов переведены (akit, llmark, hedwig, chooks, aguard, glint, dream, reddy; у всех modified=false), ~/bin/graft 9f6d843; tgctl ведёт git-admin (лиду). tk done отказал: 2 medium ignored-error internal/tasks/tasks.go:1568, :1570
+- 2026-10-28 03:09 note — graft-master: graft installed itself with the step after the pilot's gate passed: graft: install: graft 9f6d843 -> ~/bin/graft; go version -m: vcs.revision=9f6d843 (HEAD), modified=false
+- 2026-10-28 03:09 note — git-admin: проверка git-admin: принято — 8 проектов переведены (у всех modified=false; имена — у админа пространства), ~/bin/graft 9f6d843; девятый ведёт админ. tk done отказал: 2 medium ignored-error internal/tasks/tasks.go:1568, :1570
+- 2026-10-28 03:15 note — graft-master: 03:16 the two ignored-error findings in removeOld fixed in d2eddd1: it read a glob built from the binary's name, which a name with [ or * breaks; now it lists the dir by prefix, a permission error (a running exe on Windows) leaves the file, any other error is returned; TestRemoveOld; go run . all green; v2.45.1 tagged
