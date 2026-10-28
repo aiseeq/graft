@@ -1480,14 +1480,14 @@ func sameFile(dest string, data []byte) (bool, error) {
 		return false, nil
 	}
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("checking the installed file: %w", err)
 	}
 	if !fi.Mode().IsRegular() {
 		return false, nil
 	}
 	existing, err := os.ReadFile(dest)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("reading the installed file: %w", err)
 	}
 	return bytes.Equal(existing, data), nil
 }
