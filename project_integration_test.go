@@ -153,6 +153,38 @@ func TestUsageErrorsAreOneLine(t *testing.T) {
 	_ = filepath.Join
 }
 
+func TestEveryCommandAnswersHelpWithItsSection(t *testing.T) {
+	f := tasksRepo(t, "", nil)
+	names := []string{"stop", "restart", "logs", "-h"}
+	for _, c := range commands {
+		names = append(names, c.name)
+	}
+	for _, name := range names {
+		section, code := f.graft("", "help", name)
+		if code != 0 || !strings.HasPrefix(section, "Usage:\n  graft ") {
+			t.Errorf("help %s: exit %d\n%s", name, code, section)
+			continue
+		}
+		if out, code := f.graft("", name, "-h"); code != 0 || !strings.HasPrefix(out, section) {
+			t.Errorf("%s -h: exit %d, want the section of help %s first\n%s", name, code, name, out)
+		}
+	}
+	for _, args := range [][]string{{"exec", "--help"}, {"help", "exec"}} {
+		if out, code := f.graft("", args...); code != 0 || !strings.Contains(out, "--local") || !strings.Contains(out, "  125  ") || !strings.Contains(out, "  127  ") {
+			t.Errorf("%s: exit %d, want --local and the exit codes\n%s", strings.Join(args, " "), code, out)
+		}
+	}
+	if out, code := f.graft("", "commit", "--help"); code != 0 || !strings.Contains(out, "\nFlags:\n") || !strings.Contains(out, "-minor") {
+		t.Errorf("commit --help: exit %d, want its flags after the section\n%s", code, out)
+	}
+	if out, code := f.graft("", "help", "nosuch"); code != 2 {
+		t.Errorf("help nosuch: exit %d\n%s", code, out)
+	}
+	if out, code := f.graft("", "exec", "--bogus"); code != 125 {
+		t.Errorf("exec --bogus: exit %d, want the usage error\n%s", code, out)
+	}
+}
+
 func TestInitCopiesDotEnvTemplate(t *testing.T) {
 	f := newRepo(t, map[string]string{
 		".graft.yaml":       "schema: 1\nversion:\n  mode: none\ndotenv: local.env\ndotenv_template: local.env.example\n",

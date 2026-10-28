@@ -185,6 +185,12 @@ func runError(a *app.App, err error) int {
 	}
 }
 
+// parsesItsFlags names the commands whose flag set answers -h with their
+// section and flags; the others get the section from dispatch.
+var parsesItsFlags = map[string]bool{
+	"commit": true, "release": true, "version": true, "deploy": true, "flags": true, "logs": true, "stats": true,
+}
+
 func dispatch(ctx context.Context, a *app.App, args []string) error {
 	if len(args) == 0 {
 		return help(a)
@@ -200,6 +206,11 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 	// The stats record tasks as run under the command; runTask clears it,
 	// so a task run directly names itself.
 	a.Command = cmd
+	if !parsesItsFlags[cmd] {
+		if ok, err := sectionHelp(a, cmd, rest); ok {
+			return err
+		}
+	}
 	switch cmd {
 	case "commit":
 		return commitCmd(ctx, a, rest)
@@ -259,7 +270,7 @@ func projectCmd(ctx context.Context, a *app.App, cmd string, rest []string) erro
 	case "tools":
 		return toolsCmd(ctx, a, rest)
 	case "help", "-h", "--help":
-		return noArgs(a, cmd, rest, func() error { return help(a) })
+		return helpCmd(a, rest)
 	case "tasks":
 		return noArgs(a, cmd, rest, a.Tasks)
 	case "--version", "-v":
@@ -479,12 +490,45 @@ func toolsCmd(ctx context.Context, a *app.App, args []string) error {
 type heldOutput struct {
 	bytes.Buffer
 	w io.Writer
+	// err is why the usage could not be written.
+	err error
 }
 
+// newFlags makes a command's flag set, whose -h prints the command's
+// section of graft help and then its flags.
 func newFlags(a *app.App, name string) *flag.FlagSet {
 	fs := flag.NewFlagSet("graft "+name, flag.ContinueOnError)
-	fs.SetOutput(&heldOutput{w: a.Stderr})
+	out := &heldOutput{w: a.Stdout}
+	fs.SetOutput(out)
+	fs.Usage = func() {
+		if out.err = writeSection(out, a, name); out.err != nil {
+			return
+		}
+		flags := 0
+		fs.VisitAll(func(*flag.Flag) { flags++ })
+		if flags > 0 {
+			out.WriteString("\nFlags:\n")
+			fs.PrintDefaults()
+		}
+	}
 	return fs
+}
+
+// sectionHelp answers graft <command> -h for a command that parses no
+// flags of its own; false when args ask for something else.
+func sectionHelp(a *app.App, cmd string, args []string) (bool, error) {
+	if len(args) != 1 || (args[0] != "-h" && args[0] != "--help") {
+		return false, nil
+	}
+	if _, ok := sectionOf(cmd); !ok {
+		return false, nil
+	}
+	var b strings.Builder
+	if err := writeSection(&b, a, cmd); err != nil {
+		return true, err
+	}
+	fmt.Fprint(a.Stdout, b.String())
+	return true, nil
 }
 
 // parseError turns a flag parse error into graft's: -h shows the held
@@ -492,6 +536,9 @@ func newFlags(a *app.App, name string) *flag.FlagSet {
 func parseError(fs *flag.FlagSet, err error) error {
 	if errors.Is(err, flag.ErrHelp) {
 		if out, ok := fs.Output().(*heldOutput); ok {
+			if out.err != nil {
+				return out.err
+			}
 			if _, werr := out.WriteTo(out.w); werr != nil {
 				return fmt.Errorf("print the usage: %w", werr)
 			}

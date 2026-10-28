@@ -221,6 +221,7 @@ stats` (`wait_s`).
 | `graft worktree sync [--trunk <ref>]` | move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted (see Worktrees) |
 | `graft tools [install]` | check the pinned tools; install the failing ones |
 | `graft help` | the commands the project's `.graft.yaml` uses, its tasks (those with `desc`, with their arguments) and services |
+| `graft help <command>`, `graft <command> -h` | one command's part of `graft help`, with details such as the exit codes of `exec`; a command with flags lists them after it |
 | `graft --version` | print graft's own version |
 
 Put `-C <directory>` before a command to run it as if graft had been started
