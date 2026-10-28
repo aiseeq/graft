@@ -148,17 +148,36 @@ func raiseFile(ctx context.Context, path, display, goPath string, env []string, 
 	return nil
 }
 
-// latestModule is what go list -m -e says of a module@latest query.
-type latestModule struct {
+// LatestModule is what go list -m -e says of a module@latest query.
+type LatestModule struct {
 	Version string
 	Err     string
+}
+
+// LatestVersions asks go for the latest version of each module in one query.
+// A module go cannot resolve has Err set; command and decoding failures are
+// returned to the caller.
+func LatestVersions(ctx context.Context, dir string, modules []string) (map[string]LatestModule, error) {
+	goPath, err := exec.LookPath("go")
+	if err != nil {
+		return nil, fmt.Errorf("looking up go: %w", err)
+	}
+	candidates := make([]candidate, len(modules))
+	for i, module := range modules {
+		candidates[i] = candidate{path: module}
+	}
+	latest, err := latestVersions(ctx, dir, goPath, envWith(os.Environ(), "GOWORK", "off"), candidates)
+	if err != nil {
+		return nil, err
+	}
+	return latest, nil
 }
 
 // latestVersions asks go for the latest version of every candidate in one
 // go list, with -e so that a module go cannot look up leaves its error
 // instead of failing the others. A go list that fails outright (offline
 // under GOFLAGS=-mod=mod, a timeout) gives every candidate its error.
-func latestVersions(ctx context.Context, dir, goPath string, env []string, candidates []candidate) (map[string]latestModule, error) {
+func latestVersions(ctx context.Context, dir, goPath string, env []string, candidates []candidate) (map[string]LatestModule, error) {
 	ctx, cancel := context.WithTimeout(ctx, latestTimeout)
 	defer cancel()
 	args := []string{"list", "-m", "-e", "-json"}
@@ -166,11 +185,11 @@ func latestVersions(ctx context.Context, dir, goPath string, env []string, candi
 		args = append(args, c.path+"@latest")
 	}
 	out, stderr, err := runGo(ctx, dir, goPath, env, args...)
-	latest := make(map[string]latestModule, len(candidates))
+	latest := make(map[string]LatestModule, len(candidates))
 	if err != nil {
 		msg := joinOutput(stderr, out, err)
 		for _, c := range candidates {
-			latest[c.path] = latestModule{Err: msg}
+			latest[c.path] = LatestModule{Err: msg}
 		}
 		return latest, nil
 	}
@@ -185,9 +204,9 @@ func latestVersions(ctx context.Context, dir, goPath string, env []string, candi
 		} else if err != nil {
 			return nil, fmt.Errorf("decoding go list output: %w", err)
 		}
-		lm := latestModule{Version: m.Version}
+		lm := LatestModule{Version: m.Version}
 		if m.Error != nil {
-			lm = latestModule{Err: m.Error.Err}
+			lm = LatestModule{Err: m.Error.Err}
 		}
 		latest[m.Path] = lm
 	}

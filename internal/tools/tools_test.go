@@ -48,6 +48,26 @@ func TestBuildProblem(t *testing.T) {
 	}
 }
 
+func TestLatestProblem(t *testing.T) {
+	cases := []struct {
+		name, module, built, latest, want string
+	}{
+		{"older release", "example.com/tool", "v0.1.0", "v0.2.0", "built from example.com/tool@v0.1.0, latest v0.2.0"},
+		{"same release", "example.com/tool", "v0.2.0", "v0.2.0", ""},
+		{"newer clean release", "example.com/tool", "v0.3.0", "v0.2.0", ""},
+		{"pseudo-version behind release", "example.com/tool", "v0.0.0-20260101000000-111111111111", "v0.2.0", "built from example.com/tool@v0.0.0-20260101000000-111111111111, latest v0.2.0"},
+		{"pre-release", "example.com/tool", "v0.2.0-rc1", "v0.2.0", "built from example.com/tool@v0.2.0-rc1, latest v0.2.0"},
+		{"local build", "example.com/tool", "(devel)", "v0.2.0", ""},
+		{"dirty build", "example.com/tool", "v0.2.0+dirty", "v0.3.0", ""},
+	}
+	for _, c := range cases {
+		got := latestProblem(c.module, c.built, c.latest)
+		if got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 func TestInstallArg(t *testing.T) {
 	for goInstall, want := range map[string]string{
 		"example.com/tool":        "example.com/tool@latest",

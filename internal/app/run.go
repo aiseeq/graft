@@ -9,6 +9,7 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/gomods"
 	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/services"
 	"github.com/aiseeq/graft/v2/internal/tools"
@@ -212,12 +213,41 @@ func (a *App) checkTools(ctx context.Context, cfg *config.Config, install bool) 
 	if err != nil {
 		return err
 	}
-	var failed []string
+	results := make(map[string]tools.Result, len(cfg.Tools))
+	var modules []string
 	for _, name := range sortedNames(cfg.Tools) {
 		t := cfg.Tools[name]
 		r, err := tools.Check(ctx, name, t)
 		if err != nil {
 			return err
+		}
+		results[name] = r
+		if r.LatestModule != "" && !slices.Contains(modules, r.LatestModule) {
+			modules = append(modules, r.LatestModule)
+		}
+	}
+	latest := map[string]gomods.LatestModule{}
+	if len(modules) > 0 {
+		latest, err = gomods.LatestVersions(ctx, a.Dir, modules)
+		if err != nil {
+			return fmt.Errorf("looking up latest tool versions: %w", err)
+		}
+	}
+	var failed []string
+	for _, name := range sortedNames(cfg.Tools) {
+		t := cfg.Tools[name]
+		r := results[name]
+		if module := r.LatestModule; module != "" {
+			m := latest[module]
+			if m.Version == "" {
+				reason, _, _ := strings.Cut(strings.TrimSpace(m.Err), "\n")
+				if reason == "" {
+					reason = "go list -m gave no version"
+				}
+				a.warn("%s: the latest version of %s is unknown (%s); the build on PATH is kept", name, module, reason)
+			} else {
+				tools.CheckLatest(&r, m.Version)
+			}
 		}
 		if r.OK {
 			a.printf("%s: ok (%s)", name, r.Path)

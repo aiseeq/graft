@@ -1056,8 +1056,11 @@ A binary on PATH says nothing about its version, so a tool counts as present
 only when `check` prints `expect`: a version, or a capability such as a rule
 the project relies on. Leave the version out of `go_install`, or write
 `@latest`, unless the project cannot work with an older release: `expect`
-already says what it needs, and a pin nobody raises only grows stale. Without
-a version graft installs `@latest`; with one it installs that release. `graft tools` reports, `graft tools install` and
+already says what it needs, and a pin nobody raises only grows stale. For an
+unpinned tool, graft checks the build against the module's latest release and
+installs `@latest`; with a pin it installs that release. Local builds stay in
+place, and when the latest version cannot be learned, graft warns and keeps
+the build on PATH. `graft tools` reports, `graft tools install` and
 `graft init` run `go install` for the failing ones into `tools.bin_dir` from
 the user config (by default where go install puts binaries) and check again.
 Before installing, graft warns when the new copy will come ahead of another

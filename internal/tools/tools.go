@@ -37,6 +37,10 @@ type Result struct {
 	Problem string
 	// Path is where PATH finds the checked program, empty when it does not.
 	Path string
+	// LatestModule and BuiltVersion are set when an unpinned Go tool can be
+	// compared with its module's latest release.
+	LatestModule string
+	BuiltVersion string
 }
 
 // Check runs the check of one tool: its check command, or without one, a
@@ -59,6 +63,9 @@ func Check(ctx context.Context, name string, t *config.Tool) (Result, error) {
 			r.Problem = fmt.Sprintf("%s has no Go build info (%v)", path, err)
 		} else {
 			r.Problem = buildProblem(bi, t)
+			if r.Problem == "" {
+				setLatestCandidate(&r, bi, t)
+			}
 		}
 		r.OK = r.Problem == ""
 		return r, nil
@@ -80,8 +87,39 @@ func Check(ctx context.Context, name string, t *config.Tool) (Result, error) {
 	default:
 		r.OK = true
 	}
+	if r.OK {
+		if bi, err := buildinfo.ReadFile(path); err == nil {
+			setLatestCandidate(&r, bi, t)
+		}
+	}
 	return r, nil
 }
+
+func setLatestCandidate(r *Result, bi *debug.BuildInfo, t *config.Tool) {
+	pkg, pinned := t.Pin()
+	if pinned != "" || bi.Path != pkg || bi.Main.Path == "" || localBuild(bi.Main.Version) {
+		return
+	}
+	r.LatestModule, r.BuiltVersion = bi.Main.Path, bi.Main.Version
+}
+
+// CheckLatest marks an unpinned build absent when it predates the module's
+// latest release. An empty latest version leaves the result unchanged.
+func CheckLatest(r *Result, latest string) {
+	if problem := latestProblem(r.LatestModule, r.BuiltVersion, latest); problem != "" {
+		r.OK = false
+		r.Problem = problem
+	}
+}
+
+func latestProblem(module, built, latest string) string {
+	if module == "" || latest == "" || built == latest || localBuild(built) || atLeast(built, latest) {
+		return ""
+	}
+	return fmt.Sprintf("built from %s@%s, latest %s", module, built, latest)
+}
+
+func localBuild(v string) bool { return v == "(devel)" || strings.Contains(v, "+dirty") }
 
 // buildProblem compares a program's build info with go_install: the main
 // package, the main module version when a version is pinned and, when the
