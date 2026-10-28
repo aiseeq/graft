@@ -1,6 +1,7 @@
 # gate near 60s limit; test content review
 
-Статус: открыт
+Статус: готово
+Исполнитель: graft-master
 
 ## Вход
 - Проблема:
@@ -31,3 +32,4 @@
 - 2026-10-28 18:49 note — graft-master: 18:4x боец Luna 1028-1327-test-cpu снят (worker stop, 317 мин, 2 захода, приёмка 47–49 с CPU при цели 40, не сходился). Правки продуктового кода отклонены: stageCommitInput смотрит только len(cfg.Gate) и снимает защиту от записи во время неявных шагов гейта (vet/gofmt); reverts читает настоящий индекс. Тестовую часть (setup через plain git вместо graft commit) перенёс в worktree test-cpu-tests от свежего main (конфликт PROJ-86/87 разрешён тем же приёмом). A/B на одной машине, -short, корневой пакет: main 56,0 с wall / 53,6 с CPU; test-only 42,3–42,8 с wall / 38,7–39,5 с CPU; 269 тестов зелёные в обоих. Проверка защиты: откат 18 фиксов месяца, чьи ловящие тесты затронуты (scratchpad rc2.sh), на main и новом дереве + независимое ревью суб-агентом каждой замены
 - 2026-10-28 18:52 note — graft-master: откат фиксов месяца: из 18 с затронутыми тестами 3 наложились (a26d192, f745406, c38daec с -C1) — red на main и на новом дереве; 15 не ложатся на нынешний код (apply-fail на обоих) — закрыть мутациями по итогу ревью. graft gate на test-cpu-tests: 51,8 и 46,5 с (было 1:01–1:05)
 - 2026-10-28 19:04 note — graft-master: ревью суб-агента: 3 подтверждённых ослабления (reverts: version files exempt; ticket: key after SHA-256; amend: message with key unchanged) и 3 лёгких (TestTicketRequired passing cases, git-tag commit with remote, conventional any subject) — во всех 6 возвращён graft commit; мутанты ревьюера 3/3 red на новом дереве. Подъём версии в 5 копиях сведён в fixture.mustVersionedCommit (build version off a build branch fails), устаревший setup lock-тестов убран. Итог: 269 тестов, корневой пакет 42,6 с wall / 39,1 с CPU (было 56,0 / 53,6). Коммит в main
+- 2026-10-28 19:10 готово — verify-subagent: суб-агент проверил каждую замену graft commit на plain git: 3 ослабления подтверждены мутантами, 3 лёгких — все 6 возвращены, мутанты 3/3 red; откат фиксов месяца: наложившиеся 3/3 red на новом дереве; A/B корневой пакет 56,0→42,6 с wall, 53,6→39,1 с CPU, 269 тестов; graft stats test-gate 58,2→43,5 с, graft gate 46,5–51,8 с (было 1:01–1:05); all зелёный; v2.50.3 на ноуте и pc
