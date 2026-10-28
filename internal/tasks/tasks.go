@@ -9,6 +9,7 @@ import (
 	"debug/buildinfo"
 	"errors"
 	"fmt"
+	"go/format"
 	"io"
 	"io/fs"
 	"maps"
@@ -167,9 +168,14 @@ const GoVetSource = "go vet ./..."
 // GoFixSource is how a go_fix step reads, as GoVetSource does.
 const GoFixSource = "go fix -diff ./..."
 
+// GoFmtSource is how the implicit gofmt step reads in the gate.
+const GoFmtSource = "gofmt -l"
+
 // goFixHint follows a failing go_fix step.
 const goFixHint = "go fix has rewrites to make: run go fix ./... in the module, again until go fix -diff ./... is empty (one pass leaves rewrites that overlap), and commit them. " +
 	"A new Go release brings new rewrites: after a Go upgrade this step fails in every project that turns it on, whatever the change"
+
+const goFmtHint = "run gofmt -w <files> and commit them"
 
 // gateStep is a step of the gate with the task that sets its directory,
 // and what to do when it fails.
@@ -177,6 +183,7 @@ type gateStep struct {
 	step config.Step
 	task *config.Task
 	hint string
+	run  func(context.Context) error
 }
 
 // gateSteps is the gate: go vet ./... in every Go module of the tree first,
@@ -189,7 +196,7 @@ type gateStep struct {
 // build, which the build cache does not share.
 func (r *Runner) gateSteps() ([]gateStep, error) {
 	var steps []gateStep
-	if !r.Config.GoVet.IsEnabled() && !r.Config.GoFix.Enabled {
+	if !r.Config.GoVet.IsEnabled() && !r.Config.GoFix.Enabled && !r.Config.GoFmt.IsEnabled() {
 		return r.configSteps(steps), nil
 	}
 	mods, err := r.goModules()
@@ -219,6 +226,12 @@ func (r *Runner) gateSteps() ([]gateStep, error) {
 				hint: goFixHint,
 			})
 		}
+	}
+	if r.Config.GoFmt.IsEnabled() && len(mods) > 0 {
+		steps = append(steps, gateStep{
+			step: config.Step{Source: GoFmtSource}, task: &config.Task{}, hint: goFmtHint,
+			run: func(ctx context.Context) error { return r.checkGoFmt(ctx, mods) },
+		})
 	}
 	return r.configSteps(steps), nil
 }
@@ -262,6 +275,131 @@ func (r *Runner) goModules() ([]string, error) {
 	}
 	slices.Sort(dirs[min(len(dirs), 1):])
 	return r.inWorkspace(dirs)
+}
+
+// checkGoFmt is the gofmt -l step: it prints the Go files of modules that
+// git lists and go/format would change (or cannot parse), and fails on any.
+// A file belongs to its nearest module, so a module left out of modules
+// (go.work, go_vet.exclude) is not checked through the root.
+func (r *Runner) checkGoFmt(ctx context.Context, modules []string) error {
+	repo, err := r.repo()
+	if err != nil {
+		return fmt.Errorf("listing Go files: %w", err)
+	}
+	out, err := repo.Git("ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.go", "go.mod", "*/go.mod")
+	if err != nil {
+		return fmt.Errorf("listing Go files and modules: %w", err)
+	}
+	selected := make(map[string]bool, len(modules))
+	for _, mod := range modules {
+		selected[mod] = true
+	}
+	moduleDirs, err := goFmtModuleDirs(r.Root, out, modules)
+	if err != nil {
+		return err
+	}
+	var bad []string
+	for file := range strings.SplitSeq(out, "\x00") {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("checking Go formatting: %w", err)
+		}
+		if !strings.HasSuffix(file, ".go") {
+			continue
+		}
+		dir := path.Dir(file)
+		if vetSkipped(dir, r.Config.GoVet.Exclude) {
+			continue
+		}
+		if !goFmtInModule(file, moduleDirs, selected) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(r.Root, filepath.FromSlash(file)))
+		if err != nil {
+			return fmt.Errorf("reading Go file %s: %w", file, err)
+		}
+		data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+		formatted, err := format.Source(data)
+		if err != nil || !bytes.Equal(data, formatted) {
+			bad = append(bad, filepath.ToSlash(file))
+		}
+	}
+	if len(bad) > 0 {
+		slices.Sort(bad)
+		fmt.Fprintln(r.Stdout, strings.Join(bad, "\n"))
+		return errors.New("Go files need formatting")
+	}
+	return nil
+}
+
+// goFmtModuleDirs are the module directories of the git listing whose
+// go.mod is in the work tree, and the selected ones.
+func goFmtModuleDirs(root, listing string, selected []string) (map[string]bool, error) {
+	dirs := make(map[string]bool, len(selected))
+	for _, dir := range selected {
+		dirs[dir] = true
+	}
+	for item := range strings.SplitSeq(listing, "\x00") {
+		if dir, ok := strings.CutSuffix(item, "/go.mod"); ok {
+			dirs[dir] = true
+		} else if item == "go.mod" {
+			dirs["."] = true
+		}
+	}
+	for dir := range dirs {
+		_, err := os.Stat(filepath.Join(root, filepath.FromSlash(dir), "go.mod"))
+		if errors.Is(err, os.ErrNotExist) {
+			delete(dirs, dir)
+		} else if err != nil {
+			return nil, fmt.Errorf("checking module %s: %w", dir, err)
+		}
+	}
+	return dirs, nil
+}
+
+// goFmtInModule reports whether the nearest module of file is selected.
+func goFmtInModule(file string, dirs, selected map[string]bool) bool {
+	for dir := path.Dir(file); ; dir = path.Dir(dir) {
+		if dirs[dir] {
+			return selected[dir]
+		}
+		if dir == "." {
+			return false
+		}
+	}
+}
+
+// measureFunc runs a gate step done in graft's process and records it as
+// measure records a command's step.
+func (r *Runner) measureFunc(source string, run func() error) error {
+	start := time.Now()
+	err := run()
+	r.recordStep(source, stats.Usage{Wall: time.Since(start)}, stepExit(err))
+	return err
+}
+
+// stepExit is the exit code a step done in graft records: 1 on an error.
+func stepExit(err error) int {
+	if err == nil {
+		return 0
+	}
+	return 1
+}
+
+// recordStep adds a step's usage and exit to the open frames and writes its
+// stats record.
+func (r *Runner) recordStep(source string, use stats.Usage, code int) {
+	if len(r.frames) == 0 {
+		return
+	}
+	for _, f := range r.frames {
+		f.steps++
+		f.use.Add(use)
+		if f.exit == 0 {
+			f.exit = code
+		}
+	}
+	inner := r.frames[len(r.frames)-1]
+	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Step: stats.StepText(source), Exit: code, Host: r.hostOf(inner)}, use, r.frames[0].task)
 }
 
 // inWorkspace keeps, when the root has go.work, the modules its use lists:
@@ -344,11 +482,17 @@ func (r *Runner) Gate(ctx context.Context) (err error) {
 			return fmt.Errorf("gate: %w", err)
 		}
 		fmt.Fprintf(r.Stdout, "graft: gate %d/%d: %s\n", i+1, len(steps), s.Source)
-		if err := r.step(ctx, s, gs.task, nil, threads); err != nil {
+		var stepErr error
+		if gs.run != nil {
+			stepErr = r.measureFunc(s.Source, func() error { return gs.run(ctx) })
+		} else {
+			stepErr = r.step(ctx, s, gs.task, nil, threads)
+		}
+		if stepErr != nil {
 			if gs.hint != "" {
-				return fmt.Errorf("gate failed at %q: %w\n%s", s.Source, err, gs.hint)
+				return fmt.Errorf("gate failed at %q: %w\n%s", s.Source, stepErr, gs.hint)
 			}
-			return fmt.Errorf("gate failed at %q: %w", s.Source, err)
+			return fmt.Errorf("gate failed at %q: %w", s.Source, stepErr)
 		}
 	}
 	return nil
@@ -863,15 +1007,7 @@ func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
 		r.Stats.Warn(werr)
 	}
 	code := cmd.ProcessState.ExitCode()
-	for _, f := range r.frames {
-		f.steps++
-		f.use.Add(use)
-		if f.exit == 0 {
-			f.exit = code
-		}
-	}
-	inner := r.frames[len(r.frames)-1]
-	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Step: stats.StepText(source), Exit: code, Host: r.hostOf(inner)}, use, r.frames[0].task)
+	r.recordStep(source, use, code)
 	return use, err
 }
 

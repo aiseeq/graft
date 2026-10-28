@@ -235,7 +235,7 @@ stats` (`wait_s`).
 | `graft init` | install the hooks and set `core.hooksPath`, create the `.env` file from `dotenv_template` when it is missing, install pinned tools that fail their check; safe to repeat |
 | `graft check` | run the content checks on the index |
 | `graft leaks <revision range>` | scan commits for the private names and terms of the user config (`leaks`) |
-| `graft gate` | run the gate commands (`go vet ./...` in every Go module first, see `go_vet`, then `go fix -diff ./...` with `go_fix`) |
+| `graft gate` | run the gate commands (`go vet ./...` in every Go module first, see `go_vet`, then `go fix -diff ./...` with `go_fix`, then `gofmt -l` with `go_fmt`) |
 | `graft hook pre-commit` / `prepare-commit-msg` / `post-merge` | what the installed hooks call |
 | `graft flags [status]` | is the flag raised: open journal events no exception mutes |
 | `graft flags show <id>` | one event in full |
@@ -423,6 +423,14 @@ go_vet:
   # env: {GOFLAGS: -tags=foo}   # variables of the vet steps, as a task's env
   # exclude: [tools/gen]        # module directories left unvetted (with everything below)
   # reason: ...                 # required with enabled: false or exclude
+
+# gofmt -l checks every Go file git lists inside the modules, after go vet and
+# go fix. It skips testdata, vendor, node_modules and go_vet.exclude. Files
+# with different formatting or parse errors fail the gate; CRLF is treated as
+# LF. It is on by default so unformatted Go files do not enter a commit.
+go_fmt:
+  enabled: true                 # default true; false turns the check off
+  # reason: ...                 # required with enabled: false
 
 # go fix -diff ./... after the vet steps, in the same modules with go_vet.env,
 # shown as "go fix -diff ./... (backend)" below the root: a rewrite go fix

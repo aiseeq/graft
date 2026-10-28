@@ -64,6 +64,7 @@ type Config struct {
 	Gate    []Step  `yaml:"gate"`
 	GoVet   GoVet   `yaml:"go_vet"`
 	GoFix   GoFix   `yaml:"go_fix"`
+	GoFmt   GoFmt   `yaml:"go_fmt"`
 	Version Version `yaml:"version"`
 	Ticket  *Ticket `yaml:"ticket"`
 	Push    Push    `yaml:"push"`
@@ -178,6 +179,15 @@ func (g GoVet) IsEnabled() bool { return g.Enabled == nil || *g.Enabled }
 type GoFix struct {
 	Enabled bool `yaml:"enabled"`
 }
+
+// GoFmt configures the gofmt check in the gate; it is on by default.
+type GoFmt struct {
+	Enabled *bool  `yaml:"enabled"`
+	Reason  string `yaml:"reason"`
+}
+
+// IsEnabled reports whether the gate checks Go formatting; it is on by default.
+func (g GoFmt) IsEnabled() bool { return g.Enabled == nil || *g.Enabled }
 
 // Checks configures the content checks run on the staged changes.
 type Checks struct {
@@ -306,6 +316,7 @@ func (c *Config) validate() error {
 		c.validateSecrets,
 		c.validateLargeFiles,
 		c.validateGoVet,
+		c.validateGoFmt,
 		c.validateReverts,
 		c.validateHooks,
 		c.validateLock,
@@ -325,6 +336,13 @@ func (c *Config) validate() error {
 		if err := validate(); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (c *Config) validateGoFmt() error {
+	if !c.GoFmt.IsEnabled() && strings.TrimSpace(c.GoFmt.Reason) == "" {
+		return errors.New("go_fmt.reason: required when go_fmt.enabled is false, why formatting is skipped")
 	}
 	return nil
 }

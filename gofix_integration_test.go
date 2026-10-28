@@ -27,7 +27,7 @@ func TestGoFixFailsTheGateWithItsDiff(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("go fix's rewrites must fail the commit:\n%s", out)
 	}
-	for _, want := range []string{"gate 1/3: go vet ./...", "gate 2/3: go fix -diff ./...", "+\tfor i := range 3 {",
+	for _, want := range []string{"gate 1/4: go vet ./...", "gate 2/4: go fix -diff ./...", "+\tfor i := range 3 {",
 		`gate failed at "go fix -diff ./..."`, "run go fix ./... in the module, again until go fix -diff ./... is empty",
 		"after a Go upgrade this step fails in every project"} {
 		if !strings.Contains(out, want) {
@@ -49,7 +49,7 @@ func TestGoFixRunsInEveryModuleWithoutVet(t *testing.T) {
 		"tools/a/go.mod": fixGoMod, "tools/a/main.go": fixDue,
 	})
 	out, code := f.graft("", "gate")
-	if code == 0 || strings.Contains(out, "go vet") || !strings.Contains(out, "gate 1/3: go fix -diff ./...\n") ||
+	if code == 0 || strings.Contains(out, "go vet") || !strings.Contains(out, "gate 1/4: go fix -diff ./...\n") ||
 		!strings.Contains(out, `gate failed at "go fix -diff ./... (tools/a)"`) {
 		t.Errorf("exit %d:\n%s", code, out)
 	}

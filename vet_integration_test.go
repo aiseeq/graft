@@ -37,7 +37,7 @@ func TestGoProjectGateRunsVetAndItsFailureFailsTheGate(t *testing.T) {
 func TestGoProjectGatePassesCleanVetBeforeConfigSteps(t *testing.T) {
 	f := vetRepo(t, "", map[string]string{"go.mod": vetGoMod, "main.go": vetGood})
 	out := f.mustGraft("gate")
-	vet, step := strings.Index(out, "gate 1/2: go vet ./..."), strings.Index(out, "gate 2/2:")
+	vet, step := strings.Index(out, "gate 1/3: go vet ./..."), strings.Index(out, "gate 3/3:")
 	if vet < 0 || step < vet {
 		t.Errorf("vet must be the first of two steps:\n%s", out)
 	}
@@ -87,7 +87,7 @@ func TestGateVetsEveryModuleAndPassesWhenClean(t *testing.T) {
 		"deep/er/b/go.mod": vetGoMod, "deep/er/b/main.go": vetGood,
 	})
 	out := f.mustGraft("gate")
-	for _, want := range []string{"gate 1/4: go vet ./...\n", "go vet ./... (deep/er/b)", "go vet ./... (tools/a)"} {
+	for _, want := range []string{"gate 1/5: go vet ./...\n", "go vet ./... (deep/er/b)", "go vet ./... (tools/a)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q in:\n%s", want, out)
 		}
