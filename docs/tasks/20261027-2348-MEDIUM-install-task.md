@@ -1,6 +1,7 @@
 # One graft task installs a project binary into ~/bin
 
-Статус: в работе
+Статус: ждёт
+Ждёт: project masters switched their installs to the step (the space admin reports); graft's own go run . install passes once the pilot tree is clean
 Исполнитель: graft-master
 
 ## Вход
@@ -85,3 +86,6 @@ install, then graft's install task switches to the step.
 - 2026-10-28 02:33 note — graft-master: перепись и форма записаны; реализация — боец Luna (класс фича-инструмента, маршрут luna), приёмочный тест пишет мастер
 - 2026-10-28 02:34 note — graft-master: боец Luna 1028-0234-feat-install-step, branch feat/install-step, acceptance: sha256 of install_integration_test.go + go run . gate
 - 2026-10-28 02:52 note — graft-master: worker passed acceptance (16 min). Master review fixed 4 things: on Windows the swap failed when removing the running `.old`; a 2-key map without `install` got the install error; tools.Install read the user config twice; the README bullet. Tests TestInstallStep|TestTask|TestTools green. The .graft.yaml switch is set aside for the second commit.
+- 2026-10-28 02:59 note — graft-master: 70724d7 step committed; v2.45.0 tagged and installed (~/bin/graft vcs.revision=70724d7, modified=false). 0a5c73a: graft's install task uses the step. The dogfood install is refused by the pilot: the pilot project's uncommitted work has its own glint High finding. That is not graft — the same code passed the pilot at v2.45.0. Retry go run . install when the pilot tree is clean. Next: handovers to consumer masters.
+- 2026-10-28 02:59 note — graft-master: 03:01 handover with the per-project list sent to the space admin (it distributes to the project masters); worker outcome recorded (merged)
+- 2026-10-28 02:59 ждёт — graft-master — project masters switched their installs to the step (the space admin reports); graft's own go run . install passes once the pilot tree is clean
