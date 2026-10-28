@@ -1,6 +1,6 @@
 # install step keeps a destination symlink to the built file and calls it unchanged
 
-Статус: на проверке
+Статус: готово
 Исполнитель: graft-master
 
 ## Вход
@@ -17,3 +17,4 @@
 - 2026-10-28 03:21 в работе — graft-master
 - 2026-10-28 03:21 note — graft-master: fix: sameFile Lstat's the destination, a symlink is never unchanged; TestInstallStepReplacesSymlink red before ("unchanged"), green after; README
 - 2026-10-28 03:25 на проверке — graft-master — v2.45.2 installed; independent check: the reporter re-runs install on a symlinked destination
+- 2026-10-28 03:27 готово — git-admin: space admin's check on one project: a destination symlink to bin/x, graft v2.45.2 install printed 'x e6ae0f1 -> ...' without unchanged; ls -l a regular file -rwxr-xr-x, readlink exit 1; go version -m vcs.revision=e6ae0f1, modified=false; the binary runs. glint Low error-wrap in sameFile fixed after
