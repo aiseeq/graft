@@ -1,6 +1,6 @@
 # The heavy queue admits one at a time, by the machine of this moment
 
-Статус: в работе
+Статус: на проверке
 Исполнитель: graft-master
 
 ## Постановка
@@ -51,3 +51,5 @@ at a load of 22 or more, the load reaching 52. Causes:
 - 2026-10-27 23:48 в работе — graft-master
 - 2026-10-27 23:58 `go run . all` green on akit v1.2.0 (23:49–23:58); committing --minor
 - 2026-10-28 00:12 committed 2204657, tagged v2.42.14 (patch: release got no --minor), installed; TestSwappingAloneStarts for akit-master; committing
+- 2026-10-28 01:00 note — graft-master: live measurement (stats, classified starts): before 22:25–23:25 213 of 338 heavy starts began while another started under 9s earlier still ran, after 00:15–00:28 4 of 126; max load at a start 55 → 16; gates started at load ≥22 without a wait 57 → 0
+- 2026-10-28 01:00 на проверке — graft-master — needs an independent look at the before/after stats

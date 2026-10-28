@@ -1,6 +1,7 @@
 # sweep says an item's work is on the target when it ships nothing there
 
-Статус: открыт
+Статус: на проверке
+Исполнитель: graft-master
 
 ## Вход
 - Проблема: a peer saw `sweep prod: … moved to Done: its work of the last 30
@@ -29,3 +30,4 @@
 - 2026-10-28 00:20 открыт — graft-master
 - 2026-10-28 00:21 cause measured (git show --stat of the 4 commits); answered the peer
 - 2026-10-28 00:26 shipsNothing in sweptCommit, onTargetWords; TestDeploySweepByContent PROJ-85; README; committing
+- 2026-10-28 01:00 на проверке — graft-master — installed v2.44.0; the consumer's master to confirm on its next prod sweep

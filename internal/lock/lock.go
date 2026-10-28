@@ -227,7 +227,7 @@ func readQueue(path string) ([]queueEntry, error) {
 		}
 		data, err := os.ReadFile(ticket)
 		if errors.Is(err, os.ErrNotExist) || busy(err) {
-			// Removed, or being removed as dead.
+			// Gone, or a reader holds it to remove it as dead.
 			continue
 		}
 		if err != nil {

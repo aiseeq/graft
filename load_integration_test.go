@@ -265,6 +265,8 @@ func TestExecExitStatus(t *testing.T) {
 		{"not found", []string{"exec", "--heavy", "--", "no-such-command-here"}, 127, "executable file not found"},
 		{"not executable", []string{"exec", "--", "./plain"}, 126, "permission denied"},
 		{"usage", []string{"exec", "sh"}, 125, "(see graft help)"},
+		{"-C to nowhere", []string{"-C", "no-such-dir", "exec", "--", "true"}, 125, "no-such-dir"},
+		{"-C after exec", []string{"exec", "-C", ".git", "--", "true"}, 125, "-C goes before the command"},
 	} {
 		if out, code := f.graft("", c.args...); code != c.code || !strings.Contains(out, c.says) {
 			t.Errorf("%s: exit %d, want %d and %q:\n%s", c.name, code, c.code, c.says, out)

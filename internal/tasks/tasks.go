@@ -744,10 +744,15 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 		cmd = r.remoteCmd(ctx, cmd, nil, threads)
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
-	if _, err = r.measure(cmd, s.Source); err != nil {
-		return &CommandError{Started: cmd.Process != nil, Err: err}
+	_, err = r.measure(cmd, s.Source)
+	switch {
+	case err == nil:
+		return nil
+	case f.remote && cmd.Process == nil:
+		// remote_heavy's run did not start: no command ran.
+		return fmt.Errorf("remote_heavy run: %w", err)
 	}
-	return nil
+	return &CommandError{Started: cmd.Process != nil, Err: err}
 }
 
 // CommandError is how the command Exec runs failed, told apart from the

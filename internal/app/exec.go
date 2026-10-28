@@ -30,7 +30,8 @@ func (a *App) Exec(ctx context.Context, argv []string, heavy bool) error {
 	switch {
 	case err == nil:
 		return nil
-	case !errors.As(err, &cmdErr):
+	case !errors.As(err, &cmdErr), ctx.Err() != nil:
+		// Interrupted, graft ended the command itself.
 		return &ExitCodeError{Code: ExitGraft, Err: err}
 	case errors.As(cmdErr.Err, &exit):
 		return &ExitCodeError{Code: exitStatus(exit), Err: fmt.Errorf("exec: %s: %w", strings.Join(argv, " "), err)}

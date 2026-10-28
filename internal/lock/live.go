@@ -27,7 +27,7 @@ func createLive(dir, pattern string, data []byte) (*flock.Flock, string, error) 
 	for range liveAttempts {
 		f, err := os.CreateTemp(dir, pattern)
 		if err != nil {
-			return nil, "", err
+			return nil, "", fmt.Errorf("creating a live file: %w", err)
 		}
 		name := f.Name()
 		_, writeErr := f.Write(data)
@@ -38,7 +38,7 @@ func createLive(dir, pattern string, data []byte) (*flock.Flock, string, error) 
 		fl := flock.New(name, flock.SetFlag(os.O_RDONLY))
 		ok, err := fl.TryRLock()
 		if errors.Is(err, os.ErrNotExist) {
-			// Removed as dead before it was opened again.
+			// A reader took it for dead before it was opened again.
 			continue
 		}
 		if err != nil {
@@ -55,9 +55,9 @@ func createLive(dir, pattern string, data []byte) (*flock.Flock, string, error) 
 		if now, err := os.Stat(name); err == nil && os.SameFile(held, now) {
 			return fl, name, nil
 		}
-		// Removed as dead before the lock was taken.
+		// A reader took it for dead before the lock was taken.
 		if err := fl.Unlock(); err != nil {
-			return nil, "", err
+			return nil, "", fmt.Errorf("unlocking %s: %w", name, err)
 		}
 	}
 	return nil, "", fmt.Errorf("could not keep a live file %s in %s: readers took it for dead %d times", pattern, dir, liveAttempts)
@@ -74,20 +74,20 @@ func gone(name string) (bool, error) {
 	fl := flock.New(name, flock.SetFlag(os.O_RDONLY))
 	ok, err := fl.TryLock()
 	if errors.Is(err, os.ErrNotExist) {
-		return true, nil
+		return true, fl.Close()
 	}
 	if err != nil {
-		return false, fmt.Errorf("probing %s: %w", filepath.Base(name), err)
+		return false, errors.Join(fmt.Errorf("probing %s: %w", filepath.Base(name), err), fl.Close())
 	}
 	if !ok {
-		return false, nil
+		return false, fl.Close()
 	}
 	if runtime.GOOS == "windows" {
 		// Windows removes no open file; an owner taking it meanwhile sees it
 		// removed and takes another.
 		return true, errors.Join(fl.Unlock(), removeDead(name))
 	}
-	// Removed under the lock, so an owner that locks it next sees it gone.
+	// The lock still held, an owner that locks the file next finds no file.
 	return true, errors.Join(removeDead(name), fl.Unlock())
 }
 

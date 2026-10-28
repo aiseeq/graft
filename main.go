@@ -38,25 +38,31 @@ import (
 // back to the module version recorded in the binary.
 var buildVersion string
 
-// errUsage marks command line mistakes; they exit with status 2.
+// errUsage marks command line mistakes; they exit with status 2, graft
+// exec's with app.ExitGraft.
 var errUsage = errors.New("usage")
 
 func main() {
+	// graft exec's own failures exit as env's do, apart from the command's.
+	failed := 1
+	if execCall(os.Args[1:]) {
+		failed = app.ExitGraft
+	}
 	wd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "graft:", err)
-		os.Exit(1)
+		os.Exit(failed)
 	}
 	// GRAFT_VERSION is graft's to set for the project it runs in; a value
 	// inherited from an outer graft (a task that runs graft) describes
 	// another project, or the same one at another moment.
 	if err := os.Unsetenv(tasks.VersionEnv); err != nil {
 		fmt.Fprintln(os.Stderr, "graft:", err)
-		os.Exit(1)
+		os.Exit(failed)
 	}
 	if err := stats.StartRun(); err != nil {
 		fmt.Fprintln(os.Stderr, "graft:", err)
-		os.Exit(1)
+		os.Exit(failed)
 	}
 	a := &app.App{Dir: wd, ToolVersion: toolVersion(), Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}
 	// Ctrl-C stops a lock wait or a gate command instead of leaving them
@@ -67,10 +73,34 @@ func main() {
 	os.Exit(code)
 }
 
+// execCall reports a graft exec command line, after any -C.
+func execCall(args []string) bool {
+	for len(args) > 1 && args[0] == "-C" {
+		args = args[2:]
+	}
+	return len(args) > 0 && args[0] == "exec"
+}
+
 func run(ctx context.Context, a *app.App, args []string) int {
+	if execCall(args) {
+		// Every failure of graft exec but the command's is graft's.
+		fail := func(err error) int {
+			var exitCode *app.ExitCodeError
+			if err != nil && !errors.As(err, &exitCode) {
+				err = &app.ExitCodeError{Code: app.ExitGraft, Err: err}
+			}
+			return runError(a, err)
+		}
+		return runArgs(ctx, a, args, fail)
+	}
+	return runArgs(ctx, a, args, func(err error) int { return runError(a, err) })
+}
+
+// runArgs runs the command line, its result through fail.
+func runArgs(ctx context.Context, a *app.App, args []string, fail func(error) int) int {
 	for len(args) > 0 && args[0] == "-C" {
 		if len(args) < 2 || args[1] == "" {
-			return runError(a, fmt.Errorf("%w: -C requires a directory", errUsage))
+			return fail(fmt.Errorf("%w: -C requires a directory", errUsage))
 		}
 		dir := args[1]
 		if !filepath.IsAbs(dir) {
@@ -78,30 +108,30 @@ func run(ctx context.Context, a *app.App, args []string) int {
 		}
 		abs, err := filepath.Abs(dir)
 		if err != nil {
-			return runError(a, fmt.Errorf("-C %q: %w", args[1], err))
+			return fail(fmt.Errorf("-C %q: %w", args[1], err))
 		}
 		info, err := os.Stat(abs)
 		if err != nil {
-			return runError(a, fmt.Errorf("-C %q: %w", abs, err))
+			return fail(fmt.Errorf("-C %q: %w", abs, err))
 		}
 		if !info.IsDir() {
-			return runError(a, fmt.Errorf("-C %q: not a directory", abs))
+			return fail(fmt.Errorf("-C %q: not a directory", abs))
 		}
 		if err := os.Chdir(abs); err != nil {
-			return runError(a, fmt.Errorf("-C %q: %w", abs, err))
+			return fail(fmt.Errorf("-C %q: %w", abs, err))
 		}
 		wd, err := os.Getwd()
 		if err != nil {
-			return runError(a, fmt.Errorf("getting the working directory after -C %q: %w", abs, err))
+			return fail(fmt.Errorf("getting the working directory after -C %q: %w", abs, err))
 		}
 		a.Dir = wd
 		args = args[2:]
 	}
 	if err := misplacedDir(a, args); err != nil {
-		return runError(a, err)
+		return fail(err)
 	}
 	err := dispatch(ctx, a, args)
-	return runError(a, err)
+	return fail(err)
 }
 
 // misplacedDir refuses -C <directory> after the command, before any --, with
@@ -405,9 +435,10 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 }
 
 // execCmd runs graft exec [--heavy] -- <command> [args].
-// execCmd is graft exec; its own failures, usage too, exit app.ExitGraft.
+// execCmd is graft exec; its own failures, usage too, exit app.ExitGraft
+// (run).
 func execCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := &app.ExitCodeError{Code: app.ExitGraft, Err: fmt.Errorf("%w: graft exec [--heavy [--local]] -- <command> [args]", errUsage)}
+	usage := fmt.Errorf("%w: graft exec [--heavy [--local]] -- <command> [args]", errUsage)
 	var heavy, local bool
 	for len(args) > 0 && args[0] != "--" {
 		switch args[0] {
@@ -426,7 +457,7 @@ func execCmd(ctx context.Context, a *app.App, args []string) error {
 	if local {
 		// The graft the command starts stays here too.
 		if err := os.Setenv(tasks.HeavyEnv, "local"); err != nil {
-			return &app.ExitCodeError{Code: app.ExitGraft, Err: fmt.Errorf("exec --local: %w", err)}
+			return fmt.Errorf("exec --local: %w", err)
 		}
 	}
 	return a.Exec(ctx, args[1:], heavy)

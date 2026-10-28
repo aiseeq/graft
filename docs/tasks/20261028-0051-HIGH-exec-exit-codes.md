@@ -20,3 +20,4 @@
 ## Журнал
 - 2026-10-28 00:51 открыт — graft-master
 - 2026-10-28 00:58 done in code: tasks.CommandError marks the command's result; App.Exec maps 125/126/127, 128+signal; usage 125; README; TestExecExitStatus
+- 2026-10-28 01:02 note — graft-master: independent review (fresh agent) of c4b0f32: -C and early main errors exit 1/2, an unstartable remote_heavy run maps to 126/127, Ctrl-C reads as the command's 137; fixed: execCall routes every exec failure but the command's to 125, a run not started is graft's, an interrupt is 125; tests for -C and the run (the interrupt untested)

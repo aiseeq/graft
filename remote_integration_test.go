@@ -129,6 +129,11 @@ func TestExecHeavyRunsOnRemoteHost(t *testing.T) {
 	if out, code := f.graft("", "exec", "--local", "--", "true"); code != 125 {
 		t.Errorf("exec --local without --heavy: exit %d\n%s", code, out)
 	}
+	// A run that does not start ran no command: graft's failure, not 127.
+	writeFile(t, f.path(".graft.yaml"), strings.Replace(f.read(".graft.yaml"), "run: [sh, ", "run: [no-such-remote-run, ", 1))
+	if out, code := f.graft("", "exec", "--heavy", "--", "true"); code != 125 || !strings.Contains(out, "remote_heavy run") {
+		t.Errorf("a run that does not start: exit %d\n%s", code, out)
+	}
 }
 
 // TestRemoteThreadsLeftToHost: with threads 0 a step on the host gets no
