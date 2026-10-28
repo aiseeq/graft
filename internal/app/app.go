@@ -379,3 +379,4 @@ func requireNormalContext(repo *gitx.Repo) error {
 
 var errNothingToCommit = errors.New("nothing to commit: the work tree is clean")
 var errGateLeftHead = errors.New("nothing to commit: the gate left the work tree as HEAD has it")
+var errGateEmptiedAmend = errors.New("nothing to amend: the gate left the amended commit as its parent has it")

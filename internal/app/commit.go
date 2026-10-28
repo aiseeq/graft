@@ -232,11 +232,16 @@ func gateLeftHead(repo *gitx.Repo) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("reading HEAD tree after the gate: %w", err)
 	}
-	indexTree, err := repo.Git("write-tree")
+	return stagedIs(repo, strings.TrimSpace(headTree))
+}
+
+// stagedIs says whether the staged tree is tree.
+func stagedIs(repo *gitx.Repo, tree string) (bool, error) {
+	staged, err := repo.Git("write-tree")
 	if err != nil {
 		return false, fmt.Errorf("writing the staged tree after the gate: %w", err)
 	}
-	return strings.TrimSpace(indexTree) == strings.TrimSpace(headTree), nil
+	return strings.TrimSpace(staged) == tree, nil
 }
 
 type savedIndex struct {

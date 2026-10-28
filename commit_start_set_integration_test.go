@@ -83,3 +83,33 @@ func TestCommitWhoseGateUndoesItsChangesHasNothingToCommit(t *testing.T) {
 		t.Errorf("VERSION = %q, want the first commit's bump only", v)
 	}
 }
+
+// TestAmendWhoseGateEmptiesTheCommitHasNothingToAmend: when the gate puts
+// every path of the amended commit and of the new changes back as its
+// parent has them, graft says there is nothing to amend, the commit stays
+// and the index is as before.
+func TestAmendWhoseGateEmptiesTheCommitHasNothingToAmend(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none}\ngate:\n  - [sh, -c, 'rm -f h.txt mine.txt']\n",
+	})
+	f.git("-c", "core.hooksPath=/dev/null", "add", "-A")
+	f.git("-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "chore: base")
+	f.write("h.txt", "raw\n")
+	f.git("-c", "core.hooksPath=/dev/null", "add", "-A")
+	f.git("-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "fix: local")
+	head := f.git("rev-parse", "HEAD")
+	f.write("mine.txt", "mine\n")
+	out, code := f.graft("", "amend")
+	if code == 0 || !strings.Contains(out, "nothing to amend: the gate left the amended commit as its parent has it") {
+		t.Errorf("exit %d, want nothing to amend:\n%s", code, out)
+	}
+	if got := f.git("rev-parse", "HEAD"); got != head {
+		t.Errorf("HEAD moved to %s", got)
+	}
+	if staged := f.git("diff", "--cached", "--name-only"); staged != "" {
+		t.Errorf("the index is not restored, staged:\n%s", staged)
+	}
+}

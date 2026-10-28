@@ -3,13 +3,12 @@ package stats
 import (
 	"bufio"
 	"bytes"
-	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
+
+	"github.com/aiseeq/graft/v2/internal/proc"
 )
 
 // treeMemory is the memory of pid and its descendants now: the sum of their
@@ -24,15 +23,15 @@ func treeMemory(pid int) (int64, error) {
 		p := queue[0]
 		queue = queue[1:]
 		mem, err := processMemory(p)
-		if gone(err) {
+		if proc.Gone(err) {
 			continue
 		}
 		if err != nil {
 			return 0, err
 		}
 		sum += mem
-		kids, err := children(p)
-		if gone(err) {
+		kids, err := proc.Children(p)
+		if proc.Gone(err) {
 			continue
 		}
 		if err != nil {
@@ -41,11 +40,6 @@ func treeMemory(pid int) (int64, error) {
 		queue = append(queue, kids...)
 	}
 	return sum, nil
-}
-
-// gone tells whether err means the process exited while it was read.
-func gone(err error) bool {
-	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH)
 }
 
 func processMemory(pid int) (int64, error) {
@@ -67,37 +61,4 @@ func processMemory(pid int) (int64, error) {
 		kb += n
 	}
 	return kb * 1024, nil
-}
-
-// children are the processes every thread of pid started
-// (/proc/<pid>/task/<tid>/children).
-func children(pid int) ([]int, error) {
-	tasks, err := filepath.Glob(fmt.Sprintf("/proc/%d/task/*/children", pid))
-	if err != nil {
-		return nil, fmt.Errorf("process %d threads: %w", pid, err)
-	}
-	if len(tasks) == 0 {
-		if _, err := os.Stat(fmt.Sprintf("/proc/%d/task", pid)); err != nil {
-			return nil, fmt.Errorf("process %d: %w", pid, err)
-		}
-		return nil, errors.New("/proc has no task/*/children: the kernel lacks CONFIG_PROC_CHILDREN")
-	}
-	var kids []int
-	for _, task := range tasks {
-		data, err := os.ReadFile(task)
-		if gone(err) {
-			continue // the thread ended
-		}
-		if err != nil {
-			return nil, fmt.Errorf("process %d children: %w", pid, err)
-		}
-		for f := range strings.FieldsSeq(string(data)) {
-			kid, err := strconv.Atoi(f)
-			if err != nil {
-				return nil, fmt.Errorf("%s: %w", task, err)
-			}
-			kids = append(kids, kid)
-		}
-	}
-	return kids, nil
 }

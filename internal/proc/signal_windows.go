@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -26,7 +27,7 @@ func Terminate(pid int) error {
 
 // StopOnCancel keeps the kill on a cancelled cmd: Windows has no signal a
 // process without a console can catch.
-func StopOnCancel(*exec.Cmd) {}
+func StopOnCancel(*exec.Cmd, time.Duration, func(error)) {}
 
 // Kill ends the process.
 func Kill(pid int) error {

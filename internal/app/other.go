@@ -59,6 +59,12 @@ func (a *App) Amend(ctx context.Context) error {
 		if err := a.stageGateChanges(repo, start, "amend"); err != nil {
 			return errors.Join(err, restoreIndex(repo, index))
 		}
+		if empty, err := stagedIs(repo, base); err != nil || empty {
+			if err == nil {
+				err = errGateEmptiedAmend
+			}
+			return errors.Join(err, restoreIndex(repo, index))
+		}
 		if ticketed {
 			// The amended commit is checked whole, against its parent.
 			if err := requireTicket(repo, cfg, message, base); err != nil {
@@ -72,13 +78,13 @@ func (a *App) Amend(ctx context.Context) error {
 			return errors.Join(err, restoreIndex(repo, index))
 		}
 		if err := runChecks(repo, cfg, message, parent, a.Stderr); err != nil {
-			return err
+			return errors.Join(err, restoreIndex(repo, index))
 		}
 		if message, err = a.withWorkers(repo, message); err != nil {
-			return err
+			return errors.Join(err, restoreIndex(repo, index))
 		}
 		if _, err := repo.GitInput(strings.NewReader(message), markerEnv, "commit", "--amend", "--cleanup=verbatim", "-F", "-"); err != nil {
-			return err
+			return errors.Join(err, restoreIndex(repo, index))
 		}
 		head, err := repo.Git("rev-parse", "--short", "HEAD")
 		if err != nil {

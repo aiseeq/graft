@@ -5,8 +5,10 @@ package proc
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 // Detach makes cmd start in its own session, so it outlives graft and a
@@ -22,9 +24,41 @@ func Terminate(pid int) error {
 }
 
 // StopOnCancel makes cmd get SIGTERM when its context ends, in place of
-// SIGKILL, so it can clean up; cmd.WaitDelay bounds how long it may take.
-func StopOnCancel(cmd *exec.Cmd) {
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+// SIGKILL, so it can clean up. A cmd still running grace later is killed
+// with the processes it started (a child it did not stop would run on with
+// the work), what fails then goes to warn, and Wait returns soon after.
+func StopOnCancel(cmd *exec.Cmd, grace time.Duration, warn func(error)) {
+	cmd.Cancel = func() error {
+		time.AfterFunc(grace, func() {
+			if err := killTree(cmd.Process); err != nil {
+				warn(err)
+			}
+		})
+		return cmd.Process.Signal(syscall.SIGTERM)
+	}
+	cmd.WaitDelay = grace + killSettle
+}
+
+// killSettle is how long Wait waits for the output of a killed tree.
+const killSettle = 5 * time.Second
+
+// killTree kills p and the processes it started, if p still runs: os.Process
+// signals through a pidfd, so a p already waited for is not taken for a new
+// process with its pid.
+func killTree(p *os.Process) error {
+	if err := p.Signal(syscall.Signal(0)); err != nil {
+		return nil // it ended
+	}
+	kids, err := descendants(p.Pid)
+	for _, kid := range kids {
+		if kerr := syscall.Kill(kid, syscall.SIGKILL); kerr != nil && !errors.Is(kerr, syscall.ESRCH) {
+			err = errors.Join(err, fmt.Errorf("killing process %d: %w", kid, kerr))
+		}
+	}
+	if kerr := p.Kill(); kerr != nil && !errors.Is(kerr, os.ErrProcessDone) {
+		err = errors.Join(err, fmt.Errorf("killing process %d: %w", p.Pid, kerr))
+	}
+	return err
 }
 
 // Kill ends the process group a detached process leads (SIGKILL).

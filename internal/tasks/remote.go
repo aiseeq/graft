@@ -290,8 +290,9 @@ func (r *Runner) remoteCmd(ctx context.Context, cmd *exec.Cmd, vars map[string]s
 	if r.runNamesRoot() {
 		remote.Dir = cmd.Dir
 	}
-	proc.StopOnCancel(remote)
-	remote.WaitDelay = remoteStopGrace
+	proc.StopOnCancel(remote, remoteStopGrace, func(err error) {
+		fmt.Fprintf(r.Stderr, "graft: stopping %s on %s: %v\n", strings.Join(cmd.Args, " "), r.remoteHeavy.Host, err)
+	})
 	return remote
 }
 

@@ -1,6 +1,7 @@
 # graft exec --heavy --settle D
 
-Статус: открыт
+Статус: готово
+Исполнитель: graft-master
 
 ## Вход
 - Проблема:
@@ -20,3 +21,4 @@
 - 2026-10-28 11:50 открыт — graft-master
 - 2026-10-28 11:54 note — graft-master: сделано в дереве main: main.go (--settle), internal/app/exec.go (ExecOptions, подмена Settle у r.Load), help.go, README, exec_settle_integration_test.go зелёный (без флага красный — usage).
 - 2026-10-28 12:05 note — graft-master: v2.47.0 выпущен и установлен (all зелёный); независимая проверка суб-агентом идёт.
+- 2026-10-28 12:58 готово — verify-subagent: независимая проверка v2.47.0 (суб-агент 12:15): --settle держит очередь заданное время или до конца команды; без --heavy / 0s / не-длительность → 125; llmark eb79baa: второй боец стартовал через 61,2 с; тест укорочен до 600ms (08a68be), зелёный в all v2.48.0
