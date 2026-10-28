@@ -377,3 +377,40 @@ func TestUserRemoteHeavyOverflowsBehindAHeldQueue(t *testing.T) {
 		t.Errorf("behind a held queue vet stayed here:\n%s\ncalls: %q", out, callsOf(t, state))
 	}
 }
+
+// TestUserRemoteHeavyTestFindsTheStandardLibrary: the host does not get this
+// machine's environment, so a go test sent there runs without the GOROOT
+// graft sets here for a -trimpath test; the test still finds its GOROOT.
+func TestUserRemoteHeavyTestFindsTheStandardLibrary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	state := t.TempDir()
+	writeFile(t, filepath.Join(state, "run.sh"), `echo "$*" >> "`+filepath.Join(state, "calls")+`"`+"\nexec env -u GOROOT \"$@\"\n")
+	f := userRemoteRepoRun(t, "  unit:\n    heavy: true\n    run: [[go, test, -count=1, ./...]]\n", state, "[sh, "+yamlQuote(filepath.Join(state, "run.sh"))+"]")
+	f.write("a_test.go", "package a\n\nimport (\n\t\"runtime\"\n\t\"testing\"\n)\n\nfunc TestRoot(t *testing.T) {\n\tif runtime.GOROOT() == \"\" {\n\t\tt.Fatal(\"no GOROOT: go/importer finds no standard library\")\n\t}\n}\n")
+	loaded(t, state)
+	out, code := f.graft("", "unit")
+	if code != 0 || !strings.Contains(out, "graft: unit: heavy, on pc") {
+		t.Errorf("go test on pc: exit %d\n%s\ncalls: %q", code, out, callsOf(t, state))
+	}
+}
+
+// TestUserRemoteHeavyKeepsATaskReadingFilesOfThisMachine: a task whose cache
+// names files outside the tree reads them, and the host has none of them.
+func TestUserRemoteHeavyKeepsATaskReadingFilesOfThisMachine(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	outside := filepath.Join(t.TempDir(), "models")
+	writeFile(t, outside, "model-a\n")
+	f, state := userRemoteRepo(t, "  unit:\n    heavy: true\n    cache: {files: ["+yamlQuote(outside)+"]}\n    run: [[go, vet, ./...]]\n")
+	loaded(t, state)
+	cmd, out := f.start(f.work, "unit")
+	want := "graft: unit: heavy, on this machine: the task reads " + outside + " (cache.files), which the host does not have"
+	waitFor(t, func() bool { return strings.Contains(out.String(), "graft: unit: heavy, on ") })
+	setRunnable(t, filepath.Join(state, "proc"), 0)
+	if err := cmd.Wait(); err != nil || !strings.Contains(out.String(), want) || callsOf(t, state) != "" {
+		t.Errorf("a task reading a file of this machine went to pc: %v\n%s\ncalls: %q", err, out.String(), callsOf(t, state))
+	}
+}

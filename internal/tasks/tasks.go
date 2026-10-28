@@ -613,7 +613,7 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		if err != nil {
 			return err
 		}
-		if argv, env, err = trimRun(ctx, r.taskDir(t), argv, env); err != nil {
+		if argv, env, err = trimRun(ctx, r.taskDir(t), argv, env, r.frames[len(r.frames)-1].remote); err != nil {
 			return err
 		}
 		cmd = exec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -797,7 +797,7 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 		return err
 	}
 	env = r.heavyEnv(env, t, threads)
-	if argv, env, err = trimRun(ctx, dir, s.Argv, env); err != nil {
+	if argv, env, err = trimRun(ctx, dir, s.Argv, env, f.remote); err != nil {
 		return err
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)

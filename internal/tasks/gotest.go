@@ -102,11 +102,16 @@ func trimPaths(argv, env []string) []string {
 // env sets no GOROOT, GOROOT from go env in dir: a program or test built with
 // -trimpath takes runtime.GOROOT() from its environment only, and go/importer
 // and go/build find no standard library without it. go env runs in dir with
-// env, so a toolchain go.mod switches to answers for itself.
-func trimRun(ctx context.Context, dir string, argv, env []string) ([]string, []string, error) {
+// env, so a toolchain go.mod switches to answers for itself. On the host of
+// remote_heavy, which gets none of this environment, go run and go test go
+// without -trimpath: the GOROOT found here is no answer there.
+func trimRun(ctx context.Context, dir string, argv, env []string, remote bool) ([]string, []string, error) {
 	trimmed := trimPaths(argv, env)
 	if len(trimmed) == len(argv) || (argv[1] != "run" && argv[1] != "test") {
 		return trimmed, env, nil
+	}
+	if remote {
+		return argv, env, nil
 	}
 	if root, _ := lookupEnv(env, "GOROOT"); root != "" {
 		return trimmed, env, nil

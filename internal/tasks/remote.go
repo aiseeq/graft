@@ -193,6 +193,8 @@ func (r *Runner) stayHere(ctx context.Context, t *config.Task, dir string) (stri
 		return "the task runs in " + t.Dir + ", not the work tree root, and remote_heavy.run names no " + config.RootPlaceholder, nil
 	case dir != r.Root && !r.runNamesRoot():
 		return "it runs in a subdirectory, not the work tree root, and remote_heavy.run names no " + config.RootPlaceholder, nil
+	case t.Cache != nil && len(t.Cache.Files) > 0:
+		return "the task reads " + t.Cache.Files[0] + " (cache.files), which the host does not have", nil
 	}
 	if _, ok := r.Extra[MessageFileEnv]; ok {
 		def, err := json.Marshal(t)

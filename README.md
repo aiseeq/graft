@@ -193,6 +193,8 @@ queues as before, `graft: build: heavy, on this machine: <why>`:
   the host;
 - the task runs outside the work tree root (`dir`, `graft exec` in a
   subdirectory) and `run` names no `{root}`;
+- the task names `cache.files`: it reads files outside the tree or ignored
+  by git, and the host has none of them;
 - `up` failed or timed out; its first line of output is in the reason.
 
 For a user-configured host, an `up` failure or a `run` exit of `broken_exit`
@@ -627,7 +629,9 @@ dotenv_sets:                   # key lists several tasks and services share
   `runtime.GOROOT()` from its environment only, so `go run` and `go test`
   given it get `GOROOT` from `go env GOROOT`, run in the step's directory,
   unless their environment sets it: `go/importer` and `go/build` find the
-  standard library through it. A binary `go build` or `go install` made
+  standard library through it. On the host of `remote_heavy`, which does
+  not get this machine's environment, `go run` and `go test` go without
+  `-trimpath`. A binary `go build` or `go install` made
   reports no `GOROOT` where it runs unless the environment sets it.
   `go vet` and `go fix` go without, and
   `GOFLAGS` is left alone for the commands steps start themselves: under
