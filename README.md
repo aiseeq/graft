@@ -223,7 +223,7 @@ stats` (`wait_s`).
 | `graft commit -m "fix: ..."` | lock, stage work, gate, stage paths changed when it started, bump patch (version mode `file`), stage bump, checks, commit, push to every remote |
 | `graft commit --minor` / `--major` | same with a minor / major bump (version mode `file` only) |
 | `graft commit -F msg.txt` / `-F -` | message from a file / from stdin, byte for byte |
-| `graft amend` | lock, stage work before the gate, gate, stage paths changed when it started, `ticket.required` on the whole amended commit, checks, `git commit --amend --no-edit`, no push; restores the original index if the gate fails, and refuses a commit that is already on a remote unless only on branches in `push.force_with_lease` |
+| `graft amend` | lock, stage work before the gate, gate, stage paths changed since the amended commit's parent (including the amended commit's files), `ticket.required` on the whole amended commit, checks, `git commit --amend --no-edit`, no push; restores the original index if the gate fails, and refuses a commit that is already on a remote unless only on branches in `push.force_with_lease` |
 | `graft release` | tag the pushed HEAD with the version, push the tag to every remote |
 | `graft release --minor` / `--major` / `--version X.Y.Z` | choose the next tag (version mode `git-tag` only) |
 | `graft version` | print the project version |
@@ -295,8 +295,10 @@ refused with the form that works: `graft -C <directory> <command> …`.
    files visible to gate steps through `git ls-files`. If the gate fails, graft
    restores the index to its state before the command; work tree changes remain.
    After the gate, graft stages the paths that were changed when it started,
-   as the gate left them. Paths first changed while the gate ran stay out of
-   the commit so another writer's work is not committed before it was gated.
+   as the gate left them. For an amend, this includes every path changed by
+   the amended commit, measured against its parent. Paths first changed while
+   the gate ran stay out of the commit so another writer's work is not committed
+   before it was gated.
 5. Bump the version file and every file synced with it, except on a branch
    in `version.skip_branches` (`--minor` and `--major` are refused there).
    On a branch in `version.build_branches` the bump counts builds in a fourth

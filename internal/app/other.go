@@ -45,7 +45,11 @@ func (a *App) Amend(ctx context.Context) error {
 		if ticketed {
 			message = commitmessage.WithKey(message, commitmessage.BranchKey(branch, cfg.Ticket.Regexp))
 		}
-		index, start, err := stageCommitStart(repo)
+		base, err := repo.ParentTree("HEAD")
+		if err != nil {
+			return err
+		}
+		index, start, err := stageCommitStart(repo, base)
 		if err != nil {
 			return err
 		}
@@ -57,10 +61,6 @@ func (a *App) Amend(ctx context.Context) error {
 		}
 		if ticketed {
 			// The amended commit is checked whole, against its parent.
-			base, err := repo.ParentTree("HEAD")
-			if err != nil {
-				return errors.Join(err, restoreIndex(repo, index))
-			}
 			if err := requireTicket(repo, cfg, message, base); err != nil {
 				return errors.Join(err, restoreIndex(repo, index))
 			}
