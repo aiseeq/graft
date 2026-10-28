@@ -161,17 +161,14 @@ func uppercaseProjectPrefix(prefix string) bool {
 }
 
 func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, plan commitPlan) error {
-	index, err := saveIndex(repo)
+	index, start, err := stageCommitStart(repo)
 	if err != nil {
 		return err
-	}
-	if _, err := repo.Git("add", "-A"); err != nil {
-		return errors.Join(err, restoreIndex(repo, index))
 	}
 	if err := a.gateForMessage(ctx, repo, cfg, plan.message); err != nil {
 		return errors.Join(err, restoreIndex(repo, index))
 	}
-	if _, err := repo.Git("add", "-A"); err != nil {
+	if err := a.stageGateChanges(repo, start, "commit"); err != nil {
 		return errors.Join(err, restoreIndex(repo, index))
 	}
 	if cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, plan.branch) {
@@ -246,6 +243,88 @@ func restoreIndex(repo *gitx.Repo, s savedIndex) error {
 	}
 	if err := os.WriteFile(s.path, s.data, 0o644); err != nil {
 		return fmt.Errorf("restoring the git index: %w", err)
+	}
+	return nil
+}
+
+type commitStart struct {
+	tree  string
+	paths map[string]bool
+}
+
+// stageCommitStart stages the initial work tree and records what the gate may update.
+func stageCommitStart(repo *gitx.Repo) (savedIndex, commitStart, error) {
+	index, err := saveIndex(repo)
+	if err != nil {
+		return index, commitStart{}, err
+	}
+	if _, err := repo.Git("add", "-A"); err != nil {
+		return index, commitStart{}, errors.Join(fmt.Errorf("staging the work tree before the gate: %w", err), restoreIndex(repo, index))
+	}
+	start, err := saveCommitStart(repo)
+	if err != nil {
+		return index, commitStart{}, errors.Join(err, restoreIndex(repo, index))
+	}
+	return index, start, nil
+}
+
+// saveCommitStart records the staged tree and paths a commit had before its gate.
+func saveCommitStart(repo *gitx.Repo) (commitStart, error) {
+	start := commitStart{paths: make(map[string]bool)}
+	hasHead, err := repo.HasHead()
+	if err != nil {
+		return start, fmt.Errorf("checking HEAD before the gate: %w", err)
+	}
+	var out string
+	if hasHead {
+		out, err = repo.Git("diff-index", "--cached", "--name-only", "--no-renames", "-z", "HEAD")
+	} else {
+		out, err = repo.Git("ls-files", "-z")
+	}
+	if err != nil {
+		return start, fmt.Errorf("listing paths staged before the gate: %w", err)
+	}
+	for path := range strings.SplitSeq(out, "\x00") {
+		if path != "" {
+			start.paths[path] = true
+		}
+	}
+	tree, err := repo.Git("write-tree")
+	if err != nil {
+		return start, fmt.Errorf("writing the staged tree before the gate: %w", err)
+	}
+	start.tree = strings.TrimSpace(tree)
+	return start, nil
+}
+
+// stageGateChanges stages only paths already changed when the gate began.
+func (a *App) stageGateChanges(repo *gitx.Repo, start commitStart, command string) error {
+	after, err := repo.WorkTreeTree()
+	if err != nil {
+		return fmt.Errorf("writing the work tree tree after the gate: %w", err)
+	}
+	out, err := repo.Git("diff-tree", "-r", "--name-only", "--no-renames", "-z", start.tree, after)
+	if err != nil {
+		return fmt.Errorf("listing paths changed by the gate: %w", err)
+	}
+	var kept []string
+	for path := range strings.SplitSeq(out, "\x00") {
+		if path == "" {
+			continue
+		}
+		if start.paths[path] {
+			a.printf("%s: %s changed while the gate ran (a gate step or another writer); committed as the gate left it", command, path)
+			kept = append(kept, path)
+		} else {
+			a.printf("%s left out %s: changed only while the gate ran, by another writer or a gate step; commit it once its writer is done", command, path)
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	input := strings.NewReader(strings.Join(kept, "\x00") + "\x00")
+	if _, err := repo.GitInput(input, []string{"GIT_LITERAL_PATHSPECS=1"}, "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"); err != nil {
+		return fmt.Errorf("staging paths changed by the gate: %w", err)
 	}
 	return nil
 }

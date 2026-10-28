@@ -45,17 +45,14 @@ func (a *App) Amend(ctx context.Context) error {
 		if ticketed {
 			message = commitmessage.WithKey(message, commitmessage.BranchKey(branch, cfg.Ticket.Regexp))
 		}
-		index, err := saveIndex(repo)
+		index, start, err := stageCommitStart(repo)
 		if err != nil {
 			return err
-		}
-		if _, err := repo.Git("add", "-A"); err != nil {
-			return errors.Join(err, restoreIndex(repo, index))
 		}
 		if err := a.gateForMessage(ctx, repo, cfg, message); err != nil {
 			return errors.Join(err, restoreIndex(repo, index))
 		}
-		if _, err := repo.Git("add", "-A"); err != nil {
+		if err := a.stageGateChanges(repo, start, "amend"); err != nil {
 			return errors.Join(err, restoreIndex(repo, index))
 		}
 		if ticketed {
