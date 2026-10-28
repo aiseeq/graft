@@ -155,3 +155,33 @@ func TestInstallStepRelativeTo(t *testing.T) {
 		t.Errorf("a relative to: passes: exit %d\n%s", code, out)
 	}
 }
+
+// A destination that is a symlink to the built file (an older install
+// scheme) has the same bytes, but the next build would change it behind
+// the step: it is replaced with a file, never called unchanged.
+func TestInstallStepReplacesSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	dest := filepath.Join(t.TempDir(), "bin")
+	f := installRepo(t, dest)
+	f.mustGraft("build")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	installed := filepath.Join(dest, "tool")
+	if err := os.Symlink(f.path("bin/tool"), installed); err != nil {
+		t.Fatal(err)
+	}
+	out := f.mustGraft("install")
+	if strings.Contains(out, "unchanged") {
+		t.Errorf("a symlink to the build is called unchanged:\n%s", out)
+	}
+	fi, err := os.Lstat(installed)
+	if err != nil || !fi.Mode().IsRegular() {
+		t.Fatalf("%s is not a regular file: %v %v", installed, fi, err)
+	}
+	if !bytes.Equal(readBytes(t, installed), readBytes(t, f.path("bin/tool"))) {
+		t.Errorf("%s is not bin/tool", installed)
+	}
+}

@@ -522,8 +522,9 @@ dotenv_sets:                   # key lists several tasks and services share
   only from what is committed: a Go program's build info must say HEAD and
   no uncommitted changes (so a stale build in `bin/` is refused too), and a
   file without it needs a clean work tree. The copy is atomic and
-  executable, a running program keeps its old file, an identical one is
-  left alone, and each file prints `graft: install: <name> <revision> ->
+  executable, a running program keeps its old file, an identical file is
+  left alone (a symlink there, say to the build output, is replaced with a
+  file), and each file prints `graft: install: <name> <revision> ->
   <path>`. A task with an install step is never cached. The usual install
   of a project's program:
 

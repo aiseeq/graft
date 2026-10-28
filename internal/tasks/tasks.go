@@ -1464,11 +1464,32 @@ func prepareInstall(ctx context.Context, repo *gitx.Repo, head, file, to string)
 		return installCandidate{}, fmt.Errorf("install %s: reading file: %w", name, err)
 	}
 	dest := filepath.Join(destination, name)
-	existing, err := os.ReadFile(dest)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	unchanged, err := sameFile(dest, data)
+	if err != nil {
 		return installCandidate{}, fmt.Errorf("install destination %s: %w", dest, err)
 	}
-	return installCandidate{name: name, revision: rev, destination: dest, data: data, unchanged: err == nil && bytes.Equal(existing, data)}, nil
+	return installCandidate{name: name, revision: rev, destination: dest, data: data, unchanged: unchanged}, nil
+}
+
+// sameFile tells whether dest is a regular file holding data. A symlink is
+// never the same: it may lead to the build output, which the next build
+// changes behind the install, so the rename replaces the link with a file.
+func sameFile(dest string, data []byte) (bool, error) {
+	fi, err := os.Lstat(dest)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !fi.Mode().IsRegular() {
+		return false, nil
+	}
+	existing, err := os.ReadFile(dest)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(existing, data), nil
 }
 
 func (r *Runner) writeInstall(candidate installCandidate) error {
