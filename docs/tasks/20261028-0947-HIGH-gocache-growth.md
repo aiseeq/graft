@@ -19,3 +19,4 @@
 ## Журнал
 - 2026-10-28 09:47 открыт — graft-master
 - 2026-10-28 13:08 note — graft-master: glint-master 13:1x: разбиение pkg/rules/patterns переделывается (первый заход Luna потерял ~380 doc-блоков), заход Opus, итог с замером — сегодня к вечеру.
+- 2026-10-28 13:50 note — graft-master: glint-master 13:50: split merged a094825, glint installed; per edit 11-17 MB / 3.6-3.9 s / 0.5 GB RSS (was 80-97 MB / 39 s / 1.4 GB); consumers 0 diffs on 22 projects. Independent verify subagent 13:5x; then tk done and result to git-admin + aguard-master (backlog.md:34 estimate).
