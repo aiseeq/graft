@@ -1,6 +1,6 @@
 # commit sweeps in paths written during the gate
 
-Статус: в работе
+Статус: готово
 Исполнитель: graft-master
 
 ## Вход
@@ -30,3 +30,4 @@
 - 2026-10-28 12:35 note — graft-master: Проверка v2.47.1: заявленное PASS (t1c, t1d, *?-имена, удаления, падение гейта, без HEAD, amend, git mv). Новые дефекты: файл→каталог (x/y коммитится, хотя left out), amend считает старт от HEAD а не HEAD^ (форматирование файла правимого коммита теряется), гейт откатил всё → коммит одного бампа / сырая ошибка git. Спец-тесты commit_start_set_integration_test.go (sha bb21dd36…, красные 3/3), боец Luna 1028-1234-start-set, worktree start-set.
 - 2026-10-28 12:54 note — graft-master: Боец Luna 1028-1234-start-set: 'не справился' — по вине спец-теста (TestCommitWhoseGateUndoes…: empty.txt не входил в первый коммит, боец верно указал). Тест исправлен (sha eb9a8432…), код бойца зелёный; упростил gateLeftHead (без HEAD — false, без второй копии empty tree). Перенёс diff в main через git apply.
 - 2026-10-28 13:09 note — graft-master: Проверка v2.48.0 (суб-агент 13:06): 1–3 PASS. Новый дефект: amend, чей гейт опустошает правимый коммит → сырая ошибка git, индекс не восстановлен (и на ошибках checks/commit amend). Исправлено: stagedIs(base) → errGateEmptiedAmend, restoreIndex на поздних шагах amend; тест TestAmendWhoseGateEmptiesTheCommitHasNothingToAmend.
+- 2026-10-28 13:22 готово — verify-subagent: v2.48.1 independent verify 13:06-13:18: amend emptied by gate -> "nothing to amend", index+HEAD unchanged; failed checks after gate restore index; remote run ignoring TERM and its child killed after 30s grace; new tests ok

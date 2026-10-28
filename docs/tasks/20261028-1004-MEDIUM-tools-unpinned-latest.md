@@ -1,6 +1,6 @@
 # graft tools keeps stale binaries of unpinned tools
 
-Статус: в работе
+Статус: готово
 Исполнитель: graft-master
 
 ## Вход
@@ -26,3 +26,4 @@
 - 2026-10-28 12:05 note — graft-master: v2.47.0 выпущен и установлен (all зелёный); независимая проверка суб-агентом идёт.
 - 2026-10-28 12:21 note — graft-master: независимая проверка (суб-агент, v2.47.0): FAIL — сборка коммита после тега (псевдоверсия v0.2.1-0.…) считалась отставшей от v0.2.0 и откатывалась; на машине ~/bin/glint v1.83.8-0.… против latest v1.83.7 — tools install откатил бы glint. Фикс: сравнение по semver (x/mod/semver), юнит-случаи псевдоверсий.
 - 2026-10-28 12:29 note — graft-master: v2.47.1 (5b4c18c) выпущена и установлена (laptop+pc, sha 091f47df); повторная независимая проверка — суб-агент 12:30
+- 2026-10-28 13:27 готово — verify-subagent: independent verify v2.47.1 (subagent 12:33): older than latest -> built from…latest, install raises; (devel)/+dirty/pseudo after tag/newer rc -> ok; work-admin 12:53: all 8 ~/work projects ok on v2.47.1

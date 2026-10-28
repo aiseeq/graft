@@ -1941,7 +1941,9 @@ func TestDeploySkipKeysSubtaskOwnCommit(t *testing.T) {
 // ignores, and two commits of the trunk a release branch took in one; the
 // commit that took them is in the trunk by content too. A commit whose change
 // the target lacks stays listed. An item whose work ships nothing to the
-// target moves saying so.
+// target moves saying so; one whose commit ships work and docs the release
+// left out is on it, and one with both kinds of commit says how many ship
+// nothing.
 func TestDeploySweepByContent(t *testing.T) {
 	d := newDeployFixture(t, func(state string, q func(string) string) string {
 		return strings.Replace(deployConfig(state, q), `approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}`,
@@ -1952,7 +1954,8 @@ func TestDeploySweepByContent(t *testing.T) {
 	trunk := d.git("branch", "--show-current")
 	d.git("remote", "set-head", "origin", trunk)
 	d.jira.mu.Lock()
-	maps.Copy(d.jira.statuses, map[string]string{"PROJ-80": "Done", "PROJ-81": "Done", "PROJ-82": "Done", "PROJ-83": "Done", "PROJ-84": "Done", "PROJ-85": "Ready for release"})
+	maps.Copy(d.jira.statuses, map[string]string{"PROJ-80": "Done", "PROJ-81": "Done", "PROJ-82": "Done", "PROJ-83": "Done", "PROJ-84": "Done", "PROJ-85": "Ready for release",
+		"PROJ-86": "Ready for release", "PROJ-87": "Ready for release"})
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "--unapproved", "live")
 	base := d.git("rev-parse", "HEAD")
@@ -1966,6 +1969,13 @@ func TestDeploySweepByContent(t *testing.T) {
 	d.mustGraft("commit", "-m", "feat: PROJ-82 c")
 	d.write("e.txt", "e\n")
 	d.mustGraft("commit", "-m", "feat: PROJ-83 e")
+	d.write("h.txt", "h\n")
+	d.write("docs/h.md", "h\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-86 h with its docs")
+	d.write("docs/k.md", "k\n")
+	d.mustGraft("commit", "-m", "docs: PROJ-87 k")
+	d.write("k.txt", "k\n")
+	d.mustGraft("commit", "-m", "feat: PROJ-87 k")
 	d.write("g.txt", "g\n")
 	d.mustGraft("commit", "-m", "feat: PROJ-84 g")
 	picked := d.git("rev-parse", "HEAD")
@@ -1973,10 +1983,14 @@ func TestDeploySweepByContent(t *testing.T) {
 	d.write("b.txt", "b\n")
 	d.write("c.txt", "c\n")
 	d.mustGraft("commit", "-m", "chore: PROJ-81 and PROJ-82 to the release")
+	d.write("h.txt", "h\n")
+	d.write("k.txt", "k\n")
+	d.mustGraft("commit", "-m", "chore: h and k to the release, without docs")
 	// Taken in another shape the release needs: it names what it took.
 	d.write("g.txt", "g for the release\n")
 	d.mustGraft("commit", "-m", "chore: PROJ-84 to the release\n\n(cherry picked from commit "+picked[:9]+")")
 	d.mustGraft("deploy", "--unapproved", "live")
+
 	out := d.mustGraft("deploy", "sweep", "live")
 	for _, key := range []string{"PROJ-80", "PROJ-81", "PROJ-82", "PROJ-84"} {
 		if strings.Contains(out, key+" is Done") {
@@ -1986,8 +2000,14 @@ func TestDeploySweepByContent(t *testing.T) {
 	if !regexp.MustCompile(`PROJ-83 is Done, but [0-9a-f]+ is not on live yet`).MatchString(out) {
 		t.Errorf("PROJ-83 not listed:\n%s", out)
 	}
-	if want := "PROJ-85 stays Ready for release though its work of the last 30 days ships nothing to live, changing only approved_release.ignore_paths (commits: 1)"; !strings.Contains(out, want) {
-		t.Errorf("no %q:\n%s", want, out)
+	for _, want := range []string{
+		"PROJ-85 stays Ready for release though its work of the last 30 days ships nothing to live, changing only approved_release.ignore_paths (commits: 1)",
+		"PROJ-86 stays Ready for release though its work of the last 30 days is on live (commits: 1)",
+		"PROJ-87 stays Ready for release though its work of the last 30 days is on live, but for 1 commits that ship nothing to it, changing only approved_release.ignore_paths (commits: 2)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
 	}
 }
 

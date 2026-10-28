@@ -483,10 +483,25 @@ func (sc *sweptCommit) byContent(r *deployRun, head, trunk, parent string) error
 		if sc.onTarget, err = landed(r, head, sc.sha, parent, nil); err != nil || sc.onTarget || r.target.ApprovedRelease == nil {
 			return err
 		}
-		sc.onTarget, err = landed(r, head, sc.sha, parent, r.target.ApprovedRelease)
-		sc.shipsNothing = sc.onTarget
+		if sc.onTarget, err = landed(r, head, sc.sha, parent, r.target.ApprovedRelease); err != nil || !sc.onTarget {
+			return err
+		}
+		// What the target lacks is ignored files alone; the commit ships
+		// nothing only when it changes nothing else.
+		sc.shipsNothing, err = changesOnlyIgnored(r, sc.sha, parent, r.target.ApprovedRelease)
 	}
 	return err
+}
+
+// changesOnlyIgnored tells whether commit sha changes, against parent, no
+// file but the version files and the files conf ignores.
+func changesOnlyIgnored(r *deployRun, sha, parent string, conf *config.ApprovedRelease) (bool, error) {
+	out, err := r.repo.Git("diff-tree", "-r", "-z", "--name-only", "--no-renames", parent, sha)
+	if err != nil {
+		return false, err
+	}
+	files := slices.DeleteFunc(strings.Split(out, "\x00"), func(f string) bool { return f == "" || slices.Contains(r.cfg.VersionFiles(), f) })
+	return conf.Ignored(files), nil
 }
 
 // landed tells whether rev has the change of commit sha by content: put onto
@@ -584,6 +599,7 @@ func (s *sweepRun) read(ctx context.Context, keys []string) {
 
 // item judges one item by its commits.
 func (s *sweepRun) item(ctx context.Context, issue jira.Issue, commits []sweptCommit) {
+
 	allOn := !slices.ContainsFunc(commits, func(c sweptCommit) bool { return !c.onTarget })
 	inTrunk := slices.ContainsFunc(commits, func(c sweptCommit) bool { return c.inTrunk })
 	key, status := issue.Key, issue.Status

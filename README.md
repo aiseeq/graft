@@ -1527,9 +1527,10 @@ A commit of the trunk the target does not run by history is on it by
 content when, put onto the commit the target runs, it changes no file but
 the version files and those `approved_release.ignore_paths` names: a
 cherry-pick to a release branch, two commits taken in one, a commit of docs
-alone. An item whose work is on the target only so, changing nothing there
-but `ignore_paths`, moves saying its work `ships nothing to <target>`: it
-needs no deploy. A commit the target runs names what it took with the line `git
+alone. An item whose commits change nothing but `ignore_paths` moves saying
+its work `ships nothing to <target>`: it needs no deploy. A commit that also
+changes other files, taken to the target without its ignored ones, is on
+it. A commit the target runs names what it took with the line `git
 cherry-pick -x` adds, `(cherry picked from commit <sha>)`, one per commit:
 the commits named are on the target and the pick is in the trunk once they
 are, whatever shape the release needed; without the line a pick of a
