@@ -30,7 +30,7 @@ tasks:
     run:
       - [go, build, -ldflags, '-X main.buildVersion=${GRAFT_VERSION}', -o, bin/graft, .]
   install:
-    desc: install to ~/bin atomically (a running graft keeps its file) once the gate of the pilot passes with the new binary
+    desc: install bin/graft into tools.bin_dir (a running graft keeps its file) once the gate of the pilot passes with the new binary
     usage: '[--no-pilot]'
     deps: [build, glint]
     # The pilot is a project of the user's whose gate the new binary runs
@@ -57,12 +57,7 @@ tasks:
               exit 1
             fi
           fi
-          mkdir -p "$HOME/bin"
-          tmp=$(mktemp "$HOME/bin/.graft.XXXXXX")
-          trap 'rm -f "$tmp"' EXIT
-          install -m 0755 bin/graft "$tmp"
-          mv -f "$tmp" "$HOME/bin/graft"
-          echo "installed to $HOME/bin/graft"
+      - install: bin/graft
   fmt:
     desc: format the code
     run: [gofmt -w .]
