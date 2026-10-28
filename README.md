@@ -148,8 +148,9 @@ the steps of its heavy tasks and its `graft exec --heavy` go there first,
 skipping this machine's queue. A project's `when` defaults to `always`. The
 same fields may be set in the user config; a project's setting replaces the
 whole user setting. In user config, `when` defaults to `busy`: graft reads
-the load rule once and sends eligible work to the host only when this
-machine's heavy queue would wait. On a calm machine it runs locally without
+the load rule once, and whether another heavy task holds the queue (starting,
+or settling after its start), and sends eligible work to the host only when
+this machine's heavy queue would wait. On a calm machine it runs locally without
 a host line. Set `when: always` to send eligible work every time.
 
 ```yaml

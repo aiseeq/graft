@@ -221,9 +221,15 @@ func newMachine(l userconfig.MachineLoad, log io.Writer, name string) *machine {
 	return &machine{l: l, log: log, name: name, meter: pressure.NewMeter(proc), waits: Waits{}}
 }
 
-// BusyNow reads the same machine measures Wait uses, once, without entering
-// the queue. A missing measure is skipped and reported as it is in Wait.
-func BusyNow(ctx context.Context, name string, l userconfig.MachineLoad, log io.Writer) (bool, error) {
+// BusyNow tells whether Wait would wait now, without entering the queue: a
+// task holds the queue's lock at lockPath (starting, or settling after its
+// start), or the machine measures Wait uses, read once, say busy. A missing
+// measure is skipped and reported as it is in Wait.
+func BusyNow(ctx context.Context, name string, l userconfig.MachineLoad, lockPath string, log io.Writer) (bool, error) {
+	holders, err := lock.Holders(lockPath)
+	if err != nil || len(holders) > 0 {
+		return err == nil, err
+	}
 	b, err := newMachine(l, log, name).busy(ctx, true)
 	return b.why != "", err
 }

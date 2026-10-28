@@ -63,7 +63,11 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 		if err != nil {
 			return false, err
 		}
-		busy, err := loadgate.BusyNow(ctx, name, l, r.Stderr)
+		lockPath, err := loadLock()
+		if err != nil {
+			return false, err
+		}
+		busy, err := loadgate.BusyNow(ctx, name, l, lockPath, r.Stderr)
 		if err != nil {
 			return false, err
 		}

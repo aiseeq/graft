@@ -353,3 +353,27 @@ func TestUserRemoteHeavyStopsACancelledStepWithSIGTERM(t *testing.T) {
 		t.Errorf("run did not get SIGTERM (%v):\n%s", err, out.String())
 	}
 }
+
+// TestUserRemoteHeavyOverflowsBehindAHeldQueue: a heavy task that holds this
+// machine's queue (starting, or settling after its start) makes the next one
+// wait here, so that one goes to the host though the machine is calm.
+func TestUserRemoteHeavyOverflowsBehindAHeldQueue(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, overflowTasks)
+	hold, _ := f.start(f.work, "exec", "--heavy", "--local", "--settle", "1h", "--", "sleep", "60")
+	t.Cleanup(func() { _ = hold.Process.Signal(os.Interrupt); _ = hold.Wait() })
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if held, _ := filepath.Glob(filepath.Join(state, "cache", "graft", "load.lock.*.lholder")); len(held) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first exec did not take the queue")
+		}
+	}
+	out := f.mustGraft("vet")
+	if !strings.Contains(out, "graft: vet: heavy, on pc") || !strings.Contains(callsOf(t, state), "go vet ./...") {
+		t.Errorf("behind a held queue vet stayed here:\n%s\ncalls: %q", out, callsOf(t, state))
+	}
+}

@@ -1264,9 +1264,9 @@ func (r *Runner) admit(ctx context.Context, name string) (loadgate.Waits, func()
 	if err != nil {
 		return nil, none, err
 	}
-	cache, err := os.UserCacheDir()
+	lockPath, err := loadLock()
 	if err != nil {
-		return nil, none, fmt.Errorf("locating the cache for the load queue: %w", err)
+		return nil, none, err
 	}
 	var priority *loadgate.Priority
 	p, ok, err := loadgate.PriorityFromEnv()
@@ -1276,7 +1276,16 @@ func (r *Runner) admit(ctx context.Context, name string) (loadgate.Waits, func()
 	if ok {
 		priority = &p
 	}
-	return loadgate.Wait(ctx, name, priority, l, filepath.Join(cache, "graft", "load.lock"), r.Stderr)
+	return loadgate.Wait(ctx, name, priority, l, lockPath, r.Stderr)
+}
+
+// loadLock is the lock of this machine's heavy queue.
+func loadLock() (string, error) {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("locating the cache for the load queue: %w", err)
+	}
+	return filepath.Join(cache, "graft", "load.lock"), nil
 }
 
 // heavyEnv adds to the environment of a step what an admitted heavy task
