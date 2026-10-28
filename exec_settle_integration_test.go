@@ -47,9 +47,9 @@ func TestExecSettleHoldsTheQueueForThisCommand(t *testing.T) {
 	}
 
 	// The command runs past the settle: the next waits out the settle only.
-	first("2s", 8000)
-	if took := second(); took < 1500*time.Millisecond || took > 6*time.Second {
-		t.Errorf("behind a 2s settle of a command running 8s, the next exec took %s", took)
+	first("600ms", 8000)
+	if took := second(); took < 450*time.Millisecond || took > 5*time.Second {
+		t.Errorf("behind a 600ms settle of a command running 8s, the next exec took %s", took)
 	}
 
 	// The command ends before the settle: the next starts when it ends.

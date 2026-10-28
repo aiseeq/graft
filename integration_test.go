@@ -173,6 +173,16 @@ func newRepo(t *testing.T, files map[string]string, remotes ...string) *fixture 
 
 func yamlQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
+// skipGoToolchainInShort skips, under -short, a test whose seconds go to the
+// go command fetching, tidying or installing modules: the gate's test-gate
+// runs -short, test-race in all runs it before install and release.
+func skipGoToolchainInShort(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("runs the go command against modules; test-race in all runs it")
+	}
+}
+
 // gateStep is a YAML list entry that runs the helper with args.
 func gateStep(args ...string) string {
 	parts := []string{yamlQuote(helperBin)}

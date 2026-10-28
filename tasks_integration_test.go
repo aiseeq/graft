@@ -530,6 +530,7 @@ func (f *fixture) buildGoTool(out string, tags ...string) {
 // A go_install tool without check and expect is verified by the Go build
 // info of the program PATH finds.
 func TestToolsBuildInfo(t *testing.T) {
+	skipGoToolchainInShort(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake go and the non-Go program are sh scripts")
 	}

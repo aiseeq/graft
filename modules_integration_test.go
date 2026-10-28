@@ -155,6 +155,7 @@ func requireLine(t *testing.T, gomod, module string) string {
 // to its latest version before the gate, tidies, and commits it; a foreign
 // module and a replaced one stay as they are.
 func TestCommitRaisesOwnModulesToTheirLatest(t *testing.T) {
+	skipGoToolchainInShort(t)
 	f := modulesRepo(t, modulesProxy(t), latestConfig, "New")
 	out, code := f.graft("", "commit", "-m", "feat: x")
 	if code != 0 {
@@ -200,6 +201,7 @@ func TestCommitRaisesOwnModulesToTheirLatest(t *testing.T) {
 // TestGateRaisesOwnModules: graft gate run by hand checks what a commit
 // would: the own modules at their latest, left raised in the work tree.
 func TestGateRaisesOwnModules(t *testing.T) {
+	skipGoToolchainInShort(t)
 	f := modulesRepo(t, modulesProxy(t), latestConfig, "New")
 	out, code := f.graft("", "gate")
 	if code != 0 {
@@ -213,6 +215,7 @@ func TestGateRaisesOwnModules(t *testing.T) {
 // TestOwnModulesStayWithoutTheSetting: without modules.latest graft leaves
 // every go.mod alone.
 func TestOwnModulesStayWithoutTheSetting(t *testing.T) {
+	skipGoToolchainInShort(t)
 	f := modulesRepo(t, modulesProxy(t), "", "Old")
 	out := f.mustGraft("commit", "-m", "feat: x")
 	if strings.Contains(out, " -> ") {
@@ -227,6 +230,7 @@ func TestOwnModulesStayWithoutTheSetting(t *testing.T) {
 // does not build with fails the gate; graft does not go back to the old one,
 // the work tree keeps the raised go.mod for the fix.
 func TestBrokenLatestFailsTheCommitAndStaysRaised(t *testing.T) {
+	skipGoToolchainInShort(t)
 	f := modulesRepo(t, modulesProxy(t), latestConfig, "Old")
 	out, code := f.graft("", "commit", "-m", "feat: x")
 	if code == 0 {
@@ -247,6 +251,7 @@ func TestBrokenLatestFailsTheCommitAndStaysRaised(t *testing.T) {
 // learned (offline), the commit goes on at the versions it has, with a
 // warning naming the module.
 func TestUnreachableProxyWarnsAndCommits(t *testing.T) {
+	skipGoToolchainInShort(t)
 	f := modulesRepo(t, modulesProxy(t), latestConfig, "Old")
 	f.env = append(f.env, "GOPROXY=off")
 	out, code := f.graft("", "commit", "-m", "feat: x")

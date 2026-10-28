@@ -89,11 +89,11 @@ tasks:
     env: {GRAFT_TEST_DOCKER: '1'}
     run: ['go test -json -p {threads} -race -count=1 ./...']
   test-gate:
-    desc: the gate's tests, all but the ones that create docker containers (test-race in all runs those)
+    desc: the gate's tests, all but the ones that create docker containers or run the go command against modules (test-race in all runs those)
     test_db: true
     heavy: true
     tests: go
-    run: ['go test -json -p {threads} -count=1 ./...']
+    run: ['go test -json -p {threads} -count=1 -short ./...']
   smoke:
     desc: the commit gate
     run: [{task: fmt-check}, {task: vet}, {task: glint}, {task: test-gate}]

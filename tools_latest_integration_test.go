@@ -14,6 +14,7 @@ import (
 // install replaces it; when the latest cannot be learned, the build on PATH
 // passes with a warning that says so.
 func TestToolsUnpinnedFollowLatest(t *testing.T) {
+	skipGoToolchainInShort(t)
 	const (
 		plain   = "example.com/other/fake"
 		checked = "example.com/other/checked"

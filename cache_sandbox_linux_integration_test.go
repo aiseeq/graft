@@ -13,6 +13,7 @@ import (
 // to start under no_new_privs is not started, an alert each time; the task
 // runs without the cache and says why.
 func TestCacheCommandRefusedInASandbox(t *testing.T) {
+	skipGoToolchainInShort(t)
 	if !proctest.Sandboxed(t, "TestCacheCommandRefusedInASandbox") {
 		return
 	}
