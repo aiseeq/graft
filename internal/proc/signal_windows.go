@@ -24,6 +24,10 @@ func Terminate(pid int) error {
 	return Kill(pid)
 }
 
+// StopOnCancel keeps the kill on a cancelled cmd: Windows has no signal a
+// process without a console can catch.
+func StopOnCancel(*exec.Cmd) {}
+
 // Kill ends the process.
 func Kill(pid int) error {
 	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))

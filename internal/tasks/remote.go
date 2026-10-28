@@ -16,6 +16,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
 	"github.com/aiseeq/graft/v2/internal/loadgate"
+	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
@@ -76,9 +77,8 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 	}
 	if r.remoteDown != "" {
 		if r.userRemote {
-			reason := firstLine(r.remoteDown)
-			fmt.Fprintf(r.Stderr, "graft: %s: %s path broken: %s, running here\n", name, rh.Host, reason)
-			if err := r.journalRemoteBroken(name, reason); err != nil {
+			fmt.Fprintf(r.Stderr, "graft: %s: %s path broken: %s, running here\n", name, rh.Host, r.remoteDown)
+			if err := r.journalRemoteBroken(name, r.remoteDown); err != nil {
 				return false, err
 			}
 		} else {
@@ -88,11 +88,6 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 	}
 	fmt.Fprintf(r.Stderr, "graft: %s: heavy, on %s\n", name, rh.Host)
 	return true, nil
-}
-
-func firstLine(s string) string {
-	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
-	return line
 }
 
 func (r *Runner) journalRemoteBroken(task, reason string) error {
@@ -152,20 +147,18 @@ func userRemoteEligible(t *config.Task) bool {
 	return true
 }
 
+// outputFlags are the go test and go vet flags that leave a file on the
+// machine the step runs on.
+var outputFlags = []string{"-o", "-c", "-coverprofile", "-cpuprofile", "-memprofile",
+	"-blockprofile", "-mutexprofile", "-trace", "-outputdir"}
+
 func goCheckNoOutput(argv []string) bool {
 	if len(argv) < 2 || argv[0] != "go" || (argv[1] != "test" && argv[1] != "vet") {
 		return false
 	}
 	for _, arg := range argv[2:] {
-		if arg == ArgsPlaceholder || strings.HasPrefix(arg, "-o=") || arg == "-o" ||
-			strings.HasPrefix(arg, "-c=") || arg == "-c" ||
-			strings.HasPrefix(arg, "-coverprofile=") || arg == "-coverprofile" ||
-			strings.HasPrefix(arg, "-cpuprofile=") || arg == "-cpuprofile" ||
-			strings.HasPrefix(arg, "-memprofile=") || arg == "-memprofile" ||
-			strings.HasPrefix(arg, "-blockprofile=") || arg == "-blockprofile" ||
-			strings.HasPrefix(arg, "-mutexprofile=") || arg == "-mutexprofile" ||
-			strings.HasPrefix(arg, "-trace=") || arg == "-trace" ||
-			strings.HasPrefix(arg, "-outputdir=") || arg == "-outputdir" {
+		name, _, _ := strings.Cut(arg, "=")
+		if arg == ArgsPlaceholder || strings.HasPrefix(arg, "-") && slices.Contains(outputFlags, "-"+strings.TrimLeft(name, "-")) {
 			return false
 		}
 	}
@@ -192,10 +185,10 @@ func (r *Runner) stayHere(ctx context.Context, t *config.Task, dir string) (stri
 		return "the " + t.Tests + " report is a file on this machine", nil
 	case len(t.Keys) > 0:
 		return "the task takes .env keys", nil
-	case t.Dir != "":
-		return "the task runs in " + t.Dir + ", not the work tree root", nil
-	case dir != r.Root:
-		return "it runs in a subdirectory, not the work tree root", nil
+	case t.Dir != "" && !r.runNamesRoot():
+		return "the task runs in " + t.Dir + ", not the work tree root, and remote_heavy.run names no " + config.RootPlaceholder, nil
+	case dir != r.Root && !r.runNamesRoot():
+		return "it runs in a subdirectory, not the work tree root, and remote_heavy.run names no " + config.RootPlaceholder, nil
 	}
 	if _, ok := r.Extra[MessageFileEnv]; ok {
 		def, err := json.Marshal(t)
@@ -259,13 +252,29 @@ func (r *Runner) remoteUp(ctx context.Context) string {
 	return fmt.Sprintf("%s: %v", strings.Join(up, " "), err)
 }
 
+// runNamesRoot says whether remote_heavy's run takes the work tree root as
+// {root}, so it can start from the task's directory.
+func (r *Runner) runNamesRoot() bool {
+	return slices.ContainsFunc(r.remoteHeavy.Run, func(w string) bool { return strings.Contains(w, config.RootPlaceholder) })
+}
+
+// remoteStopGrace is how long a step on remote_heavy's host has after
+// SIGTERM to take its work off the host before it is killed.
+const remoteStopGrace = 30 * time.Second
+
 // remoteCmd is cmd run on remote_heavy's host: its run with env and the
-// command appended, from the work tree root. The variables graft sets go
-// as env K=V, since the host does not get this machine's environment, and
-// GRAFT_HEAVY=local keeps a graft the step starts there from sending its
-// heavy work on again.
+// command appended, from the work tree root, or from cmd's directory when
+// run names {root}. The variables graft sets go as env K=V, since the host
+// does not get this machine's environment, and GRAFT_HEAVY=local keeps a
+// graft the step starts there from sending its heavy work on again. A
+// cancelled step is asked to stop first: killed, run could not clear the
+// host.
 func (r *Runner) remoteCmd(ctx context.Context, cmd *exec.Cmd, vars map[string]string, threads string) *exec.Cmd {
-	words := append(slices.Clone(r.remoteHeavy.Run), "env", HeavyEnv+"=local")
+	words := make([]string, 0, len(r.remoteHeavy.Run)+len(vars)+len(cmd.Args)+4)
+	for _, w := range r.remoteHeavy.Run {
+		words = append(words, strings.ReplaceAll(w, config.RootPlaceholder, r.Root))
+	}
+	words = append(words, "env", HeavyEnv+"=local")
 	for _, k := range sortedKeys(vars) {
 		words = append(words, k+"="+vars[k])
 	}
@@ -278,6 +287,11 @@ func (r *Runner) remoteCmd(ctx context.Context, cmd *exec.Cmd, vars map[string]s
 	words = append(words, cmd.Args...)
 	remote := exec.CommandContext(ctx, words[0], words[1:]...)
 	remote.Dir, remote.Env = r.Root, cmd.Env
+	if r.runNamesRoot() {
+		remote.Dir = cmd.Dir
+	}
+	proc.StopOnCancel(remote)
+	remote.WaitDelay = remoteStopGrace
 	return remote
 }
 

@@ -319,13 +319,7 @@ func Load() (*Config, string, error) {
 		return nil, path, err
 	}
 	if cfg.RemoteHeavy != nil {
-		if cfg.RemoteHeavy.When == "" {
-			cfg.RemoteHeavy.When = "busy"
-		}
-		if cfg.RemoteHeavy.BrokenExit == 0 {
-			cfg.RemoteHeavy.BrokenExit = 125
-		}
-		if err := config.ValidateRemoteHeavy(cfg.RemoteHeavy); err != nil {
+		if err := cfg.RemoteHeavy.Normalize("busy"); err != nil {
 			return nil, path, err
 		}
 	}

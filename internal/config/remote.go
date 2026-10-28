@@ -15,8 +15,11 @@ type RemoteHeavy struct {
 	// Up exits 0 when the host takes commands, quickly; any other exit
 	// keeps the heavy work on this machine, said in a line.
 	Up []string `yaml:"up"`
-	// Run runs a command on the host from the work tree root, with the
-	// step's argv appended, and exits with the command's status.
+	// Run runs a command on the host, with the step's argv appended, and
+	// exits with the command's status. It starts from the work tree root,
+	// or from the task's directory when it names {root}, the work tree
+	// root filled in; without {root} a task run in a subdirectory stays
+	// on this machine.
 	Run []string `yaml:"run"`
 	// Threads fills {threads} and GRAFT_THREADS of a step run there; 0
 	// leaves them to the host, and a step that uses {threads} is refused.
@@ -27,6 +30,26 @@ type RemoteHeavy struct {
 	// BrokenExit is the exit status run uses when it could not carry a
 	// command to the host.
 	BrokenExit int `yaml:"broken_exit"`
+}
+
+// RootPlaceholder in remote_heavy's run is the work tree root.
+const RootPlaceholder = "{root}"
+
+// DefaultBrokenExit is the status of a step remote_heavy's run could not
+// carry, when broken_exit names none: the one graft exec gives its own
+// failures.
+const DefaultBrokenExit = 125
+
+// Normalize fills an unset when with defaultWhen and an unset broken_exit
+// with DefaultBrokenExit, then validates r.
+func (r *RemoteHeavy) Normalize(defaultWhen string) error {
+	if r.When == "" {
+		r.When = defaultWhen
+	}
+	if r.BrokenExit == 0 {
+		r.BrokenExit = DefaultBrokenExit
+	}
+	return ValidateRemoteHeavy(r)
 }
 
 // ValidateRemoteHeavy validates the fields shared by project and user
@@ -62,11 +85,5 @@ func (c *Config) validateRemoteHeavy() error {
 	if r == nil {
 		return nil
 	}
-	if r.When == "" {
-		r.When = "always"
-	}
-	if r.BrokenExit == 0 {
-		r.BrokenExit = 125
-	}
-	return ValidateRemoteHeavy(r)
+	return r.Normalize("always")
 }

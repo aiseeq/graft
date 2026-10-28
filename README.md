@@ -156,7 +156,7 @@ a host line. Set `when: always` to send eligible work every time.
 remote_heavy:
   host: pc                       # the machine, in graft's lines and in stats
   up: [scripts/remote.sh, up]          # exits 0 when the host takes commands, within 30s
-  run: [scripts/remote.sh, run]        # runs the appended argv on the host from the work tree root
+  run: [scripts/remote.sh, run]        # runs the appended argv on the host from the work tree root; with {root}, from the step's directory
   threads: 16                    # {threads} and GRAFT_THREADS there; 0 leaves GRAFT_THREADS unset and refuses {threads}
   when: always                   # project default; user config defaults to busy
   broken_exit: 125               # run's transport failure status
@@ -167,7 +167,12 @@ graft only decides where a step runs and appends `env GRAFT_HEAVY=local
 K=V… <argv>`: the variables it sets for the step (`env`, `GRAFT_VERSION`,
 `GRAFT_THREADS`), since the host does not get this machine's environment,
 and `GRAFT_HEAVY=local`, so that a graft the step starts there keeps its heavy
-work. `up` runs once per graft, at the first heavy task. With user-configured
+work. `run` starts from the work tree root; when it names `{root}`, filled
+with the work tree root, it starts from the step's directory instead (a
+task's `dir`, `graft exec` in a subdirectory), as a `run` that carries the
+whole tree and runs the command where it was started needs. A step
+interrupted here sends `run` SIGTERM, so it can take its work off the host,
+and kills it 30 seconds later. `up` runs once per graft, at the first heavy task. With user-configured
 `remote_heavy`, only tasks whose every step is a `go test` or `go vet` command
 that writes no output file can use the host; a task with `remote: true` can
 send any heavy work. Output flags such as `-o`, `-coverprofile` and `-trace`
@@ -183,9 +188,10 @@ queues as before, `graft: build: heavy, on this machine: <why>`:
   write files needed here;
 - the task uses the test database, a jest or playwright report file, `.env`
   keys (`dotenv`, `dotenv_sets`) or a `${KEY}` that is no variable of the
-  task, or runs outside the work tree root (`dir`, `graft exec` in a
-  subdirectory), or names `GRAFT_COMMIT_MESSAGE_FILE` in a gate: none of these
-  is on the host;
+  task, or names `GRAFT_COMMIT_MESSAGE_FILE` in a gate: none of these is on
+  the host;
+- the task runs outside the work tree root (`dir`, `graft exec` in a
+  subdirectory) and `run` names no `{root}`;
 - `up` failed or timed out; its first line of output is in the reason.
 
 For a user-configured host, an `up` failure or a `run` exit of `broken_exit`

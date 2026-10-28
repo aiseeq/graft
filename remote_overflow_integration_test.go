@@ -18,20 +18,27 @@ import (
 func userRemoteRepo(t *testing.T, tasks string) (f *fixture, state string) {
 	t.Helper()
 	state = t.TempDir()
-	writeFile(t, filepath.Join(state, "up"), "")
-	writeFile(t, filepath.Join(state, "up.sh"), `[ -e "`+filepath.Join(state, "up")+`" ] || { echo no route to pc; exit 1; }`+"\n")
 	writeFile(t, filepath.Join(state, "run.sh"), `[ -e "`+filepath.Join(state, "broken")+`" ] && { echo connection to pc lost >&2; exit 125; }`+"\n"+
 		`echo "$*" >> "`+filepath.Join(state, "calls")+`"`+"\nexec \"$@\"\n")
-	f = newRepo(t, map[string]string{
+	return userRemoteRepoRun(t, tasks, state, "[sh, "+yamlQuote(filepath.Join(state, "run.sh"))+"]"), state
+}
+
+// userRemoteRepoRun is userRemoteRepo with run as remote_heavy's run, its
+// scripts in state.
+func userRemoteRepoRun(t *testing.T, tasks, state, run string) *fixture {
+	t.Helper()
+	writeFile(t, filepath.Join(state, "up"), "")
+	writeFile(t, filepath.Join(state, "up.sh"), `[ -e "`+filepath.Join(state, "up")+`" ] || { echo no route to pc; exit 1; }`+"\n")
+	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: none}\ntasks:\n" + tasks,
 		"go.mod":      "module example.com/a\n\ngo 1.22\n",
 		"a.go":        "package a\n",
 	})
 	cfgDir := t.TempDir()
 	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms, swap_window: 10ms}\n"+
-		"remote_heavy: {host: pc, up: [sh, "+yamlQuote(filepath.Join(state, "up.sh"))+"], run: [sh, "+yamlQuote(filepath.Join(state, "run.sh"))+"], threads: 8}\n")
+		"remote_heavy: {host: pc, up: [sh, "+yamlQuote(filepath.Join(state, "up.sh"))+"], run: "+run+", threads: 8}\n")
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, filepath.Join(state, "proc"), 0), "XDG_CACHE_HOME="+filepath.Join(state, "cache"))
-	return f, state
+	return f
 }
 
 func loaded(t *testing.T, state string) {
@@ -278,5 +285,71 @@ func TestInstallCopiesToTheUsersHosts(t *testing.T) {
 	}
 	if !strings.Contains(string(readBytes(t, installed)), "two") {
 		t.Errorf("the binary here was not installed before the host failed")
+	}
+}
+
+const inDirTasks = `  indir:
+    heavy: true
+    remote: true
+    dir: sub
+    run: [[sh, -c, 'echo there >> out']]
+`
+
+// TestUserRemoteHeavyRunsATaskInItsDirectoryWithRoot: a task with dir goes
+// to the host only when remote_heavy's run takes the work tree root as
+// {root}, and then starts from the task's directory with the root filled
+// in; without {root} it stays here, as the line says.
+func TestUserRemoteHeavyRunsATaskInItsDirectoryWithRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, inDirTasks)
+	f.write("sub/keep", "")
+	loaded(t, state)
+	cmd, out := f.start(f.work, "indir")
+	waitFor(t, func() bool { return strings.Contains(out.String(), "names no {root}") })
+	setRunnable(t, filepath.Join(state, "proc"), 0)
+	if err := cmd.Wait(); err != nil || callsOf(t, state) != "" {
+		t.Errorf("a task with dir went to a run without {root} (%v):\n%s", err, out.String())
+	}
+
+	state = t.TempDir()
+	writeFile(t, filepath.Join(state, "run.sh"), `root=$1; shift; echo "$PWD root=$root $*" >> "`+filepath.Join(state, "calls")+`"`+"\nexec \"$@\"\n")
+	f = userRemoteRepoRun(t, inDirTasks, state, "[sh, "+yamlQuote(filepath.Join(state, "run.sh"))+", '{root}']")
+	f.write("sub/keep", "")
+	loaded(t, state)
+	sent := f.mustGraft("indir")
+	if calls := callsOf(t, state); !strings.HasPrefix(calls, filepath.Join(f.work, "sub")+" root="+f.work+" env ") {
+		t.Errorf("run got %q, want it in sub with the root\n%s", calls, sent)
+	}
+	if got := f.read("sub/out"); got != "there\n" {
+		t.Errorf("sub/out = %q, want the step run in sub", got)
+	}
+}
+
+// TestUserRemoteHeavyStopsACancelledStepWithSIGTERM: an interrupted graft
+// asks remote_heavy's run to stop (SIGTERM), so it can take its work off the
+// host, rather than killing it.
+func TestUserRemoteHeavyStopsACancelledStepWithSIGTERM(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh, and Windows has no SIGTERM")
+	}
+	state := t.TempDir()
+	writeFile(t, filepath.Join(state, "run.sh"), `trap 'echo term > "`+filepath.Join(state, "term")+`"; kill $pid; exit 143' TERM`+"\n"+
+		`echo started > "`+filepath.Join(state, "calls")+`"`+"\n\"$@\" &\npid=$!\nwait $pid\n")
+	f := userRemoteRepoRun(t, "  long:\n    heavy: true\n    remote: true\n    run: [[sleep, '10']]\n", state, "[sh, "+yamlQuote(filepath.Join(state, "run.sh"))+"]")
+	loaded(t, state)
+	cmd, out := f.start(f.work, "long")
+	for deadline := time.Now().Add(10 * time.Second); callsOf(t, state) == ""; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("run did not start:\n%s", out.String())
+		}
+	}
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	if data, err := os.ReadFile(filepath.Join(state, "term")); err != nil || string(data) != "term\n" {
+		t.Errorf("run did not get SIGTERM (%v):\n%s", err, out.String())
 	}
 }

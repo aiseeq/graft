@@ -21,6 +21,12 @@ func Terminate(pid int) error {
 	return signalGroup(pid, syscall.SIGTERM)
 }
 
+// StopOnCancel makes cmd get SIGTERM when its context ends, in place of
+// SIGKILL, so it can clean up; cmd.WaitDelay bounds how long it may take.
+func StopOnCancel(cmd *exec.Cmd) {
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+}
+
 // Kill ends the process group a detached process leads (SIGKILL).
 func Kill(pid int) error {
 	return signalGroup(pid, syscall.SIGKILL)
