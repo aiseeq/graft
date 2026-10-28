@@ -1,6 +1,6 @@
 # A tracker transition to done waits for glint -s low on the deployed sha
 
-Статус: в работе
+Статус: готово
 Исполнитель: graft-master
 
 ## Вход
@@ -48,3 +48,4 @@
 - 2026-10-28 00:23 code, README, tests (glint_integration_test.go, config cases) done; committing
 - 2026-10-28 00:29 review (fresh agent) of 2e9cb71: sweep moves held items to Done without the check; rulesPanicked is under stats; a bad --glint-ticket shows only after the deploy; no deployed sha gives a git error; a held key delivered again but skipped is dropped (older). Fixing all; --glint-ticket not tied to an acceptance: graft cannot tell one, said in README
 - 2026-10-28 00:31 fixed: sweep checks glint (TestSweepGlintHoldsItems, red without), stats.rulesPanicked, ticket read before the deploy, empty deployed sha, held keys kept when unread or unposted; README
+- 2026-10-28 01:07 готово — review-agent: fresh review agent on 2e9cb71: 5 findings fixed in a26d192 (TestSweepGlintHoldsItems red without); go run . all green; v2.44.1 installed
