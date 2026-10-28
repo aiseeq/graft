@@ -29,7 +29,8 @@ type Result struct {
 
 // Trim removes, with apply, the entries of the Go build cache in dir not
 // used for longer than older before now, and counts them either way. An
-// entry is a file <hash>-a or <hash>-d in one of the 256 subdirectories
+// entry is a file <hash>-a or <hash>-d, or a directory <hash>-d that holds
+// an executable go run or go tool built, in one of the 256 subdirectories
 // 00…ff, as the go command's own trim takes them; the fuzz cache and the
 // cache's own files stay. An entry gone meanwhile, removed by a go command
 // trimming at the same time, is not counted.
@@ -53,10 +54,12 @@ func Trim(dir string, older time.Duration, now time.Time, apply bool) (Result, e
 			return r, err
 		}
 		for _, e := range entries {
-			name := e.Name()
-			if !strings.HasSuffix(name, "-a") && !strings.HasSuffix(name, "-d") || !e.Type().IsRegular() {
+			name, path := e.Name(), filepath.Join(sub, e.Name())
+			executable := e.IsDir() && strings.HasSuffix(name, "-d")
+			if !strings.HasSuffix(name, "-a") && !strings.HasSuffix(name, "-d") || !e.Type().IsRegular() && !executable {
 				continue
 			}
+			// go marks an executable used on its directory.
 			info, err := e.Info()
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
@@ -64,13 +67,25 @@ func Trim(dir string, older time.Duration, now time.Time, apply bool) (Result, e
 			if err != nil {
 				return r, err
 			}
+			size := info.Size()
+			if executable {
+				if size, err = dirSize(path); errors.Is(err, fs.ErrNotExist) {
+					continue
+				} else if err != nil {
+					return r, err
+				}
+			}
 			if !info.ModTime().Before(cutoff) {
 				r.Kept++
-				r.KeptBytes += info.Size()
+				r.KeptBytes += size
 				continue
 			}
 			if apply {
-				err := os.Remove(filepath.Join(sub, name))
+				remove := os.Remove
+				if executable {
+					remove = os.RemoveAll
+				}
+				err := remove(path)
 				if errors.Is(err, fs.ErrNotExist) {
 					continue
 				}
@@ -79,8 +94,25 @@ func Trim(dir string, older time.Duration, now time.Time, apply bool) (Result, e
 				}
 			}
 			r.Removed++
-			r.RemovedBytes += info.Size()
+			r.RemovedBytes += size
 		}
 	}
 	return r, nil
+}
+
+// dirSize sums the sizes of the regular files under dir.
+func dirSize(dir string) (int64, error) {
+	var n int64
+	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		n += info.Size()
+		return nil
+	})
+	return n, err
 }

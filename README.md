@@ -1900,14 +1900,15 @@ worktrees the cache holds days of builds nobody will repeat. `graft gocache
 trim` removes the entries of `go env GOCACHE` unused for longer than
 `--older` (25h by default: a day, plus the hour go waits before it marks an
 entry used again), the way go's own trim does: files `<hash>-a` and
-`<hash>-d` in the subdirectories `00`…`ff`. The fuzz corpus and the cache's
+`<hash>-d`, and directories `<hash>-d` with the executables `go run` and `go
+tool` built, in the subdirectories `00`…`ff`. The fuzz corpus and the cache's
 own files stay, and a directory without the README go writes there is
 refused. Without `--apply` it only reports what it would remove and what it
 keeps. A removed entry is a cache miss: go rebuilds the package the next time
 it is needed, so a project not built for a day builds cold once, and a
 project in use stays warm. Run it daily from a timer, for instance a
-systemd user unit with `ExecStart=graft gocache trim --apply` and
-`OnCalendar=daily`.
+systemd user unit with `ExecStart=` the absolute path of graft and `gocache
+trim --apply`, and `OnCalendar=daily`: systemd does not look in `~/bin`.
 
 ## Development
 

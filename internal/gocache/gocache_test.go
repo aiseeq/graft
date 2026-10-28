@@ -50,9 +50,28 @@ func TestTrimRemovesTheEntriesUnusedForLongerThanTheAge(t *testing.T) {
 	old := []string{"00/" + strings.Repeat("0", 64) + "-a", "00/" + strings.Repeat("1", 64) + "-d", "ff/" + strings.Repeat("f", 64) + "-d"}
 	kept := []string{"0a/" + strings.Repeat("a", 64) + "-a", "0a/" + strings.Repeat("b", 64) + "-d",
 		"README", "trim.txt", "testexpire.txt", "fuzz/example.com/m/FuzzX/0123", "0a/notes"}
-	want := Result{Removed: 3, Kept: 2, RemovedBytes: 3 * 5, KeptBytes: 2 * 5}
+	want := Result{Removed: 4, Kept: 3, RemovedBytes: 3*5 + 7, KeptBytes: 2*5 + 7}
 
 	dir := cacheDir(t, now, ages)
+	// Executables go run built: a directory <hash>-d, marked used on itself.
+	for rel, age := range map[string]time.Duration{
+		"5c/" + strings.Repeat("5", 64) + "-d": 30 * time.Hour,
+		"5c/" + strings.Repeat("6", 64) + "-d": 2 * time.Hour,
+		"5c/" + strings.Repeat("7", 64) + "-a": 30 * time.Hour,
+	} {
+		exe := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(exe, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(exe, "prog"), []byte("program"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(exe, now.Add(-age), now.Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old = append(old, "5c/"+strings.Repeat("5", 64)+"-d")
+	kept = append(kept, "5c/"+strings.Repeat("6", 64)+"-d/prog", "5c/"+strings.Repeat("7", 64)+"-a/prog")
 	r, err := Trim(dir, 25*time.Hour, now, false)
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +102,7 @@ func TestTrimRemovesTheEntriesUnusedForLongerThanTheAge(t *testing.T) {
 			t.Errorf("%s removed: %v", rel, err)
 		}
 	}
-	if r, err := Trim(dir, 25*time.Hour, now, true); err != nil || r != (Result{Kept: 2, KeptBytes: 10}) {
+	if r, err := Trim(dir, 25*time.Hour, now, true); err != nil || r != (Result{Kept: 3, KeptBytes: 17}) {
 		t.Errorf("second trim: %+v, %v", r, err)
 	}
 }
