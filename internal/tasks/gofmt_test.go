@@ -76,3 +76,43 @@ func TestCheckGoFmt(t *testing.T) {
 		t.Errorf("file in the unselected nested module was listed: %q", got)
 	}
 }
+
+// TestCheckGoFmtListsAConflictOnce: git lists a file in a merge conflict once
+// per stage; the step prints it once.
+func TestCheckGoFmtListsAConflictOnce(t *testing.T) {
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil && args[0] != "merge" {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	write("go.mod", "module example.com/m\n\ngo 1.26\n")
+	write("a.go", "package m\n\nfunc f() {}\n")
+	git("add", "-A")
+	git("commit", "-qm", "base")
+	git("checkout", "-qb", "other")
+	write("a.go", "package m\n\nfunc g() {}\n")
+	git("commit", "-qam", "other")
+	git("checkout", "-q", "main")
+	write("a.go", "package m\n\nfunc h() {}\n")
+	git("commit", "-qam", "main")
+	git("merge", "-q", "other")
+	var out bytes.Buffer
+	r := &Runner{Root: root, Config: &config.Config{}, Stdout: &out}
+	if err := r.checkGoFmt(context.Background(), []string{"."}); err == nil {
+		t.Fatal("a file with conflict markers must fail")
+	}
+	if n := strings.Count(out.String(), "a.go"); n != 1 {
+		t.Errorf("a.go listed %d times:\n%s", n, out.String())
+	}
+}

@@ -169,9 +169,10 @@ func userRemoteEligible(t *config.Task, args []string) bool {
 }
 
 // outputFlags are the go test and go vet flags that leave a file on the
-// machine the step runs on.
+// machine the step runs on (-fuzz its corpus in testdata); -mod=mod, which
+// may rewrite go.mod and go.sum, keeps a step here too.
 var outputFlags = []string{"-o", "-c", "-coverprofile", "-cpuprofile", "-memprofile",
-	"-blockprofile", "-mutexprofile", "-trace", "-outputdir"}
+	"-blockprofile", "-mutexprofile", "-trace", "-outputdir", "-fuzz"}
 
 // goCheckNoOutput reports whether argv is go test or go vet with no flag
 // that writes a file, args given in place of {args}.
@@ -181,15 +182,24 @@ func goCheckNoOutput(argv, args []string) bool {
 	}
 	var words []string
 	for _, arg := range argv[2:] {
-		if arg == ArgsPlaceholder {
+		switch {
+		case arg == ArgsPlaceholder:
 			words = append(words, args...)
-		} else {
+		case strings.Contains(arg, ArgsPlaceholder) && len(args) == 1:
+			// Inside a word {args} takes exactly one argument.
+			words = append(words, strings.Replace(arg, ArgsPlaceholder, args[0], 1))
+		default:
 			words = append(words, arg)
 		}
 	}
 	for _, arg := range words {
-		name, _, _ := strings.Cut(arg, "=")
-		if strings.HasPrefix(arg, "-") && slices.Contains(outputFlags, "-"+strings.TrimLeft(name, "-")) {
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		name, value, _ := strings.Cut(arg, "=")
+		// go test passes -test.X to the test binary as -X.
+		name = "-" + strings.TrimPrefix(strings.TrimLeft(name, "-"), "test.")
+		if slices.Contains(outputFlags, name) || name == "-mod" && value == "mod" {
 			return false
 		}
 	}

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aiseeq/graft/v2/internal/loadgate"
 )
 
 // userRemoteRepo is a Go project without remote_heavy on a machine whose
@@ -382,6 +384,21 @@ func TestUserRemoteHeavyOverflowsBehindAHeldQueue(t *testing.T) {
 	admitted.env = append(slices.Clone(f.env), "GRAFT_ADMITTED=1")
 	if out := admitted.mustGraft("exec", "--heavy", "--", "go", "vet", "./..."); strings.Contains(out, "on pc") || strings.Count(callsOf(t, state), "go vet") != 1 {
 		t.Errorf("an admitted exec went to pc behind the queue it does not wait for:\n%s\ncalls: %q", out, callsOf(t, state))
+	}
+	// A task with a priority waits for the machine, not for the queue: on a
+	// calm machine it runs here, on a busy one it goes.
+	budget, err := loadgate.NewBudget(t.TempDir(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prio := *f
+	prio.env = append(slices.Clone(f.env), loadgate.EnvPriority+"=deploy", loadgate.EnvBudget+"="+budget, loadgate.EnvThen+"="+loadgate.ThenStart)
+	if out := prio.mustGraft("exec", "--heavy", "--", "go", "vet", "./..."); strings.Contains(out, "on pc") || strings.Count(callsOf(t, state), "go vet") != 1 {
+		t.Errorf("a task with a priority on a calm machine went to pc:\n%s\ncalls: %q", out, callsOf(t, state))
+	}
+	loaded(t, state)
+	if out := prio.mustGraft("exec", "--heavy", "--", "go", "vet", "./..."); !strings.Contains(out, "on pc") {
+		t.Errorf("a task with a priority on a busy machine stayed here:\n%s\ncalls: %q", out, callsOf(t, state))
 	}
 }
 
