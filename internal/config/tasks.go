@@ -28,14 +28,22 @@ type Step struct {
 	// service when it is empty.
 	ServiceAction string
 	ServiceName   string
+	Install       *InstallStep
 	Source        string
+}
+
+// InstallStep describes a built file and an optional destination directory.
+type InstallStep struct {
+	Path string
+	To   string
 }
 
 // Service actions a step can take.
 var serviceActions = []string{"start", "stop", "restart"}
 
 // UnmarshalYAML accepts a string (argv by shell quoting rules, no shell), a
-// list (argv as is), {sh: "..."} or {task: name}.
+// list (argv as is), {sh: "..."}, {task: name}, {service: ...}, or
+// {install: path, to: directory}.
 func (s *Step) UnmarshalYAML(node *yaml.Node) error {
 	switch node.Kind {
 	case yaml.ScalarNode, yaml.SequenceNode:
@@ -48,13 +56,16 @@ func (s *Step) UnmarshalYAML(node *yaml.Node) error {
 	case yaml.MappingNode:
 		return s.unmarshalMap(node)
 	default:
-		return fmt.Errorf("line %d: a step is a string, a list, {sh: ...}, {task: ...} or {service: ...}", node.Line)
+		return fmt.Errorf("line %d: a step is a string, a list, {sh: ...}, {task: ...}, {service: ...} or {install: ...}", node.Line)
 	}
 }
 
 func (s *Step) unmarshalMap(node *yaml.Node) error {
+	if handled, err := s.unmarshalInstallMap(node); handled {
+		return err
+	}
 	if len(node.Content) != 2 || node.Content[1].Kind != yaml.ScalarNode {
-		return fmt.Errorf("line %d: a step map is {sh: \"...\"}, {task: name} or {service: action [name]}", node.Line)
+		return fmt.Errorf("line %d: a step map is {sh: \"...\"}, {task: name}, {service: action [name]} or {install: ...}", node.Line)
 	}
 	key, value := node.Content[0].Value, node.Content[1].Value
 	switch key {
@@ -62,6 +73,8 @@ func (s *Step) unmarshalMap(node *yaml.Node) error {
 		s.Shell, s.Source = value, shellLabel(value)
 	case "task":
 		s.Task, s.Source = value, "task "+value
+	case "install":
+		s.Install, s.Source = &InstallStep{Path: value}, "install "+value
 	case "service":
 		fields := strings.Fields(value)
 		if len(fields) == 0 || len(fields) > 2 || !slices.Contains(serviceActions, fields[0]) {
@@ -74,13 +87,37 @@ func (s *Step) unmarshalMap(node *yaml.Node) error {
 		s.Source = "service " + value
 	default:
 		// "echo a: b" unquoted is a map to YAML.
-		return fmt.Errorf("line %d: %q was read as a map (\": \" in a plain string); quote the whole step, or use {sh: ...}, {task: ...} or {service: ...}",
+		return fmt.Errorf("line %d: %q was read as a map (\": \" in a plain string); quote the whole step, or use {sh: ...}, {task: ...}, {service: ...} or {install: ...}",
 			node.Line, key+": "+value)
 	}
 	if value == "" {
 		return fmt.Errorf("line %d: %s: empty", node.Line, key)
 	}
 	return nil
+}
+
+func (s *Step) unmarshalInstallMap(node *yaml.Node) (bool, error) {
+	if len(node.Content) != 4 || node.Content[0].Value != "install" && node.Content[2].Value != "install" {
+		return false, nil
+	}
+	values := map[string]*yaml.Node{}
+	for i := 0; i < len(node.Content); i += 2 {
+		key, value := node.Content[i].Value, node.Content[i+1]
+		if key != "install" && key != "to" || values[key] != nil || value.Kind != yaml.ScalarNode {
+			return true, fmt.Errorf("line %d: a step map is {install: ..., to: ...}", node.Line)
+		}
+		values[key] = value
+	}
+	if values["install"] == nil || values["to"] == nil {
+		return true, fmt.Errorf("line %d: a step map is {install: ..., to: ...}", node.Line)
+	}
+	install := &InstallStep{Path: values["install"].Value, To: values["to"].Value}
+	if install.Path == "" || install.To == "" {
+		return true, fmt.Errorf("line %d: install: and to: must not be empty", node.Line)
+	}
+	s.Install = install
+	s.Source = "install " + install.Path
+	return true, nil
 }
 
 // shellLabel names a shell step in graft's output: the script itself when it
@@ -489,6 +526,9 @@ func (c *Config) validateTask(name string, t *Task) error {
 			return err
 		}
 	}
+	if err := validateInstallDestinations(where, t.Run); err != nil {
+		return err
+	}
 	if err := t.Lock.validate(where + ".lock"); err != nil {
 		return err
 	}
@@ -507,6 +547,15 @@ func (c *Config) validateTask(name string, t *Task) error {
 		return err
 	}
 	return c.validateTaskRefs(where, t)
+}
+
+func validateInstallDestinations(where string, steps []Step) error {
+	for _, s := range steps {
+		if s.Install != nil && s.Install.To != "" && !filepath.IsAbs(s.Install.To) && !strings.HasPrefix(s.Install.To, "~/") && s.Install.To != "~" {
+			return fmt.Errorf("%s.run: install to: must be an absolute path or start with ~/", where)
+		}
+	}
+	return nil
 }
 
 // validateTaskRefs checks the tasks and services a task names.

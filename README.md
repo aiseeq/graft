@@ -511,9 +511,34 @@ dotenv_sets:                   # key lists several tasks and services share
 ```
 
 - A step is a string (split into words, no shell; pipes, `$VAR` and
-  redirects are errors), a list (argv as is), `{sh: "..."}`, `{task: name}`
-  or `{service: action [name]}`. A string with `: ` in it is a map to YAML:
-  quote the whole step.
+  redirects are errors), a list (argv as is), `{sh: "..."}`, `{task: name}`,
+  `{service: action [name]}` or `{install: paths}` (below). A string with
+  `: ` in it is a map to YAML: quote the whole step.
+- `{install: paths}` puts built files where programs live: the paths, globs
+  among them, are relative to the task's `dir`, and a glob that matches
+  nothing is an error. They go to `tools.bin_dir` of the user config, or
+  where `go install` puts binaries; `{install: paths, to: dir}` names
+  another directory, absolute or starting with `~/`. A file is installed
+  only from what is committed: a Go program's build info must say HEAD and
+  no uncommitted changes (so a stale build in `bin/` is refused too), and a
+  file without it needs a clean work tree. The copy is atomic and
+  executable, a running program keeps its old file, an identical one is
+  left alone, and each file prints `graft: install: <name> <revision> ->
+  <path>`. A task with an install step is never cached. The usual install
+  of a project's program:
+
+  ```yaml
+  tasks:
+    build:
+      run: [[go, build, -o, bin/tool, ./cmd/tool]]
+    install:
+      desc: install bin/tool into ~/bin
+      deps: [build]
+      run: [{install: bin/tool}]
+  ```
+
+  Steps a project needs around it (a check that nothing runs the old
+  program, a config file) stay `sh` steps of the same task.
 - `{args}` receives the arguments after `--` verbatim: as separate words
   when it is a whole argv word, as the one argument inside a word, and
   shell-quoted in `sh` steps. `${KEY}` is expanded in the configured words

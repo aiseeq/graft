@@ -4,7 +4,9 @@
 package tasks
 
 import (
+	"bytes"
 	"context"
+	"debug/buildinfo"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +15,8 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,6 +32,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/testreport"
+	"github.com/aiseeq/graft/v2/internal/tools"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
@@ -313,8 +318,8 @@ func (r *Runner) Gate(ctx context.Context) (err error) {
 	}
 	r.Stdin = nil
 	all := make([]config.Step, len(steps))
-	for i, gs := range steps {
-		all[i] = gs.step
+	for i := range steps {
+		all[i] = steps[i].step
 	}
 	if err := r.preflight(all, &config.Task{}, "gate"); err != nil {
 		return err
@@ -328,7 +333,8 @@ func (r *Runner) Gate(ctx context.Context) (err error) {
 		return err
 	}
 	defer func() { err = errors.Join(err, leave()) }()
-	for i, gs := range steps {
+	for i := range steps {
+		gs := &steps[i]
 		s, threads, err := r.threads(gs.step, gs.task)
 		if err != nil {
 			return fmt.Errorf("gate: %w", err)
@@ -544,6 +550,9 @@ func (r *Runner) steps(ctx context.Context, name string, t *config.Task, args []
 // step runs s, its {threads} already filled; threads is the thread count a
 // heavy task passes as GRAFT_THREADS.
 func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args []string, threads string) error {
+	if s.Install != nil {
+		return r.install(ctx, s, t)
+	}
 	if s.Task != "" {
 		return r.run(ctx, s.Task, nil)
 	}
@@ -1366,6 +1375,200 @@ func (r *Runner) repo() (*gitx.Repo, error) {
 		r.Repo = repo
 	}
 	return r.Repo, nil
+}
+
+// install expands source patterns, validates each binary, then installs it.
+func (r *Runner) install(ctx context.Context, s config.Step, t *config.Task) error {
+	patterns := strings.Fields(s.Install.Path)
+	if len(patterns) == 0 {
+		return errors.New("install: empty path")
+	}
+	var files []string
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(filepath.Join(r.taskDir(t), filepath.FromSlash(pattern)))
+		if err != nil {
+			return fmt.Errorf("install glob %q: %w", pattern, err)
+		}
+		if len(matches) == 0 {
+			return fmt.Errorf("install glob %q matched no files", pattern)
+		}
+		files = append(files, matches...)
+	}
+	repo, err := r.repo()
+	if err != nil {
+		return fmt.Errorf("install: opening repository: %w", err)
+	}
+	head, err := repo.Git("rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return fmt.Errorf("install: reading HEAD: %w", err)
+	}
+	head = strings.TrimSpace(head)
+	candidates := make([]installCandidate, 0, len(files))
+	for _, file := range files {
+		candidate, err := prepareInstall(ctx, repo, head, file, s.Install.To)
+		if err != nil {
+			return err
+		}
+		candidates = append(candidates, candidate)
+	}
+	for _, candidate := range candidates {
+		if err := r.writeInstall(candidate); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type installCandidate struct {
+	name, revision, destination string
+	data                        []byte
+	unchanged                   bool
+}
+
+func prepareInstall(ctx context.Context, repo *gitx.Repo, head, file, to string) (installCandidate, error) {
+	name := filepath.Base(file)
+	info, err := os.Stat(file)
+	if err != nil {
+		return installCandidate{}, fmt.Errorf("install %s: %w", name, err)
+	}
+	if !info.Mode().IsRegular() {
+		return installCandidate{}, fmt.Errorf("install %s: not a regular file", name)
+	}
+	build, buildErr := buildinfo.ReadFile(file)
+	revision, hasRevision := installSetting(build, "vcs.revision")
+	rev := head
+	if buildErr == nil && hasRevision {
+		if modified, ok := installSetting(build, "vcs.modified"); ok && modified == "true" {
+			return installCandidate{}, fmt.Errorf("install %s: refusing uncommitted binary (revision %s)", name, shortRevision(revision))
+		}
+		if revision != head {
+			return installCandidate{}, fmt.Errorf("install %s: binary revision %s does not match HEAD %s", name, shortRevision(revision), shortRevision(head))
+		}
+		rev = revision
+	} else {
+		clean, err := repo.IsClean()
+		if err != nil {
+			return installCandidate{}, fmt.Errorf("install %s: checking clean tree: %w", name, err)
+		}
+		if !clean {
+			return installCandidate{}, fmt.Errorf("install %s: refusing binary without Go revision; working tree must be clean", name)
+		}
+	}
+	destination, err := installDestination(ctx, to)
+	if err != nil {
+		return installCandidate{}, fmt.Errorf("install destination for %s: %w", name, err)
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return installCandidate{}, fmt.Errorf("install %s: reading file: %w", name, err)
+	}
+	dest := filepath.Join(destination, name)
+	existing, err := os.ReadFile(dest)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return installCandidate{}, fmt.Errorf("install destination %s: %w", dest, err)
+	}
+	return installCandidate{name: name, revision: rev, destination: dest, data: data, unchanged: err == nil && bytes.Equal(existing, data)}, nil
+}
+
+func (r *Runner) writeInstall(candidate installCandidate) error {
+	if candidate.unchanged {
+		fmt.Fprintf(r.Stderr, "graft: install: %s %s unchanged: %s\n", candidate.name, shortRevision(candidate.revision), candidate.destination)
+		return nil
+	}
+	if err := installAtomic(candidate.destination, candidate.data); err != nil {
+		return fmt.Errorf("install %s to %s: %w", candidate.name, candidate.destination, err)
+	}
+	fmt.Fprintf(r.Stderr, "graft: install: %s %s -> %s\n", candidate.name, shortRevision(candidate.revision), candidate.destination)
+	return nil
+}
+
+func installSetting(info *debug.BuildInfo, key string) (string, bool) {
+	if info == nil {
+		return "", false
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == key {
+			return setting.Value, true
+		}
+	}
+	return "", false
+}
+
+func installDestination(ctx context.Context, to string) (string, error) {
+	if to == "" {
+		return tools.InstallDir(ctx)
+	}
+	if to == "~" || strings.HasPrefix(to, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("getting home directory: %w", err)
+		}
+		to = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(to, "~"), string(filepath.Separator)))
+	}
+	return to, nil
+}
+
+func shortRevision(rev string) string {
+	if len(rev) > 7 {
+		return rev[:7]
+	}
+	return rev
+}
+
+func installAtomic(dest string, data []byte) (err error) {
+	dir := filepath.Dir(dest)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating destination directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".graft-install-*")
+	if err != nil {
+		return fmt.Errorf("creating temporary file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if e := os.Remove(tmpName); e != nil && !errors.Is(e, os.ErrNotExist) {
+			err = errors.Join(err, fmt.Errorf("removing temporary file: %w", e))
+		}
+	}()
+	if _, err = tmp.Write(data); err != nil {
+		return errors.Join(fmt.Errorf("writing temporary file: %w", err), tmp.Close())
+	}
+	if err = tmp.Chmod(0o755); err != nil {
+		return errors.Join(fmt.Errorf("setting executable mode: %w", err), tmp.Close())
+	}
+	if err = tmp.Close(); err != nil {
+		return fmt.Errorf("closing temporary file: %w", err)
+	}
+	if err = os.Rename(tmpName, dest); err == nil {
+		return nil
+	}
+	if runtime.GOOS != "windows" {
+		return fmt.Errorf("replacing destination: %w", err)
+	}
+	// Windows does not replace a running program, but renames it: the old
+	// file moves aside under a name of its own and is removed when nothing
+	// runs it any more, by this install or a later one.
+	oldPattern := filepath.Join(dir, "."+filepath.Base(dest)+".old-*")
+	removeOld(oldPattern)
+	old := filepath.Join(dir, fmt.Sprintf(".%s.old-%d", filepath.Base(dest), time.Now().UnixNano()))
+	if moveErr := os.Rename(dest, old); moveErr != nil {
+		return errors.Join(fmt.Errorf("replacing destination: %w", err), fmt.Errorf("moving current destination: %w", moveErr))
+	}
+	if moveErr := os.Rename(tmpName, dest); moveErr != nil {
+		restoreErr := os.Rename(old, dest)
+		return errors.Join(fmt.Errorf("replacing destination: %w", err), fmt.Errorf("installing new file: %w", moveErr), restoreErr)
+	}
+	removeOld(oldPattern)
+	return nil
+}
+
+// removeOld removes the replaced programs matching pattern that nothing
+// runs any more; one still running stays for a later install to remove.
+func removeOld(pattern string) {
+	old, _ := filepath.Glob(pattern) // the pattern is graft's own and well formed
+	for _, f := range old {
+		_ = os.Remove(f) // still running: left for a later install
+	}
 }
 
 // taskDir is the directory a task's steps run in.

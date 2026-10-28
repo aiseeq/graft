@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -205,7 +204,7 @@ func (a *App) Tools(ctx context.Context, install bool) error {
 }
 
 func (a *App) checkTools(ctx context.Context, cfg *config.Config, install bool) error {
-	binDir, err := toolsBinDir()
+	binDir, err := tools.UserBinDir()
 	if err != nil {
 		return err
 	}
@@ -251,16 +250,4 @@ func (a *App) checkTools(ctx context.Context, cfg *config.Config, install bool) 
 		return fmt.Errorf("tools not ready: %s", strings.Join(failed, ", "))
 	}
 	return nil
-}
-
-// toolsBinDir is tools.bin_dir from the user config; empty without one.
-func toolsBinDir() (string, error) {
-	ucfg, _, err := userconfig.Load()
-	if errors.Is(err, userconfig.ErrNotFound) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return ucfg.Tools.BinDir, nil
 }

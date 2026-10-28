@@ -1,6 +1,6 @@
 # The heavy queue admits one at a time, by the machine of this moment
 
-Статус: на проверке
+Статус: готово
 Исполнитель: graft-master
 
 ## Постановка
@@ -53,3 +53,5 @@ at a load of 22 or more, the load reaching 52. Causes:
 - 2026-10-28 00:12 committed 2204657, tagged v2.42.14 (patch: release got no --minor), installed; TestSwappingAloneStarts for akit-master; committing
 - 2026-10-28 01:00 note — graft-master: live measurement (stats, classified starts): before 22:25–23:25 213 of 338 heavy starts began while another started under 9s earlier still ran, after 00:15–00:28 4 of 126; max load at a start 55 → 16; gates started at load ≥22 without a wait 57 → 0
 - 2026-10-28 01:00 на проверке — graft-master — needs an independent look at the before/after stats
+- 2026-10-28 02:35 note — graft-master: 02:37 independent review of the stats measurement — fresh Opus agent (heavy-review in the scratchpad), windows 22:25–23:25 and 00:15–now
+- 2026-10-28 02:38 готово — graft-master-review-agent: independent re-count from ~/.cache/graft/stats.jsonl by a fresh Opus agent (scratchpad heavy-review/main.go): admitted heavy starts that overlapped a start <9s earlier 181–286 of 281–397 (22:25–23:25) → 0 of 943 (00:15–02:36); max load at a start 54.97 → 16.80; gates at load ≥22 with no wait 36–49 (the 57 was overcounted) → 0. Queue admits one at a time.

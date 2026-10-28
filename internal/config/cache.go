@@ -118,6 +118,8 @@ func (c *Config) sideEffect(name string, seen map[string]bool) string {
 	}
 	for _, s := range t.Run {
 		switch {
+		case s.Install != nil:
+			return fmt.Sprintf("task %s installs files outside the work tree", name)
 		case s.ServiceAction != "":
 			return fmt.Sprintf("task %s acts on services", name)
 		case s.Task != "":

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 	"github.com/aiseeq/graft/v2/internal/version"
 )
 
@@ -231,6 +232,30 @@ func shadows(dir, program string) ([]string, error) {
 		found = append(found, p)
 	}
 	return found, nil
+}
+
+// UserBinDir is tools.bin_dir from the user config; empty without one.
+func UserBinDir() (string, error) {
+	ucfg, _, err := userconfig.Load()
+	if errors.Is(err, userconfig.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return ucfg.Tools.BinDir, nil
+}
+
+// InstallDir is the configured tools directory, or where go install puts binaries.
+func InstallDir(ctx context.Context) (string, error) {
+	binDir, err := UserBinDir()
+	if err != nil {
+		return "", err
+	}
+	if binDir != "" {
+		return binDir, nil
+	}
+	return goBin(ctx)
 }
 
 // goBin is where go install puts binaries.
