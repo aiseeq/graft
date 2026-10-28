@@ -224,11 +224,14 @@ func newMachine(l userconfig.MachineLoad, log io.Writer, name string) *machine {
 // BusyNow tells whether Wait would wait now, without entering the queue: a
 // task holds the queue's lock at lockPath (starting, or settling after its
 // start), or the machine measures Wait uses, read once, say busy. A missing
-// measure is skipped and reported as it is in Wait.
+// measure is skipped and reported as it is in Wait. An empty lockPath leaves
+// the queue out, for a task with a priority, which Wait does not queue.
 func BusyNow(ctx context.Context, name string, l userconfig.MachineLoad, lockPath string, log io.Writer) (bool, error) {
-	holders, err := lock.Holders(lockPath)
-	if err != nil || len(holders) > 0 {
-		return err == nil, err
+	if lockPath != "" {
+		holders, err := lock.Holders(lockPath)
+		if err != nil || len(holders) > 0 {
+			return err == nil, err
+		}
 	}
 	b, err := newMachine(l, log, name).busy(ctx, true)
 	return b.why != "", err

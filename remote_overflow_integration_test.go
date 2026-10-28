@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -376,6 +377,12 @@ func TestUserRemoteHeavyOverflowsBehindAHeldQueue(t *testing.T) {
 	if !strings.Contains(out, "graft: vet: heavy, on pc") || !strings.Contains(callsOf(t, state), "go vet ./...") {
 		t.Errorf("behind a held queue vet stayed here:\n%s\ncalls: %q", out, callsOf(t, state))
 	}
+	// A graft a step of an admitted task starts does not queue: it runs here.
+	admitted := *f
+	admitted.env = append(slices.Clone(f.env), "GRAFT_ADMITTED=1")
+	if out := admitted.mustGraft("exec", "--heavy", "--", "go", "vet", "./..."); strings.Contains(out, "on pc") || strings.Count(callsOf(t, state), "go vet") != 1 {
+		t.Errorf("an admitted exec went to pc behind the queue it does not wait for:\n%s\ncalls: %q", out, callsOf(t, state))
+	}
 }
 
 // TestUserRemoteHeavyTestFindsTheStandardLibrary: the host does not get this
@@ -393,6 +400,10 @@ func TestUserRemoteHeavyTestFindsTheStandardLibrary(t *testing.T) {
 	out, code := f.graft("", "unit")
 	if code != 0 || !strings.Contains(out, "graft: unit: heavy, on pc") {
 		t.Errorf("go test on pc: exit %d\n%s\ncalls: %q", code, out, callsOf(t, state))
+	}
+	out, code = f.graft("", "exec", "--heavy", "--", "go", "test", "-count=1", "./...")
+	if code != 0 || !strings.Contains(out, "graft: exec: heavy, on pc") {
+		t.Errorf("exec go test on pc: exit %d\n%s\ncalls: %q", code, out, callsOf(t, state))
 	}
 }
 
@@ -412,5 +423,34 @@ func TestUserRemoteHeavyKeepsATaskReadingFilesOfThisMachine(t *testing.T) {
 	setRunnable(t, filepath.Join(state, "proc"), 0)
 	if err := cmd.Wait(); err != nil || !strings.Contains(out.String(), want) || callsOf(t, state) != "" {
 		t.Errorf("a task reading a file of this machine went to pc: %v\n%s\ncalls: %q", err, out.String(), callsOf(t, state))
+	}
+}
+
+// TestUserRemoteHeavyJudgesTheArgumentsGiven: a go test step with {args}
+// goes to the host when the arguments given write no file, and stays here
+// when one of them does.
+func TestUserRemoteHeavyJudgesTheArgumentsGiven(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, "  test:\n    heavy: true\n    run: [[go, test, -v, '{args}', ./...]]\n")
+	for _, c := range []struct {
+		args  []string
+		where string
+	}{
+		{[]string{"test"}, "on pc"},
+		{[]string{"test", "--", "-run", "TestX"}, "on pc"},
+		{[]string{"test", "--", "-coverprofile=c.out"}, "on this machine: "},
+	} {
+		loaded(t, state)
+		cmd, out := f.start(f.work, c.args...)
+		waitFor(t, func() bool { return strings.Contains(out.String(), "graft: test: heavy, on ") })
+		setRunnable(t, filepath.Join(state, "proc"), 0)
+		if err := cmd.Wait(); err != nil || !strings.Contains(out.String(), "graft: test: heavy, "+c.where) {
+			t.Errorf("graft %q on a busy machine, want %q: %v\n%s", c.args, c.where, err, out.String())
+		}
+	}
+	if calls := callsOf(t, state); strings.Contains(calls, "coverprofile") || strings.Count(calls, "go test") != 2 {
+		t.Errorf("run got %q, want the two runs without a file", calls)
 	}
 }

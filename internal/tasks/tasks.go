@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"go/format"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"maps"
@@ -314,17 +316,30 @@ func (r *Runner) checkGoFmt(ctx context.Context, modules []string) error {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(r.Root, filepath.FromSlash(file)))
+		if errors.Is(err, os.ErrNotExist) {
+			continue // in the index, deleted in the work tree
+		}
 		if err != nil {
 			return fmt.Errorf("reading Go file %s: %w", file, err)
 		}
 		data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+		// format.Source takes a file without a package clause for a
+		// fragment, which gofmt rejects.
+		if _, err := parser.ParseFile(token.NewFileSet(), "", data, parser.PackageClauseOnly); err != nil {
+			bad = append(bad, file+": "+err.Error())
+			continue
+		}
 		formatted, err := format.Source(data)
-		if err != nil || !bytes.Equal(data, formatted) {
-			bad = append(bad, filepath.ToSlash(file))
+		if err != nil {
+			bad = append(bad, file+": "+err.Error())
+		} else if !bytes.Equal(data, formatted) {
+			bad = append(bad, file)
 		}
 	}
 	if len(bad) > 0 {
 		slices.Sort(bad)
+		// A file in a merge conflict is listed once per stage.
+		bad = slices.Compact(bad)
 		fmt.Fprintln(r.Stdout, strings.Join(bad, "\n"))
 		return errors.New("Go files need formatting")
 	}
@@ -645,7 +660,7 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 		return err
 	}
 	if t.Heavy {
-		remote, err := r.placeHeavy(ctx, name, t, r.Root)
+		remote, err := r.placeHeavy(ctx, name, t, r.Root, args)
 		if err != nil {
 			return err
 		}
@@ -921,7 +936,7 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 	f := r.begin(ExecTask)
 	defer func() { r.end(f, err != nil) }()
 	if heavy {
-		if f.remote, err = r.placeHeavy(ctx, ExecTask, t, dir); err != nil {
+		if f.remote, err = r.placeHeavy(ctx, ExecTask, t, dir, nil); err != nil {
 			return err
 		}
 	}

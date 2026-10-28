@@ -16,3 +16,5 @@
 ## Журнал
 - 2026-10-28 14:29 открыт — graft-master
 - 2026-10-28 14:32 note — graft-master: spec gofmt_integration_test.go (sha d20d09fe), красная на main 14:33; бриф scratchpad/gate-gofmt/brief.md; worktree ~/.cache/worktrees/graft/gate-gofmt; боец Luna, приёмка /tmp/claude-tmp/graft-gate-gofmt-accept.sh
+- 2026-10-28 14:50 note — graft-master: 14:55 боец сдал (приёмка зелёная); ревью 1: принадлежность файла ближайшему модулю (go.work), ctx; worker continue
+- 2026-10-28 15:23 note — graft-master: проверка суб-агентом: 12 мутаций, 11 красные; дефекты: удалённый в дереве файл из индекса валил graft gate, файл без package проходил, конфликт — файл трижды, нет текста ошибки разбора, нет теста на удалённый go.mod. Всё исправлено, мутации красные.

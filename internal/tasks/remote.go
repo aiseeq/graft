@@ -31,8 +31,8 @@ const remoteUpTimeout = 30 * time.Second
 
 // placeHeavy says whether a heavy task, or graft exec --heavy run in dir,
 // runs its steps on remote_heavy's host, and says where it runs when the
-// project has one.
-func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, dir string) (bool, error) {
+// project has one; args are the arguments given to the task.
+func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, dir string, args []string) (bool, error) {
 	rh := r.Config.RemoteHeavy
 	if rh == nil {
 		var err error
@@ -54,20 +54,12 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 		fmt.Fprintf(r.Stderr, "graft: %s: heavy, on this machine: %s\n", name, why)
 		return false, nil
 	}
-	if r.userRemote && t.Remote == nil && !userRemoteEligible(t) {
+	if r.userRemote && t.Remote == nil && !userRemoteEligible(t, args) {
 		fmt.Fprintf(r.Stderr, "graft: %s: heavy, on this machine: only go test and go vet steps that write no file can use user remote_heavy\n", name)
 		return false, nil
 	}
 	if rh.When == "busy" {
-		l, err := r.Load()
-		if err != nil {
-			return false, err
-		}
-		lockPath, err := loadLock()
-		if err != nil {
-			return false, err
-		}
-		busy, err := loadgate.BusyNow(ctx, name, l, lockPath, r.Stderr)
+		busy, err := r.wouldWait(ctx, name)
 		if err != nil {
 			return false, err
 		}
@@ -92,6 +84,31 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 	}
 	fmt.Fprintf(r.Stderr, "graft: %s: heavy, on %s\n", name, rh.Host)
 	return true, nil
+}
+
+// wouldWait tells whether this machine's queue would make the heavy task wait
+// now, as admit and enterHeavy decide: a task inside an admitted one (a
+// graft its step started, or a nested heavy task) does not wait, and one
+// with a priority waits for the machine only, not for the queue.
+func (r *Runner) wouldWait(ctx context.Context, name string) (bool, error) {
+	if os.Getenv(AdmittedEnv) != "" || r.heavy > 0 {
+		return false, nil
+	}
+	l, err := r.Load()
+	if err != nil {
+		return false, err
+	}
+	_, priority, err := loadgate.PriorityFromEnv()
+	if err != nil {
+		return false, err
+	}
+	lockPath := ""
+	if !priority {
+		if lockPath, err = loadLock(); err != nil {
+			return false, err
+		}
+	}
+	return loadgate.BusyNow(ctx, name, l, lockPath, r.Stderr)
 }
 
 func (r *Runner) journalRemoteBroken(task, reason string) error {
@@ -135,7 +152,7 @@ func (r *Runner) journalRemoteBroken(task, reason string) error {
 
 // userRemoteEligible accepts only go test and go vet invocations whose
 // arguments cannot request an output file.
-func userRemoteEligible(t *config.Task) bool {
+func userRemoteEligible(t *config.Task, args []string) bool {
 	if t.Remote != nil && *t.Remote {
 		return true
 	}
@@ -144,7 +161,7 @@ func userRemoteEligible(t *config.Task) bool {
 	}
 	for _, step := range t.Run {
 		if step.Shell != "" || step.Install != nil || step.Task != "" || step.ServiceAction != "" ||
-			!goCheckNoOutput(step.Argv) {
+			!goCheckNoOutput(step.Argv, args) {
 			return false
 		}
 	}
@@ -156,13 +173,23 @@ func userRemoteEligible(t *config.Task) bool {
 var outputFlags = []string{"-o", "-c", "-coverprofile", "-cpuprofile", "-memprofile",
 	"-blockprofile", "-mutexprofile", "-trace", "-outputdir"}
 
-func goCheckNoOutput(argv []string) bool {
+// goCheckNoOutput reports whether argv is go test or go vet with no flag
+// that writes a file, args given in place of {args}.
+func goCheckNoOutput(argv, args []string) bool {
 	if len(argv) < 2 || argv[0] != "go" || (argv[1] != "test" && argv[1] != "vet") {
 		return false
 	}
+	var words []string
 	for _, arg := range argv[2:] {
+		if arg == ArgsPlaceholder {
+			words = append(words, args...)
+		} else {
+			words = append(words, arg)
+		}
+	}
+	for _, arg := range words {
 		name, _, _ := strings.Cut(arg, "=")
-		if arg == ArgsPlaceholder || strings.HasPrefix(arg, "-") && slices.Contains(outputFlags, "-"+strings.TrimLeft(name, "-")) {
+		if strings.HasPrefix(arg, "-") && slices.Contains(outputFlags, "-"+strings.TrimLeft(name, "-")) {
 			return false
 		}
 	}
