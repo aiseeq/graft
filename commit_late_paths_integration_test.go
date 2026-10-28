@@ -1,6 +1,7 @@
 package main
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -93,5 +94,33 @@ func TestAmendLeavesOutPathsWrittenDuringTheGate(t *testing.T) {
 	checkLateWritesLeftOut(t, f, out, "amended")
 	if got := f.git("log", "--format=%s"); got != "fix: local\nchore: base" {
 		t.Errorf("amend did not rewrite the last commit:\n%s", got)
+	}
+}
+
+// TestCommitLeavesOutWhatAnotherWriterStagedDuringTheGate: a git add or git
+// mv another writer runs while the gate runs stays out of the commit too, as
+// the line about it says.
+func TestCommitLeavesOutWhatAnotherWriterStagedDuringTheGate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none}\ngate:\n  - [sh, -c, 'echo other > other.txt && git add other.txt && git mv old.txt moved.txt']\n",
+		"old.txt":     "old\n",
+	})
+	f.git("-c", "core.hooksPath=/dev/null", "add", "-A")
+	f.git("-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "chore: base")
+	f.write("mine.txt", "mine\n")
+	out := f.mustGraft("commit", "-m", "feat: mine")
+	if got := f.git("ls-tree", "--name-only", "HEAD"); got != ".graft.yaml\nmine.txt\nold.txt" {
+		t.Errorf("HEAD has %q, want the commit's start without the other writer's add and mv\n%s", got, out)
+	}
+	for _, want := range []string{"left out other.txt:", "left out moved.txt:", "left out old.txt:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if status := f.run(f.work, "git", "status", "--porcelain"); !strings.Contains(status, "other.txt") || !strings.Contains(status, "moved.txt") {
+		t.Errorf("the other writer's work is not left in the tree:\n%s", status)
 	}
 }

@@ -20,3 +20,4 @@
 ## Журнал
 - 2026-10-28 09:50 открыт — graft-master
 - 2026-10-28 10:23 note — graft-master: замер 10:35: TestCommitLockScope целиком 0.65 с (graft exec --heavy, -count=1), против 12.1 с у worktree в stats Сна — то число снято под нагрузкой (тесты гоняют поддельный /proc и settle 10ms, своей очереди не ждут). Профиль гейта — только на спокойной машине (busy rc 0), сейчас занята.
+- 2026-10-28 12:05 note — graft-master: база 28.10 ~11:40 (машина занята, busy rc 1 по IO): корневой пакет go test -count=1 -json . — 70.9 с wall, CPU 59.0 с (user 25.6, sys 33.4); sys больше user — время уходит на порождение процессов (git/graft на тест). 229 тестов, лидера нет: хвост по ~1 с. stats 7d test-gate: медиана 53.5 с, макс 3m17s, 4% упавших. Лог scratchpad gate-tests/base.json.

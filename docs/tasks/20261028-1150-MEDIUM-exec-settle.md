@@ -19,3 +19,4 @@
 ## Журнал
 - 2026-10-28 11:50 открыт — graft-master
 - 2026-10-28 11:54 note — graft-master: сделано в дереве main: main.go (--settle), internal/app/exec.go (ExecOptions, подмена Settle у r.Load), help.go, README, exec_settle_integration_test.go зелёный (без флага красный — usage).
+- 2026-10-28 12:05 note — graft-master: v2.47.0 выпущен и установлен (all зелёный); независимая проверка суб-агентом идёт.

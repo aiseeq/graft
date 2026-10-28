@@ -24,3 +24,5 @@
 - 2026-10-28 11:24 note — graft-master: репро: worktree ~/.cache/worktrees/graft/late-paths (ветка late-paths от 132e5a9), commit_late_paths_integration_test.go sha256 ab69cf99…, оба теста красные по нужной причине (late.txt и правка clean.txt в коммите, строк нет). Бриф — scratchpad graft-master late-paths/brief.md; задание бойцу Luna, класс багфикс-по-тикету.
 - 2026-10-28 11:24 note — graft-master: задание бойцу 1028-1124-late-paths (Luna, приёмка: sha теста + graft gate в дереве бойца). Итог — worker wait.
 - 2026-10-28 11:53 note — graft-master: влито c53b67c (боец + правки ревью). Дальше: релиз, install, независимая проверка, итог git-admin.
+- 2026-10-28 12:05 note — graft-master: v2.47.0 выпущен и установлен (all зелёный); независимая проверка суб-агентом идёт.
+- 2026-10-28 12:21 note — graft-master: независимая проверка (суб-агент, v2.47.0): FAIL — git add/mv/rm второго писателя во время гейта уходят в коммит при строке «left out». Фикс: после гейта индекс возвращается к дереву старта (read-tree), затем индексируются сохранённые пути; тест TestCommitLeavesOutWhatAnotherWriterStagedDuringTheGate красный без фикса, зелёный с ним.

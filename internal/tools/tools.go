@@ -20,6 +20,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/mod/semver"
+
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 	"github.com/aiseeq/graft/v2/internal/version"
@@ -112,8 +114,11 @@ func CheckLatest(r *Result, latest string) {
 	}
 }
 
+// latestProblem compares by semantic version, so a build of a commit past
+// the latest release (its pseudo-version is a pre-release of the next
+// patch) is newer, not older.
 func latestProblem(module, built, latest string) string {
-	if module == "" || latest == "" || built == latest || localBuild(built) || atLeast(built, latest) {
+	if module == "" || latest == "" || localBuild(built) || !semver.IsValid(built) || !semver.IsValid(latest) || semver.Compare(built, latest) >= 0 {
 		return ""
 	}
 	return fmt.Sprintf("built from %s@%s, latest %s", module, built, latest)

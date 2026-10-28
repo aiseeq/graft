@@ -319,6 +319,11 @@ func (a *App) stageGateChanges(repo *gitx.Repo, start commitStart, command strin
 			a.printf("%s left out %s: changed only while the gate ran, by another writer or a gate step; commit it once its writer is done", command, path)
 		}
 	}
+	// The index goes back to what the commit started with: a git add, mv or
+	// rm another writer ran while the gate ran is left out as its paths are.
+	if _, err := repo.Git("read-tree", start.tree); err != nil {
+		return fmt.Errorf("restoring the index the gate started with: %w", err)
+	}
 	if len(kept) == 0 {
 		return nil
 	}

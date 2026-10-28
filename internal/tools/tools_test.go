@@ -57,6 +57,8 @@ func TestLatestProblem(t *testing.T) {
 		{"newer clean release", "example.com/tool", "v0.3.0", "v0.2.0", ""},
 		{"pseudo-version behind release", "example.com/tool", "v0.0.0-20260101000000-111111111111", "v0.2.0", "built from example.com/tool@v0.0.0-20260101000000-111111111111, latest v0.2.0"},
 		{"pre-release", "example.com/tool", "v0.2.0-rc1", "v0.2.0", "built from example.com/tool@v0.2.0-rc1, latest v0.2.0"},
+		{"pseudo-version past the release", "example.com/tool", "v0.2.1-0.20261028021119-9e7c17d060cd", "v0.2.0", ""},
+		{"pseudo-version of an untagged module behind the latest", "example.com/tool", "v0.0.0-20260101000000-111111111111", "v0.0.0-20260201000000-222222222222", "built from example.com/tool@v0.0.0-20260101000000-111111111111, latest v0.0.0-20260201000000-222222222222"},
 		{"local build", "example.com/tool", "(devel)", "v0.2.0", ""},
 		{"dirty build", "example.com/tool", "v0.2.0+dirty", "v0.3.0", ""},
 	}
