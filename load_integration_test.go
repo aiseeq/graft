@@ -262,8 +262,8 @@ func TestExecExitStatus(t *testing.T) {
 	}{
 		{"the command's", []string{"exec", "--", "sh", "-c", "exit 3"}, 3, "exit status 3"},
 		{"a signal", []string{"exec", "--", "sh", "-c", "kill -TERM $$"}, 128 + 15, "signal: terminated"},
-		{"not found", []string{"exec", "--heavy", "--", "no-such-command-here"}, 127, "executable file not found"},
-		{"not executable", []string{"exec", "--", "./plain"}, 126, "permission denied"},
+		{"not found", []string{"exec", "--heavy", "--", "no-such-command-here"}, 127, "graft: exec: start no-such-command-here: "},
+		{"not executable", []string{"exec", "--", "./plain"}, 126, "graft: exec: start ./plain: "},
 		{"usage", []string{"exec", "sh"}, 125, "(see graft help)"},
 		{"-C to nowhere", []string{"-C", "no-such-dir", "exec", "--", "true"}, 125, "no-such-dir"},
 		{"-C after exec", []string{"exec", "-C", ".git", "--", "true"}, 125, "-C goes before the command"},

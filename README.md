@@ -123,7 +123,9 @@ its exit status, 128 and the signal for one a signal ended. Its own failures
 exit as `env`'s do, with a `graft: …` line, so a caller tells them from the
 command's: 125 graft itself (a usage error, `-C`, the config, the queue,
 `remote_heavy`'s `run` that does not start, an interrupt that ended the
-command), 126 a command found but not started, 127 one not found. On the
+command), 126 a command found but not started, 127 one not found, these two
+with the line `graft: exec: start <command>: …`, as a command of its own
+that exits 126 or 127 has none. On the
 host of `remote_heavy` the status is the one its `run` gives, so a failing
 `ssh` says 255. `graft stats` records it as the task `exec` of the work tree
 around (`--task exec` lists the commands); without `--heavy` it runs at once

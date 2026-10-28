@@ -30,4 +30,4 @@
 - 2026-10-28 00:20 открыт — graft-master
 - 2026-10-28 00:21 cause measured (git show --stat of the 4 commits); answered the peer
 - 2026-10-28 00:26 shipsNothing in sweptCommit, onTargetWords; TestDeploySweepByContent PROJ-85; README; committing
-- 2026-10-28 01:00 на проверке — graft-master — installed v2.44.0; the consumer's master to confirm on its next prod sweep
+- 2026-10-28 01:00 на проверке — graft-master — installed v2.44.0; the reporting peer to confirm on its next prod sweep
