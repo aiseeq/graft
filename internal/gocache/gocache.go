@@ -21,7 +21,7 @@ const readme = "This directory holds cached build artifacts from the Go build sy
 // it uses: an entry used within this long may look that much older.
 const MarkInterval = time.Hour
 
-// Result counts the entries a trim removed, or would remove, and kept.
+// Result counts the entries a trim takes, with apply or without, and keeps.
 type Result struct {
 	Removed, Kept           int
 	RemovedBytes, KeptBytes int64
@@ -51,53 +51,62 @@ func Trim(dir string, older time.Duration, now time.Time, apply bool) (Result, e
 			continue
 		}
 		if err != nil {
-			return r, err
+			return r, fmt.Errorf("read the cache: %w", err)
 		}
 		for _, e := range entries {
-			name, path := e.Name(), filepath.Join(sub, e.Name())
-			executable := e.IsDir() && strings.HasSuffix(name, "-d")
-			if !strings.HasSuffix(name, "-a") && !strings.HasSuffix(name, "-d") || !e.Type().IsRegular() && !executable {
-				continue
-			}
-			// go marks an executable used on its directory.
-			info, err := e.Info()
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
-			if err != nil {
+			if err := r.entry(sub, e, cutoff, apply); err != nil {
 				return r, err
 			}
-			size := info.Size()
-			if executable {
-				if size, err = dirSize(path); errors.Is(err, fs.ErrNotExist) {
-					continue
-				} else if err != nil {
-					return r, err
-				}
-			}
-			if !info.ModTime().Before(cutoff) {
-				r.Kept++
-				r.KeptBytes += size
-				continue
-			}
-			if apply {
-				remove := os.Remove
-				if executable {
-					remove = os.RemoveAll
-				}
-				err := remove(path)
-				if errors.Is(err, fs.ErrNotExist) {
-					continue
-				}
-				if err != nil {
-					return r, err
-				}
-			}
-			r.Removed++
-			r.RemovedBytes += size
 		}
 	}
 	return r, nil
+}
+
+// entry counts one directory entry of a cache subdirectory, removing it with
+// apply when it is a cache entry unused since cutoff.
+func (r *Result) entry(sub string, e fs.DirEntry, cutoff time.Time, apply bool) error {
+	name, path := e.Name(), filepath.Join(sub, e.Name())
+	executable := e.IsDir() && strings.HasSuffix(name, "-d")
+	if !strings.HasSuffix(name, "-a") && !strings.HasSuffix(name, "-d") || !e.Type().IsRegular() && !executable {
+		return nil
+	}
+	// go marks an executable used on its directory.
+	info, err := e.Info()
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the cache entry: %w", err)
+	}
+	size := info.Size()
+	if executable {
+		if size, err = dirSize(path); errors.Is(err, fs.ErrNotExist) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+	}
+	if !info.ModTime().Before(cutoff) {
+		r.Kept++
+		r.KeptBytes += size
+		return nil
+	}
+	if apply {
+		remove := os.Remove
+		if executable {
+			remove = os.RemoveAll
+		}
+		err := remove(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	r.Removed++
+	r.RemovedBytes += size
+	return nil
 }
 
 // dirSize sums the sizes of the regular files under dir.

@@ -192,6 +192,12 @@ var parsesItsFlags = map[string]bool{
 	"commit": true, "release": true, "version": true, "deploy": true, "flags": true, "logs": true, "stats": true,
 }
 
+// subcommands are the commands that parse their own arguments.
+var subcommands = map[string]func(context.Context, *app.App, []string) error{
+	"commit": commitCmd, "release": releaseCmd, "version": versionCmd, "hook": hookCmd, "flags": flagsCmd,
+	"deploy": deployCmd, "worktree": worktreeCmd, "gocache": gocacheCmd, "exec": execCmd,
+}
+
 func dispatch(ctx context.Context, a *app.App, args []string) error {
 	if len(args) == 0 {
 		return help(a)
@@ -206,15 +212,12 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 	if ok, err := sectionHelp(a, cmd, rest); ok {
 		return err
 	}
+	if run, ok := subcommands[cmd]; ok {
+		return run(ctx, a, rest)
+	}
 	switch cmd {
-	case "commit":
-		return commitCmd(ctx, a, rest)
 	case "amend":
 		return noArgs(a, cmd, rest, func() error { return a.Amend(ctx) })
-	case "release":
-		return releaseCmd(ctx, a, rest)
-	case "version":
-		return versionCmd(ctx, a, rest)
 	case "init":
 		return noArgs(a, cmd, rest, func() error { return a.Init(ctx) })
 	case "check":
@@ -226,20 +229,8 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		return a.Leaks(rest[0])
 	case "gate":
 		return noArgs(a, cmd, rest, func() error { return a.Gate(ctx) })
-	case "hook":
-		return hookCmd(ctx, a, rest)
-	case "flags":
-		return flagsCmd(ctx, a, rest)
-	case "deploy":
-		return deployCmd(ctx, a, rest)
 	case "stats":
 		return statsCmd(a, rest)
-	case "worktree":
-		return worktreeCmd(ctx, a, rest)
-	case "gocache":
-		return gocacheCmd(ctx, a, rest)
-	case "exec":
-		return execCmd(ctx, a, rest)
 	default:
 		return projectCmd(ctx, a, cmd, rest)
 	}
