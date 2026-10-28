@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/aiseeq/graft/v2/internal/config"
 )
 
 // Config is the user's graft settings.
@@ -29,6 +31,28 @@ type Config struct {
 	Commit Commit `yaml:"commit"`
 	// Modules names module path prefixes graft keeps at their latest release.
 	Modules Modules `yaml:"modules"`
+	// RemoteHeavy is the host heavy work of every project overflows to, when
+	// the project names none of its own; it defaults to when: busy.
+	RemoteHeavy *config.RemoteHeavy `yaml:"remote_heavy"`
+	// Install is where the install step copies what it installs here.
+	Install Install `yaml:"install"`
+}
+
+// Install names hosts that receive binaries installed by an install step.
+type Install struct {
+	Hosts []string `yaml:"hosts"`
+}
+
+// RemoteHeavySettings returns the user's remote host when configured.
+func RemoteHeavySettings() (*config.RemoteHeavy, error) {
+	cfg, _, err := Load()
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return cfg.RemoteHeavy, nil
 }
 
 // Modules lists Go module path prefixes whose requirements graft raises to
@@ -293,6 +317,17 @@ func Load() (*Config, string, error) {
 	}
 	if err := cfg.Load.normalize(path); err != nil {
 		return nil, path, err
+	}
+	if cfg.RemoteHeavy != nil {
+		if cfg.RemoteHeavy.When == "" {
+			cfg.RemoteHeavy.When = "busy"
+		}
+		if cfg.RemoteHeavy.BrokenExit == 0 {
+			cfg.RemoteHeavy.BrokenExit = 125
+		}
+		if err := config.ValidateRemoteHeavy(cfg.RemoteHeavy); err != nil {
+			return nil, path, err
+		}
 	}
 	return &cfg, path, nil
 }

@@ -102,8 +102,11 @@ type Runner struct {
 	heavy int
 	// remoteDown is why remote_heavy's host did not answer, once asked:
 	// remoteAsked; "" when it did.
-	remoteAsked bool
-	remoteDown  string
+	remoteAsked        bool
+	remoteDown         string
+	remoteHeavy        *config.RemoteHeavy
+	userRemote         bool
+	remoteBrokenReason string
 	// frames are the tasks running now, outermost first; every process a
 	// step runs counts in all of them.
 	frames []*frame
@@ -517,6 +520,21 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 		return err
 	}
 	err = r.steps(ctx, name, t, args)
+	if f.remote && r.remoteBrokenReason != "" {
+		reason := r.remoteBrokenReason
+		r.remoteBrokenReason = ""
+		fmt.Fprintf(r.Stderr, "graft: %s: %s path broken: %s, running here\n", name, r.remoteHeavy.Host, reason)
+		if jerr := r.journalRemoteBroken(name, reason); jerr != nil {
+			return errors.Join(err, jerr)
+		}
+		f.remote = false
+		leave, herr := r.enterHeavy(ctx, name)
+		if herr != nil {
+			return errors.Join(err, herr)
+		}
+		err = r.steps(ctx, name, t, args)
+		err = errors.Join(err, leave())
+	}
 	r.done[name] = true
 	return errors.Join(err, release())
 }
@@ -607,12 +625,17 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		cmd = r.remoteCmd(ctx, cmd, vars, threads)
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
+	var remoteStderr bytes.Buffer
+	if r.frames[len(r.frames)-1].remote {
+		cmd.Stderr = io.MultiWriter(r.Stderr, &remoteStderr)
+	}
 	switch t.Tests {
 	case config.TestsGo:
 		tree := r.treeID()
 		report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
 		cmd.Stdout = report
 		use, err := r.measure(cmd, s.Source)
+		r.noteBrokenRemote(cmd, err, remoteStderr.String())
 		runs, cerr := report.Close()
 		if cerr != nil {
 			fmt.Fprintf(r.Stderr, "graft: printing the test output: %v\n", cerr)
@@ -623,10 +646,36 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		r.recordTests(runs, tree, t.Tests, use)
 		return err
 	case config.TestsJest, config.TestsPlaywright:
-		return r.reportFileStep(cmd, s.Source, t.Tests, report)
+		err := r.reportFileStep(cmd, s.Source, t.Tests, report)
+		r.noteBrokenRemote(cmd, err, remoteStderr.String())
+		return err
 	}
 	_, err = r.measure(cmd, s.Source)
+	r.noteBrokenRemote(cmd, err, remoteStderr.String())
 	return err
+}
+
+func (r *Runner) noteBrokenRemote(cmd *exec.Cmd, err error, stderr string) {
+	if err == nil || cmd.ProcessState == nil || r.remoteHeavy == nil || !r.userRemote || len(r.frames) == 0 || !r.frames[len(r.frames)-1].remote {
+		return
+	}
+	code := cmd.ProcessState.ExitCode()
+	if code != r.remoteHeavy.BrokenExit {
+		return
+	}
+	reason := fmt.Sprintf("run exited %d", code)
+	if line := lastLine(stderr); line != "" {
+		reason += ": " + line
+	}
+	r.remoteBrokenReason = reason
+}
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(lines[len(lines)-1])
 }
 
 // reportFile tells whether the task's steps write a test report to the file
@@ -722,6 +771,9 @@ const ExecTask = "exec"
 // {threads} filled and GRAFT_THREADS.
 func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool) (err error) {
 	t := &config.Task{Heavy: heavy}
+	if heavy {
+		t.Run = []config.Step{{Argv: slices.Clone(argv)}}
+	}
 	f := r.begin(ExecTask)
 	defer func() { r.end(f, err != nil) }()
 	if heavy {
@@ -1293,7 +1345,7 @@ func (r *Runner) threads(s config.Step, t *config.Task) (config.Step, string, er
 	}
 	var n string
 	if len(r.frames) > 0 && r.frames[len(r.frames)-1].remote {
-		rh := r.Config.RemoteHeavy
+		rh := r.remoteHeavy
 		if rh.Threads == 0 {
 			if uses {
 				return s, "", fmt.Errorf("%s in a step run on %s: set remote_heavy.threads", config.ThreadsPlaceholder, rh.Host)
@@ -1412,18 +1464,34 @@ func (r *Runner) install(ctx context.Context, s config.Step, t *config.Task) err
 		}
 		candidates = append(candidates, candidate)
 	}
+	var hosts []string
+	switch cfg, _, err := userconfig.Load(); {
+	case errors.Is(err, userconfig.ErrNotFound):
+	case err != nil:
+		return fmt.Errorf("reading install hosts: %w", err)
+	default:
+		hosts = cfg.Install.Hosts
+	}
 	for _, candidate := range candidates {
 		if err := r.writeInstall(candidate); err != nil {
 			return err
+		}
+		for _, host := range hosts {
+			cmd := exec.CommandContext(ctx, "rsync", "--archive", "--mkpath", candidate.source, host+":"+candidate.destination)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("install %s to %s: rsync: %w: %s", candidate.name, host, err, strings.TrimSpace(string(out)))
+			}
+			fmt.Fprintf(r.Stderr, "graft: install: %s %s -> %s:%s\n", candidate.name, shortRevision(candidate.revision), host, candidate.destination)
 		}
 	}
 	return nil
 }
 
 type installCandidate struct {
-	name, revision, destination string
-	data                        []byte
-	unchanged                   bool
+	name, revision, destination, source string
+	data                                []byte
+	unchanged                           bool
 }
 
 func prepareInstall(ctx context.Context, repo *gitx.Repo, head, file, to string) (installCandidate, error) {
@@ -1468,7 +1536,7 @@ func prepareInstall(ctx context.Context, repo *gitx.Repo, head, file, to string)
 	if err != nil {
 		return installCandidate{}, fmt.Errorf("install destination %s: %w", dest, err)
 	}
-	return installCandidate{name: name, revision: rev, destination: dest, data: data, unchanged: unchanged}, nil
+	return installCandidate{name: name, revision: rev, destination: dest, source: file, data: data, unchanged: unchanged}, nil
 }
 
 // sameFile tells whether dest is a regular file holding data. A symlink is

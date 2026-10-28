@@ -221,6 +221,13 @@ func newMachine(l userconfig.MachineLoad, log io.Writer, name string) *machine {
 	return &machine{l: l, log: log, name: name, meter: pressure.NewMeter(proc), waits: Waits{}}
 }
 
+// BusyNow reads the same machine measures Wait uses, once, without entering
+// the queue. A missing measure is skipped and reported as it is in Wait.
+func BusyNow(ctx context.Context, name string, l userconfig.MachineLoad, log io.Writer) (bool, error) {
+	b, err := newMachine(l, log, name).busy(ctx, true)
+	return b.why != "", err
+}
+
 // busyness is why the machine cannot take a heavy task, one of the Why
 // constants, and the words that say it; a calm machine has neither.
 type busyness struct{ why, text string }

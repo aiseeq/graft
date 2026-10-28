@@ -68,6 +68,15 @@ commit:
   local_branches: ['nightly/*']  # a plain git commit on these passes the hook after the checks: no gate, version or push
 modules:
   latest: [github.com/someone/, example.org/team/] # raise these modules before graft commit and graft gate
+remote_heavy:
+  host: pc
+  up: [scripts/remote.sh, up]
+  run: [scripts/remote.sh, run]
+  threads: 16
+  when: busy                    # default for user config; also: always
+  broken_exit: 125              # run's transport failure status
+install:
+  hosts: [pc]                   # copy installed binaries to the same absolute path
 ```
 
 With `commit.conventional` graft commit wants the subject as `type(scope)!:
@@ -133,7 +142,12 @@ and is only recorded.
 
 A project with another machine for heavy work names it in `.graft.yaml`, and
 the steps of its heavy tasks and its `graft exec --heavy` go there first,
-skipping this machine's queue:
+skipping this machine's queue. A project's `when` defaults to `always`. The
+same fields may be set in the user config; a project's setting replaces the
+whole user setting. In user config, `when` defaults to `busy`: graft reads
+the load rule once and sends eligible work to the host only when this
+machine's heavy queue would wait. On a calm machine it runs locally without
+a host line. Set `when: always` to send eligible work every time.
 
 ```yaml
 remote_heavy:
@@ -141,6 +155,8 @@ remote_heavy:
   up: [scripts/remote.sh, up]          # exits 0 when the host takes commands, within 30s
   run: [scripts/remote.sh, run]        # runs the appended argv on the host from the work tree root
   threads: 16                    # {threads} and GRAFT_THREADS there; 0 leaves GRAFT_THREADS unset and refuses {threads}
+  when: always                   # project default; user config defaults to busy
+  broken_exit: 125               # run's transport failure status
 ```
 
 The project's `run` carries the tree to the host and runs the command there;
@@ -148,7 +164,13 @@ graft only decides where a step runs and appends `env GRAFT_HEAVY=local
 K=V… <argv>`: the variables it sets for the step (`env`, `GRAFT_VERSION`,
 `GRAFT_THREADS`), since the host does not get this machine's environment,
 and `GRAFT_HEAVY=local`, so that a graft the step starts there keeps its heavy
-work. `up` runs once per graft, at the first heavy task. Each heavy task
+work. `up` runs once per graft, at the first heavy task. With user-configured
+`remote_heavy`, only tasks whose every step is a `go test` or `go vet` command
+that writes no output file can use the host; a task with `remote: true` can
+send any heavy work. Output flags such as `-o`, `-coverprofile` and `-trace`
+keep the task here. Project configuration keeps its existing rule: every
+heavy task can go to its host except tasks that need local files or data.
+Each heavy task
 says where it runs, `graft: build: heavy, on pc`, or why it stays here and
 queues as before, `graft: build: heavy, on this machine: <why>`:
 
@@ -162,6 +184,13 @@ queues as before, `graft: build: heavy, on this machine: <why>`:
   subdirectory), or names `GRAFT_COMMIT_MESSAGE_FILE` in a gate: none of these
   is on the host;
 - `up` failed or timed out; its first line of output is in the reason.
+
+For a user-configured host, an `up` failure or a `run` exit of `broken_exit`
+means the transport path broke, so graft writes the reason and runs the task
+here through the heavy queue. It appends one JSON line per occurrence to
+`<user cache dir>/graft/remote-broken.jsonl`, beside `stats.jsonl`, with the
+time, project, task, host, reason and process/session identifiers. A different
+`run` exit is the task's failure and is not retried.
 
 A heavy task inside a heavy task decides for itself, and a task that is not
 heavy runs here wherever its caller runs.
@@ -526,7 +555,10 @@ dotenv_sets:                   # key lists several tasks and services share
   executable, a running program keeps its old file, an identical file is
   left alone (a symlink there, say to the build output, is replaced with a
   file), and each file prints `graft: install: <name> <revision> ->
-  <path>`. A task with an install step is never cached. The usual install
+  <path>`. With `install.hosts` in the user config, the same file is sent by
+  `rsync` to each host at that absolute path, creating its directory; a failed
+  host fails the step after the local install. A task with an install step is
+  never cached. The usual install
   of a project's program:
 
   ```yaml

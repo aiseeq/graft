@@ -4,15 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
+	"github.com/aiseeq/graft/v2/internal/loadgate"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
 // HeavyEnv set to "local" keeps heavy work on this machine though the
@@ -30,8 +34,17 @@ const remoteUpTimeout = 30 * time.Second
 func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, dir string) (bool, error) {
 	rh := r.Config.RemoteHeavy
 	if rh == nil {
+		var err error
+		rh, err = userconfig.RemoteHeavySettings()
+		if err != nil {
+			return false, fmt.Errorf("reading user remote_heavy: %w", err)
+		}
+		r.userRemote = rh != nil
+	}
+	if rh == nil {
 		return false, nil
 	}
+	r.remoteHeavy = rh
 	why, err := r.stayHere(ctx, t, dir)
 	if err != nil {
 		return false, err
@@ -40,8 +53,123 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 		fmt.Fprintf(r.Stderr, "graft: %s: heavy, on this machine: %s\n", name, why)
 		return false, nil
 	}
+	if r.userRemote && t.Remote == nil && !userRemoteEligible(t) {
+		fmt.Fprintf(r.Stderr, "graft: %s: heavy, on this machine: only go test and go vet steps that write no file can use user remote_heavy\n", name)
+		return false, nil
+	}
+	if rh.When == "busy" {
+		l, err := r.Load()
+		if err != nil {
+			return false, err
+		}
+		busy, err := loadgate.BusyNow(ctx, name, l, r.Stderr)
+		if err != nil {
+			return false, err
+		}
+		if !busy {
+			return false, nil
+		}
+	}
+	if !r.remoteAsked {
+		r.remoteAsked = true
+		r.remoteDown = r.remoteUp(ctx)
+	}
+	if r.remoteDown != "" {
+		if r.userRemote {
+			reason := firstLine(r.remoteDown)
+			fmt.Fprintf(r.Stderr, "graft: %s: %s path broken: %s, running here\n", name, rh.Host, reason)
+			if err := r.journalRemoteBroken(name, reason); err != nil {
+				return false, err
+			}
+		} else {
+			fmt.Fprintf(r.Stderr, "graft: %s: heavy, on this machine: %s did not answer (%s)\n", name, rh.Host, r.remoteDown)
+		}
+		return false, nil
+	}
 	fmt.Fprintf(r.Stderr, "graft: %s: heavy, on %s\n", name, rh.Host)
 	return true, nil
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
+	return line
+}
+
+func (r *Runner) journalRemoteBroken(task, reason string) error {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("locating remote failure journal: %w", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting current directory for remote failure journal: %w", err)
+	}
+	line, err := json.Marshal(struct {
+		At        string `json:"at"`
+		Project   string `json:"project"`
+		Task      string `json:"task"`
+		Host      string `json:"host"`
+		Reason    string `json:"reason"`
+		PID       int    `json:"pid"`
+		PPID      int    `json:"ppid"`
+		Cwd       string `json:"cwd"`
+		ClaudePID string `json:"claude_pid"`
+		Worker    string `json:"worker"`
+	}{time.Now().Format(time.RFC3339), r.Root, task, r.remoteHeavy.Host, reason, os.Getpid(), os.Getppid(), cwd, os.Getenv("CLAUDE_PID"), os.Getenv("WORKER_JOB")})
+	if err != nil {
+		return fmt.Errorf("encoding remote failure journal entry: %w", err)
+	}
+	path := filepath.Join(cache, "graft", "remote-broken.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating remote failure journal: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("opening remote failure journal: %w", err)
+	}
+	_, writeErr := f.Write(append(line, '\n'))
+	if err := errors.Join(writeErr, f.Close()); err != nil {
+		return fmt.Errorf("writing remote failure journal: %w", err)
+	}
+	return nil
+}
+
+// userRemoteEligible accepts only go test and go vet invocations whose
+// arguments cannot request an output file.
+func userRemoteEligible(t *config.Task) bool {
+	if t.Remote != nil && *t.Remote {
+		return true
+	}
+	if len(t.Run) == 0 {
+		return false
+	}
+	for _, step := range t.Run {
+		if step.Shell != "" || step.Install != nil || step.Task != "" || step.ServiceAction != "" ||
+			!goCheckNoOutput(step.Argv) {
+			return false
+		}
+	}
+	return true
+}
+
+func goCheckNoOutput(argv []string) bool {
+	if len(argv) < 2 || argv[0] != "go" || (argv[1] != "test" && argv[1] != "vet") {
+		return false
+	}
+	for _, arg := range argv[2:] {
+		if arg == ArgsPlaceholder || strings.HasPrefix(arg, "-o=") || arg == "-o" ||
+			strings.HasPrefix(arg, "-c=") || arg == "-c" ||
+			strings.HasPrefix(arg, "-coverprofile=") || arg == "-coverprofile" ||
+			strings.HasPrefix(arg, "-cpuprofile=") || arg == "-cpuprofile" ||
+			strings.HasPrefix(arg, "-memprofile=") || arg == "-memprofile" ||
+			strings.HasPrefix(arg, "-blockprofile=") || arg == "-blockprofile" ||
+			strings.HasPrefix(arg, "-mutexprofile=") || arg == "-mutexprofile" ||
+			strings.HasPrefix(arg, "-trace=") || arg == "-trace" ||
+			strings.HasPrefix(arg, "-outputdir=") || arg == "-outputdir" {
+			return false
+		}
+	}
+	return true
 }
 
 // stayHere is why the heavy task stays on this machine, "" when it goes to
@@ -84,13 +212,6 @@ func (r *Runner) stayHere(ctx context.Context, t *config.Task, dir string) (stri
 		}
 		return "${" + key + "} would carry a .env value to the host", nil
 	}
-	if !r.remoteAsked {
-		r.remoteAsked = true
-		r.remoteDown = r.remoteUp(ctx)
-	}
-	if r.remoteDown != "" {
-		return r.Config.RemoteHeavy.Host + " did not answer (" + r.remoteDown + ")", nil
-	}
 	return "", nil
 }
 
@@ -121,7 +242,7 @@ func dotenvRef(t *config.Task) (string, error) {
 // remoteUp runs remote_heavy's up and returns why the host is not there,
 // "" when it is.
 func (r *Runner) remoteUp(ctx context.Context) string {
-	up := r.Config.RemoteHeavy.Up
+	up := r.remoteHeavy.Up
 	ctx, cancel := context.WithTimeout(ctx, remoteUpTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, up[0], up[1:]...)
@@ -133,7 +254,7 @@ func (r *Runner) remoteUp(ctx context.Context) string {
 		return ""
 	}
 	if line, _, _ := strings.Cut(strings.TrimSpace(out.String()), "\n"); line != "" {
-		return fmt.Sprintf("%s: %v: %s", strings.Join(up, " "), err, line)
+		return line
 	}
 	return fmt.Sprintf("%s: %v", strings.Join(up, " "), err)
 }
@@ -144,7 +265,7 @@ func (r *Runner) remoteUp(ctx context.Context) string {
 // GRAFT_HEAVY=local keeps a graft the step starts there from sending its
 // heavy work on again.
 func (r *Runner) remoteCmd(ctx context.Context, cmd *exec.Cmd, vars map[string]string, threads string) *exec.Cmd {
-	words := append(slices.Clone(r.Config.RemoteHeavy.Run), "env", HeavyEnv+"=local")
+	words := append(slices.Clone(r.remoteHeavy.Run), "env", HeavyEnv+"=local")
 	for _, k := range sortedKeys(vars) {
 		words = append(words, k+"="+vars[k])
 	}
@@ -165,5 +286,5 @@ func (r *Runner) hostOf(f *frame) string {
 	if !f.remote {
 		return ""
 	}
-	return r.Config.RemoteHeavy.Host
+	return r.remoteHeavy.Host
 }
