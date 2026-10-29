@@ -824,12 +824,15 @@ deps and inner tasks included.
 
 A task with `tests:` also writes `tests.jsonl` next to it: one line per
 package run, the test binary's time without the build, the top-level tests
-as `[name, wall_s, result]`, and the subtests that failed or were skipped;
-a skipped test with a reason is `[name, wall_s, "skip", reason]`. Cached packages
-did not run and are left out.
+as `[name, wall_s, result]`, and the subtests that failed or were skipped.
+A fourth field holds a skipped test's reason or the first lines of a failed
+test's output; package `reason` holds build output or package-level failure
+output when no test failed. Reasons have at most 10 lines, 300 characters per
+line and 2000 characters total, with terminal color codes removed. Cached
+packages did not run and are left out.
 
 ```json
-{"time":"2026-01-05T10:00:03.1+01:00","project":"/home/me/work/projectA","task":"test","top":"commit","tree":"9f2c...","runner":"go","package":"example.com/a/store","result":"fail","wall_s":2.7,"tests":[["TestSave",2.5,"pass"],["TestLoad",0.1,"fail"],["TestTable/empty",0,"fail"],["TestTable",0,"fail"]]}
+{"time":"2026-01-05T10:00:03.1+01:00","project":"/home/me/work/projectA","task":"test","top":"commit","tree":"9f2c...","runner":"go","package":"example.com/a/store","result":"fail","wall_s":2.7,"tests":[["TestSave",2.5,"pass"],["TestLoad",0.1,"fail","load_test.go:18: database unavailable"],["TestTable/empty",0,"fail","want empty result"],["TestTable",0,"fail"]]}
 ```
 
 - `tree` identifies what the work tree held: HEAD, the changes to tracked
@@ -839,6 +842,9 @@ did not run and are left out.
   `playwright`. For jest and playwright a package is a test file; its time
   is the file's run for jest and the sum of its tests for playwright, whose
   files run spread over workers.
+- `reason` on a failing package holds up to 10 lines of build output or
+  package-level failure output. A failing test's fourth field is its output,
+  without Go test framing lines.
 - `load_start` and `load_max` are those of the step, as on its stats line.
 - `result` is `pass`, `fail`, `skip`, `build-fail` or, for a test a retry
   passed within the run, `flaky`: it counts as failed and passed on its
@@ -847,6 +853,12 @@ did not run and are left out.
 - A test takes about 45 bytes, so a suite of 2000 tests writes 90 KB a
   run. The file moves to `tests.jsonl.1` at 64 MB, so the two keep about
   1400 runs of such a suite.
+
+A failing `step` or `task` line in `stats.jsonl` has a `reason` with up to
+10 lines of stderr's tail, or stdout's tail when stderr was empty. A task line
+uses the first failing step's reason.
+Output sent directly to a terminal is not captured, so its failing step has
+no `reason`; this keeps the child connected to the terminal.
 
 A task the cache skipped is a `"kind":"cache-hit"` line with the wall and
 CPU time of the run whose pass it reused: the time the skip saved.

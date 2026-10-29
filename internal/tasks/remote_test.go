@@ -1,6 +1,19 @@
 package tasks
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
+
+func TestTailCaptureReason(t *testing.T) {
+	var capture tailCapture
+	for i := range 15 {
+		fmt.Fprintf(&capture, "line %d\n", i)
+	}
+	if got := capture.reason(); got != "line 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14" {
+		t.Fatalf("tail reason: %q", got)
+	}
+}
 
 func TestGoCheckNoOutput(t *testing.T) {
 	for _, c := range []struct {

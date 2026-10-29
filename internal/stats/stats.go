@@ -102,6 +102,9 @@ type Record struct {
 	// Exit is the exit status; -1 when there is none (killed by a signal, or
 	// a task that failed outside its processes).
 	Exit int `json:"exit"`
+	// Reason is bounded output from a failed step, or its first failed step
+	// on a task; empty when no output was captured or the record passed.
+	Reason string `json:"reason,omitempty"`
 	// Run names the graft process that wrote the line; Parent the graft
 	// that started it, through a task step or a deploy script. Absent in
 	// lines written before graft 2.19.

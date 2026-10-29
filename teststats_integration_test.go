@@ -169,7 +169,7 @@ func TestGoTestsAreRecordedPerTest(t *testing.T) {
 		data, _ := json.Marshal(tc)
 		got = append(got, string(data))
 	}
-	want := `["TestSlow",2.5,"pass"] ["TestFlaky",0.1,"fail"] ["TestTable/bad",0,"fail"] ["TestTable",0,"fail"] ["TestLater",0,"skip","p_test.go:20: no corpus in testdata/corpus"]`
+	want := `["TestSlow",2.5,"pass"] ["TestFlaky",0.1,"fail","p_test.go:9: boom"] ["TestTable/bad",0,"fail","p_test.go:14: sub boom"] ["TestTable",0,"fail"] ["TestLater",0,"skip","p_test.go:20: no corpus in testdata/corpus"]`
 	if strings.Join(got, " ") != want {
 		t.Errorf("tests of p:\n%s\nwant\n%s", strings.Join(got, " "), want)
 	}

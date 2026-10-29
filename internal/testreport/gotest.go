@@ -44,6 +44,8 @@ type goPackage struct {
 	results []stats.TestResult
 	// skipped are the skipped tests, subtests included, as they ended.
 	skipped []stats.TestResult
+	build   []string
+	output  []string
 	cached  bool
 }
 
@@ -61,6 +63,7 @@ type goTest struct {
 type event struct {
 	Action      string
 	Package     string
+	ImportPath  string
 	Test        string
 	Output      string
 	Elapsed     float64
@@ -126,6 +129,13 @@ func (g *GoTest) line(raw []byte) {
 	}
 	g.events++
 	if e.Action == "build-output" {
+		pkgName := e.Package
+		if pkgName == "" {
+			pkgName, _, _ = strings.Cut(e.ImportPath, " [")
+		}
+		if pkgName != "" {
+			g.pkg(pkgName).build = append(g.pkg(pkgName).build, e.Output)
+		}
 		g.print(e.Output)
 		return
 	}
@@ -172,6 +182,7 @@ func (pkg *goPackage) test(name string) *goTest {
 }
 
 func (g *GoTest) packageOutput(pkg *goPackage, out string) {
+	pkg.output = append(pkg.output, out)
 	if strings.HasPrefix(out, "ok") && strings.Contains(out, "(cached)") {
 		pkg.cached = true
 	}
@@ -213,6 +224,9 @@ func (g *GoTest) result(pkg *goPackage, name string, elapsed float64, result str
 		g.print(strings.Join(t.lines, ""))
 	}
 	res := stats.TestResult{Name: name, WallS: round(elapsed), Result: result}
+	if t.failed {
+		res.Reason = testReason(t.lines)
+	}
 	if result == stats.ResultSkip {
 		res.Reason = skipReason(t.lines)
 		pkg.skipped = append(pkg.skipped, res)
@@ -221,6 +235,21 @@ func (g *GoTest) result(pkg *goPackage, name string, elapsed float64, result str
 	if !strings.Contains(name, "/") || t.failed || result == stats.ResultSkip {
 		pkg.results = append(pkg.results, res)
 	}
+}
+
+// testReason returns the output produced by a failed test, without go test
+// framing lines.
+func testReason(output []string) string {
+	var lines []string
+	for _, line := range output {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "=== RUN") || strings.HasPrefix(trimmed, "--- FAIL") ||
+			strings.HasPrefix(trimmed, "=== PAUSE") || strings.HasPrefix(trimmed, "=== CONT") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return stats.LimitReason(strings.Join(lines, ""))
 }
 
 // skipReason is the message of t.Skip, one line: the last log entry the
@@ -302,11 +331,41 @@ func (g *GoTest) finish(name string, e event) {
 		}
 	}
 	run.Tests = pkg.results
+	if run.Result == stats.ResultBuildFail {
+		build := pkg.build
+		if len(build) == 0 {
+			build = pkg.output
+		}
+		run.Reason = stats.LimitReason(strings.Join(build, ""))
+	} else if run.Result == stats.ResultFail {
+		hasFailedTest := false
+		for _, test := range pkg.results {
+			if test.Result == stats.ResultFail {
+				hasFailedTest = true
+				break
+			}
+		}
+		if !hasFailedTest {
+			run.Reason = packageReason(pkg.output)
+		}
+	}
 	g.printSkipped(name, pkg.skipped)
 	if pkg.cached || run.Result == stats.ResultSkip || (run.Result == stats.ResultPass && len(run.Tests) == 0) {
 		return
 	}
 	g.runs = append(g.runs, run)
+}
+
+func packageReason(output []string) string {
+	var lines []string
+	for _, line := range output {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "FAIL") || strings.HasPrefix(trimmed, "ok\t") || strings.HasPrefix(trimmed, "ok  ") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return stats.LimitReason(strings.Join(lines, ""))
 }
 
 func round(s float64) float64 { return math.Round(s*1000) / 1000 }

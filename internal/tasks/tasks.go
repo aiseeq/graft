@@ -24,6 +24,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aiseeq/graft/v2/internal/config"
@@ -38,6 +39,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/testreport"
 	"github.com/aiseeq/graft/v2/internal/tools"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
+	"golang.org/x/term"
 )
 
 // MarkerEnv is set for git commands graft itself runs, so the pre-commit hook
@@ -125,6 +127,8 @@ type frame struct {
 	use   stats.Usage
 	// exit is the first non-zero exit status of its processes.
 	exit int
+	// reason is the first non-empty reason from a failed process step.
+	reason string
 	// db follows the test database's container in a test_db task.
 	db   *stats.CgroupWatch
 	load *stats.LoadWatch
@@ -388,7 +392,7 @@ func goFmtInModule(file string, dirs, selected map[string]bool) bool {
 func (r *Runner) measureFunc(source string, run func() error) error {
 	start := time.Now()
 	err := run()
-	r.recordStep(source, stats.Usage{Wall: time.Since(start)}, stepExit(err))
+	r.recordStep(source, stats.Usage{Wall: time.Since(start)}, stepExit(err), "")
 	return err
 }
 
@@ -402,9 +406,12 @@ func stepExit(err error) int {
 
 // recordStep adds a step's usage and exit to the open frames and writes its
 // stats record.
-func (r *Runner) recordStep(source string, use stats.Usage, code int) {
+func (r *Runner) recordStep(source string, use stats.Usage, code int, reason string) {
 	if len(r.frames) == 0 {
 		return
+	}
+	if code == 0 {
+		reason = ""
 	}
 	for _, f := range r.frames {
 		f.steps++
@@ -412,9 +419,12 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int) {
 		if f.exit == 0 {
 			f.exit = code
 		}
+		if code != 0 && f.reason == "" {
+			f.reason = reason
+		}
 	}
 	inner := r.frames[len(r.frames)-1]
-	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Step: stats.StepText(source), Exit: code, Host: r.hostOf(inner)}, use, r.frames[0].task)
+	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Step: stats.StepText(source), Exit: code, Reason: reason, Host: r.hostOf(inner)}, use, r.frames[0].task)
 }
 
 // inWorkspace keeps, when the root has go.work, the modules its use lists:
@@ -1042,19 +1052,43 @@ func (r *Runner) Unit(name string, fn func() error) (err error) {
 // Measure runs cmd as a step of the unit or task running, and records it
 // the way task steps are recorded.
 func (r *Runner) Measure(source string, cmd *exec.Cmd) error {
-	_, err := r.measure(cmd, source)
+	_, err := r.measureWithCapture(cmd, source, false)
 	return err
 }
 
 // measure runs cmd and records what it cost against every running task.
 // A command that never started records nothing: no process ran.
 func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
+	return r.measureWithCapture(cmd, source, true)
+}
+
+// backgroundPipeWait bounds how long an inherited output pipe can keep Wait
+// blocked after the step exits, while allowing ordinary child shutdown.
+const backgroundPipeWait = 2 * time.Second
+
+// measureWithCapture is measure; with capture the step's output also goes to
+// a bounded tail, the reason of its stats line when it fails.
+func (r *Runner) measureWithCapture(cmd *exec.Cmd, source string, capture bool) (stats.Usage, error) {
+	var stdout, stderr *tailCapture
+	autoWaitDelay := false
+	if capture {
+		stdout, stderr = &tailCapture{}, &tailCapture{}
+		var outPiped, errPiped bool
+		cmd.Stdout, outPiped = teeWriter(cmd.Stdout, stdout)
+		cmd.Stderr, errPiped = teeWriter(cmd.Stderr, stderr)
+		if (outPiped || errPiped) && cmd.WaitDelay == 0 {
+			cmd.WaitDelay, autoWaitDelay = backgroundPipeWait, true
+		}
+	}
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		return stats.Usage{}, fmt.Errorf("start %s: %w", cmd.Path, err)
 	}
 	watch := stats.WatchProcess(cmd.Process.Pid)
 	err := cmd.Wait()
+	if autoWaitDelay && errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		err = nil
+	}
 	seen := watch.Stop()
 	if len(r.frames) == 0 {
 		return stats.Usage{}, err
@@ -1064,8 +1098,55 @@ func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
 		r.Stats.Warn(werr)
 	}
 	code := cmd.ProcessState.ExitCode()
-	r.recordStep(source, use, code)
+	var reason string
+	if stderr != nil {
+		reason = stderr.reason()
+	}
+	if reason == "" && stdout != nil {
+		reason = stdout.reason()
+	}
+	r.recordStep(source, use, code, reason)
 	return use, err
+}
+
+// teeWriter copies output to capture while preserving the original receiver;
+// a terminal file stays direct so the child keeps its terminal behavior.
+func teeWriter(dst, capture io.Writer) (io.Writer, bool) {
+	if file, ok := dst.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
+		return dst, false
+	}
+	if dst == nil {
+		return capture, true
+	}
+	return io.MultiWriter(dst, capture), true
+}
+
+// tailCapture stores only the latest output bytes, so verbose steps use
+// bounded memory while their reason is collected.
+type tailCapture struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (c *tailCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.data = append(c.data, p...)
+	if len(c.data) > 64<<10 {
+		c.data = append([]byte(nil), c.data[len(c.data)-(64<<10):]...)
+	}
+	return len(p), nil
+}
+
+func (c *tailCapture) reason() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	text := string(c.data)
+	lines := strings.Split(strings.TrimRight(text, "\r\n"), "\n")
+	if len(lines) > 10 {
+		lines = lines[len(lines)-10:]
+	}
+	return stats.LimitReason(strings.Join(lines, "\n"))
 }
 
 // begin opens the stats frame of a task.
@@ -1101,6 +1182,7 @@ func (r *Runner) end(f *frame, failed bool) stats.Usage {
 		if rec.Exit == 0 {
 			rec.Exit = -1
 		}
+		rec.Reason = f.reason
 	}
 	use := f.use
 	use.Wall = time.Since(f.start)

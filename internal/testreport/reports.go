@@ -17,11 +17,13 @@ type jestReport struct {
 		Status           string
 		StartTime        int64
 		EndTime          int64
+		FailureMessage   string
 		AssertionResults []struct {
-			FullName    string
-			Status      string
-			Duration    *float64
-			Invocations int
+			FullName        string
+			Status          string
+			Duration        *float64
+			Invocations     int
+			FailureMessages []string
 		}
 	}
 }
@@ -46,6 +48,7 @@ func ParseJest(data []byte, dir string) ([]stats.PackageRun, error) {
 		run := newRun(pkg, stats.ResultPass, float64(file.EndTime-file.StartTime)/1000)
 		if file.Status == "failed" {
 			run.Result = stats.ResultFail
+			run.Reason = stats.LimitReason(file.FailureMessage)
 		}
 		for _, a := range file.AssertionResults {
 			res := stats.TestResult{Name: a.FullName}
@@ -65,11 +68,27 @@ func ParseJest(data []byte, dir string) ([]stats.PackageRun, error) {
 			default:
 				return nil, fmt.Errorf("jest report: %s: test %q has status %q", file.Name, a.FullName, a.Status)
 			}
+			if res.Result == stats.ResultFail {
+				res.Reason = stats.LimitReason(strings.Join(a.FailureMessages, "\n"))
+				if run.Reason == "" {
+					run.Reason = res.Reason
+				}
+			}
 			run.Tests = append(run.Tests, res)
 		}
 		runs = append(runs, run)
 	}
 	return runs, nil
+}
+
+// firstNonEmpty returns the first string containing non-whitespace text.
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // relative is name relative to dir, in slashes; a name outside dir stays
@@ -96,6 +115,8 @@ type playwrightSuite struct {
 }
 
 type playwrightError struct {
+	Message  string
+	Stack    string
 	Location struct {
 		File string
 	}
@@ -106,9 +127,15 @@ type playwrightSpec struct {
 	Tests []struct {
 		ProjectName string
 		Status      string
-		Results     []struct {
-			Duration float64
-		}
+		Results     []playwrightResult
+	}
+}
+
+type playwrightResult struct {
+	Duration float64
+	Error    *struct {
+		Message string
+		Stack   string
 	}
 }
 
@@ -146,9 +173,21 @@ func ParsePlaywright(data []byte) ([]stats.PackageRun, error) {
 				}
 			}
 		}
-		runs = append(runs, newRun(pkg, stats.ResultFail, 0))
+		run := newRun(pkg, stats.ResultFail, 0)
+		run.Reason = stats.LimitReason(firstNonEmpty(e.Message, e.Stack))
+		runs = append(runs, run)
 	}
 	return runs, nil
+}
+
+func playwrightReason(results []playwrightResult) string {
+	var reasons []string
+	for _, result := range results {
+		if result.Error != nil {
+			reasons = append(reasons, firstNonEmpty(result.Error.Message, result.Error.Stack))
+		}
+	}
+	return stats.LimitReason(strings.Join(reasons, "\n"))
 }
 
 // playwrightTests adds the tests of suite to run; titles are the describes
@@ -172,6 +211,10 @@ func playwrightTests(run *stats.PackageRun, suite playwrightSuite, titles []stri
 			case "unexpected":
 				res.Result = stats.ResultFail
 				run.Result = stats.ResultFail
+				res.Reason = playwrightReason(t.Results)
+				if run.Reason == "" {
+					run.Reason = res.Reason
+				}
 			case "flaky":
 				res.Result = stats.ResultFlaky
 			case "skipped":

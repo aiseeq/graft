@@ -26,3 +26,6 @@
 - 2026-10-29 04:43 открыт — graft-master
 - 2026-10-29 04:59 в работе — graft-master
 - 2026-10-29 04:59 note — graft-master: боец Luna 1029-0459-fail-reasons, worktree ~/.cache/worktrees/graft/fail-reasons, приёмка accept/reasons.sh (красная на main 04:58: все 5 проверок)
+- 2026-10-29 05:29 note — graft-master: мастер: Luna сдала рабочую версию, приёмка красная из-за моего файла (go fix: SplitSeq, strings.Builder) — исход «не справился» не её; Terra 1029-0521 снята. Ревью: tee stdout/stderr через MultiWriter снимает TTY и вешает graft на фоновом процессе с унаследованным stderr (тест DoNotWaitForABackgroundChild красный 15 с), деплой тоже под захватом. Доводка — worker continue, правка-по-ревью
+- 2026-10-29 05:36 note — luna: luna: причины отказов в tests.jsonl и stats.jsonl, единое ограничение текста (stats.LimitReason), проверки Go/jest/playwright и шагов; доводка по ревью: в терминале без захвата, WaitDelay 2 с у захваченного шага, деплой без захвата
+- 2026-10-29 05:36 note — graft-master: ревью мастера: доводка верна; свёл повтор WaitDelay, комментарий measureWithCapture, пример README без противоречия (package reason только без упавшего теста, родитель без вывода сабтеста); приёмка перенесена в fail_reasons_integration_test.go; тесты журналов, exec, install, deploy зелёные

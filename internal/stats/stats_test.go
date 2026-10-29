@@ -45,6 +45,21 @@ func TestStepText(t *testing.T) {
 	}
 }
 
+func TestLimitReason(t *testing.T) {
+	got := LimitReason("\x1b[31m" + strings.Repeat("ж", 301) + "\x1b[0m\nsecond\n")
+	lines := strings.Split(got, "\n")
+	if len(lines) != 2 || len([]rune(lines[0])) != 300 || strings.Contains(got, "\x1b") || lines[1] != "second" {
+		t.Fatalf("unexpected bounded reason: %q", got)
+	}
+	many := LimitReason(strings.Repeat(strings.Repeat("x", 300)+"\n", 12))
+	if strings.Count(many, "\n") > 9 {
+		t.Errorf("kept more than 10 lines: %q", many)
+	}
+	if len([]rune(many)) > 2000 {
+		t.Errorf("reason exceeds total limit: %d", len([]rune(many)))
+	}
+}
+
 func TestMedian(t *testing.T) {
 	for _, c := range []struct {
 		in   []float64

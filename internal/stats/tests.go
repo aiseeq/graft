@@ -31,6 +31,8 @@ type PackageRun struct {
 	Project string    `json:"project"`
 	Task    string    `json:"task"`
 	Top     string    `json:"top"`
+	// Reason is the package's build or test process output on failure.
+	Reason string `json:"reason,omitempty"`
 	// Tree identifies the work tree the tests ran on, HEAD and every
 	// change on top of it: the same tree failing and passing a test is a
 	// flake. Empty when it could not be read.
@@ -50,13 +52,13 @@ type PackageRun struct {
 }
 
 // TestResult is one test of a package run, written as [name, wall_s,
-// result] to keep large suites small, or [name, wall_s, "skip", reason] for
-// a test skipped with a reason.
+// result] to keep large suites small, or with a fourth field when it has a
+// reason.
 type TestResult struct {
 	Name   string
 	WallS  float64
 	Result string
-	// Reason is what a skipped test said, when its runner tells.
+	// Reason is the output of a failing test or the reason a test was skipped.
 	Reason string
 }
 

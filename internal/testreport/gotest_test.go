@@ -69,8 +69,8 @@ func TestGoTestPrintsWhatPlainGoTestPrints(t *testing.T) {
 		t.Errorf("output does not end in the count of skipped tests:\n%s", out.String())
 	}
 	want := `toy/c build-fail null
-toy/a fail [["TestPass",0,"pass"],["TestFail",0,"fail"],["TestSkip",0,"skip","a_test.go:5: later"],["TestSub/bad",0,"fail"],["TestSub",0,"fail"]]
-toy/b fail [["TestOK",0,"pass"],["TestPanic",0,"fail"]]
+toy/a fail [["TestPass",0,"pass"],["TestFail",0,"fail","a_test.go:4: before\na_test.go:4: boom"],["TestSkip",0,"skip","a_test.go:5: later"],["TestSub/bad",0,"fail","a_test.go:8: sub boom"],["TestSub",0,"fail"]]
+toy/b fail [["TestOK",0,"pass"],["TestPanic",0,"fail","panic: oops [recovered, repanicked]\ngoroutine 8 [running]:\ntesting.tRunner.func1.2({0x550fc0, 0x594560})\n/usr/local/go/src/testing/testing.go:1974 +0x232\ntesting.tRunner.func1()\n/usr/local/go/src/testing/testing.go:1977 +0x349\npanic({0x550fc0?, 0x594560?})\n/usr/local/go/src/runtime/panic.go:860 +0x13a\ntoy/b.TestPanic(0xbec77926488?)\n/src/toy/b/b_test.go:4 +0x25"]]
 `
 	if got := summary(runs); got != want {
 		t.Errorf("runs:\n%s\nwant\n%s", got, want)
@@ -79,6 +79,28 @@ toy/b fail [["TestOK",0,"pass"],["TestPanic",0,"fail"]]
 
 // TestGoTestVerbose: with -v every line of output shows, the passing tests'
 // too.
+func TestGoTestFailureReasonsAndPackageFailure(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"Action":"start","Package":"m/testmain"}`,
+		`{"Action":"output","Package":"m/testmain","Output":"panic: setup failed\nstack line\n"}`,
+		`{"Action":"fail","Package":"m/testmain","Elapsed":0.01}`,
+		`{"Action":"start","Package":"m/tests"}`,
+		`{"Action":"run","Package":"m/tests","Test":"TestBad"}`,
+		`{"Action":"output","Package":"m/tests","Test":"TestBad","Output":"=== RUN   TestBad\n"}`,
+		`{"Action":"output","Package":"m/tests","Test":"TestBad","Output":"bad assertion\n"}`,
+		`{"Action":"output","Package":"m/tests","Test":"TestBad","Output":"--- FAIL: TestBad (0.00s)\n"}`,
+		`{"Action":"fail","Package":"m/tests","Test":"TestBad"}`,
+		`{"Action":"fail","Package":"m/tests","Elapsed":0.01}`,
+	}, "\n") + "\n"
+	runs := feed(t, NewGoTest(&strings.Builder{}, false), stream)
+	if len(runs) != 2 || runs[0].Reason != "panic: setup failed\nstack line" {
+		t.Fatalf("package reason not kept: %+v", runs)
+	}
+	if len(runs[1].Tests) != 1 || runs[1].Tests[0].Reason != "bad assertion" || runs[1].Reason != "" {
+		t.Fatalf("test output not kept separately: %+v", runs[1])
+	}
+}
+
 func TestGoTestVerbose(t *testing.T) {
 	stream, err := os.ReadFile("testdata/go-test.json")
 	if err != nil {
@@ -117,7 +139,7 @@ func TestGoTestBenchmarksAndCutStreams(t *testing.T) {
 	if want := "goos: linux\nBenchmarkX-8 \t 100\t 4.7 ns/op\nok  \tm/a\t0.004s\n    b_test.go:5: waiting\n"; out.String() != want {
 		t.Errorf("output:\n%q\nwant\n%q", out.String(), want)
 	}
-	if got := summary(runs); got != "m/b fail [[\"TestHangs\",0,\"fail\"]]\n" {
+	if got := summary(runs); got != "m/b fail [[\"TestHangs\",0,\"fail\",\"b_test.go:5: waiting\"]]\n" {
 		t.Errorf("runs:\n%s", got)
 	}
 }

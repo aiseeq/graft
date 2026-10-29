@@ -18,7 +18,7 @@ func TestParseJest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `src/__tests__/cart.test.tsx fail [["Cart adds an item",0.035,"pass"],["Cart totals sums prices",0.12,"fail"],["Cart reconnects",0.9,"flaky"],["Cart later",0,"skip"],["Cart some day",0,"skip"]]
+	want := `src/__tests__/cart.test.tsx fail [["Cart adds an item",0.035,"pass"],["Cart totals sums prices",0.12,"fail","expected 3, got 4"],["Cart reconnects",0.9,"flaky"],["Cart later",0,"skip"],["Cart some day",0,"skip"]]
 src/__tests__/menu.test.tsx pass [["opens",0.012,"pass"]]
 src/__tests__/broken.test.tsx fail null
 `
@@ -30,6 +30,19 @@ src/__tests__/broken.test.tsx fail null
 	}
 	if _, err := ParseJest([]byte(`{"testResults": "no"}`), "/src/app"); err == nil {
 		t.Error("a report of another shape was accepted")
+	}
+}
+
+func TestReportFailureReasons(t *testing.T) {
+	jest := []byte(`{"testResults":[{"name":"/src/app/fail.test.js","status":"failed","failureMessage":"file setup failed","startTime":1,"endTime":2,"assertionResults":[{"fullName":"fails","status":"failed","failureMessages":["expected true","received false"]}]}]}`)
+	jr, err := ParseJest(jest, "/src/app")
+	if err != nil || len(jr) != 1 || jr[0].Reason != "file setup failed" || jr[0].Tests[0].Reason != "expected true\nreceived false" {
+		t.Fatalf("jest reasons: %+v, %v", jr, err)
+	}
+	playwright := []byte(`{"suites":[{"file":"bad.spec.ts","specs":[{"title":"fails","tests":[{"status":"unexpected","results":[{"duration":1,"error":{"message":"expected true","stack":"stack"}}]}]}]}]}`)
+	pr, err := ParsePlaywright(playwright)
+	if err != nil || len(pr) != 1 || pr[0].Reason != "expected true" || pr[0].Tests[0].Reason != "expected true" {
+		t.Fatalf("playwright reasons: %+v, %v", pr, err)
 	}
 }
 
