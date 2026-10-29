@@ -1414,7 +1414,8 @@ release_notes:
    PROJ-123: <reason>` for it (`attributed to PROJ-123 instead of PROJ-100:
    <reason>` when its message names others), and the release notes, the release page,
    `graft deploy cutoff`, `.withheld`, the window versions and, on the
-   hotfix `base` target, the hotfix label check count it as the item's.
+   hotfix `base` target, the hotfix label check count it as the item's, and
+   so its revert too.
    `commit` is the full hash (40 lowercase hex digits, 64 in a SHA-256
    repository), `item` a key of `project_keys`, `reason` is required. A short
    or repeated hash, a missing reason, a commit the repository does not have

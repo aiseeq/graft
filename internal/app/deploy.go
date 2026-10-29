@@ -1229,7 +1229,7 @@ func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out
 	fail := gateFailure{commit: c, why: "names no item"}
 	if at, ok := g.conf.Attributed[c.sha]; ok {
 		instead := ""
-		if named := commitKeys(g.keyRe, nil, c); len(named) > 0 {
+		if named := slices.DeleteFunc(commitKeys(g.keyRe, nil, c), func(k string) bool { return k == at.Item }); len(named) > 0 {
 			instead = " instead of " + strings.Join(named, ", ")
 		}
 		g.app.printf("approved release: %s: attributed to %s%s: %s", line, at.Item, instead, at.Reason)
@@ -1273,11 +1273,23 @@ func oneCommit(repo *gitx.Repo, sha string) (deliveredCommit, error) {
 }
 
 // commitKeys are the project's item keys a commit names in its subject and
-// body, or the item approved_release.attribute ties it to; conf may be nil.
+// body, or the item approved_release.attribute ties it to, a revert of such
+// a commit included: its message quotes the one it reverts; conf may be nil.
 func commitKeys(keyRe *regexp.Regexp, conf *config.ApprovedRelease, c deliveredCommit) []string {
 	if conf != nil {
 		if at, ok := conf.Attributed[c.sha]; ok {
 			return []string{at.Item}
+		}
+		var items []string
+		for _, m := range revertsRe.FindAllStringSubmatch(c.body, -1) {
+			for sha, at := range conf.Attributed {
+				if strings.HasPrefix(sha, m[1]) {
+					items = append(items, at.Item)
+				}
+			}
+		}
+		if len(items) > 0 {
+			return uniqueSorted(items)
 		}
 	}
 	return uniqueSorted(keyRe.FindAllString(c.subject+"\n"+c.body, -1))

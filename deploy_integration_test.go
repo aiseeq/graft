@@ -1155,9 +1155,22 @@ func TestDeployApprovedReleaseAttribute(t *testing.T) {
 	// A commit naming the wrong item goes out as the item it is attributed to.
 	d.write(".graft.yaml", strings.Replace(attributed, keyless+", item: PROJ-9", named+", item: PROJ-9", 1))
 	d.mustFixtureCommit("docs: PROJ-2 attribute the named commit")
+	before, _ := d.jira.snapshot()
 	out = d.mustGraft("deploy", "gate")
 	if !strings.Contains(out, `feat: PROJ-8 named: attributed to PROJ-9 instead of PROJ-8: key left out`) {
 		t.Errorf("the named commit goes out as PROJ-9:\n%s", out)
+	}
+	after, _ := d.jira.snapshot()
+	if len(after["PROJ-9"]) != len(before["PROJ-9"])+1 || len(after["PROJ-8"]) != len(before["PROJ-8"]) {
+		t.Errorf("the note goes to PROJ-9 alone: before %v, after %v\n%s", before, after, out)
+	}
+
+	// Its revert, quoting the message, takes out the work of PROJ-9 too.
+	d.git("rm", "-q", "b.txt")
+	d.mustFixtureCommit("Revert \"feat: PROJ-8 named\"\n\nThis reverts commit " + named + ".")
+	out = d.mustGraft("deploy", "gate")
+	if !strings.Contains(out, "release note for PROJ-9 not posted: this deploy only takes its work out") || strings.Contains(out, "PROJ-8 not posted") {
+		t.Errorf("the revert takes out PROJ-9's work:\n%s", out)
 	}
 }
 
