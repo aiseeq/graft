@@ -826,10 +826,11 @@ deps and inner tasks included.
   graft sums `write_bytes` of `/proc/<pid>/io` over the tree every 200 ms,
   read with `tree_mem_mb`, and takes the fastest growth over a stretch of a
   second or more. A parent's `write_bytes` takes in those of the children
-  it reaps; what a child was counted for comes off its parent's growth
-  over the next two readings. A process graft may not read (one under
-  `sudo`) is left out, and so is its parent's growth over the two readings
-  after it is gone; a step whose tree graft cannot read at all, and a step
+  it reaps; what a child gone from the tree was counted for comes off the
+  growth of its nearest ancestor still there over the next two readings.
+  What graft may not read (a process under `sudo`, while it is so) is left
+  out, and so is that ancestor's growth over the two readings after such a
+  process is gone; a step whose tree graft cannot read at all, and a step
   shorter than a second, have no peak. Writes in the last 200 ms of a step
   are not read. A task line has its largest step's. Linux only.
 - `load_start` and `load_max` are the machine's 1-minute load average when

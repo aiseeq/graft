@@ -153,14 +153,15 @@ const reapReadings = 2
 // writeRate finds the most a process tree wrote in a second from what its
 // processes have written so far. A parent's writes take in the writes of
 // the children it reaps: what a child gone from the tree was counted for
-// comes off its parent's growth, and the growth of a parent whose child of
-// unknown writes is gone is left out, both for reapReadings. A child that
-// left the tree alive (a daemon) costs its parent's writes over them.
+// comes off the growth of its nearest ancestor still there, and the growth
+// of an ancestor whose gone child held writes graft could not read is left
+// out, both for reapReadings. A child that left the tree alive (a daemon)
+// costs its parent's writes over them.
 type writeRate struct {
-	last map[int]treeProc
-	// credit is what gone children were counted for, by parent, still to
+	last map[int]tracked
+	// credit is what gone children were counted for, by ancestor, still to
 	// come off its growth, for credited more readings; blind is the readings
-	// a parent's growth is still left out of.
+	// an ancestor's growth is still left out of.
 	credit   map[int]int64
 	credited map[int]int
 	blind    map[int]int
@@ -170,6 +171,16 @@ type writeRate struct {
 	points []writePoint
 	peak   int64
 	known  bool
+}
+
+// tracked is what writeRate keeps of a process between readings.
+type tracked struct {
+	parent int
+	// writes is its write_bytes when last read; readable tells it was read
+	// at the last reading, and hidden that some reading could not read it,
+	// so that write_bytes holds writes left out.
+	writes           int64
+	readable, hidden bool
 }
 
 type writePoint struct {
@@ -182,47 +193,35 @@ func (r *writeRate) add(at time.Time, now map[int]treeProc) {
 	if r.credit == nil {
 		r.credit, r.credited, r.blind = map[int]int64{}, map[int]int{}, map[int]int{}
 	}
-	for _, pid := range slices.Sorted(maps.Keys(r.last)) {
-		if _, ok := now[pid]; ok {
-			continue
-		}
-		p := r.last[pid]
-		if p.readable {
-			r.credit[p.parent] += p.writes + r.credit[pid]
-			r.credited[p.parent] = reapReadings
-		} else {
-			r.blind[p.parent] = reapReadings
-		}
-		r.blind[p.parent] = max(r.blind[p.parent], r.blind[pid])
-		delete(r.credit, pid)
-		delete(r.credited, pid)
-		delete(r.blind, pid)
-	}
+	r.gone(now)
+	next := make(map[int]tracked, len(now))
 	read := false
 	for _, pid := range slices.Sorted(maps.Keys(now)) {
 		p := now[pid]
 		prev, seen := r.last[pid]
-		if !p.readable {
-			// Unreadable now, after it was read (it ran a setuid
-			// program): what it wrote before stays counted.
-			p.writes = prev.writes
-			now[pid] = p
-			continue
+		t := tracked{parent: p.parent, writes: prev.writes, readable: p.readable, hidden: prev.hidden || !p.readable}
+		if p.readable {
+			var grow int64
+			switch {
+			case len(r.points) == 0:
+				// The counting starts at the first reading that reads a
+				// process.
+			case !seen:
+				grow = p.writes
+			case !prev.readable:
+				// Read again: what it wrote unseen stays out.
+			default:
+				grow = max(p.writes-prev.writes, 0)
+			}
+			read = true
+			taken := min(r.credit[pid], grow)
+			r.credit[pid] -= taken
+			if r.blind[pid] == 0 {
+				r.total += grow - taken
+			}
+			t.writes = p.writes
 		}
-		grow := p.writes
-		switch {
-		case len(r.points) == 0 && !read:
-			// The first reading is where the counting starts.
-			grow = 0
-		case seen:
-			grow = max(p.writes-prev.writes, 0)
-		}
-		read = true
-		taken := min(r.credit[pid], grow)
-		r.credit[pid] -= taken
-		if r.blind[pid] == 0 {
-			r.total += grow - taken
-		}
+		next[pid] = t
 	}
 	for _, pid := range slices.Sorted(maps.Keys(r.blind)) {
 		if r.blind[pid]--; r.blind[pid] <= 0 {
@@ -235,7 +234,7 @@ func (r *writeRate) add(at time.Time, now map[int]treeProc) {
 			delete(r.credit, pid)
 		}
 	}
-	r.last = now
+	r.last = next
 	if !read {
 		return
 	}
@@ -253,6 +252,39 @@ func (r *writeRate) add(at time.Time, now map[int]treeProc) {
 	rate := int64(float64(r.total-p.total) / at.Sub(p.at).Seconds())
 	r.peak, r.known = max(r.peak, rate), true
 	r.points = r.points[from:]
+}
+
+// gone hands what the processes no longer in the tree were counted for, or
+// that their writes are unknown, to their nearest ancestor still there,
+// which reaps them or the process that did.
+func (r *writeRate) gone(now map[int]treeProc) {
+	isGone := func(pid int) bool {
+		_, ok := now[pid]
+		return !ok
+	}
+	for _, pid := range slices.Sorted(maps.Keys(r.last)) {
+		if !isGone(pid) {
+			continue
+		}
+		p := r.last[pid]
+		up := p.parent
+		for a, ok := r.last[up]; ok && isGone(up); a, ok = r.last[up] {
+			up = a.parent
+		}
+		if p.hidden {
+			r.blind[up] = reapReadings
+		} else {
+			r.credit[up] += p.writes
+		}
+		r.credit[up] += r.credit[pid]
+		if r.credit[up] > 0 {
+			r.credited[up] = reapReadings
+		}
+		r.blind[up] = max(r.blind[up], r.blind[pid])
+		delete(r.credit, pid)
+		delete(r.credited, pid)
+		delete(r.blind, pid)
+	}
 }
 
 // sample reads the tree and the load every watchInterval until stop is

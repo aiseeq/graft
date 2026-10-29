@@ -113,6 +113,12 @@ func TestWriteRateCountsEveryWriteOnce(t *testing.T) {
 		// sudo's 100 MB are not known: not a burst when its parent reaps it.
 		{"an unreadable child", []string{"1:0:0 2:1:-1", "1:0:1 2:1:-1", "1:0:101", "1:0:101", "1:0:102"}, 2},
 		{"read, then unreadable", []string{"1:0:0 2:1:0", "1:0:0 2:1:5", "1:0:0 2:1:-1", "1:0:9", "1:0:9"}, 5},
+		// What it wrote unseen stays out; what it writes after counts.
+		{"unreadable, then read again", []string{"1:0:0 2:1:0", "1:0:0 2:1:-1", "1:0:0 2:1:50", "1:0:0 2:1:52"}, 2},
+		{"a child and grandchild gone at once", []string{"1:0:0 2:1:0 3:2:0", "1:0:0 2:1:0 3:2:5", "1:0:5", "1:0:5"}, 5},
+		{"an unreadable grandchild gone with its parent", []string{"1:0:0 2:1:0 3:2:-1", "1:0:0 2:1:0 3:2:-1", "1:0:100", "1:0:100", "1:0:101"}, 1},
+		// The second process of the first reading starts there too.
+		{"the first reading", []string{"1:0:5 2:1:7", "1:0:5 2:1:7"}, 0},
 		// Taken for reaped, it costs its parent's 2 MB over two readings.
 		{"a process leaving the tree", []string{"1:0:0 2:1:0", "1:0:0 2:1:8", "1:0:1", "1:0:2", "1:0:5"}, 8 + 3},
 	} {
