@@ -1282,9 +1282,9 @@ func commitKeys(keyRe *regexp.Regexp, conf *config.ApprovedRelease, c deliveredC
 		}
 		var items []string
 		for _, m := range revertsRe.FindAllStringSubmatch(c.body, -1) {
-			for sha, at := range conf.Attributed {
+			for _, sha := range slices.Sorted(maps.Keys(conf.Attributed)) {
 				if strings.HasPrefix(sha, m[1]) {
-					items = append(items, at.Item)
+					items = append(items, conf.Attributed[sha].Item)
 				}
 			}
 		}
