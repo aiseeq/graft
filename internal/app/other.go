@@ -70,7 +70,7 @@ func (a *App) Amend(ctx context.Context) error {
 		if err := runChecks(repo, cfg, message, parent, a.Stderr); err != nil {
 			return errors.Join(err, restoreIndex(repo, index))
 		}
-		if message, err = a.withWorkers(repo, message); err != nil {
+		if message, err = a.withWorkers(repo, cfg, message); err != nil {
 			return errors.Join(err, restoreIndex(repo, index))
 		}
 		if _, err := repo.GitInput(strings.NewReader(message), markerEnv, "commit", "--amend", "--cleanup=verbatim", "-F", "-"); err != nil {

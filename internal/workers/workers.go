@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -96,7 +97,8 @@ func passOver(warn io.Writer, file string, err error) {
 //     finished: the master commits its work after the job's process exits;
 //   - the markers of other worktrees whose round is finished and some of
 //     whose files the commit stages as the job left them (carried): the
-//     master carried the job's diff over by hand;
+//     master carried the job's diff over by hand; project version files and
+//     Go module and workspace files do not count as carried work;
 //   - the Worker trailers of the commits a merge or a squash brings in.
 //
 // The marker of another worktree whose job still runs names no model, nor
@@ -105,7 +107,7 @@ func passOver(warn io.Writer, file string, err error) {
 // gone or cannot be read, and one of a round not finished whose process is
 // gone, the job killed and the marker left, is reported to warn and passed
 // over.
-func Models(repo *gitx.Repo, warn io.Writer) ([]string, error) {
+func Models(repo *gitx.Repo, warn io.Writer, excluded []string) ([]string, error) {
 	var models []string
 	add := func(ms ...string) {
 		for _, m := range ms {
@@ -155,7 +157,7 @@ func Models(repo *gitx.Repo, warn io.Writer) ([]string, error) {
 			return nil, err
 		}
 		for _, m := range others {
-			n, err := carried(repo, m.Dir, staged)
+			n, err := carried(repo, m.Dir, staged, excluded)
 			if err != nil {
 				passOver(warn, m.file, err)
 				continue
@@ -225,12 +227,20 @@ func stagedBlobs(repo *gitx.Repo) (map[string]string, error) {
 	return blobs, nil
 }
 
-// carried counts the files of staged the worktree at dir holds with the
-// same content and changed since it forked from HEAD: the job's work, not
-// a file it left as it found it.
-func carried(repo *gitx.Repo, dir string, staged map[string]string) (int, error) {
+// goModuleFiles are the names of the files graft commit and the go command
+// rewrite alike in every worktree (modules.latest, go mod tidy).
+var goModuleFiles = []string{"go.mod", "go.sum", "go.work", "go.work.sum"}
+
+// carried counts the files of staged but excluded and goModuleFiles the
+// worktree at dir holds with the same content and changed since it forked
+// from HEAD: the job's work, not a file it left as it found it, nor one
+// graft writes the same way in both trees.
+func carried(repo *gitx.Repo, dir string, staged map[string]string, excluded []string) (int, error) {
 	var paths []string
 	for p := range staged {
+		if slices.Contains(excluded, p) || slices.Contains(goModuleFiles, path.Base(p)) {
+			continue
+		}
 		info, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(p)))
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -301,9 +311,9 @@ func forkBlobs(repo *gitx.Repo, dir string, paths []string) (map[string]string, 
 	blobs := map[string]string{}
 	for entry := range strings.SplitSeq(out, "\x00") {
 		// <mode> <type> <object>\t<path>
-		meta, path, ok := strings.Cut(entry, "\t")
+		meta, name, ok := strings.Cut(entry, "\t")
 		if f := strings.Fields(meta); ok && len(f) == 3 {
-			blobs[path] = f[2]
+			blobs[name] = f[2]
 		}
 	}
 	return blobs, nil

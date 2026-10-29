@@ -386,8 +386,10 @@ and not when the message already names it:
 - the `Worker` trailers of the commits a merge (`MERGE_HEAD`) or
   `git merge --squash` brings in.
 
-The marker of another worktree whose job still runs names no model, nor does
-one whose files the commit changes to other text, or puts back as they were
+Project version files and files named `go.mod`, `go.sum`, `go.work` or
+`go.work.sum` do not count as carried work. The marker of another worktree
+whose job still runs names no model, nor does one whose files the commit
+changes to other text, or puts back as they were
 before the fork: two jobs on the same code do that for their own reasons. The
 commit says how many files it carries of which job. A marker is a hint and
 never stops a commit: one that cannot be read, does not parse or names no id,

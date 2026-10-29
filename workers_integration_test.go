@@ -286,3 +286,38 @@ func TestWorkerTrailersInGitsOwnCommits(t *testing.T) {
 		t.Errorf("git commit in another worktree, trailers %q\n%s", got, f.git("log", "-1", "--format=%B"))
 	}
 }
+
+// TestWorkerTrailersNotFromFilesGraftWrites: the version file graft
+// commit bumps and the go.mod and go.sum it raises come out the same in every
+// tree that bumps from the same base; a finished job whose tree holds them so
+// is not carried over by a commit that stages only those and its own work.
+func TestWorkerTrailersNotFromFilesGraftWrites(t *testing.T) {
+	f := workerRepo(t, "file")
+	job := filepath.Join(f.base, "job")
+	f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
+	writeFile(t, filepath.Join(job, "VERSION"), "1.0.2\n")
+	writeFile(t, filepath.Join(job, "sub", "go.mod"), "module example.com/a\n\ngo 1.22\n\nrequire example.com/lib v1.2.3\n")
+	writeFile(t, filepath.Join(job, "sub", "go.sum"), "example.com/lib v1.2.3 h1:x=\n")
+	f.gitIn(job, "add", "-A")
+	f.gitIn(job, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "the job's tree, bumped")
+	writeFile(t, filepath.Join(job, "work.txt"), "the job's work\n")
+	writeMarkerJSON(t, f, map[string]any{"id": "job1", "models": []string{"vendor/model-a"}, "client": "cli", "dir": job, "finished": true})
+
+	f.write("sub/go.mod", "module example.com/a\n\ngo 1.22\n\nrequire example.com/lib v1.2.3\n")
+	f.write("sub/go.sum", "example.com/lib v1.2.3 h1:x=\n")
+	f.write("sub/a.go", "package a\n")
+	f.write("a.txt", "by the master\n")
+	out := f.mustGraft("commit", "-m", "feat: the master's own work")
+	if got := f.read("VERSION"); got != "1.0.2\n" {
+		t.Fatalf("the commit bumped VERSION to %q, want 1.0.2 as in the job's tree", got)
+	}
+	if got := f.workers("HEAD"); got != "" || strings.Contains(out, "as the finished job job1 left them") {
+		t.Errorf("files graft writes named the job, trailers %q\n%s", got, out)
+	}
+
+	f.write("work.txt", "the job's work\n")
+	out = f.mustGraft("commit", "-m", "feat: the job's work carried over")
+	if got := f.workers("HEAD"); got != "vendor/model-a" {
+		t.Errorf("the job's own work carried over, trailers %q\n%s", got, out)
+	}
+}
