@@ -713,13 +713,23 @@ func TestDeployReleaseNotesSkipQuietCommits(t *testing.T) {
 	d.mustFixtureCommit("docs: PROJ-6 comment reworded")
 	d.write("d.txt", "d\n")
 	d.mustFixtureCommit("fix(api)!: PROJ-6 real fix")
+	// A merge brings what its branch's commits do, whatever its subject says.
+	trunk := d.git("rev-parse", "--abbrev-ref", "HEAD")
+	d.git("switch", "-q", "-c", "feature/PROJ-5-docs")
+	d.write("e.txt", "e\n")
+	d.mustFixtureCommit("docs: PROJ-5 comment reworded")
+	d.git("switch", "-q", trunk)
+	d.git("-c", "core.hooksPath=/dev/null", "merge", "-q", "--no-ff", "-m", "Merge branch 'feature/PROJ-5-docs'", "feature/PROJ-5-docs")
+	d.git("push", "-q", "origin", trunk)
 	out := d.mustGraft("deploy", "test")
 	comments, moved := d.jira.snapshot()
-	if len(comments["PROJ-1"]) != 0 || len(comments["PROJ-6"]) != 1 || len(moved) != 0 {
+	if len(comments["PROJ-1"]) != 0 || len(comments["PROJ-5"]) != 0 || len(comments["PROJ-6"]) != 1 || len(moved) != 0 {
 		t.Errorf("comments = %v, moved = %v\n%s", comments, moved, out)
 	}
-	if want := "release note for PROJ-1 not posted, PROJ-1 left alone: its commits in this deploy are docs, test, style or ci only"; !strings.Contains(out, want) {
-		t.Errorf("no %q:\n%s", want, out)
+	for _, key := range []string{"PROJ-1", "PROJ-5"} {
+		if want := "release note for " + key + " not posted, " + key + " left alone: its commits in this deploy are docs, test, style or ci only"; !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
 	}
 }
 

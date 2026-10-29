@@ -21,3 +21,4 @@
 - 2026-10-29 12:03 открыт — graft-master
 - 2026-10-29 12:03 в работе — graft-master
 - 2026-10-29 12:08 note — graft-master: сделано мастером (правка ~30 строк, бойцу дольше брифа): message.ConventionalType, deliveredKeys отделяет quiet, README; TestDeployReleaseNotesSkipQuietCommits красный на main, зелёный после; go run . all — пакеты ok
+- 2026-10-29 12:23 note — graft-master: ревью суб-агента 37f9c45: merge-коммит с ключом в теме обходил фильтр; строка «no work item keys» при одних quiet; нет юнит-теста ConventionalType — всё исправлено: deliveredCommit.merge (%P), ключ merge доставлен, только если его не называют quiet/revert-коммиты выкатки; тест с --no-ff merge красный без правки; go run . all EXIT 0

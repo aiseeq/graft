@@ -121,3 +121,14 @@ func TestCheckConventional(t *testing.T) {
 		}
 	}
 }
+
+func TestConventionalType(t *testing.T) {
+	for subject, want := range map[string]string{
+		"docs: x": "docs", "docs(api)!: x": "docs", "fix(a, b): y": "fix",
+		`Revert "docs: x"`: "", "Docs: x": "", "docs: ": "", "Merge branch 'feature/PROJ-1-x'": "",
+	} {
+		if got := ConventionalType(subject); got != want {
+			t.Errorf("%q: %q, want %q", subject, got, want)
+		}
+	}
+}

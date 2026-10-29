@@ -516,7 +516,7 @@ func (a *App) noteKeys(r *deployRun) []string {
 	for _, key := range quiet {
 		a.warn("release note for %s not posted, %s left alone: its commits in this deploy are %s only", key, key, strings.Join(quietTypes[:len(quietTypes)-1], ", ")+" or "+quietTypes[len(quietTypes)-1])
 	}
-	if len(keys) == 0 {
+	if len(keys) == 0 && len(reverted) == 0 && len(quiet) == 0 {
 		a.printf("release notes: no work item keys in %s..%s", gitx.Short(r.prev), gitx.Short(r.head))
 	}
 	return keys
@@ -1585,6 +1585,8 @@ func isRevert(subject string) bool {
 
 type deliveredCommit struct {
 	sha, subject, body string
+	// merge is a commit with more than one parent.
+	merge bool
 }
 
 // deliveredCommits lists the commits that go out, merges left out.
@@ -1594,7 +1596,7 @@ func deliveredCommits(repo *gitx.Repo, prev, head string) ([]deliveredCommit, er
 
 // logCommits lists the commits git log selects with args.
 func logCommits(repo *gitx.Repo, args ...string) ([]deliveredCommit, error) {
-	out, err := repo.Git(append([]string{"log", "--format=%H%x1f%s%x1f%b%x1e"}, args...)...)
+	out, err := repo.Git(append([]string{"log", "--format=%H%x1f%P%x1f%s%x1f%b%x1e"}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1604,11 +1606,11 @@ func logCommits(repo *gitx.Repo, args ...string) ([]deliveredCommit, error) {
 		if rec == "" {
 			continue
 		}
-		f := strings.SplitN(rec, "\x1f", 3)
-		if len(f) != 3 {
+		f := strings.SplitN(rec, "\x1f", 4)
+		if len(f) != 4 {
 			return nil, fmt.Errorf("unexpected git log record %q", rec)
 		}
-		commits = append(commits, deliveredCommit{sha: f[0], subject: f[1], body: f[2]})
+		commits = append(commits, deliveredCommit{sha: f[0], subject: f[2], body: f[3], merge: strings.Contains(f[1], " ")})
 	}
 	return commits, nil
 }
@@ -1647,20 +1649,29 @@ func deliveredKeys(r *deployRun) (keys, reverted, quiet []string, err error) {
 		}
 	}
 	keyRe := projectKeyRe(r.cfg)
+	// merged are the keys merge commits name: a merge brings what its
+	// branch's commits do, so it delivers only a key none of them names.
+	var merged []string
 	for _, c := range commits {
 		if slices.Contains(r.withheld, c.sha) || withholds(c.body, r.withheld) {
 			continue
 		}
 		named := commitKeys(keyRe, r.target.ApprovedRelease, c)
-		if isRevert(c.subject) || slices.ContainsFunc(undone, func(p string) bool { return strings.HasPrefix(c.sha, p) }) {
+		switch {
+		case isRevert(c.subject) || slices.ContainsFunc(undone, func(p string) bool { return strings.HasPrefix(c.sha, p) }):
 			reverted = append(reverted, named...)
-			continue
-		}
-		if slices.Contains(quietTypes, message.ConventionalType(c.subject)) {
+		case c.merge:
+			merged = append(merged, named...)
+		case slices.Contains(quietTypes, message.ConventionalType(c.subject)):
 			quiet = append(quiet, named...)
-			continue
+		default:
+			keys = append(keys, named...)
 		}
-		keys = append(keys, named...)
+	}
+	for _, k := range merged {
+		if !slices.Contains(quiet, k) && !slices.Contains(reverted, k) {
+			keys = append(keys, k)
+		}
 	}
 	keys = uniqueSorted(keys)
 	reverted = slices.DeleteFunc(uniqueSorted(reverted), func(k string) bool { return slices.Contains(keys, k) })
