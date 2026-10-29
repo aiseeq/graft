@@ -1228,7 +1228,11 @@ func (g *gateRun) withEarlier(commits []deliveredCommit, withheld []string) ([]d
 func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out *gateOutcome) (*gateFailure, error) {
 	fail := gateFailure{commit: c, why: "names no item"}
 	if at, ok := g.conf.Attributed[c.sha]; ok {
-		g.app.printf("approved release: %s: attributed to %s: %s", line, at.Item, at.Reason)
+		instead := ""
+		if named := commitKeys(g.keyRe, nil, c); len(named) > 0 {
+			instead = " instead of " + strings.Join(named, ", ")
+		}
+		g.app.printf("approved release: %s: attributed to %s%s: %s", line, at.Item, instead, at.Reason)
 	}
 	if fail.keys = commitKeys(g.keyRe, g.conf, c); len(fail.keys) > 0 {
 		pass, err := g.gate.commit(ctx, fail.keys)
@@ -1280,7 +1284,8 @@ func commitKeys(keyRe *regexp.Regexp, conf *config.ApprovedRelease, c deliveredC
 }
 
 // attributionProblems lists the attributions the repository contradicts: a
-// commit it does not have, or one whose message names an item already.
+// commit it does not have, or one whose message names the attributed item
+// already, which the attribution does not change.
 func attributionProblems(repo *gitx.Repo, cfg *config.Config) ([]string, error) {
 	if cfg.Deploy == nil {
 		return nil, nil
@@ -1323,8 +1328,8 @@ func attributionProblems(repo *gitx.Repo, cfg *config.Config) ([]string, error) 
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", where, err)
 			}
-			if keys := commitKeys(keyRe, nil, c); len(keys) > 0 {
-				problems = append(problems, fmt.Sprintf("%s: commit %s %q names %s already: attribute is for a commit that names no item", where, gitx.Short(c.sha), c.subject, strings.Join(keys, ", ")))
+			if keys := commitKeys(keyRe, nil, c); slices.Equal(keys, []string{at.Item}) {
+				problems = append(problems, fmt.Sprintf("%s: commit %s %q names %s already: the attribution changes nothing", where, gitx.Short(c.sha), c.subject, at.Item))
 			}
 		}
 	}

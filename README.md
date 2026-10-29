@@ -1338,7 +1338,7 @@ deploy:
         statuses: [Ready for release, Done]  # the item, or a subtask's parent, is in one of these
         prefix: "Product v"     # optional: and in a "Product v…" version every approver approved
         ignore_paths: ["docs/**", "*.md"]   # a commit changing only these ships nothing and passes
-        attribute:              # optional: a commit whose message names no item, as a commit of the item
+        attribute:              # optional: a commit whose message names no item, or the wrong one, as a commit of the item
           - {commit: 0123456789abcdef0123456789abcdef01234567, item: PROJ-123, reason: "the key was left out of the message"}
       release_notes:
         transitions: [{from: [Ready for release], to: Done}]
@@ -1407,16 +1407,18 @@ release_notes:
    commits with `sudo -n`, so a server that wants a sudo password answers
    with an error instead of a prompt.
    `attribute` ties a commit already in the history whose message names no
-   item to the item it belongs to, without rewriting history: the commit is
-   checked exactly as a commit naming that item (`statuses`, a subtask by its
+   item, or the wrong one (a standing parent instead of its subtask, say), to
+   the item it belongs to, without rewriting history: the commit is checked
+   exactly as a commit naming that item alone (`statuses`, a subtask by its
    parent, `prefix` with every approval), the deploy prints `attributed to
-   PROJ-123: <reason>` for it, and the release notes, the release page,
+   PROJ-123: <reason>` for it (`attributed to PROJ-123 instead of PROJ-100:
+   <reason>` when its message names others), and the release notes, the release page,
    `graft deploy cutoff`, `.withheld`, the window versions and, on the
    hotfix `base` target, the hotfix label check count it as the item's.
    `commit` is the full hash (40 lowercase hex digits, 64 in a SHA-256
    repository), `item` a key of `project_keys`, `reason` is required. A short
    or repeated hash, a missing reason, a commit the repository does not have
-   and a commit whose message names an item already are config errors: the
+   and a commit whose message names the attributed item alone already are config errors: the
    first ones when the config loads, the last two in `graft check` (and so
    `graft commit`) and every `graft deploy` command. Each target has its own
    list.

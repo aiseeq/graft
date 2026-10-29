@@ -1135,20 +1135,29 @@ func TestDeployApprovedReleaseAttribute(t *testing.T) {
 	}
 
 	// The repository contradicts an attribution: the commit is unknown, or
-	// it names an item already.
+	// it names the item already.
 	d.write("b.txt", "b\n")
 	d.mustFixtureCommit("feat: PROJ-8 named")
 	named := d.git("rev-parse", "HEAD")
 	unknown := strings.Repeat("ab", 20)
-	cfg := strings.Replace(d.read(".graft.yaml"), keyless+", item: PROJ-9", named+", item: PROJ-9", 1)
+	attributed := d.read(".graft.yaml")
+	cfg := strings.Replace(attributed, keyless+", item: PROJ-9", named+", item: PROJ-8", 1)
 	d.write(".graft.yaml", strings.Replace(cfg, keyless+", item: PROJ-6", unknown+", item: PROJ-6", 1))
 	for _, args := range [][]string{{"check"}, {"deploy", "gate"}} {
 		out, code := d.graft("", args...)
 		if code == 0 ||
-			!strings.Contains(out, "deploy.targets.gate.approved_release.attribute[0]: commit "+named[:12]+` "feat: PROJ-8 named" names PROJ-8 already: attribute is for a commit that names no item`) ||
+			!strings.Contains(out, "deploy.targets.gate.approved_release.attribute[0]: commit "+named[:12]+` "feat: PROJ-8 named" names PROJ-8 already: the attribution changes nothing`) ||
 			!strings.Contains(out, "deploy.targets.live.approved_release.attribute[0]: commit "+unknown+" is not in this repository (git fetch?)") {
 			t.Errorf("%v: exit %d\n%s", args, code, out)
 		}
+	}
+
+	// A commit naming the wrong item goes out as the item it is attributed to.
+	d.write(".graft.yaml", strings.Replace(attributed, keyless+", item: PROJ-9", named+", item: PROJ-9", 1))
+	d.mustFixtureCommit("docs: PROJ-2 attribute the named commit")
+	out = d.mustGraft("deploy", "gate")
+	if !strings.Contains(out, `feat: PROJ-8 named: attributed to PROJ-9 instead of PROJ-8: key left out`) {
+		t.Errorf("the named commit goes out as PROJ-9:\n%s", out)
 	}
 }
 
