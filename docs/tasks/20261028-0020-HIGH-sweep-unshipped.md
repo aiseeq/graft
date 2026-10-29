@@ -31,5 +31,5 @@
 - 2026-10-28 00:21 cause measured (git show --stat of the 4 commits); answered the peer
 - 2026-10-28 00:26 shipsNothing in sweptCommit, onTargetWords; TestDeploySweepByContent PROJ-85; README; committing
 - 2026-10-28 01:00 на проверке — graft-master — installed v2.44.0; the reporting peer to confirm on its next prod sweep
-- 2026-10-28 13:45 note — graft-master: verify subagent 13:35: PASS 3/3; found wording defect (commit with real+ignored files, real part on target -> said ships nothing). Fixed 14525c0 (changesOnlyIgnored), test PROJ-86/87 red before; v2.48.2. Re-verify subagent 13:5x
-- 2026-10-28 13:50 готово — verify-subagent: subagent 13:35+13:5x on v2.48.2: abc0bbc logic PASS, TestDeploySweep ok, revert red (PROJ-85); wording defect fixed 14525c0, revert red on PROJ-86, PROJ-87 mixed line present
+- 2026-10-28 13:45 note — graft-master: verify subagent 13:35: PASS 3/3; found wording defect (commit with real+ignored files, real part on target -> said ships nothing). Fixed a093fe4 (changesOnlyIgnored), test PROJ-86/87 red before; v2.48.2. Re-verify subagent 13:5x
+- 2026-10-28 13:50 готово — verify-subagent: subagent 13:35+13:5x on v2.48.2: abc0bbc logic PASS, TestDeploySweep ok, revert red (PROJ-85); wording defect fixed a093fe4, revert red on PROJ-86, PROJ-87 mixed line present

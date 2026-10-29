@@ -18,5 +18,5 @@
 
 ## Журнал
 - 2026-10-28 13:33 открыт — graft-master
-- 2026-10-28 13:45 note — graft-master: fixed 29d285c+652c2d8, v2.48.2 installed laptop+pc (sha 9e578dd6); graft check on glint patterns-split2: v2.48.1 fails, fix passes; glint-master told. Independent verify: subagent 13:5x
+- 2026-10-28 13:45 note — graft-master: fixed 2cc8228+9bb1c2b, v2.48.2 installed laptop+pc (sha 9e578dd6); graft check on glint patterns-split2: v2.48.1 fails, fix passes; glint-master told. Independent verify: subagent 13:5x
 - 2026-10-28 13:50 готово — verify-subagent: subagent 13:5x, ~/bin/graft check e2e with public remote + terms: git mv clean; move + new term found once; duplicated moved line found once; "-- " removal hunks parse; no new line passes (moved requires identical line in HEAD; a HEAD line never scanned is published with HEAD anyway). glint-master committed the split on v2.48.2.

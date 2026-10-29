@@ -22,4 +22,4 @@
 - 2026-10-28 00:51 открыт — graft-master
 - 2026-10-28 00:58 done in code: tasks.CommandError marks the command's result; App.Exec maps 125/126/127, 128+signal; usage 125; README; TestExecExitStatus
 - 2026-10-28 01:02 note — graft-master: independent review (fresh agent) of c4b0f32: -C and early main errors exit 1/2, an unstartable remote_heavy run maps to 126/127, Ctrl-C reads as the command's 137; fixed: execCall routes every exec failure but the command's to 125, a run not started is graft's, an interrupt is 125; tests for -C and the run (the interrupt untested)
-- 2026-10-28 01:07 готово — review-agent: fresh review agent on c4b0f32: 3 findings fixed in e43526f (tests for -C and remote run; interrupt untested); go run . all green; v2.44.1 installed; requester wired the codes (125 infra, 126/127 with the start line)
+- 2026-10-28 01:07 готово — review-agent: fresh review agent on c4b0f32: 3 findings fixed in 7ed4dad (tests for -C and remote run; interrupt untested); go run . all green; v2.44.1 installed; requester wired the codes (125 infra, 126/127 with the start line)
