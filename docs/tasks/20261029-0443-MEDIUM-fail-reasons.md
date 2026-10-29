@@ -1,6 +1,7 @@
 # Журналы: первые строки причины красного прогона
 
-Статус: открыт
+Статус: в работе
+Исполнитель: graft-master
 
 ## Вход
 - Проблема:
@@ -23,3 +24,5 @@
 
 ## Журнал
 - 2026-10-29 04:43 открыт — graft-master
+- 2026-10-29 04:59 в работе — graft-master
+- 2026-10-29 04:59 note — graft-master: боец Luna 1029-0459-fail-reasons, worktree ~/.cache/worktrees/graft/fail-reasons, приёмка accept/reasons.sh (красная на main 04:58: все 5 проверок)

@@ -185,3 +185,38 @@ func TestInstallStepReplacesSymlink(t *testing.T) {
 		t.Errorf("%s is not bin/tool", installed)
 	}
 }
+
+// TestInstallStepRefusesLinkedWorktreeGoBinary: go build stamps no revision
+// in a linked worktree, so install from there refuses a Go binary and names
+// the main tree; the main tree still installs, and so does a file that is not
+// a Go binary from the linked worktree.
+func TestInstallStepRefusesLinkedWorktreeGoBinary(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "bin")
+	f := installRepo(t, dest)
+	linked := filepath.Join(f.base, "linked")
+	f.git("worktree", "add", "-q", "-b", "side", linked)
+
+	out, code := f.exec(linked, "", graftBin, "install")
+	if code == 0 {
+		t.Fatalf("a Go binary without a revision installed from a linked worktree:\n%s", out)
+	}
+	main, err := filepath.EvalSymlinks(f.work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "worktree") || !strings.Contains(out, main) {
+		t.Errorf("the refusal must say linked worktree and name the main tree %s:\n%s", main, out)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "tool")); !os.IsNotExist(err) {
+		t.Errorf("a refused install wrote %s: %v", filepath.Join(dest, "tool"), err)
+	}
+
+	if out, code := f.exec(linked, "", graftBin, "install-script"); code != 0 {
+		t.Errorf("a non-Go file from a linked worktree must install as before, exit %d:\n%s", code, out)
+	}
+
+	f.mustGraft("install")
+	if _, err := os.Stat(filepath.Join(dest, "tool")); err != nil {
+		t.Errorf("the main tree must still install: %v", err)
+	}
+}

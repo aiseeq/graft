@@ -1,6 +1,7 @@
 # exec --heavy: откат на эту машину при broken_exit хоста
 
-Статус: открыт
+Статус: в работе
+Исполнитель: graft-master
 
 ## Вход
 - Проблема:
@@ -20,3 +21,5 @@
 
 ## Журнал
 - 2026-10-29 04:59 открыт — graft-master
+- 2026-10-29 05:04 в работе — graft-master
+- 2026-10-29 05:04 note — graft-master: боец Luna (worker status: exec-broken-remote), worktree ~/.cache/worktrees/graft/exec-broken-remote, приёмка accept/execbroken.sh (красная на main 05:04: exit 125, нет строки path broken)

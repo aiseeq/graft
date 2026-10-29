@@ -1675,6 +1675,17 @@ func prepareInstall(ctx context.Context, repo *gitx.Repo, head, file, to string)
 		}
 		rev = revision
 	} else {
+		if buildErr == nil && filepath.Clean(repo.GitDir) != filepath.Clean(repo.CommonDir) {
+			worktrees, err := repo.Git("worktree", "list", "--porcelain")
+			if err != nil {
+				return installCandidate{}, fmt.Errorf("install %s: listing worktrees: %w", name, err)
+			}
+			mainWorktree := strings.TrimPrefix(strings.SplitN(worktrees, "\n", 2)[0], "worktree ")
+			if mainWorktree == worktrees || mainWorktree == "" {
+				return installCandidate{}, fmt.Errorf("install %s: unexpected git worktree list output: %q", name, worktrees)
+			}
+			return installCandidate{}, fmt.Errorf("install %s: refusing Go binary without vcs.revision from linked worktree; go build does not embed VCS metadata there, install from the main worktree (%s) after merging", name, filepath.FromSlash(mainWorktree))
+		}
 		clean, err := repo.IsClean()
 		if err != nil {
 			return installCandidate{}, fmt.Errorf("install %s: checking clean tree: %w", name, err)
