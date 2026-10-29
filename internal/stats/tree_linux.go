@@ -17,15 +17,19 @@ import (
 // their anonymous and shared-memory resident pages (RssAnon and RssShmem of
 // /proc/<pid>/status). File-backed pages, binaries and libraries most of
 // all, are left out: they are shared between the processes and the kernel
-// takes them back under pressure. With withIO, their writes are summed too
-// (write_bytes of /proc/<pid>/io, which holds the writes of the children the
-// process reaped); a process whose io it may not read, sudo say, counts
-// none until its parent reaps it. A process gone meanwhile counts nothing.
+// takes them back under pressure. With withIO, every process is listed with
+// its writes (write_bytes of /proc/<pid>/io), unread where graft may not
+// read them (sudo). A process gone meanwhile is left out.
 func readTree(pid int, withIO bool) (treeNow, error) {
 	now := treeNow{}
-	queue := []int{pid}
+	if withIO {
+		now.procs = map[int]treeProc{}
+	}
+	type queued struct{ pid, parent int }
+	queue := []queued{{pid: pid}}
 	for len(queue) > 0 {
-		p := queue[0]
+		q := queue[0]
+		p := q.pid
 		queue = queue[1:]
 		mem, err := processMemory(p)
 		if proc.Gone(err) {
@@ -38,11 +42,13 @@ func readTree(pid int, withIO bool) (treeNow, error) {
 		if withIO && now.ioErr == nil {
 			w, err := processWrites(p)
 			switch {
-			case proc.Gone(err), errors.Is(err, fs.ErrPermission):
+			case proc.Gone(err):
+			case errors.Is(err, fs.ErrPermission):
+				now.procs[p] = treeProc{parent: q.parent}
 			case err != nil:
 				now.ioErr = err
 			default:
-				now.writes += w
+				now.procs[p] = treeProc{parent: q.parent, writes: w, readable: true}
 			}
 		}
 		kids, err := proc.Children(p)
@@ -52,7 +58,9 @@ func readTree(pid int, withIO bool) (treeNow, error) {
 		if err != nil {
 			return treeNow{}, err
 		}
-		queue = append(queue, kids...)
+		for _, kid := range kids {
+			queue = append(queue, queued{kid, p})
+		}
 	}
 	return now, nil
 }

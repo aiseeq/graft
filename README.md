@@ -794,8 +794,9 @@ deps and inner tasks included.
   (the hold after a wait), `lock` (a task lock) and `sudo` (a deploy's
   confirmation). Absent when nothing waited.
 - `host`, on the lines of a task run on the host of `remote_heavy` and of
-  its steps, names that host; absent for this machine. Their CPU time and
-  memory are those of the command that sent the step there, not of the work.
+  its steps, names that host; absent for this machine. Their CPU time,
+  memory and disk IO are those of the command that sent the step there, not
+  of the work.
 - `step` is the step as written in `.graft.yaml`, on one line, cut to 200
   characters. `exit` is -1 when there is no exit status: killed by a signal,
   or a task that failed outside its processes.
@@ -824,9 +825,13 @@ deps and inner tasks included.
 - `peak_write_mbs` is the most the process tree wrote in a second, MB/s:
   graft sums `write_bytes` of `/proc/<pid>/io` over the tree every 200 ms,
   read with `tree_mem_mb`, and takes the fastest growth over a stretch of a
-  second or more. A step shorter than a second has none. A process whose
-  io graft may not read (one under `sudo`) counts when its parent reaps it,
-  at once. A task line has its largest step's. Linux only.
+  second or more. A parent's `write_bytes` takes in those of the children
+  it reaps; what a child was counted for comes off its parent's growth
+  over the next two readings. A process graft may not read (one under
+  `sudo`) is left out, and so is its parent's growth over the two readings
+  after it is gone; a step whose tree graft cannot read at all, and a step
+  shorter than a second, have no peak. Writes in the last 200 ms of a step
+  are not read. A task line has its largest step's. Linux only.
 - `load_start` and `load_max` are the machine's 1-minute load average when
   the step or task started and the highest seen while it ran, read with
   `tree_mem_mb`. Wall time on a machine at load 30 does not compare with

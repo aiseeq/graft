@@ -3,6 +3,8 @@ package stats
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -123,26 +125,51 @@ func (w *LoadWatch) Stop() Sample {
 
 // treeNow is what readTree saw of a process tree at one moment.
 type treeNow struct {
-	// mem is the summed memory and writes the summed bytes written so far;
-	// ioErr tells why writes is unknown.
-	mem, writes int64
-	ioErr       error
+	// mem is the summed memory; procs holds, when the writes are read, every
+	// process of the tree by pid; ioErr tells why they are unknown.
+	mem   int64
+	procs map[int]treeProc
+	ioErr error
+}
+
+// treeProc is one process of a tree: its parent and, when graft may read
+// its io (not one under sudo), what it has caused to be written so far,
+// the writes of the children it reaped included.
+type treeProc struct {
+	parent   int
+	writes   int64
+	readable bool
 }
 
 // peakWindow is the shortest stretch a write rate is taken over: one
 // 200 ms flush is not a rate the disk is kept busy at.
 const peakWindow = time.Second
 
-// writeRate finds the most a process tree wrote in a second from the
-// running sums of its writes.
+// reapReadings is how many readings a reaped child's writes may show up in
+// its parent's growth: the reading that finds the child gone, and the next,
+// in case the child was reaped while the tree was read.
+const reapReadings = 2
+
+// writeRate finds the most a process tree wrote in a second from what its
+// processes have written so far. A parent's writes take in the writes of
+// the children it reaps: what a child gone from the tree was counted for
+// comes off its parent's growth, and the growth of a parent whose child of
+// unknown writes is gone is left out, both for reapReadings. A child that
+// left the tree alive (a daemon) costs its parent's writes over them.
 type writeRate struct {
-	// last is the latest sum read and total what the tree wrote since the
-	// first read; a sum that falls, when a process leaves the tree, adds
-	// nothing.
-	last, total int64
-	points      []writePoint
-	peak        int64
-	known       bool
+	last map[int]treeProc
+	// credit is what gone children were counted for, by parent, still to
+	// come off its growth, for credited more readings; blind is the readings
+	// a parent's growth is still left out of.
+	credit   map[int]int64
+	credited map[int]int
+	blind    map[int]int
+	// total is what the tree wrote since the first reading that read a
+	// process.
+	total  int64
+	points []writePoint
+	peak   int64
+	known  bool
 }
 
 type writePoint struct {
@@ -150,12 +177,68 @@ type writePoint struct {
 	total int64
 }
 
-// add takes the sum of the tree's writes read at at.
-func (r *writeRate) add(at time.Time, sum int64) {
-	if len(r.points) > 0 {
-		r.total += max(sum-r.last, 0)
+// add takes the tree's processes read at at.
+func (r *writeRate) add(at time.Time, now map[int]treeProc) {
+	if r.credit == nil {
+		r.credit, r.credited, r.blind = map[int]int64{}, map[int]int{}, map[int]int{}
 	}
-	r.last = sum
+	for _, pid := range slices.Sorted(maps.Keys(r.last)) {
+		if _, ok := now[pid]; ok {
+			continue
+		}
+		p := r.last[pid]
+		if p.readable {
+			r.credit[p.parent] += p.writes + r.credit[pid]
+			r.credited[p.parent] = reapReadings
+		} else {
+			r.blind[p.parent] = reapReadings
+		}
+		r.blind[p.parent] = max(r.blind[p.parent], r.blind[pid])
+		delete(r.credit, pid)
+		delete(r.credited, pid)
+		delete(r.blind, pid)
+	}
+	read := false
+	for _, pid := range slices.Sorted(maps.Keys(now)) {
+		p := now[pid]
+		prev, seen := r.last[pid]
+		if !p.readable {
+			// Unreadable now, after it was read (it ran a setuid
+			// program): what it wrote before stays counted.
+			p.writes = prev.writes
+			now[pid] = p
+			continue
+		}
+		grow := p.writes
+		switch {
+		case len(r.points) == 0 && !read:
+			// The first reading is where the counting starts.
+			grow = 0
+		case seen:
+			grow = max(p.writes-prev.writes, 0)
+		}
+		read = true
+		taken := min(r.credit[pid], grow)
+		r.credit[pid] -= taken
+		if r.blind[pid] == 0 {
+			r.total += grow - taken
+		}
+	}
+	for _, pid := range slices.Sorted(maps.Keys(r.blind)) {
+		if r.blind[pid]--; r.blind[pid] <= 0 {
+			delete(r.blind, pid)
+		}
+	}
+	for _, pid := range slices.Sorted(maps.Keys(r.credited)) {
+		if r.credited[pid]--; r.credited[pid] <= 0 {
+			delete(r.credited, pid)
+			delete(r.credit, pid)
+		}
+	}
+	r.last = now
+	if !read {
+		return
+	}
 	r.points = append(r.points, writePoint{at, r.total})
 	from := -1
 	for i, p := range r.points {
@@ -188,7 +271,7 @@ func sample(pid int, stop <-chan struct{}) (s Sample) {
 			case now.ioErr != nil:
 				s.IOErr = now.ioErr
 			default:
-				writes.add(time.Now(), now.writes)
+				writes.add(time.Now(), now.procs)
 			}
 		}
 		if s.LoadErr == nil {

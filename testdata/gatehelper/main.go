@@ -183,7 +183,7 @@ func run(args []string) error {
 		}
 		file, err := os.Create(args[1])
 		if err != nil {
-			return err
+			return fmt.Errorf("write: %w", err)
 		}
 		chunk := make([]byte, 1<<20)
 		for i := range chunk {

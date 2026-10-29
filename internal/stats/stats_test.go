@@ -2,6 +2,7 @@ package stats
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -72,28 +73,80 @@ func TestMedian(t *testing.T) {
 	}
 }
 
+// rateOf feeds readings to a writeRate a second apart, each a set of
+// pid:parent:megabytes processes, -1 megabytes for one graft may not read,
+// and returns the megabytes it counted.
+func rateOf(t *testing.T, readings ...string) (counted int64, r *writeRate) {
+	t.Helper()
+	r = &writeRate{}
+	at := time.Unix(1000, 0)
+	for i, reading := range readings {
+		now := map[int]treeProc{}
+		for proc := range strings.FieldsSeq(reading) {
+			var pid, parent int
+			var mb int64
+			if _, err := fmt.Sscanf(proc, "%d:%d:%d", &pid, &parent, &mb); err != nil {
+				t.Fatalf("reading %q: %v", reading, err)
+			}
+			now[pid] = treeProc{parent: parent, writes: mb << 20, readable: mb >= 0}
+			if mb < 0 {
+				now[pid] = treeProc{parent: parent}
+			}
+		}
+		r.add(at.Add(time.Duration(i)*time.Second), now)
+	}
+	return r.total >> 20, r
+}
+
+func TestWriteRateCountsEveryWriteOnce(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		readings []string
+		want     int64
+	}{
+		{"growth from the first reading", []string{"1:0:5", "1:0:7 2:1:3", "1:0:9 2:1:4"}, 4 + 3 + 1},
+		// The parent takes in a reaped child's 4 MB, 1 of them new.
+		{"a reaped child", []string{"1:0:0 2:1:0", "1:0:0 2:1:3", "1:0:4"}, 4},
+		// Reaped while the tree was read: gone before its parent grew.
+		{"a child reaped while reading", []string{"1:0:0 2:1:0", "1:0:0 2:1:3", "1:0:0", "1:0:3"}, 3},
+		{"a grandchild reaped twice", []string{"1:0:0 2:1:0 3:2:0", "1:0:0 2:1:1 3:2:2", "1:0:0 2:1:3", "1:0:3"}, 3},
+		// sudo's 100 MB are not known: not a burst when its parent reaps it.
+		{"an unreadable child", []string{"1:0:0 2:1:-1", "1:0:1 2:1:-1", "1:0:101", "1:0:101", "1:0:102"}, 2},
+		{"read, then unreadable", []string{"1:0:0 2:1:0", "1:0:0 2:1:5", "1:0:0 2:1:-1", "1:0:9", "1:0:9"}, 5},
+		// Taken for reaped, it costs its parent's 2 MB over two readings.
+		{"a process leaving the tree", []string{"1:0:0 2:1:0", "1:0:0 2:1:8", "1:0:1", "1:0:2", "1:0:5"}, 8 + 3},
+	} {
+		if got, _ := rateOf(t, c.readings...); got != c.want {
+			t.Errorf("%s: counted %d MB, want %d", c.name, got, c.want)
+		}
+	}
+	if _, r := rateOf(t, "1:0:-1", "1:0:-1 2:1:-1", "1:0:-1"); r.known {
+		t.Errorf("a tree graft may not read has a peak: %d", r.peak)
+	}
+}
+
 func TestWriteRatePeak(t *testing.T) {
 	var r writeRate
 	at := time.Unix(1000, 0)
-	tick := func(ms int, sum int64) { r.add(at.Add(time.Duration(ms)*time.Millisecond), sum) }
-	tick(0, 5<<20)
-	tick(200, 5<<20)
-	tick(800, 7<<20)
+	tick := func(ms int, mb int64) {
+		r.add(at.Add(time.Duration(ms)*time.Millisecond), map[int]treeProc{1: {writes: mb << 20, readable: true}})
+	}
+	tick(0, 5)
+	tick(200, 5)
+	tick(800, 7)
 	if r.known {
 		t.Fatalf("a peak under a second: %d", r.peak)
 	}
-	// A process leaving the tree takes its writes out of the sum: that is
-	// no negative write, and the next growth counts from the lower sum.
-	tick(1000, 1<<20)
+	tick(1000, 7)
 	if !r.known || r.peak != 2<<20 {
 		t.Fatalf("2 MB over the first second: %d %v", r.peak, r.known)
 	}
-	tick(1200, 13<<20)
-	// 2 + 12 MB since the point of 200 ms, a second before.
+	tick(1200, 19)
+	// 2 + 12 MB since the reading at 200 ms, a second before.
 	if r.peak != 14<<20 {
 		t.Errorf("14 MB in the second up to 1.2 s: %d", r.peak)
 	}
-	tick(3200, 13<<20)
+	tick(3200, 19)
 	if r.peak != 14<<20 {
 		t.Errorf("an idle stretch lowered the peak: %d", r.peak)
 	}

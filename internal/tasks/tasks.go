@@ -55,11 +55,13 @@ type Runner struct {
 	Root string
 	// Repo is the repository at Root; nil opens it when a step needs it.
 	Repo *gitx.Repo
-	// repoName names the repository in the profiles of its runs, set once.
-	repoName string
-	Config   *config.Config
-	Stdout   io.Writer
-	Stderr   io.Writer
+	// repoName names the repository in the profiles of its runs, set once;
+	// noRepoName: it cannot be, said once.
+	repoName   string
+	noRepoName bool
+	Config     *config.Config
+	Stdout     io.Writer
+	Stderr     io.Writer
 	// Stdin is given to steps; nil closes it (the gate: nothing may wait for
 	// input there).
 	Stdin io.Reader
@@ -136,9 +138,8 @@ type frame struct {
 	load *stats.LoadWatch
 	// remote runs the steps of a heavy task on remote_heavy's host.
 	remote bool
-	// first is the first word of the command of its first step, which tells
-	// a graft exec's kind.
-	first string
+	// program is the program a graft exec runs, which tells its kind.
+	program string
 }
 
 // TestDB is the test database of test_db tasks.
@@ -418,13 +419,9 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int, reason str
 	if code == 0 {
 		reason = ""
 	}
-	first := firstWord(source)
 	for _, f := range r.frames {
 		f.steps++
 		f.use.Add(use)
-		if f.first == "" {
-			f.first = first
-		}
 		if f.exit == 0 {
 			f.exit = code
 		}
@@ -433,23 +430,18 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int, reason str
 		}
 	}
 	inner := r.frames[len(r.frames)-1]
-	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Profile: r.profile(inner.task, first), Step: stats.StepText(source), Exit: code, Reason: reason, Host: r.hostOf(inner)}, use, r.frames[0].task)
-}
-
-// firstWord is the name of the program a step's command starts with.
-func firstWord(source string) string {
-	words := strings.Fields(source)
-	if len(words) == 0 {
-		return ""
-	}
-	return filepath.Base(words[0])
+	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Profile: r.profile(inner), Step: stats.StepText(source), Exit: code, Reason: reason, Host: r.hostOf(inner)}, use, r.frames[0].task)
 }
 
 // profile is the kind of a run the admission of heavy tasks knows it by:
 // the repository's name, that of the main work tree's folder for every
 // worktree, and the task; a graft exec, whose commands differ, adds the
-// first word of its command. "" when the repository cannot be read, said.
-func (r *Runner) profile(task, first string) string {
+// program it runs. "" when the repository cannot be read, said once, and
+// without stats.
+func (r *Runner) profile(f *frame) string {
+	if r.Stats == nil || r.noRepoName {
+		return ""
+	}
 	if r.repoName == "" {
 		repo, err := r.repo()
 		switch {
@@ -459,16 +451,15 @@ func (r *Runner) profile(task, first string) string {
 			// A graft exec outside a repository: its folder.
 			r.repoName = filepath.Base(r.Root)
 		default:
-			if r.Stats != nil {
-				r.Stats.Warn(fmt.Errorf("naming the run for its profile: %w", err))
-			}
+			r.noRepoName = true
+			r.Stats.Warn(fmt.Errorf("naming the run for its profile: %w", err))
 			return ""
 		}
 	}
-	if task == ExecTask && first != "" {
-		return r.repoName + ":" + task + ":" + first
+	if f.program != "" {
+		return r.repoName + ":" + f.task + ":" + f.program
 	}
-	return r.repoName + ":" + task
+	return r.repoName + ":" + f.task
 }
 
 // inWorkspace keeps, when the root has go.work, the modules its use lists:
@@ -985,6 +976,7 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 		t.Run = []config.Step{{Argv: slices.Clone(argv)}}
 	}
 	f := r.begin(ExecTask)
+	f.program = filepath.Base(argv[0])
 	defer func() { r.end(f, err != nil) }()
 	if heavy {
 		if f.remote, err = r.placeHeavy(ctx, ExecTask, t, dir, nil); err != nil {
@@ -1265,7 +1257,7 @@ func (r *Runner) begin(task string) *frame {
 // what it cost; the task's error itself goes back to its caller.
 func (r *Runner) end(f *frame, failed bool) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
-	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f.task, f.first), In: f.in, Steps: f.steps, Host: r.hostOf(f)}
+	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f)}
 	if failed {
 		// A failure outside the processes (a missing key, a lock timeout)
 		// has no exit status of its own.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,7 +106,9 @@ func TestStepDiskIO(t *testing.T) {
 	if ok.PeakWrite != nil {
 		t.Errorf("a step shorter than a second has no peak: %v", *ok.PeakWrite)
 	}
-	if *task.WriteMB != *step.WriteMB+*ok.WriteMB || *task.ReadMB != *step.ReadMB+*ok.ReadMB {
+	// Each line rounds to 0.1 MB on its own.
+	sums := func(task, a, b float64) bool { return math.Abs(task-a-b) <= 0.15 }
+	if !sums(*task.WriteMB, *step.WriteMB, *ok.WriteMB) || !sums(*task.ReadMB, *step.ReadMB, *ok.ReadMB) {
 		t.Errorf("the task does not sum its steps: %+v, steps %+v %+v", task, step, ok)
 	}
 	if task.PeakWrite == nil || *task.PeakWrite != *step.PeakWrite {

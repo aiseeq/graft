@@ -28,11 +28,17 @@ type Repo struct {
 // ErrNotRepo is returned by Open outside a git work tree.
 var ErrNotRepo = errors.New("not inside a git work tree")
 
-// Open resolves the repository that contains dir.
+// Open resolves the repository that contains dir. Only git saying it is not
+// a repository is ErrNotRepo; git missing or refusing the repository (a
+// dubious owner, a broken one) is an error of its own.
 func Open(dir string) (*Repo, error) {
-	out, err := run(dir, nil, nil, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir")
-	if err != nil {
+	// LC_ALL=C: the message that tells a missing repository is English.
+	out, err := run(dir, []string{"LC_ALL=C"}, nil, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir")
+	if gerr, ok := errors.AsType[*Error](err); ok && strings.Contains(gerr.Stderr, "not a git repository") {
 		return nil, fmt.Errorf("%w: %w", ErrNotRepo, err)
+	}
+	if err != nil {
+		return nil, err
 	}
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	if len(lines) != 3 {
