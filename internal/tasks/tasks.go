@@ -1270,7 +1270,7 @@ func (r *Runner) end(f *frame, failed bool) stats.Usage {
 	use := f.use
 	use.Wall = time.Since(f.start)
 	if f.load != nil {
-		if err := use.Watched(f.load.Stop()); err != nil {
+		if err := use.Watched(f.load.Stop()); err != nil && r.Stats != nil {
 			r.Stats.Warn(err)
 		}
 	}
