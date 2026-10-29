@@ -795,9 +795,21 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		tree := r.treeID()
 		report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
 		cmd.Stdout = report
-		use, err := r.measure(cmd, s.Source)
+		// The stats line takes its reason from the parsed stream, so the
+		// report closes before it is written; a step that never got there
+		// (it did not start) closes it here.
+		var runs []stats.PackageRun
+		var cerr error
+		closed := false
+		use, err := r.measureGoTest(cmd, s.Source, func() string {
+			closed = true
+			runs, cerr = report.Close()
+			return report.Reason()
+		})
+		if !closed {
+			runs, cerr = report.Close()
+		}
 		r.noteBrokenRemote(cmd, err, remoteStderr.String())
-		runs, cerr := report.Close()
 		if cerr != nil {
 			fmt.Fprintf(r.Stderr, "graft: printing the test output: %v\n", cerr)
 		}
@@ -1062,6 +1074,12 @@ func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
 	return r.measureWithCapture(cmd, source, true)
 }
 
+// measureGoTest is measure for a go test -json step: its stdout is the
+// stream, so only stderr is kept, and reason gives the parsed failures.
+func (r *Runner) measureGoTest(cmd *exec.Cmd, source string, reason func() string) (stats.Usage, error) {
+	return r.measureWithReason(cmd, source, true, false, reason)
+}
+
 // backgroundPipeWait bounds how long an inherited output pipe can keep Wait
 // blocked after the step exits, while allowing ordinary child shutdown.
 const backgroundPipeWait = 2 * time.Second
@@ -1069,14 +1087,16 @@ const backgroundPipeWait = 2 * time.Second
 // measureWithCapture is measure; with capture the step's output also goes to
 // a bounded tail, the reason of its stats line when it fails.
 func (r *Runner) measureWithCapture(cmd *exec.Cmd, source string, capture bool) (stats.Usage, error) {
-	var stdout, stderr *tailCapture
+	return r.measureWithReason(cmd, source, capture, capture, nil)
+}
+
+// measureWithReason runs and records cmd; the reason of a failed step is
+// reasonSource's when it gives one, else the tail of stderr, else of stdout.
+func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, captureStdout bool, reasonSource func() string) (stats.Usage, error) {
+	stdout, stderr, piped := captureStepOutput(cmd, captureStderr, captureStdout)
 	autoWaitDelay := false
-	if capture {
-		stdout, stderr = &tailCapture{}, &tailCapture{}
-		var outPiped, errPiped bool
-		cmd.Stdout, outPiped = teeWriter(cmd.Stdout, stdout)
-		cmd.Stderr, errPiped = teeWriter(cmd.Stderr, stderr)
-		if (outPiped || errPiped) && cmd.WaitDelay == 0 {
+	if piped {
+		if cmd.WaitDelay == 0 {
 			cmd.WaitDelay, autoWaitDelay = backgroundPipeWait, true
 		}
 	}
@@ -1099,7 +1119,10 @@ func (r *Runner) measureWithCapture(cmd *exec.Cmd, source string, capture bool) 
 	}
 	code := cmd.ProcessState.ExitCode()
 	var reason string
-	if stderr != nil {
+	if reasonSource != nil {
+		reason = reasonSource()
+	}
+	if reason == "" && stderr != nil {
 		reason = stderr.reason()
 	}
 	if reason == "" && stdout != nil {
@@ -1107,6 +1130,24 @@ func (r *Runner) measureWithCapture(cmd *exec.Cmd, source string, capture bool) 
 	}
 	r.recordStep(source, use, code, reason)
 	return use, err
+}
+
+// captureStepOutput tees the asked streams into tails; piped tells whether
+// one of them now goes through a pipe.
+func captureStepOutput(cmd *exec.Cmd, captureStderr, captureStdout bool) (stdout, stderr *tailCapture, piped bool) {
+	if captureStdout {
+		stdout = &tailCapture{}
+		var outPiped bool
+		cmd.Stdout, outPiped = teeWriter(cmd.Stdout, stdout)
+		piped = piped || outPiped
+	}
+	if captureStderr {
+		stderr = &tailCapture{}
+		var errPiped bool
+		cmd.Stderr, errPiped = teeWriter(cmd.Stderr, stderr)
+		piped = piped || errPiped
+	}
+	return stdout, stderr, piped
 }
 
 // teeWriter copies output to capture while preserving the original receiver;

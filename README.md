@@ -855,8 +855,9 @@ packages did not run and are left out.
   1400 runs of such a suite.
 
 A failing `step` or `task` line in `stats.jsonl` has a `reason` with up to
-10 lines of stderr's tail, or stdout's tail when stderr was empty. A task line
-uses the first failing step's reason.
+10 lines of stderr's tail, or stdout's tail when stderr was empty; for
+`tests: go`, it uses the parsed failed package or test reasons, falling back
+to stderr when they are empty. A task line uses the first failing step's reason.
 Output sent directly to a terminal is not captured, so its failing step has
 no `reason`; this keeps the child connected to the terminal.
 

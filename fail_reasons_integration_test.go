@@ -153,3 +153,31 @@ func TestFailReasonsDoNotWaitForABackgroundChild(t *testing.T) {
 		}
 	}
 }
+
+// TestFailReasonsOfAGoTestStepAreParsed: a failed step of a tests: go task has
+// the reason graft read from the go test -json stream, not the stream.
+func TestFailReasonsOfAGoTestStepAreParsed(t *testing.T) {
+	stream := filepath.Join(t.TempDir(), "stream.json")
+	writeFile(t, stream, failingRun)
+	f, statsFile := statsRepo(t, "tasks:\n  test:\n    tests: go\n    run: ["+helperStep("cat", stream, "1")+"]\n")
+	if out, code := f.graft("", "test"); code == 0 {
+		t.Fatalf("the failing run passed:\n%s", out)
+	}
+	got := map[string]string{}
+	for _, l := range readStatsRaw(t, statsFile) {
+		if l.Task == "test" {
+			got[l.Kind] = l.Reason
+		}
+	}
+	for _, kind := range []string{"step", "task"} {
+		reason := got[kind]
+		for _, want := range []string{"q_test.go:3:28: undefined: missing", "TestFlaky", "p_test.go:9: boom", "TestTable/bad", "p_test.go:14: sub boom"} {
+			if !strings.Contains(reason, want) {
+				t.Errorf("%s reason %q, want it to hold %q", kind, reason, want)
+			}
+		}
+		if strings.Contains(reason, `"Action"`) {
+			t.Errorf("%s reason is the raw go test -json stream: %q", kind, reason)
+		}
+	}
+}

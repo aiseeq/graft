@@ -115,6 +115,25 @@ func (g *GoTest) Close() ([]stats.PackageRun, error) {
 	return g.runs, g.err
 }
 
+// Reason returns the failed packages and tests in the order their events ended.
+func (g *GoTest) Reason() string {
+	var reasons []string
+	for i := range g.runs {
+		run := &g.runs[i]
+		failedTest := false
+		for _, test := range run.Tests {
+			if test.Result == stats.ResultFail && test.Reason != "" {
+				reasons = append(reasons, run.Package+" "+test.Name+": "+test.Reason)
+				failedTest = true
+			}
+		}
+		if !failedTest && run.Reason != "" {
+			reasons = append(reasons, run.Package+": "+run.Reason)
+		}
+	}
+	return stats.LimitReason(strings.Join(reasons, "\n"))
+}
+
 func (g *GoTest) print(s string) {
 	if g.err == nil && s != "" {
 		_, g.err = io.WriteString(g.out, s)
