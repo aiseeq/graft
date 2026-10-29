@@ -118,3 +118,30 @@ func TestIDExactWinsOverLongerOne(t *testing.T) {
 		t.Errorf("resolved %v, want [e1]", src.resolved)
 	}
 }
+
+// TestIDFullUUIDReachesClosedEvent: a full UUID no open event has goes to the
+// source as before, so a closed event can still be shown, and a mute of it
+// writes the rule for its next occurrence.
+func TestIDFullUUIDReachesClosedEvent(t *testing.T) {
+	ctx := context.Background()
+	j, src, out := prefixJournal(t, idA, idB)
+	src.events[0].Status = "resolved"
+	if err := j.Show(ctx, idA); err != nil {
+		t.Fatalf("show a closed event by its full id: %v", err)
+	}
+	if !strings.Contains(out.String(), idA) {
+		t.Errorf("show output:\n%s", out)
+	}
+	if err := j.Mute(ctx, MuteOptions{ID: idA, Reason: "noise", In: InKey}); err != nil {
+		t.Fatalf("mute a closed event by its full id: %v", err)
+	}
+	if !strings.Contains(out.String(), "was already closed") {
+		t.Errorf("mute output:\n%s", out)
+	}
+	if err := j.Ack(ctx, idA, "seen"); err == nil {
+		t.Error("ack of a closed event: want the source's error")
+	}
+	if err := j.Show(ctx, idA[:8]); err == nil {
+		t.Error("a prefix of a closed event only: want an error")
+	}
+}

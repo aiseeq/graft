@@ -242,9 +242,9 @@ stats` (`wait_s`).
 | `graft gate` | run the gate commands (`go vet ./...` in every Go module first, see `go_vet`, then `go fix -diff ./...` with `go_fix`, then `gofmt -l` with `go_fmt`) |
 | `graft hook pre-commit` / `prepare-commit-msg` / `post-merge` | what the installed hooks call |
 | `graft flags [status]` | is the flag raised: open journal events no exception mutes |
-| `graft flags show <id>` | one open event in full; `<id>` is its id or a prefix only one open event has |
+| `graft flags show <id>` | one event in full; `<id>` is its id or a prefix only one open event has; a closed event takes its full UUID |
 | `graft flags ack <id> --reason R` | close an open event with a reason |
-| `graft flags mute <id> --reason R [--match S] [--in subject\|body\|key] [--all-envs]` | add an exception for an open event, then close it |
+| `graft flags mute <id> --reason R [--match S] [--in subject\|body\|key] [--all-envs]` | add an exception for the event, then close it if it is open |
 | `graft deploy [--redeploy] [--unapproved] [--glint-ticket KEY] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--unapproved` skips the `approved_release` check, `--glint-ticket` names the item that takes the glint findings of the deployed commit (`release_notes.glint`) |
 | `graft deploy check <target>` | what `graft deploy <target>` would refuse now, read only: unpublished work, the window, `requires`, the hold, `approved_release` with the items of the commits outside it (summary, status, fix versions); exit 1 when it would refuse |
 | `graft deploy versions` | the version and the commit each target runs, with the remote branches at it, required targets first |

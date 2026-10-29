@@ -5,9 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"slices"
 	"strings"
 )
+
+// fullUUID is an id the source is asked for as is when no open event has it:
+// a closed event is still shown, and muted for its next occurrence.
+var fullUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // maxListed caps the events printed by status; the counts cover all of them.
 const maxListed = 30
@@ -182,7 +187,8 @@ func summary(e Event) string {
 
 // resolveID finds an open event by its exact id or unique prefix, before any
 // call that reads or closes a single event: a short id would otherwise reach
-// the source as is.
+// the source as is. A full UUID no open event has goes to the source
+// unchanged.
 func (j *Journal) resolveID(ctx context.Context, id string) (string, error) {
 	if err := checkID(id); err != nil {
 		return "", err
@@ -205,6 +211,9 @@ func (j *Journal) resolveID(ctx context.Context, id string) (string, error) {
 	case 1:
 		return candidates[0], nil
 	case 0:
+		if fullUUID.MatchString(id) {
+			return id, nil
+		}
 		return "", fmt.Errorf("no open event has the id %q or one starting with it; graft flags status lists them", id)
 	default:
 		return "", fmt.Errorf("id %q is ambiguous; matching open events: %s", id, strings.Join(candidates, ", "))
