@@ -1,7 +1,7 @@
 # install: отказ Go-бинарю без ревизии из связанного worktree
 
-Статус: в работе
-Исполнитель: graft-master
+Статус: готово
+Исполнитель: luna
 
 ## Вход
 - Проблема:
@@ -26,3 +26,4 @@
 - 2026-10-29 04:59 note — graft-master: боец Luna 1029-0459-install-linked-worktree, worktree ~/.cache/worktrees/graft/install-linked-worktree, приёмка accept/wtinstall.sh (красная на main 04:58: install из linked worktree прошёл); решение: отказ, а не сборка во временном клоне — из worktree ставится невлитый код, ставить надо из основного дерева после влития
 - 2026-10-29 05:06 note — luna: luna: Refuse Go binaries without vcs.revision from linked worktrees and document the install behavior.
 - 2026-10-29 05:06 note — graft-master: ревью мастера: дифф верен (GitDir/CommonDir абсолютные — основное дерево не задето); приёмочный тест перенесён в install_integration_test.go (TestInstallStepRefusesLinkedWorktreeGoBinary), имя файла в ошибке разбора worktree list; TestInstall* зелёные
+- 2026-10-29 05:07 готово — graft-master: ревью мастера по диффу; TestInstallStepRefusesLinkedWorktreeGoBinary и TestInstall* зелёные; гейт коммита 4d6ce3a

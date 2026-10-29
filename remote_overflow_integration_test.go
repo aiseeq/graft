@@ -471,3 +471,36 @@ func TestUserRemoteHeavyJudgesTheArgumentsGiven(t *testing.T) {
 		t.Errorf("run got %q, want the two runs without a file", calls)
 	}
 }
+
+// TestExecBrokenRemotePathRunsHere: graft exec --heavy sent to the
+// user's host whose run exits broken_exit runs the command here through the
+// heavy queue and journals the break, as a heavy task does.
+func TestExecBrokenRemotePathRunsHere(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, overflowTasks)
+	writeFile(t, filepath.Join(state, "broken"), "")
+	loaded(t, state)
+	cmd, out := f.start(f.work, "exec", "--heavy", "--", "go", "vet", "./...")
+	for deadline := time.Now().Add(10 * time.Second); !strings.Contains(out.String(), "graft: exec: pc path broken: "); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			t.Fatalf("no broken path line:\n%s", out.String())
+		}
+	}
+	setRunnable(t, filepath.Join(state, "proc"), 0)
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("exec did not run here: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "connection to pc lost") || !strings.Contains(out.String(), "running here") {
+		t.Errorf("the broken line lacks the cause or the fallback:\n%s", out.String())
+	}
+	if strings.Count(out.String(), "graft: exec: heavy, on") != 1 {
+		t.Errorf("want one placement line, sent to pc once:\n%s", out.String())
+	}
+	lines := readBroken(t, state)
+	if len(lines) != 1 || lines[0].Task != "exec" || lines[0].Host != "pc" {
+		t.Errorf("remote-broken.jsonl: %+v, want one exec line for pc", lines)
+	}
+}

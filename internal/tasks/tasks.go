@@ -679,15 +679,7 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 		return err
 	}
 	err = r.steps(ctx, name, t, args)
-	if f.remote && r.remoteBrokenReason != "" {
-		reason := r.remoteBrokenReason
-		r.remoteBrokenReason = ""
-		fmt.Fprintf(r.Stderr, "graft: %s: %s path broken: %s, running here\n", name, r.remoteHeavy.Host, reason)
-		if jerr := r.journalRemoteBroken(name, reason); jerr != nil {
-			return errors.Join(err, jerr)
-		}
-		f.remote = false
-		leave, herr := r.enterHeavy(ctx, name)
+	if leave, fallback, herr := r.fallbackBrokenRemote(ctx, name); fallback {
 		if herr != nil {
 			return errors.Join(err, herr)
 		}
@@ -829,6 +821,24 @@ func (r *Runner) noteBrokenRemote(cmd *exec.Cmd, err error, stderr string) {
 	r.remoteBrokenReason = reason
 }
 
+// fallbackBrokenRemote, after the running task or exec was sent to the
+// user's host and run told the path broke, says so, journals it and takes
+// the heavy queue here; fallback is false when nothing broke.
+func (r *Runner) fallbackBrokenRemote(ctx context.Context, name string) (func() error, bool, error) {
+	if len(r.frames) == 0 || !r.frames[len(r.frames)-1].remote || r.remoteBrokenReason == "" {
+		return nil, false, nil
+	}
+	reason := r.remoteBrokenReason
+	r.remoteBrokenReason = ""
+	fmt.Fprintf(r.Stderr, "graft: %s: %s path broken: %s, running here\n", name, r.remoteHeavy.Host, reason)
+	if err := r.journalRemoteBroken(name, reason); err != nil {
+		return nil, true, err
+	}
+	r.frames[len(r.frames)-1].remote = false
+	leave, err := r.enterHeavy(ctx, name)
+	return leave, true, err
+}
+
 func lastLine(s string) string {
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	if len(lines) == 0 {
@@ -947,31 +957,63 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 		}
 		defer func() { err = errors.Join(err, leave()) }()
 	}
-	s, threads, err := r.threads(config.Step{Argv: argv, Source: strings.Join(argv, " ")}, t)
+	source := strings.Join(argv, " ")
+	var remoteStderr bytes.Buffer
+	run := func() (*exec.Cmd, error) {
+		s, threads, err := r.threads(config.Step{Argv: argv, Source: source}, t)
+		if err != nil {
+			return nil, err
+		}
+		env, err := r.env(t, nil)
+		if err != nil {
+			return nil, err
+		}
+		env = r.heavyEnv(env, t, threads)
+		commandArgv, env, err := trimRun(ctx, dir, s.Argv, env, f.remote)
+		if err != nil {
+			return nil, err
+		}
+		cmd := exec.CommandContext(ctx, commandArgv[0], commandArgv[1:]...)
+		cmd.Dir, cmd.Env = dir, env
+		if f.remote {
+			cmd = r.remoteCmd(ctx, cmd, nil, threads)
+		}
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
+		if f.remote {
+			cmd.Stderr = io.MultiWriter(r.Stderr, &remoteStderr)
+		}
+		return cmd, nil
+	}
+	cmd, err := run()
 	if err != nil {
 		return err
 	}
-	env, err := r.env(t, nil)
-	if err != nil {
-		return err
+	_, err = r.measure(cmd, source)
+	r.noteBrokenRemote(cmd, err, remoteStderr.String())
+	if leave, fallback, herr := r.fallbackBrokenRemote(ctx, ExecTask); fallback {
+		if herr != nil {
+			return errors.Join(err, herr)
+		}
+		localCmd, runErr := run()
+		if runErr != nil {
+			return errors.Join(err, runErr, leave())
+		}
+		_, err = r.measure(localCmd, source)
+		return errors.Join(commandError(localCmd, err), leave())
 	}
-	env = r.heavyEnv(env, t, threads)
-	if argv, env, err = trimRun(ctx, dir, s.Argv, env, f.remote); err != nil {
-		return err
-	}
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Dir, cmd.Env = dir, env
-	if f.remote {
-		cmd = r.remoteCmd(ctx, cmd, nil, threads)
-	}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
-	_, err = r.measure(cmd, s.Source)
 	switch {
 	case err == nil:
 		return nil
 	case f.remote && cmd.Process == nil:
 		// remote_heavy's run did not start: no command ran.
 		return fmt.Errorf("remote_heavy run: %w", err)
+	}
+	return commandError(cmd, err)
+}
+
+func commandError(cmd *exec.Cmd, err error) error {
+	if err == nil {
+		return nil
 	}
 	return &CommandError{Started: cmd.Process != nil, Err: err}
 }

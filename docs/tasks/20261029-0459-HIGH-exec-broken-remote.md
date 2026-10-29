@@ -23,3 +23,5 @@
 - 2026-10-29 04:59 открыт — graft-master
 - 2026-10-29 05:04 в работе — graft-master
 - 2026-10-29 05:04 note — graft-master: боец Luna (worker status: exec-broken-remote), worktree ~/.cache/worktrees/graft/exec-broken-remote, приёмка accept/execbroken.sh (красная на main 05:04: exit 125, нет строки path broken)
+- 2026-10-29 05:13 note — luna: luna: Общий откат broken_exit для задач и graft exec --heavy; Exec повторяет команду локально с локальными threads, README обновлён.
+- 2026-10-29 05:13 note — graft-master: ревью мастера: откат — одна функция fallbackBrokenRemote для задачи и exec (frames — указатели, сброс remote виден closure exec); комментарий к ней, приёмка перенесена в remote_overflow_integration_test.go (TestExecBrokenRemotePathRunsHere); удалённые тесты зелёные

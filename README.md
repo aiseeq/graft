@@ -203,7 +203,8 @@ queues as before, `graft: build: heavy, on this machine: <why>`:
 
 For a user-configured host, an `up` failure or a `run` exit of `broken_exit`
 means the transport path broke, so graft writes the reason and runs the task
-here through the heavy queue. It appends one JSON line per occurrence to
+here through the heavy queue. The same fallback applies to `graft exec --heavy`.
+It appends one JSON line per occurrence to
 `<user cache dir>/graft/remote-broken.jsonl`, beside `stats.jsonl`, with the
 time, project, task, host, reason and process/session identifiers. A different
 `run` exit is the task's failure and is not retried.
