@@ -689,11 +689,19 @@ dotenv_sets:                   # key lists several tasks and services share
   ```yaml
   lint:
     cache:
+      paths: ['**/*.go', .golangci.yml]    # work tree files this task reads
       env: [GOFLAGS]                       # values of these variables
       files: ['~/.config/linter.yaml']     # content of files outside the tree or ignored
       commands: [[go, version], [docker, image, inspect, -f, '{{.Id}}', 'postgres:18']]   # their stdout
     run: [golangci-lint run]
   ```
+
+  `paths` narrows the work tree files in the key to the union of this task's
+  paths and the paths of its deps and inner tasks. Every dep and inner task
+  must declare `cache.paths`; otherwise graft cannot narrow the key for its
+  input, which may depend on the whole tree. Include every file the check reads
+  outside those paths, such as source files, includes or a linter config in the
+  tree, or a change to that file will not rerun the task.
 
   Only passes are kept, under `<user cache dir>/graft/passed`, for 30 days,
   shared by every worktree and clone of the machine: one that holds the same

@@ -14,6 +14,9 @@ import (
 // changed: the work tree, its definition and these inputs from outside the
 // tree.
 type TaskCache struct {
+	// Paths are the files in the work tree the task depends on.
+	Paths []string `yaml:"paths"`
+	paths []*regexp.Regexp
 	// Env are environment variables whose values the result depends on.
 	Env []string `yaml:"env"`
 	// Files are files outside the tree, or ignored by git, whose content the
@@ -31,7 +34,7 @@ const CacheTree = "tree"
 func (c *TaskCache) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind == yaml.ScalarNode {
 		if node.Value != CacheTree {
-			return fmt.Errorf("cache: want %q or a map of env, files and commands, got %q", CacheTree, node.Value)
+			return fmt.Errorf("cache: want %q or a map of paths, env, files and commands, got %q", CacheTree, node.Value)
 		}
 		*c = TaskCache{}
 		return nil
@@ -81,6 +84,22 @@ func (c *Config) validateCache() error {
 		if effect := c.sideEffect(name, map[string]bool{}); effect != "" {
 			return fmt.Errorf("tasks.%s.cache: %s; cache only checks that change nothing outside the work tree", name, effect)
 		}
+		if len(t.Cache.Paths) == 0 {
+			if t.Cache.Paths != nil {
+				return fmt.Errorf("tasks.%s.cache.paths: must not be empty", name)
+			}
+		} else {
+			for _, glob := range t.Cache.Paths {
+				re, err := CompileGlob(glob)
+				if err != nil {
+					return fmt.Errorf("tasks.%s.cache.paths: %w", name, err)
+				}
+				t.Cache.paths = append(t.Cache.paths, re)
+			}
+			if err := c.validateCachePathRefs(name, name, map[string]bool{}); err != nil {
+				return err
+			}
+		}
 		for _, k := range t.Cache.Env {
 			if k == "" || strings.ContainsAny(k, "=$ ") {
 				return fmt.Errorf("tasks.%s.cache.env: %q is not a variable name", name, k)
@@ -93,6 +112,52 @@ func (c *Config) validateCache() error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) validateCachePathRefs(root, name string, seen map[string]bool) error {
+	if seen[name] {
+		return nil
+	}
+	seen[name] = true
+	for _, ref := range c.Tasks[name].Refs() {
+		dep := c.Tasks[ref]
+		if dep.Cache == nil || len(dep.Cache.Paths) == 0 {
+			return fmt.Errorf("tasks.%s.cache: task %s has no cache.paths; its input is the whole tree", root, ref)
+		}
+		if err := c.validateCachePathRefs(root, ref, seen); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CachePaths returns the compiled paths of a task and its deps and inner tasks.
+func (c *Config) CachePaths(name string) []*regexp.Regexp {
+	t := c.Tasks[name]
+	if t == nil || t.Cache == nil || len(t.Cache.Paths) == 0 {
+		return nil
+	}
+	var paths []*regexp.Regexp
+	seen := map[string]bool{}
+	var visit func(string)
+	visit = func(n string) {
+		if seen[n] {
+			return
+		}
+		seen[n] = true
+		t := c.Tasks[n]
+		if t == nil {
+			return
+		}
+		if t.Cache != nil {
+			paths = append(paths, t.Cache.paths...)
+		}
+		for _, ref := range t.Refs() {
+			visit(ref)
+		}
+	}
+	visit(name)
+	return paths
 }
 
 // sideEffects are commands that act outside the work tree: their tasks must

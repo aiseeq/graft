@@ -92,7 +92,21 @@ func (r *Runner) cacheKey(ctx context.Context, name string, args []string) (stri
 	if err != nil {
 		return "", err
 	}
-	tree, err := repo.ContentID(r.Config.CacheExcluded)
+	paths := r.Config.CachePaths(name)
+	tree, err := repo.ContentID(func(path string) bool {
+		if r.Config.CacheExcluded(path) {
+			return true
+		}
+		if len(paths) == 0 {
+			return false
+		}
+		for _, re := range paths {
+			if re.MatchString(path) {
+				return false
+			}
+		}
+		return true
+	})
 	if err != nil {
 		return "", fmt.Errorf("reading the work tree: %w", err)
 	}

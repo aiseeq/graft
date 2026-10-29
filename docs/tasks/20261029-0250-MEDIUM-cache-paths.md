@@ -1,7 +1,7 @@
 # cache.paths: ключ кеша задачи по части дерева
 
-Статус: в работе
-Исполнитель: graft-master
+Статус: готово
+Исполнитель: luna
 
 ## Вход
 - Проблема:
@@ -26,3 +26,4 @@
 - 2026-10-29 02:50 note — graft-master: боец Luna (id выше в worker status), worktree ~/.cache/worktrees/graft/cache-paths, приёмка accept/cachepaths.sh (красная на main)
 - 2026-10-29 02:50 note — graft-master: потребитель: у обеих shell-задач нет deps и inner tasks; поставит paths: ['scripts/**', '.shellcheckrc'] после выхода версии
 - 2026-10-29 03:30 note — luna: Добавлены cache.paths, проверка globs и deps/inner tasks; обновлён README. Приёмка accept/cachepaths.sh и graft gate прошли.
+- 2026-10-29 03:51 готово — graft-master: мастер: ревью диффа; приёмка мастера (cache_paths_integration_test.go: пропуск при правке вне путей, запуск при правке под своими путями, путями dep и inner task, новом и удалённом файле, литеральном пути; ошибки конфига для dep без paths, cache: tree, пустого списка, плохого глоба) красная на main, зелёная после; прежние TestTaskCache* зелёные; обход deps+inner сведён в Task.Refs

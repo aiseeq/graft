@@ -179,6 +179,17 @@ type Task struct {
 	Cache *TaskCache `yaml:"cache"`
 }
 
+// Refs are the tasks t runs: its deps, then its inner tasks in step order.
+func (t *Task) Refs() []string {
+	refs := slices.Clone(t.Deps)
+	for _, s := range t.Run {
+		if s.Task != "" {
+			refs = append(refs, s.Task)
+		}
+	}
+	return refs
+}
+
 // Test reports a task can read.
 const (
 	TestsGo         = "go"
@@ -596,14 +607,7 @@ func (c *Config) checkTaskCycles() error {
 			return nil
 		}
 		state[name] = visiting
-		t := c.Tasks[name]
-		next := slices.Clone(t.Deps)
-		for _, s := range t.Run {
-			if s.Task != "" {
-				next = append(next, s.Task)
-			}
-		}
-		for _, n := range next {
+		for _, n := range c.Tasks[name].Refs() {
 			if err := visit(n, append(path, name)); err != nil {
 				return err
 			}
