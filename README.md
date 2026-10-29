@@ -1491,7 +1491,10 @@ release_notes:
    the Jira token get notes: not in a done-category status (Done, Won't do),
    a to-do-category one (To Do, Backlog: work not started) or `skip_statuses`, and assigned to the owner now or at some point in
    the item's history (an item handed over for review keeps its notes). Other
-   items are left alone with a warning. A failed comment or move is printed
+   items are left alone with a warning, and so is an item whose commits in
+   the deploy are all of the Conventional Commits types docs, test, style or
+   ci: they change nothing the target runs, so the item is not delivered
+   (no note, fix version or move). A failed comment or move is printed
    as a warning and does not change the exit status.
    With `subtasks: true` (it needs `transitions`), subtasks follow their
    parent: when a delivered item is in, or has just reached, the `to` of a

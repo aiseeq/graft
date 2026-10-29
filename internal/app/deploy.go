@@ -25,6 +25,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/jira"
 	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/lock"
+	"github.com/aiseeq/graft/v2/internal/message"
 	"github.com/aiseeq/graft/v2/internal/tasks"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
@@ -504,13 +505,16 @@ func (a *App) noteKeys(r *deployRun) []string {
 		a.warn("release notes skipped: the previously deployed commit %s is unknown here (git fetch?)", r.prev)
 		return nil
 	}
-	keys, reverted, err := deliveredKeys(r)
+	keys, reverted, quiet, err := deliveredKeys(r)
 	if err != nil {
 		a.warn("release notes skipped: %v", err)
 		return nil
 	}
 	for _, key := range reverted {
 		a.printf("release note for %s not posted: this deploy only takes its work out", key)
+	}
+	for _, key := range quiet {
+		a.warn("release note for %s not posted, %s left alone: its commits in this deploy are %s only", key, key, strings.Join(quietTypes[:len(quietTypes)-1], ", ")+" or "+quietTypes[len(quietTypes)-1])
 	}
 	if len(keys) == 0 {
 		a.printf("release notes: no work item keys in %s..%s", gitx.Short(r.prev), gitx.Short(r.head))
@@ -1621,15 +1625,15 @@ func uniqueSorted(in []string) []string {
 // release that go out now. Withheld commits and the reverts that withheld
 // them delivered nothing, nor did a revert or a commit a revert among them
 // takes out: reverted are the keys only those name.
-func deliveredKeys(r *deployRun) (keys, reverted []string, err error) {
+func deliveredKeys(r *deployRun) (keys, reverted, quiet []string, err error) {
 	commits, err := logCommits(r.repo, r.prev+".."+r.head)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	for _, sha := range r.released {
 		c, err := oneCommit(r.repo, sha)
 		if err != nil {
-			return nil, nil, fmt.Errorf("commit %s withheld from an earlier release: %w", gitx.Short(sha), err)
+			return nil, nil, nil, fmt.Errorf("commit %s withheld from an earlier release: %w", gitx.Short(sha), err)
 		}
 		commits = append(commits, c)
 	}
@@ -1652,12 +1656,21 @@ func deliveredKeys(r *deployRun) (keys, reverted []string, err error) {
 			reverted = append(reverted, named...)
 			continue
 		}
+		if slices.Contains(quietTypes, message.ConventionalType(c.subject)) {
+			quiet = append(quiet, named...)
+			continue
+		}
 		keys = append(keys, named...)
 	}
 	keys = uniqueSorted(keys)
 	reverted = slices.DeleteFunc(uniqueSorted(reverted), func(k string) bool { return slices.Contains(keys, k) })
-	return keys, reverted, nil
+	quiet = slices.DeleteFunc(uniqueSorted(quiet), func(k string) bool { return slices.Contains(keys, k) || slices.Contains(reverted, k) })
+	return keys, reverted, quiet, nil
 }
+
+// quietTypes are the Conventional Commits types of the commits that change
+// nothing the target runs: an item named only by them is not delivered.
+var quietTypes = []string{"docs", "test", "style", "ci"}
 
 // withholds tells whether a commit message reverts one of the withheld
 // commits.

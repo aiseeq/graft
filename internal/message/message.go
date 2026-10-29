@@ -61,6 +61,15 @@ func Read(src Source) (string, error) {
 // an optional scope, ! for a breaking change, then the description.
 var conventional = regexp.MustCompile(`^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([^()\n]+\))?!?: \S`)
 
+// ConventionalType returns the Conventional Commits type of the subject, ""
+// for a subject that is not one.
+func ConventionalType(subject string) string {
+	if m := conventional.FindStringSubmatch(subject); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
 // CheckConventional refuses a message whose subject is not a Conventional
 // Commits one (type(scope)!: description); git's own revert subject, Revert
 // "...", passes.

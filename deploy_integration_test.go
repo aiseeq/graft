@@ -699,6 +699,30 @@ func TestDeployReleaseNotesSkipReverts(t *testing.T) {
 	}
 }
 
+// TestDeployReleaseNotesSkipQuietCommits: an item whose commits in the deploy
+// are docs, test, style or ci only changes nothing on the target, so it gets
+// no release note and stays where it is; one with any other commit gets both.
+func TestDeployReleaseNotesSkipQuietCommits(t *testing.T) {
+	d := deployRepo(t)
+	d.mustGraft("deploy", "test")
+	d.write("a.txt", "a\n")
+	d.mustFixtureCommit("docs(api): PROJ-1 comment reworded")
+	d.write("b.txt", "b\n")
+	d.mustFixtureCommit("test: PROJ-1 one more case")
+	d.write("c.txt", "c\n")
+	d.mustFixtureCommit("docs: PROJ-6 comment reworded")
+	d.write("d.txt", "d\n")
+	d.mustFixtureCommit("fix(api)!: PROJ-6 real fix")
+	out := d.mustGraft("deploy", "test")
+	comments, moved := d.jira.snapshot()
+	if len(comments["PROJ-1"]) != 0 || len(comments["PROJ-6"]) != 1 || len(moved) != 0 {
+		t.Errorf("comments = %v, moved = %v\n%s", comments, moved, out)
+	}
+	if want := "release note for PROJ-1 not posted, PROJ-1 left alone: its commits in this deploy are docs, test, style or ci only"; !strings.Contains(out, want) {
+		t.Errorf("no %q:\n%s", want, out)
+	}
+}
+
 // productVersions are the versions of PROJ: the nearest unreleased
 // "Product v" one is Product v1.2.10 (id 10010).
 func productVersions() []map[string]any {
