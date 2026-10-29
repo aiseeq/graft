@@ -763,7 +763,7 @@ func flagsCmd(ctx context.Context, a *app.App, args []string) error {
 		}
 	case "show", "ack", "mute":
 		if len(pos) != 1 {
-			return fmt.Errorf("%w: flags %s takes one event id", errUsage, o.Command)
+			return fmt.Errorf("%w: flags %s takes one event id or prefix", errUsage, o.Command)
 		}
 		o.ID = pos[0]
 	default:

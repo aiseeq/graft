@@ -180,9 +180,44 @@ func summary(e Event) string {
 	return strings.Join(parts, " · ")
 }
 
+// resolveID finds an open event by its exact id or unique prefix, before any
+// call that reads or closes a single event: a short id would otherwise reach
+// the source as is.
+func (j *Journal) resolveID(ctx context.Context, id string) (string, error) {
+	if err := checkID(id); err != nil {
+		return "", err
+	}
+	events, err := j.Source.Open(ctx)
+	if err != nil {
+		return "", err
+	}
+	var candidates []string
+	for i := range events {
+		e := &events[i]
+		if e.ID == id {
+			return e.ID, nil
+		}
+		if strings.HasPrefix(e.ID, id) {
+			candidates = append(candidates, e.ID)
+		}
+	}
+	switch len(candidates) {
+	case 1:
+		return candidates[0], nil
+	case 0:
+		return "", fmt.Errorf("no open event has the id %q or one starting with it; graft flags status lists them", id)
+	default:
+		return "", fmt.Errorf("id %q is ambiguous; matching open events: %s", id, strings.Join(candidates, ", "))
+	}
+}
+
 // Show prints one event in full.
 func (j *Journal) Show(ctx context.Context, id string) error {
-	e, err := j.Source.Get(ctx, id)
+	fullID, err := j.resolveID(ctx, id)
+	if err != nil {
+		return err
+	}
+	e, err := j.Source.Get(ctx, fullID)
 	if err != nil {
 		return err
 	}
@@ -219,10 +254,14 @@ func (j *Journal) Ack(ctx context.Context, id, reason string) error {
 	if strings.TrimSpace(reason) == "" {
 		return errors.New("--reason is required: say what the event was")
 	}
-	if err := j.Source.Resolve(ctx, id, reason); err != nil {
+	fullID, err := j.resolveID(ctx, id)
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(j.Out, "closed %s (%s): %s\n", id, j.Env, reason)
+	if err := j.Source.Resolve(ctx, fullID, reason); err != nil {
+		return err
+	}
+	fmt.Fprintf(j.Out, "closed %s (%s): %s\n", fullID, j.Env, reason)
 	return nil
 }
 
@@ -247,7 +286,11 @@ func (j *Journal) Mute(ctx context.Context, o MuteOptions) error {
 	if strings.TrimSpace(o.Reason) == "" {
 		return errors.New("--reason is required: say why this is noise")
 	}
-	e, err := j.Source.Get(ctx, o.ID)
+	fullID, err := j.resolveID(ctx, o.ID)
+	if err != nil {
+		return err
+	}
+	e, err := j.Source.Get(ctx, fullID)
 	if err != nil {
 		return err
 	}
@@ -291,13 +334,13 @@ func (j *Journal) Mute(ctx context.Context, o MuteOptions) error {
 	} else {
 		fmt.Fprintf(j.Out, "%s already has this rule\n", j.RulesPath)
 	}
-	if err := j.Source.Resolve(ctx, o.ID, o.Reason); err != nil {
+	if err := j.Source.Resolve(ctx, fullID, o.Reason); err != nil {
 		if errors.Is(err, ErrNotOpen) {
-			fmt.Fprintf(j.Out, "%s was already closed; the rule still applies to its next occurrence\n", o.ID)
+			fmt.Fprintf(j.Out, "%s was already closed; the rule still applies to its next occurrence\n", fullID)
 			return nil
 		}
 		return fmt.Errorf("rule written, but closing the event failed: %w", err)
 	}
-	fmt.Fprintf(j.Out, "closed %s (%s); commit %s\n", o.ID, j.Env, j.RulesPath)
+	fmt.Fprintf(j.Out, "closed %s (%s); commit %s\n", fullID, j.Env, j.RulesPath)
 	return nil
 }
