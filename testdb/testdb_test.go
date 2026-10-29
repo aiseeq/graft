@@ -120,6 +120,16 @@ func TestRefusesANonTestDatabase(t *testing.T) {
 	}
 }
 
+// TestMissingDSNSaysHowToRun: plain go test has no TEST_DB_DSN; the error
+// names the graft task that sets it and how to run one test through it.
+func TestMissingDSNSaysHowToRun(t *testing.T) {
+	t.Setenv(DSNEnv, "")
+	_, err := fromEnv()
+	if err == nil || !strings.Contains(err.Error(), "test_db: true") || !strings.Contains(err.Error(), "graft test -- -run") {
+		t.Errorf("want the way to run the tests, got %v", err)
+	}
+}
+
 // TestCloningLeavesTemplateReadersAlone: handing out a copy must not
 // terminate the connections that read the template, as parallel test binaries
 // do on start to check the template is fresh; terminating them used to kill

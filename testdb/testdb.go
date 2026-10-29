@@ -90,7 +90,9 @@ var (
 func fromEnv() (*DB, error) {
 	dsn := os.Getenv(DSNEnv)
 	if dsn == "" {
-		return nil, fmt.Errorf("%s is not set: it names the migrated source database of a disposable PostgreSQL", DSNEnv)
+		return nil, fmt.Errorf("%s is not set: it names the migrated source database of a disposable PostgreSQL; "+
+			"the graft task with test_db: true sets it, so run the tests through that task, not plain go test: "+
+			"graft test -- -run TestX ./pkg", DSNEnv)
 	}
 	cacheMu.Lock()
 	defer cacheMu.Unlock()

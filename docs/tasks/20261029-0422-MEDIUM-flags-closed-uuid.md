@@ -1,6 +1,6 @@
 # graft flags: полный UUID закрытого события снова доходит до источника
 
-Статус: на проверке
+Статус: готово
 Исполнитель: graft-master
 
 ## Вход
@@ -20,3 +20,4 @@
 ## Журнал
 - 2026-10-29 04:22 открыт — graft-master
 - 2026-10-29 04:22 на проверке — graft-master — ждёт проверки git-admin
+- 2026-10-29 04:36 готово — git-admin: git-admin 29.10: graft v2.51.0 на ноуте и PC (~/bin/graft revision a03a1e5, modified=false; 44b9cb6 входит). Живой прогон в рабочем проекте (только show): префикс открытого «ff129f55» — полное событие; «f» — ambiguous со списком двух полных id; «zzz» — «no open event … graft flags status lists them» без запроса к среде; полный UUID закрытого события (ack 23.10, env test) — запрос ушёл к источнику, его ответ «event … not found»; префикс того же закрытого — отказ graft без запроса. Тест TestIDFullUUIDReachesClosedEvent — со слов исполнителя.
