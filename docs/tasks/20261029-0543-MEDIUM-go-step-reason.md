@@ -1,7 +1,7 @@
 # stats reason шага tests: go — из разобранного прогона, не сырой JSON
 
-Статус: в работе
-Исполнитель: graft-master
+Статус: готово
+Исполнитель: luna
 
 ## Вход
 - Проблема:
@@ -25,3 +25,4 @@
 - 2026-10-29 05:45 note — graft-master: боец Luna, worktree ~/.cache/worktrees/graft/go-step-reason, приёмка accept/goreason.sh (красная на main 05:45: reason — сырой JSON)
 - 2026-10-29 05:54 note — luna: luna: tests: go теперь пишет в stats.jsonl причины из разобранных package/test runs; README обновлён.
 - 2026-10-29 05:54 note — graft-master: ревью мастера: верно; Close разборщика гарантирован и когда шаг не стартовал (раньше был внутри обратного вызова reason), комментарии к новым функциям; приёмка перенесена в fail_reasons_integration_test.go; тесты журналов зелёные
+- 2026-10-29 05:59 готово — graft-master: ревью мастера по диффу; TestFailReasonsOfAGoTestStepAreParsed и тесты журналов зелёные; гейт коммита 34ded04; glint чист после выноса goTestStep
