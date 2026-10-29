@@ -1,6 +1,6 @@
 # заметка о выкатке и перевод — только за коммиты, меняющие поведение
 
-Статус: в работе
+Статус: готово
 Исполнитель: graft-master
 
 ## Вход
@@ -24,3 +24,4 @@
 - 2026-10-29 12:23 note — graft-master: ревью суб-агента 37f9c45: merge-коммит с ключом в теме обходил фильтр; строка «no work item keys» при одних quiet; нет юнит-теста ConventionalType — всё исправлено: deliveredCommit.merge (%P), ключ merge доставлен, только если его не называют quiet/revert-коммиты выкатки; тест с --no-ff merge красный без правки; go run . all EXIT 0
 - 2026-10-29 12:30 note — graft-master: повторное ревью 703fd33: ключ только в имени ветки при безключевых docs-коммитах ветки снова доставлялся; README «subject» уже поведения — исправлено: merge решает по коммитам merge^1..merge (есть не-quiet, не-revert → доставлен), тест PROJ-9 (docs) и PROJ-10 (fix) по --no-ff, красный без правки; go run . all EXIT 0
 - 2026-10-29 12:38 note — graft-master: третье ревью 718bd22: A и B закрыты; остаток (был и раньше): merge ранее выкаченной ветки повторно доставлял её ключ — диапазон merge с ^prev, TestDeployReleaseNotesMergeOfDeployedBranch красный без правки (2 заметки), зелёный после; go run . all EXIT 0
+- 2026-10-29 12:45 готово — reviewer-opus: независимое ревью суб-агента Opus в 3 раунда (37f9c45, 703fd33, 718bd22): все находки исправлены, последняя (^prev) — по его же предложению, тест красный без правки; TestDeployReleaseNotes*, TestConventionalType, go run . all EXIT 0 на 3c30a34; сложность deliveredKeys вынесена в goingOut/undoneBy/mergeChanges

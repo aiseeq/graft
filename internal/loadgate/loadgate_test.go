@@ -31,6 +31,7 @@ func fakeMachine(t *testing.T) (setRunnable func(int), setIO func(string), setSw
 		}
 	}
 	t.Setenv(ProcEnv, dir)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	setRunnable = func(n int) {
 		var stat strings.Builder
 		stat.WriteString("cpu  1 1 1 1\n")
@@ -98,8 +99,47 @@ func TestCalmMachineStartsOneAtATime(t *testing.T) {
 	}
 }
 
-// TestBusyDiskAndSwapHoldTasks: IO pressure or swapping above its limit
-// holds a task as the load does, and it says why.
+// quietUntil is the end of the quiet mode the tests set: well ahead.
+var quietUntil = time.Now().Add(time.Hour)
+
+// quietUntilText is quietUntil as akit says it: the time of day, the date
+// too when it is not today.
+func quietUntilText() string {
+	if now := time.Now(); quietUntil.YearDay() != now.YearDay() || quietUntil.Year() != now.Year() {
+		return quietUntil.Format("2006-01-02 15:04")
+	}
+	return quietUntil.Format("15:04")
+}
+
+// setQuiet sets the quiet mode akit's busy --quiet-until sets, until the time.
+func setQuiet(t *testing.T, until time.Time) {
+	t.Helper()
+	dir := filepath.Join(os.Getenv("XDG_STATE_HOME"), "akit")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "quiet-until"), []byte(until.Format(time.RFC3339)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestQuietModeOverHoldsNoTask: a quiet mode whose time has passed holds
+// nothing.
+func TestQuietModeOverHoldsNoTask(t *testing.T) {
+	fakeMachine(t)
+	setQuiet(t, time.Now().Add(-time.Minute))
+	var log strings.Builder
+	waits, release, err := Wait(context.Background(), "build", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log)
+	if err != nil || waits[WhyQuiet] > 0 {
+		t.Fatalf("waits %v, %v:\n%s", waits, err, log.String())
+	}
+	if err := release(); err != nil {
+		t.Error(err)
+	}
+}
+
+// TestBusyDiskAndSwapHoldTasks: IO pressure or swapping above its limit, or
+// the quiet mode, holds a task as the load does, and it says why.
 func TestBusyDiskAndSwapHoldTasks(t *testing.T) {
 	for _, c := range []struct {
 		name, want string
@@ -115,6 +155,8 @@ func TestBusyDiskAndSwapHoldTasks(t *testing.T) {
 				}
 				swapping(t, setSwap)
 			}},
+		{"quiet", "quiet mode until " + quietUntilText() + " (busy --quiet-off ends it)",
+			func(t *testing.T, _ func(string), _ func(int64)) { setQuiet(t, quietUntil) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, setIO, setSwap := fakeMachine(t)

@@ -34,6 +34,9 @@ const (
 	WhyLoad = "load"
 	WhyIO   = "io"
 	WhySwap = "swap"
+	// WhyQuiet is the wait for the quiet mode akit's busy --quiet-until
+	// sets to end.
+	WhyQuiet = "quiet"
 )
 
 // Waits is how long a heavy task waited, by why.
@@ -241,12 +244,13 @@ func BusyNow(ctx context.Context, name string, l userconfig.MachineLoad, lockPat
 // constants, and the words that say it; a calm machine has neither.
 type busyness struct{ why, text string }
 
-// measures are the rule's measures as the waits name them, with the
-// setting of each limit.
+// measures are the rule's measures as the waits name them, with what sets
+// each limit.
 var measures = map[string]struct{ why, setting string }{
-	pressure.CPU:  {WhyLoad, "load.wait_above"},
-	pressure.IO:   {WhyIO, "load.max_io_full"},
-	pressure.Swap: {WhySwap, "load.max_mem_some, load.max_swap_kbs"},
+	pressure.CPU:   {WhyLoad, "user config load.wait_above"},
+	pressure.IO:    {WhyIO, "user config load.max_io_full"},
+	pressure.Swap:  {WhySwap, "user config load.max_mem_some, load.max_swap_kbs"},
+	pressure.Quiet: {WhyQuiet, "busy --quiet-off ends it"},
 }
 
 // busy says why the machine cannot take a heavy task now, nothing when it
@@ -266,8 +270,12 @@ func (m *machine) busy(ctx context.Context, fresh bool) (busyness, error) {
 	m.runnable = float64(v.Load.Runnable)
 	var b busyness
 	if v.Busy() {
-		ms := measures[v.Measure]
-		b = busyness{ms.why, fmt.Sprintf("%s (user config %s)", v.Why(), ms.setting)}
+		// A measure graft does not know yet still makes the machine busy.
+		ms, known := measures[v.Measure]
+		b = busyness{v.Measure, v.Why()}
+		if known {
+			b = busyness{ms.why, fmt.Sprintf("%s (%s)", v.Why(), ms.setting)}
+		}
 	}
 	return b, nil
 }

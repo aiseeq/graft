@@ -105,7 +105,11 @@ this moment (`procs_running` of `/proc/stat`, one reading, not an average
 that lags a minute behind) below `wait_above`, the IO pressure at most
 `max_io_full`, and not the memory pressure above `max_mem_some` while the
 machine swaps more than `max_swap_kbs`: swap in use is no harm, and swapping
-without memory pressure neither. A measure the system lacks (no `/proc/stat`,
+without memory pressure neither. The quiet mode of `busy --quiet-until TIME`
+(akit) makes the machine busy until that time, whatever it measures: the wait
+says "quiet mode until HH:MM", and `busy --quiet-off` ends it sooner. A measure
+akit reports and graft does not know yet makes the machine busy too, by its own
+words. A measure the system lacks (no `/proc/stat`,
 a kernel without PSI) is skipped and said. Heavy tasks of
 all projects, on a calm machine too, queue under one lock in the user cache
 (`graft/load.lock`) in ticket order and start one at a time: a task that
