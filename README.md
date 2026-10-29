@@ -1415,7 +1415,8 @@ release_notes:
    <reason>` when its message names others), and the release notes, the release page,
    `graft deploy cutoff`, `.withheld`, the window versions and, on the
    hotfix `base` target, the hotfix label check count it as the item's, and
-   so its revert too.
+   so its revert too; a commit that brings the reverted work back (`Reapply`,
+   a revert of the revert) needs an attribute of its own.
    `commit` is the full hash (40 lowercase hex digits, 64 in a SHA-256
    repository), `item` a key of `project_keys`, `reason` is required. A short
    or repeated hash, a missing reason, a commit the repository does not have
