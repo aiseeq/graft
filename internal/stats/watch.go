@@ -160,11 +160,10 @@ const reapReadings = 2
 type writeRate struct {
 	last map[int]tracked
 	// credit is what gone children were counted for, by ancestor, still to
-	// come off its growth, for credited more readings; blind is the readings
-	// an ancestor's growth is still left out of.
-	credit   map[int]int64
-	credited map[int]int
-	blind    map[int]int
+	// come off its growth, each for readings of its own; blind is the
+	// readings an ancestor's growth is still left out of.
+	credit map[int][]credit
+	blind  map[int]int
 	// total is what the tree wrote since the first reading that read a
 	// process.
 	total  int64
@@ -183,6 +182,13 @@ type tracked struct {
 	readable, hidden bool
 }
 
+// credit is what one gone child was counted for, to come off its ancestor's
+// growth over the next left readings.
+type credit struct {
+	bytes int64
+	left  int
+}
+
 type writePoint struct {
 	at    time.Time
 	total int64
@@ -191,7 +197,7 @@ type writePoint struct {
 // add takes the tree's processes read at at.
 func (r *writeRate) add(at time.Time, now map[int]treeProc) {
 	if r.credit == nil {
-		r.credit, r.credited, r.blind = map[int]int64{}, map[int]int{}, map[int]int{}
+		r.credit, r.blind = map[int][]credit{}, map[int]int{}
 	}
 	r.gone(now)
 	next := make(map[int]tracked, len(now))
@@ -214,10 +220,9 @@ func (r *writeRate) add(at time.Time, now map[int]treeProc) {
 				grow = max(p.writes-prev.writes, 0)
 			}
 			read = true
-			taken := min(r.credit[pid], grow)
-			r.credit[pid] -= taken
+			grow = r.takeCredit(pid, grow)
 			if r.blind[pid] == 0 {
-				r.total += grow - taken
+				r.total += grow
 			}
 			t.writes = p.writes
 		}
@@ -228,9 +233,15 @@ func (r *writeRate) add(at time.Time, now map[int]treeProc) {
 			delete(r.blind, pid)
 		}
 	}
-	for _, pid := range slices.Sorted(maps.Keys(r.credited)) {
-		if r.credited[pid]--; r.credited[pid] <= 0 {
-			delete(r.credited, pid)
+	for _, pid := range slices.Sorted(maps.Keys(r.credit)) {
+		left := r.credit[pid][:0]
+		for _, c := range r.credit[pid] {
+			if c.left--; c.left > 0 && c.bytes > 0 {
+				left = append(left, c)
+			}
+		}
+		r.credit[pid] = left
+		if len(left) == 0 {
 			delete(r.credit, pid)
 		}
 	}
@@ -268,23 +279,37 @@ func (r *writeRate) gone(now map[int]treeProc) {
 		}
 		p := r.last[pid]
 		up := p.parent
-		for a, ok := r.last[up]; ok && isGone(up); a, ok = r.last[up] {
+		// Bounded by the processes there were: a loop of parents, which
+		// the kernel does not make, cannot hold the sampler.
+		for range len(r.last) {
+			a, ok := r.last[up]
+			if !ok || !isGone(up) {
+				break
+			}
 			up = a.parent
 		}
 		if p.hidden {
 			r.blind[up] = reapReadings
-		} else {
-			r.credit[up] += p.writes
+		} else if p.writes > 0 {
+			r.credit[up] = append(r.credit[up], credit{p.writes, reapReadings})
 		}
-		r.credit[up] += r.credit[pid]
-		if r.credit[up] > 0 {
-			r.credited[up] = reapReadings
-		}
+		r.credit[up] = append(r.credit[up], r.credit[pid]...)
 		r.blind[up] = max(r.blind[up], r.blind[pid])
 		delete(r.credit, pid)
-		delete(r.credited, pid)
 		delete(r.blind, pid)
 	}
+}
+
+// takeCredit takes what gone children of pid were counted for off its
+// growth, the oldest first, and returns what is left of it.
+func (r *writeRate) takeCredit(pid int, grow int64) int64 {
+	for i := range r.credit[pid] {
+		c := &r.credit[pid][i]
+		taken := min(c.bytes, grow)
+		c.bytes -= taken
+		grow -= taken
+	}
+	return grow
 }
 
 // sample reads the tree and the load every watchInterval until stop is

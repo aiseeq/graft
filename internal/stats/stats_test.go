@@ -117,6 +117,8 @@ func TestWriteRateCountsEveryWriteOnce(t *testing.T) {
 		{"unreadable, then read again", []string{"1:0:0 2:1:0", "1:0:0 2:1:-1", "1:0:0 2:1:50", "1:0:0 2:1:52"}, 2},
 		{"a child and grandchild gone at once", []string{"1:0:0 2:1:0 3:2:0", "1:0:0 2:1:0 3:2:5", "1:0:5", "1:0:5"}, 5},
 		{"an unreadable grandchild gone with its parent", []string{"1:0:0 2:1:0 3:2:-1", "1:0:0 2:1:0 3:2:-1", "1:0:100", "1:0:100", "1:0:101"}, 1},
+		// Children going one by one do not keep the daemon's credit alive.
+		{"a daemon leaving a busy parent", []string{"1:0:0 2:1:0 3:1:0", "1:0:0 2:1:8 3:1:0 4:1:0", "1:0:2 3:1:0 4:1:0", "1:0:4 4:1:0 5:1:0", "1:0:6 5:1:0", "1:0:8", "1:0:10"}, 8 + 6},
 		// The second process of the first reading starts there too.
 		{"the first reading", []string{"1:0:5 2:1:7", "1:0:5 2:1:7"}, 0},
 		// Taken for reaped, it costs its parent's 2 MB over two readings.
