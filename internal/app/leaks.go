@@ -110,11 +110,11 @@ func leakFindings(repo *gitx.Repo, message string, log io.Writer) ([]checks.Find
 	return findings, nil
 }
 
-// Leaks scans the commits of a revision range the way graft commit scans a
+// Leaks scans commits selected by revisions the way graft commit scans a
 // public repository's changes: each commit's added lines and message, names
 // the repository already had in the parent excluded. It reports and fails on
 // findings, for auditing history.
-func (a *App) Leaks(revRange string) error {
+func (a *App) Leaks(revisions []string) error {
 	repo, err := gitx.Open(a.Dir)
 	if err != nil {
 		return err
@@ -130,7 +130,9 @@ func (a *App) Leaks(revRange string) error {
 	if err != nil {
 		return err
 	}
-	out, err := repo.Git("rev-list", "--reverse", "--no-merges", revRange)
+	args := append([]string{"rev-list", "--reverse", "--no-merges"}, revisions...)
+	args = append(args, "--")
+	out, err := repo.Git(args...)
 	if err != nil {
 		return err
 	}

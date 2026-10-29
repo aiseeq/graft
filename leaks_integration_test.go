@@ -111,3 +111,34 @@ func TestLeaksScansHistory(t *testing.T) {
 		t.Errorf("exit %d:\n%s", code, out)
 	}
 }
+
+// TestLeaksTakesAnyRevisions: every argument goes to git rev-list, so --all
+// reaches a commit only a tag holds.
+func TestLeaksTakesAnyRevisions(t *testing.T) {
+	f := leakRepo(t, "github.com/somebody-else/", "")
+	f.git("switch", "-q", "-c", "side")
+	f.write("side.go", "package main\n\n// SettleInvoice\n")
+	f.mustPlainCommit("feat: side")
+	f.git("tag", "-a", "v9.9.9", "-m", "side tag")
+	f.git("switch", "-q", "-")
+	f.git("branch", "-D", "side")
+
+	out, code := f.graft("", "leaks", "HEAD")
+	if code != 0 {
+		t.Fatalf("HEAD alone holds no leak, exit %d:\n%s", code, out)
+	}
+	out, code = f.graft("", "leaks", "--all")
+	if code == 0 || !strings.Contains(out, "side.go:3: private name SettleInvoice") {
+		t.Errorf("--all must reach the tag-only commit, exit %d:\n%s", code, out)
+	}
+	out, code = f.graft("", "leaks", "v9.9.9", "^HEAD")
+	if code == 0 || !strings.Contains(out, "side.go:3") || !strings.Contains(out, "1 commits scanned") {
+		t.Errorf("several revisions go to rev-list together, exit %d:\n%s", code, out)
+	}
+	if out, code := f.graft("", "leaks"); code == 0 {
+		t.Errorf("no revision must stay a usage error:\n%s", out)
+	}
+	if out, code := f.graft("", "leaks", "--bogus-flag"); code == 0 {
+		t.Errorf("an option rev-list rejects must fail:\n%s", out)
+	}
+}

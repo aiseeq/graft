@@ -223,10 +223,10 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 	case "check":
 		return noArgs(a, cmd, rest, a.Check)
 	case "leaks":
-		if len(rest) != 1 || strings.HasPrefix(rest[0], "-") {
-			return fmt.Errorf("%w: graft leaks <revision range>", errUsage)
+		if len(rest) == 0 {
+			return fmt.Errorf("%w: graft leaks <revision>…", errUsage)
 		}
-		return a.Leaks(rest[0])
+		return a.Leaks(rest)
 	case "gate":
 		return noArgs(a, cmd, rest, func() error { return a.Gate(ctx) })
 	case "stats":

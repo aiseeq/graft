@@ -37,7 +37,7 @@ var commands = []command{
 	{name: "version", syntax: fixed("graft version [--describe]", "graft version bump [--minor|--major]"), summary: text("print the project version; --describe: the build identity, for stamping binaries; bump: raise it in the files without committing (version mode file)")},
 	{name: "init", syntax: fixed("graft init"), summary: text("install the git hooks (core.hooksPath) and the pinned tools")},
 	{name: "check", syntax: fixed("graft check"), summary: text("scan the staged changes for secrets, binaries, large files, version drift")},
-	{name: "leaks", syntax: fixed("graft leaks <revision range>"), summary: text("scan commits for the private names and terms of the user config (leaks)")},
+	{name: "leaks", syntax: fixed("graft leaks <revision>…"), summary: text("scan commits for the private names and terms of the user config (leaks)")},
 	{name: "gate", syntax: fixed("graft gate"), summary: text("run the gate (go vet ./... in every Go module first; go_vet.enabled: false or go_vet.exclude, with a reason, skips it)")},
 	{name: "hook", syntax: fixed("graft hook (pre-commit|post-merge)"), summary: text("entry point of the installed hooks")},
 	{name: "flags", syntax: fixed(
