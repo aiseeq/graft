@@ -1,6 +1,6 @@
 # тяжёлые задачи ждут, пока включён тихий режим машины (akit busy --quiet-until)
 
-Статус: в работе
+Статус: готово
 Исполнитель: graft-master
 
 ## Вход
@@ -26,3 +26,4 @@
 - 2026-10-29 14:37 note — graft-master: akit v1.6.0; коммит 6f8786d (graft commit поднял akit, гейт зелёный); go run . all на 6f8786d идёт; дальше: проверка связки busy --quiet 2m → go run . exec --heavy -- true ждёт с quiet → busy --quiet-off, на отдельном XDG_STATE_HOME (не глушить машину); release --minor, install; tk done в akit 20261029-1245-MEDIUM-busy-quiet; итог git-admin
 - 2026-10-29 14:49 note — graft-master: v2.53.0 выпущен (all EXIT 0 на 6f8786d), установлен 7578c7d на ноут и PC (лид выключал режим на время install: install сам тяжёлый и в режиме ждёт); связка проверена на своих XDG_STATE_HOME/XDG_CACHE_HOME — ждёт с quiet mode until 14:50, после --quiet-off стартует; тикет akit busy-quiet закрыт; ревью суб-агента идёт
 - 2026-10-29 14:51 note — graft-master: ревью суб-агента 6f8786d: серьёзного нет; README — исключение приоритетного деплоя (load_wait), busy --quiet D, дата в строке, quiet в wait_why — исправлено; ветка неизвестной меры через akit не вызывается, тестом не покрыта (точки подмены нет) — оставлено
+- 2026-10-29 15:44 готово — reviewer-opus: ревью суб-агента Opus 6f8786d: серьёзного нет, README поправлен e61639e; связка проверена мастером на своих XDG_STATE_HOME/XDG_CACHE_HOME (ждёт с quiet mode until 14:50, после --quiet-off стартует); loadgate тесты зелёные и под живым тихим режимом машины; go run . all EXIT 0 на 6f8786d; коммит e61639e сам ждал тихого режима лида до его конца
