@@ -1628,29 +1628,11 @@ func uniqueSorted(in []string) []string {
 // them delivered nothing, nor did a revert or a commit a revert among them
 // takes out: reverted are the keys only those name.
 func deliveredKeys(r *deployRun) (keys, reverted, quiet []string, err error) {
-	commits, err := logCommits(r.repo, r.prev+".."+r.head)
+	commits, err := goingOut(r)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	for _, sha := range r.released {
-		c, err := oneCommit(r.repo, sha)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("commit %s withheld from an earlier release: %w", gitx.Short(sha), err)
-		}
-		commits = append(commits, c)
-	}
-	// A revert takes work out, and so do the commits it reverts here.
-	var undone []string
-	for _, c := range commits {
-		if isRevert(c.subject) {
-			for _, m := range revertsRe.FindAllStringSubmatch(c.body, -1) {
-				undone = append(undone, m[1])
-			}
-		}
-	}
-	isUndone := func(c deliveredCommit) bool {
-		return isRevert(c.subject) || slices.ContainsFunc(undone, func(p string) bool { return strings.HasPrefix(c.sha, p) })
-	}
+	isUndone := undoneBy(commits)
 	keyRe := projectKeyRe(r.cfg)
 	// merged are the keys merge commits name: a merge brings what its
 	// branch's commits do, so the commits naming the key decide, and when
@@ -1669,11 +1651,10 @@ func deliveredKeys(r *deployRun) (keys, reverted, quiet []string, err error) {
 		case isUndone(c):
 			reverted = append(reverted, named...)
 		case c.merge:
-			brought, err := logCommits(r.repo, "--no-merges", c.sha+"^1.."+c.sha, "^"+r.prev)
+			changes, err := mergeChanges(r, c, isUndone)
 			if err != nil {
-				return nil, nil, nil, fmt.Errorf("the commits merge %s brings: %w", gitx.Short(c.sha), err)
+				return nil, nil, nil, err
 			}
-			changes := slices.ContainsFunc(brought, func(b deliveredCommit) bool { return !isUndone(b) && !isQuiet(b) })
 			for _, k := range named {
 				merged = append(merged, mergedKey{k, changes})
 			}
@@ -1696,6 +1677,49 @@ func deliveredKeys(r *deployRun) (keys, reverted, quiet []string, err error) {
 	reverted = slices.DeleteFunc(uniqueSorted(reverted), func(k string) bool { return slices.Contains(keys, k) })
 	quiet = slices.DeleteFunc(uniqueSorted(quiet), func(k string) bool { return slices.Contains(keys, k) || slices.Contains(reverted, k) })
 	return keys, reverted, quiet, nil
+}
+
+// goingOut lists the commits of prev..head and those withheld from an
+// earlier release that go out now.
+func goingOut(r *deployRun) ([]deliveredCommit, error) {
+	commits, err := logCommits(r.repo, r.prev+".."+r.head)
+	if err != nil {
+		return nil, err
+	}
+	for _, sha := range r.released {
+		c, err := oneCommit(r.repo, sha)
+		if err != nil {
+			return nil, fmt.Errorf("commit %s withheld from an earlier release: %w", gitx.Short(sha), err)
+		}
+		commits = append(commits, c)
+	}
+	return commits, nil
+}
+
+// undoneBy tells which commits take work out: a revert, and the commits a
+// revert among commits reverts.
+func undoneBy(commits []deliveredCommit) func(deliveredCommit) bool {
+	var undone []string
+	for _, c := range commits {
+		if isRevert(c.subject) {
+			for _, m := range revertsRe.FindAllStringSubmatch(c.body, -1) {
+				undone = append(undone, m[1])
+			}
+		}
+	}
+	return func(c deliveredCommit) bool {
+		return isRevert(c.subject) || slices.ContainsFunc(undone, func(p string) bool { return strings.HasPrefix(c.sha, p) })
+	}
+}
+
+// mergeChanges tells whether a merge brings a commit the target has not run
+// that changes it: neither of the quietTypes nor one taking work out.
+func mergeChanges(r *deployRun, merge deliveredCommit, isUndone func(deliveredCommit) bool) (bool, error) {
+	brought, err := logCommits(r.repo, "--no-merges", merge.sha+"^1.."+merge.sha, "^"+r.prev)
+	if err != nil {
+		return false, fmt.Errorf("the commits merge %s brings: %w", gitx.Short(merge.sha), err)
+	}
+	return slices.ContainsFunc(brought, func(b deliveredCommit) bool { return !isUndone(b) && !isQuiet(b) }), nil
 }
 
 // quietTypes are the Conventional Commits types of the commits that change
