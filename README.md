@@ -106,10 +106,12 @@ that lags a minute behind) below `wait_above`, the IO pressure at most
 `max_io_full`, and not the memory pressure above `max_mem_some` while the
 machine swaps more than `max_swap_kbs`: swap in use is no harm, and swapping
 without memory pressure neither. The quiet mode of `busy --quiet-until TIME`
-(akit) makes the machine busy until that time, whatever it measures: the wait
-says "quiet mode until HH:MM", and `busy --quiet-off` ends it sooner. A measure
-akit reports and graft does not know yet makes the machine busy too, by its own
-words. A measure the system lacks (no `/proc/stat`,
+or `busy --quiet DURATION` (akit) makes the machine busy until that time,
+whatever it measures: the wait says "quiet mode until HH:MM" (the date too
+when it is not today), and `busy --quiet-off` ends it sooner. A priority task
+of `graft deploy` waits for it no longer than `deploy.load_wait` allows, as
+for any busy machine. A measure akit reports and graft does not know yet
+makes the machine busy too, by its own words. A measure the system lacks (no `/proc/stat`,
 a kernel without PSI) is skipped and said. Heavy tasks of
 all projects, on a calm machine too, queue under one lock in the user cache
 (`graft/load.lock`) in ticket order and start one at a time: a task that
@@ -781,7 +783,9 @@ deps and inner tasks included.
   tasks and for their locks. Absent when nothing waited.
 - `wait_why` splits `wait_s` by what was waited for, in seconds: `queue`
   (behind other heavy tasks), `load`, `io`, `swap` (each over its limit;
-  the time between two readings goes to what the first found), `settle`
+  the time between two readings goes to what the first found), `quiet` (the
+  quiet mode of akit's busy), a measure graft does not know yet by its own
+  name, `settle`
   (the hold after a wait), `lock` (a task lock) and `sudo` (a deploy's
   confirmation). Absent when nothing waited.
 - `host`, on the lines of a task run on the host of `remote_heavy` and of
