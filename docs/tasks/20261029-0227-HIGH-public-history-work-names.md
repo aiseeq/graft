@@ -1,6 +1,6 @@
 # История публичных репо aiseeq/* без имён и данных рабочих проектов
 
-Статус: на проверке
+Статус: готово
 Ждёт: итоги chooks-master и glint-master через git-admin; затем независимая проверка свежими клонами
 Исполнитель: graft-master
 
@@ -31,3 +31,4 @@
 - 2026-10-29 02:41 ждёт — graft-master — итоги chooks-master и glint-master через git-admin; затем независимая проверка свежими клонами
 - 2026-10-29 03:03 note — graft-master: дополнение (по находке chooks-master): refs/pull/* в мирроре: graft 0 (ls-remote), glint 2 (PR 4 head/merge) — graft leaks 0 находок, chooks 11 с именами — удаляет только поддержка GitHub. chooks переписан chooks-master: main 3f38ae6→b7a094f, хеши 5192474
 - 2026-10-29 03:39 на проверке — graft-master — graft: свежий клон, graft leaks main+теги 0 (мой замер, исполнитель тоже я — нужна чужая проверка); glint и chooks проверены мной независимо: --branches --tags 0 терминов (587 и 150 коммитов); refs/pull: glint 65 коммитов / 2 термина, chooks 20 / 17 — только поддержка GitHub; proxy.golang.org — вне git
+- 2026-10-29 04:22 готово — git-admin: git-admin 29.10: свежий клон github.com/aiseeq/graft (main e7cccc0), graft из этого клона: leaks --branches --tags — 261 коммит, находок 0; refs/pull у graft нет (ls-remote 0); до того по origin/main и 137 тегам — 0.
