@@ -1,7 +1,7 @@
 # трейлер Worker: файлы, которые пишет сам graft, — не перенос работы бойца
 
-Статус: в работе
-Исполнитель: graft-master
+Статус: готово
+Исполнитель: luna
 
 ## Вход
 - Проблема:
@@ -26,3 +26,4 @@
 - 2026-10-29 10:49 note — graft-master: боец Luna 1029-1049-worker-own-files, worktree ~/.cache/worktrees/graft/worker-own-files, приёмка accept/ownfiles.sh (красная на main 10:4x: трейлер vendor/model-a)
 - 2026-10-29 10:57 note — luna: luna: Исключил файлы версии и Go module/workspace-файлы из доказательства переноса; приёмка и graft gate прошли.
 - 2026-10-29 10:57 note — graft-master: ревью мастера: верно; список go-файлов вынесен в goModuleFiles, path.Base вместо filepath.Base (пути git — через /), переменная path в forkBlobs переименована (затеняла пакет); приёмка перенесена в workers_integration_test.go (TestWorkerTrailersNotFromFilesGraftWrites); glint чист
+- 2026-10-29 10:58 готово — graft-master: ревью мастера по диффу; TestWorkerTrailersNotFromFilesGraftWrites (красный на main 375eb9b, зелёный после) и TestWorker* зелёные; гейт коммита a98972d; glint чист
