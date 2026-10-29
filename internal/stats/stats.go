@@ -48,6 +48,11 @@ type Record struct {
 	Kind string    `json:"kind"`
 	// Project is the absolute root of the project.
 	Project string `json:"project"`
+	// Profile is the kind of the run the admission of heavy tasks knows it
+	// by: <repository>:<task>, the repository named by its main work tree's
+	// folder for every worktree, and a graft exec <repository>:exec:<the
+	// first word of its command>.
+	Profile string `json:"profile,omitempty"`
 	Task    string `json:"task"`
 	// Top is what the task ran under: the graft command (commit, gate,
 	// deploy, ...) or, for graft <task>, the outermost task.
@@ -70,6 +75,16 @@ type Record struct {
 	// the step's processes and all their descendants, sampled (Watch).
 	// On a task line, its largest step's. Absent where it is not read.
 	TreeMemMB *float64 `json:"tree_mem_mb,omitempty"`
+	// ReadMB and WriteMB are what the step and the descendants it waited for
+	// read from and wrote to the storage (ru_inblock, ru_oublock), a write
+	// counted when it dirties the page; on a task line, its steps' sum.
+	// Absent where the OS does not report them in bytes.
+	ReadMB  *float64 `json:"read_mb,omitempty"`
+	WriteMB *float64 `json:"write_mb,omitempty"`
+	// PeakWriteMBs is the most the process tree wrote in a second, sampled
+	// (write_bytes of /proc/<pid>/io); on a task line, its largest step's.
+	// Absent for a step shorter than a second and where it is not read.
+	PeakWriteMBs *float64 `json:"peak_write_mbs,omitempty"`
 	// LoadStart and LoadMax are the 1-minute load average when the step or
 	// task started and the highest seen while it ran: a run on a loaded
 	// machine is slower for that alone. Absent where it is not read.
@@ -145,6 +160,14 @@ type Usage struct {
 	// TreeKnown.
 	TreeMem   int64
 	TreeKnown bool
+	// Read and Write are the bytes the process read and wrote, known when
+	// IOKnown.
+	Read, Write int64
+	IOKnown     bool
+	// PeakWrite is the most the process tree wrote in a second, in bytes,
+	// known when PeakKnown.
+	PeakWrite int64
+	PeakKnown bool
 	// LoadStart and LoadMax are known when LoadKnown.
 	LoadStart, LoadMax float64
 	LoadKnown          bool
@@ -161,6 +184,12 @@ func (s *Usage) Watched(w Sample) error {
 		s.TreeMem, s.TreeKnown = w.TreeMem, true
 	} else if !Unsupported(w.TreeErr) {
 		errs = append(errs, fmt.Errorf("reading the memory of the process tree: %w", w.TreeErr))
+	}
+	if w.PeakKnown {
+		s.PeakWrite, s.PeakKnown = w.PeakWrite, true
+	}
+	if w.IOErr != nil && !Unsupported(w.IOErr) {
+		errs = append(errs, fmt.Errorf("reading the writes of the process tree: %w", w.IOErr))
 	}
 	if w.LoadKnown {
 		if !s.LoadKnown {
@@ -180,7 +209,8 @@ func (s *Usage) Watched(w Sample) error {
 // caller around the run.
 func FromProcess(ps *os.ProcessState, wall time.Duration) Usage {
 	rss, known := maxRSS(ps)
-	return Usage{Wall: wall, User: ps.UserTime(), Sys: ps.SystemTime(), MaxRSS: rss, RSSKnown: known}
+	read, write, ioKnown := blockIO(ps)
+	return Usage{Wall: wall, User: ps.UserTime(), Sys: ps.SystemTime(), MaxRSS: rss, RSSKnown: known, Read: read, Write: write, IOKnown: ioKnown}
 }
 
 // Add adds the CPU time of u and keeps the larger peak memory; wall time is
@@ -195,6 +225,15 @@ func (s *Usage) Add(u Usage) {
 	if u.TreeKnown {
 		s.TreeMem = max(s.TreeMem, u.TreeMem)
 		s.TreeKnown = true
+	}
+	if u.IOKnown {
+		s.Read += u.Read
+		s.Write += u.Write
+		s.IOKnown = true
+	}
+	if u.PeakKnown {
+		s.PeakWrite = max(s.PeakWrite, u.PeakWrite)
+		s.PeakKnown = true
 	}
 	if !u.LoadKnown {
 		s.LoadKnown = false
@@ -226,6 +265,13 @@ func (s Usage) Fill(rec *Record) {
 	}
 	if s.TreeKnown {
 		rec.TreeMemMB = megabytes(s.TreeMem)
+	}
+	rec.ReadMB, rec.WriteMB, rec.PeakWriteMBs = nil, nil, nil
+	if s.IOKnown {
+		rec.ReadMB, rec.WriteMB = megabytes(s.Read), megabytes(s.Write)
+	}
+	if s.PeakKnown {
+		rec.PeakWriteMBs = megabytes(s.PeakWrite)
 	}
 	rec.LoadStart, rec.LoadMax = s.Loads()
 	rec.DBCPUS, rec.DBMemMB = nil, nil

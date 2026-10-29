@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestUsageKeepsPartialLoadPeakAndRejectsUnknownStep(t *testing.T) {
@@ -68,5 +69,49 @@ func TestMedian(t *testing.T) {
 		if got := median(c.in); got != c.want {
 			t.Errorf("median(%v) = %v, want %v", c.in, got, c.want)
 		}
+	}
+}
+
+func TestWriteRatePeak(t *testing.T) {
+	var r writeRate
+	at := time.Unix(1000, 0)
+	tick := func(ms int, sum int64) { r.add(at.Add(time.Duration(ms)*time.Millisecond), sum) }
+	tick(0, 5<<20)
+	tick(200, 5<<20)
+	tick(800, 7<<20)
+	if r.known {
+		t.Fatalf("a peak under a second: %d", r.peak)
+	}
+	// A process leaving the tree takes its writes out of the sum: that is
+	// no negative write, and the next growth counts from the lower sum.
+	tick(1000, 1<<20)
+	if !r.known || r.peak != 2<<20 {
+		t.Fatalf("2 MB over the first second: %d %v", r.peak, r.known)
+	}
+	tick(1200, 13<<20)
+	// 2 + 12 MB since the point of 200 ms, a second before.
+	if r.peak != 14<<20 {
+		t.Errorf("14 MB in the second up to 1.2 s: %d", r.peak)
+	}
+	tick(3200, 13<<20)
+	if r.peak != 14<<20 {
+		t.Errorf("an idle stretch lowered the peak: %d", r.peak)
+	}
+}
+
+func TestUsageSumsDiskIO(t *testing.T) {
+	var task Usage
+	task.Add(Usage{Read: 1 << 20, Write: 3 << 20, IOKnown: true, PeakWrite: 4 << 20, PeakKnown: true})
+	task.Add(Usage{Read: 2 << 20, Write: 5 << 20, IOKnown: true})
+	task.Add(Usage{Write: 1 << 20, IOKnown: true, PeakWrite: 2 << 20, PeakKnown: true})
+	var rec Record
+	task.Fill(&rec)
+	if rec.ReadMB == nil || *rec.ReadMB != 3 || rec.WriteMB == nil || *rec.WriteMB != 9 || rec.PeakWriteMBs == nil || *rec.PeakWriteMBs != 4 {
+		t.Errorf("read %v write %v peak %v", rec.ReadMB, rec.WriteMB, rec.PeakWriteMBs)
+	}
+	var unknown Record
+	(&Usage{}).Fill(&unknown)
+	if unknown.ReadMB != nil || unknown.WriteMB != nil || unknown.PeakWriteMBs != nil {
+		t.Errorf("unknown IO was written: %+v", unknown)
 	}
 }

@@ -14,3 +14,7 @@ func maxRSS(ps *os.ProcessState) (int64, bool) {
 	}
 	return ru.Maxrss, true
 }
+
+// blockIO reports nothing: macOS counts ru_inblock and ru_oublock in
+// operations, not bytes.
+func blockIO(*os.ProcessState) (read, write int64, ok bool) { return 0, 0, false }

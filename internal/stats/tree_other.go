@@ -2,4 +2,4 @@
 
 package stats
 
-func treeMemory(int) (int64, error) { return 0, ErrNoTree }
+func readTree(int, bool) (treeNow, error) { return treeNow{}, ErrNoTree }

@@ -763,10 +763,15 @@ A task gets a line of its own when it ends, covering everything it ran,
 deps and inner tasks included.
 
 ```json
-{"time":"2026-01-05T10:00:03.1+01:00","kind":"step","project":"/home/me/work/projectA","task":"lint","top":"commit","step":"shellcheck scripts/*.sh","wall_s":41.2,"user_s":38.9,"sys_s":2.4,"max_rss_mb":9123.4,"tree_mem_mb":11840.2,"load_start":4.12,"load_max":9.8,"exit":0}
-{"time":"2026-01-05T10:00:03.1+01:00","kind":"task","project":"/home/me/work/projectA","task":"lint","top":"commit","steps":2,"wall_s":44,"user_s":40.1,"sys_s":2.6,"max_rss_mb":9123.4,"tree_mem_mb":11840.2,"load_start":3.9,"load_max":9.8,"exit":0}
+{"time":"2026-01-05T10:00:03.1+01:00","kind":"step","project":"/home/me/work/projectA","profile":"projectA:lint","task":"lint","top":"commit","step":"shellcheck scripts/*.sh","wall_s":41.2,"user_s":38.9,"sys_s":2.4,"max_rss_mb":9123.4,"tree_mem_mb":11840.2,"read_mb":12.5,"write_mb":310.2,"peak_write_mbs":96.4,"load_start":4.12,"load_max":9.8,"exit":0}
+{"time":"2026-01-05T10:00:03.1+01:00","kind":"task","project":"/home/me/work/projectA","profile":"projectA:lint","task":"lint","top":"commit","steps":2,"wall_s":44,"user_s":40.1,"sys_s":2.6,"max_rss_mb":9123.4,"tree_mem_mb":11840.2,"read_mb":12.6,"write_mb":310.4,"peak_write_mbs":96.4,"load_start":3.9,"load_max":9.8,"exit":0}
 ```
 
+- `profile` is the kind of run, for telling what a run of the same kind
+  cost before: `<repository>:<task>`, the repository named by the folder of
+  its main work tree, so every worktree of it shares the profile, and for
+  a `graft exec` `<repository>:exec:<program>`, the program its command
+  starts with. Outside a repository, the folder graft ran in names it.
 - `top` is the graft command the task ran under (`commit`, `amend`, `gate`,
   `hook`, `deploy`, `start`), or the outermost task for `graft <task>`. A
   deploy is recorded as task `deploy <target>`: its deps, the `sudo`
@@ -811,6 +816,17 @@ deps and inner tasks included.
   counted in each. Processes that leave the tree (daemons, containers
   started through a docker daemon) are not counted. A task line has its
   largest step's. Linux only; elsewhere the field is left out.
+- `read_mb` and `write_mb` are what the step and the descendants it waited
+  for read from and wrote to the storage (`ru_inblock` and `ru_oublock` of
+  `wait4`); a task line has its steps' sum. A write counts when it dirties
+  the page, before the kernel writes it out; reads from the page cache and
+  writes to tmpfs count nothing. Linux only.
+- `peak_write_mbs` is the most the process tree wrote in a second, MB/s:
+  graft sums `write_bytes` of `/proc/<pid>/io` over the tree every 200 ms,
+  read with `tree_mem_mb`, and takes the fastest growth over a stretch of a
+  second or more. A step shorter than a second has none. A process whose
+  io graft may not read (one under `sudo`) counts when its parent reaps it,
+  at once. A task line has its largest step's. Linux only.
 - `load_start` and `load_max` are the machine's 1-minute load average when
   the step or task started and the highest seen while it ran, read with
   `tree_mem_mb`. Wall time on a machine at load 30 does not compare with

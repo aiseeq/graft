@@ -15,6 +15,7 @@
 //	gatehelper print <text>         print text
 //	gatehelper pwd <file>           write the working directory to file
 //	gatehelper alloc <mb>           touch mb megabytes of memory, then exit
+//	gatehelper write <file> <mb> <ms> write mb megabytes to file and sync it, then sleep ms
 package main
 
 import (
@@ -170,6 +171,33 @@ func run(args []string) error {
 			buf[i] = 1
 		}
 		fmt.Println("allocated", mb, "MB, last byte", buf[len(buf)-1])
+		return nil
+	case "write":
+		mb, err := strconv.Atoi(args[2])
+		if err != nil {
+			return fmt.Errorf("write: size %q: %w", args[2], err)
+		}
+		ms, err := strconv.Atoi(args[3])
+		if err != nil {
+			return fmt.Errorf("write: delay %q: %w", args[3], err)
+		}
+		file, err := os.Create(args[1])
+		if err != nil {
+			return err
+		}
+		chunk := make([]byte, 1<<20)
+		for i := range chunk {
+			chunk[i] = byte(i)
+		}
+		for range mb {
+			if _, err := file.Write(chunk); err != nil {
+				return errors.Join(err, file.Close())
+			}
+		}
+		if err := errors.Join(file.Sync(), file.Close()); err != nil {
+			return err
+		}
+		time.Sleep(time.Duration(ms) * time.Millisecond)
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[0])

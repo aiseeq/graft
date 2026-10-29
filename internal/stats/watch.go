@@ -24,6 +24,12 @@ type Sample struct {
 	// several run side by side; TreeErr tells why it is unknown.
 	TreeMem int64
 	TreeErr error
+	// PeakWrite is the most the tree wrote in a second, in bytes, known when
+	// PeakKnown: a step shorter than a second has no peak. IOErr tells why
+	// the writes stopped being read.
+	PeakWrite int64
+	PeakKnown bool
+	IOErr     error
 	// LoadStart and LoadMax are the 1-minute load average when the step
 	// started and the highest seen while it ran; LoadErr tells why they are
 	// unknown.
@@ -115,16 +121,75 @@ func (w *LoadWatch) Stop() Sample {
 	return s
 }
 
+// treeNow is what readTree saw of a process tree at one moment.
+type treeNow struct {
+	// mem is the summed memory and writes the summed bytes written so far;
+	// ioErr tells why writes is unknown.
+	mem, writes int64
+	ioErr       error
+}
+
+// peakWindow is the shortest stretch a write rate is taken over: one
+// 200 ms flush is not a rate the disk is kept busy at.
+const peakWindow = time.Second
+
+// writeRate finds the most a process tree wrote in a second from the
+// running sums of its writes.
+type writeRate struct {
+	// last is the latest sum read and total what the tree wrote since the
+	// first read; a sum that falls, when a process leaves the tree, adds
+	// nothing.
+	last, total int64
+	points      []writePoint
+	peak        int64
+	known       bool
+}
+
+type writePoint struct {
+	at    time.Time
+	total int64
+}
+
+// add takes the sum of the tree's writes read at at.
+func (r *writeRate) add(at time.Time, sum int64) {
+	if len(r.points) > 0 {
+		r.total += max(sum-r.last, 0)
+	}
+	r.last = sum
+	r.points = append(r.points, writePoint{at, r.total})
+	from := -1
+	for i, p := range r.points {
+		if at.Sub(p.at) >= peakWindow {
+			from = i
+		}
+	}
+	if from < 0 {
+		return
+	}
+	p := r.points[from]
+	rate := int64(float64(r.total-p.total) / at.Sub(p.at).Seconds())
+	r.peak, r.known = max(r.peak, rate), true
+	r.points = r.points[from:]
+}
+
 // sample reads the tree and the load every watchInterval until stop is
 // closed; a source that fails once is not read again.
-func sample(pid int, stop <-chan struct{}) Sample {
+func sample(pid int, stop <-chan struct{}) (s Sample) {
 	t := time.NewTicker(watchInterval)
 	defer t.Stop()
-	var s Sample
+	var writes writeRate
+	defer func() { s.PeakWrite, s.PeakKnown = writes.peak, writes.known }()
 	for first := true; ; first = false {
 		if s.TreeErr == nil {
-			sum, err := treeMemory(pid)
-			s.TreeMem, s.TreeErr = max(s.TreeMem, sum), err
+			now, err := readTree(pid, s.IOErr == nil)
+			s.TreeMem, s.TreeErr = max(s.TreeMem, now.mem), err
+			switch {
+			case err != nil, s.IOErr != nil:
+			case now.ioErr != nil:
+				s.IOErr = now.ioErr
+			default:
+				writes.add(time.Now(), now.writes)
+			}
 		}
 		if s.LoadErr == nil {
 			load, err := loadavg.Read()
