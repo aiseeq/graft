@@ -792,32 +792,7 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	}
 	switch t.Tests {
 	case config.TestsGo:
-		tree := r.treeID()
-		report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
-		cmd.Stdout = report
-		// The stats line takes its reason from the parsed stream, so the
-		// report closes before it is written; a step that never got there
-		// (it did not start) closes it here.
-		var runs []stats.PackageRun
-		var cerr error
-		closed := false
-		use, err := r.measureGoTest(cmd, s.Source, func() string {
-			closed = true
-			runs, cerr = report.Close()
-			return report.Reason()
-		})
-		if !closed {
-			runs, cerr = report.Close()
-		}
-		r.noteBrokenRemote(cmd, err, remoteStderr.String())
-		if cerr != nil {
-			fmt.Fprintf(r.Stderr, "graft: printing the test output: %v\n", cerr)
-		}
-		if report.Events() == 0 && strings.Contains(s.Source, "go test") {
-			fmt.Fprintf(r.Stderr, "graft: %s: the task has tests: go, but go test printed no -json events; pass -json to it\n", r.frames[len(r.frames)-1].task)
-		}
-		r.recordTests(runs, tree, t.Tests, use)
-		return err
+		return r.goTestStep(cmd, s.Source, t.Tests, words, &remoteStderr)
 	case config.TestsJest, config.TestsPlaywright:
 		err := r.reportFileStep(cmd, s.Source, t.Tests, report)
 		r.noteBrokenRemote(cmd, err, remoteStderr.String())
@@ -1072,6 +1047,37 @@ func (r *Runner) Measure(source string, cmd *exec.Cmd) error {
 // A command that never started records nothing: no process ran.
 func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
 	return r.measureWithCapture(cmd, source, true)
+}
+
+// goTestStep runs a step of a tests: go task: its stdout is go test -json,
+// parsed into the tests journal and the reason of its stats line.
+func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string, remoteStderr *bytes.Buffer) error {
+	tree := r.treeID()
+	report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
+	cmd.Stdout = report
+	// The stats line takes its reason from the parsed stream, so the report
+	// closes before it is written; a step that never got there (it did not
+	// start) closes it here.
+	var runs []stats.PackageRun
+	var cerr error
+	closed := false
+	use, err := r.measureGoTest(cmd, source, func() string {
+		closed = true
+		runs, cerr = report.Close()
+		return report.Reason()
+	})
+	if !closed {
+		runs, cerr = report.Close()
+	}
+	r.noteBrokenRemote(cmd, err, remoteStderr.String())
+	if cerr != nil {
+		fmt.Fprintf(r.Stderr, "graft: printing the test output: %v\n", cerr)
+	}
+	if report.Events() == 0 && strings.Contains(source, "go test") {
+		fmt.Fprintf(r.Stderr, "graft: %s: the task has tests: go, but go test printed no -json events; pass -json to it\n", r.frames[len(r.frames)-1].task)
+	}
+	r.recordTests(runs, tree, runner, use)
+	return err
 }
 
 // measureGoTest is measure for a go test -json step: its stdout is the
