@@ -1669,7 +1669,7 @@ func deliveredKeys(r *deployRun) (keys, reverted, quiet []string, err error) {
 		case isUndone(c):
 			reverted = append(reverted, named...)
 		case c.merge:
-			brought, err := logCommits(r.repo, "--no-merges", c.sha+"^1.."+c.sha)
+			brought, err := logCommits(r.repo, "--no-merges", c.sha+"^1.."+c.sha, "^"+r.prev)
 			if err != nil {
 				return nil, nil, nil, fmt.Errorf("the commits merge %s brings: %w", gitx.Short(c.sha), err)
 			}

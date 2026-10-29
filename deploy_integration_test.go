@@ -2137,3 +2137,25 @@ func (j *fakeJira) listComments(w http.ResponseWriter, key string) {
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"total": len(comments), "comments": comments})
 }
+
+// TestDeployReleaseNotesMergeOfDeployedBranch: a merge brings nothing the
+// target has already run, so merging a branch deployed before posts no note.
+func TestDeployReleaseNotesMergeOfDeployedBranch(t *testing.T) {
+	d := deployRepo(t)
+	d.mustGraft("deploy", "test")
+	trunk := d.git("rev-parse", "--abbrev-ref", "HEAD")
+	d.jira.statuses["PROJ-10"] = "Testing"
+	d.git("switch", "-q", "-c", "feature/PROJ-10-fix")
+	d.write("g.txt", "g\n")
+	d.git("add", "-A")
+	d.git("-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "fix: PROJ-10 real fix")
+	d.git("push", "-q", "-u", "origin", "feature/PROJ-10-fix")
+	d.mustGraft("deploy", "test")
+	d.git("switch", "-q", trunk)
+	d.git("-c", "core.hooksPath=/dev/null", "merge", "-q", "--no-ff", "-m", "Merge branch 'feature/PROJ-10-fix'", "feature/PROJ-10-fix")
+	d.git("push", "-q", "origin", trunk)
+	out := d.mustGraft("deploy", "test")
+	if comments, _ := d.jira.snapshot(); len(comments["PROJ-10"]) != 1 {
+		t.Errorf("comments = %v\n%s", comments, out)
+	}
+}
