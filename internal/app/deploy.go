@@ -1648,29 +1648,48 @@ func deliveredKeys(r *deployRun) (keys, reverted, quiet []string, err error) {
 			}
 		}
 	}
+	isUndone := func(c deliveredCommit) bool {
+		return isRevert(c.subject) || slices.ContainsFunc(undone, func(p string) bool { return strings.HasPrefix(c.sha, p) })
+	}
 	keyRe := projectKeyRe(r.cfg)
 	// merged are the keys merge commits name: a merge brings what its
-	// branch's commits do, so it delivers only a key none of them names.
-	var merged []string
+	// branch's commits do, so the commits naming the key decide, and when
+	// none does, whether the merge brings any change.
+	type mergedKey struct {
+		key     string
+		changes bool
+	}
+	var merged []mergedKey
 	for _, c := range commits {
 		if slices.Contains(r.withheld, c.sha) || withholds(c.body, r.withheld) {
 			continue
 		}
 		named := commitKeys(keyRe, r.target.ApprovedRelease, c)
 		switch {
-		case isRevert(c.subject) || slices.ContainsFunc(undone, func(p string) bool { return strings.HasPrefix(c.sha, p) }):
+		case isUndone(c):
 			reverted = append(reverted, named...)
 		case c.merge:
-			merged = append(merged, named...)
-		case slices.Contains(quietTypes, message.ConventionalType(c.subject)):
+			brought, err := logCommits(r.repo, "--no-merges", c.sha+"^1.."+c.sha)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("the commits merge %s brings: %w", gitx.Short(c.sha), err)
+			}
+			changes := slices.ContainsFunc(brought, func(b deliveredCommit) bool { return !isUndone(b) && !isQuiet(b) })
+			for _, k := range named {
+				merged = append(merged, mergedKey{k, changes})
+			}
+		case isQuiet(c):
 			quiet = append(quiet, named...)
 		default:
 			keys = append(keys, named...)
 		}
 	}
-	for _, k := range merged {
-		if !slices.Contains(quiet, k) && !slices.Contains(reverted, k) {
-			keys = append(keys, k)
+	for _, m := range merged {
+		switch {
+		case slices.Contains(keys, m.key) || slices.Contains(quiet, m.key) || slices.Contains(reverted, m.key):
+		case m.changes:
+			keys = append(keys, m.key)
+		default:
+			quiet = append(quiet, m.key)
 		}
 	}
 	keys = uniqueSorted(keys)
@@ -1682,6 +1701,11 @@ func deliveredKeys(r *deployRun) (keys, reverted, quiet []string, err error) {
 // quietTypes are the Conventional Commits types of the commits that change
 // nothing the target runs: an item named only by them is not delivered.
 var quietTypes = []string{"docs", "test", "style", "ci"}
+
+// isQuiet tells whether the commit is of one of the quietTypes.
+func isQuiet(c deliveredCommit) bool {
+	return slices.Contains(quietTypes, message.ConventionalType(c.subject))
+}
 
 // withholds tells whether a commit message reverts one of the withheld
 // commits.

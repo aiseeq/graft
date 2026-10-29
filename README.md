@@ -1494,9 +1494,10 @@ release_notes:
    items are left alone with a warning, and so is an item whose commits in
    the deploy are all of the Conventional Commits types docs, test, style or
    ci: they change nothing the target runs, so the item is not delivered
-   (no note, fix version or move); a merge commit delivers what the commits
-   it brings do, and an item only its own subject names. A failed comment or
-   move is printed
+   (no note, fix version or move). A merge commit delivers what the commits
+   it brings do: an item the deploy's other commits name goes by them, and
+   one only the merge's message names is delivered when the merge brings a
+   commit of another type. A failed comment or move is printed
    as a warning and does not change the exit status.
    With `subtasks: true` (it needs `transitions`), subtasks follow their
    parent: when a delivered item is in, or has just reached, the `to` of a

@@ -720,13 +720,28 @@ func TestDeployReleaseNotesSkipQuietCommits(t *testing.T) {
 	d.mustFixtureCommit("docs: PROJ-5 comment reworded")
 	d.git("switch", "-q", trunk)
 	d.git("-c", "core.hooksPath=/dev/null", "merge", "-q", "--no-ff", "-m", "Merge branch 'feature/PROJ-5-docs'", "feature/PROJ-5-docs")
+	// A branch whose name alone carries the key, its commits keyless.
+	d.jira.statuses["PROJ-9"] = "In Progress"
+	d.git("switch", "-q", "-c", "feature/PROJ-9-docs")
+	d.write("f.txt", "f\n")
+	d.git("add", "-A")
+	d.git("-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "docs: comment reworded")
+	d.git("switch", "-q", trunk)
+	d.git("-c", "core.hooksPath=/dev/null", "merge", "-q", "--no-ff", "-m", "Merge branch 'feature/PROJ-9-docs'", "feature/PROJ-9-docs")
+	d.jira.statuses["PROJ-10"] = "Testing"
+	d.git("switch", "-q", "-c", "feature/PROJ-10-fix")
+	d.write("g.txt", "g\n")
+	d.git("add", "-A")
+	d.git("-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "fix: real fix")
+	d.git("switch", "-q", trunk)
+	d.git("-c", "core.hooksPath=/dev/null", "merge", "-q", "--no-ff", "-m", "Merge branch 'feature/PROJ-10-fix'", "feature/PROJ-10-fix")
 	d.git("push", "-q", "origin", trunk)
 	out := d.mustGraft("deploy", "test")
 	comments, moved := d.jira.snapshot()
-	if len(comments["PROJ-1"]) != 0 || len(comments["PROJ-5"]) != 0 || len(comments["PROJ-6"]) != 1 || len(moved) != 0 {
+	if len(comments["PROJ-1"]) != 0 || len(comments["PROJ-5"]) != 0 || len(comments["PROJ-9"]) != 0 || len(comments["PROJ-6"]) != 1 || len(comments["PROJ-10"]) != 1 || len(moved) != 0 {
 		t.Errorf("comments = %v, moved = %v\n%s", comments, moved, out)
 	}
-	for _, key := range []string{"PROJ-1", "PROJ-5"} {
+	for _, key := range []string{"PROJ-1", "PROJ-5", "PROJ-9"} {
 		if want := "release note for " + key + " not posted, " + key + " left alone: its commits in this deploy are docs, test, style or ci only"; !strings.Contains(out, want) {
 			t.Errorf("no %q:\n%s", want, out)
 		}
