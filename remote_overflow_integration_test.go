@@ -424,6 +424,41 @@ func TestUserRemoteHeavyTestFindsTheStandardLibrary(t *testing.T) {
 	}
 }
 
+// TestUserRemoteHeavyPassesTheVariablesNamed: the host gets no variable of
+// the caller's but the go command's own (GOFLAGS here) and the ones graft
+// exec --env names: FOO=1 graft exec --heavy -- go test does not see FOO
+// there, with --env FOO it does.
+func TestUserRemoteHeavyPassesTheVariablesNamed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	state := t.TempDir()
+	// The host's environment lacks the caller's variables.
+	writeFile(t, filepath.Join(state, "run.sh"), `echo "$*" >> "`+filepath.Join(state, "calls")+`"`+"\nexec env -u FOO -u GOFLAGS \"$@\"\n")
+	f := userRemoteRepoRun(t, "", state, "[sh, "+yamlQuote(filepath.Join(state, "run.sh"))+"]")
+	f.write("a_test.go", "package a\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\n"+
+		"func TestEnv(t *testing.T) {\n\tfoo, set := os.LookupEnv(\"FOO\")\n\tif !set {\n\t\tfoo = \"unset\"\n\t}\n"+
+		"\tif err := os.WriteFile(\"env.out\", []byte(\"FOO=\"+foo+\" GOFLAGS=\"+os.Getenv(\"GOFLAGS\")), 0o644); err != nil {\n\t\tt.Fatal(err)\n\t}\n}\n")
+	f.env = append(f.env, "FOO=1", "GOFLAGS=-p=2")
+	for _, c := range []struct {
+		flags []string
+		want  string
+	}{
+		{nil, "FOO=unset GOFLAGS=-p=2"},
+		{[]string{"--env", "FOO"}, "FOO=1 GOFLAGS=-p=2"},
+	} {
+		loaded(t, state)
+		args := append(append([]string{"exec", "--heavy"}, c.flags...), "--", "go", "test", "-count=1", "./...")
+		out, code := f.graft("", args...)
+		if code != 0 || !strings.Contains(out, "graft: exec: heavy, on pc") {
+			t.Fatalf("%v: exit %d\n%s\ncalls: %q", c.flags, code, out, callsOf(t, state))
+		}
+		if got := readFile(t, f.path("env.out")); got != c.want {
+			t.Errorf("%v: the test on pc saw %q, want %q", c.flags, got, c.want)
+		}
+	}
+}
+
 // TestUserRemoteHeavyKeepsATaskReadingFilesOfThisMachine: a task whose cache
 // names files outside the tree reads them, and the host has none of them.
 func TestUserRemoteHeavyKeepsATaskReadingFilesOfThisMachine(t *testing.T) {

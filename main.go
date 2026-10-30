@@ -476,15 +476,25 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 // execCmd is graft exec; its own failures, usage too, exit app.ExitGraft
 // (run).
 func execCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := fmt.Errorf("%w: graft exec [--heavy [--local] [--settle <duration>]] -- <command> [args]", errUsage)
+	usage := fmt.Errorf("%w: graft exec [--heavy [--local] [--env <name>]... [--settle <duration>]] -- <command> [args]", errUsage)
 	var opts app.ExecOptions
 	var local bool
+	var pass []string
 	for len(args) > 0 && args[0] != "--" {
 		switch args[0] {
 		case "--heavy":
 			opts.Heavy = true
 		case "--local":
 			local = true
+		case "--env":
+			if len(args) < 2 {
+				return usage
+			}
+			if args[1] == "" || strings.ContainsAny(args[1], "=,") {
+				return fmt.Errorf("%w: exec --env %q: want the name of a variable", errUsage, args[1])
+			}
+			pass = append(pass, args[1])
+			args = args[1:]
 		case "--settle":
 			if len(args) < 2 {
 				return usage
@@ -500,8 +510,17 @@ func execCmd(ctx context.Context, a *app.App, args []string) error {
 		}
 		args = args[1:]
 	}
-	if len(args) < 2 || ((local || opts.Settle > 0) && !opts.Heavy) {
+	if len(args) < 2 || ((local || opts.Settle > 0 || len(pass) > 0) && !opts.Heavy) {
 		return usage
+	}
+	if len(pass) > 0 {
+		// The host gets them, for the grafts the command starts too.
+		if prev := os.Getenv(tasks.PassEnvEnv); prev != "" {
+			pass = append([]string{prev}, pass...)
+		}
+		if err := os.Setenv(tasks.PassEnvEnv, strings.Join(pass, ",")); err != nil {
+			return fmt.Errorf("exec --env: %w", err)
+		}
 	}
 	if local {
 		// The graft the command starts stays here too.

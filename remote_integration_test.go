@@ -48,9 +48,11 @@ const remoteTasks = `  build:
 
 // TestHeavyTaskRunsOnRemoteHost: with remote_heavy a heavy task's steps go
 // to the host through its run, with graft's variables and the host's
-// threads, skipping this machine's queue; the stats name the host.
+// threads, and the caller's GOFLAGS, skipping this machine's queue; the
+// stats name the host.
 func TestHeavyTaskRunsOnRemoteHost(t *testing.T) {
 	f, state := remoteRepo(t, 8, remoteTasks)
+	f.env = append(f.env, "GOFLAGS=-p=3")
 	out := f.mustGraft("build")
 	if !strings.Contains(out, "graft: build: heavy, on pc") {
 		t.Errorf("no line naming the host:\n%s", out)
@@ -59,7 +61,7 @@ func TestHeavyTaskRunsOnRemoteHost(t *testing.T) {
 		t.Errorf("the step on the host: %q", got)
 	}
 	calls := readFile(t, filepath.Join(state, "calls"))
-	if want := "env GRAFT_HEAVY=local MODE=fast GRAFT_THREADS=8 GOMAXPROCS=8 sh -c echo threads=8"; !strings.HasPrefix(calls, want) {
+	if want := "env GRAFT_HEAVY=local GOFLAGS=-p=3 MODE=fast GRAFT_THREADS=8 GOMAXPROCS=8 sh -c echo threads=8"; !strings.HasPrefix(calls, want) {
 		t.Errorf("run got %q, want it to start %q", calls, want)
 	}
 	hosts := map[string]string{}

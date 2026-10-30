@@ -1,7 +1,6 @@
 # Тяжёлое с переменными вызывающего не уходит на хост remote_heavy
 
-Статус: ждёт
-Ждёт: выбор git-admin из вариантов 1–4 (письмо 06:2x)
+Статус: в работе
 Исполнитель: graft-master
 
 ## Вход
@@ -29,3 +28,6 @@
 5) /proc/<ppid>/environ — снят (журнал 05:03).
 Рекомендация: 2 + встроенный короткий список 3 (GOOS GOARCH GOFLAGS CGO_ENABLED GOEXPERIMENT — передаются всегда, это не секреты, и без них результат на хосте неверен). Ждёт выбора git-admin.
 - 2026-10-30 06:08 ждёт — graft-master — выбор git-admin из вариантов 1–4 (письмо 06:2x)
+- 2026-10-30 06:09 в работе — graft-master
+- 2026-10-30 06:09 note — graft-master: Выбор git-admin: вариант 2 (graft exec --heavy --env NAME) + встроенная передача GOOS GOARCH GOFLAGS CGO_ENABLED GOEXPERIMENT; 3 и 4 не делать. Условия: README и graft exec -h рядом с --env — переменные вызывающего на хост не уходят, нужно --env NAME или --local; тест: FOO=1 … --env FOO печатает FOO на хосте, без --env не видит, GOOS доезжает без флага.
+- 2026-10-30 06:11 note — graft-master: Сделано: graft exec --env NAME (GRAFT_PASS_ENV, видят и вложенные graft), remoteCmd передаёт hostEnv (GOOS GOARCH GOFLAGS CGO_ENABLED GOEXPERIMENT) и названные, своё значение задачи важнее; README и graft exec -h. Тест TestUserRemoteHeavyPassesTheVariablesNamed (хост — env -u FOO -u GOFLAGS): без --env FOO=unset, с --env FOO=1, GOFLAGS доезжает без флага; мутация (без передачи) — красный.

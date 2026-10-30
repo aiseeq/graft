@@ -206,11 +206,14 @@ send any heavy work. Output flags such as `-o`, `-coverprofile` and `-trace`
 of an admitted heavy task starts, a heavy task inside another) does not
 overflow under `when: busy`. Project configuration keeps its existing rule: every
 heavy task can go to its host except tasks that need local files or data.
-The host's command gets the task's `env`, `GRAFT_HEAVY=local` and the
-threads, not the caller's environment: a command that reads a variable its
-caller set, such as `FLAG=1 graft exec --heavy -- go test ./...`, or
-`GOOS=windows … go vet`, does not see it there; keep such a run here with
-`graft exec --heavy --local` or `GRAFT_HEAVY=local`.
+The host's command gets the task's `env`, `GRAFT_HEAVY=local`, the threads
+and the caller's `GOOS`, `GOARCH`, `GOFLAGS`, `CGO_ENABLED` and
+`GOEXPERIMENT` (the task's own value wins), not the rest of the caller's
+environment: `FLAG=1 graft exec --heavy -- go test ./...` does not see
+`FLAG` there. Pass such a variable with `graft exec --heavy --env FLAG --
+…` (repeatable; it sets `GRAFT_PASS_ENV`, a comma-separated list the grafts
+the command starts read too), or keep the run here with `graft exec --heavy
+--local` or `GRAFT_HEAVY=local`.
 A gate under the user config's `when: busy`, in a project without its own
 `remote_heavy`, that would wait here while the host answers and has a task
 with `remote: true` (the project vouches that its tests pass on the host:
@@ -300,7 +303,7 @@ stats` (`wait_s`).
 | `graft tasks` | every task, building blocks and deps included |
 | `graft start` / `stop` / `restart [service]` | background services, all of them without a name |
 | `graft logs <service> [--lines N] [-f]` | the end of a service's log, or its journal; `-f` follows until Ctrl-C |
-| `graft exec [--heavy [--local] [--settle <duration>]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local`; `--settle` holds the queue after it starts in place of `load.settle` |
+| `graft exec [--heavy [--local] [--env <name>]... [--settle <duration>]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local`; the host gets no variable of the caller's but the go command's own unless `--env <name>` names it; `--settle` holds the queue after it starts in place of `load.settle` |
 | `graft stats [--since 7d] [--project <root>\|--all] [--task <name>]` | recorded resource use of tasks (see [Resource stats](#resource-stats)) |
 | `graft status` | services, the test database, held locks |
 | `graft locks` | who holds graft's locks |

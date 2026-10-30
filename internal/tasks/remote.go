@@ -320,14 +320,36 @@ func (r *Runner) runNamesRoot() bool {
 	return slices.ContainsFunc(r.remoteHeavy.Run, func(w string) bool { return strings.Contains(w, config.RootPlaceholder) })
 }
 
+// PassEnvEnv names, comma-separated, the caller's variables a step on
+// remote_heavy's host gets besides the task's env: graft exec --env sets it,
+// for the grafts the command starts too.
+const PassEnvEnv = "GRAFT_PASS_ENV"
+
+// hostEnv are the caller's variables every step on the host gets: they
+// choose what the go command builds and checks, the host's result is wrong
+// without them, and they hold no secret.
+var hostEnv = []string{"GOOS", "GOARCH", "GOFLAGS", "CGO_ENABLED", "GOEXPERIMENT"}
+
+// passedEnv lists hostEnv and the names in PassEnvEnv.
+func passedEnv() []string {
+	names := slices.Clone(hostEnv)
+	for name := range strings.SplitSeq(os.Getenv(PassEnvEnv), ",") {
+		if name = strings.TrimSpace(name); name != "" && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 // remoteStopGrace is how long a step on remote_heavy's host has after
 // SIGTERM to take its work off the host before it is killed.
 const remoteStopGrace = 30 * time.Second
 
 // remoteCmd is cmd run on remote_heavy's host: its run with env and the
 // command appended, from the work tree root, or from cmd's directory when
-// run names {root}. The variables graft sets go as env K=V, since the host
-// does not get this machine's environment, and GRAFT_HEAVY=local keeps a
+// run names {root}. The variables graft sets, and the caller's passedEnv,
+// go as env K=V, since the host does not get this machine's environment
+// (the task's own value wins), and GRAFT_HEAVY=local keeps a
 // graft the step starts there from sending its heavy work on again. A
 // cancelled step is asked to stop first: killed, run could not clear the
 // host.
@@ -337,6 +359,13 @@ func (r *Runner) remoteCmd(ctx context.Context, cmd *exec.Cmd, vars map[string]s
 		words = append(words, strings.ReplaceAll(w, config.RootPlaceholder, r.Root))
 	}
 	words = append(words, "env", HeavyEnv+"=local")
+	for _, k := range passedEnv() {
+		if v, set := os.LookupEnv(k); set {
+			if _, own := vars[k]; !own {
+				words = append(words, k+"="+v)
+			}
+		}
+	}
 	for _, k := range sortedKeys(vars) {
 		words = append(words, k+"="+vars[k])
 	}
