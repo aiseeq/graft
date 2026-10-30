@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
@@ -140,7 +139,7 @@ func (a *App) statsTests(statsPath string, f stats.TestFilter, where string) err
 // made absolute, or the current repository's root.
 func (a *App) statsProject(path string) (string, error) {
 	if path == "" {
-		repo, err := gitx.Open(a.Dir)
+		repo, err := a.openRepo(a.Dir)
 		if err != nil {
 			return "", fmt.Errorf("%w; pass --project <path> or --all", err)
 		}

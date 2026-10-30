@@ -986,6 +986,11 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	if s.Task != "" {
 		return r.run(ctx, s.Task, nil)
 	}
+	if r.Repo != nil {
+		// A task step can run arbitrary commands that change the worktree,
+		// index, or HEAD. Drop cached Git state when the step ends.
+		defer r.Repo.Invalidate()
+	}
 	if r.gateSplit {
 		finish, prepareErr := r.prepareGateStep(ctx, s, t, args, threads)
 		if prepareErr != nil {

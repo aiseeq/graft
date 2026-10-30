@@ -286,30 +286,40 @@ func projectCmd(ctx context.Context, a *app.App, cmd string, rest []string) erro
 
 // taskShortcut runs graft <task> as graft run <task>.
 func taskShortcut(ctx context.Context, a *app.App, name string, args []string) error {
-	ok, err := a.IsTask(name)
+	ok, err := a.RunIfTask(ctx, name, func() ([]string, error) {
+		return taskArgs(a, name, args)
+	})
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return fmt.Errorf("%w: unknown command or task %q", errUsage, name)
 	}
-	return runTask(ctx, a, name, args)
+	return nil
 }
 
 // runTask takes the task arguments after --, so a task argument is never
 // mistaken for one of graft's.
 func runTask(ctx context.Context, a *app.App, name string, args []string) error {
+	args, err := taskArgs(a, name, args)
+	if err != nil {
+		return err
+	}
+	return a.Run(ctx, name, args)
+}
+
+func taskArgs(a *app.App, name string, args []string) ([]string, error) {
 	if len(args) > 0 && args[0] == "--no-cache" {
 		a.NoCache, args = true, args[1:]
 	}
 	if len(args) > 0 {
 		if args[0] != "--" {
-			return fmt.Errorf("%w: task arguments go after --: graft %s -- %s", errUsage, name, envs.QuoteArgs(args))
+			return nil, fmt.Errorf("%w: task arguments go after --: graft %s -- %s", errUsage, name, envs.QuoteArgs(args))
 		}
 		args = args[1:]
 	}
 	a.Command = ""
-	return a.Run(ctx, name, args)
+	return args, nil
 }
 
 func statsCmd(a *app.App, args []string) error {

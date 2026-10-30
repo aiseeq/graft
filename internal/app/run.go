@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -26,15 +27,24 @@ func (a *App) Run(ctx context.Context, task string, args []string) error {
 	return a.runner(repo, cfg).Run(ctx, task, args)
 }
 
-// IsTask reports whether name is a task of the project in the current
-// directory; outside a project nothing is.
-func (a *App) IsTask(name string) (bool, error) {
-	cfg, found, err := a.ProjectConfig()
-	if err != nil || !found {
+// RunIfTask runs name when it is a task of the project in the current
+// directory. The config used to recognize the task is also used to run it.
+func (a *App) RunIfTask(ctx context.Context, name string, args func() ([]string, error)) (bool, error) {
+	repo, cfg, err := a.open()
+	if err != nil {
+		if errors.Is(err, gitx.ErrNotRepo) || errors.Is(err, config.ErrNotFound) {
+			return false, nil
+		}
 		return false, err
 	}
-	_, ok := cfg.Tasks[name]
-	return ok, nil
+	if _, ok := cfg.Tasks[name]; !ok {
+		return false, nil
+	}
+	runArgs, err := args()
+	if err != nil {
+		return true, err
+	}
+	return true, a.runner(repo, cfg).Run(ctx, name, runArgs)
 }
 
 func sortedNames[V any](m map[string]V) []string {
@@ -151,7 +161,7 @@ func describeService(st services.State) string {
 
 // Locks shows the held locks: the repository lock and the named ones.
 func (a *App) Locks() error {
-	repo, err := gitx.Open(a.Dir)
+	repo, err := a.openRepo(a.Dir)
 	if err != nil {
 		return err
 	}

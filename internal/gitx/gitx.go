@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // Repo is a work tree with its git directories resolved to absolute paths.
@@ -23,6 +24,23 @@ type Repo struct {
 	GitDir string
 	// CommonDir is shared by all worktrees of the repository (refs, config).
 	CommonDir string
+	// ObjectFormat is the hash format used by this repository.
+	ObjectFormat string
+
+	cacheMu         sync.Mutex
+	headKnown       bool
+	hasHead         bool
+	headOID         string
+	branch          string
+	branchSet       bool
+	indexTree       string
+	treeSet         bool
+	headTreeEntries map[string]string
+	headTreeSet     bool
+	refs            map[string]bool
+	refSet          map[string]bool
+	remotes         []string
+	remoteSet       bool
 }
 
 // ErrNotRepo is returned by Open outside a git work tree.
@@ -34,37 +52,181 @@ var ErrNotRepo = errors.New("not inside a git work tree")
 // error of its own.
 func Open(dir string) (*Repo, error) {
 	// LC_ALL=C: the messages that tell there is no work tree are English.
-	out, err := run(dir, []string{"LC_ALL=C"}, nil, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir")
+	args := []string{"rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir", "--show-object-format", "--verify", "--quiet", "HEAD^{commit}"}
+	out, err := run(dir, []string{"LC_ALL=C"}, nil, args...)
 	if gerr, ok := errors.AsType[*Error](err); ok && (strings.Contains(gerr.Stderr, "not a git repository") || strings.Contains(gerr.Stderr, "must be run in a work tree")) {
 		return nil, fmt.Errorf("%w: %w", ErrNotRepo, err)
 	}
+	hasHead := err == nil
 	if err != nil {
-		return nil, err
+		gerr, ok := errors.AsType[*Error](err)
+		if !ok || ExitCode(err) != 1 || strings.TrimSpace(gerr.Stderr) != "" {
+			return nil, err
+		}
 	}
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) != 3 {
+	expectedLines := 4
+	if hasHead {
+		expectedLines++
+	}
+	if len(lines) != expectedLines {
 		return nil, fmt.Errorf("unexpected git rev-parse output: %q", out)
 	}
-	return &Repo{
-		Root:      filepath.FromSlash(lines[0]),
-		GitDir:    filepath.FromSlash(lines[1]),
-		CommonDir: filepath.FromSlash(lines[2]),
-	}, nil
+	repo := &Repo{
+		Root:         filepath.FromSlash(lines[0]),
+		GitDir:       filepath.FromSlash(lines[1]),
+		CommonDir:    filepath.FromSlash(lines[2]),
+		ObjectFormat: lines[3],
+	}
+	repo.hasHead, repo.headKnown = hasHead, true
+	return repo, nil
 }
 
 // Git runs git in the work tree root and returns its stdout.
 func (r *Repo) Git(args ...string) (string, error) {
-	return run(r.Root, nil, nil, args...)
+	if len(args) == 3 && args[0] == "rev-parse" && args[1] == "--verify" && args[2] == "HEAD^{commit}" {
+		r.cacheMu.Lock()
+		if r.headOID != "" {
+			head := r.headOID
+			r.cacheMu.Unlock()
+			return head, nil
+		}
+		r.cacheMu.Unlock()
+	}
+	if len(args) == 1 && args[0] == "write-tree" {
+		r.cacheMu.Lock()
+		if r.treeSet {
+			tree := r.indexTree
+			r.cacheMu.Unlock()
+			return tree, nil
+		}
+		r.cacheMu.Unlock()
+	}
+	r.invalidateFor(args)
+	out, err := run(r.Root, nil, nil, args...)
+	if err == nil {
+		r.cacheGitResult(args, out)
+	}
+	return out, err
+}
+
+func (r *Repo) cacheGitResult(args []string, out string) {
+	switch {
+	case len(args) == 1 && args[0] == "write-tree":
+		r.cacheMu.Lock()
+		r.indexTree, r.treeSet = out, true
+		r.cacheMu.Unlock()
+	case len(args) == 4 && args[0] == "rev-parse" && args[1] == "--verify" && args[2] == "--quiet" && args[3] == "HEAD^{commit}":
+		r.cacheMu.Lock()
+		r.hasHead, r.headKnown = true, true
+		r.cacheMu.Unlock()
+	case len(args) == 3 && args[0] == "rev-parse" && args[1] == "--verify" && args[2] == "HEAD^{commit}":
+		r.cacheMu.Lock()
+		r.headOID = strings.TrimSpace(out)
+		r.cacheMu.Unlock()
+	case len(args) == 4 && args[0] == "symbolic-ref" && args[1] == "--short" && args[2] == "-q" && args[3] == "HEAD":
+		r.cacheMu.Lock()
+		r.branch, r.branchSet = strings.TrimSpace(out), true
+		r.cacheMu.Unlock()
+	}
 }
 
 // GitEnv runs git with extra environment entries (KEY=VALUE).
 func (r *Repo) GitEnv(env []string, args ...string) (string, error) {
+	r.invalidateFor(args)
 	return run(r.Root, env, nil, args...)
 }
 
 // GitInput runs git with stdin fed from input.
 func (r *Repo) GitInput(input io.Reader, env []string, args ...string) (string, error) {
+	r.invalidateFor(args)
 	return run(r.Root, env, input, args...)
+}
+
+// Invalidate drops answers that a repository mutation or an external step may
+// have changed. Call it around commands run outside Repo's Git methods.
+func (r *Repo) Invalidate() {
+	r.cacheMu.Lock()
+	r.headKnown, r.branchSet, r.treeSet, r.headTreeSet = false, false, false, false
+	r.headOID = ""
+	r.refs, r.refSet = nil, nil
+	r.headTreeEntries = nil
+	r.remotes, r.remoteSet = nil, false
+	r.cacheMu.Unlock()
+}
+
+func (r *Repo) invalidateFor(args []string) {
+	if mutatesHead(args) {
+		r.Invalidate()
+		return
+	}
+	if mutatesIndex(args) {
+		r.invalidateIndex()
+	}
+	if mutatesRefs(args) {
+		r.invalidateRefs()
+	}
+	if mutatesRemotes(args) {
+		r.invalidateRemotes()
+	}
+}
+
+func (r *Repo) invalidateIndex() {
+	r.cacheMu.Lock()
+	r.treeSet = false
+	r.cacheMu.Unlock()
+}
+
+func (r *Repo) invalidateRefs() {
+	r.cacheMu.Lock()
+	r.refs, r.refSet = nil, nil
+	r.cacheMu.Unlock()
+}
+
+func (r *Repo) invalidateRemotes() {
+	r.cacheMu.Lock()
+	r.remotes, r.remoteSet = nil, false
+	r.cacheMu.Unlock()
+}
+
+func mutatesIndex(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "add", "apply", "checkout-index", "mv", "read-tree", "restore", "rm", "update-index":
+		return true
+	default:
+		return false
+	}
+}
+
+func mutatesHead(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "branch", "checkout", "cherry-pick", "commit", "merge", "rebase", "reset", "revert", "switch", "symbolic-ref", "update-ref":
+		return true
+	default:
+		return false
+	}
+}
+
+func mutatesRefs(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "branch", "checkout", "cherry-pick", "commit", "fetch", "gc", "merge", "pull", "prune", "rebase", "remote", "repack", "replace", "reset", "revert", "stash", "switch", "symbolic-ref", "tag", "update-ref", "worktree":
+		return true
+	default:
+		return mutatesHead(args)
+	}
+}
+
+func mutatesRemotes(args []string) bool {
+	return len(args) > 0 && (args[0] == "remote" || args[0] == "config")
 }
 
 // Command builds a git command in the work tree root for callers that need to
@@ -92,10 +254,10 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error { return e.Err }
 
-// InOther runs git in dir, a work tree other than the one a hook may run in,
-// with stdin fed from input: without the variables git sets for the hook
-// (LocalEnvVars), which would bind it to the hook's repository and index.
-func InOther(dir string, input io.Reader, args ...string) (string, error) {
+// InOther runs git in dir, a work tree other than this one, without the
+// variables git sets for a hook, which would bind it to the hook's repository
+// and index.
+func (r *Repo) InOther(dir string, input io.Reader, args ...string) (string, error) {
 	drop, err := LocalEnvVars()
 	if err != nil {
 		return "", fmt.Errorf("listing git environment variables: %w", err)
@@ -140,9 +302,22 @@ func ExitCode(err error) int {
 // Branch returns the short name of the checked-out branch. A detached HEAD is
 // an error: there is no branch to push and no branch name to take a key from.
 func (r *Repo) Branch() (string, error) {
+	r.cacheMu.Lock()
+	if r.branchSet {
+		branch := r.branch
+		r.cacheMu.Unlock()
+		if branch == "" {
+			return "", errors.New("HEAD is detached: check out a branch first")
+		}
+		return branch, nil
+	}
+	r.cacheMu.Unlock()
 	out, err := r.Git("symbolic-ref", "--short", "-q", "HEAD")
 	if err != nil {
 		if ExitCode(err) == 1 {
+			r.cacheMu.Lock()
+			r.branch, r.branchSet = "", true
+			r.cacheMu.Unlock()
 			return "", errors.New("HEAD is detached: check out a branch first")
 		}
 		return "", err
@@ -152,12 +327,56 @@ func (r *Repo) Branch() (string, error) {
 
 // HasHead reports whether HEAD points at a commit (false on an unborn branch).
 func (r *Repo) HasHead() (bool, error) {
+	r.cacheMu.Lock()
+	if r.headKnown {
+		hasHead := r.hasHead
+		r.cacheMu.Unlock()
+		return hasHead, nil
+	}
+	r.cacheMu.Unlock()
 	return r.RevExists("HEAD")
 }
 
 // RevExists reports whether rev resolves to a commit.
 func (r *Repo) RevExists(rev string) (bool, error) {
-	return r.gitTest("rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	if rev == "HEAD" {
+		r.cacheMu.Lock()
+		if r.headKnown {
+			hasHead := r.hasHead
+			r.cacheMu.Unlock()
+			return hasHead, nil
+		}
+		r.cacheMu.Unlock()
+	}
+	if strings.HasPrefix(rev, "refs/") {
+		return r.cachedRef("commit:"+rev, func() (bool, error) {
+			return r.gitTest("rev-parse", "--verify", "--quiet", rev+"^{commit}")
+		})
+	}
+	if fullObjectID(rev) {
+		return r.cachedRef("commit-id:"+rev, func() (bool, error) {
+			return r.gitTest("rev-parse", "--verify", "--quiet", rev+"^{commit}")
+		})
+	}
+	ok, err := r.gitTest("rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	if err == nil && rev == "HEAD" {
+		r.cacheMu.Lock()
+		r.hasHead, r.headKnown = ok, true
+		r.cacheMu.Unlock()
+	}
+	return ok, err
+}
+
+func fullObjectID(rev string) bool {
+	if len(rev) != 40 && len(rev) != 64 {
+		return false
+	}
+	for _, c := range rev {
+		if !('0' <= c && c <= '9') && !('a' <= c && c <= 'f') && !('A' <= c && c <= 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 // IsAncestor reports whether ancestor is reachable from rev (a commit is its
@@ -168,7 +387,33 @@ func (r *Repo) IsAncestor(ancestor, rev string) (bool, error) {
 
 // RefExists reports whether the fully qualified ref exists.
 func (r *Repo) RefExists(ref string) (bool, error) {
+	if strings.HasPrefix(ref, "refs/") {
+		return r.cachedRef("ref:"+ref, func() (bool, error) {
+			return r.gitTest("rev-parse", "--verify", "--quiet", ref)
+		})
+	}
 	return r.gitTest("rev-parse", "--verify", "--quiet", ref)
+}
+
+func (r *Repo) cachedRef(key string, query func() (bool, error)) (bool, error) {
+	r.cacheMu.Lock()
+	if r.refSet[key] {
+		ok := r.refs[key]
+		r.cacheMu.Unlock()
+		return ok, nil
+	}
+	r.cacheMu.Unlock()
+	ok, err := query()
+	if err == nil {
+		r.cacheMu.Lock()
+		if r.refs == nil {
+			r.refs = make(map[string]bool)
+			r.refSet = make(map[string]bool)
+		}
+		r.refs[key], r.refSet[key] = ok, true
+		r.cacheMu.Unlock()
+	}
+	return ok, err
 }
 
 // gitTest runs a git command that answers by its status: 0 yes, 1 no, any
@@ -186,11 +431,22 @@ func (r *Repo) gitTest(args ...string) (bool, error) {
 
 // Remotes lists the configured remotes in git's order.
 func (r *Repo) Remotes() ([]string, error) {
+	r.cacheMu.Lock()
+	if r.remoteSet {
+		remotes := slices.Clone(r.remotes)
+		r.cacheMu.Unlock()
+		return remotes, nil
+	}
+	r.cacheMu.Unlock()
 	out, err := r.Git("remote")
 	if err != nil {
 		return nil, err
 	}
-	return splitLines(out), nil
+	remotes := splitLines(out)
+	r.cacheMu.Lock()
+	r.remotes, r.remoteSet = remotes, true
+	r.cacheMu.Unlock()
+	return slices.Clone(remotes), nil
 }
 
 // IsClean reports whether the work tree and the index match HEAD, untracked

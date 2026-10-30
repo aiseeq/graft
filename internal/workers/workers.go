@@ -256,7 +256,7 @@ func carried(repo *gitx.Repo, dir string, staged map[string]string, excluded []s
 		return 0, nil
 	}
 	slices.Sort(paths)
-	out, err := gitx.InOther(dir, strings.NewReader(strings.Join(paths, "\n")+"\n"), "hash-object", "--stdin-paths")
+	out, err := repo.InOther(dir, strings.NewReader(strings.Join(paths, "\n")+"\n"), "hash-object", "--stdin-paths")
 	if err != nil {
 		return 0, err
 	}
@@ -293,7 +293,7 @@ func forkBlobs(repo *gitx.Repo, dir string, paths []string) (map[string]string, 
 	if ok, err := repo.HasHead(); err != nil || !ok {
 		return map[string]string{}, err
 	}
-	head, err := gitx.InOther(dir, nil, "rev-parse", "--verify", "HEAD")
+	head, err := repo.InOther(dir, nil, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return nil, err
 	}

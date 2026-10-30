@@ -266,6 +266,7 @@ func restoreIndex(repo *gitx.Repo, s savedIndex) error {
 	if s.path == "" {
 		return nil
 	}
+	defer repo.Invalidate()
 	if !s.exists {
 		if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("restoring the git index: %w", err)

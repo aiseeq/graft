@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -48,9 +49,22 @@ func (r *Repo) ContentID(exclude func(path string) bool) (string, error) {
 
 // headEntries are the files of HEAD, path to "mode object".
 func (r *Repo) headEntries() (map[string]string, error) {
+	r.cacheMu.Lock()
+	if r.headTreeSet {
+		entries := cloneTreeEntries(r.headTreeEntries)
+		r.cacheMu.Unlock()
+		return entries, nil
+	}
+	r.cacheMu.Unlock()
+
 	entries := map[string]string{}
 	ok, err := r.HasHead()
 	if err != nil || !ok {
+		if err == nil {
+			r.cacheMu.Lock()
+			r.headTreeEntries, r.headTreeSet = entries, true
+			r.cacheMu.Unlock()
+		}
 		return entries, err
 	}
 	out, err := r.Git("ls-tree", "-r", "-z", "--full-tree", "HEAD")
@@ -68,30 +82,29 @@ func (r *Repo) headEntries() (map[string]string, error) {
 		}
 		entries[path] = f[0] + " " + f[2]
 	}
+	r.cacheMu.Lock()
+	r.headTreeEntries, r.headTreeSet = cloneTreeEntries(entries), true
+	r.cacheMu.Unlock()
 	return entries, nil
+}
+
+func cloneTreeEntries(entries map[string]string) map[string]string {
+	copy := make(map[string]string, len(entries))
+	maps.Copy(copy, entries)
+	return copy
 }
 
 // changedPaths are the files that differ from HEAD (all tracked files
 // before the first commit) and the untracked files that are not ignored.
 func (r *Repo) changedPaths() ([]string, error) {
-	ok, err := r.HasHead()
+	out, err := r.Git("status", "--porcelain", "-z", "--untracked-files=all", "--no-renames")
 	if err != nil {
 		return nil, err
 	}
-	tracked := []string{"diff", "HEAD", "--name-only", "-z", "--no-renames", "--no-ext-diff"}
-	if !ok {
-		tracked = []string{"ls-files", "-z"}
-	}
 	var paths []string
-	for _, args := range [][]string{tracked, {"ls-files", "--others", "--exclude-standard", "-z"}} {
-		out, err := r.Git(args...)
-		if err != nil {
-			return nil, err
-		}
-		for p := range strings.SplitSeq(out, "\x00") {
-			if p != "" {
-				paths = append(paths, p)
-			}
+	for record := range strings.SplitSeq(out, "\x00") {
+		if len(record) >= 4 {
+			paths = append(paths, record[3:])
 		}
 	}
 	return paths, nil

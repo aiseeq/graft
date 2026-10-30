@@ -77,7 +77,7 @@ func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
 	heavy := opts.Heavy
 	root := a.Dir
 	cfg := &config.Config{}
-	repo, err := gitx.Open(a.Dir)
+	repo, err := a.openRepo(a.Dir)
 	switch {
 	case err == nil:
 		root = repo.Root

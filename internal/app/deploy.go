@@ -1303,18 +1303,14 @@ func attributionProblems(repo *gitx.Repo, cfg *config.Config) ([]string, error) 
 		return nil, nil
 	}
 	var problems []string
-	format, err := repo.Git("rev-parse", "--show-object-format")
-	if err != nil {
-		return nil, fmt.Errorf("reading repository object format: %w", err)
-	}
 	var wantHashLength int
-	switch strings.TrimSpace(format) {
+	switch repo.ObjectFormat {
 	case "sha1":
 		wantHashLength = sha1CommitHashLength
 	case "sha256":
 		wantHashLength = sha256CommitHashLength
 	default:
-		return nil, fmt.Errorf("unsupported repository object format %q", strings.TrimSpace(format))
+		return nil, fmt.Errorf("unsupported repository object format %q", repo.ObjectFormat)
 	}
 	for _, name := range slices.Sorted(maps.Keys(cfg.Deploy.Targets)) {
 		conf := cfg.Deploy.Targets[name].ApprovedRelease

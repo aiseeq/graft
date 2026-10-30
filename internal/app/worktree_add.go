@@ -67,17 +67,8 @@ func (a *App) WorktreeAdd(ctx context.Context, o WorktreeAddOptions) error {
 	if exists {
 		from = o.Branch
 	}
-	links, err := neighbours(repo, main, dir, from)
+	links, err := addWorktree(repo, main, dir, o.Branch, from, exists)
 	if err != nil {
-		return err
-	}
-	args := []string{"worktree", "add", "--quiet"}
-	if exists {
-		args = append(args, dir, o.Branch)
-	} else {
-		args = append(args, "-b", o.Branch, dir, base)
-	}
-	if _, err := repo.Git(args...); err != nil {
 		return err
 	}
 	if exists {
@@ -85,7 +76,11 @@ func (a *App) WorktreeAdd(ctx context.Context, o WorktreeAddOptions) error {
 	} else {
 		a.printf("worktree %s on %s from %s", dir, o.Branch, base)
 	}
-	linkSetups, err := a.linkWorktree(main, dir)
+	worktreeRepo, err := a.openRepo(dir)
+	if err != nil {
+		return err
+	}
+	linkSetups, err := a.linkWorktree(main, dir, worktreeRepo)
 	if err != nil {
 		return err
 	}
@@ -98,17 +93,30 @@ func (a *App) WorktreeAdd(ctx context.Context, o WorktreeAddOptions) error {
 		}
 		a.printf("linked %s -> %s", l.at, l.to)
 	}
-	return a.prepareWorktree(ctx, main, dir, linkSetups)
+	return a.prepareWorktree(ctx, main, dir, linkSetups, worktreeRepo)
+}
+
+func addWorktree(repo *gitx.Repo, main, dir, branch, base string, exists bool) ([]link, error) {
+	links, err := neighbours(repo, main, dir, base)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"worktree", "add", "--quiet"}
+	if exists {
+		args = append(args, dir, branch)
+	} else {
+		args = append(args, "-b", branch, dir, base)
+	}
+	if _, err := repo.Git(args...); err != nil {
+		return nil, err
+	}
+	return links, nil
 }
 
 // prepareWorktree copies worktree.copy from the main worktree into the one
 // at dir and runs worktree.setup there, as the config at dir has them: the
 // branch's own.
-func (a *App) prepareWorktree(ctx context.Context, main, dir string, linkSetups []string) error {
-	repo, err := gitx.Open(dir)
-	if err != nil {
-		return err
-	}
+func (a *App) prepareWorktree(ctx context.Context, main, dir string, linkSetups []string, repo *gitx.Repo) error {
 	cfg, err := config.Load(repo.Root)
 	if err != nil {
 		return err
@@ -142,11 +150,7 @@ func (a *App) prepareWorktree(ctx context.Context, main, dir string, linkSetups 
 // the groups it did not link, each once. A group whose key matches but whose
 // setup runs for another group is not linked: the setup installs its paths
 // here too.
-func (a *App) linkWorktree(main, dir string) ([]string, error) {
-	repo, err := gitx.Open(dir)
-	if err != nil {
-		return nil, err
-	}
+func (a *App) linkWorktree(main, dir string, repo *gitx.Repo) ([]string, error) {
 	cfg, err := config.Load(repo.Root)
 	if err != nil {
 		return nil, err

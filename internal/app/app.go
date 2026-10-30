@@ -41,6 +41,7 @@ type App struct {
 	Command string
 
 	stats *stats.Recorder
+	repos map[string]*gitx.Repo
 }
 
 // lockFile is the lock's name inside the common git directory, shared by all
@@ -48,7 +49,7 @@ type App struct {
 const lockFile = "graft.lock"
 
 func (a *App) open() (*gitx.Repo, *config.Config, error) {
-	repo, err := gitx.Open(a.Dir)
+	repo, err := a.openRepo(a.Dir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -60,6 +61,26 @@ func (a *App) open() (*gitx.Repo, *config.Config, error) {
 		return nil, nil, err
 	}
 	return repo, cfg, nil
+}
+
+func (a *App) openRepo(dir string) (*gitx.Repo, error) {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolving repository directory: %w", err)
+	}
+	dir = filepath.Clean(absDir)
+	if repo := a.repos[dir]; repo != nil {
+		return repo, nil
+	}
+	repo, err := gitx.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	if a.repos == nil {
+		a.repos = make(map[string]*gitx.Repo)
+	}
+	a.repos[dir] = repo
+	return repo, nil
 }
 
 // requireGraft refuses to work on a project that needs a newer graft: an
@@ -153,6 +174,7 @@ func (a *App) runner(repo *gitx.Repo, cfg *config.Config) *tasks.Runner {
 
 func (a *App) gate(ctx context.Context, repo *gitx.Repo, cfg *config.Config) error {
 	a.warnStaleWorktreeLinks(repo, cfg)
+	defer repo.Invalidate()
 	return a.runner(repo, cfg).Gate(ctx)
 }
 
@@ -177,6 +199,7 @@ func (a *App) gateForMessage(ctx context.Context, repo *gitx.Repo, cfg *config.C
 	a.warnStaleWorktreeLinks(repo, cfg)
 	r := a.runner(repo, cfg)
 	r.Extra = map[string]string{tasks.MessageFileEnv: f.Name()}
+	defer repo.Invalidate()
 	return r.Gate(ctx)
 }
 

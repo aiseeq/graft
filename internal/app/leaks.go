@@ -115,7 +115,7 @@ func leakFindings(repo *gitx.Repo, message string, log io.Writer) ([]checks.Find
 // the repository already had in the parent excluded. It reports and fails on
 // findings, for auditing history.
 func (a *App) Leaks(revisions []string) error {
-	repo, err := gitx.Open(a.Dir)
+	repo, err := a.openRepo(a.Dir)
 	if err != nil {
 		return err
 	}
