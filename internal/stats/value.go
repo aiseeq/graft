@@ -2,6 +2,7 @@ package stats
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -25,7 +26,8 @@ type ValueFilter struct {
 }
 
 // Value returns the selected timing and its run count. Project records match
-// by profile when one is available, and by project root otherwise.
+// by their profile's repository name, and a record without a profile by its
+// project root.
 func Value(recs []Record, f ValueFilter) (float64, int, error) {
 	if f.Stat != ValueWallP50 && f.Stat != ValueWallP95 && f.Stat != ValueWaitP95 {
 		return 0, 0, fmt.Errorf("unknown stat %q", f.Stat)
@@ -71,8 +73,8 @@ func projectRecord(r *Record, roots map[string]bool, profile string) bool {
 	if roots == nil {
 		return true
 	}
-	if profile != "" {
-		return len(r.Profile) > len(profile) && r.Profile[:len(profile)] == profile && r.Profile[len(profile)] == ':'
+	if profile != "" && r.Profile != "" {
+		return strings.HasPrefix(r.Profile, profile+":")
 	}
 	return roots[r.Project]
 }

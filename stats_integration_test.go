@@ -550,4 +550,7 @@ func TestStatsValueCommand(t *testing.T) {
 	if out, code := f.graft("", "stats", "--all", "--value", "wall-p50", "--task", "absent", "--since", "24h"); code != 3 || !strings.Contains(out, "0 runs, need 3") {
 		t.Errorf("too few runs: exit %d, %q; want code 3 and the threshold message", code, out)
 	}
+	if out, code := f.graft("", "stats", "--value=", "--since", "24h"); code != 2 || !strings.Contains(out, "--value: want") {
+		t.Errorf("empty --value: exit %d, %q; want a usage error", code, out)
+	}
 }

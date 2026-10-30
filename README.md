@@ -1004,7 +1004,9 @@ usage errors.
 
 For a nightly speed check, `graft stats --value wall-p50 --task build --since 24h`
 prints one number of seconds, with at most three decimal places.
-`wall-p95` gives the nearest-rank 95th percentile, and `wait-p95` gives the
+The wall values are a run's own time, `wall_s - wait_s`: its wall time without
+the wait for the machine. `wall-p95` gives the nearest-rank 95th percentile, and
+`wait-p95` gives the
 95th percentile of waits. Wall values use successful runs; `wait-p95` without
 `--task` uses outer task runs. The default minimum is three runs. Fewer runs
 prints no value, explains the count on stderr and exits with code 3; set

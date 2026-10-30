@@ -65,8 +65,14 @@ func TestProjectRecordUsesPathWhenProfileIsUnavailable(t *testing.T) {
 	if !projectRecord(&Record{Project: "/worktree"}, roots, "") {
 		t.Error("profileless worktree record was excluded without a profile")
 	}
-	if projectRecord(&Record{Project: "/worktree"}, roots, "projectA") {
-		t.Error("profileless record was included despite an available profile")
+	if !projectRecord(&Record{Project: "/worktree"}, roots, "projectA") {
+		t.Error("profileless worktree record was excluded when the repository has a profile name")
+	}
+	if projectRecord(&Record{Project: "/worktree", Profile: "projectB:gate"}, roots, "projectA") {
+		t.Error("a record of another repository's profile was included")
+	}
+	if !projectRecord(&Record{Project: "/elsewhere", Profile: "projectA:gate"}, roots, "projectA") {
+		t.Error("a record with the repository's profile was excluded")
 	}
 }
 

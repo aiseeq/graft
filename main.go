@@ -332,12 +332,18 @@ func statsCmd(a *app.App, args []string) error {
 	if *all && *project != "" {
 		return fmt.Errorf("%w: --all and --project exclude each other", errUsage)
 	}
-	minRunsSet := false
+	valueSet, minRunsSet := false, false
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "min-runs" {
+		switch f.Name {
+		case "value":
+			valueSet = true
+		case "min-runs":
 			minRunsSet = true
 		}
 	})
+	if valueSet && *value == "" {
+		return fmt.Errorf("%w: --value: want wall-p50, wall-p95 or wait-p95", errUsage)
+	}
 	if err := validateStatsValue(*value, *task, *tests, *minRuns, minRunsSet); err != nil {
 		return err
 	}
