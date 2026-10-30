@@ -26,10 +26,12 @@ var newlySet = []string{
 }
 
 // perRun are the variables graft sets anew for every run of a task, the
-// threads from the machine's load among them: read, they would miss the
-// cache every time, and a test whose result hangs on them is the bug.
+// threads from the machine's load and the version described anew by every
+// commit among them (a graft run by the tests drops the inherited one):
+// read, they would miss the cache every time, and a test whose result hangs
+// on them is the bug.
 var perRun = []string{
-	"GRAFT_RUN_ID", "GRAFT_TEST_REPORT", "GRAFT_COMMIT_MESSAGE_FILE", "GRAFT_ADMITTED", "GRAFT_NOW",
+	"GRAFT_RUN_ID", "GRAFT_TEST_REPORT", "GRAFT_COMMIT_MESSAGE_FILE", "GRAFT_ADMITTED", "GRAFT_NOW", "GRAFT_VERSION",
 	"GRAFT_LOAD_PRIORITY", "GRAFT_LOAD_BUDGET", "GRAFT_LOAD_THEN", "GRAFT_LOADAVG",
 	"GRAFT_THREADS", "GOMAXPROCS",
 }
