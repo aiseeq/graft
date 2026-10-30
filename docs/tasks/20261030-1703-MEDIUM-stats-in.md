@@ -1,6 +1,7 @@
 # graft stats --in: отбор задачи по родителю
 
-Статус: открыт
+Статус: готово
+Исполнитель: luna-1030-1704
 
 ## Что сделать
 Запрос git-admin 30.10 ~16:55 CET (замер glint мастером glint): задача glint у потребителей идёт внутри smoke, deploy, analyze; `graft stats --task glint` смешивает все. Поле `in` (internal/stats/stats.go Record.In) уже пишется.
@@ -18,3 +19,4 @@
 - 2026-10-30 17:03 открыт — graft-master
 - 2026-10-30 17:04 note — graft-master: graft-master: боец Luna (фича-инструмента): бриф /home/aisee/.cache/worktrees/graft-measure/brief-stats-in.md, приёмка /home/aisee/.cache/worktrees/graft-measure/stats-in-accept.sh, дерево /home/aisee/.cache/worktrees/graft/feat-stats-in
 - 2026-10-30 17:28 note — graft-master: graft-master: ревью Terra 1030-1711: P2 --tests с --in и P2 потеря шагов исправлены в 77c78f3; повтор: шаги относятся по процессу graft — процесс, запустивший задачу в двух родителях, покажет шаги обоих; принято ограничением (у строк шагов нет in), описано в README и комментарии ranIn.
+- 2026-10-30 17:37 готово — terra-review (session graft-master): независимое ревью Terra 1030-1711 (бриф /home/aisee/.cache/worktrees/graft-measure/brief-review-stats-in.md, 2 захода): 2 P2 исправлены в 77c78f3, третья — ограничение по процессу, описано (71df29a). Приёмка /home/aisee/.cache/worktrees/graft-measure/stats-in-accept.sh exit 0 (glint in smoke wall-p50 2.654 = jq по копии журнала), go run . all зелёный на 77c78f3; glint чист после 04ed8cc.
