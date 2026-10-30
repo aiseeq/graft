@@ -1931,7 +1931,24 @@ the main one:
 worktree:
   copy: [.env]               # files of the main worktree, copied with their permissions
   setup: [generate-config]   # tasks run in the new worktree after the copy
+  link:
+    - key: [frontend/package-lock.json] # matching files identify shared dependencies
+      paths: [frontend/node_modules, frontend/admin-app/node_modules]
+      setup: frontend-deps    # run when a key differs or a directory is missing
 ```
+
+For each `link` group, `add` links its untracked directories to the main
+worktree when all key files match and all directories exist there. Otherwise,
+it runs the group's setup task in the new worktree, once for all the groups
+that name it, before the tasks of `setup`. A group needs `key`, `paths` and
+`setup`; a path the checkout tracks is an error. A directory link the system
+does not make (Windows without the right to make symlinks) is warned and the
+group's setup installs instead. `graft <setup>` in a worktree removes the
+group's links first (links only, never a directory), so it installs into the
+worktree, not into the main one. `graft gate` in a worktree warns, one line a
+path, of a link whose group's key file now differs from the main worktree's:
+`worktree.link <path>: a link to the main worktree, but <key> differs from it:
+run graft <setup>`; the gate goes on.
 
 A file of `copy` missing in the main worktree, or one the checkout has
 (tracked), is an error, and so is a failing `setup` task; the worktree stays,

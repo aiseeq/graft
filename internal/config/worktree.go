@@ -15,12 +15,20 @@ type Worktree struct {
 	// Setup are tasks run in the new worktree after the copy, such as
 	// generating the files the project needs and does not track.
 	Setup []string `yaml:"setup"`
+	// Link groups directories shared with the main worktree while their key files match.
+	Link []WorktreeLink `yaml:"link"`
+}
+
+// WorktreeLink describes dependency directories and the files that identify them.
+type WorktreeLink struct {
+	Key   []string `yaml:"key"`
+	Paths []string `yaml:"paths"`
+	Setup string   `yaml:"setup"`
 }
 
 func (c *Config) validateWorktree() error {
 	for _, p := range c.Worktree.Copy {
-		if p == "" || path.IsAbs(p) || path.Clean(p) != p || p == ".." || strings.HasPrefix(p, "../") ||
-			p == ".git" || strings.HasPrefix(p, ".git/") || strings.Contains(p, `\`) {
+		if !cleanWorktreePath(p) {
 			return fmt.Errorf("worktree.copy: %q is not a clean path inside the repository, written with /", p)
 		}
 	}
@@ -29,5 +37,24 @@ func (c *Config) validateWorktree() error {
 			return fmt.Errorf("worktree.setup: %s is no task of tasks", t)
 		}
 	}
+	for i, group := range c.Worktree.Link {
+		prefix := fmt.Sprintf("worktree.link[%d]", i)
+		if len(group.Paths) == 0 || len(group.Key) == 0 || group.Setup == "" {
+			return fmt.Errorf("%s: key, paths and setup are required", prefix)
+		}
+		for _, p := range append(append([]string{}, group.Key...), group.Paths...) {
+			if !cleanWorktreePath(p) {
+				return fmt.Errorf("%s: %q is not a clean path inside the repository, written with /", prefix, p)
+			}
+		}
+		if _, ok := c.Tasks[group.Setup]; !ok {
+			return fmt.Errorf("%s setup: %s is no task of tasks", prefix, group.Setup)
+		}
+	}
 	return nil
+}
+
+func cleanWorktreePath(p string) bool {
+	return p != "" && !path.IsAbs(p) && path.Clean(p) == p && p != ".." && !strings.HasPrefix(p, "../") &&
+		p != ".git" && !strings.HasPrefix(p, ".git/") && !strings.Contains(p, `\`)
 }

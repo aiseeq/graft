@@ -152,6 +152,7 @@ func (a *App) runner(repo *gitx.Repo, cfg *config.Config) *tasks.Runner {
 }
 
 func (a *App) gate(ctx context.Context, repo *gitx.Repo, cfg *config.Config) error {
+	a.warnStaleWorktreeLinks(repo, cfg)
 	return a.runner(repo, cfg).Gate(ctx)
 }
 
