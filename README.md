@@ -229,8 +229,10 @@ queues as before, `graft: build: heavy, on this machine: <why>`:
 
 - `GRAFT_HEAVY=local` in the environment (any other value is an error), or
   `graft exec --heavy --local`, which sets it for the command too;
-- `remote: false` in the task (only a heavy task takes `remote`): its steps
-  write files needed here;
+- `remote: false` in the task: its steps write files needed here, or its
+  tests read what only this machine has (a tool on `PATH`, state under the
+  home directory); a task that is not heavy takes it to keep its steps out
+  of a split gate, and only a heavy task takes `remote: true`;
 - the task uses the test database, a jest or playwright report file, `.env`
   keys (`dotenv`, `dotenv_sets`) or a `${KEY}` that is no variable of the
   task, or names `GRAFT_COMMIT_MESSAGE_FILE` in a gate: none of these is on
@@ -576,7 +578,7 @@ tasks:
     deps: [build]              # run first, each task at most once per invocation
     test_db: true              # pass the test database DSN (see below)
     heavy: true                # wait while the machine is loaded (user config load), GRAFT_THREADS set
-    remote: false              # heavy only: stay on this machine though the project has remote_heavy
+    remote: false              # stay on this machine though remote_heavy or a split gate would send it (true: heavy only)
     tests: go                  # read go test -json: print plain go test output, record every test
     dotenv: [API_KEY!, 'LOG_DIR?']  # only these .env keys reach the steps; KEY? optional, KEY! must not be empty
     dotenv_sets: [db]          # plus the keys of named sets
