@@ -165,7 +165,8 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	if err != nil {
 		return err
 	}
-	if err := a.gateForMessage(ctx, repo, cfg, plan.message); err != nil {
+	frozen, advisoryFailed, err := a.gateForMessage(ctx, repo, cfg, plan.message)
+	if err != nil {
 		return errors.Join(err, restoreIndex(repo, index))
 	}
 	if err := a.stageGateChanges(repo, start, "commit"); err != nil {
@@ -204,6 +205,11 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	}
 	if _, err := repo.GitInput(strings.NewReader(msg), markerEnv, "commit", "--cleanup=verbatim", "-F", "-"); err != nil {
 		return undo(err)
+	}
+	if frozen != nil {
+		if err := a.recordCommitAdvisory(repo, cfg, frozen, advisoryFailed); err != nil {
+			return err
+		}
 	}
 	refs := []string{"HEAD"}
 	if plan.bump.tag != "" {

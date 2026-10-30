@@ -43,7 +43,8 @@ func (a *App) Amend(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := a.gateForMessage(ctx, repo, cfg, message); err != nil {
+		frozen, advisoryFailed, err := a.gateForMessage(ctx, repo, cfg, message)
+		if err != nil {
 			return errors.Join(err, restoreIndex(repo, index))
 		}
 		if err := a.stageGateChanges(repo, start, "amend"); err != nil {
@@ -75,6 +76,11 @@ func (a *App) Amend(ctx context.Context) error {
 		}
 		if _, err := repo.GitInput(strings.NewReader(message), markerEnv, "commit", "--amend", "--cleanup=verbatim", "-F", "-"); err != nil {
 			return errors.Join(err, restoreIndex(repo, index))
+		}
+		if frozen != nil {
+			if err := a.recordCommitAdvisory(repo, cfg, frozen, advisoryFailed); err != nil {
+				return err
+			}
 		}
 		head, err := repo.Git("rev-parse", "--short", "HEAD")
 		if err != nil {

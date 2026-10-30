@@ -158,32 +158,32 @@ func (a *App) gate(ctx context.Context, repo *gitx.Repo, cfg *config.Config) err
 
 // gateForMessage runs the gate of a commit whose message is known: steps find
 // it in the file named by GRAFT_COMMIT_MESSAGE_FILE, removed afterwards.
-func (a *App) gateForMessage(ctx context.Context, repo *gitx.Repo, cfg *config.Config, message string) (err error) {
+func (a *App) gateForMessage(ctx context.Context, repo *gitx.Repo, cfg *config.Config, message string) (frozen *activeFreeze, failed []string, retErr error) {
 	f, err := os.CreateTemp(repo.GitDir, "GRAFT_COMMIT_MESSAGE.*")
 	if err != nil {
-		return fmt.Errorf("writing the commit message for the gate: %w", err)
+		return nil, nil, fmt.Errorf("writing the commit message for the gate: %w", err)
 	}
 	defer func() {
 		if rmErr := os.Remove(f.Name()); rmErr != nil {
-			err = errors.Join(err, fmt.Errorf("removing %s: %w", f.Name(), rmErr))
+			retErr = errors.Join(retErr, fmt.Errorf("removing %s: %w", f.Name(), rmErr))
 		}
 	}()
 	if _, err := f.WriteString(message); err != nil {
-		return errors.Join(fmt.Errorf("writing %s: %w", f.Name(), err), f.Close())
+		return nil, nil, errors.Join(fmt.Errorf("writing %s: %w", f.Name(), err), f.Close())
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("writing %s: %w", f.Name(), err)
+		return nil, nil, fmt.Errorf("writing %s: %w", f.Name(), err)
 	}
 	a.warnStaleWorktreeLinks(repo, cfg)
 	branch, err := repo.Branch()
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	lookup, err := a.frozenForBranch(repo, cfg, branch)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	frozen := lookup.freeze
+	frozen = lookup.freeze
 	gateCfg := cfg
 	if frozen != nil {
 		gateCfg = configWithoutFreezeAdvisory(cfg, frozen)
@@ -191,16 +191,18 @@ func (a *App) gateForMessage(ctx context.Context, repo *gitx.Repo, cfg *config.C
 	r := a.runner(repo, gateCfg)
 	r.Extra = map[string]string{tasks.MessageFileEnv: f.Name()}
 	if err := r.Gate(ctx); err != nil {
-		return err
+		return nil, nil, err
 	}
 	if frozen != nil {
-		head, err := repo.Git("rev-parse", "HEAD")
-		if err != nil {
-			return err
+		var selected []string
+		for _, step := range cfg.Gate {
+			if freezeAdvisory(frozen, step.Task) {
+				selected = append(selected, step.Task)
+			}
 		}
-		return a.runFreezeAdvisory(ctx, repo, cfg, frozen, branch, "commit", strings.TrimSpace(head))
+		return frozen, a.runFreezeAdvisory(ctx, repo, cfg, frozen, branch, selected), nil
 	}
-	return nil
+	return nil, nil, nil
 }
 
 // markerEnv lets graft's own git commit through the pre-commit hook.

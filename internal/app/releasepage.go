@@ -72,7 +72,7 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 		return err
 	}
 	if frozen := r.freezeForOwnedTarget(); frozen != nil && frozen.branch == r.branch {
-		journal, err := freezeJournal(r.repo, r.cfg, frozen)
+		journal, err := a.freezeJournal(r.repo, r.cfg, frozen)
 		if err != nil {
 			return err
 		}
@@ -110,21 +110,20 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 	return nil
 }
 
-func freezeJournal(repo *gitx.Repo, cfg *config.Config, f *activeFreeze) (string, error) {
+func (a *App) freezeJournal(repo *gitx.Repo, cfg *config.Config, f *activeFreeze) (string, error) {
 	remotes, err := pushRemotes(repo, cfg)
 	if err != nil {
 		return "", err
 	}
-	tags := map[string]bool{}
+	tags := map[string]string{}
 	for _, remote := range remotes {
 		out, err := repo.Git("ls-remote", "--tags", remote, "refs/tags/freeze-log/"+f.target+"/"+freezeSlug(f.version)+"/*")
 		if err != nil {
 			return "", err
 		}
-		for line := range strings.SplitSeq(out, "\n") {
-			_, ref, ok := strings.Cut(line, "\t")
-			if ok && !strings.HasSuffix(ref, "^{}") {
-				tags[strings.TrimPrefix(ref, "refs/tags/")] = true
+		for _, tag := range remoteTagNames(out) {
+			if _, exists := tags[tag]; !exists {
+				tags[tag] = remote
 			}
 		}
 	}
@@ -139,10 +138,10 @@ func freezeJournal(repo *gitx.Repo, cfg *config.Config, f *activeFreeze) (string
 	var b strings.Builder
 	b.WriteString("<h2>Freeze journal</h2><ul>")
 	for _, tag := range names {
-		if _, err := repo.Git("fetch", "--quiet", remotes[0], "refs/tags/"+tag+":refs/tags/"+tag); err != nil {
+		if _, err := repo.Git("fetch", "--quiet", tags[tag], "refs/tags/"+tag); err != nil {
 			return "", err
 		}
-		contents, err := repo.Git("for-each-ref", "--format=%(contents)", "refs/tags/"+tag)
+		contents, err := repo.Git("cat-file", "tag", "FETCH_HEAD")
 		if err != nil {
 			return "", err
 		}
@@ -179,15 +178,12 @@ func pageHeader(ctx context.Context, client *jira.Client, p *config.ReleasePage,
 	var links []string
 	for _, name := range names {
 		link := html.EscapeString(name)
-		for _, project := range r.cfg.ReleaseNotes.Jira.ProjectKeys {
-			vs, err := client.ProjectVersions(ctx, project)
-			if err != nil {
-				return "", err
-			}
-			if i := slices.IndexFunc(vs, func(v jira.Version) bool { return v.Name == name }); i >= 0 {
-				link = anchor(client.VersionURL(project, vs[i].ID), name)
-				break
-			}
+		project, v, found, err := findProjectVersion(ctx, client, r.cfg.ReleaseNotes.Jira.ProjectKeys, name)
+		if err != nil {
+			return "", err
+		}
+		if found {
+			link = anchor(client.VersionURL(project, v.ID), name)
 		}
 		links = append(links, link)
 	}
@@ -198,6 +194,19 @@ func pageHeader(ctx context.Context, client *jira.Client, p *config.ReleasePage,
 	}
 	b.WriteString("</tbody></table>")
 	return b.String(), nil
+}
+
+func findProjectVersion(ctx context.Context, client *jira.Client, projects []string, name string) (string, jira.Version, bool, error) {
+	for _, project := range projects {
+		versions, err := client.ProjectVersions(ctx, project)
+		if err != nil {
+			return "", jira.Version{}, false, err
+		}
+		if i := slices.IndexFunc(versions, func(v jira.Version) bool { return v.Name == name }); i >= 0 {
+			return project, versions[i], true, nil
+		}
+	}
+	return "", jira.Version{}, false, nil
 }
 
 // buildHeading names the build a section is about.

@@ -104,7 +104,9 @@ type deployRun struct {
 	// wait for a sudo password.
 	dryRun bool
 	// freeze is the active freeze related to this target, read once per run.
-	freeze *activeFreeze
+	freeze                         *activeFreeze
+	freezeLogKind, freezeLogReason string
+	freezeAdvisoryFailed           []string
 	// glint holds the moves for the glint findings of the deployed commit.
 	glint *glintCheck
 }
@@ -241,12 +243,10 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	if err := a.checkTargetRuns(ctx, r, o); err != nil {
 		return err
 	}
-	if err := a.checkFreeze(ctx, r, o, false); err != nil {
+	if err := a.checkFreeze(ctx, r, o); err != nil {
 		return err
 	}
-	if err := a.runFreezeAdvisory(ctx, r.repo, r.cfg, r.freezeForBranch(), r.branch, r.name, r.head); err != nil {
-		return err
-	}
+	r.freezeAdvisoryFailed = a.runFreezeAdvisory(ctx, r.repo, r.cfg, r.freezeForBranch(), r.branch, filterFreezeAdvisoryNames(r.target.Deps, r.freezeForBranch()))
 	if err := a.checkIntegrations(ctx, r); err != nil {
 		return err
 	}
@@ -334,36 +334,30 @@ func (a *App) checkReleaseFlow(ctx context.Context, r *deployRun, unapproved boo
 	return errors.Join(errs...)
 }
 
-func (a *App) checkFreeze(ctx context.Context, r *deployRun, o DeployOptions, dry bool) error {
+func (a *App) checkFreeze(ctx context.Context, r *deployRun, o DeployOptions) error {
 	frozen := r.freezeForRequiredTarget()
 	if frozen == nil {
 		return nil
 	}
 	if !r.hotfix && r.branch != frozen.branch {
 		if o.PastFreeze != "" {
-			if !dry {
-				a.warn("deploy %s bypasses freeze %s: %s", r.name, frozen.name, o.PastFreeze)
-				return freezeLog(a, r.repo, r.cfg, frozen, r.head, r.name, "bypass", o.PastFreeze)
-			}
+			a.warn("deploy %s bypasses freeze %s: %s", r.name, frozen.name, o.PastFreeze)
+			r.freezeLogKind, r.freezeLogReason = "bypass", o.PastFreeze
 			return nil
 		}
 		return fmt.Errorf("%s is frozen at %s; deploy from %s (or pass --past-freeze with a reason)", frozen.target, frozen.name, frozen.branch)
 	}
 	if r.hotfix {
-		if !dry {
-			return freezeLog(a, r.repo, r.cfg, frozen, r.head, r.name, "bypass", r.branch)
-		}
+		r.freezeLogKind, r.freezeLogReason = "bypass", r.branch
 		return nil
 	}
 	err := a.freezeIssueCheck(ctx, r, frozen)
 	if err == nil || o.PastFreeze == "" {
 		return err
 	}
-	if dry {
-		return nil
-	}
 	a.warn("deploy %s bypasses freeze %s: %s", r.name, frozen.name, o.PastFreeze)
-	return freezeLog(a, r.repo, r.cfg, frozen, r.head, r.name, "bypass", o.PastFreeze)
+	r.freezeLogKind, r.freezeLogReason = "bypass", o.PastFreeze
+	return nil
 }
 
 // checkTargetRuns reads what the target runs, shows it and refuses a deploy
@@ -518,17 +512,27 @@ func (a *App) runDeployScript(ctx context.Context, r *deployRun, args []string) 
 // release is live by now, so a failure here is reported and the rest goes on;
 // only a fix version left unset makes the deploy exit non-zero.
 func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
+	if err := a.recordFreezeJournal(r); err != nil {
+		return err
+	}
 	if r.target.DeployedSHA == nil {
 		return nil
 	}
+	shaRecorded := true
 	if err := deploy.WriteDeployedSHA(ctx, r.env, r.target.DeployedSHA, r.head); err != nil {
+		shaRecorded = false
 		a.warn("the deployed commit is not recorded: %v", err)
 	}
 	withheldErr := errors.Join(a.recordWithheld(ctx, r), a.mergeIntoTrunk(r))
 	a.hotfixDone(r)
-	withheldErr = errors.Join(withheldErr, a.recordVersions(ctx, r), a.publishReleasePage(ctx, r))
-	if frozen := r.freezeForOwnedTarget(); frozen != nil && frozen.branch == r.branch {
-		withheldErr = errors.Join(withheldErr, removeFreezeTags(a, r.repo, r.cfg, frozen))
+	pageErr := a.publishReleasePage(ctx, r)
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	withheldErr = errors.Join(withheldErr, a.recordVersions(recordCtx, r), pageErr)
+	if frozen := r.freezeForOwnedTarget(); frozen != nil && frozen.branch == r.branch && shaRecorded && pageErr == nil {
+		withheldErr = errors.Join(withheldErr, a.removeFreezeTags(r.repo, r.cfg, frozen))
+	} else if frozen := r.freezeForOwnedTarget(); frozen != nil && frozen.branch == r.branch && (!shaRecorded || pageErr != nil) {
+		a.warn("freeze %s remains active because deployed_sha or the release page could not be recorded", frozen.name)
 	}
 	if r.target.ReleaseNotes == nil {
 		return withheldErr
@@ -546,6 +550,23 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 		return errors.Join(withheldErr, fmt.Errorf("deployed %s to %s, but %s (see above)", gitx.Short(r.head), r.name, strings.Join(missing, "; ")))
 	}
 	return withheldErr
+}
+
+func (a *App) recordFreezeJournal(r *deployRun) error {
+	var errs []error
+	if frozen := r.freezeForBranch(); frozen != nil {
+		for _, task := range r.freezeAdvisoryFailed {
+			if err := a.freezeLog(r.repo, r.cfg, frozen, r.head, r.name, "advisory", task); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	if frozen := r.freezeForRequiredTarget(); frozen != nil && r.freezeLogKind != "" {
+		if err := a.freezeLog(r.repo, r.cfg, frozen, r.head, r.name, r.freezeLogKind, r.freezeLogReason); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // noteKeys lists the keys the deploy delivers, saying why when there are

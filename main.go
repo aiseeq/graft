@@ -878,6 +878,9 @@ func runDeployCommand(ctx context.Context, a *app.App, pos, scriptArgs []string,
 	if deployCommandFlagsInvalid(pos[0], scriptArgsProvided, lines, grep, redeploy, unapproved, pastFreeze, apply, glintTicket) {
 		return usage
 	}
+	if reason != "" && pos[0] != "thaw" {
+		return usage
+	}
 	if run := trackerDeployCmd(ctx, a, pos, scriptArgsProvided, apply, glintTicket); run != nil {
 		return run()
 	}

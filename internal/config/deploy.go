@@ -474,6 +474,14 @@ func (c *Config) validateFreeze(where string, t *DeployTarget, f *Freeze) error 
 		if _, ok := c.Tasks[task]; !ok {
 			return fmt.Errorf("%s.freeze.advisory[%d]: unknown task %q", where, i, task)
 		}
+		acceptance := c.Deploy.Targets[t.Requires]
+		direct := slices.Contains(acceptance.Deps, task)
+		for _, step := range c.Gate {
+			direct = direct || step.Task == task
+		}
+		if !direct {
+			return fmt.Errorf("%s.freeze.advisory[%d]: task %q must be a direct dependency of %s or a gate step", where, i, task, t.Requires)
+		}
 	}
 	return nil
 }

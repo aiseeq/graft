@@ -157,6 +157,16 @@ func TestFrozenTargetTakesOnlyTheReleaseBranch(t *testing.T) {
 		t.Errorf("graft deploy check acc does not show the freeze: exit %d\n%s", code, out)
 	}
 
+	// A bypass whose deploy fails is not journaled.
+	d.env = append(d.env, "DEPLOY_EXIT=3")
+	if out, code := d.graft("", "deploy", "--past-freeze", "a try that fails", "acc"); code == 0 {
+		t.Errorf("the failing deploy script passed:\n%s", out)
+	}
+	d.env = d.env[:len(d.env)-1]
+	if logs := d.remoteTags("freeze-log/"); len(logs) != 0 {
+		t.Errorf("freeze-log after a failed deploy = %q", logs)
+	}
+
 	out = d.mustGraft("deploy", "--past-freeze", "the customer asked for the trunk", "acc")
 	if !strings.Contains(out, "the customer asked for the trunk") {
 		t.Errorf("the bypass is not said:\n%s", out)
@@ -193,10 +203,18 @@ func TestFrozenTargetTakesOnlyTheReleaseBranch(t *testing.T) {
 // Bug; reverts and ignore_paths pass, as in approved_release.
 func TestFrozenTargetTakesOnlyTheFrozenVersion(t *testing.T) {
 	d := freezeRepo(t)
+	// acc took another product's work before the freeze: what goes out is
+	// counted from what prod runs, so the branch must still drop it.
+	early := d.commitFile("early.txt", "feat: PROJ-6 on acc before the freeze")
+	d.mustGraft("deploy", "acc")
 	d.commitFile("one.txt", "feat: PROJ-1 accepted work")
 	d.freeze()
 	d.commitFile("bug.txt", "fix: PROJ-8 a bug found in acceptance")
 	d.commitFile("docs/notes.md", "docs: release notes draft")
+	if out, code := d.graft("", "deploy", "acc"); code == 0 || !strings.Contains(out, "PROJ-6 not in Product v1.2.10") {
+		t.Errorf("acc took the work it ran before the freeze, counted from acc: exit %d\n%s", code, out)
+	}
+	d.commitFile("revert-early.txt", "revert: feat: PROJ-6 on acc before the freeze\n\nThis reverts commit "+early+".")
 	d.mustGraft("deploy", "acc")
 
 	for _, c := range []struct{ file, msg, want string }{
@@ -225,6 +243,9 @@ func TestFrozenTargetTakesOnlyTheFrozenVersion(t *testing.T) {
 	if logs := d.remoteTags("freeze-log/prod/1.2.10/"); len(logs) != 1 || !strings.HasSuffix(logs[0], "-bypass") {
 		t.Errorf("freeze-log after the bypass of an item = %q", logs)
 	}
+	// What a bypass let out stays out: the next deploy does not need it again.
+	d.commitFile("more.txt", "feat: PROJ-1 more accepted work")
+	d.mustGraft("deploy", "acc")
 }
 
 // TestAdvisoryTaskWarnsOnTheFrozenBranch: while prod is frozen, a failing
@@ -240,8 +261,13 @@ func TestAdvisoryTaskWarnsOnTheFrozenBranch(t *testing.T) {
 	if out := d.mustGraft("commit", "-m", "fix: PROJ-8 committed through the gate"); !strings.Contains(out, "advisory while Product v1.2.10 is frozen") {
 		t.Errorf("the gate on the release branch does not say lint is advisory:\n%s", out)
 	}
-	if logs := d.remoteTags("freeze-log/prod/1.2.10/"); len(logs) != 1 || !strings.HasSuffix(logs[0], "-advisory") {
-		t.Errorf("freeze-log after the advisory failure on the gate = %q", logs)
+	logs := d.remoteTags("freeze-log/prod/1.2.10/")
+	if len(logs) != 1 || !strings.HasSuffix(logs[0], "-advisory") {
+		t.Fatalf("freeze-log after the advisory failure on the gate = %q", logs)
+	}
+	d.git("fetch", "-q", "origin", "refs/tags/freeze-log/*:refs/tags/freeze-log/*")
+	if got, head := d.git("rev-parse", logs[0]+"^{commit}"), d.git("rev-parse", "HEAD"); got != head {
+		t.Errorf("the gate's advisory record is on %s, want the commit it made %s", got, head)
 	}
 	if out := d.mustGraft("deploy", "acc"); !strings.Contains(out, "lint failed, advisory while Product v1.2.10 is frozen") {
 		t.Errorf("the acc deploy does not say lint is advisory:\n%s", out)
@@ -262,6 +288,11 @@ func TestAdvisoryTaskWarnsOnTheFrozenBranch(t *testing.T) {
 // acc takes the trunk again; graft deploy thaw ends a freeze by hand.
 func TestFreezeEndsWhenTheBranchReachesProd(t *testing.T) {
 	d := freezeRepo(t)
+	// Every remote carries the freeze and its journal, and loses them at the end.
+	mirror := d.remote("mirror")
+	d.run(d.base, "git", "init", "-q", "--bare", mirror)
+	d.addRemote("mirror", mirror)
+	d.git("push", "-q", "mirror", "HEAD")
 	d.commitFile("one.txt", "feat: PROJ-1 accepted work")
 	trunk := d.freeze()
 	d.mustGraft("deploy", "acc")
@@ -278,6 +309,9 @@ func TestFreezeEndsWhenTheBranchReachesProd(t *testing.T) {
 	}
 	if tags := d.remoteTags("freeze"); len(tags) != 0 {
 		t.Errorf("tags left after the release = %q", tags)
+	}
+	if tags := d.git("ls-remote", "--tags", "mirror", "refs/tags/freeze*"); tags != "" {
+		t.Errorf("tags left on mirror after the release:\n%s", tags)
 	}
 	body := d.jira.page("Product v1.2.10: release notes")
 	for _, want := range []string{"a look at the trunk", "lint"} {
@@ -306,6 +340,18 @@ func TestFreezeEndsWhenTheBranchReachesProd(t *testing.T) {
 	d.mustGraft("deploy", "acc")
 	if out, code := d.graft("", "deploy", "acc"); code == 0 || !strings.Contains(out, "already runs") {
 		t.Errorf("acc took the commit it runs again without --redeploy: exit %d\n%s", code, out)
+	}
+
+	// Frozen again from another clone, this clone's tag of the earlier freeze
+	// is stale: the freeze on the remote decides.
+	d.jira.mu.Lock()
+	d.jira.fixVersions["PROJ-1"] = []string{"10010", "10030"}
+	d.jira.mu.Unlock()
+	d.git("switch", "-q", trunk)
+	d.mustGraft("deploy", "freeze", "prod", "Product v1.3.0")
+	d.git("tag", "-f", "-a", "freeze/prod/1.3.0", "-m", "version: Product v1.3.0\nbranch: release/1.3.0\ntime: 2026-10-01T10:00:00+03:00\n", "HEAD~1")
+	if out, code := d.graft("", "deploy", "--redeploy", "acc"); code != 0 {
+		t.Errorf("acc with a stale local freeze tag: exit %d\n%s", code, out)
 	}
 }
 
