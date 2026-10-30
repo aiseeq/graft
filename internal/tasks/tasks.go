@@ -696,7 +696,7 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 	if stepErr == nil {
 		return nil
 	}
-	if stepErr != nil && advisory != nil && gs.step.Task != "" && advisory(gs.step.Task) {
+	if advisory != nil && gs.step.Task != "" && advisory(gs.step.Task) {
 		return reportAdvisoryFailure(gs.step.Task, stepErr, onAdvisory)
 	}
 	if gs.hint != "" {

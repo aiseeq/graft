@@ -411,7 +411,7 @@ func (c *Config) validateTarget(name string, t *DeployTarget) error {
 		return err
 	}
 	if f := t.Freeze; f != nil {
-		if err := c.validateFreeze(where, t, f); err != nil {
+		if err := c.validateFreeze(where, name, t, f); err != nil {
 			return err
 		}
 	}
@@ -452,7 +452,7 @@ func (c *Config) validateTargetOptions(where string, t *DeployTarget) error {
 	return nil
 }
 
-func (c *Config) validateFreeze(where string, t *DeployTarget, f *Freeze) error {
+func (c *Config) validateFreeze(where, name string, t *DeployTarget, f *Freeze) error {
 	if t.Requires == "" {
 		return fmt.Errorf("%s.freeze: needs requires, the target it holds during acceptance", where)
 	}
@@ -461,7 +461,7 @@ func (c *Config) validateFreeze(where string, t *DeployTarget, f *Freeze) error 
 	}
 	acceptance := c.Deploy.Targets[t.Requires]
 	if t.DeployedSHA == nil || acceptance == nil || acceptance.DeployedSHA == nil {
-		return fmt.Errorf("%s.freeze: needs deployed_sha on both %s and %s", where, t.Requires, strings.TrimPrefix(where, "deploy.targets."))
+		return fmt.Errorf("%s.freeze: needs deployed_sha on both %s and %s", where, t.Requires, name)
 	}
 	if c.ReleaseNotes == nil || c.ReleaseNotes.Jira == nil || len(c.ReleaseNotes.Jira.ProjectKeys) == 0 {
 		return fmt.Errorf("%s.freeze: needs release_notes.jira.project_keys to find Jira versions", where)
@@ -474,6 +474,10 @@ func (c *Config) validateFreeze(where string, t *DeployTarget, f *Freeze) error 
 			return fmt.Errorf("%s.freeze.types[%d]: blank", where, i)
 		}
 	}
+	return c.validateFreezeAdvisory(where, name, t.Requires, t, acceptance, f)
+}
+
+func (c *Config) validateFreezeAdvisory(where, name, requires string, t, acceptance *DeployTarget, f *Freeze) error {
 	for i, task := range f.Advisory {
 		if _, ok := c.Tasks[task]; !ok {
 			return fmt.Errorf("%s.freeze.advisory[%d]: unknown task %q", where, i, task)
@@ -483,10 +487,45 @@ func (c *Config) validateFreeze(where string, t *DeployTarget, f *Freeze) error 
 			direct = direct || step.Task == task
 		}
 		if !direct {
-			return fmt.Errorf("%s.freeze.advisory[%d]: task %q must be a direct dependency of %s or %s, or a gate step", where, i, task, where[strings.LastIndex(where, ".")+1:], t.Requires)
+			return fmt.Errorf("%s.freeze.advisory[%d]: task %q must be a direct dependency of %s or %s, or a gate step", where, i, task, name, t.Requires)
+		}
+		var roots []string
+		roots = append(roots, t.Deps...)
+		roots = append(roots, acceptance.Deps...)
+		for _, step := range c.Gate {
+			if step.Task != "" {
+				roots = append(roots, step.Task)
+			}
+		}
+		for _, root := range roots {
+			if root != task && c.taskDependsOn(root, task, map[string]bool{}) {
+				return fmt.Errorf("%s.freeze.advisory[%d]: task %q cannot be a dependency of %q", where, i, task, root)
+			}
 		}
 	}
 	return nil
+}
+
+func (c *Config) taskDependsOn(root, wanted string, seen map[string]bool) bool {
+	if seen[root] {
+		return false
+	}
+	seen[root] = true
+	task := c.Tasks[root]
+	if task == nil {
+		return false
+	}
+	for _, dep := range task.Deps {
+		if dep == wanted || c.taskDependsOn(dep, wanted, seen) {
+			return true
+		}
+	}
+	for _, step := range task.Run {
+		if step.Task == wanted || c.taskDependsOn(step.Task, wanted, seen) {
+			return true
+		}
+	}
+	return false
 }
 
 // validateTargetRelease checks the release window and what a target asks of

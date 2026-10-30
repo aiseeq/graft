@@ -98,7 +98,7 @@ func (a *App) pushTrunkMerge(r *deployRun, trunk, branch string) (string, error)
 			remote, err, branch, remote, branch, r.branch, remote, branch)
 	}
 	a.printf("pushed to %s", remote)
-	mirrors := a.push(r.repo, slices.DeleteFunc(pushTo, func(x string) bool { return x == remote }), []string{ref}, false)
+	mirrors := a.push(r.repo, slices.DeleteFunc(pushTo, func(x string) bool { return x == remote }), []string{ref}, false, hasConfiguredFreeze(r.cfg))
 	local, err := r.repo.Git("rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
 	if err == nil && strings.TrimSpace(local) == old {
 		if _, err := r.repo.Git("update-ref", "refs/heads/"+branch, merge, old); err != nil {

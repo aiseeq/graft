@@ -42,7 +42,7 @@ func TestFreezeAdvisoryJournalFailureFailsCommitAfterCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, code := d.graft("", "commit", "-m", "fix: PROJ-8 advisory failure")
-	if code == 0 || !strings.Contains(out, "commit is made and pushed") || !strings.Contains(out, "freeze journal lacks the advisory record") {
+	if code == 0 || !strings.Contains(out, "commit is made") || !strings.Contains(out, "freeze journal lacks the advisory record") {
 		t.Fatalf("advisory journal push failure was not reported after commit: exit %d\n%s", code, out)
 	}
 	if !strings.Contains(d.git("log", "-1", "--format=%s"), "PROJ-8 advisory failure") {
@@ -143,10 +143,9 @@ func TestFreezeRefusesTwoActiveFreezesForOneRequiredTarget(t *testing.T) {
 	d.at("2026-10-20 10:00")
 	d.mustGraft("deploy", "freeze", "aaa", "Product v1.2.10")
 	d.git("switch", "-q", trunk)
-	d.mustGraft("deploy", "freeze", "prod", "Product v1.2.10")
-	d.git("switch", "-q", trunk)
-	out, code := d.graft("", "deploy", "acc")
+	out, code := d.graft("", "deploy", "freeze", "prod", "Product v1.2.10")
 	if code == 0 || !strings.Contains(out, "aaa") || !strings.Contains(out, "prod") {
-		t.Fatalf("two active freezes did not refuse acc with both targets named: exit %d\n%s", code, out)
+		t.Fatalf("second active freeze was not refused with both targets named: exit %d\n%s", code, out)
 	}
+	d.git("switch", "-q", trunk)
 }

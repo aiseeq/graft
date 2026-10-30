@@ -72,7 +72,7 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 		return err
 	}
 	if frozen := r.freezeForOwnedTarget(); frozen != nil && frozen.branch == r.branch {
-		journal, err := a.freezeJournal(r.repo, r.cfg, frozen)
+		journal, err := a.freezeJournal(r.repo, r.cfg, frozen, p)
 		if err != nil {
 			return err
 		}
@@ -100,8 +100,9 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 	}
 	heading := buildHeading(p, r)
 	if strings.Contains(page.Body, heading) {
-		if strings.Contains(section, "<h2>Freeze journal</h2>") {
-			body := replaceFreezeJournal(page.Body, heading, section[strings.Index(section, "<h2>Freeze journal</h2>"):])
+		journalHeading := "<h3>" + html.EscapeString(p.Label("freeze_journal")) + "</h3>"
+		if strings.Contains(section, journalHeading) {
+			body := replaceFreezeJournal(page.Body, heading, section[strings.Index(section, journalHeading):])
 			if body != page.Body {
 				if _, err := client.UpdatePage(ctx, page, body, "freeze journal "+r.version); err != nil {
 					return err
@@ -119,28 +120,14 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 }
 
 func replaceFreezeJournal(body, build, journal string) string {
-	const heading = "<h2>Freeze journal</h2>"
+	const heading = "<h3>Freeze journal</h3>"
 	buildStart := strings.Index(body, build)
 	if buildStart < 0 {
 		return body + journal
 	}
 	buildEnd := len(body)
-	for searchAt := buildStart + len(build); searchAt < len(body); {
-		next := strings.Index(body[searchAt:], "<h2>")
-		if next < 0 {
-			break
-		}
-		headingStart := searchAt + next
-		headingEnd := strings.Index(body[headingStart:], "</h2>")
-		if headingEnd < 0 {
-			break
-		}
-		headingEnd += headingStart + len("</h2>")
-		if body[headingStart:headingEnd] != heading {
-			buildEnd = headingStart
-			break
-		}
-		searchAt = headingEnd
+	if next := strings.Index(body[buildStart+len(build):], "<h2>"); next >= 0 {
+		buildEnd = buildStart + len(build) + next
 	}
 	section := body[buildStart:buildEnd]
 	start := strings.Index(section, heading)
@@ -155,7 +142,7 @@ func replaceFreezeJournal(body, build, journal string) string {
 	return body[:buildStart+start] + journal + body[buildStart+end:]
 }
 
-func (a *App) freezeJournal(repo *gitx.Repo, cfg *config.Config, f *activeFreeze) (string, error) {
+func (a *App) freezeJournal(repo *gitx.Repo, cfg *config.Config, f *activeFreeze, p *config.ReleasePage) (string, error) {
 	tags, err := freezeLogTags(repo, cfg, f)
 	if err != nil {
 		return "", err
@@ -169,7 +156,7 @@ func (a *App) freezeJournal(repo *gitx.Repo, cfg *config.Config, f *activeFreeze
 	}
 	slices.Sort(names)
 	var b strings.Builder
-	b.WriteString("<h2>Freeze journal</h2><ul>")
+	b.WriteString("<h3>" + html.EscapeString(p.Label("freeze_journal")) + "</h3><ul>")
 	for _, tag := range names {
 		refs := tags[tag]
 		if len(refs) == 0 {

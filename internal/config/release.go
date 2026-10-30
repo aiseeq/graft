@@ -55,17 +55,18 @@ type ReleasePage struct {
 // PageLabels are the words of a release page and their defaults; build
 // takes {version} and {short}.
 var PageLabels = map[string]string{
-	"release": "Release",
-	"date":    "Date",
-	"target":  "Target",
-	"build":   "Build {version}, commit {short}",
-	"changes": "Changes",
-	"fixes":   "Fixes",
-	"moved":   "Moved to the next release",
-	"none":    "No items.",
-	"issue":   "Issue",
-	"summary": "Summary",
-	"type":    "Type",
+	"release":        "Release",
+	"date":           "Date",
+	"target":         "Target",
+	"build":          "Build {version}, commit {short}",
+	"changes":        "Changes",
+	"fixes":          "Fixes",
+	"moved":          "Moved to the next release",
+	"none":           "No items.",
+	"freeze_journal": "Freeze journal",
+	"issue":          "Issue",
+	"summary":        "Summary",
+	"type":           "Type",
 }
 
 // Label is the page's word for the key.

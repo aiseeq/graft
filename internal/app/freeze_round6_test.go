@@ -22,14 +22,14 @@ func TestFreezeUsesTheIssueVersionID(t *testing.T) {
 }
 
 func TestReplaceFreezeJournalWithinBuildSection(t *testing.T) {
-	first := "<h2>Product v1.2.10</h2><ul><li>items</li></ul><h2>Freeze journal</h2><ul><li>old</li></ul>"
-	second := "<h2>Product v1.2.11</h2><ul><li>other items</li></ul><h2>Freeze journal</h2><ul><li>keep</li></ul>"
+	first := "<h2>Product v1.2.10</h2><ul><li>items</li></ul><h3>Freeze journal</h3><ul><li>old</li></ul>"
+	second := "<h2>Product v1.2.11</h2><ul><li>other items</li></ul><h3>Freeze journal</h3><ul><li>keep</li></ul>"
 	body := first + second
 	build := "<h2>Product v1.2.10</h2>"
-	journal := "<h2>Freeze journal</h2><ul><li>new</li></ul>"
+	journal := "<h3>Freeze journal</h3><ul><li>new</li></ul>"
 	body = replaceFreezeJournal(body, build, journal)
 	body = replaceFreezeJournal(body, build, journal)
-	if got := strings.Count(body, "<h2>Freeze journal</h2>"); got != 2 {
+	if got := strings.Count(body, "<h3>Freeze journal</h3>"); got != 2 {
 		t.Fatalf("freeze journal headings = %d, want one for each build: %s", got, body)
 	}
 	firstBuild := body[:strings.Index(body, "<h2>Product v1.2.11</h2>")]
@@ -117,7 +117,7 @@ func TestFreezeJournalListsRetriedCommitAdvisory(t *testing.T) {
 	}
 	cfg := &config.Config{Deploy: &config.Deploy{Remote: "origin"}}
 	app := &App{}
-	journal, err := app.freezeJournal(repo, cfg, &activeFreeze{target: "prod", version: "1.2.10"})
+	journal, err := app.freezeJournal(repo, cfg, &activeFreeze{target: "prod", version: "1.2.10"}, &config.ReleasePage{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -319,40 +319,39 @@ func pushRemotes(repo *gitx.Repo, cfg *config.Config) ([]string, error) {
 
 // PushError reports the remotes a push did not reach.
 type PushError struct {
-	Failed []string
-	Total  int
-	Refs   []string
-	Lease  bool
+	Failed       []string
+	Total        int
+	Refs         []string
+	Lease        bool
+	NoFollowTags bool
 }
 
 func (e *PushError) Error() string {
 	var retry []string
 	for _, r := range e.Failed {
-		retry = append(retry, retryPushCommand(r, e.Refs, e.Lease))
+		retry = append(retry, retryPushCommand(r, e.Refs, e.Lease, e.NoFollowTags))
 	}
 	return fmt.Sprintf("push failed for %d of %d remotes (%s); the commit is made locally, retry with: %s",
 		len(e.Failed), e.Total, strings.Join(e.Failed, ", "), strings.Join(retry, "; "))
 }
 
-func retryPushCommand(remote string, refs []string, lease bool) string {
-	push := pushArgs(remote, lease)
-	args := []string{"git", push[0], remote}
+func retryPushCommand(remote string, refs []string, lease, noFollowTags bool) string {
+	args := append([]string{"git"}, pushArgs(remote, lease, noFollowTags)...)
 	args = append(args, refs...)
-	args = append(args, push[1:len(push)-1]...)
 	return strings.Join(args, " ")
 }
 
 // push publishes refs to every remote, one at a time, and keeps going past a
 // failed remote: the others still get the commit, and the summary names each
 // one that did not.
-func (a *App) push(repo *gitx.Repo, remotes, refs []string, lease bool) error {
+func (a *App) push(repo *gitx.Repo, remotes, refs []string, lease, noFollowTags bool) error {
 	if len(remotes) == 0 {
 		a.printf("no remotes configured, nothing pushed")
 		return nil
 	}
 	var failed []string
 	for _, remote := range remotes {
-		args := append(pushArgs(remote, lease), refs...)
+		args := append(pushArgs(remote, lease, noFollowTags), refs...)
 		if _, err := repo.Git(args...); err != nil {
 			failed = append(failed, remote)
 			fmt.Fprintf(a.Stderr, "graft: push to %s FAILED: %v\n", remote, err)
@@ -361,18 +360,34 @@ func (a *App) push(repo *gitx.Repo, remotes, refs []string, lease bool) error {
 		a.printf("pushed to %s", remote)
 	}
 	if len(failed) > 0 {
-		return &PushError{Failed: failed, Total: len(remotes), Refs: refs, Lease: lease}
+		return &PushError{Failed: failed, Total: len(remotes), Refs: refs, Lease: lease, NoFollowTags: noFollowTags}
 	}
 	return nil
 }
 
 // pushArgs is git push to remote, with --force-with-lease for a branch that is
 // rebased after it was pushed: the push replaces only what this clone last saw.
-func pushArgs(remote string, lease bool) []string {
-	if lease {
-		return []string{"push", "--no-follow-tags", "--force-with-lease", remote}
+func pushArgs(remote string, lease, noFollowTags bool) []string {
+	args := []string{"push"}
+	if noFollowTags {
+		args = append(args, "--no-follow-tags")
 	}
-	return []string{"push", "--no-follow-tags", remote}
+	if lease {
+		args = append(args, "--force-with-lease")
+	}
+	return append(args, remote)
+}
+
+func hasConfiguredFreeze(cfg *config.Config) bool {
+	if cfg == nil || cfg.Deploy == nil {
+		return false
+	}
+	for _, target := range cfg.Deploy.Targets {
+		if target.Freeze != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeOrNormalContext tells whether a merge is in progress, which a graft

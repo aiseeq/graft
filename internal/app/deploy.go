@@ -247,7 +247,7 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	if err := a.checkFreeze(ctx, r, o); err != nil {
 		return err
 	}
-	if err := checkFreezeAdvisoryPreflight(a, r); err != nil {
+	if err := a.checkFreezeAdvisoryPreflight(r); err != nil {
 		return err
 	}
 	if err := a.checkIntegrations(ctx, r); err != nil {
@@ -520,14 +520,17 @@ func configuredFreezeAdvisoryForTarget(r *deployRun) map[string]bool {
 	return advisory
 }
 
-func checkFreezeAdvisoryPreflight(a *App, r *deployRun) error {
+func (a *App) checkFreezeAdvisoryPreflight(r *deployRun) error {
 	if len(r.freezePreflightDeps) == 0 {
 		return nil
 	}
 	frozen := r.freezeForBranch()
 	if frozen != nil {
+		var required []string
+		var missing []string
 		for _, task := range r.freezePreflightDeps {
 			if !freezeAdvisory(frozen, task) {
+				required = append(required, task)
 				continue
 			}
 			problems := r.tasks.DepsMissing([]string{task})
@@ -538,6 +541,10 @@ func checkFreezeAdvisoryPreflight(a *App, r *deployRun) error {
 			a.warnFreezeAdvisory(frozen, task, err)
 			r.freezeAdvisoryFailed = append(r.freezeAdvisoryFailed, task)
 			r.tasks.Skip(task)
+		}
+		missing = r.tasks.DepsMissing(required)
+		if len(missing) > 0 {
+			return fmt.Errorf("deploy %s: nothing was done, missing:\n  %s", r.name, strings.Join(missing, "\n  "))
 		}
 		return nil
 	}
@@ -1536,11 +1543,30 @@ func shipsNothing(repo *gitx.Repo, cfg *config.Config, conf *config.ApprovedRele
 
 // approvalGate reads each item and each version once per deploy.
 type approvalGate struct {
-	client *jira.Client
-	conf   *config.ApprovedRelease
-	issues map[string]jira.Issue
+	client  *jira.Client
+	conf    *config.ApprovedRelease
+	issues  map[string]jira.Issue
+	history map[string]fixVersionHistoryResult
 	// versions maps a version id to whether every approver approved it.
 	versions map[string]bool
+}
+
+type fixVersionHistoryResult struct {
+	added, hasAddition bool
+	err                error
+}
+
+func (g *approvalGate) fixVersionHistoryAfter(ctx context.Context, key, versionID string, at time.Time) (bool, bool, error) {
+	cacheKey := key + "\x00" + versionID + "\x00" + at.Format(time.RFC3339Nano)
+	if result, ok := g.history[cacheKey]; ok {
+		return result.added, result.hasAddition, result.err
+	}
+	added, hasAddition, err := g.client.FixVersionHistoryAfter(ctx, key, versionID, at)
+	if g.history == nil {
+		g.history = map[string]fixVersionHistoryResult{}
+	}
+	g.history[cacheKey] = fixVersionHistoryResult{added: added, hasAddition: hasAddition, err: err}
+	return added, hasAddition, err
 }
 
 // gatePass is the verdict on one commit.

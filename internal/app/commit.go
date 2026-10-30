@@ -214,14 +214,19 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 		refs = append(refs, "refs/tags/"+plan.bump.tag)
 	}
 	head, err := repo.Git("rev-parse", "--short", "HEAD")
+	var postCommitErrs []error
 	if err != nil {
-		return errors.Join(fmt.Errorf("commit made, but reading it back failed: %w", err), a.push(repo, plan.remotes, refs, config.BranchMatches(cfg.Push.Lease, plan.branch)))
+		postCommitErrs = append(postCommitErrs, fmt.Errorf("commit made, but reading it back failed: %w", err))
+	} else {
+		a.printf("committed %s on %s%s", strings.TrimSpace(head), plan.branch, plan.bump.describe())
 	}
-	a.printf("committed %s on %s%s", strings.TrimSpace(head), plan.branch, plan.bump.describe())
-	if err := a.push(repo, plan.remotes, refs, config.BranchMatches(cfg.Push.Lease, plan.branch)); err != nil {
-		return err
+	if err := a.push(repo, plan.remotes, refs, config.BranchMatches(cfg.Push.Lease, plan.branch), hasConfiguredFreeze(cfg)); err != nil {
+		postCommitErrs = append(postCommitErrs, err)
 	}
-	return a.recordCommitAdvisoryAfterPush(repo, cfg, frozen, advisoryFailed)
+	if err := a.recordCommitAdvisoryAfterPush(repo, cfg, frozen, advisoryFailed); err != nil {
+		postCommitErrs = append(postCommitErrs, err)
+	}
+	return errors.Join(postCommitErrs...)
 }
 
 func (a *App) recordCommitAdvisoryAfterPush(repo *gitx.Repo, cfg *config.Config, frozen *activeFreeze, failed []string) error {
@@ -229,7 +234,7 @@ func (a *App) recordCommitAdvisoryAfterPush(repo *gitx.Repo, cfg *config.Config,
 		return nil
 	}
 	if err := a.recordCommitAdvisory(repo, cfg, frozen, failed); err != nil {
-		return fmt.Errorf("commit is made and pushed, but the freeze journal lacks the advisory record: %w", err)
+		return fmt.Errorf("commit is made, but the freeze journal lacks the advisory record: %w", err)
 	}
 	return nil
 }

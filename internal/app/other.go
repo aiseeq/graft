@@ -78,7 +78,7 @@ func (a *App) Amend(ctx context.Context) error {
 			return errors.Join(err, restoreIndex(repo, index))
 		}
 		if frozen != nil {
-			if err := a.recordCommitAdvisory(repo, cfg, frozen, advisoryFailed); err != nil {
+			if err := a.recordCommitAdvisoryLocal(repo, cfg, frozen, advisoryFailed); err != nil {
 				return err
 			}
 		}
@@ -89,6 +89,32 @@ func (a *App) Amend(ctx context.Context) error {
 		a.printf("amended the last commit, now %s (not pushed)", strings.TrimSpace(head))
 		return nil
 	})
+}
+
+func (a *App) recordCommitAdvisoryLocal(repo *gitx.Repo, cfg *config.Config, frozen *activeFreeze, failed []string) error {
+	if frozen == nil || len(failed) == 0 {
+		return nil
+	}
+	head, err := repo.Git("rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	remotes, err := pushRemotes(repo, cfg)
+	if err != nil {
+		return err
+	}
+	for _, task := range failed {
+		tag, err := a.commitAdvisoryLogLocal(repo, cfg, frozen, strings.TrimSpace(head), task)
+		if err != nil {
+			return fmt.Errorf("amended commit %s task %s: freeze journal record could not be made: %w", gitx.Short(strings.TrimSpace(head)), task, err)
+		}
+		var commands []string
+		for _, remote := range remotes {
+			commands = append(commands, "git push "+remote+" refs/tags/"+tag)
+		}
+		a.printf("advisory record %s is local; push the amended commit, then run: %s", tag, strings.Join(commands, "; "))
+	}
+	return nil
 }
 
 // amendMessage is the message of the amended commit: HEAD's, with the key of
@@ -192,7 +218,7 @@ func (a *App) Release(ctx context.Context, opts ReleaseOptions) error {
 			return err
 		}
 		a.printf("tagged %s", tag)
-		return a.push(repo, remotes, []string{"refs/tags/" + tag}, false)
+		return a.push(repo, remotes, []string{"refs/tags/" + tag}, false, hasConfiguredFreeze(cfg))
 	})
 }
 
