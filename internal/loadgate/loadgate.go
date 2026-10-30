@@ -286,6 +286,11 @@ func (m *machine) busy(ctx context.Context, fresh bool) (busyness, error) {
 	if err != nil {
 		return busyness{}, fmt.Errorf("measuring the machine: %w", err)
 	}
+	// A look that the wait's end cut short is no measure: its disk source
+	// failed for the deadline, not for the machine.
+	if err := ctx.Err(); err != nil {
+		return busyness{}, err
+	}
 	noPSI := slices.Contains(v.Skipped, pressure.ErrNoIOPressure)
 	for _, none := range v.Skipped {
 		m.skip(none, v.Load.DiskFault, noPSI)

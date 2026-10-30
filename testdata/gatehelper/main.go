@@ -16,7 +16,6 @@
 //	gatehelper pwd <file>           write the working directory to file
 //	gatehelper alloc <mb>           touch mb megabytes of memory, then exit
 //	gatehelper write <file> <mb> <ms> write mb megabytes to file and sync it, then sleep ms
-//	gatehelper parent <cmd> <arg>... run cmd as a child with this environment, passing on SIGTERM and SIGINT, and exit with its status
 package main
 
 import (
@@ -24,7 +23,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -33,9 +31,6 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 2 && os.Args[1] == "parent" {
-		os.Exit(parent(os.Args[2:]))
-	}
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "gatehelper:", err)
 		os.Exit(1)
@@ -211,37 +206,6 @@ func run(args []string) error {
 
 func stamp(event string) string {
 	return fmt.Sprintf("%s %d %d", event, os.Getpid(), time.Now().UnixNano())
-}
-
-// parent runs argv as its child, as a shell would, and returns its exit
-// status: the child's parent has the child's environment.
-func parent(argv []string) int {
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGTERM, os.Interrupt)
-	if err := cmd.Start(); err != nil {
-		fmt.Fprintln(os.Stderr, "gatehelper:", err)
-		return 1
-	}
-	go func() {
-		for s := range signals {
-			if err := cmd.Process.Signal(s); err != nil {
-				fmt.Fprintln(os.Stderr, "gatehelper:", err)
-			}
-		}
-	}()
-	err := cmd.Wait()
-	var exitErr *exec.ExitError
-	switch {
-	case err == nil:
-		return 0
-	case errors.As(err, &exitErr) && exitErr.ExitCode() >= 0:
-		return exitErr.ExitCode()
-	default:
-		fmt.Fprintln(os.Stderr, "gatehelper:", err)
-		return 1
-	}
 }
 
 func appendLine(path, line string) error {

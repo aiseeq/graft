@@ -176,7 +176,9 @@ func TestBusyDiskAndSwapHoldTasks(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			_, setIO, setSwap := fakeMachine(t)
 			c.busy(t, setIO, setSwap)
-			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			// Long enough for the first look at a loaded machine, the disk
+			// source's included, to end before the wait does.
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			var log strings.Builder
 			p := &Priority{For: "graft deploy prod", Budget: newBudget(t, time.Hour)}

@@ -73,9 +73,6 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 			return false, WhyNotBusy, nil
 		}
 	}
-	if why := r.callerSetWhy(rh.Host); why != "" {
-		return stay(why)
-	}
 	if !r.remoteAsked {
 		r.remoteAsked = true
 		r.remoteDown = r.remoteUp(ctx)

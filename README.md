@@ -206,13 +206,11 @@ send any heavy work. Output flags such as `-o`, `-coverprofile` and `-trace`
 of an admitted heavy task starts, a heavy task inside another) does not
 overflow under `when: busy`. Project configuration keeps its existing rule: every
 heavy task can go to its host except tasks that need local files or data.
-A heavy task or `graft exec --heavy` whose caller set variables for it, such
-as `FLAG=1 graft exec --heavy -- go test ./...`, stays here, since the host
-gets only the task's `env`: `heavy, on this machine: the caller set FLAG,
-which pc would not get`. graft tells them by its parent's environment (Linux;
-elsewhere such a task stays here, saying graft cannot tell), leaving out
-`GRAFT_*`, `GIT_*`, `GOMAXPROCS`, `GOLANGCI_LINT_CACHE` and the shell's
-`PWD`, `OLDPWD`, `SHLVL`, `_`.
+The host's command gets the task's `env`, `GRAFT_HEAVY=local` and the
+threads, not the caller's environment: a command that reads a variable its
+caller set, such as `FLAG=1 graft exec --heavy -- go test ./...`, or
+`GOOS=windows … go vet`, does not see it there; keep such a run here with
+`graft exec --heavy --local` or `GRAFT_HEAVY=local`.
 A gate under the user config's `when: busy`, in a project without its own
 `remote_heavy`, that would wait here while the host answers and has an
 eligible step, runs split: `graft: gate: busy here: go test and go vet steps
@@ -223,8 +221,8 @@ here (test database, `.env` keys, `remote: false`, a directory the host's
 `run` cannot reach), and every other step (the gofmt check, go fix,
 installs, scripts) is admitted here for itself, then released. A host step
 whose path breaks is said and rerun here, admitted for itself, and the
-gate's later go steps run here too. A gate whose caller set variables (see
-above), or whose host does not answer, waits here whole and says why.
+gate's later go steps run here too. A gate whose host does not answer waits
+here whole and says why.
 Each heavy task
 says where it runs, `graft: build: heavy, on pc`, or why it stays here and
 queues as before, `graft: build: heavy, on this machine: <why>`:

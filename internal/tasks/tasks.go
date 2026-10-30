@@ -126,11 +126,7 @@ type Runner struct {
 	remoteHeavy        *config.RemoteHeavy
 	userRemote         bool
 	remoteBrokenReason string
-	// callerNames are the variables graft's caller set (callerSet), read
-	// once: callerAsked; callerErr when graft could not tell.
-	callerAsked bool
-	callerNames []string
-	callerErr   error
+
 	// frames are the tasks running now, outermost first; every process a
 	// step runs counts in all of them.
 	frames []*frame
@@ -297,10 +293,6 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, erro
 		return false, nil
 	}
 	if !gateHasEligible(gate, r.Config) {
-		return false, nil
-	}
-	if why := r.callerSetWhy(rh.Host); why != "" {
-		fmt.Fprintf(r.Stderr, "graft: gate: busy here, waits for this machine whole: %s\n", why)
 		return false, nil
 	}
 	rhCopy := *rh
@@ -852,10 +844,11 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 			r.keep(ctx, key, name, args, use)
 		}
 	}()
-	if err := r.RunDeps(ctx, t.Deps); err != nil {
+	// Before the deps too: one of them may install into the group's paths.
+	if err := r.unlinkWorktreeLinks(name); err != nil {
 		return err
 	}
-	if err := r.unlinkWorktreeLinks(name); err != nil {
+	if err := r.RunDeps(ctx, t.Deps); err != nil {
 		return err
 	}
 	leave, err := r.placeTask(ctx, f, name, t, args)
@@ -1235,7 +1228,7 @@ func (r *Runner) execCommand(ctx context.Context, dir string, argv []string, t *
 	}
 	env = r.heavyEnv(env, t, threads)
 	if innerGraft {
-		env = append(env, ExecHeavyEnv+"=1", CallerSetEnv+"="+r.callerSetValue())
+		env = append(env, ExecHeavyEnv+"=1")
 	}
 	commandArgv, env, err := trimRun(ctx, dir, s.Argv, env, remote)
 	if err != nil {
@@ -1837,7 +1830,7 @@ func BaseEnv() ([]string, error) {
 		return nil, fmt.Errorf("listing git environment variables: %w", err)
 	}
 	// Non-nil even when empty: the runner caches it and nil means not read yet.
-	return append([]string{}, gitx.Without(os.Environ(), append(gitVars, MarkerEnv, ExecHeavyEnv, CallerSetEnv))...), nil
+	return append([]string{}, gitx.Without(os.Environ(), append(gitVars, MarkerEnv, ExecHeavyEnv))...), nil
 }
 
 func sortedKeys(m map[string]string) []string {

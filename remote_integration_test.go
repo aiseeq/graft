@@ -28,7 +28,6 @@ func remoteRepo(t *testing.T, threads int, tasks string) (f *fixture, state stri
 	cfgDir := t.TempDir()
 	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms, swap_window: 10ms}\n")
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, filepath.Join(state, "proc"), 30), "XDG_CACHE_HOME="+filepath.Join(state, "cache"))
-	f.shell = true
 	return f, state
 }
 
