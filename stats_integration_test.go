@@ -568,4 +568,7 @@ func TestStatsValueCommand(t *testing.T) {
 	if out, code := f.graft("", "stats", "--value", "wait-p95", "--task", "glint", "--in", "smoke", "--since", "24h"); code != 2 || !strings.Contains(out, "cannot be used with --in") {
 		t.Errorf("wait-p95 with --in: exit %d, %q; want a usage error", code, out)
 	}
+	if out, code := f.graft("", "stats", "--tests", "--task", "glint", "--in", "smoke", "--since", "24h"); code != 2 || !strings.Contains(out, "--tests cannot be used with --in") {
+		t.Errorf("--tests with --in: exit %d, %q; want a usage error", code, out)
+	}
 }

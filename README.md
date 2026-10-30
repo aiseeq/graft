@@ -1019,7 +1019,7 @@ Use `--in <task>` with `--task <name>` to select runs of that task whose
 `in` field names the task or deploy that ran it. For example,
 `graft stats --task lint --in smoke` reports only `lint` runs in `smoke`;
 `--value wall-p50` and `--value wall-p95` use the same selection.
-`--in` requires `--task` and cannot be used with `--value wait-p95`.
+`--in` requires `--task` and cannot be used with `--tests` or `--value wait-p95`; the report keeps the steps, inner tasks and grafts of the selected runs.
 
 ## Services
 

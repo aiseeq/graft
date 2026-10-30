@@ -144,7 +144,7 @@ func Summarize(recs []Record, f Filter) ([]Row, Saved) {
 	runs := f.taskRuns(recs)
 	for i := range recs {
 		r := &recs[i]
-		if !f.selects(r) {
+		if !f.selects(r) || !f.ranIn(r, runs) {
 			continue
 		}
 		if r.Kind == KindCacheHit {
@@ -177,8 +177,21 @@ func Summarize(recs []Record, f Filter) ([]Row, Saved) {
 
 // selects tells whether a record is of the period and the project.
 func (f Filter) selects(r *Record) bool {
-	return !r.Time.Before(f.Since) && (f.Project == "" || r.Project == f.Project) &&
-		(f.In == "" || (r.Kind == KindTask && r.Task == f.Task && matchesIn(r, f.In)))
+	return !r.Time.Before(f.Since) && (f.Project == "" || r.Project == f.Project)
+}
+
+// ranIn tells, with --in, whether a record belongs to a run of the broken
+// down task in that parent: the task line itself by its in field, its steps,
+// inner tasks and cache hits by the graft that ran it, and a graft it started
+// by its parent.
+func (f Filter) ranIn(r *Record, runs map[string]bool) bool {
+	if f.In == "" {
+		return true
+	}
+	if r.Kind == KindTask && r.Task == f.Task {
+		return matchesIn(r, f.In)
+	}
+	return (r.Run != "" && runs[r.Run]) || (r.Parent != "" && runs[r.Parent])
 }
 
 // taskRuns are the runs of graft that ran the broken down task: the
@@ -189,7 +202,7 @@ func (f Filter) taskRuns(recs []Record) map[string]bool {
 		return runs
 	}
 	for i := range recs {
-		if r := &recs[i]; r.Kind == KindTask && r.Task == f.Task && r.Run != "" && f.selects(r) {
+		if r := &recs[i]; r.Kind == KindTask && r.Task == f.Task && r.Run != "" && f.selects(r) && matchesIn(r, f.In) {
 			runs[r.Run] = true
 		}
 	}

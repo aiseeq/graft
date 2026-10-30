@@ -41,14 +41,20 @@ func TestReportShowsTheDatabase(t *testing.T) {
 
 func TestReportFiltersTaskByIn(t *testing.T) {
 	recs := []Record{
-		{Kind: KindTask, Task: "lint", In: "smoke", WallS: 10},
-		{Kind: KindTask, Task: "lint", In: "deploy", WallS: 20},
-		{Kind: KindTask, Task: "lint", WallS: 30},
-		{Kind: KindTask, Task: "test", In: "smoke", WallS: 40},
+		{Kind: KindTask, Task: "lint", In: "smoke", Run: "r1", WallS: 10},
+		{Kind: KindStep, Task: "lint", Step: "check", Run: "r1", WallS: 9},
+		{Kind: KindTask, Task: "lint", In: "deploy", Run: "r2", WallS: 20},
+		{Kind: KindStep, Task: "lint", Step: "check", Run: "r2", WallS: 19},
+		{Kind: KindTask, Task: "lint", Run: "r3", WallS: 30},
+		{Kind: KindTask, Task: "test", In: "smoke", Run: "r1", WallS: 40},
 	}
 	rows, _ := Summarize(recs, Filter{Task: "lint", In: "smoke"})
-	if len(rows) != 1 || rows[0].Label != TaskLabel || rows[0].Runs != 1 || rows[0].WallMed != 10 {
-		t.Errorf("report rows = %+v, want only the lint run in smoke", rows)
+	got := map[string]Row{}
+	for _, row := range rows {
+		got[row.Label] = row
+	}
+	if len(rows) != 2 || got[TaskLabel].Runs != 1 || got[TaskLabel].WallMed != 10 || got["check"].Runs != 1 || got["check"].WallMed != 9 {
+		t.Errorf("report rows = %+v, want the lint run in smoke and its step", rows)
 	}
 }
 

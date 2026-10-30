@@ -384,6 +384,9 @@ func validateStatsValue(value, task, in string, inSet, tests bool, minRuns int, 
 	if inSet && task == "" {
 		return fmt.Errorf("%w: --in requires --task", errUsage)
 	}
+	if inSet && tests {
+		return fmt.Errorf("%w: --tests cannot be used with --in", errUsage)
+	}
 	if inSet && value == "wait-p95" {
 		return fmt.Errorf("%w: --value wait-p95 cannot be used with --in", errUsage)
 	}
