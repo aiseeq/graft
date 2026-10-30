@@ -1,6 +1,6 @@
 # graft на akit v1.7.0: kind в pressure.Check, порог диска 9.6 за 5 с, источник диска в пропусках и профиль диска в stats
 
-Статус: в работе
+Статус: готово
 Исполнитель: graft-master
 
 ## Вход
@@ -25,3 +25,4 @@
 - 2026-10-30 03:28 note — graft-master: сделано в e5ae71d: kind=profile в Wait/BusyNow, skip «…, PSI total used» с DiskFault, MaxIOFull=pressure.DefaultLimits (9.6), disk_profile в строке задачи, XDG_RUNTIME_DIR тестов изолирован (на машине живой io-state.sock); тест интеграции 37132fa; all зелёный; отдано на проверку суб-агенту
 - 2026-10-30 03:32 note — graft-master: по ревью: без PSI текст «and no IO pressure either: the disk is not checked» (тест no PSI either), README «once per look at the machine»; пути в тикетах заменены на ~ и имена
 - 2026-10-30 03:39 note — graft-master: aguard-master 30.10: профилей вида <repo>:<task> у aguard нет (задачи graft в cgroup сессии), disk_profile пока пуст; поле необязательное, остаётся
+- 2026-10-30 03:46 готово — reviewer-opus (session graft-master): суб-агент (свежий контекст, бриф из тикета) 30.10: принят — kind в Meter.Check loadgate.go:284, kind() tasks.go:1650 (repo:gate, repo:exec:<prog>), disk_profile только на внешней тяжёлой задаче (TestHeavyTaskKeepsItsDiskProfile), skip однократно с fault, MaxIOFull=pressure.DefaultLimits 9.6, тесты изолированы от /run/user/1000/io-state.sock; тесты пакетов и интеграции exit 0. Low-находки исправлены в f6cfc05 (без PSI — «disk is not checked», README). go run . all exit 0; v2.56.0 установлен (b5c7388)
