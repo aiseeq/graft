@@ -126,6 +126,11 @@ type Runner struct {
 	remoteHeavy        *config.RemoteHeavy
 	userRemote         bool
 	remoteBrokenReason string
+	// callerNames are the variables graft's caller set (callerSet), read
+	// once: callerAsked; callerErr when graft could not tell.
+	callerAsked bool
+	callerNames []string
+	callerErr   error
 	// frames are the tasks running now, outermost first; every process a
 	// step runs counts in all of them.
 	frames []*frame
@@ -274,7 +279,7 @@ func (r *Runner) configSteps(steps []gateStep) []gateStep {
 // splitBusyGate enables per-step placement for a gate that would wait on this
 // machine and has at least one eligible process step, including nested tasks.
 func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, error) {
-	if r.Config.RemoteHeavy != nil || r.heavy > 0 || os.Getenv(AdmittedEnv) != "" {
+	if r.Config.RemoteHeavy != nil || r.heavy > 0 || os.Getenv(AdmittedEnv) != "" || os.Getenv(HeavyEnv) == "local" {
 		return false, nil
 	}
 	rh, err := userconfig.RemoteHeavySettings()
@@ -294,11 +299,17 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, erro
 	if !gateHasEligible(gate, r.Config) {
 		return false, nil
 	}
+	if why := r.callerSetWhy(rh.Host); why != "" {
+		fmt.Fprintf(r.Stderr, "graft: gate: busy here, waits for this machine whole: %s\n", why)
+		return false, nil
+	}
 	rhCopy := *rh
 	previousRemoteHeavy := r.remoteHeavy
 	r.remoteHeavy = &rhCopy
-	if r.remoteUp(ctx) != "" {
+	if down := r.remoteUp(ctx); down != "" {
 		r.remoteHeavy = previousRemoteHeavy
+		r.remoteAsked, r.remoteDown = true, down
+		fmt.Fprintf(r.Stderr, "graft: gate: busy here, waits for this machine whole: %s did not answer (%s)\n", rh.Host, down)
 		return false, nil
 	}
 	r.userRemote, r.remoteAsked = true, true
@@ -689,18 +700,29 @@ func (r *Runner) Run(ctx context.Context, name string, args []string) error {
 	if err := r.preflight(t.Run, t, name); err != nil {
 		return err
 	}
-	execHeavy := os.Getenv(ExecHeavyEnv)
-	if execHeavy != "" {
-		value, err := strconv.ParseBool(execHeavy)
-		if err != nil {
-			return fmt.Errorf("%s=%q: %w", ExecHeavyEnv, execHeavy, err)
-		}
-		if value {
-			r.execHeavyTask = name
-			defer func() { r.execHeavyTask = "" }()
-		}
+	execHeavy, err := execHeavyAsked()
+	if err != nil {
+		return err
+	}
+	if execHeavy {
+		r.execHeavyTask = name
+		defer func() { r.execHeavyTask = "" }()
 	}
 	return r.run(ctx, name, args)
+}
+
+// execHeavyAsked tells whether graft exec --heavy started this graft to run
+// its top-level task or command as heavy (ExecHeavyEnv).
+func execHeavyAsked() (bool, error) {
+	v := os.Getenv(ExecHeavyEnv)
+	if v == "" {
+		return false, nil
+	}
+	heavy, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s=%q: %w", ExecHeavyEnv, v, err)
+	}
+	return heavy, nil
 }
 
 // checkArgs fits the arguments into the task's steps before anything runs,
@@ -833,20 +855,14 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 	if err := r.RunDeps(ctx, t.Deps); err != nil {
 		return err
 	}
-	if t.Heavy && !r.gateSplit {
-		remote, here, err := r.placeHeavy(ctx, name, t, r.Root, args)
-		if err != nil {
-			return err
-		}
-		f.remote, f.here = remote, here
+	if err := r.unlinkWorktreeLinks(name); err != nil {
+		return err
 	}
-	if t.Heavy && !f.remote && !r.gateSplit {
-		leave, herr := r.enterHeavy(ctx, name)
-		if herr != nil {
-			return herr
-		}
-		defer func() { err = errors.Join(err, leave()) }()
+	leave, err := r.placeTask(ctx, f, name, t, args)
+	if err != nil {
+		return err
 	}
+	defer func() { err = errors.Join(err, leave()) }()
 	release, waited, err := r.lock(ctx, name, t.Lock)
 	r.Waited(WhyLock, waited)
 	if err != nil {
@@ -862,6 +878,28 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 	}
 	r.done[name] = true
 	return errors.Join(err, release())
+}
+
+// placeTask places a heavy task, on the host or admitted here, and returns
+// what releases its admission; a split gate places each step instead.
+func (r *Runner) placeTask(ctx context.Context, f *frame, name string, t *config.Task, args []string) (func() error, error) {
+	none := func() error { return nil }
+	if !t.Heavy {
+		return none, nil
+	}
+	if r.gateSplit {
+		f.here = WhyGateSplit
+		return none, nil
+	}
+	remote, here, err := r.placeHeavy(ctx, name, t, r.Root, args)
+	if err != nil {
+		return nil, err
+	}
+	f.remote, f.here = remote, here
+	if remote {
+		return none, nil
+	}
+	return r.enterHeavy(ctx, name)
 }
 
 func (r *Runner) steps(ctx context.Context, name string, t *config.Task, args []string) error {
@@ -896,7 +934,16 @@ func (r *Runner) steps(ctx context.Context, name string, t *config.Task, args []
 func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.Task, args []string, threads string) (func(error) error, error) {
 	frame := r.frames[len(r.frames)-1]
 	wasRemote := frame.remote
-	remote := s.Shell == "" && goCheckNoOutput(s.Argv, args)
+	remote := s.Shell == "" && goCheckNoOutput(s.Argv, args) && r.remoteDown == ""
+	if remote {
+		// A step goes to the host only as its task could: not with the test
+		// database, .env keys, remote: false or a directory the host lacks.
+		why, err := r.stayHere(ctx, t, r.taskDir(t))
+		if err != nil {
+			return nil, err
+		}
+		remote = why == ""
+	}
 	frame.remote = remote
 	var leave func() error
 	if !remote {
@@ -911,6 +958,8 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 		if remote && r.remoteBrokenReason != "" {
 			reason := r.remoteBrokenReason
 			r.remoteBrokenReason = ""
+			// The gate's later go steps run here: the path is broken.
+			r.remoteDown = reason
 			fmt.Fprintf(r.Stderr, "graft: %s: %s path broken: %s, running here\n", frame.task, r.remoteHeavy.Host, reason)
 			if err := r.journalRemoteBroken(frame.task, reason); err != nil {
 				stepErr = errors.Join(stepErr, err)
@@ -938,17 +987,8 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 // step runs s, its {threads} already filled; threads is the thread count a
 // heavy task passes as GRAFT_THREADS.
 func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args []string, threads string) (err error) {
-	if s.Install != nil {
-		return r.install(ctx, s, t)
-	}
 	if s.Task != "" {
 		return r.run(ctx, s.Task, nil)
-	}
-	if s.ServiceAction != "" {
-		if r.Service == nil {
-			return errors.New("service steps are not available here")
-		}
-		return r.Service(ctx, s.ServiceAction, s.ServiceName)
 	}
 	if r.gateSplit {
 		finish, prepareErr := r.prepareGateStep(ctx, s, t, args, threads)
@@ -956,6 +996,15 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 			return prepareErr
 		}
 		defer func() { err = finish(err) }()
+	}
+	if s.Install != nil {
+		return r.install(ctx, s, t)
+	}
+	if s.ServiceAction != "" {
+		if r.Service == nil {
+			return errors.New("service steps are not available here")
+		}
+		return r.Service(ctx, s.ServiceAction, s.ServiceName)
 	}
 	var report string
 	if reportFile(t) {
@@ -1186,7 +1235,7 @@ func (r *Runner) execCommand(ctx context.Context, dir string, argv []string, t *
 	}
 	env = r.heavyEnv(env, t, threads)
 	if innerGraft {
-		env = append(env, ExecHeavyEnv+"=1")
+		env = append(env, ExecHeavyEnv+"=1", CallerSetEnv+"="+r.callerSetValue())
 	}
 	commandArgv, env, err := trimRun(ctx, dir, s.Argv, env, remote)
 	if err != nil {
@@ -1208,6 +1257,11 @@ func (r *Runner) execCommand(ctx context.Context, dir string, argv []string, t *
 // exec. A heavy one queues for the machine as a heavy task does and gets
 // {threads} filled and GRAFT_THREADS.
 func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool) (err error) {
+	if !heavy {
+		if heavy, err = execHeavyAsked(); err != nil {
+			return err
+		}
+	}
 	t := &config.Task{Heavy: heavy}
 	innerGraft := graftCommand(argv)
 	if heavy && !innerGraft {
@@ -1783,7 +1837,7 @@ func BaseEnv() ([]string, error) {
 		return nil, fmt.Errorf("listing git environment variables: %w", err)
 	}
 	// Non-nil even when empty: the runner caches it and nil means not read yet.
-	return append([]string{}, gitx.Without(os.Environ(), append(gitVars, MarkerEnv, ExecHeavyEnv))...), nil
+	return append([]string{}, gitx.Without(os.Environ(), append(gitVars, MarkerEnv, ExecHeavyEnv, CallerSetEnv))...), nil
 }
 
 func sortedKeys(m map[string]string) []string {

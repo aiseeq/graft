@@ -183,6 +183,10 @@ type fixture struct {
 	work string
 	// env is added to the environment of every process the fixture runs.
 	env []string
+	// shell runs graft from a parent with graft's environment, as a user's
+	// shell does: graft tells the variables its caller set by its parent's
+	// environment, which the test binary's differs from.
+	shell bool
 }
 
 // newRepo makes a work tree on branch feature/PROJ-42-thing with bare remotes
@@ -308,7 +312,7 @@ func TestChangeDirectoryFlag(t *testing.T) {
 
 func (f *fixture) exec(dir, stdin, name string, args ...string) (string, int) {
 	f.t.Helper()
-	cmd := exec.Command(name, args...)
+	cmd := f.command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(slices.Clone(testEnv), f.env...)
 	cmd.Stdin = strings.NewReader(stdin)
@@ -329,7 +333,7 @@ func (f *fixture) exec(dir, stdin, name string, args ...string) (string, int) {
 // buffer while it runs.
 func (f *fixture) start(dir string, args ...string) (*exec.Cmd, *syncBuffer) {
 	f.t.Helper()
-	cmd := exec.Command(graftBin, args...)
+	cmd := f.command(graftBin, args...)
 	cmd.Dir = dir
 	cmd.Env = append(slices.Clone(testEnv), f.env...)
 	out := &syncBuffer{}
@@ -338,6 +342,15 @@ func (f *fixture) start(dir string, args ...string) (*exec.Cmd, *syncBuffer) {
 		f.t.Fatal(err)
 	}
 	return cmd, out
+}
+
+// command is name with args, run through a parent of its own for graft
+// under shell.
+func (f *fixture) command(name string, args ...string) *exec.Cmd {
+	if f.shell && name == graftBin {
+		return exec.Command(helperBin, append([]string{"parent", graftBin}, args...)...)
+	}
+	return exec.Command(name, args...)
 }
 
 func (f *fixture) mustGraft(args ...string) string {

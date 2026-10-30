@@ -41,6 +41,7 @@ func userRemoteRepoRun(t *testing.T, tasks, state, run string) *fixture {
 	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms, swap_window: 10ms}\n"+
 		"remote_heavy: {host: pc, up: [sh, "+yamlQuote(filepath.Join(state, "up.sh"))+"], run: "+run+", threads: 8}\n")
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, filepath.Join(state, "proc"), 0), "XDG_CACHE_HOME="+filepath.Join(state, "cache"))
+	f.shell = true
 	return f
 }
 

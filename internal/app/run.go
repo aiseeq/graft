@@ -22,9 +22,7 @@ func (a *App) Run(ctx context.Context, task string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := unlinkSetupLinks(repo, cfg, task); err != nil {
-		return err
-	}
+
 	return a.runner(repo, cfg).Run(ctx, task, args)
 }
 

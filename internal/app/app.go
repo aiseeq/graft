@@ -174,6 +174,7 @@ func (a *App) gateForMessage(ctx context.Context, repo *gitx.Repo, cfg *config.C
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("writing %s: %w", f.Name(), err)
 	}
+	a.warnStaleWorktreeLinks(repo, cfg)
 	r := a.runner(repo, cfg)
 	r.Extra = map[string]string{tasks.MessageFileEnv: f.Name()}
 	return r.Gate(ctx)

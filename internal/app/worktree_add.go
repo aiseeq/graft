@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"golang.org/x/mod/modfile"
@@ -138,7 +139,9 @@ func (a *App) prepareWorktree(ctx context.Context, main, dir string, linkSetups 
 
 // linkWorktree links the groups of worktree.link, as the config at dir has
 // them, to the main worktree's directories, and returns the setup tasks of
-// the groups it did not link, each once.
+// the groups it did not link, each once. A group whose key matches but whose
+// setup runs for another group is not linked: the setup installs its paths
+// here too.
 func (a *App) linkWorktree(main, dir string) ([]string, error) {
 	repo, err := gitx.Open(dir)
 	if err != nil {
@@ -162,18 +165,33 @@ func (a *App) linkWorktree(main, dir string) ([]string, error) {
 		}
 	}
 	var setups []string
-	seenSetup := map[string]bool{}
-	for _, group := range cfg.Worktree.Link {
-		linked, err := a.linkGroup(main, dir, group, tracked)
-		if err != nil {
-			if !errors.Is(err, errWorktreeLinkUnavailable) {
-				return nil, err
-			}
-			a.warn("%v; running graft %s", err, group.Setup)
+	need := func(setup string) {
+		if !slices.Contains(setups, setup) {
+			setups = append(setups, setup)
 		}
-		if !linked && !seenSetup[group.Setup] {
-			setups = append(setups, group.Setup)
-			seenSetup[group.Setup] = true
+	}
+	matches := make([]bool, len(cfg.Worktree.Link))
+	for i, group := range cfg.Worktree.Link {
+		if matches[i], err = groupMatches(main, dir, group, tracked); err != nil {
+			return nil, err
+		}
+		if !matches[i] {
+			need(group.Setup)
+		}
+	}
+	for i, group := range cfg.Worktree.Link {
+		switch {
+		case !matches[i]:
+		case slices.Contains(setups, group.Setup):
+			a.printf("not linking %s: graft %s installs it with another group", strings.Join(group.Paths, ", "), group.Setup)
+		default:
+			if err := a.linkGroup(main, dir, group); err != nil {
+				if !errors.Is(err, errWorktreeLinkUnavailable) {
+					return nil, err
+				}
+				a.warn("%v; running graft %s", err, group.Setup)
+				need(group.Setup)
+			}
 		}
 	}
 	return setups, nil
@@ -184,11 +202,10 @@ func (a *App) linkWorktree(main, dir string) ([]string, error) {
 // installs instead.
 var errWorktreeLinkUnavailable = errors.New("directory link unavailable")
 
-// linkGroup links every path of group to the main worktree's when its key
-// files have the main worktree's content and the main worktree has every
-// path as a directory, and tells whether it linked them.
-func (a *App) linkGroup(main, dir string, group config.WorktreeLink, tracked []string) (bool, error) {
-	var made []string
+// groupMatches tells whether the group's key files in the new worktree at
+// dir have the main worktree's content and the main worktree has every path
+// of the group as a directory.
+func groupMatches(main, dir string, group config.WorktreeLink, tracked []string) (bool, error) {
 	for _, p := range group.Paths {
 		for _, t := range tracked {
 			if t == p || strings.HasPrefix(t, p+"/") {
@@ -224,17 +241,29 @@ func (a *App) linkGroup(main, dir string, group config.WorktreeLink, tracked []s
 			return false, fmt.Errorf("worktree.link path %s in main worktree: %w", p, err)
 		}
 	}
+	return true, nil
+}
+
+// linkGroup links every path of group in the new worktree at dir to the
+// main worktree's.
+func (a *App) linkGroup(main, dir string, group config.WorktreeLink) error {
+	var made []string
 	for _, p := range group.Paths {
 		at := filepath.Join(dir, filepath.FromSlash(p))
 		to := filepath.Join(main, filepath.FromSlash(p))
+		if _, err := os.Lstat(at); err == nil {
+			return errors.Join(fmt.Errorf("worktree.link %s: the new worktree has it already", p), removeCreatedLinks(made))
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return errors.Join(fmt.Errorf("worktree.link %s: %w", p, err), removeCreatedLinks(made))
+		}
 		if err := os.MkdirAll(filepath.Dir(at), 0o755); err != nil {
-			return false, fmt.Errorf("worktree.link %s parent: %w", p, err)
+			return errors.Join(fmt.Errorf("worktree.link %s parent: %w", p, err), removeCreatedLinks(made))
 		}
 		if err := os.Symlink(to, at); err != nil {
 			if cleanupErr := removeCreatedLinks(made); cleanupErr != nil {
-				return false, errors.Join(fmt.Errorf("creating worktree.link %s: %w", p, err), cleanupErr)
+				return errors.Join(fmt.Errorf("creating worktree.link %s: %w", p, err), cleanupErr)
 			}
-			return false, errors.Join(
+			return errors.Join(
 				fmt.Errorf("%w: worktree.link %s", errWorktreeLinkUnavailable, p),
 				fmt.Errorf("creating directory link: %w", err),
 			)
@@ -242,7 +271,7 @@ func (a *App) linkGroup(main, dir string, group config.WorktreeLink, tracked []s
 		made = append(made, at)
 		a.printf("linked %s from %s", p, main)
 	}
-	return true, nil
+	return nil
 }
 
 // removeCreatedLinks removes the links a group made before one failed.

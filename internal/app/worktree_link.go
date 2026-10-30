@@ -2,41 +2,12 @@ package app
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 )
-
-// unlinkSetupLinks removes the links of the worktree.link groups whose setup
-// is task, so the task installs into this worktree and never writes into
-// the main worktree's directories; a real directory stays.
-func unlinkSetupLinks(repo *gitx.Repo, cfg *config.Config, task string) error {
-	for _, group := range cfg.Worktree.Link {
-		if group.Setup != task {
-			continue
-		}
-		for _, p := range group.Paths {
-			at := filepath.Join(repo.Root, filepath.FromSlash(p))
-			info, err := os.Lstat(at)
-			if os.IsNotExist(err) {
-				continue
-			}
-			if err != nil {
-				return fmt.Errorf("worktree.link %s: checking link before %s: %w", p, task, err)
-			}
-			if info.Mode()&os.ModeSymlink == 0 {
-				continue
-			}
-			if err := os.Remove(at); err != nil {
-				return fmt.Errorf("worktree.link %s: removing link before %s: %w", p, task, err)
-			}
-		}
-	}
-	return nil
-}
 
 // warnStaleWorktreeLinks warns of every path of a worktree.link group that
 // links to the main worktree while a key file of the group differs from the

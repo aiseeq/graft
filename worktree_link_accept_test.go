@@ -96,7 +96,8 @@ func TestWorktreeLinkSameKey(t *testing.T) {
 
 // TestWorktreeLinkKeyDiffers: a group whose key differs from the main
 // worktree's is not linked and its setup task runs instead, once for every
-// group that names it; a group whose key matches is still linked.
+// group that names it; a group whose key matches is not linked either when
+// that setup is its own too, since the setup installs its paths as well.
 func TestWorktreeLinkKeyDiffers(t *testing.T) {
 	f, cache := linkRepo(t)
 	f.git("checkout", "-q", "-b", "w/both")
@@ -124,8 +125,8 @@ func TestWorktreeLinkKeyDiffers(t *testing.T) {
 
 	out = f.mustGraft("worktree", "add", "w/one")
 	wt = filepath.Join(cache, "worktrees", "work", "w-one")
-	if !linksToMain(t, f, wt, "deps") || !linksToMain(t, f, wt, "sub/deps") {
-		t.Errorf("the group with the same key is not linked:\n%s", out)
+	if linksToMain(t, f, wt, "deps") || linksToMain(t, f, wt, "sub/deps") || !strings.Contains(out, "not linking deps, sub/deps: graft install installs it with another group") {
+		t.Errorf("the group with the same key and the setup that runs anyway is linked:\n%s", out)
 	}
 	if linksToMain(t, f, wt, "e2e/deps") {
 		t.Errorf("e2e/deps is linked though its key differs:\n%s", out)

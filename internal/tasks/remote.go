@@ -73,6 +73,9 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 			return false, WhyNotBusy, nil
 		}
 	}
+	if why := r.callerSetWhy(rh.Host); why != "" {
+		return stay(why)
+	}
 	if !r.remoteAsked {
 		r.remoteAsked = true
 		r.remoteDown = r.remoteUp(ctx)
@@ -96,6 +99,7 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 const (
 	WhyInsideHeavy = "inside an admitted heavy task, which waits for the machine"
 	WhyNotBusy     = "this machine would not make it wait"
+	WhyGateSplit   = "in a gate split by step, each step placed for itself"
 )
 
 // wouldWait tells whether this machine's queue would make the heavy task wait
@@ -226,21 +230,8 @@ func (r *Runner) stayHere(ctx context.Context, t *config.Task, dir string) (stri
 	default:
 		return "", fmt.Errorf("%s=%q: want local, or leave it unset", HeavyEnv, v)
 	}
-	switch {
-	case t.Remote != nil && !*t.Remote:
-		return "the task has remote: false", nil
-	case t.TestDB:
-		return "the task uses the test database", nil
-	case reportFile(t):
-		return "the " + t.Tests + " report is a file on this machine", nil
-	case len(t.Keys) > 0:
-		return "the task takes .env keys", nil
-	case t.Dir != "" && !r.runNamesRoot():
-		return "the task runs in " + t.Dir + ", not the work tree root, and remote_heavy.run names no " + config.RootPlaceholder, nil
-	case dir != r.Root && !r.runNamesRoot():
-		return "it runs in a subdirectory, not the work tree root, and remote_heavy.run names no " + config.RootPlaceholder, nil
-	case t.Cache != nil && len(t.Cache.Files) > 0:
-		return "the task reads " + t.Cache.Files[0] + " (cache.files), which the host does not have", nil
+	if why := r.taskStaysHere(t, dir); why != "" {
+		return why, nil
 	}
 	if _, ok := r.Extra[MessageFileEnv]; ok {
 		def, err := json.Marshal(t)
@@ -258,6 +249,28 @@ func (r *Runner) stayHere(ctx context.Context, t *config.Task, dir string) (stri
 		return "${" + key + "} would carry a .env value to the host", nil
 	}
 	return "", nil
+}
+
+// taskStaysHere is why the task's own settings keep it on this machine, ""
+// when they do not.
+func (r *Runner) taskStaysHere(t *config.Task, dir string) string {
+	switch {
+	case t.Remote != nil && !*t.Remote:
+		return "the task has remote: false"
+	case t.TestDB:
+		return "the task uses the test database"
+	case reportFile(t):
+		return "the " + t.Tests + " report is a file on this machine"
+	case len(t.Keys) > 0:
+		return "the task takes .env keys"
+	case t.Dir != "" && r.taskDir(t) != filepath.Clean(r.Root) && !r.runNamesRoot():
+		return "the task runs in " + t.Dir + ", not the work tree root, and remote_heavy.run names no " + config.RootPlaceholder
+	case dir != r.Root && !r.runNamesRoot():
+		return "it runs in a subdirectory, not the work tree root, and remote_heavy.run names no " + config.RootPlaceholder
+	case t.Cache != nil && len(t.Cache.Files) > 0:
+		return "the task reads " + t.Cache.Files[0] + " (cache.files), which the host does not have"
+	}
+	return ""
 }
 
 // dotenvRef is the first ${KEY} of the task's env and argv that is no

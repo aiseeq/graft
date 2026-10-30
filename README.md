@@ -160,9 +160,11 @@ an agent that takes a minute to get going.
 
 `graft exec --heavy -- graft <task>` takes no queue slot itself: it starts the
 inner graft with `GRAFT_EXEC_HEAVY=1`, by which that graft runs its top-level
-task as heavy (placed on the host or admitted here once, as any heavy task),
-even when `.graft.yaml` does not mark it heavy; the inner graft's own steps do
-not inherit the variable.
+task, or the command of its `graft exec`, as heavy (placed on the host or
+admitted here once, as any heavy task), even when `.graft.yaml` does not mark
+it heavy; the inner graft's own steps do not inherit the variable. Other
+graft commands than a task and `exec` run unadmitted there; `gate` and
+`commit` admit their gate themselves.
 
 A project with another machine for heavy work names it in `.graft.yaml`, and
 the steps of its heavy tasks and its `graft exec --heavy` go there first,
@@ -204,14 +206,25 @@ send any heavy work. Output flags such as `-o`, `-coverprofile` and `-trace`
 of an admitted heavy task starts, a heavy task inside another) does not
 overflow under `when: busy`. Project configuration keeps its existing rule: every
 heavy task can go to its host except tasks that need local files or data.
+A heavy task or `graft exec --heavy` whose caller set variables for it, such
+as `FLAG=1 graft exec --heavy -- go test ./...`, stays here, since the host
+gets only the task's `env`: `heavy, on this machine: the caller set FLAG,
+which pc would not get`. graft tells them by its parent's environment (Linux;
+elsewhere such a task stays here, saying graft cannot tell), leaving out
+`GRAFT_*`, `GIT_*`, `GOMAXPROCS`, `GOLANGCI_LINT_CACHE` and the shell's
+`PWD`, `OLDPWD`, `SHLVL`, `_`.
 A gate under the user config's `when: busy`, in a project without its own
 `remote_heavy`, that would wait here while the host answers and has an
 eligible step, runs split: `graft: gate: busy here: go test and go vet steps
 on pc, the rest waits for this machine step by step`. It takes no admission
 as a whole, nor do its heavy tasks; every `go test` and `go vet` step that
-writes no file, at any depth, runs on the host, and every other step (the
-gofmt check, go fix, scripts) is admitted here for itself, then released. A
-host step whose path breaks is said and rerun here, admitted for itself.
+writes no file, at any depth, runs on the host unless its task would stay
+here (test database, `.env` keys, `remote: false`, a directory the host's
+`run` cannot reach), and every other step (the gofmt check, go fix,
+installs, scripts) is admitted here for itself, then released. A host step
+whose path breaks is said and rerun here, admitted for itself, and the
+gate's later go steps run here too. A gate whose caller set variables (see
+above), or whose host does not answer, waits here whole and says why.
 Each heavy task
 says where it runs, `graft: build: heavy, on pc`, or why it stays here and
 queues as before, `graft: build: heavy, on this machine: <why>`:
@@ -1954,13 +1967,17 @@ worktree:
 For each `link` group, `add` links its untracked directories to the main
 worktree when all key files match and all directories exist there. Otherwise,
 it runs the group's setup task in the new worktree, once for all the groups
-that name it, before the tasks of `setup`. A group needs `key`, `paths` and
-`setup`; a path the checkout tracks is an error. A directory link the system
-does not make (Windows without the right to make symlinks) is warned and the
-group's setup installs instead. `graft <setup>` in a worktree removes the
-group's links first (links only, never a directory), so it installs into the
-worktree, not into the main one. `graft gate` in a worktree warns, one line a
-path, of a link whose group's key file now differs from the main worktree's:
+that name it, before the tasks of `setup`; a group whose key matches but
+whose setup runs for another group is not linked either (`not linking
+<paths>: graft <setup> installs it with another group`). A group needs
+`key`, `paths` and `setup`; a path the checkout tracks is an error. A
+directory link the system does not make (Windows without the right to make
+symlinks) is warned and the group's setup installs instead. A setup task run
+in a worktree, on its own or as a dependency or step of another task, first
+removes its groups' links to the main worktree (links there only, never a
+directory), so it installs into the worktree, not into the main one. `graft
+gate` and the gate of `graft commit` in a worktree warn, one line a path, of
+a link whose group's key file now differs from the main worktree's:
 `worktree.link <path>: a link to the main worktree, but <key> differs from it:
 run graft <setup>`; the gate goes on.
 
