@@ -352,15 +352,6 @@ func (a *App) checkFreeze(ctx context.Context, r *deployRun, o DeployOptions) er
 		}
 		return nil
 	}
-	if !r.hotfix && r.branch != frozen.branch {
-		if o.PastFreeze != "" {
-			refusal := fmt.Sprintf("%s is frozen at %s; deploy from %s", frozen.target, frozen.name, frozen.branch)
-			a.warn("deploy %s bypasses freeze %s: %s: %s", r.name, frozen.name, o.PastFreeze, refusal)
-			r.freezeLogKind, r.freezeLogReason = "bypass", o.PastFreeze+": "+refusal
-			return nil
-		}
-		return freezeRefusalError{fmt.Errorf("%s is frozen at %s; deploy from %s (or pass --past-freeze with a reason)", frozen.target, frozen.name, frozen.branch)}
-	}
 	if r.hotfix {
 		r.freezeLogKind, r.freezeLogReason = "bypass", r.branch
 		if o.PastFreeze != "" {
@@ -368,15 +359,25 @@ func (a *App) checkFreeze(ctx context.Context, r *deployRun, o DeployOptions) er
 		}
 		return nil
 	}
-	err := a.freezeIssueCheck(ctx, r, frozen)
-	if err == nil || o.PastFreeze == "" {
-		return err
+	var refusals []error
+	if r.branch != frozen.branch {
+		refusals = append(refusals, freezeRefusalError{fmt.Errorf("%s is frozen at %s; deploy from %s (or pass --past-freeze with a reason)", frozen.target, frozen.name, frozen.branch)})
 	}
-	var refusal freezeRefusalError
-	if !errors.As(err, &refusal) {
-		return err
+	if err := a.freezeIssueCheck(ctx, r, frozen); err != nil {
+		var refusal freezeRefusalError
+		if !errors.As(err, &refusal) {
+			return err
+		}
+		refusals = append(refusals, refusal)
 	}
-	a.warn("deploy %s bypasses freeze %s: %s", r.name, frozen.name, refusal.Error())
+	if len(refusals) == 0 {
+		return nil
+	}
+	refusal := freezeRefusalError{errors.Join(refusals...)}
+	if o.PastFreeze == "" {
+		return refusal
+	}
+	a.warn("deploy %s bypasses freeze %s: %s: %s", r.name, frozen.name, o.PastFreeze, refusal.Error())
 	r.freezeLogKind, r.freezeLogReason = "bypass", o.PastFreeze+": "+refusal.Error()
 	return nil
 }
@@ -628,12 +629,13 @@ func (a *App) finishFreeze(r *deployRun, shaRecorded bool, pageErr, journalErr e
 	if frozen == nil || frozen.branch != r.branch {
 		return errors.Join(pageErr, journalErr)
 	}
+	pendingErr := a.pushPendingFreezeLogs(r.repo, r.cfg, frozen)
 	if r.target.ReleasePage == nil {
 		a.printf("freeze journal for %s has no release page configured", frozen.name)
 	}
-	if !shaRecorded || pageErr != nil || journalErr != nil {
+	if !shaRecorded || pageErr != nil || journalErr != nil || pendingErr != nil {
 		a.warn("freeze stays active at %s until deployed_sha, the release page, and the freeze journal are complete", frozen.name)
-		return errors.Join(pageErr, journalErr)
+		return errors.Join(pageErr, journalErr, pendingErr)
 	}
 	return a.removeFreezeTags(r.repo, r.cfg, frozen)
 }
@@ -641,16 +643,22 @@ func (a *App) finishFreeze(r *deployRun, shaRecorded bool, pageErr, journalErr e
 func (a *App) recordFreezeJournal(r *deployRun) error {
 	var errs []error
 	if frozen := r.freezeForBranch(); frozen != nil {
+		if err := a.pushPendingFreezeLogs(r.repo, r.cfg, frozen); err != nil {
+			errs = append(errs, err)
+		}
 		for _, task := range r.freezeAdvisoryFailed {
 			if tag, err := a.freezeLog(r.repo, r.cfg, frozen, r.head, r.name, "advisory", task); err != nil {
-				a.warn("freeze-log tag %s was not written: %v", tag, err)
+				a.warn("freeze-log tag %s was not fully published: %v", tag, err)
 				errs = append(errs, err)
 			}
 		}
 	}
 	if frozen := r.freezeForRequiredTarget(); frozen != nil && r.freezeLogKind != "" {
+		if err := a.pushPendingFreezeLogs(r.repo, r.cfg, frozen); err != nil {
+			errs = append(errs, err)
+		}
 		if tag, err := a.freezeLog(r.repo, r.cfg, frozen, r.head, r.name, r.freezeLogKind, r.freezeLogReason); err != nil {
-			a.warn("freeze-log tag %s was not written: %v", tag, err)
+			a.warn("freeze-log tag %s was not fully published: %v", tag, err)
 			errs = append(errs, err)
 		}
 	}

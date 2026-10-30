@@ -27,8 +27,8 @@ func TestReplaceFreezeJournalWithinBuildSection(t *testing.T) {
 	body := first + second
 	build := "<h2>Product v1.2.10</h2>"
 	journal := "<h3>Freeze journal</h3><ul><li>new</li></ul>"
-	body = replaceFreezeJournal(body, build, journal)
-	body = replaceFreezeJournal(body, build, journal)
+	body = replaceFreezeJournal(body, build, "<h3>Freeze journal</h3>", journal)
+	body = replaceFreezeJournal(body, build, "<h3>Freeze journal</h3>", journal)
 	if got := strings.Count(body, "<h3>Freeze journal</h3>"); got != 2 {
 		t.Fatalf("freeze journal headings = %d, want one for each build: %s", got, body)
 	}

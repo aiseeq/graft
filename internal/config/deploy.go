@@ -469,6 +469,9 @@ func (c *Config) validateFreeze(where, name string, t *DeployTarget, f *Freeze) 
 	if strings.TrimSpace(f.Branch) == "" {
 		f.Branch = "release/{version}"
 	}
+	if strings.Count(f.Branch, "{version}") != 1 {
+		return fmt.Errorf("%s.freeze.branch: must contain {version} exactly once", where)
+	}
 	for i, typ := range f.Types {
 		if strings.TrimSpace(typ) == "" {
 			return fmt.Errorf("%s.freeze.types[%d]: blank", where, i)

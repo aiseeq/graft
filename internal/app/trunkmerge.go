@@ -93,7 +93,10 @@ func (a *App) pushTrunkMerge(r *deployRun, trunk, branch string) (string, error)
 		return "", err
 	}
 	ref := merge + ":refs/heads/" + branch
-	if _, err := r.repo.Git("push", "--quiet", remote, ref); err != nil {
+	args := pushArgs(remote, false, hasConfiguredFreeze(r.cfg))
+	args = append(args, ref)
+	args = append(args[:1], append([]string{"--quiet"}, args[1:]...)...)
+	if _, err := r.repo.Git(args...); err != nil {
 		return "", fmt.Errorf("git push %s: %w; merge by hand: git switch %s && git pull --ff-only %s %s && git merge -s ours --no-edit %s && git push %s %s",
 			remote, err, branch, remote, branch, r.branch, remote, branch)
 	}

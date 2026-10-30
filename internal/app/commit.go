@@ -207,14 +207,15 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 		return undo(err)
 	}
 	refs := []string{"HEAD"}
+	var postCommitErrs []error
 	if plan.bump.tag != "" {
 		if _, err := repo.Git("tag", "-a", plan.bump.tag, "-m", plan.bump.tag); err != nil {
-			return fmt.Errorf("commit made, but tagging it failed: %w", err)
+			postCommitErrs = append(postCommitErrs, fmt.Errorf("commit made, but tagging it failed: %w", err))
+		} else {
+			refs = append(refs, "refs/tags/"+plan.bump.tag)
 		}
-		refs = append(refs, "refs/tags/"+plan.bump.tag)
 	}
 	head, err := repo.Git("rev-parse", "--short", "HEAD")
-	var postCommitErrs []error
 	if err != nil {
 		postCommitErrs = append(postCommitErrs, fmt.Errorf("commit made, but reading it back failed: %w", err))
 	} else {

@@ -102,7 +102,7 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 	if strings.Contains(page.Body, heading) {
 		journalHeading := "<h3>" + html.EscapeString(p.Label("freeze_journal")) + "</h3>"
 		if strings.Contains(section, journalHeading) {
-			body := replaceFreezeJournal(page.Body, heading, section[strings.Index(section, journalHeading):])
+			body := replaceFreezeJournal(page.Body, heading, journalHeading, section[strings.Index(section, journalHeading):])
 			if body != page.Body {
 				if _, err := client.UpdatePage(ctx, page, body, "freeze journal "+r.version); err != nil {
 					return err
@@ -119,8 +119,7 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 	return nil
 }
 
-func replaceFreezeJournal(body, build, journal string) string {
-	const heading = "<h3>Freeze journal</h3>"
+func replaceFreezeJournal(body, build, heading, journal string) string {
 	buildStart := strings.Index(body, build)
 	if buildStart < 0 {
 		return body + journal
@@ -155,6 +154,10 @@ func (a *App) freezeJournal(repo *gitx.Repo, cfg *config.Config, f *activeFreeze
 		names = append(names, tag)
 	}
 	slices.Sort(names)
+	contents, err := readRemoteTags(repo, tags)
+	if err != nil {
+		return "", err
+	}
 	var b strings.Builder
 	b.WriteString("<h3>" + html.EscapeString(p.Label("freeze_journal")) + "</h3><ul>")
 	for _, tag := range names {
@@ -162,11 +165,7 @@ func (a *App) freezeJournal(repo *gitx.Repo, cfg *config.Config, f *activeFreeze
 		if len(refs) == 0 {
 			return "", fmt.Errorf("freeze journal tag %s has no remote ref", tag)
 		}
-		contents, err := readRemoteTag(repo, refs[0])
-		if err != nil {
-			return "", err
-		}
-		line, err := freezeJournalLine(tag, contents)
+		line, err := freezeJournalLine(tag, contents[tag])
 		if err != nil {
 			return "", err
 		}
