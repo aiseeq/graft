@@ -101,7 +101,7 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 	heading := buildHeading(p, r)
 	if strings.Contains(page.Body, heading) {
 		if strings.Contains(section, "<h2>Freeze journal</h2>") {
-			body := replaceFreezeJournal(page.Body, section[strings.Index(section, "<h2>Freeze journal</h2>"):])
+			body := replaceFreezeJournal(page.Body, heading, section[strings.Index(section, "<h2>Freeze journal</h2>"):])
 			if body != page.Body {
 				if _, err := client.UpdatePage(ctx, page, body, "freeze journal "+r.version); err != nil {
 					return err
@@ -118,17 +118,41 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 	return nil
 }
 
-func replaceFreezeJournal(body, journal string) string {
+func replaceFreezeJournal(body, build, journal string) string {
 	const heading = "<h2>Freeze journal</h2>"
-	start := strings.Index(body, heading)
-	if start < 0 {
+	buildStart := strings.Index(body, build)
+	if buildStart < 0 {
 		return body + journal
 	}
-	end := strings.Index(body[start:], "</ul>")
-	if end < 0 {
-		return body[:start] + journal
+	buildEnd := len(body)
+	for searchAt := buildStart + len(build); searchAt < len(body); {
+		next := strings.Index(body[searchAt:], "<h2>")
+		if next < 0 {
+			break
+		}
+		headingStart := searchAt + next
+		headingEnd := strings.Index(body[headingStart:], "</h2>")
+		if headingEnd < 0 {
+			break
+		}
+		headingEnd += headingStart + len("</h2>")
+		if body[headingStart:headingEnd] != heading {
+			buildEnd = headingStart
+			break
+		}
+		searchAt = headingEnd
 	}
-	return body[:start] + journal + body[start+end+len("</ul>"):]
+	section := body[buildStart:buildEnd]
+	start := strings.Index(section, heading)
+	if start < 0 {
+		return body[:buildEnd] + journal + body[buildEnd:]
+	}
+	end := strings.Index(section[start:], "</ul>")
+	if end < 0 {
+		return body[:buildStart+start] + journal + body[buildEnd:]
+	}
+	end += start + len("</ul>")
+	return body[:buildStart+start] + journal + body[buildStart+end:]
 }
 
 func (a *App) freezeJournal(repo *gitx.Repo, cfg *config.Config, f *activeFreeze) (string, error) {
@@ -155,12 +179,48 @@ func (a *App) freezeJournal(repo *gitx.Repo, cfg *config.Config, f *activeFreeze
 		if err != nil {
 			return "", err
 		}
-		kind := tag[strings.LastIndex(tag, "-")+1:]
-		detail := strings.TrimSpace(strings.ReplaceAll(contents, "\n", "; "))
-		b.WriteString("<li>" + html.EscapeString(kind+": "+detail) + "</li>")
+		line, err := freezeJournalLine(tag, contents)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString("<li>" + html.EscapeString(line) + "</li>")
 	}
 	b.WriteString("</ul>")
 	return b.String(), nil
+}
+
+func freezeJournalLine(tag, contents string) (string, error) {
+	name := tag[strings.LastIndex(tag, "/")+1:]
+	parts := strings.Split(name, "-")
+	if len(parts) < 3 {
+		return "", fmt.Errorf("invalid freeze journal tag %s", tag)
+	}
+	when, err := time.Parse("20060102T150405", parts[0])
+	if err != nil {
+		return "", fmt.Errorf("invalid freeze journal time in %s: %w", tag, err)
+	}
+	kind := parts[len(parts)-1]
+	var target, commit, reason string
+	if _, body, ok := strings.Cut(contents, "\n\n"); ok {
+		for line := range strings.SplitSeq(body, "\n") {
+			key, value, ok := strings.Cut(line, ": ")
+			if !ok {
+				continue
+			}
+			switch key {
+			case "target":
+				target = value
+			case "commit":
+				commit = gitx.Short(value)
+			case "reason":
+				reason = value
+			}
+		}
+	}
+	if target == "" || commit == "" {
+		return "", fmt.Errorf("freeze journal tag %s lacks target or commit", tag)
+	}
+	return fmt.Sprintf("%s %s %s at %s: %s", kind, target, commit, when.Format("2006-01-02 15:04:05"), reason), nil
 }
 
 // withheldItems are the items of the commits this release withheld, the

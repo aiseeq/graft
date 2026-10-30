@@ -158,7 +158,7 @@ func (a *App) gate(ctx context.Context, repo *gitx.Repo, cfg *config.Config) err
 
 // gateForMessage runs the gate of a commit whose message is known: steps find
 // it in the file named by GRAFT_COMMIT_MESSAGE_FILE, removed afterwards.
-func (a *App) gateForMessage(ctx context.Context, repo *gitx.Repo, cfg *config.Config, message string) (frozen *activeFreeze, failed []string, retErr error) {
+func (a *App) gateForMessage(ctx context.Context, repo *gitx.Repo, cfg *config.Config, branch, message string) (frozen *activeFreeze, failed []string, retErr error) {
 	f, err := os.CreateTemp(repo.GitDir, "GRAFT_COMMIT_MESSAGE.*")
 	if err != nil {
 		return nil, nil, fmt.Errorf("writing the commit message for the gate: %w", err)
@@ -175,12 +175,7 @@ func (a *App) gateForMessage(ctx context.Context, repo *gitx.Repo, cfg *config.C
 		return nil, nil, fmt.Errorf("writing %s: %w", f.Name(), err)
 	}
 	a.warnStaleWorktreeLinks(repo, cfg)
-	var branch string
 	if configuredFreezeAdvisory(cfg) {
-		branch, err = repo.Branch()
-		if err != nil {
-			return nil, nil, fmt.Errorf("reading the current branch for freeze advisory: %w", err)
-		}
 		frozen, err = a.frozenForBranch(repo, cfg, branch)
 		if err != nil && !errors.Is(err, errNoActiveFreeze) {
 			return nil, nil, err
@@ -191,13 +186,11 @@ func (a *App) gateForMessage(ctx context.Context, repo *gitx.Repo, cfg *config.C
 	var gateErr error
 	if frozen != nil {
 		gateErr = r.Unit("commit advisory gate", func() error {
-			return r.GateWithAdvisory(ctx, func(task string, err error) bool {
-				if !freezeAdvisory(frozen, task) {
-					return false
-				}
+			return r.GateWithAdvisory(ctx, func(task string) bool {
+				return freezeAdvisory(frozen, task)
+			}, func(task string, err error) {
 				a.warnFreezeAdvisory(frozen, task, err)
 				failed = append(failed, task)
-				return true
 			})
 		})
 	} else {
@@ -335,10 +328,18 @@ type PushError struct {
 func (e *PushError) Error() string {
 	var retry []string
 	for _, r := range e.Failed {
-		retry = append(retry, "git "+strings.Join(append(pushArgs(r, e.Lease), e.Refs...), " "))
+		retry = append(retry, retryPushCommand(r, e.Refs, e.Lease))
 	}
 	return fmt.Sprintf("push failed for %d of %d remotes (%s); the commit is made locally, retry with: %s",
 		len(e.Failed), e.Total, strings.Join(e.Failed, ", "), strings.Join(retry, "; "))
+}
+
+func retryPushCommand(remote string, refs []string, lease bool) string {
+	push := pushArgs(remote, lease)
+	args := []string{"git", push[0], remote}
+	args = append(args, refs...)
+	args = append(args, push[1:len(push)-1]...)
+	return strings.Join(args, " ")
 }
 
 // push publishes refs to every remote, one at a time, and keeps going past a
@@ -369,9 +370,9 @@ func (a *App) push(repo *gitx.Repo, remotes, refs []string, lease bool) error {
 // rebased after it was pushed: the push replaces only what this clone last saw.
 func pushArgs(remote string, lease bool) []string {
 	if lease {
-		return []string{"push", "--force-with-lease", remote}
+		return []string{"push", "--no-follow-tags", "--force-with-lease", remote}
 	}
-	return []string{"push", remote}
+	return []string{"push", "--no-follow-tags", remote}
 }
 
 // mergeOrNormalContext tells whether a merge is in progress, which a graft

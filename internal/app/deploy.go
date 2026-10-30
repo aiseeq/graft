@@ -363,6 +363,9 @@ func (a *App) checkFreeze(ctx context.Context, r *deployRun, o DeployOptions) er
 	}
 	if r.hotfix {
 		r.freezeLogKind, r.freezeLogReason = "bypass", r.branch
+		if o.PastFreeze != "" {
+			r.freezeLogReason += ": " + o.PastFreeze
+		}
 		return nil
 	}
 	err := a.freezeIssueCheck(ctx, r, frozen)
@@ -621,19 +624,11 @@ func (a *App) finishFreeze(r *deployRun, shaRecorded bool, pageErr, journalErr e
 	if r.target.ReleasePage == nil {
 		a.printf("freeze journal for %s has no release page configured", frozen.name)
 	}
-	if !shaRecorded {
+	if !shaRecorded || pageErr != nil || journalErr != nil {
 		a.warn("freeze stays active at %s until deployed_sha, the release page, and the freeze journal are complete", frozen.name)
 		return errors.Join(pageErr, journalErr)
 	}
-	if pageErr != nil {
-		a.warn("freeze stays active at %s until deployed_sha, the release page, and the freeze journal are complete", frozen.name)
-		return errors.Join(pageErr, journalErr)
-	}
-	if journalErr != nil {
-		a.warn("freeze stays active at %s until deployed_sha, the release page, and the freeze journal are complete", frozen.name)
-		return journalErr
-	}
-	return errors.Join(pageErr, journalErr, a.removeFreezeTags(r.repo, r.cfg, frozen))
+	return a.removeFreezeTags(r.repo, r.cfg, frozen)
 }
 
 func (a *App) recordFreezeJournal(r *deployRun) error {

@@ -126,6 +126,16 @@ func (i Issue) HasFixVersion(name string) bool {
 	return false
 }
 
+// FixVersionID returns the ID of this issue's fix version with the given name.
+func (i Issue) FixVersionID(name string) string {
+	for _, version := range i.FixVersions {
+		if version.Name == name {
+			return version.ID
+		}
+	}
+	return ""
+}
+
 // Transition is a move available from the item's current status.
 type Transition struct {
 	ID string

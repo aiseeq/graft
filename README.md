@@ -1861,6 +1861,10 @@ and the release page journal succeed. If no release page is configured, the
 journal is reported as having no page and `deployed_sha` is sufficient. `graft deploy thaw
 <target> --reason 'reason'` ends it manually and removes those tags too.
 
+Freeze and journal tags live on the remotes. To keep removed tags from
+returning in local clones, enable `fetch.pruneTags` or set
+`remote.<name>.tagOpt --no-tags` for each remote.
+
 ### Release pages
 
 ```yaml

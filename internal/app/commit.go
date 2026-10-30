@@ -165,7 +165,7 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	if err != nil {
 		return err
 	}
-	frozen, advisoryFailed, err := a.gateForMessage(ctx, repo, cfg, plan.message)
+	frozen, advisoryFailed, err := a.gateForMessage(ctx, repo, cfg, plan.branch, plan.message)
 	if err != nil {
 		return errors.Join(err, restoreIndex(repo, index))
 	}
@@ -206,11 +206,6 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	if _, err := repo.GitInput(strings.NewReader(msg), markerEnv, "commit", "--cleanup=verbatim", "-F", "-"); err != nil {
 		return undo(err)
 	}
-	if frozen != nil {
-		if err := a.recordCommitAdvisory(repo, cfg, frozen, advisoryFailed); err != nil {
-			return err
-		}
-	}
 	refs := []string{"HEAD"}
 	if plan.bump.tag != "" {
 		if _, err := repo.Git("tag", "-a", plan.bump.tag, "-m", plan.bump.tag); err != nil {
@@ -223,7 +218,20 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 		return errors.Join(fmt.Errorf("commit made, but reading it back failed: %w", err), a.push(repo, plan.remotes, refs, config.BranchMatches(cfg.Push.Lease, plan.branch)))
 	}
 	a.printf("committed %s on %s%s", strings.TrimSpace(head), plan.branch, plan.bump.describe())
-	return a.push(repo, plan.remotes, refs, config.BranchMatches(cfg.Push.Lease, plan.branch))
+	if err := a.push(repo, plan.remotes, refs, config.BranchMatches(cfg.Push.Lease, plan.branch)); err != nil {
+		return err
+	}
+	return a.recordCommitAdvisoryAfterPush(repo, cfg, frozen, advisoryFailed)
+}
+
+func (a *App) recordCommitAdvisoryAfterPush(repo *gitx.Repo, cfg *config.Config, frozen *activeFreeze, failed []string) error {
+	if frozen == nil {
+		return nil
+	}
+	if err := a.recordCommitAdvisory(repo, cfg, frozen, failed); err != nil {
+		return fmt.Errorf("commit is made and pushed, but the freeze journal lacks the advisory record: %w", err)
+	}
+	return nil
 }
 
 // gateLeftHead says whether the staged tree is HEAD's: the gate put every

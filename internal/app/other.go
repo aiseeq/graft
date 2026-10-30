@@ -31,7 +31,7 @@ func (a *App) Amend(ctx context.Context) error {
 		if err := checkAmendable(repo, cfg); err != nil {
 			return err
 		}
-		message, ticketed, err := amendMessage(repo, cfg)
+		message, ticketed, branch, err := amendMessage(repo, cfg)
 		if err != nil {
 			return err
 		}
@@ -43,7 +43,7 @@ func (a *App) Amend(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		frozen, advisoryFailed, err := a.gateForMessage(ctx, repo, cfg, message)
+		frozen, advisoryFailed, err := a.gateForMessage(ctx, repo, cfg, branch, message)
 		if err != nil {
 			return errors.Join(err, restoreIndex(repo, index))
 		}
@@ -93,22 +93,22 @@ func (a *App) Amend(ctx context.Context) error {
 
 // amendMessage is the message of the amended commit: HEAD's, with the key of
 // the branch's ticket when the branch is ticketed.
-func amendMessage(repo *gitx.Repo, cfg *config.Config) (message string, ticketed bool, err error) {
+func amendMessage(repo *gitx.Repo, cfg *config.Config) (message string, ticketed bool, branch string, err error) {
 	message, err = repo.Git("log", "-1", "--format=%B", "HEAD")
 	if err != nil {
-		return "", false, err
+		return "", false, "", err
 	}
 	// log appends a newline of its own after the message's.
 	message = strings.TrimRight(message, "\n") + "\n"
-	branch, err := repo.Branch()
+	branch, err = repo.Branch()
 	if err != nil {
-		return "", false, err
+		return "", false, "", err
 	}
 	ticketed = cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, branch)
 	if ticketed {
 		message = commitmessage.WithKey(message, commitmessage.BranchKey(branch, cfg.Ticket.Regexp))
 	}
-	return message, ticketed, nil
+	return message, ticketed, branch, nil
 }
 
 // checkAmendable refuses to amend a missing commit, one with nothing to fold

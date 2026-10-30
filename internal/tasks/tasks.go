@@ -610,12 +610,12 @@ func vetSkipped(dir string, exclude []string) bool {
 
 // Gate runs the commit gate with stdin closed.
 func (r *Runner) Gate(ctx context.Context) (err error) {
-	return r.GateWithAdvisory(ctx, nil)
+	return r.GateWithAdvisory(ctx, nil, nil)
 }
 
-// GateWithAdvisory runs the configured gate in order; onAdvisory handles a
-// failed configured step and may let the gate continue.
-func (r *Runner) GateWithAdvisory(ctx context.Context, onAdvisory func(string, error) bool) (err error) {
+// GateWithAdvisory runs the configured gate in order, reporting failures of
+// steps selected by advisory.
+func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) bool, onAdvisory func(string, error)) (err error) {
 	steps, err := r.gateSteps()
 	if err != nil {
 		return err
@@ -625,11 +625,7 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, onAdvisory func(string, e
 		return nil
 	}
 	r.Stdin = nil
-	all := make([]config.Step, len(steps))
-	for i := range steps {
-		all[i] = steps[i].step
-	}
-	if err := r.preflight(all, &config.Task{}, "gate"); err != nil {
+	if err := r.preflightGate(steps, advisory); err != nil {
 		return err
 	}
 	f := r.begin(stats.GateTask)
@@ -652,37 +648,68 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, onAdvisory func(string, e
 		defer func() { err = errors.Join(err, leave()) }()
 	}
 	for i := range steps {
-		gs := &steps[i]
-		s, threads, err := r.threads(gs.step, gs.task)
-		if err != nil {
-			return fmt.Errorf("gate: %w", err)
-		}
-		fmt.Fprintf(r.Stdout, "graft: gate %d/%d: %s\n", i+1, len(steps), s.Source)
-		var stepErr error
-		if gs.run != nil {
-			run := func() error { return gs.run(ctx) }
-			if r.gateSplit {
-				leave, herr := r.enterHeavy(ctx, stats.GateTask)
-				if herr != nil {
-					return herr
-				}
-				stepErr = errors.Join(r.measureFunc(s.Source, run), leave())
-			} else {
-				stepErr = r.measureFunc(s.Source, run)
-			}
-		} else {
-			stepErr = r.step(ctx, s, gs.task, nil, threads)
-		}
-		if stepErr != nil {
-			if onAdvisory != nil && gs.step.Task != "" && onAdvisory(gs.step.Task, stepErr) {
-				continue
-			}
-			if gs.hint != "" {
-				return fmt.Errorf("gate failed at %q: %w\n%s", s.Source, stepErr, gs.hint)
-			}
-			return fmt.Errorf("gate failed at %q: %w", s.Source, stepErr)
+		if err := r.runGateStep(ctx, &steps[i], i+1, len(steps), advisory, onAdvisory); err != nil {
+			return err
 		}
 	}
+	return nil
+}
+
+func (r *Runner) preflightGate(steps []gateStep, advisory func(string) bool) error {
+	var required []config.Step
+	for i := range steps {
+		gs := &steps[i]
+		if advisory != nil && gs.step.Task != "" && advisory(gs.step.Task) {
+			continue
+		}
+		required = append(required, gs.step)
+	}
+	return r.preflight(required, &config.Task{}, "gate")
+}
+
+func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total int, advisory func(string) bool, onAdvisory func(string, error)) error {
+	s, threads, err := r.threads(gs.step, gs.task)
+	if err != nil {
+		return fmt.Errorf("gate: %w", err)
+	}
+	fmt.Fprintf(r.Stdout, "graft: gate %d/%d: %s\n", number, total, s.Source)
+	if advisory != nil && gs.step.Task != "" && advisory(gs.step.Task) {
+		if err := r.preflight([]config.Step{gs.step}, &config.Task{}, "gate"); err != nil {
+			return reportAdvisoryFailure(gs.step.Task, err, onAdvisory)
+		}
+	}
+	var stepErr error
+	if gs.run != nil {
+		run := func() error { return gs.run(ctx) }
+		if r.gateSplit {
+			leave, herr := r.enterHeavy(ctx, stats.GateTask)
+			if herr != nil {
+				return herr
+			}
+			stepErr = errors.Join(r.measureFunc(s.Source, run), leave())
+		} else {
+			stepErr = r.measureFunc(s.Source, run)
+		}
+	} else {
+		stepErr = r.step(ctx, s, gs.task, nil, threads)
+	}
+	if stepErr == nil {
+		return nil
+	}
+	if stepErr != nil && advisory != nil && gs.step.Task != "" && advisory(gs.step.Task) {
+		return reportAdvisoryFailure(gs.step.Task, stepErr, onAdvisory)
+	}
+	if gs.hint != "" {
+		return fmt.Errorf("gate failed at %q: %w\n%s", s.Source, stepErr, gs.hint)
+	}
+	return fmt.Errorf("gate failed at %q: %w", s.Source, stepErr)
+}
+
+func reportAdvisoryFailure(task string, err error, report func(string, error)) error {
+	if err == nil || report == nil {
+		return err
+	}
+	report(task, err)
 	return nil
 }
 
