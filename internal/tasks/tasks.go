@@ -136,8 +136,10 @@ type frame struct {
 	// db follows the test database's container in a test_db task.
 	db   *stats.CgroupWatch
 	load *stats.LoadWatch
-	// remote runs the steps of a heavy task on remote_heavy's host.
+	// remote runs the steps of a heavy task on remote_heavy's host; here is
+	// why one with a host runs on this machine.
 	remote bool
+	here   string
 	// program is the program a graft exec runs, which tells its kind.
 	program string
 }
@@ -705,11 +707,11 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 		return err
 	}
 	if t.Heavy {
-		remote, err := r.placeHeavy(ctx, name, t, r.Root, args)
+		remote, here, err := r.placeHeavy(ctx, name, t, r.Root, args)
 		if err != nil {
 			return err
 		}
-		f.remote = remote
+		f.remote, f.here = remote, here
 	}
 	if t.Heavy && !f.remote {
 		leave, herr := r.enterHeavy(ctx, name)
@@ -979,7 +981,7 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 	f.program = filepath.Base(argv[0])
 	defer func() { r.end(f, err != nil) }()
 	if heavy {
-		if f.remote, err = r.placeHeavy(ctx, ExecTask, t, dir, nil); err != nil {
+		if f.remote, f.here, err = r.placeHeavy(ctx, ExecTask, t, dir, nil); err != nil {
 			return err
 		}
 	}
@@ -1257,7 +1259,7 @@ func (r *Runner) begin(task string) *frame {
 // what it cost; the task's error itself goes back to its caller.
 func (r *Runner) end(f *frame, failed bool) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
-	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f)}
+	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here}
 	if failed {
 		// A failure outside the processes (a missing key, a lock timeout)
 		// has no exit status of its own.

@@ -504,3 +504,39 @@ func TestExecBrokenRemotePathRunsHere(t *testing.T) {
 		t.Errorf("remote-broken.jsonl: %+v, want one exec line for pc", lines)
 	}
 }
+
+// TestHeavyTaskLineSaysWhyItStayedHere: the task line of a heavy task that
+// had a host and ran here says why, also when graft said nothing: a calm
+// machine, or inside an admitted heavy task; one sent to the host says
+// nothing.
+func TestHeavyTaskLineSaysWhyItStayedHere(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, overflowTasks+`  outer:
+    heavy: true
+    remote: false
+    run: [[graft, vet]]
+`)
+	f.mustGraft("vet")
+	f.mustGraft("build")
+	f.mustGraft("outer")
+	loaded(t, state)
+	f.mustGraft("vet")
+	var got []string
+	for _, l := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+		if l.Kind == "task" {
+			got = append(got, l.Task+": "+l.Host+"|"+l.Here)
+		}
+	}
+	want := []string{
+		"vet: |this machine would not make it wait",
+		"build: |only go test and go vet steps that write no file can use user remote_heavy",
+		"vet: |inside an admitted heavy task, which waits for the machine",
+		"outer: |the task has remote: false",
+		"vet: pc|",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("task lines:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}

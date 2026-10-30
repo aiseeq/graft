@@ -31,40 +31,46 @@ const remoteUpTimeout = 30 * time.Second
 
 // placeHeavy says whether a heavy task, or graft exec --heavy run in dir,
 // runs its steps on remote_heavy's host, and says where it runs when the
-// project has one; args are the arguments given to the task.
-func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, dir string, args []string) (bool, error) {
+// project has one; args are the arguments given to the task. here is why
+// it stays on this machine when there is a host, for the stats.
+func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, dir string, args []string) (remote bool, here string, err error) {
 	rh := r.Config.RemoteHeavy
 	if rh == nil {
-		var err error
 		rh, err = userconfig.RemoteHeavySettings()
 		if err != nil {
-			return false, fmt.Errorf("reading user remote_heavy: %w", err)
+			return false, "", fmt.Errorf("reading user remote_heavy: %w", err)
 		}
 		r.userRemote = rh != nil
 	}
 	if rh == nil {
-		return false, nil
+		return false, "", nil
 	}
 	r.remoteHeavy = rh
+	stay := func(why string) (bool, string, error) {
+		fmt.Fprintf(r.Stderr, "graft: %s: heavy, on this machine: %s\n", name, why)
+		return false, why, nil
+	}
 	why, err := r.stayHere(ctx, t, dir)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if why != "" {
-		fmt.Fprintf(r.Stderr, "graft: %s: heavy, on this machine: %s\n", name, why)
-		return false, nil
+		return stay(why)
 	}
 	if r.userRemote && t.Remote == nil && !userRemoteEligible(t, args) {
-		fmt.Fprintf(r.Stderr, "graft: %s: heavy, on this machine: only go test and go vet steps that write no file can use user remote_heavy\n", name)
-		return false, nil
+		return stay("only go test and go vet steps that write no file can use user remote_heavy")
 	}
 	if rh.When == "busy" {
+		if os.Getenv(AdmittedEnv) != "" || r.heavy > 0 {
+			// Not said: such a task never waited here either.
+			return false, WhyInsideHeavy, nil
+		}
 		busy, err := r.wouldWait(ctx, name)
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
 		if !busy {
-			return false, nil
+			return false, WhyNotBusy, nil
 		}
 	}
 	if !r.remoteAsked {
@@ -75,25 +81,28 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 		if r.userRemote {
 			fmt.Fprintf(r.Stderr, "graft: %s: %s path broken: %s, running here\n", name, rh.Host, r.remoteDown)
 			if err := r.journalRemoteBroken(name, r.remoteDown); err != nil {
-				return false, err
+				return false, "", err
 			}
-		} else {
-			fmt.Fprintf(r.Stderr, "graft: %s: heavy, on this machine: %s did not answer (%s)\n", name, rh.Host, r.remoteDown)
+			return false, rh.Host + " path broken: " + r.remoteDown, nil
 		}
-		return false, nil
+		return stay(rh.Host + " did not answer (" + r.remoteDown + ")")
 	}
 	fmt.Fprintf(r.Stderr, "graft: %s: heavy, on %s\n", name, rh.Host)
-	return true, nil
+	return true, "", nil
 }
 
+// Reasons a heavy task with a host stays on this machine without saying so:
+// under when: busy, it would not wait here.
+const (
+	WhyInsideHeavy = "inside an admitted heavy task, which waits for the machine"
+	WhyNotBusy     = "this machine would not make it wait"
+)
+
 // wouldWait tells whether this machine's queue would make the heavy task wait
-// now, as admit and enterHeavy decide: a task inside an admitted one (a
-// graft its step started, or a nested heavy task) does not wait, and one
-// with a priority waits for the machine only, not for the queue.
+// now, as admit and enterHeavy decide for a task outside an admitted one
+// (placeHeavy keeps those here): one with a priority waits for the machine
+// only, not for the queue.
 func (r *Runner) wouldWait(ctx context.Context, name string) (bool, error) {
-	if os.Getenv(AdmittedEnv) != "" || r.heavy > 0 {
-		return false, nil
-	}
 	l, err := r.Load()
 	if err != nil {
 		return false, err

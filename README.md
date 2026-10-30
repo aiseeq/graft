@@ -797,6 +797,12 @@ deps and inner tasks included.
   its steps, names that host; absent for this machine. Their CPU time,
   memory and disk IO are those of the command that sent the step there, not
   of the work.
+- `here`, on the line of a heavy task that had a `remote_heavy` host and
+  ran on this machine, is why: the reason its `heavy, on this machine:`
+  line gave, the broken path, or, where graft says nothing, `this machine
+  would not make it wait` (`when: busy` on a calm machine) and `inside an
+  admitted heavy task, which waits for the machine`. Absent for a task the
+  host ran and without a host.
 - `step` is the step as written in `.graft.yaml`, on one line, cut to 200
   characters. `exit` is -1 when there is no exit status: killed by a signal,
   or a task that failed outside its processes.

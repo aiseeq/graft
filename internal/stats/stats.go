@@ -55,6 +55,9 @@ type Record struct {
 	Kind string    `json:"kind"`
 	// Project is the absolute root of the project.
 	Project string `json:"project"`
+	// Here, on the line of a heavy task with a remote_heavy host that ran on
+	// this machine, is why it did not go to the host.
+	Here string `json:"here,omitempty"`
 	// Profile is the kind of the run the admission of heavy tasks knows it
 	// by: <repository>:<task>, the repository named by its main work tree's
 	// folder for every worktree, and a graft exec <repository>:exec:<the

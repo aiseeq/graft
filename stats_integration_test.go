@@ -36,6 +36,7 @@ type statsLine struct {
 	WaitS    float64            `json:"wait_s"`
 	WaitWhy  map[string]float64 `json:"wait_why"`
 	Host     string             `json:"host"`
+	Here     string             `json:"here"`
 	Exit     int                `json:"exit"`
 	Run      string             `json:"run"`
 	Parent   string             `json:"parent"`
