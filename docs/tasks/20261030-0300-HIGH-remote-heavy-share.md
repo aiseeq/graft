@@ -1,6 +1,7 @@
 # PC простаивает при очереди на ноуте: что из ждавшего могло уйти на remote_heavy, причина в stats, шаги гейта на PC
 
-Статус: в работе
+Статус: ждёт
+Ждёт: 2026-10-31 05:15
 Исполнитель: graft-master
 
 ## Вход
@@ -28,3 +29,5 @@
 - 2026-10-30 04:25 note — graft-master: Боец Luna 1030-0358 принят; ревью мастера: GRAFT_EXEC_HEAVY ставился и без --heavy (исправлено), комментарии, README точнее. Коммит fa41806 на feat/gate-split, вливается через worktree sync.
 - 2026-10-30 04:42 note — graft-master: Независимая проверка 30.10: приёмка ok, дефекты: HIGH шаги разделённого гейта идут на хост мимо stayHere (test_db, keys, .env, remote:false, dir без {root}); MEDIUM graft exec --heavy -- graft exec мимо очереди; LOW broken path не запоминается, host down в split не запоминается, here пуст у тяжёлых задач split, install-шаги без допуска. Чиню до релиза.
 - 2026-10-30 05:03 note — graft-master: 0a7b2ca: шаги split-гейта через stayHere; exec --heavy -- graft exec в очереди; broken/down запоминаются; here=WhyGateSplit; install/service под допуском. Повторная проверка: все исправлены. Флак loadgate TestBusyDiskAndSwapHoldTasks/io — не нагрузка, а гонка: конец ожидания обрывал подключение к источнику диска, graft уходил на PSI и запускал задачу; busy() теперь возвращает ctx.Err() (10 прогонов зелёные).
+- 2026-10-30 05:10 note — graft-master: v2.57.0 (422a2fa) установлен на ноут и PC в 05:10 CET; all зелёный. Остаток приёмки — замер ожидания гейтов за сутки после (30.10 05:10 → 31.10 05:10) против 29.10 (gate 600 задач / 20.8 ч ожидания), затем итог git-admin.
+- 2026-10-30 05:10 ждёт — graft-master — 2026-10-31 05:15

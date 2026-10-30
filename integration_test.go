@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aiseeq/graft/v2/internal/testinputs"
 	"github.com/aiseeq/graft/v2/internal/version"
 )
 
@@ -274,6 +275,16 @@ func (f *fixture) tryGit(args ...string) (string, int) {
 
 func (f *fixture) graft(stdin string, args ...string) (string, int) {
 	return f.exec(f.work, stdin, graftBin, args...)
+}
+
+// The graft, git and gatehelper the tests run read the environment and
+// gatehelper's sources, and go test keys a cached result on them only when
+// the test reads them too.
+func TestChildInputsKeyTheCache(t *testing.T) {
+	testinputs.Env()
+	if err := testinputs.Files(filepath.Join("testdata", "gatehelper")); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestChangeDirectoryFlag(t *testing.T) {

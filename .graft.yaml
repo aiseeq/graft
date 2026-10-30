@@ -93,7 +93,7 @@ tasks:
     test_db: true
     heavy: true
     tests: go
-    run: ['go test -json -p {threads} -count=1 -short ./...']
+    run: ['go test -json -p {threads} -short ./...']
   smoke:
     desc: the commit gate
     run: [{task: fmt-check}, {task: vet}, {task: glint}, {task: test-gate}]
