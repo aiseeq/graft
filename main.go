@@ -848,7 +848,9 @@ func deployFlagsMisplaced(sub string, scriptArgs, logFlags, deployFlags bool) bo
 func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	// Everything after -- belongs to the deploy script.
 	var scriptArgs []string
+	var scriptArgsProvided bool
 	if i := slices.Index(args, "--"); i >= 0 {
+		scriptArgsProvided = true
 		args, scriptArgs = args[:i], args[i+1:]
 	}
 	fs := newFlags(a, "deploy")
@@ -856,6 +858,8 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	grep := fs.String("grep", "", "logs: keep lines matching this regexp")
 	redeploy := fs.Bool("redeploy", false, "deploy the commit the target already runs")
 	unapproved := fs.Bool("unapproved", false, "skip the approved_release check")
+	pastFreeze := fs.String("past-freeze", "", "deploy through an acceptance freeze with a reason")
+	reason := fs.String("reason", "", "thaw: why the freeze ended")
 	apply := fs.Bool("apply", false, "sweep: move the items, not only list them")
 	glintTicket := fs.String("glint-ticket", "", "deploy, handover: the item that takes the glint findings of the deployed commit, at a release acceptance")
 	fs.BoolVar(&a.NoCache, "no-cache", false, "run the deps with cache even if they passed on this tree")
@@ -863,29 +867,47 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	if err != nil {
 		return err
 	}
-	usage := fmt.Errorf("%w: graft deploy [--redeploy] [--unapproved] [--glint-ticket KEY] <target> [-- args] | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | check <target> | versions | cutoff <target> | sweep <target> [--apply] | handover <target> [--glint-ticket KEY] | check-head | check-integrations [build]", errUsage)
+	return runDeployCommand(ctx, a, pos, scriptArgs, scriptArgsProvided, *lines, *grep, *redeploy, *unapproved, *pastFreeze, *reason, *apply, *glintTicket)
+}
+
+func runDeployCommand(ctx context.Context, a *app.App, pos, scriptArgs []string, scriptArgsProvided bool, lines int, grep string, redeploy, unapproved bool, pastFreeze, reason string, apply bool, glintTicket string) error {
+	usage := fmt.Errorf("%w: graft deploy [--redeploy] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] <target> [-- args] | freeze <target> [Jira version] | thaw <target> --reason REASON | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | check <target> | versions | cutoff <target> | sweep <target> [--apply] | handover <target> [--glint-ticket KEY] | check-head | check-integrations [build]", errUsage)
 	if len(pos) == 0 {
 		return usage
 	}
-	logFlags := *lines != 200 || *grep != ""
-	if deployFlagsMisplaced(pos[0], scriptArgs != nil, logFlags, *redeploy || *unapproved) || *apply && pos[0] != "sweep" ||
-		*glintTicket != "" && isDeploySubcommand(pos[0]) && pos[0] != "handover" {
+	if deployCommandFlagsInvalid(pos[0], scriptArgsProvided, lines, grep, redeploy, unapproved, pastFreeze, apply, glintTicket) {
 		return usage
 	}
-	if run := trackerDeployCmd(ctx, a, pos, scriptArgs != nil, *apply, *glintTicket); run != nil {
+	if run := trackerDeployCmd(ctx, a, pos, scriptArgsProvided, apply, glintTicket); run != nil {
 		return run()
 	}
 	if run := readOnlyDeployCmd(ctx, a, pos, scriptArgs); run != nil {
 		return run()
 	}
+	if pos[0] == "freeze" && len(pos) >= 2 && len(pos) <= 3 && !scriptArgsProvided {
+		return a.DeployFreeze(ctx, pos[1], strings.Join(pos[2:], " "))
+	}
+	if pos[0] == "thaw" && len(pos) == 2 && !scriptArgsProvided {
+		return a.DeployThaw(ctx, pos[1], reason)
+	}
+	return runDeployTarget(ctx, a, pos, scriptArgs, lines, grep, redeploy, unapproved, pastFreeze, glintTicket, usage)
+}
+
+func deployCommandFlagsInvalid(sub string, scriptArgsProvided bool, lines int, grep string, redeploy, unapproved bool, pastFreeze string, apply bool, glintTicket string) bool {
+	logFlags := lines != 200 || grep != ""
+	return deployFlagsMisplaced(sub, scriptArgsProvided, logFlags, redeploy || unapproved || pastFreeze != "") || apply && sub != "sweep" ||
+		glintTicket != "" && isDeploySubcommand(sub) && sub != "handover"
+}
+
+func runDeployTarget(ctx context.Context, a *app.App, pos, scriptArgs []string, lines int, grep string, redeploy, unapproved bool, pastFreeze, glintTicket string, usage error) error {
 	switch {
 	case pos[0] == "logs" && len(pos) == 2:
-		if *lines <= 0 {
+		if lines <= 0 {
 			return fmt.Errorf("%w: --lines must be positive", errUsage)
 		}
-		return a.DeployLogs(ctx, pos[1], *lines, *grep, scriptArgs)
+		return a.DeployLogs(ctx, pos[1], lines, grep, scriptArgs)
 	case !isDeploySubcommand(pos[0]) && len(pos) == 1:
-		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs, Redeploy: *redeploy, Unapproved: *unapproved, GlintTicket: *glintTicket})
+		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs, Redeploy: redeploy, Unapproved: unapproved, GlintTicket: glintTicket, PastFreeze: pastFreeze})
 	default:
 		return usage
 	}

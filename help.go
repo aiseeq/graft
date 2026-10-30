@@ -48,7 +48,9 @@ var commands = []command{
 	), summary: text("review the project's event journal: status, show, ack, mute"),
 		applies: func(c *config.Config) bool { return c.Flags != nil }},
 	{name: "deploy", syntax: fixed(
-		"graft deploy [--redeploy] [--unapproved] <target> [-- script args]",
+		"graft deploy [--redeploy] [--unapproved] [--past-freeze REASON] <target> [-- script args]",
+		"graft deploy freeze <target> [Jira version]",
+		"graft deploy thaw <target> --reason REASON",
 		"graft deploy status <target> [-- args]",
 		"graft deploy logs <target> [--lines N] [--grep RE] [-- args]",
 		"graft deploy check <target>",
@@ -59,6 +61,7 @@ var commands = []command{
 		"graft deploy check-head",
 		"graft deploy check-integrations [build]",
 	), summary: text("run the project's deploy script between graft's checks; status, logs, what a deploy would refuse, the versions the targets run, the release cutoff, the items git and the target contradict, the items held for their comment"),
+		details: "freeze <target> <Jira version> cuts the configured release branch and records the active freeze; without a version it shows the freeze. The required target accepts that branch and items in the frozen version; --past-freeze REASON records an exceptional deploy, and hotfix deploys are journaled. freeze.advisory tasks warn and are recorded on the frozen branch during deploy and the graft commit gate. A successful deploy of the frozen branch to the release target ends the freeze; thaw <target> --reason REASON ends it manually.",
 		applies: func(c *config.Config) bool { return c.Deploy != nil }},
 	{name: "run", syntax: fixed("graft <task> [-- args]", "graft run <task> [-- args]"), summary: text("run a task with its deps"),
 		applies: func(c *config.Config) bool { return len(c.Tasks) > 0 }},

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 )
 
 // TestWasAssignedToReadsEveryPage puts the hand-over on the second page.
@@ -33,6 +34,48 @@ func TestWasAssignedToReadsEveryPage(t *testing.T) {
 		if err != nil || got != want {
 			t.Errorf("%s: %v %v, want %v", account, got, err, want)
 		}
+	}
+}
+
+func TestFixVersionAddedAfterUsesLatestAddition(t *testing.T) {
+	at := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	entry := func(created, from, to string) map[string]any {
+		return map[string]any{"created": created, "items": []any{
+			map[string]any{"fieldId": "fixVersions", "fromString": from, "toString": to},
+		}}
+	}
+	cases := []struct {
+		name    string
+		entries []any
+		want    bool
+	}{
+		{name: "removed then re-added after freeze", entries: []any{
+			entry("2026-01-01T12:00:00.000+0000", "", "Product v1.2.10"),
+			entry("2026-01-03T12:00:00.000+0000", "Product v1.2.10", ""),
+			entry("2026-01-04T12:00:00.000+0000", "", "Product v1.2.10"),
+		}, want: true},
+		{name: "added before freeze", entries: []any{
+			entry("2026-01-01T12:00:00.000+0000", "", "Product v1.2.10"),
+		}, want: false},
+		{name: "another version changed", entries: []any{
+			entry("2026-01-04T12:00:00.000+0000", "", "Product v1.2.11"),
+		}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/rest/api/3/issue/PROJ-1/changelog" || r.URL.Query().Get("startAt") != "0" {
+					http.Error(w, "unexpected request", http.StatusNotFound)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"isLast": true, "values": tc.entries})
+			}))
+			defer srv.Close()
+			got, err := New(Credentials{BaseURL: srv.URL}).FixVersionAddedAfter(context.Background(), "PROJ-1", "Product v1.2.10", at)
+			if err != nil || got != tc.want {
+				t.Errorf("FixVersionAddedAfter = %v, %v; want %v", got, err, tc.want)
+			}
+		})
 	}
 }
 

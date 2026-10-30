@@ -292,7 +292,9 @@ stats` (`wait_s`).
 | `graft flags show <id>` | one event in full; `<id>` is its id or a prefix only one open event has; a closed event takes its full UUID |
 | `graft flags ack <id> --reason R` | close an open event with a reason |
 | `graft flags mute <id> --reason R [--match S] [--in subject\|body\|key] [--all-envs]` | add an exception for the event, then close it if it is open |
-| `graft deploy [--redeploy] [--unapproved] [--glint-ticket KEY] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--unapproved` skips the `approved_release` check, `--glint-ticket` names the item that takes the glint findings of the deployed commit (`release_notes.glint`) |
+| `graft deploy [--redeploy] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--unapproved` skips the `approved_release` check, `--past-freeze` records a reason for deploying through an active freeze, `--glint-ticket` names the item that takes the glint findings of the deployed commit (`release_notes.glint`) |
+| `graft deploy freeze <target> [Jira version]` | cut and push the configured freeze branch and annotated freeze tag; without a version, show the active freeze |
+| `graft deploy thaw <target> --reason REASON` | end the active freeze and remove its freeze and journal tags from every remote |
 | `graft deploy check <target>` | what `graft deploy <target>` would refuse now, read only: unpublished work, the window, `requires`, the hold, `approved_release` with the items of the commits outside it (summary, status, fix versions); exit 1 when it would refuse |
 | `graft deploy versions` | the version and the commit each target runs, with the remote branches at it, required targets first |
 | `graft deploy cutoff <target>` | the release candidate of the target's window: its unchecked commits and the commands that revert them on a release branch |
@@ -1739,6 +1741,7 @@ deploy:
         tz: Europe/Berlin
         cutoff: {days_before: 1, at: "18:00"}   # optional: when test starts holding the candidate
       approved_release: {statuses: [Ready for release, Done]}
+      freeze: {types: [Bug], advisory: [lint]}   # optional: hold test on release/{version} while the customer accepts
       merge_into_trunk: true    # optional: record the release branch on the trunk after the release
 ```
 
@@ -1821,6 +1824,30 @@ deploy:
   and make the deploy exit 1.
 - `GRAFT_NOW` (RFC 3339), when set, is the time these checks use instead of
   the clock: for tests and for rehearsing a cutoff.
+
+### Freeze
+
+Add `freeze` to a release target that has `requires`; it holds that required
+acceptance target while the customer reviews a Jira version. `freeze.types`
+allows items of those Jira types that joined the version after the freeze,
+and `freeze.advisory` names tasks that warn and are recorded when they fail
+on the frozen branch during deploys and the `graft commit` gate. Without this
+setting, deploy behavior is unchanged.
+
+Run `graft deploy freeze <target> <Jira version>` from the trunk to cut and
+push `release/{version}` and the annotated `freeze/<target>/<version>` tag.
+The version prefix is removed from `{version}`. While the tag is on a remote,
+the required target accepts only that branch and commits naming an item in the
+frozen version. Items added to the version after the freeze pass only when
+their type is in `freeze.types`. Use `graft deploy --past-freeze 'reason'
+<required target>` to pass any of these checks; graft warns and records the
+bypass. A hotfix still follows the configured hotfix checks and is recorded
+in the freeze journal. Advisory tasks run on the frozen branch during deploy
+and at the `graft commit` gate; failures warn and are recorded without stopping
+the operation. A successful deploy of the frozen branch to the release target
+publishes the journal on the release page (`<version>: release notes`) and
+removes the freeze and journal tags from every remote. `graft deploy thaw
+<target> --reason 'reason'` ends it manually and removes those tags too.
 
 ### Release pages
 

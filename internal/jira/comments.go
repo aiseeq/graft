@@ -100,45 +100,31 @@ func (n *adfNode) write(b *strings.Builder) {
 // them, say.
 func (c *Client) CameInto(ctx context.Context, key string, statuses []string) (time.Time, error) {
 	var last time.Time
-	for start := 0; ; {
-		data, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/rest/api/3/issue/%s/changelog?startAt=%d&maxResults=%d", key, start, changelogPage), nil, http.StatusOK)
-		if err != nil {
-			return time.Time{}, err
+	err := c.changelog(ctx, key, func(value json.RawMessage) (bool, error) {
+		var entry struct {
+			Created string `json:"created"`
+			Items   []struct {
+				FieldID    string `json:"fieldId"`
+				FromString string `json:"fromString"`
+				ToString   string `json:"toString"`
+			} `json:"items"`
 		}
-		var page struct {
-			IsLast bool `json:"isLast"`
-			Values []struct {
-				Created string `json:"created"`
-				Items   []struct {
-					FieldID    string `json:"fieldId"`
-					FromString string `json:"fromString"`
-					ToString   string `json:"toString"`
-				} `json:"items"`
-			} `json:"values"`
+		if err := json.Unmarshal(value, &entry); err != nil {
+			return false, fmt.Errorf("%s: unexpected changelog entry: %w", key, err)
 		}
-		if err := json.Unmarshal(data, &page); err != nil {
-			return time.Time{}, fmt.Errorf("%s: unexpected changelog JSON: %w", key, err)
-		}
-		for _, v := range page.Values {
-			for _, it := range v.Items {
-				if it.FieldID != "status" || !slices.Contains(statuses, it.ToString) || slices.Contains(statuses, it.FromString) {
-					continue
-				}
-				when, err := time.Parse(timeLayout, v.Created)
-				if err != nil {
-					return time.Time{}, fmt.Errorf("%s: a history entry created at %q: %w", key, v.Created, err)
-				}
-				if when.After(last) {
-					last = when
-				}
+		for _, item := range entry.Items {
+			if item.FieldID != "status" || !slices.Contains(statuses, item.ToString) || slices.Contains(statuses, item.FromString) {
+				continue
+			}
+			when, err := time.Parse(timeLayout, entry.Created)
+			if err != nil {
+				return false, fmt.Errorf("%s: a history entry created at %q: %w", key, entry.Created, err)
+			}
+			if when.After(last) {
+				last = when
 			}
 		}
-		if page.IsLast {
-			return last, nil
-		}
-		if len(page.Values) == 0 {
-			return time.Time{}, fmt.Errorf("%s: changelog page at %d is empty but not the last", key, start)
-		}
-		start += len(page.Values)
-	}
+		return false, nil
+	})
+	return last, err
 }

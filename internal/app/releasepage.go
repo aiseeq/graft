@@ -71,6 +71,13 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 	if err != nil {
 		return err
 	}
+	if frozen := r.freezeForOwnedTarget(); frozen != nil && frozen.branch == r.branch {
+		journal, err := freezeJournal(r.repo, r.cfg, frozen)
+		if err != nil {
+			return err
+		}
+		section += journal
+	}
 	space, err := client.PageSpace(ctx, p.Parent)
 	if err != nil {
 		return err
@@ -101,6 +108,50 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 	}
 	a.printf("release page %q: build %s added: %s", title, r.version, page.URL)
 	return nil
+}
+
+func freezeJournal(repo *gitx.Repo, cfg *config.Config, f *activeFreeze) (string, error) {
+	remotes, err := pushRemotes(repo, cfg)
+	if err != nil {
+		return "", err
+	}
+	tags := map[string]bool{}
+	for _, remote := range remotes {
+		out, err := repo.Git("ls-remote", "--tags", remote, "refs/tags/freeze-log/"+f.target+"/"+freezeSlug(f.version)+"/*")
+		if err != nil {
+			return "", err
+		}
+		for line := range strings.SplitSeq(out, "\n") {
+			_, ref, ok := strings.Cut(line, "\t")
+			if ok && !strings.HasSuffix(ref, "^{}") {
+				tags[strings.TrimPrefix(ref, "refs/tags/")] = true
+			}
+		}
+	}
+	if len(tags) == 0 {
+		return "", nil
+	}
+	names := make([]string, 0, len(tags))
+	for tag := range tags {
+		names = append(names, tag)
+	}
+	slices.Sort(names)
+	var b strings.Builder
+	b.WriteString("<h2>Freeze journal</h2><ul>")
+	for _, tag := range names {
+		if _, err := repo.Git("fetch", "--quiet", remotes[0], "refs/tags/"+tag+":refs/tags/"+tag); err != nil {
+			return "", err
+		}
+		contents, err := repo.Git("for-each-ref", "--format=%(contents)", "refs/tags/"+tag)
+		if err != nil {
+			return "", err
+		}
+		kind := tag[strings.LastIndex(tag, "-")+1:]
+		detail := strings.TrimSpace(strings.ReplaceAll(contents, "\n", "; "))
+		b.WriteString("<li>" + html.EscapeString(kind+": "+detail) + "</li>")
+	}
+	b.WriteString("</ul>")
+	return b.String(), nil
 }
 
 // withheldItems are the items of the commits this release withheld, the

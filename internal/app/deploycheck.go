@@ -51,6 +51,11 @@ func (a *App) DeployCheck(ctx context.Context, target string) error {
 	if r.branch, err = r.repo.Branch(); err != nil {
 		return err
 	}
+	if lookup, lookupErr := activeFreezeForRun(r); lookupErr != nil {
+		return lookupErr
+	} else {
+		r.freeze = lookup.freeze
+	}
 	if r.hotfix = r.cfg.Deploy.IsHotfix(r.branch); !r.hotfix {
 		refuse(a.checkWindow(r))
 	}
@@ -68,6 +73,8 @@ func (a *App) DeployCheck(ctx context.Context, target string) error {
 	} else {
 		refuse(a.checkReleaseFlow(ctx, r, false))
 	}
+	// Freeze refusals are useful even when an earlier check already failed.
+	refuse(a.checkFreeze(ctx, r, DeployOptions{}, true))
 	if len(refusals) == 0 {
 		a.printf("graft deploy %s passes its checks now; its deps, the integrations and the confirmation run only in the deploy", r.name)
 		return nil

@@ -115,6 +115,16 @@ type Issue struct {
 	Labels   []string
 }
 
+// HasFixVersion reports whether this issue belongs to the named release.
+func (i Issue) HasFixVersion(name string) bool {
+	for _, version := range i.FixVersions {
+		if version.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Transition is a move available from the item's current status.
 type Transition struct {
 	ID string
@@ -189,45 +199,95 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 // changelogPage is how many history entries one request reads.
 const changelogPage = 100
 
-// WasAssignedTo reports whether the item's history shows it assigned to the
-// account at some point: handed over from it or to it.
-func (c *Client) WasAssignedTo(ctx context.Context, key, accountID string) (bool, error) {
+func (c *Client) changelog(ctx context.Context, key string, visit func(json.RawMessage) (bool, error)) error {
 	for start := 0; ; {
 		data, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/rest/api/3/issue/%s/changelog?startAt=%d&maxResults=%d", key, start, changelogPage), nil, http.StatusOK)
 		if err != nil {
-			return false, err
+			return err
 		}
 		var page struct {
-			IsLast bool `json:"isLast"`
-			Values []struct {
-				Items []struct {
-					FieldID string  `json:"fieldId"`
-					From    *string `json:"from"`
-					To      *string `json:"to"`
-				} `json:"items"`
-			} `json:"values"`
+			IsLast bool              `json:"isLast"`
+			Values []json.RawMessage `json:"values"`
 		}
 		if err := json.Unmarshal(data, &page); err != nil {
-			return false, fmt.Errorf("%s: unexpected changelog JSON: %w", key, err)
+			return fmt.Errorf("%s: unexpected changelog JSON: %w", key, err)
 		}
-		for _, v := range page.Values {
-			for _, it := range v.Items {
-				if it.FieldID != "assignee" {
-					continue
-				}
-				if (it.From != nil && *it.From == accountID) || (it.To != nil && *it.To == accountID) {
-					return true, nil
-				}
+		for _, value := range page.Values {
+			stop, err := visit(value)
+			if err != nil {
+				return err
+			}
+			if stop {
+				return nil
 			}
 		}
 		if page.IsLast {
-			return false, nil
+			return nil
 		}
 		if len(page.Values) == 0 {
-			return false, fmt.Errorf("%s: changelog page at %d is empty but not the last", key, start)
+			return fmt.Errorf("%s: changelog page at %d is empty but not the last", key, start)
 		}
 		start += len(page.Values)
 	}
+}
+
+// WasAssignedTo reports whether the item's history shows it assigned to the
+// account at some point: handed over from it or to it.
+func (c *Client) WasAssignedTo(ctx context.Context, key, accountID string) (bool, error) {
+	found := false
+	err := c.changelog(ctx, key, func(value json.RawMessage) (bool, error) {
+		var entry struct {
+			Items []struct {
+				FieldID string  `json:"fieldId"`
+				From    *string `json:"from"`
+				To      *string `json:"to"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(value, &entry); err != nil {
+			return false, fmt.Errorf("%s: unexpected changelog entry: %w", key, err)
+		}
+		for _, it := range entry.Items {
+			if it.FieldID != "assignee" {
+				continue
+			}
+			if (it.From != nil && *it.From == accountID) || (it.To != nil && *it.To == accountID) {
+				found = true
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+	return found, err
+}
+
+// FixVersionAddedAfter reports whether the latest addition of versionName
+// to the item's Fix Version field happened after at.
+func (c *Client) FixVersionAddedAfter(ctx context.Context, key, versionName string, at time.Time) (bool, error) {
+	var latest time.Time
+	err := c.changelog(ctx, key, func(value json.RawMessage) (bool, error) {
+		var entry struct {
+			Created string `json:"created"`
+			Items   []struct {
+				FieldID    string `json:"fieldId"`
+				FromString string `json:"fromString"`
+				ToString   string `json:"toString"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(value, &entry); err != nil {
+			return false, fmt.Errorf("%s: unexpected changelog entry: %w", key, err)
+		}
+		changed, err := time.Parse(timeLayout, entry.Created)
+		if err != nil {
+			return false, fmt.Errorf("%s: invalid changelog time %q: %w", key, entry.Created, err)
+		}
+		for _, item := range entry.Items {
+			if item.FieldID == "fixVersions" && item.ToString == versionName && item.FromString != versionName && changed.After(latest) {
+				latest = changed
+			}
+		}
+		return false, nil
+	})
+	return latest.After(at), err
 }
 
 // Transition moves an item to the status named to.

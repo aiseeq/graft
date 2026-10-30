@@ -54,6 +54,8 @@ type DeployTarget struct {
 	// Requires names a target that must already run the version being
 	// deployed (prod after test).
 	Requires string `yaml:"requires"`
+	// Freeze holds the required target to a Jira release branch during acceptance.
+	Freeze *Freeze `yaml:"freeze"`
 	// Confirm is "sudo": a sudo prompt in the foreground after the checks
 	// and deps, before the deploy script runs.
 	Confirm      string       `yaml:"confirm"`
@@ -86,6 +88,18 @@ type DeployTarget struct {
 	DotEnvSets []string    `yaml:"dotenv_sets"`
 	// Keys is DotEnv with the sets merged in.
 	Keys []DotEnvKey `yaml:"-"`
+}
+
+// Freeze configures a release freeze on a target that requires the acceptance target.
+type Freeze struct {
+	// Branch is the release branch template; {version} is the version name
+	// without approved_release.prefix. It defaults to release/{version}.
+	Branch string `yaml:"branch"`
+	// Types may join the frozen version after the freeze was cut.
+	Types []string `yaml:"types"`
+	// Advisory names tasks that warn and are journaled when they fail on the
+	// frozen branch during deploy and the commit gate.
+	Advisory []string `yaml:"advisory"`
 }
 
 // Integrations compares the integrations two targets configure.
@@ -377,7 +391,7 @@ func (c *Config) validateDeploy() error {
 }
 
 // DeploySubcommands are the words after graft deploy that are not targets.
-var DeploySubcommands = []string{"status", "logs", "check", "versions", "check-head", "check-integrations", "cutoff", "sweep", "handover"}
+var DeploySubcommands = []string{"status", "logs", "check", "versions", "check-head", "check-integrations", "cutoff", "sweep", "handover", "freeze", "thaw"}
 
 func (c *Config) validateTarget(name string, t *DeployTarget) error {
 	where := "deploy.targets." + name
@@ -396,6 +410,23 @@ func (c *Config) validateTarget(name string, t *DeployTarget) error {
 	if err := c.validateRequires(where, name, t); err != nil {
 		return err
 	}
+	if f := t.Freeze; f != nil {
+		if err := c.validateFreeze(where, t, f); err != nil {
+			return err
+		}
+	}
+	if err := c.validateTargetOptions(where, t); err != nil {
+		return err
+	}
+	keys, err := c.resolveKeys(where, t.DotEnv, t.DotEnvSets)
+	if err != nil {
+		return err
+	}
+	t.Keys = keys
+	return c.validateTargetRelease(where, t)
+}
+
+func (c *Config) validateTargetOptions(where string, t *DeployTarget) error {
 	for _, d := range t.Deps {
 		if _, ok := c.Tasks[d]; !ok {
 			return fmt.Errorf("%s.deps: unknown task %q", where, d)
@@ -418,12 +449,33 @@ func (c *Config) validateTarget(name string, t *DeployTarget) error {
 			return err
 		}
 	}
-	keys, err := c.resolveKeys(where, t.DotEnv, t.DotEnvSets)
-	if err != nil {
-		return err
+	return nil
+}
+
+func (c *Config) validateFreeze(where string, t *DeployTarget, f *Freeze) error {
+	if t.Requires == "" {
+		return fmt.Errorf("%s.freeze: needs requires, the target it holds during acceptance", where)
 	}
-	t.Keys = keys
-	return c.validateTargetRelease(where, t)
+	if t.ApprovedRelease == nil || t.ApprovedRelease.Prefix == "" {
+		return fmt.Errorf("%s.freeze: needs approved_release.prefix to identify Jira versions", where)
+	}
+	if c.ReleaseNotes == nil || c.ReleaseNotes.Jira == nil || len(c.ReleaseNotes.Jira.ProjectKeys) == 0 {
+		return fmt.Errorf("%s.freeze: needs release_notes.jira.project_keys to find Jira versions", where)
+	}
+	if strings.TrimSpace(f.Branch) == "" {
+		f.Branch = "release/{version}"
+	}
+	for i, typ := range f.Types {
+		if strings.TrimSpace(typ) == "" {
+			return fmt.Errorf("%s.freeze.types[%d]: blank", where, i)
+		}
+	}
+	for i, task := range f.Advisory {
+		if _, ok := c.Tasks[task]; !ok {
+			return fmt.Errorf("%s.freeze.advisory[%d]: unknown task %q", where, i, task)
+		}
+	}
+	return nil
 }
 
 // validateTargetRelease checks the release window and what a target asks of

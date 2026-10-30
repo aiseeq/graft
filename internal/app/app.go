@@ -175,9 +175,32 @@ func (a *App) gateForMessage(ctx context.Context, repo *gitx.Repo, cfg *config.C
 		return fmt.Errorf("writing %s: %w", f.Name(), err)
 	}
 	a.warnStaleWorktreeLinks(repo, cfg)
-	r := a.runner(repo, cfg)
+	branch, err := repo.Branch()
+	if err != nil {
+		return err
+	}
+	lookup, err := a.frozenForBranch(repo, cfg, branch)
+	if err != nil {
+		return err
+	}
+	frozen := lookup.freeze
+	gateCfg := cfg
+	if frozen != nil {
+		gateCfg = configWithoutFreezeAdvisory(cfg, frozen)
+	}
+	r := a.runner(repo, gateCfg)
 	r.Extra = map[string]string{tasks.MessageFileEnv: f.Name()}
-	return r.Gate(ctx)
+	if err := r.Gate(ctx); err != nil {
+		return err
+	}
+	if frozen != nil {
+		head, err := repo.Git("rev-parse", "HEAD")
+		if err != nil {
+			return err
+		}
+		return a.runFreezeAdvisory(ctx, repo, cfg, frozen, branch, "commit", strings.TrimSpace(head))
+	}
+	return nil
 }
 
 // markerEnv lets graft's own git commit through the pre-commit hook.

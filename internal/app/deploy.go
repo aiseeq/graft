@@ -63,6 +63,8 @@ type DeployOptions struct {
 	GlintTicket string
 	// Unapproved skips the approved_release check.
 	Unapproved bool
+	// PastFreeze permits a freeze refusal when it gives the bypass reason.
+	PastFreeze string
 }
 
 type deployRun struct {
@@ -101,6 +103,8 @@ type deployRun struct {
 	// dryRun is graft deploy check: the checks record nothing and never
 	// wait for a sudo password.
 	dryRun bool
+	// freeze is the active freeze related to this target, read once per run.
+	freeze *activeFreeze
 	// glint holds the moves for the glint findings of the deployed commit.
 	glint *glintCheck
 }
@@ -225,11 +229,22 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	if err := a.startRelease(r); err != nil {
 		return err
 	}
+	if lookup, lookupErr := activeFreezeForRun(r); lookupErr != nil {
+		return lookupErr
+	} else {
+		r.freeze = lookup.freeze
+	}
 	// requires is a quick read-only check: it fails before a long deps run.
 	if err := a.requireDeployed(ctx, r); err != nil {
 		return err
 	}
 	if err := a.checkTargetRuns(ctx, r, o); err != nil {
+		return err
+	}
+	if err := a.checkFreeze(ctx, r, o, false); err != nil {
+		return err
+	}
+	if err := a.runFreezeAdvisory(ctx, r.repo, r.cfg, r.freezeForBranch(), r.branch, r.name, r.head); err != nil {
 		return err
 	}
 	if err := a.checkIntegrations(ctx, r); err != nil {
@@ -239,11 +254,8 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	// confirmation and the script. Its name has a space no task name can
 	// have.
 	err = r.tasks.Unit("deploy "+r.name, func() error {
-		if len(r.target.Deps) > 0 {
-			a.printf("deploy %s: running %s first", r.name, strings.Join(r.target.Deps, ", "))
-			if err := r.tasks.RunDeps(ctx, r.target.Deps); err != nil {
-				return fmt.Errorf("deploy %s: nothing was deployed: %w", r.name, err)
-			}
+		if err := a.runDeployDeps(ctx, r); err != nil {
+			return err
 		}
 		if r.target.Confirm == "sudo" {
 			start := time.Now()
@@ -266,6 +278,18 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	}
 	a.printf("deployed %s to %s", gitx.Short(r.head), r.name)
 	return a.recordDeployment(ctx, r)
+}
+
+func (a *App) runDeployDeps(ctx context.Context, r *deployRun) error {
+	deps := filterFreezeAdvisory(r.target.Deps, r.freezeForBranch(), func(task string) string { return task })
+	if len(deps) == 0 {
+		return nil
+	}
+	a.printf("deploy %s: running %s first", r.name, strings.Join(deps, ", "))
+	if err := r.tasks.RunDeps(ctx, deps); err != nil {
+		return fmt.Errorf("deploy %s: nothing was deployed: %w", r.name, err)
+	}
+	return nil
 }
 
 // startRelease reads the time and the branch, and refuses a target with a
@@ -308,6 +332,38 @@ func (a *App) checkReleaseFlow(ctx context.Context, r *deployRun, unapproved boo
 	}
 	stop(a.checkVersionContents(ctx, r))
 	return errors.Join(errs...)
+}
+
+func (a *App) checkFreeze(ctx context.Context, r *deployRun, o DeployOptions, dry bool) error {
+	frozen := r.freezeForRequiredTarget()
+	if frozen == nil {
+		return nil
+	}
+	if !r.hotfix && r.branch != frozen.branch {
+		if o.PastFreeze != "" {
+			if !dry {
+				a.warn("deploy %s bypasses freeze %s: %s", r.name, frozen.name, o.PastFreeze)
+				return freezeLog(a, r.repo, r.cfg, frozen, r.head, r.name, "bypass", o.PastFreeze)
+			}
+			return nil
+		}
+		return fmt.Errorf("%s is frozen at %s; deploy from %s (or pass --past-freeze with a reason)", frozen.target, frozen.name, frozen.branch)
+	}
+	if r.hotfix {
+		if !dry {
+			return freezeLog(a, r.repo, r.cfg, frozen, r.head, r.name, "bypass", r.branch)
+		}
+		return nil
+	}
+	err := a.freezeIssueCheck(ctx, r, frozen)
+	if err == nil || o.PastFreeze == "" {
+		return err
+	}
+	if dry {
+		return nil
+	}
+	a.warn("deploy %s bypasses freeze %s: %s", r.name, frozen.name, o.PastFreeze)
+	return freezeLog(a, r.repo, r.cfg, frozen, r.head, r.name, "bypass", o.PastFreeze)
 }
 
 // checkTargetRuns reads what the target runs, shows it and refuses a deploy
@@ -471,6 +527,9 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 	withheldErr := errors.Join(a.recordWithheld(ctx, r), a.mergeIntoTrunk(r))
 	a.hotfixDone(r)
 	withheldErr = errors.Join(withheldErr, a.recordVersions(ctx, r), a.publishReleasePage(ctx, r))
+	if frozen := r.freezeForOwnedTarget(); frozen != nil && frozen.branch == r.branch {
+		withheldErr = errors.Join(withheldErr, removeFreezeTags(a, r.repo, r.cfg, frozen))
+	}
 	if r.target.ReleaseNotes == nil {
 		return withheldErr
 	}
