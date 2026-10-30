@@ -850,8 +850,11 @@ deps and inner tasks included.
   container (not with a DSN from the environment) and sees its cgroup v2
   from the host: Linux with docker on the host itself, not Docker Desktop.
 - A line is one append-mode write, so concurrent grafts never split each
-  other's lines. At 20 MB the file moves to `stats.jsonl.1`, replacing the
-  older copy.
+  other's lines. At 20 MB the file moves to `stats.jsonl.1` and the older
+  copies one number up (`.2`, `.3`…, the highest the oldest); a copy whose
+  last line is more than 15 days old is removed then, so two weekly windows
+  can be compared. `graft stats` reads them all, and when the log starts
+  after `--since`, its header names the first line instead.
 - A failure to record is not a failure of the task: graft warns once per run
   and goes on.
 
@@ -884,8 +887,9 @@ packages did not run and are left out.
   tree. A package cut off (a timeout, a killed process) fails with the tests
   that were running.
 - A test takes about 45 bytes, so a suite of 2000 tests writes 90 KB a
-  run. The file moves to `tests.jsonl.1` at 64 MB, so the two keep about
-  1400 runs of such a suite.
+  run. The file moves to `tests.jsonl.1` at 64 MB, its copies kept as those
+  of `stats.jsonl` are: at least 15 days, and 700 runs of such a suite a
+  copy.
 
 A failing `step` or `task` line in `stats.jsonl` has a `reason` with up to
 10 lines of stderr's tail, or stdout's tail when stderr was empty; for

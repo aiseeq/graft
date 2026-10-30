@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -239,6 +240,14 @@ func TestStatsFileRotates(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, statsFile+".1", "the copy before\n")
+	writeFile(t, statsFile+".2", "the copy of 10 days ago\n")
+	writeFile(t, statsFile+".3", "the copy of 16 days ago\n")
+	for n, age := range map[string]time.Duration{".2": 10 * 24 * time.Hour, ".3": 16 * 24 * time.Hour} {
+		at := time.Now().Add(-age)
+		if err := os.Chtimes(statsFile+n, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
 	writeFile(t, statsFile, "")
 	const full = 20<<20 + 1
 	if err := os.Truncate(statsFile, full); err != nil {
@@ -247,6 +256,16 @@ func TestStatsFileRotates(t *testing.T) {
 	f.mustGraft("one")
 	if st, err := os.Stat(statsFile + ".1"); err != nil || st.Size() != full {
 		t.Fatalf("the full file is not the old copy: %v %v", st, err)
+	}
+	// The older copies move one number up; the one past the 15 days of
+	// Retention goes.
+	for n, want := range map[string]string{".2": "the copy before\n", ".3": "the copy of 10 days ago\n"} {
+		if data, err := os.ReadFile(statsFile + n); err != nil || string(data) != want {
+			t.Errorf("%s: %q %v, want %q", n, data, err, want)
+		}
+	}
+	if _, err := os.Stat(statsFile + ".4"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the copy of 16 days ago is kept: %v", err)
 	}
 	if lines := readStats(t, statsFile); len(lines) != 2 {
 		t.Errorf("new file: %+v", lines)
@@ -333,8 +352,16 @@ func TestStatsCommand(t *testing.T) {
 	if !strings.Contains(out, "1 malformed line") {
 		t.Errorf("the torn line is not reported:\n%s", out)
 	}
-	if got := rows(f.mustGraft("stats", "--since", "30d")); len(got) != 3 || got[2] != "lint 4 15s 30s 6s - 19.5 GB 25% -" {
+	month := f.mustGraft("stats", "--since", "30d")
+	if got := rows(month); len(got) != 3 || got[2] != "lint 4 15s 30s 6s - 19.5 GB 25% -" {
 		t.Errorf("30 days: %q", got)
+	}
+	// The log starts 10 days ago: the header says so, not 30 days.
+	if first := now.Add(-10 * 24 * time.Hour).Format("2006-01-02 15:04"); !strings.Contains(month, "since "+first+" (the log starts there, after the ") {
+		t.Errorf("the header does not name the first line, %s:\n%s", first, month)
+	}
+	if strings.Contains(out, "the log starts there") {
+		t.Errorf("a 7-day report of a 10-day log names its first line:\n%s", out)
 	}
 	if got := rows(f.mustGraft("stats", "--since", "90m", "--task", "lint")); strings.Join(got, "\n") != strings.Join([]string{
 		"STEP RUNS WALL MED WALL MAX CPU MED TREE MEM MEM MAX FAILED SAVED",

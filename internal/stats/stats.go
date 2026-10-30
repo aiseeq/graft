@@ -14,6 +14,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,9 +23,14 @@ import (
 	"github.com/gofrs/flock"
 )
 
-// MaxSize is the size at which the file is moved to its one old copy
-// (stats.jsonl.1) before the next line is written.
+// MaxSize is the size at which the file is moved to its newest old copy
+// (stats.jsonl.1, the older ones moving to .2, .3…) before the next line is
+// written.
 const MaxSize = 20 << 20
+
+// Retention is how long an old copy is kept after its last line: two weekly
+// windows and a day, so a week compares with the week before.
+const Retention = 15 * 24 * time.Hour
 
 // MaxTestsSize is MaxSize of the tests file: a run of a large suite writes
 // hundreds of kilobytes, and the flaky report needs weeks of them.
@@ -409,10 +416,11 @@ func Append(path string, v any, maxSize int64) error {
 	return err
 }
 
-// rotate moves a full file to path.1, replacing the older copy. One graft
+// rotate moves a full file to path.1, the old copies one number up, and
+// removes the copies whose last line is older than Retention. One graft
 // rotates at a time, under a lock next to the file, and checks the size
 // again under it: two grafts that both saw the file full would otherwise
-// rotate twice and the second would throw the first copy away.
+// rotate twice.
 func rotate(path string, maxSize int64) error {
 	full, err := isFull(path, maxSize)
 	if err != nil || !full {
@@ -427,14 +435,92 @@ func rotate(path string, maxSize int64) error {
 		return nil // another graft is rotating; append to whichever file is there
 	}
 	if full, err = isFull(path, maxSize); err == nil && full {
-		if rerr := os.Rename(path, path+".1"); rerr != nil {
-			err = fmt.Errorf("rotating %s: %w", path, rerr)
-		}
+		err = shift(path)
 	}
 	if cerr := fl.Close(); cerr != nil {
 		err = errors.Join(err, fmt.Errorf("unlocking %s: %w", fl.Path(), cerr))
 	}
 	return err
+}
+
+// shift moves path to path.1 and each old copy one number up, the oldest
+// first, then removes the copies past Retention.
+func shift(path string) error {
+	copies, err := oldCopies(path)
+	if err != nil {
+		return err
+	}
+	for i := len(copies) - 1; i >= 0; i-- {
+		if err := os.Rename(copies[i].path, copyPath(path, copies[i].n+1)); err != nil {
+			return fmt.Errorf("rotating %s: %w", copies[i].path, err)
+		}
+	}
+	if err := os.Rename(path, copyPath(path, 1)); err != nil {
+		return fmt.Errorf("rotating %s: %w", path, err)
+	}
+	if copies, err = oldCopies(path); err != nil {
+		return err
+	}
+	for _, c := range copies {
+		st, err := os.Stat(c.path)
+		if err != nil {
+			return fmt.Errorf("rotating %s: %w", path, err)
+		}
+		if time.Since(st.ModTime()) <= Retention {
+			continue
+		}
+		if err := os.Remove(c.path); err != nil {
+			return fmt.Errorf("removing the old copy %s: %w", c.path, err)
+		}
+	}
+	return nil
+}
+
+// oldCopy is a numbered old copy of a stats or tests file.
+type oldCopy struct {
+	path string
+	n    int
+}
+
+func copyPath(path string, n int) string { return path + "." + strconv.Itoa(n) }
+
+// oldCopies lists path's old copies, the newest (.1) first.
+func oldCopies(path string) ([]oldCopy, error) {
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing the old copies of %s: %w", path, err)
+	}
+	var copies []oldCopy
+	for _, e := range entries {
+		suffix, ok := strings.CutPrefix(e.Name(), filepath.Base(path)+".")
+		if !ok {
+			continue
+		}
+		n, err := strconv.Atoi(suffix)
+		if err != nil || n < 1 {
+			continue // the lock, not a copy
+		}
+		copies = append(copies, oldCopy{filepath.Join(filepath.Dir(path), e.Name()), n})
+	}
+	slices.SortFunc(copies, func(a, b oldCopy) int { return a.n - b.n })
+	return copies, nil
+}
+
+// Files lists the old copies of path and path itself, oldest first: the
+// order to read them in.
+func Files(path string) ([]string, error) {
+	copies, err := oldCopies(path)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]string, 0, len(copies)+1)
+	for _, c := range slices.Backward(copies) {
+		files = append(files, c.path)
+	}
+	return append(files, path), nil
 }
 
 func isFull(path string, maxSize int64) (bool, error) {

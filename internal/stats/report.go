@@ -14,11 +14,15 @@ import (
 	"time"
 )
 
-// Load reads the old copy of the stats file and the file itself, oldest
+// Load reads the old copies of the stats file and the file itself, oldest
 // first. Lines that are not records (a torn write of a crashed graft) are
 // counted in malformed and left out.
 func Load(path string) (recs []Record, malformed int, err error) {
-	for _, p := range []string{path + ".1", path} {
+	files, err := Files(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	for _, p := range files {
 		r, m, err := loadFile(p)
 		if err != nil {
 			return nil, 0, err

@@ -66,7 +66,7 @@ func (a *App) Stats(o StatsOptions) error {
 	if o.Task != "" {
 		what, label = "task "+o.Task, "STEP"
 	}
-	a.printf("%s in %s%s since %s", what, where, calmNote(o.MaxLoad), since.Format("2006-01-02 15:04"))
+	a.printf("%s in %s%s since %s", what, where, calmNote(o.MaxLoad), sinceText(since, earliest(recs, func(r *stats.Record) time.Time { return r.Time })))
 	rows, saved := stats.Summarize(recs, f)
 	if len(rows) == 0 && saved.Hits == 0 {
 		a.printf("nothing recorded (%s)", path)
@@ -126,7 +126,7 @@ func (a *App) statsTests(statsPath string, f stats.TestFilter, where string) err
 	if f.Task != "" {
 		what = "tests of task " + f.Task
 	}
-	a.printf("%s in %s since %s, the %d slowest by median", what, where, f.Since.Format("2006-01-02 15:04"), testsLimit)
+	a.printf("%s in %s since %s, the %d slowest by median", what, where, sinceText(f.Since, earliest(runs, func(r *stats.PackageRun) time.Time { return r.Time })), testsLimit)
 	rep := stats.SummarizeTests(runs, f, testsLimit)
 	rep.Reruns = stats.Reruns(recs, f)
 	if len(rep.Packages) == 0 && len(rep.Reruns) == 0 {
@@ -160,4 +160,25 @@ func (a *App) statsProject(path string) (string, error) {
 		return "", fmt.Errorf("--project %s: %w", path, err)
 	}
 	return real, nil
+}
+
+// sinceText names where a report starts: the cut asked for, or the first
+// line of the log when the log starts after it.
+func sinceText(since, first time.Time) string {
+	const layout = "2006-01-02 15:04"
+	if !first.IsZero() && first.After(since) {
+		return fmt.Sprintf("%s (the log starts there, after the %s asked)", first.Local().Format(layout), since.Format(layout))
+	}
+	return since.Format(layout)
+}
+
+// earliest is the time of the oldest of the lines; zero for none.
+func earliest[T any](lines []T, at func(*T) time.Time) time.Time {
+	var first time.Time
+	for i := range lines {
+		if t := at(&lines[i]); first.IsZero() || t.Before(first) {
+			first = t
+		}
+	}
+	return first
 }
