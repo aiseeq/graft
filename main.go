@@ -472,7 +472,6 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 	return a.WorktreeClean(ctx, o)
 }
 
-// execCmd runs graft exec [--heavy] -- <command> [args].
 // execCmd is graft exec; its own failures, usage too, exit app.ExitGraft
 // (run).
 func execCmd(ctx context.Context, a *app.App, args []string) error {
@@ -513,6 +512,15 @@ func execCmd(ctx context.Context, a *app.App, args []string) error {
 	if len(args) < 2 || ((local || opts.Settle > 0 || len(pass) > 0) && !opts.Heavy) {
 		return usage
 	}
+	if err := exportExecEnv(pass, local); err != nil {
+		return err
+	}
+	return a.Exec(ctx, args[1:], opts)
+}
+
+// exportExecEnv hands graft exec's --env names and --local to the grafts the
+// command starts, through the environment it inherits.
+func exportExecEnv(pass []string, local bool) error {
 	if len(pass) > 0 {
 		// The host gets them, for the grafts the command starts too.
 		if prev := os.Getenv(tasks.PassEnvEnv); prev != "" {
@@ -528,7 +536,7 @@ func execCmd(ctx context.Context, a *app.App, args []string) error {
 			return fmt.Errorf("exec --local: %w", err)
 		}
 	}
-	return a.Exec(ctx, args[1:], opts)
+	return nil
 }
 
 func toolsCmd(ctx context.Context, a *app.App, args []string) error {

@@ -1,6 +1,6 @@
 # Тяжёлое с переменными вызывающего не уходит на хост remote_heavy
 
-Статус: в работе
+Статус: готово
 Исполнитель: graft-master
 
 ## Вход
@@ -31,3 +31,5 @@
 - 2026-10-30 06:09 в работе — graft-master
 - 2026-10-30 06:09 note — graft-master: Выбор git-admin: вариант 2 (graft exec --heavy --env NAME) + встроенная передача GOOS GOARCH GOFLAGS CGO_ENABLED GOEXPERIMENT; 3 и 4 не делать. Условия: README и graft exec -h рядом с --env — переменные вызывающего на хост не уходят, нужно --env NAME или --local; тест: FOO=1 … --env FOO печатает FOO на хосте, без --env не видит, GOOS доезжает без флага.
 - 2026-10-30 06:11 note — graft-master: Сделано: graft exec --env NAME (GRAFT_PASS_ENV, видят и вложенные graft), remoteCmd передаёт hostEnv (GOOS GOARCH GOFLAGS CGO_ENABLED GOEXPERIMENT) и названные, своё значение задачи важнее; README и graft exec -h. Тест TestUserRemoteHeavyPassesTheVariablesNamed (хост — env -u FOO -u GOFLAGS): без --env FOO=unset, с --env FOO=1, GOFLAGS доезжает без флага; мутация (без передачи) — красный.
+- 2026-10-30 06:39 note — graft-master: v2.59.0 (6a86e13) на ноуте и PC 06:37 CET; заявителю отправлено. Попутно: флак loadgate TestBusyDiskAndSwapHoldTasks/swap под -race в all (взгляд с нулевым свопом после замершего писателя подделки) — опрос и окно 100 мс в этом случае (6a86e13); воспроизвести не удалось, 0 из 160 прогонов.
+- 2026-10-30 06:42 готово — subagent-check (session graft-master): Независимая проверка 30.10 06:41 CET (суб-агент, свежий контекст): diff 16731e9 по коду и запуском — значение задачи побеждает (remote.go:362-368 + порядок env), --env без --heavy — usage, имена с =/,/пустое — ошибка, GRAFT_PASS_ENV дописывается вложенному graft (PASS=BAR,FOO,BAZ), на pc GOFLAGS='-tags=a -p=2' доходит целым; 3 теста ok; мутация range passedEnv()→nil роняет TestHeavyTaskRunsOnRemoteHost и TestUserRemoteHeavyPassesTheVariablesNamed; README:209-216,306 и exec -h — условие git-admin выполнено. Пробел: нет отдельного теста на own-проверку (поведение верно за счёт порядка env). glint medium main.go execCmd — вынесено в exportExecEnv.
