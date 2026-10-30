@@ -16,6 +16,7 @@ import (
 // load.settle, or until the command ends if that comes first; it needs
 // --heavy and a duration above 0.
 func TestExecSettleHoldsTheQueueForThisCommand(t *testing.T) {
+	skipWaitInShort(t)
 	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"})
 	// first runs a heavy exec of log for ms in the background, with settle,
 	// and returns once its command has started.

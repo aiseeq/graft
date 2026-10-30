@@ -234,6 +234,17 @@ func skipGoToolchainInShort(t *testing.T) {
 	}
 }
 
+// skipWaitInShort skips, under -short, a test whose seconds go to waiting on
+// purpose, for the samples of a running step or a child's grace, in code
+// that rarely changes: the gate's test-gate runs -short, test-race in all
+// runs it before install and release.
+func skipWaitInShort(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("waits on purpose; test-race in all runs it")
+	}
+}
+
 // gateStep is a YAML list entry that runs the helper with args.
 func gateStep(args ...string) string {
 	parts := []string{yamlQuote(helperBin)}

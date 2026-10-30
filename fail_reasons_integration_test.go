@@ -135,6 +135,7 @@ func readStatsRaw(t *testing.T, path string) []reasonStatsLine {
 // process holding its stderr does not keep graft from the next step once it
 // exits.
 func TestFailReasonsDoNotWaitForABackgroundChild(t *testing.T) {
+	skipWaitInShort(t)
 	f, statsFile := statsRepo(t, "tasks:\n  red:\n    run:\n      - {sh: 'sleep 30 >&2 & echo $! > bg.pid'}\n      - {sh: 'echo boom >&2; exit 3'}\n")
 	cmd, out := f.start(f.work, "red")
 	defer func() {

@@ -162,6 +162,7 @@ tasks:
 // max_rss_mb is the peak of one of them; tree_mem_mb, the peak of their sum,
 // shows four 64 MB processes at about 256 MB.
 func TestStepMemoryOfTheProcessTree(t *testing.T) {
+	skipWaitInShort(t)
 	if runtime.GOOS != "linux" {
 		t.Skip("the process tree is read from /proc")
 	}
@@ -193,6 +194,7 @@ func TestStepMemoryOfTheProcessTree(t *testing.T) {
 // so runs on a loaded machine can be told apart; graft stats --max-load
 // leaves them out.
 func TestStatsRecordTheMachineLoad(t *testing.T) {
+	skipWaitInShort(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("uses sh")
 	}
@@ -453,6 +455,7 @@ func TestStatsRerunsAreFlaky(t *testing.T) {
 // without the waits, and a run over its limit says so as it ends; a task
 // under its limit and a broken down task carry no mark.
 func TestStatsMarkTasksOverTheLimits(t *testing.T) {
+	skipWaitInShort(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("uses sh")
 	}

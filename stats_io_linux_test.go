@@ -77,6 +77,7 @@ func diskDir(t *testing.T) string {
 // names its profile, the same from a worktree, and a graft exec's adds the
 // first word of its command.
 func TestStepDiskIO(t *testing.T) {
+	skipWaitInShort(t)
 	big := filepath.Join(diskDir(t), "big")
 	f, statsFile := statsRepo(t, "tasks:\n  io:\n    run:\n      - "+helperStep("write", big, "32", "1500")+"\n      - "+helperStep("ok")+"\n")
 	f.mustGraft("io")
