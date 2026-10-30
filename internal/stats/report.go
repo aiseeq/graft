@@ -183,7 +183,8 @@ func (f Filter) selects(r *Record) bool {
 // ranIn tells, with --in, whether a record belongs to a run of the broken
 // down task in that parent: the task line itself by its in field, its steps,
 // inner tasks and cache hits by the graft that ran it, and a graft it started
-// by its parent.
+// by its parent. A graft that ran the task in two parents keeps the steps of
+// both: step lines do not name the parent.
 func (f Filter) ranIn(r *Record, runs map[string]bool) bool {
 	if f.In == "" {
 		return true
