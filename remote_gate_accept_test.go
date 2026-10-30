@@ -5,21 +5,29 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 // calmAfter makes the loaded machine of state calm after d, while a graft
-// waits for it.
-func calmAfter(t *testing.T, state string, d time.Duration) {
+// waits for it. The returned stop, for once that graft is over, drops a calm
+// still to come: a graft that waited for none ends the test without the
+// rest of d.
+func calmAfter(t *testing.T, state string, d time.Duration) (stop func()) {
 	t.Helper()
 	done := make(chan struct{})
-	go func() {
+	timer := time.AfterFunc(d, func() {
 		defer close(done)
-		time.Sleep(d)
 		setRunnable(t, filepath.Join(state, "proc"), 1)
-	}()
-	t.Cleanup(func() { <-done })
+	})
+	stop = sync.OnceFunc(func() {
+		if !timer.Stop() {
+			<-done
+		}
+	})
+	t.Cleanup(stop)
+	return stop
 }
 
 const splitGateConfig = "schema: 1\nversion: {mode: none}\n" +
@@ -100,8 +108,9 @@ func TestExecOfGraftLetsTheInnerGraftPlaceIt(t *testing.T) {
 	f, state := userRemoteRepo(t, "  vet:\n    run: [[go, vet, ./...]]\n  script:\n    run: [[sh, -c, 'echo here >> out']]\n")
 	loaded(t, state)
 	// Calm later, so that an exec that queued itself still ends.
-	calmAfter(t, state, 3*time.Second)
+	stop := calmAfter(t, state, 3*time.Second)
 	out := f.mustGraft("exec", "--heavy", "--", "graft", "vet")
+	stop()
 	if !strings.Contains(callsOf(t, state), "go vet ./...") || !strings.Contains(out, "graft: vet: heavy, on pc") {
 		t.Errorf("the inner vet, heavy by the exec, did not go to pc:\n%s\ncalls: %q", out, callsOf(t, state))
 	}
