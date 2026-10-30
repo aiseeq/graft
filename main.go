@@ -378,16 +378,24 @@ func validateStatsValue(value, task, in string, inSet, tests bool, minRuns int, 
 	if value != "" && tests {
 		return fmt.Errorf("%w: --value and --tests exclude each other", errUsage)
 	}
-	if inSet && in == "" {
+	if inSet {
+		return validateStatsIn(value, task, in, tests)
+	}
+	return nil
+}
+
+// validateStatsIn checks --in against the flags it goes with.
+func validateStatsIn(value, task, in string, tests bool) error {
+	if in == "" {
 		return fmt.Errorf("%w: --in: want a task or deploy", errUsage)
 	}
-	if inSet && task == "" {
+	if task == "" {
 		return fmt.Errorf("%w: --in requires --task", errUsage)
 	}
-	if inSet && tests {
+	if tests {
 		return fmt.Errorf("%w: --tests cannot be used with --in", errUsage)
 	}
-	if inSet && value == "wait-p95" {
+	if value == "wait-p95" {
 		return fmt.Errorf("%w: --value wait-p95 cannot be used with --in", errUsage)
 	}
 	return nil
