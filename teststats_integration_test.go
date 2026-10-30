@@ -201,6 +201,10 @@ func TestGoTestsAreRecordedPerTest(t *testing.T) {
 		return rows
 	}
 	report := f.mustGraft("stats", "--tests")
+	// The tests file starts minutes ago: a header from 30 days says where.
+	if month := f.mustGraft("stats", "--tests", "--since", "30d"); !strings.Contains(month, "(the log starts there, after the ") {
+		t.Errorf("the header of --tests --since 30d does not name the first line:\n%s", month)
+	}
 	wantRows := []string{
 		"slow tests",
 		"PACKAGE TEST RUNS WALL MED WALL MAX FAILED",
