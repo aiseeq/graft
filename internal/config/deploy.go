@@ -459,6 +459,10 @@ func (c *Config) validateFreeze(where string, t *DeployTarget, f *Freeze) error 
 	if t.ApprovedRelease == nil || t.ApprovedRelease.Prefix == "" {
 		return fmt.Errorf("%s.freeze: needs approved_release.prefix to identify Jira versions", where)
 	}
+	acceptance := c.Deploy.Targets[t.Requires]
+	if t.DeployedSHA == nil || acceptance == nil || acceptance.DeployedSHA == nil {
+		return fmt.Errorf("%s.freeze: needs deployed_sha on both %s and %s", where, t.Requires, strings.TrimPrefix(where, "deploy.targets."))
+	}
 	if c.ReleaseNotes == nil || c.ReleaseNotes.Jira == nil || len(c.ReleaseNotes.Jira.ProjectKeys) == 0 {
 		return fmt.Errorf("%s.freeze: needs release_notes.jira.project_keys to find Jira versions", where)
 	}
@@ -474,13 +478,12 @@ func (c *Config) validateFreeze(where string, t *DeployTarget, f *Freeze) error 
 		if _, ok := c.Tasks[task]; !ok {
 			return fmt.Errorf("%s.freeze.advisory[%d]: unknown task %q", where, i, task)
 		}
-		acceptance := c.Deploy.Targets[t.Requires]
-		direct := slices.Contains(acceptance.Deps, task)
+		direct := slices.Contains(t.Deps, task) || slices.Contains(acceptance.Deps, task)
 		for _, step := range c.Gate {
 			direct = direct || step.Task == task
 		}
 		if !direct {
-			return fmt.Errorf("%s.freeze.advisory[%d]: task %q must be a direct dependency of %s or a gate step", where, i, task, t.Requires)
+			return fmt.Errorf("%s.freeze.advisory[%d]: task %q must be a direct dependency of %s or %s, or a gate step", where, i, task, where[strings.LastIndex(where, ".")+1:], t.Requires)
 		}
 	}
 	return nil

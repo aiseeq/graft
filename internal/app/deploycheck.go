@@ -51,10 +51,10 @@ func (a *App) DeployCheck(ctx context.Context, target string) error {
 	if r.branch, err = r.repo.Branch(); err != nil {
 		return err
 	}
-	if lookup, lookupErr := activeFreezeForRun(r); lookupErr != nil {
-		return lookupErr
-	} else {
-		r.freeze = lookup.freeze
+	if r.freeze, err = activeFreezeForRun(r); err != nil {
+		if !errors.Is(err, errNoActiveFreeze) {
+			return err
+		}
 	}
 	if r.hotfix = r.cfg.Deploy.IsHotfix(r.branch); !r.hotfix {
 		refuse(a.checkWindow(r))

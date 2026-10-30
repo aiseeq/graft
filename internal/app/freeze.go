@@ -15,6 +15,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/jira"
+	"github.com/aiseeq/graft/v2/internal/tasks"
 )
 
 type activeFreeze struct {
@@ -23,53 +24,58 @@ type activeFreeze struct {
 	config                             *config.DeployTarget
 }
 
-type freezeLookup struct {
-	freeze *activeFreeze
-}
+type remoteTag struct{ sha, remote string }
+
+type freezeRefusalError struct{ error }
 
 var freezeTagPart = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+var errNoActiveFreeze = errors.New("no active freeze")
 
 func freezeSlug(s string) string { return strings.Trim(freezeTagPart.ReplaceAllString(s, "_"), "_.-") }
 
-func remoteTagNames(out string) []string {
-	var tags []string
+func parseRemoteTags(out, remote string) map[string]remoteTag {
+	tags := map[string]remoteTag{}
 	for line := range strings.SplitSeq(out, "\n") {
-		_, ref, ok := strings.Cut(line, "\t")
+		sha, ref, ok := strings.Cut(line, "\t")
 		if ok && !strings.HasSuffix(ref, "^{}") {
-			tags = append(tags, strings.TrimPrefix(ref, "refs/tags/"))
+			tags[strings.TrimPrefix(ref, "refs/tags/")] = remoteTag{sha: sha, remote: remote}
 		}
 	}
 	return tags
 }
 
-func activeTargetFreeze(repo *gitx.Repo, cfg *config.Config, name string, target *config.DeployTarget) (freezeLookup, error) {
+func activeTargetFreeze(repo *gitx.Repo, cfg *config.Config, name string, target *config.DeployTarget) (*activeFreeze, error) {
 	if target.Freeze == nil {
 		// This target has not opted into freezes.
-		return freezeLookup{}, nil
+		return nil, errNoActiveFreeze
 	}
 	remotes, err := pushRemotes(repo, cfg)
 	if err != nil {
-		return freezeLookup{}, err
+		return nil, err
 	}
 	for _, remote := range remotes {
 		out, err := repo.Git("ls-remote", "--tags", remote, "refs/tags/freeze/"+name+"/*")
 		if err != nil {
-			return freezeLookup{}, err
+			return nil, err
 		}
-		for _, tag := range remoteTagNames(out) {
-			freeze, err := readFreezeTag(repo, remote, name, tag, target)
-			return freezeLookup{freeze: freeze}, err
+		tags := parseRemoteTags(out, remote)
+		for _, tag := range slices.Sorted(maps.Keys(tags)) {
+			return readFreezeTag(repo, tags[tag], name, tag, target)
 		}
 	}
 	// No remote carries an active freeze tag for this target.
-	return freezeLookup{}, nil
+	return nil, errNoActiveFreeze
 }
 
-func readFreezeTag(repo *gitx.Repo, remote, name, tag string, target *config.DeployTarget) (*activeFreeze, error) {
-	if _, err := repo.Git("fetch", "--quiet", remote, "refs/tags/"+tag); err != nil {
-		return nil, err
+func readRemoteTag(repo *gitx.Repo, ref remoteTag) (string, error) {
+	if _, err := repo.Git("fetch", "--no-write-fetch-head", "--quiet", ref.remote, ref.sha); err != nil {
+		return "", err
 	}
-	contents, err := repo.Git("cat-file", "tag", "FETCH_HEAD")
+	return repo.Git("cat-file", "tag", ref.sha)
+}
+
+func readFreezeTag(repo *gitx.Repo, ref remoteTag, name, tag string, target *config.DeployTarget) (*activeFreeze, error) {
+	contents, err := readRemoteTag(repo, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -119,18 +125,21 @@ func (a *App) DeployFreeze(ctx context.Context, target, versionName string) erro
 		return fmt.Errorf("deploy.targets.%s has no freeze configured", target)
 	}
 	current, err := activeTargetFreeze(r.repo, r.cfg, target, r.target)
+	if errors.Is(err, errNoActiveFreeze) {
+		err = nil
+	}
 	if err != nil {
 		return err
 	}
 	if versionName == "" {
-		if current.freeze == nil {
+		if current == nil {
 			return fmt.Errorf("no active freeze for %s", target)
 		}
-		a.printf("%s is frozen at %s on %s since %s", target, current.freeze.name, current.freeze.branch, current.freeze.time.Format(time.RFC3339))
+		a.printf("%s is frozen at %s on %s since %s", target, current.name, current.branch, current.time.Format(time.RFC3339))
 		return nil
 	}
-	if current.freeze != nil {
-		return fmt.Errorf("%s is already frozen at %s on %s", target, current.freeze.name, current.freeze.branch)
+	if current != nil {
+		return fmt.Errorf("%s is already frozen at %s on %s", target, current.name, current.branch)
 	}
 	if err := deployFreezeTrunk(r.repo, r.cfg); err != nil {
 		return err
@@ -177,6 +186,9 @@ func (a *App) cutFreeze(ctx context.Context, r *deployRun, target, versionName s
 	if err := a.push(r.repo, remotes, []string{"refs/tags/" + tag}, false); err != nil {
 		_, cleanupErr := r.repo.Git("tag", "-d", tag)
 		return errors.Join(err, cleanupErr)
+	}
+	if _, err := r.repo.Git("tag", "-d", tag); err != nil {
+		return err
 	}
 	a.printf("froze %s at %s on %s", target, versionName, branch)
 	return nil
@@ -262,17 +274,20 @@ func (a *App) DeployThaw(ctx context.Context, target, reason string) error {
 	if reason == "" {
 		return errors.New("--reason is required")
 	}
-	lookup, err := activeTargetFreeze(r.repo, r.cfg, target, r.target)
+	freeze, err := activeTargetFreeze(r.repo, r.cfg, target, r.target)
+	if errors.Is(err, errNoActiveFreeze) {
+		err = nil
+	}
 	if err != nil {
 		return err
 	}
-	if lookup.freeze == nil {
+	if freeze == nil {
 		return fmt.Errorf("no active freeze for %s", target)
 	}
-	if err := a.removeFreezeTags(r.repo, r.cfg, lookup.freeze); err != nil {
+	if err := a.removeFreezeTags(r.repo, r.cfg, freeze); err != nil {
 		return err
 	}
-	a.printf("thawed %s at %s: %s", target, lookup.freeze.name, reason)
+	a.printf("thawed %s at %s: %s", target, freeze.name, reason)
 	return nil
 }
 
@@ -281,14 +296,26 @@ func (a *App) removeFreezeTags(repo *gitx.Repo, cfg *config.Config, f *activeFre
 	if err != nil {
 		return err
 	}
+	journal, err := freezeLogTags(repo, cfg, f)
+	if err != nil {
+		return err
+	}
 	for _, remote := range remotes {
 		var refs []string
-		out, e := repo.Git("ls-remote", "--tags", remote, "refs/tags/"+f.tag, "refs/tags/freeze-log/"+f.target+"/"+freezeSlug(f.version)+"/*")
-		if e != nil {
-			return e
+		out, err := repo.Git("ls-remote", "--tags", remote, "refs/tags/"+f.tag)
+		if err != nil {
+			return err
 		}
-		for _, tag := range remoteTagNames(out) {
+		for tag := range parseRemoteTags(out, remote) {
 			refs = append(refs, ":refs/tags/"+tag)
+		}
+		for tag, remoteRefs := range journal {
+			for _, ref := range remoteRefs {
+				if ref.remote == remote {
+					refs = append(refs, ":refs/tags/"+tag)
+					break
+				}
+			}
 		}
 		if len(refs) > 0 {
 			args := append([]string{"push", remote}, refs...)
@@ -297,47 +324,109 @@ func (a *App) removeFreezeTags(repo *gitx.Repo, cfg *config.Config, f *activeFre
 			}
 		}
 	}
-	local, err := repo.Git("tag", "--list", f.tag)
+	local, err := repo.Git("tag", "--list", "freeze-log/"+f.target+"/"+freezeSlug(f.version)+"/*", f.tag)
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(local) != "" {
-		if _, err := repo.Git("tag", "-d", f.tag); err != nil {
-			return err
+	for tag := range strings.SplitSeq(strings.TrimSpace(local), "\n") {
+		if tag != "" {
+			if _, err := repo.Git("tag", "-d", tag); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-func (a *App) freezeLog(repo *gitx.Repo, cfg *config.Config, f *activeFreeze, commit, where, kind, reason string) error {
+func (a *App) freezeLog(repo *gitx.Repo, cfg *config.Config, f *activeFreeze, commit, where, kind, reason string) (string, error) {
 	now, err := deployNow()
 	if err != nil {
-		return err
+		return "", err
 	}
-	base := fmt.Sprintf("freeze-log/%s/%s/%s", f.target, freezeSlug(f.version), now.Format("20060102T150405"))
-	tag := base + "-" + kind
-	for n := 1; ; n++ {
-		tags, err := repo.Git("tag", "--list", tag)
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(tags) == "" {
-			break
-		}
-		tag = fmt.Sprintf("%s-%d-%s", base, n, kind)
-	}
-	msg := fmt.Sprintf("target: %s\ncommit: %s\nreason: %s\n", where, commit, reason)
-	if _, err := repo.Git("tag", "-a", tag, commit, "-m", msg); err != nil {
-		return err
-	}
+	base := fmt.Sprintf("freeze-log/%s/%s/%s-%s", f.target, freezeSlug(f.version), now.Format("20060102T150405"), gitx.Short(commit))
 	remotes, err := pushRemotes(repo, cfg)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return a.push(repo, remotes, []string{"refs/tags/" + tag}, false)
+	msg := fmt.Sprintf("target: %s\ncommit: %s\nreason: %s\n", where, commit, reason)
+	for n := 0; ; n++ {
+		suffix := ""
+		if n > 0 {
+			suffix = fmt.Sprintf("-%d", n)
+		}
+		tag := base + suffix + "-" + kind
+		exists, err := remoteTagExists(repo, remotes, tag)
+		if err != nil {
+			return tag, err
+		}
+		if exists {
+			continue
+		}
+		if _, err := repo.Git("tag", "-a", tag, commit, "-m", msg); err != nil {
+			return tag, err
+		}
+		if err := a.push(repo, remotes, []string{"refs/tags/" + tag}, false); err != nil {
+			collision, cleanupErr := cleanupFreezeLogPush(repo, remotes, tag)
+			if cleanupErr != nil {
+				return tag, errors.Join(err, cleanupErr)
+			}
+			if collision {
+				continue
+			}
+			return tag, err
+		}
+		_, err = repo.Git("tag", "-d", tag)
+		return tag, err
+	}
 }
 
-func activeFreezeForRun(r *deployRun) (freezeLookup, error) {
+func cleanupFreezeLogPush(repo *gitx.Repo, remotes []string, tag string) (bool, error) {
+	localSHA, err := repo.Git("rev-parse", "refs/tags/"+tag)
+	if err != nil {
+		return false, err
+	}
+	localSHA = strings.TrimSpace(localSHA)
+	var collision bool
+	var pushed []string
+	for _, remote := range remotes {
+		out, err := repo.Git("ls-remote", "--tags", remote, "refs/tags/"+tag)
+		if err != nil {
+			return false, err
+		}
+		for _, ref := range parseRemoteTags(out, remote) {
+			if ref.sha == localSHA {
+				pushed = append(pushed, remote)
+			} else {
+				collision = true
+			}
+		}
+	}
+	var cleanupErrs []error
+	for _, remote := range pushed {
+		if _, err := repo.Git("push", remote, ":refs/tags/"+tag); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove partial freeze-log tag from %s: %w", remote, err))
+		}
+	}
+	if _, err := repo.Git("tag", "-d", tag); err != nil {
+		cleanupErrs = append(cleanupErrs, err)
+	}
+	return collision, errors.Join(cleanupErrs...)
+}
+
+func remoteTagExists(repo *gitx.Repo, remotes []string, tag string) (bool, error) {
+	for _, remote := range remotes {
+		out, err := repo.Git("ls-remote", "--tags", remote, "refs/tags/"+tag)
+		if err != nil {
+			return false, err
+		}
+		if len(parseRemoteTags(out, remote)) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func activeFreezeForRun(r *deployRun) (*activeFreeze, error) {
 	for _, name := range slices.Sorted(maps.Keys(r.cfg.Deploy.Targets)) {
 		target := r.cfg.Deploy.Targets[name]
 		if target.Freeze == nil || (name != r.name && target.Requires != r.name) {
@@ -346,7 +435,7 @@ func activeFreezeForRun(r *deployRun) (freezeLookup, error) {
 		return activeTargetFreeze(r.repo, r.cfg, name, target)
 	}
 	// This deploy target has no related freeze configured.
-	return freezeLookup{}, nil
+	return nil, errNoActiveFreeze
 }
 
 func (r *deployRun) freezeForRequiredTarget() *activeFreeze {
@@ -388,16 +477,28 @@ func filterFreezeAdvisoryNames(tasks []string, f *activeFreeze) []string {
 	return selected
 }
 
+func configuredFreezeAdvisory(cfg *config.Config) bool {
+	if cfg == nil || cfg.Deploy == nil {
+		return false
+	}
+	for _, target := range cfg.Deploy.Targets {
+		if target.Freeze != nil && len(target.Freeze.Advisory) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func configWithoutFreezeAdvisory(cfg *config.Config, f *activeFreeze) *config.Config {
 	filtered := *cfg
 	filtered.Gate = filterFreezeAdvisory(cfg.Gate, f, func(step config.Step) string { return step.Task })
 	return &filtered
 }
 
-func (a *App) frozenForBranch(repo *gitx.Repo, cfg *config.Config, branch string) (freezeLookup, error) {
+func (a *App) frozenForBranch(repo *gitx.Repo, cfg *config.Config, branch string) (*activeFreeze, error) {
 	if cfg == nil || cfg.Deploy == nil {
 		// A commit gate without deploy configuration cannot have a freeze.
-		return freezeLookup{}, nil
+		return nil, errNoActiveFreeze
 	}
 	for _, name := range slices.Sorted(maps.Keys(cfg.Deploy.Targets)) {
 		target := cfg.Deploy.Targets[name]
@@ -407,30 +508,33 @@ func (a *App) frozenForBranch(repo *gitx.Repo, cfg *config.Config, branch string
 		pattern := strings.ReplaceAll(regexp.QuoteMeta(target.Freeze.Branch), regexp.QuoteMeta("{version}"), ".+")
 		matches, err := regexp.MatchString("^"+pattern+"$", branch)
 		if err != nil {
-			return freezeLookup{}, fmt.Errorf("matching freeze branch pattern for %s: %w", name, err)
+			return nil, fmt.Errorf("matching freeze branch pattern for %s: %w", name, err)
 		}
 		if !matches {
 			continue
 		}
-		lookup, err := activeTargetFreeze(repo, cfg, name, target)
-		if err != nil {
-			return freezeLookup{}, err
+		freeze, err := activeTargetFreeze(repo, cfg, name, target)
+		if errors.Is(err, errNoActiveFreeze) {
+			continue
 		}
-		if lookup.freeze != nil && lookup.freeze.branch == branch {
-			return lookup, nil
+		if err != nil {
+			return nil, err
+		}
+		if freeze != nil && freeze.branch == branch {
+			return freeze, nil
 		}
 	}
 	// No active freeze uses this branch.
-	return freezeLookup{}, nil
+	return nil, errNoActiveFreeze
 }
 
-func (a *App) runFreezeAdvisory(ctx context.Context, repo *gitx.Repo, cfg *config.Config, f *activeFreeze, branch string, selected []string) []string {
+func (a *App) runFreezeAdvisory(ctx context.Context, runner *tasks.Runner, f *activeFreeze, branch string, selected []string) []string {
 	if f == nil || f.branch != branch {
 		return nil
 	}
 	var failed []string
 	for _, task := range selected {
-		if err := a.runner(repo, cfg).Run(ctx, task, nil); err != nil {
+		if err := runner.Run(ctx, task, nil); err != nil {
 			a.warn("%s failed, advisory while %s is frozen: %v", task, f.name, err)
 			failed = append(failed, task)
 		}
@@ -444,8 +548,10 @@ func (a *App) recordCommitAdvisory(repo *gitx.Repo, cfg *config.Config, f *activ
 		return err
 	}
 	for _, task := range failed {
-		if err := a.freezeLog(repo, cfg, f, strings.TrimSpace(head), "commit", "advisory", task); err != nil {
+		if tag, err := a.freezeLog(repo, cfg, f, strings.TrimSpace(head), "commit", "advisory", task); err != nil {
 			a.warn("could not record advisory failure: %v", err)
+		} else {
+			a.printf("recorded freeze advisory in %s", tag)
 		}
 	}
 	return nil
@@ -457,6 +563,10 @@ func (a *App) freezeIssueCheck(ctx context.Context, r *deployRun, f *activeFreez
 	}
 	if f.config.DeployedSHA == nil {
 		return fmt.Errorf("freeze target %s has no deployed_sha", f.target)
+	}
+	acceptance := r.cfg.Deploy.Targets[f.config.Requires]
+	if acceptance == nil || acceptance.DeployedSHA == nil {
+		return fmt.Errorf("freeze target %s requires deployed_sha on both targets", f.target)
 	}
 	env, err := envs.Get(r.cfg, r.repo.Root, f.config.Env)
 	if err != nil {
@@ -477,6 +587,23 @@ func (a *App) freezeIssueCheck(ctx context.Context, r *deployRun, f *activeFreez
 	if err != nil {
 		return err
 	}
+	if len(bypassed) > 0 {
+		args := []string{"log", "--format=%H", prev + ".." + r.head, "--not"}
+		for sha := range bypassed {
+			args = append(args, sha)
+		}
+		listed, err := r.repo.Git(args...)
+		if err != nil {
+			return fmt.Errorf("listing commits not already bypassed: %w", err)
+		}
+		allowed := map[string]bool{}
+		for line := range strings.SplitSeq(listed, "\n") {
+			if sha := strings.TrimSpace(line); sha != "" {
+				allowed[sha] = true
+			}
+		}
+		commits = slices.DeleteFunc(commits, func(c deliveredCommit) bool { return !allowed[c.sha] })
+	}
 	g, err := newGateRun(a, r.repo, r.cfg, f.config.ApprovedRelease)
 	if err != nil {
 		return err
@@ -487,7 +614,7 @@ func (a *App) freezeIssueCheck(ctx context.Context, r *deployRun, f *activeFreez
 		return err
 	}
 	for _, c := range commits {
-		if bypassed[c.sha] || reachableFromBypass(r.repo, c.sha, bypassed) {
+		if bypassed[c.sha] {
 			continue
 		}
 		if err := checkFreezeCommit(ctx, r, f, g.gate, keyRe, c, reverted[c.sha]); err != nil {
@@ -497,43 +624,46 @@ func (a *App) freezeIssueCheck(ctx context.Context, r *deployRun, f *activeFreez
 	return nil
 }
 
-func reachableFromBypass(repo *gitx.Repo, commit string, bypasses map[string]bool) bool {
-	for bypass := range bypasses {
-		if _, err := repo.Git("merge-base", "--is-ancestor", commit, bypass); err == nil {
-			return true
-		}
-	}
-	return false
-}
-
 func bypassedCommits(repo *gitx.Repo, cfg *config.Config, f *activeFreeze) (map[string]bool, error) {
-	remotes, err := pushRemotes(repo, cfg)
+	tags, err := freezeLogTags(repo, cfg, f)
 	if err != nil {
 		return nil, err
 	}
 	out := map[string]bool{}
-	prefix := "freeze-log/" + f.target + "/" + freezeSlug(f.version) + "/*-bypass"
-	for _, remote := range remotes {
-		listed, err := repo.Git("ls-remote", "--tags", remote, "refs/tags/"+prefix)
+	for tag, refs := range tags {
+		if !strings.HasSuffix(tag, "-bypass") {
+			continue
+		}
+		contents, err := readRemoteTag(repo, refs[0])
 		if err != nil {
 			return nil, err
 		}
-		for _, tag := range remoteTagNames(listed) {
-			if _, err := repo.Git("fetch", "--quiet", remote, "refs/tags/"+tag); err != nil {
-				return nil, err
-			}
-			contents, err := repo.Git("cat-file", "tag", "FETCH_HEAD")
-			if err != nil {
-				return nil, err
-			}
-			for line := range strings.SplitSeq(contents, "\n") {
-				if after, ok := strings.CutPrefix(line, "commit: "); ok {
-					out[after] = true
-				}
+		for line := range strings.SplitSeq(contents, "\n") {
+			if after, ok := strings.CutPrefix(line, "commit: "); ok {
+				out[after] = true
 			}
 		}
 	}
 	return out, nil
+}
+
+func freezeLogTags(repo *gitx.Repo, cfg *config.Config, f *activeFreeze) (map[string][]remoteTag, error) {
+	remotes, err := pushRemotes(repo, cfg)
+	if err != nil {
+		return nil, err
+	}
+	tags := map[string][]remoteTag{}
+	pattern := "refs/tags/freeze-log/" + f.target + "/" + freezeSlug(f.version) + "/*"
+	for _, remote := range remotes {
+		out, err := repo.Git("ls-remote", "--tags", remote, pattern)
+		if err != nil {
+			return nil, err
+		}
+		for name, ref := range parseRemoteTags(out, remote) {
+			tags[name] = append(tags[name], ref)
+		}
+	}
+	return tags, nil
 }
 
 func checkFreezeCommit(ctx context.Context, r *deployRun, f *activeFreeze, gate *approvalGate, keyRe *regexp.Regexp, commit deliveredCommit, reverted string) error {
@@ -546,7 +676,7 @@ func checkFreezeCommit(ctx context.Context, r *deployRun, f *activeFreeze, gate 
 		if err != nil || ignored {
 			return err
 		}
-		return fmt.Errorf("%s names no item in %s", gitx.Short(commit.sha), f.name)
+		return freezeRefusalError{fmt.Errorf("%s names no item in %s", gitx.Short(commit.sha), f.name)}
 	}
 	var matched []string
 	for _, key := range keys {
@@ -555,7 +685,14 @@ func checkFreezeCommit(ctx context.Context, r *deployRun, f *activeFreeze, gate 
 		}
 	}
 	if len(matched) == 0 {
-		return fmt.Errorf("%s not in %s", strings.Join(keys, ", "), f.name)
+		ignored, err := shipsNothing(r.repo, r.cfg, f.config.ApprovedRelease, commit.sha)
+		if err != nil {
+			return err
+		}
+		if ignored {
+			return nil
+		}
+		return freezeRefusalError{fmt.Errorf("%s not in %s", strings.Join(keys, ", "), f.name)}
 	}
 	return nil
 }
@@ -576,12 +713,15 @@ func checkFreezeIssue(ctx context.Context, gate *approvalGate, f *activeFreeze, 
 		return nil
 	}
 	*matched = append(*matched, key)
-	added, err := gate.client.FixVersionAddedAfter(ctx, key, f.name, f.time)
+	added, hasAddition, err := gate.client.FixVersionHistoryAfter(ctx, key, f.name, f.time)
 	if err != nil {
 		return err
 	}
+	if !hasAddition && issue.Created.After(f.time) {
+		added = true
+	}
 	if added && !slices.Contains(f.config.Freeze.Types, issue.Type) {
-		return fmt.Errorf("%s joined %s after the freeze", key, f.name)
+		return freezeRefusalError{fmt.Errorf("%s joined %s after the freeze", key, f.name)}
 	}
 	return nil
 }

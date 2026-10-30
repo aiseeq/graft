@@ -59,8 +59,11 @@ type fakeJira struct {
 	// Progress.
 	written map[string][]fakeComment
 	entered map[string]time.Time
-	// fixChanges are the changes of a key's fix versions its history shows.
+	// fixChanges are the changes of a key's fix versions its history shows;
+	// created maps a key to when it was created, with the fix versions it
+	// has, if its history shows no change of them.
 	fixChanges map[string][]fakeFixChange
+	created    map[string]time.Time
 }
 
 // fakeFixChange is one change of an item's fix versions in its history.
@@ -202,6 +205,9 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if p := j.parents[key]; p != "" {
 			fields["parent"] = map[string]string{"key": p}
+		}
+		if at, ok := j.created[key]; ok {
+			fields["created"] = at.Format(fakeTimeLayout)
 		}
 		subtasks := []any{}
 		for _, st := range slices.Sorted(maps.Keys(j.parents)) {

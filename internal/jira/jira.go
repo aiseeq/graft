@@ -95,6 +95,7 @@ func (c *Client) Myself(ctx context.Context) (string, error) {
 type Issue struct {
 	Key     string
 	Summary string
+	Created time.Time
 	// Type is the issue type's name, such as Bug.
 	Type   string
 	Status string
@@ -134,13 +135,14 @@ type Transition struct {
 // Issue reads an item's status, assignee, fix versions and available
 // transitions.
 func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
-	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+key+"?fields=summary,status,assignee,fixVersions,issuetype,parent,subtasks,labels&expand=transitions", nil, http.StatusOK)
+	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+key+"?fields=summary,created,status,assignee,fixVersions,issuetype,parent,subtasks,labels&expand=transitions", nil, http.StatusOK)
 	if err != nil {
 		return Issue{}, err
 	}
 	var raw struct {
 		Fields struct {
 			Summary string `json:"summary"`
+			Created string `json:"created"`
 			Status  struct {
 				Name     string `json:"name"`
 				Category struct {
@@ -177,7 +179,14 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 	if raw.Fields.Status.Category.Key == "" {
 		return Issue{}, fmt.Errorf("%s: the status has no category", key)
 	}
-	issue := Issue{Key: key, Summary: raw.Fields.Summary, Type: raw.Fields.IssueType.Name, Status: raw.Fields.Status.Name, Done: raw.Fields.Status.Category.Key == "done", NotStarted: raw.Fields.Status.Category.Key == "new", FixVersions: raw.Fields.FixVersions, Labels: raw.Fields.Labels}
+	var created time.Time
+	if raw.Fields.Created != "" {
+		created, err = time.Parse(timeLayout, raw.Fields.Created)
+		if err != nil {
+			return Issue{}, fmt.Errorf("%s: invalid created time %q: %w", key, raw.Fields.Created, err)
+		}
+	}
+	issue := Issue{Key: key, Summary: raw.Fields.Summary, Created: created, Type: raw.Fields.IssueType.Name, Status: raw.Fields.Status.Name, Done: raw.Fields.Status.Category.Key == "done", NotStarted: raw.Fields.Status.Category.Key == "new", FixVersions: raw.Fields.FixVersions, Labels: raw.Fields.Labels}
 	if a := raw.Fields.Assignee; a != nil {
 		if a.AccountID == "" {
 			return Issue{}, fmt.Errorf("%s: the assignee has no accountId", key)
@@ -263,6 +272,13 @@ func (c *Client) WasAssignedTo(ctx context.Context, key, accountID string) (bool
 // FixVersionAddedAfter reports whether the latest addition of versionName
 // to the item's Fix Version field happened after at.
 func (c *Client) FixVersionAddedAfter(ctx context.Context, key, versionName string, at time.Time) (bool, error) {
+	added, _, err := c.FixVersionHistoryAfter(ctx, key, versionName, at)
+	return added, err
+}
+
+// FixVersionHistoryAfter reports whether a version was added after at and
+// whether the history contains any addition of that version.
+func (c *Client) FixVersionHistoryAfter(ctx context.Context, key, versionName string, at time.Time) (added, hasAddition bool, retErr error) {
 	var latest time.Time
 	err := c.changelog(ctx, key, func(value json.RawMessage) (bool, error) {
 		var entry struct {
@@ -281,13 +297,16 @@ func (c *Client) FixVersionAddedAfter(ctx context.Context, key, versionName stri
 			return false, fmt.Errorf("%s: invalid changelog time %q: %w", key, entry.Created, err)
 		}
 		for _, item := range entry.Items {
-			if item.FieldID == "fixVersions" && item.ToString == versionName && item.FromString != versionName && changed.After(latest) {
-				latest = changed
+			if item.FieldID == "fixVersions" && item.ToString == versionName && item.FromString != versionName {
+				hasAddition = true
+				if changed.After(latest) {
+					latest = changed
+				}
 			}
 		}
 		return false, nil
 	})
-	return latest.After(at), err
+	return latest.After(at), hasAddition, err
 }
 
 // Transition moves an item to the status named to.

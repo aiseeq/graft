@@ -175,24 +175,23 @@ func (a *App) gateForMessage(ctx context.Context, repo *gitx.Repo, cfg *config.C
 		return nil, nil, fmt.Errorf("writing %s: %w", f.Name(), err)
 	}
 	a.warnStaleWorktreeLinks(repo, cfg)
-	branch, err := repo.Branch()
-	if err != nil {
-		return nil, nil, err
+	var branch string
+	if configuredFreezeAdvisory(cfg) {
+		branch, err = repo.Branch()
+		if err != nil {
+			return nil, nil, err
+		}
+		frozen, err = a.frozenForBranch(repo, cfg, branch)
+		if err != nil && !errors.Is(err, errNoActiveFreeze) {
+			return nil, nil, err
+		}
 	}
-	lookup, err := a.frozenForBranch(repo, cfg, branch)
-	if err != nil {
-		return nil, nil, err
-	}
-	frozen = lookup.freeze
 	gateCfg := cfg
 	if frozen != nil {
 		gateCfg = configWithoutFreezeAdvisory(cfg, frozen)
 	}
 	r := a.runner(repo, gateCfg)
 	r.Extra = map[string]string{tasks.MessageFileEnv: f.Name()}
-	if err := r.Gate(ctx); err != nil {
-		return nil, nil, err
-	}
 	if frozen != nil {
 		var selected []string
 		for _, step := range cfg.Gate {
@@ -200,7 +199,21 @@ func (a *App) gateForMessage(ctx context.Context, repo *gitx.Repo, cfg *config.C
 				selected = append(selected, step.Task)
 			}
 		}
-		return frozen, a.runFreezeAdvisory(ctx, repo, cfg, frozen, branch, selected), nil
+		err = r.Unit("gate", func() error {
+			if err := r.Gate(ctx); err != nil {
+				return err
+			}
+			failed = a.runFreezeAdvisory(ctx, r, frozen, branch, selected)
+			return nil
+		})
+	} else {
+		err = r.Gate(ctx)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("running commit gate: %w", err)
+	}
+	if frozen != nil {
+		return frozen, failed, nil
 	}
 	return nil, nil, nil
 }

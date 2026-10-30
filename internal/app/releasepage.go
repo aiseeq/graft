@@ -100,6 +100,14 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 	}
 	heading := buildHeading(p, r)
 	if strings.Contains(page.Body, heading) {
+		if strings.Contains(section, "<h2>Freeze journal</h2>") {
+			body := replaceFreezeJournal(page.Body, section[strings.Index(section, "<h2>Freeze journal</h2>"):])
+			if body != page.Body {
+				if _, err := client.UpdatePage(ctx, page, body, "freeze journal "+r.version); err != nil {
+					return err
+				}
+			}
+		}
 		a.printf("release page %q already lists build %s: %s", title, r.version, page.URL)
 		return nil
 	}
@@ -110,22 +118,23 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 	return nil
 }
 
+func replaceFreezeJournal(body, journal string) string {
+	const heading = "<h2>Freeze journal</h2>"
+	start := strings.Index(body, heading)
+	if start < 0 {
+		return body + journal
+	}
+	end := strings.Index(body[start:], "</ul>")
+	if end < 0 {
+		return body[:start] + journal
+	}
+	return body[:start] + journal + body[start+end+len("</ul>"):]
+}
+
 func (a *App) freezeJournal(repo *gitx.Repo, cfg *config.Config, f *activeFreeze) (string, error) {
-	remotes, err := pushRemotes(repo, cfg)
+	tags, err := freezeLogTags(repo, cfg, f)
 	if err != nil {
 		return "", err
-	}
-	tags := map[string]string{}
-	for _, remote := range remotes {
-		out, err := repo.Git("ls-remote", "--tags", remote, "refs/tags/freeze-log/"+f.target+"/"+freezeSlug(f.version)+"/*")
-		if err != nil {
-			return "", err
-		}
-		for _, tag := range remoteTagNames(out) {
-			if _, exists := tags[tag]; !exists {
-				tags[tag] = remote
-			}
-		}
 	}
 	if len(tags) == 0 {
 		return "", nil
@@ -138,10 +147,11 @@ func (a *App) freezeJournal(repo *gitx.Repo, cfg *config.Config, f *activeFreeze
 	var b strings.Builder
 	b.WriteString("<h2>Freeze journal</h2><ul>")
 	for _, tag := range names {
-		if _, err := repo.Git("fetch", "--quiet", tags[tag], "refs/tags/"+tag); err != nil {
-			return "", err
+		refs := tags[tag]
+		if len(refs) == 0 {
+			return "", fmt.Errorf("freeze journal tag %s has no remote ref", tag)
 		}
-		contents, err := repo.Git("cat-file", "tag", "FETCH_HEAD")
+		contents, err := readRemoteTag(repo, refs[0])
 		if err != nil {
 			return "", err
 		}

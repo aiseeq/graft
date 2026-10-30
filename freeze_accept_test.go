@@ -60,6 +60,8 @@ func freezeRepo(t *testing.T) *deployFixture {
 	after := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	d.jira.mu.Lock()
 	d.jira.types = map[string]string{"PROJ-8": "Bug"}
+	d.jira.fixVersions["PROJ-10"] = []string{"10010"}
+	d.jira.created = map[string]time.Time{"PROJ-1": before.Add(-24 * time.Hour), "PROJ-10": after}
 	d.jira.fixChanges = map[string][]fakeFixChange{
 		"PROJ-1": {{at: before, id: "10010", added: true}},
 		// PROJ-3 was in the version, left it before the freeze and came back after.
@@ -221,6 +223,8 @@ func TestFrozenTargetTakesOnlyTheFrozenVersion(t *testing.T) {
 		{"other.txt", "feat: PROJ-6 another product", "PROJ-6 not in Product v1.2.10"},
 		{"keyless.txt", "chore: tidy up", "names no item"},
 		{"late.txt", "feat: PROJ-3 joined late", "PROJ-3 joined Product v1.2.10 after the freeze"},
+		// Created in the version, its history shows no change of fix versions.
+		{"new.txt", "feat: PROJ-10 created in the version after the freeze", "PROJ-10 joined Product v1.2.10 after the freeze"},
 	} {
 		sha := d.commitFile(c.file, c.msg)
 		out, code := d.graft("", "deploy", "acc")
@@ -376,5 +380,48 @@ func TestNoFreezeKeepsDeploysAsBefore(t *testing.T) {
 	}
 	if out, code := d.graft("", "deploy", "prod"); code == 0 || strings.Contains(out, "advisory") {
 		t.Errorf("prod with a failing lint: exit %d\n%s", code, out)
+	}
+}
+
+// TestReleasePageLinksTheVersionItsDeployCreated: without freeze the prod
+// deploy keeps its order, the versions before the page, so the page header
+// links the window version this deploy created.
+func TestReleasePageLinksTheVersionItsDeployCreated(t *testing.T) {
+	d := newDeployFixture(t, versionConfig)
+	d.jira.mu.Lock()
+	d.jira.manageVersions = true
+	d.jira.versions = []map[string]any{
+		{"id": "20022", "name": "Product 22.10.26", "released": false, "archived": false, "releaseDate": "2026-10-22"},
+	}
+	d.jira.mu.Unlock()
+	d.at("2026-10-16 10:00")
+	d.mustGraft("deploy", "test")
+	d.at("2026-10-19 15:30")
+	out, _ := d.graft("", "deploy", "--unapproved", "prod")
+	if body := d.jira.page("Product 19.10.26: release notes"); !strings.Contains(body, "/versions/") {
+		t.Errorf("the page header does not link the version the deploy created:\n%s\n%s", body, out)
+	}
+}
+
+// TestAFailedJournalStillRecordsTheDeploy: the deploy ran, so a remote that
+// refuses the journal's tag does not keep acc's deployed commit from being
+// recorded.
+func TestAFailedJournalStillRecordsTheDeploy(t *testing.T) {
+	d := freezeRepo(t)
+	d.commitFile("one.txt", "feat: PROJ-1 accepted work")
+	trunk := d.freeze()
+	hook := filepath.Join(d.remote("origin"), "hooks", "update")
+	writeFile(t, hook, "#!/bin/sh\ncase \"$1\" in refs/tags/freeze-log/*) exit 1;; esac\n")
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d.git("switch", "-q", trunk)
+	head := d.commitFile("two.txt", "feat: PROJ-1 trunk work after the freeze")
+	out, code := d.graft("", "deploy", "--past-freeze", "a look at the trunk", "acc")
+	if got := strings.TrimSpace(d.stateFile("acc-sha")); got != head {
+		t.Errorf("acc-sha = %q, want the deployed %s (exit %d)\n%s", got, head, code, out)
+	}
+	if !strings.Contains(out, "freeze-log") {
+		t.Errorf("the failed journal is not said:\n%s", out)
 	}
 }
