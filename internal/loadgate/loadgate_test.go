@@ -180,9 +180,16 @@ func TestBusyDiskAndSwapHoldTasks(t *testing.T) {
 			// source's included, to end before the wait does.
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
+			l := testLoad
+			if c.name == "swap" {
+				// A look after the first measures the swapping since the
+				// one before, a poll ago: the fake's writer, stalled for
+				// longer under -race, must not leave a look with none.
+				l.Poll, l.SwapWindow = 100*time.Millisecond, 100*time.Millisecond
+			}
 			var log strings.Builder
 			p := &Priority{For: "graft deploy prod", Budget: newBudget(t, time.Hour)}
-			waits, _, err := wait(ctx, "build", p, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log)
+			waits, _, err := wait(ctx, "build", p, l, filepath.Join(t.TempDir(), "load.lock"), &log)
 			if err == nil {
 				t.Errorf("started on a busy machine:\n%s", log.String())
 			}
