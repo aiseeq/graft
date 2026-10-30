@@ -132,6 +132,13 @@ func TestNoDiskSourceUsesPSI(t *testing.T) {
 			func(t *testing.T) { t.Setenv("XDG_RUNTIME_DIR", t.TempDir()) }},
 		{"failing", "graft: build: " + pressure.ErrIOSourceFailed.Error() + ": no data yet, PSI total used\n",
 			func(t *testing.T) { fakeDisk(t).set(0, "no data yet") }},
+		{"no PSI either", "graft: build: " + pressure.ErrNoIOSource.Error() + ", and no IO pressure either: the disk is not checked\n",
+			func(t *testing.T) {
+				t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+				if err := os.Remove(filepath.Join(os.Getenv(ProcEnv), "pressure", "io")); err != nil {
+					t.Fatal(err)
+				}
+			}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			setRunnable, _, _ := fakeMachine(t)
@@ -150,7 +157,7 @@ func TestNoDiskSourceUsesPSI(t *testing.T) {
 				t.Fatal(err)
 			}
 			// Told once over the readings of a wait.
-			if got := strings.Count(log.String(), "PSI total used"); got != 1 || !strings.HasPrefix(log.String(), c.want) {
+			if got := strings.Count(log.String(), c.want); got != 1 {
 				t.Errorf("log, want %q once:\n%s", c.want, log.String())
 			}
 			if adm.DiskProfile != nil {

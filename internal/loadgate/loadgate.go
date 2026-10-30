@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -285,8 +286,9 @@ func (m *machine) busy(ctx context.Context, fresh bool) (busyness, error) {
 	if err != nil {
 		return busyness{}, fmt.Errorf("measuring the machine: %w", err)
 	}
+	noPSI := slices.Contains(v.Skipped, pressure.ErrNoIOPressure)
 	for _, none := range v.Skipped {
-		m.skip(none, v.Load.DiskFault)
+		m.skip(none, v.Load.DiskFault, noPSI)
 	}
 	m.runnable = float64(v.Load.Runnable)
 	m.disk = nil
@@ -307,8 +309,8 @@ func (m *machine) busy(ctx context.Context, fresh bool) (busyness, error) {
 
 // skip says the first time that the system lacks a measure. Without the disk
 // state source, which fault tells why, the disk is still measured by the IO
-// pressure's total.
-func (m *machine) skip(none, fault error) {
+// pressure's total, unless the system lacks that too (noPSI).
+func (m *machine) skip(none, fault error, noPSI bool) {
 	if m.unchecked[none] {
 		return
 	}
@@ -316,11 +318,15 @@ func (m *machine) skip(none, fault error) {
 		m.unchecked = map[error]bool{}
 	}
 	m.unchecked[none] = true
+	fallback := "PSI total used"
+	if noPSI {
+		fallback = "and no IO pressure either: the disk is not checked"
+	}
 	switch {
 	case errors.Is(none, pressure.ErrNoIOSource):
-		fmt.Fprintf(m.log, "graft: %s: %v, PSI total used\n", m.name, none)
+		fmt.Fprintf(m.log, "graft: %s: %v, %s\n", m.name, none, fallback)
 	case errors.Is(none, pressure.ErrIOSourceFailed):
-		fmt.Fprintf(m.log, "graft: %s: %v, PSI total used\n", m.name, fault)
+		fmt.Fprintf(m.log, "graft: %s: %v, %s\n", m.name, fault, fallback)
 	default:
 		fmt.Fprintf(m.log, "graft: %s: %v, not checked\n", m.name, none)
 	}

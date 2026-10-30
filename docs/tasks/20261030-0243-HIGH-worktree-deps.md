@@ -4,7 +4,7 @@
 Исполнитель: graft-master
 
 ## Вход
-- Задание Сна (обход tools 30.10, итог — git-admin; отчёт /home/aisee/.claude/improve/runs/2026-10-30/round-tools.md): в свежем worktree двух закрытых проектов с фронтом (A, B — имена в отчёте обхода) нет frontend/node_modules — гейт (lint-changed: tsc, eslint) и jest стоят; 15 бойцов проекта A 29.10, бойцы сами запускали npm ci мимо очереди, мастер A симлинкует node_modules своим циклом, мастер B ставил npm ci руками.
+- Задание Сна (обход tools 30.10, итог — git-admin; отчёт обхода Сна round-tools.md): в свежем worktree двух закрытых проектов с фронтом (A, B — имена в отчёте обхода) нет frontend/node_modules — гейт (lint-changed: tsc, eslint) и jest стоят; 15 бойцов проекта A 29.10, бойцы сами запускали npm ci мимо очереди, мастер A симлинкует node_modules своим циклом, мастер B ставил npm ci руками.
 - graft: worktree.copy — файлы, worktree.setup — задачи (README ~1907); каталога зависимостей принести нечем. A: .graft.yaml:74 `worktree: {copy: [.env], setup: [generate-config]}`; B — без worktree:.
 
 ## Что сделать

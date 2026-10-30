@@ -4,7 +4,7 @@
 Исполнитель: graft-master
 
 ## Вход
-- akit-master 30.10 (письмо сессии): akit v1.7.0, тикет /home/aisee/git/akit/docs/tasks/20261030-0230-HIGH-io-now.md. `(*Meter).Check(ctx, l, kind, fresh)`; kind — вид задачи, тот же ключ, что profile в stats.jsonl (aguard собирает по нему профили).
+- akit-master 30.10 (письмо сессии): akit v1.7.0, тикет akit io-now. `(*Meter).Check(ctx, l, kind, fresh)`; kind — вид задачи, тот же ключ, что profile в stats.jsonl (aguard собирает по нему профили).
 - Мера IO моментальная: фриз сейчас или ≥ MaxIOFull % за 5 с; DefaultLimits.MaxIOFull 9.6; ≥100 выключает дисковую меру.
 - Новые сентинелы в Verdict.Skipped: ErrNoIOSource, ErrIOSourceFailed; причина — Load.DiskFault. Диск при этом проверяется по PSI total.
 - Load.Disk.Profile (json.RawMessage) — писать в журнал допуска вместе с kind.
@@ -22,3 +22,5 @@
 ## Журнал
 - 2026-10-30 03:15 открыт — graft-master
 - 2026-10-30 03:15 в работе — graft-master
+- 2026-10-30 03:28 note — graft-master: сделано в e5ae71d: kind=profile в Wait/BusyNow, skip «…, PSI total used» с DiskFault, MaxIOFull=pressure.DefaultLimits (9.6), disk_profile в строке задачи, XDG_RUNTIME_DIR тестов изолирован (на машине живой io-state.sock); тест интеграции 37132fa; all зелёный; отдано на проверку суб-агенту
+- 2026-10-30 03:32 note — graft-master: по ревью: без PSI текст «and no IO pressure either: the disk is not checked» (тест no PSI either), README «once per look at the machine»; пути в тикетах заменены на ~ и имена

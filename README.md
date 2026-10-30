@@ -110,8 +110,11 @@ neither. The disk is read from the disk state source on
 `$XDG_RUNTIME_DIR/io-state.sock`, asked for the task's kind (its `profile`
 in the stats) and giving back a profile of it, which the task's stats line
 keeps as `disk_profile`; without the source, or when it fails, graft says so
-once per task and measures the IO pressure by the `full` total of
-`/proc/pressure/io` over `swap_window` (between readings while it waits). The quiet mode of `busy --quiet-until TIME`
+once per look at the machine (a task with `remote_heavy` under `when: busy`
+looks twice: before it chooses the host, and when it waits here) and
+measures the IO pressure by the `full` total of `/proc/pressure/io` over
+`swap_window` (between readings while it waits); a system without that file
+either leaves the disk unchecked, and says so. The quiet mode of `busy --quiet-until TIME`
 or `busy --quiet DURATION` (akit) makes the machine busy until that time,
 whatever it measures: the wait says "quiet mode until HH:MM" (the date too
 when it is not today), and `busy --quiet-off` ends it sooner. A priority task

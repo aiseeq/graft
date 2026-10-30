@@ -20,3 +20,5 @@
 - 2026-10-30 02:43 открыт — graft-master
 - 2026-10-30 02:43 в работе — graft-master
 - 2026-10-30 02:52 сделано: ротация в .1…N со сдвигом и удалением копий старше 15 дней по mtime (stats.go shift/oldCopies/Files), Load и LoadTests читают все копии, шапка stats и --tests называет первую запись (app/stats.go sinceText), README; тесты TestStatsFileRotates (сдвиг, удаление 16-дневной), TestStatsCommand (шапка при --since 30d); all зелёный. Дальше — независимая проверка. — graft-master
+- 2026-10-30 03:28 note — graft-master: находки ревью: Files/Load/LoadTests пропускают копии старше --since кроме самой старой (заголовок видит начало лога), Append пишет строку при сбое удаления копии; тесты TestLoadReadsTheCopiesOldestFirst, TestAppendWritesWhenAnOldCopyStays, заголовок --tests в TestGoTestsAreRecordedPerTest; вошло в e5ae71d (первый коммит упал на сборке akit 1.7.0) и 37132fa; all зелёный; отдано на проверку суб-агенту
+- 2026-10-30 03:32 note — graft-master: читатели вне graft уведомлены: aguard-master (msg 54100dd1, agentwait/graft.go:14-17), dream-master (msg 1e29695e, sleep inventory/heavy.go:238)
