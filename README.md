@@ -158,6 +158,12 @@ after the command starts, or until it ends if sooner, in place of
 `load.settle`, for one command whose load comes later than its start, such as
 an agent that takes a minute to get going.
 
+`graft exec --heavy -- graft <task>` takes no queue slot itself: it starts the
+inner graft with `GRAFT_EXEC_HEAVY=1`, by which that graft runs its top-level
+task as heavy (placed on the host or admitted here once, as any heavy task),
+even when `.graft.yaml` does not mark it heavy; the inner graft's own steps do
+not inherit the variable.
+
 A project with another machine for heavy work names it in `.graft.yaml`, and
 the steps of its heavy tasks and its `graft exec --heavy` go there first,
 skipping this machine's queue. A project's `when` defaults to `always`. The
@@ -198,6 +204,14 @@ send any heavy work. Output flags such as `-o`, `-coverprofile` and `-trace`
 of an admitted heavy task starts, a heavy task inside another) does not
 overflow under `when: busy`. Project configuration keeps its existing rule: every
 heavy task can go to its host except tasks that need local files or data.
+A gate under the user config's `when: busy`, in a project without its own
+`remote_heavy`, that would wait here while the host answers and has an
+eligible step, runs split: `graft: gate: busy here: go test and go vet steps
+on pc, the rest waits for this machine step by step`. It takes no admission
+as a whole, nor do its heavy tasks; every `go test` and `go vet` step that
+writes no file, at any depth, runs on the host, and every other step (the
+gofmt check, go fix, scripts) is admitted here for itself, then released. A
+host step whose path breaks is said and rerun here, admitted for itself.
 Each heavy task
 says where it runs, `graft: build: heavy, on pc`, or why it stays here and
 queues as before, `graft: build: heavy, on this machine: <why>`:
