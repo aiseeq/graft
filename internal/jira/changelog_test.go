@@ -37,11 +37,11 @@ func TestWasAssignedToReadsEveryPage(t *testing.T) {
 	}
 }
 
-func TestFixVersionAddedAfterUsesLatestAddition(t *testing.T) {
+func TestFixVersionHistoryAfterUsesLatestAddition(t *testing.T) {
 	at := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	entry := func(created, from, to string) map[string]any {
 		return map[string]any{"created": created, "items": []any{
-			map[string]any{"fieldId": "fixVersions", "fromString": from, "toString": to},
+			map[string]any{"fieldId": "fixVersions", "from": from, "to": to},
 		}}
 	}
 	cases := []struct {
@@ -50,15 +50,15 @@ func TestFixVersionAddedAfterUsesLatestAddition(t *testing.T) {
 		want    bool
 	}{
 		{name: "removed then re-added after freeze", entries: []any{
-			entry("2026-01-01T12:00:00.000+0000", "", "Product v1.2.10"),
-			entry("2026-01-03T12:00:00.000+0000", "Product v1.2.10", ""),
-			entry("2026-01-04T12:00:00.000+0000", "", "Product v1.2.10"),
+			entry("2026-01-01T12:00:00.000+0000", "", "10010"),
+			entry("2026-01-03T12:00:00.000+0000", "10010", ""),
+			entry("2026-01-04T12:00:00.000+0000", "", "10010"),
 		}, want: true},
 		{name: "added before freeze", entries: []any{
-			entry("2026-01-01T12:00:00.000+0000", "", "Product v1.2.10"),
+			entry("2026-01-01T12:00:00.000+0000", "", "10010"),
 		}, want: false},
 		{name: "another version changed", entries: []any{
-			entry("2026-01-04T12:00:00.000+0000", "", "Product v1.2.11"),
+			entry("2026-01-04T12:00:00.000+0000", "", "10011"),
 		}, want: false},
 	}
 	for _, tc := range cases {
@@ -71,9 +71,9 @@ func TestFixVersionAddedAfterUsesLatestAddition(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]any{"isLast": true, "values": tc.entries})
 			}))
 			defer srv.Close()
-			got, err := New(Credentials{BaseURL: srv.URL}).FixVersionAddedAfter(context.Background(), "PROJ-1", "Product v1.2.10", at)
+			got, _, err := New(Credentials{BaseURL: srv.URL}).FixVersionHistoryAfter(context.Background(), "PROJ-1", "10010", at)
 			if err != nil || got != tc.want {
-				t.Errorf("FixVersionAddedAfter = %v, %v; want %v", got, err, tc.want)
+				t.Errorf("FixVersionHistoryAfter = %v, %v; want %v", got, err, tc.want)
 			}
 		})
 	}

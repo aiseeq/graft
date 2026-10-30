@@ -269,24 +269,17 @@ func (c *Client) WasAssignedTo(ctx context.Context, key, accountID string) (bool
 	return found, err
 }
 
-// FixVersionAddedAfter reports whether the latest addition of versionName
-// to the item's Fix Version field happened after at.
-func (c *Client) FixVersionAddedAfter(ctx context.Context, key, versionName string, at time.Time) (bool, error) {
-	added, _, err := c.FixVersionHistoryAfter(ctx, key, versionName, at)
-	return added, err
-}
-
 // FixVersionHistoryAfter reports whether a version was added after at and
 // whether the history contains any addition of that version.
-func (c *Client) FixVersionHistoryAfter(ctx context.Context, key, versionName string, at time.Time) (added, hasAddition bool, retErr error) {
+func (c *Client) FixVersionHistoryAfter(ctx context.Context, key, versionID string, at time.Time) (added, hasAddition bool, retErr error) {
 	var latest time.Time
 	err := c.changelog(ctx, key, func(value json.RawMessage) (bool, error) {
 		var entry struct {
 			Created string `json:"created"`
 			Items   []struct {
-				FieldID    string `json:"fieldId"`
-				FromString string `json:"fromString"`
-				ToString   string `json:"toString"`
+				FieldID string `json:"fieldId"`
+				From    string `json:"from"`
+				To      string `json:"to"`
 			} `json:"items"`
 		}
 		if err := json.Unmarshal(value, &entry); err != nil {
@@ -297,7 +290,7 @@ func (c *Client) FixVersionHistoryAfter(ctx context.Context, key, versionName st
 			return false, fmt.Errorf("%s: invalid changelog time %q: %w", key, entry.Created, err)
 		}
 		for _, item := range entry.Items {
-			if item.FieldID == "fixVersions" && item.ToString == versionName && item.FromString != versionName {
+			if item.FieldID == "fixVersions" && item.To == versionID && item.From != versionID {
 				hasAddition = true
 				if changed.After(latest) {
 					latest = changed

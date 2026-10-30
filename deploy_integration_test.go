@@ -33,6 +33,7 @@ type fakeJira struct {
 	assignees       map[string]string
 	handedOver      []string
 	failAll         bool
+	requests        int
 	versions        []map[string]any
 	versionRequests int
 	fixVersions     map[string][]string
@@ -89,6 +90,7 @@ var fakeTransitions = map[string]string{"31": "Testing", "41": "Ready for releas
 func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	j.requests++
 	if j.failAll {
 		http.Error(w, "down for maintenance", http.StatusInternalServerError)
 		return

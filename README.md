@@ -1741,7 +1741,6 @@ deploy:
         tz: Europe/Berlin
         cutoff: {days_before: 1, at: "18:00"}   # optional: when test starts holding the candidate
       approved_release: {statuses: [Ready for release, Done]}
-      freeze: {types: [Bug], advisory: [lint]}   # optional: hold test on release/{version} while the customer accepts
       merge_into_trunk: true    # optional: record the release branch on the trunk after the release
 ```
 
@@ -1828,11 +1827,23 @@ deploy:
 ### Freeze
 
 Add `freeze` to a release target that has `requires`; it holds that required
-acceptance target while the customer reviews a Jira version. `freeze.types`
-allows items of those Jira types that joined the version after the freeze,
-and `freeze.advisory` names tasks that warn and are recorded when they fail
-on the frozen branch during deploys and the `graft commit` gate. Without this
-setting, deploy behavior is unchanged.
+acceptance target while the customer reviews a Jira version. Freeze requires
+`approved_release.prefix`, `deployed_sha` on both targets, and
+`release_notes.jira.project_keys`. `freeze.types` allows items of those Jira
+types that joined the version after the freeze. `freeze.advisory` names tasks
+that must be direct deps of the frozen target, its required target, or a
+top-level gate step. They run in configured order and failures warn and are
+recorded during deploys to either target and the `graft commit` gate on the
+frozen branch. Without this setting, deploy behavior is unchanged.
+
+For example, with `release_notes.jira.project_keys: [PROJ]`, configure both
+targets with `deployed_sha`, set `approved_release.prefix: "Product "` on the
+frozen target, and list `lint` among that target's or its required target's
+deps (or as a top-level gate step):
+
+```yaml
+freeze: {branch: release/{version}, types: [Bug], advisory: [lint]}
+```
 
 Run `graft deploy freeze <target> <Jira version>` from the trunk to cut and
 push `release/{version}` and the annotated `freeze/<target>/<version>` tag.
@@ -1845,8 +1856,9 @@ bypass. A hotfix still follows the configured hotfix checks and is recorded
 in the freeze journal. Advisory tasks run on the frozen branch during deploy
 and at the `graft commit` gate; failures warn and are recorded without stopping
 the operation. A successful deploy of the frozen branch to the release target
-publishes the journal on the release page (`<version>: release notes`) and
-removes the freeze and journal tags from every remote. `graft deploy thaw
+removes the freeze and journal tags from every remote only after `deployed_sha`
+and the release page journal succeed. If no release page is configured, the
+journal is reported as having no page and `deployed_sha` is sufficient. `graft deploy thaw
 <target> --reason 'reason'` ends it manually and removes those tags too.
 
 ### Release pages

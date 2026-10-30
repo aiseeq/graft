@@ -179,43 +179,34 @@ func (a *App) gateForMessage(ctx context.Context, repo *gitx.Repo, cfg *config.C
 	if configuredFreezeAdvisory(cfg) {
 		branch, err = repo.Branch()
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("reading the current branch for freeze advisory: %w", err)
 		}
 		frozen, err = a.frozenForBranch(repo, cfg, branch)
 		if err != nil && !errors.Is(err, errNoActiveFreeze) {
 			return nil, nil, err
 		}
 	}
-	gateCfg := cfg
-	if frozen != nil {
-		gateCfg = configWithoutFreezeAdvisory(cfg, frozen)
-	}
-	r := a.runner(repo, gateCfg)
+	r := a.runner(repo, cfg)
 	r.Extra = map[string]string{tasks.MessageFileEnv: f.Name()}
+	var gateErr error
 	if frozen != nil {
-		var selected []string
-		for _, step := range cfg.Gate {
-			if freezeAdvisory(frozen, step.Task) {
-				selected = append(selected, step.Task)
-			}
-		}
-		err = r.Unit("gate", func() error {
-			if err := r.Gate(ctx); err != nil {
-				return err
-			}
-			failed = a.runFreezeAdvisory(ctx, r, frozen, branch, selected)
-			return nil
+		gateErr = r.Unit("commit advisory gate", func() error {
+			return r.GateWithAdvisory(ctx, func(task string, err error) bool {
+				if !freezeAdvisory(frozen, task) {
+					return false
+				}
+				a.warnFreezeAdvisory(frozen, task, err)
+				failed = append(failed, task)
+				return true
+			})
 		})
 	} else {
-		err = r.Gate(ctx)
+		gateErr = r.Gate(ctx)
 	}
-	if err != nil {
-		return nil, nil, fmt.Errorf("running commit gate: %w", err)
+	if gateErr != nil {
+		return nil, nil, gateErr
 	}
-	if frozen != nil {
-		return frozen, failed, nil
-	}
-	return nil, nil, nil
+	return frozen, failed, nil
 }
 
 // markerEnv lets graft's own git commit through the pre-commit hook.

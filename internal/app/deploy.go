@@ -107,6 +107,7 @@ type deployRun struct {
 	freeze                         *activeFreeze
 	freezeLogKind, freezeLogReason string
 	freezeAdvisoryFailed           []string
+	freezePreflightDeps            []string
 	// glint holds the moves for the glint findings of the deployed commit.
 	glint *glintCheck
 }
@@ -246,6 +247,9 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	if err := a.checkFreeze(ctx, r, o); err != nil {
 		return err
 	}
+	if err := checkFreezeAdvisoryPreflight(a, r); err != nil {
+		return err
+	}
 	if err := a.checkIntegrations(ctx, r); err != nil {
 		return err
 	}
@@ -253,7 +257,6 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	// confirmation and the script. Its name has a space no task name can
 	// have.
 	err = r.tasks.Unit("deploy "+r.name, func() error {
-		r.freezeAdvisoryFailed = a.runFreezeAdvisory(ctx, r.tasks, r.freezeForBranch(), r.branch, filterFreezeAdvisoryNames(r.target.Deps, r.freezeForBranch()))
 		if err := a.runDeployDeps(ctx, r); err != nil {
 			return err
 		}
@@ -281,12 +284,19 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 }
 
 func (a *App) runDeployDeps(ctx context.Context, r *deployRun) error {
-	deps := filterFreezeAdvisory(r.target.Deps, r.freezeForBranch(), func(task string) string { return task })
-	if len(deps) == 0 {
+	if len(r.target.Deps) == 0 {
 		return nil
 	}
-	a.printf("deploy %s: running %s first", r.name, strings.Join(deps, ", "))
-	if err := r.tasks.RunDeps(ctx, deps); err != nil {
+	a.printf("deploy %s: running %s first", r.name, strings.Join(r.target.Deps, ", "))
+	if err := r.tasks.RunDepsWithAdvisory(ctx, r.target.Deps, func(task string, err error) bool {
+		frozen := r.freezeForBranch()
+		if !freezeAdvisory(frozen, task) {
+			return false
+		}
+		a.warnFreezeAdvisory(frozen, task, err)
+		r.freezeAdvisoryFailed = append(r.freezeAdvisoryFailed, task)
+		return true
+	}); err != nil {
 		return fmt.Errorf("deploy %s: nothing was deployed: %w", r.name, err)
 	}
 	return nil
@@ -344,8 +354,9 @@ func (a *App) checkFreeze(ctx context.Context, r *deployRun, o DeployOptions) er
 	}
 	if !r.hotfix && r.branch != frozen.branch {
 		if o.PastFreeze != "" {
-			a.warn("deploy %s bypasses freeze %s: %s", r.name, frozen.name, o.PastFreeze)
-			r.freezeLogKind, r.freezeLogReason = "bypass", o.PastFreeze
+			refusal := fmt.Sprintf("%s is frozen at %s; deploy from %s", frozen.target, frozen.name, frozen.branch)
+			a.warn("deploy %s bypasses freeze %s: %s: %s", r.name, frozen.name, o.PastFreeze, refusal)
+			r.freezeLogKind, r.freezeLogReason = "bypass", o.PastFreeze+": "+refusal
 			return nil
 		}
 		return freezeRefusalError{fmt.Errorf("%s is frozen at %s; deploy from %s (or pass --past-freeze with a reason)", frozen.target, frozen.name, frozen.branch)}
@@ -476,11 +487,62 @@ func deployPreflight(r *deployRun) error {
 	c := tasks.NewKeyCheck(lookup, nil)
 	c.Keys(r.target.Keys)
 	c.Refs(r.target.Run.Argv)
-	problems := append(c.Problems(), r.tasks.DepsMissing(r.target.Deps)...)
+	advisory := configuredFreezeAdvisoryForTarget(r)
+	var deps []string
+	r.freezePreflightDeps = nil
+	for _, task := range r.target.Deps {
+		if advisory[task] {
+			r.freezePreflightDeps = append(r.freezePreflightDeps, task)
+		} else {
+			deps = append(deps, task)
+		}
+	}
+	problems := append(c.Problems(), r.tasks.DepsMissing(deps)...)
 	if len(problems) > 0 {
 		return fmt.Errorf("deploy %s: nothing was done, missing:\n  %s", r.name, strings.Join(problems, "\n  "))
 	}
 	return nil
+}
+
+func configuredFreezeAdvisoryForTarget(r *deployRun) map[string]bool {
+	advisory := map[string]bool{}
+	for name, target := range r.cfg.Deploy.Targets {
+		if target.Freeze == nil || (name != r.name && target.Requires != r.name) {
+			continue
+		}
+		for _, task := range target.Freeze.Advisory {
+			advisory[task] = true
+		}
+	}
+	return advisory
+}
+
+func checkFreezeAdvisoryPreflight(a *App, r *deployRun) error {
+	if len(r.freezePreflightDeps) == 0 {
+		return nil
+	}
+	frozen := r.freezeForBranch()
+	if frozen != nil {
+		for _, task := range r.freezePreflightDeps {
+			if !freezeAdvisory(frozen, task) {
+				continue
+			}
+			problems := r.tasks.DepsMissing([]string{task})
+			if len(problems) == 0 {
+				continue
+			}
+			err := fmt.Errorf("nothing was run, missing:\n  %s", strings.Join(problems, "\n  "))
+			a.warnFreezeAdvisory(frozen, task, err)
+			r.freezeAdvisoryFailed = append(r.freezeAdvisoryFailed, task)
+			r.tasks.Skip(task)
+		}
+		return nil
+	}
+	problems := r.tasks.DepsMissing(r.target.Deps)
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("deploy %s: nothing was done, missing:\n  %s", r.name, strings.Join(problems, "\n  "))
 }
 
 func (a *App) runDeployScript(ctx context.Context, r *deployRun, args []string) error {
@@ -528,22 +590,11 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 		shaRecorded = false
 		a.warn("the deployed commit is not recorded: %v", err)
 	}
-	withheldErr := errors.Join(journalErr, a.recordWithheld(ctx, r), a.mergeIntoTrunk(r))
+	withheldErr := errors.Join(a.recordWithheld(ctx, r), a.mergeIntoTrunk(r))
 	a.hotfixDone(r)
 	versionsErr := a.recordVersions(ctx, r)
 	pageErr := a.publishReleasePage(ctx, r)
-	withheldErr = errors.Join(withheldErr, versionsErr, pageErr)
-	frozen := r.freezeForOwnedTarget()
-	if frozen != nil && frozen.branch == r.branch && r.target.ReleasePage == nil {
-		a.printf("freeze journal for %s has no release page configured", frozen.name)
-	}
-	if frozen != nil && frozen.branch == r.branch && shaRecorded && pageErr == nil {
-		if err := a.removeFreezeTags(r.repo, r.cfg, frozen); err != nil {
-			withheldErr = errors.Join(withheldErr, err)
-		}
-	} else if frozen != nil && frozen.branch == r.branch && (!shaRecorded || pageErr != nil) {
-		a.warn("freeze %s remains active because deployed_sha or the release page could not be recorded", frozen.name)
-	}
+	withheldErr = errors.Join(withheldErr, versionsErr, a.finishFreeze(r, shaRecorded, pageErr, journalErr))
 	if r.target.ReleaseNotes == nil {
 		return withheldErr
 	}
@@ -560,6 +611,29 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 		return errors.Join(withheldErr, fmt.Errorf("deployed %s to %s, but %s (see above)", gitx.Short(r.head), r.name, strings.Join(missing, "; ")))
 	}
 	return withheldErr
+}
+
+func (a *App) finishFreeze(r *deployRun, shaRecorded bool, pageErr, journalErr error) error {
+	frozen := r.freezeForOwnedTarget()
+	if frozen == nil || frozen.branch != r.branch {
+		return errors.Join(pageErr, journalErr)
+	}
+	if r.target.ReleasePage == nil {
+		a.printf("freeze journal for %s has no release page configured", frozen.name)
+	}
+	if !shaRecorded {
+		a.warn("freeze stays active at %s until deployed_sha, the release page, and the freeze journal are complete", frozen.name)
+		return errors.Join(pageErr, journalErr)
+	}
+	if pageErr != nil {
+		a.warn("freeze stays active at %s until deployed_sha, the release page, and the freeze journal are complete", frozen.name)
+		return errors.Join(pageErr, journalErr)
+	}
+	if journalErr != nil {
+		a.warn("freeze stays active at %s until deployed_sha, the release page, and the freeze journal are complete", frozen.name)
+		return journalErr
+	}
+	return errors.Join(pageErr, journalErr, a.removeFreezeTags(r.repo, r.cfg, frozen))
 }
 
 func (a *App) recordFreezeJournal(r *deployRun) error {

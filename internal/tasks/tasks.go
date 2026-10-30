@@ -610,6 +610,12 @@ func vetSkipped(dir string, exclude []string) bool {
 
 // Gate runs the commit gate with stdin closed.
 func (r *Runner) Gate(ctx context.Context) (err error) {
+	return r.GateWithAdvisory(ctx, nil)
+}
+
+// GateWithAdvisory runs the configured gate in order; onAdvisory handles a
+// failed configured step and may let the gate continue.
+func (r *Runner) GateWithAdvisory(ctx context.Context, onAdvisory func(string, error) bool) (err error) {
 	steps, err := r.gateSteps()
 	if err != nil {
 		return err
@@ -668,6 +674,9 @@ func (r *Runner) Gate(ctx context.Context) (err error) {
 			stepErr = r.step(ctx, s, gs.task, nil, threads)
 		}
 		if stepErr != nil {
+			if onAdvisory != nil && gs.step.Task != "" && onAdvisory(gs.step.Task, stepErr) {
+				continue
+			}
 			if gs.hint != "" {
 				return fmt.Errorf("gate failed at %q: %w\n%s", s.Source, stepErr, gs.hint)
 			}
@@ -704,6 +713,11 @@ func (r *Runner) Run(ctx context.Context, name string, args []string) error {
 		defer func() { r.execHeavyTask = "" }()
 	}
 	return r.run(ctx, name, args)
+}
+
+// Skip marks a task complete without running it.
+func (r *Runner) Skip(name string) {
+	r.done[name] = true
 }
 
 // execHeavyAsked tells whether graft exec --heavy started this graft to run
@@ -757,8 +771,14 @@ func (r *Runner) DepsMissing(deps []string) []string {
 // RunDeps runs tasks the way a task's deps run: in order, each at most once
 // per runner, stopping at the first failure.
 func (r *Runner) RunDeps(ctx context.Context, deps []string) error {
+	return r.RunDepsWithAdvisory(ctx, deps, nil)
+}
+
+// RunDepsWithAdvisory runs dependencies in order and lets onAdvisory handle
+// selected task failures without stopping later dependencies.
+func (r *Runner) RunDepsWithAdvisory(ctx context.Context, deps []string, onAdvisory func(string, error) bool) error {
 	for _, d := range deps {
-		if err := r.run(ctx, d, nil); err != nil {
+		if err := r.run(ctx, d, nil); err != nil && (onAdvisory == nil || !onAdvisory(d, err)) {
 			return err
 		}
 	}
