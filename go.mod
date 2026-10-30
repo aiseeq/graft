@@ -10,7 +10,7 @@ require (
 )
 
 require (
-	github.com/aiseeq/akit v1.13.2
+	github.com/aiseeq/akit v1.14.1
 	github.com/jackc/pgx/v5 v5.11.0
 	golang.org/x/mod v0.42.0
 )

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aiseeq/graft/v2/internal/stats"
 )
 
 // statsLine is one line of stats.jsonl as the tests read it.
@@ -509,5 +511,43 @@ func TestRunOverLimitOnce(t *testing.T) {
 	}
 	if out, code := f.graft("", "broken"); code == 0 || !strings.Contains(out, "graft: over the limit: broken took ") {
 		t.Errorf("broken: exit %d\n%s", code, out)
+	}
+}
+
+func TestStatsValueCommand(t *testing.T) {
+	f, path := statsRepo(t, "tasks: {}\n")
+	now := time.Now()
+	root := realRoot(t, f)
+	recs := []stats.Record{
+		{Time: now, Kind: stats.KindTask, Project: root, Profile: "work:gate", Task: "gate", Top: "commit", WallS: 10, WaitS: 2, Exit: 0},
+		{Time: now, Kind: stats.KindTask, Project: filepath.Join(f.base, "linked"), Profile: "work:gate", Task: "gate", Top: "gate", WallS: 20, Exit: 0},
+		{Time: now, Kind: stats.KindTask, Project: root, Profile: "work:gate", Task: "gate", Top: "gate", WallS: 30, Exit: 0},
+		{Time: now, Kind: stats.KindTask, Project: root, Profile: "work:gate", Task: "gate", WallS: 100, Exit: 1},
+		{Time: now, Kind: stats.KindTask, Project: root, Profile: "work:dep", Task: "dep", In: "outer", WaitS: 100},
+		{Time: now, Kind: stats.KindTask, Project: root, Profile: "work:outer", Task: "outer", WaitS: 1},
+		{Time: now, Kind: stats.KindTask, Project: root, Profile: "work:outer", Task: "outer", WaitS: 2},
+		{Time: now, Kind: stats.KindTask, Project: root, Profile: "work:outer", Task: "outer", WaitS: 3},
+	}
+	var data strings.Builder
+	for _, rec := range recs {
+		line, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data.Write(line)
+		data.WriteByte('\n')
+	}
+	writeFile(t, path, data.String())
+	if out, code := f.graft("", "stats", "--value", "wall-p50", "--task", "gate", "--since", "24h"); code != 0 || out != "20\n" {
+		t.Errorf("project wall-p50 including linked tree and commit gate: exit %d, %q; want 0, %q", code, out, "20\n")
+	}
+	if out, code := f.graft("", "stats", "--all", "--value", "wall-p95", "--task", "gate", "--since", "24h"); code != 0 || out != "30\n" {
+		t.Errorf("wall-p95: exit %d, %q; want 0, %q", code, out, "30\n")
+	}
+	if out, code := f.graft("", "stats", "--all", "--value", "wait-p95", "--since", "24h"); code != 0 || out != "3\n" {
+		t.Errorf("outer wait-p95: exit %d, %q; want 0, %q", code, out, "3\n")
+	}
+	if out, code := f.graft("", "stats", "--all", "--value", "wall-p50", "--task", "absent", "--since", "24h"); code != 3 || !strings.Contains(out, "0 runs, need 3") {
+		t.Errorf("too few runs: exit %d, %q; want code 3 and the threshold message", code, out)
 	}
 }

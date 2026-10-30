@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/aiseeq/graft/v2/internal/gitx"
@@ -26,6 +27,8 @@ type StatsOptions struct {
 	Tests bool
 	// MaxLoad, when set, takes only the runs whose load stayed below it.
 	MaxLoad float64
+	Value   string
+	MinRuns int
 }
 
 // overLimitsShown is how many tasks over their limits a report names, the
@@ -61,6 +64,9 @@ func (a *App) Stats(o StatsOptions) error {
 	if malformed > 0 {
 		fmt.Fprintf(a.Stderr, "graft: %s: %d malformed line(s) left out\n", path, malformed)
 	}
+	if o.Value != "" {
+		return a.statsValue(recs, f, o)
+	}
 	what := "tasks"
 	label := "TASK"
 	if o.Task != "" {
@@ -93,6 +99,57 @@ func (a *App) Stats(o StatsOptions) error {
 		a.printf("and %d more over their limits", more)
 	}
 	return nil
+}
+
+func (a *App) statsValue(recs []stats.Record, f stats.Filter, o StatsOptions) error {
+	var roots map[string]bool
+	profile := ""
+	if !o.All {
+		var err error
+		roots, profile, err = a.statsProjectTrees(f.Project)
+		if err != nil {
+			return err
+		}
+	}
+	value, runs, err := stats.Value(recs, stats.ValueFilter{Stat: stats.ValueStat(o.Value), Task: o.Task,
+		Since: f.Since, ProjectRoots: roots, Profile: profile, MaxLoad: o.MaxLoad})
+	if err != nil {
+		return err
+	}
+	if runs < o.MinRuns {
+		return &ExitCodeError{Code: 3, Err: fmt.Errorf("--value %s: %d runs, need %d", o.Value, runs, o.MinRuns)}
+	}
+	formatted := fmt.Sprintf("%.3f", value)
+	formatted = strings.TrimRight(strings.TrimRight(formatted, "0"), ".")
+	if formatted == "" || formatted == "-0" {
+		formatted = "0"
+	}
+	fmt.Fprintln(a.Stdout, formatted)
+	return nil
+}
+
+// statsProjectTrees returns every worktree root and the profile prefix shared
+// by the repository's records.
+func (a *App) statsProjectTrees(root string) (map[string]bool, string, error) {
+	roots := map[string]bool{root: true}
+	repo, err := gitx.Open(root)
+	if err != nil {
+		if errors.Is(err, gitx.ErrNotRepo) {
+			return roots, "", nil
+		}
+		return nil, "", err
+	}
+	out, err := repo.Git("worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, "", fmt.Errorf("listing project worktrees: %w", err)
+	}
+	for line := range strings.SplitSeq(out, "\n") {
+		if path, ok := strings.CutPrefix(line, "worktree "); ok {
+			roots[filepath.Clean(path)] = true
+		}
+	}
+	name := filepath.Base(filepath.Dir(repo.CommonDir))
+	return roots, name, nil
 }
 
 // calmNote tells, in a report's heading, which runs --max-load kept.

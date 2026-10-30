@@ -1002,6 +1002,15 @@ incomplete load sample are left out with runs recorded without a load. Pass
 a positive value when setting `--max-load`; zero and non-finite values are
 usage errors.
 
+For a nightly speed check, `graft stats --value wall-p50 --task build --since 24h`
+prints one number of seconds, with at most three decimal places.
+`wall-p95` gives the nearest-rank 95th percentile, and `wait-p95` gives the
+95th percentile of waits. Wall values use successful runs; `wait-p95` without
+`--task` uses outer task runs. The default minimum is three runs. Fewer runs
+prints no value, explains the count on stderr and exits with code 3; set
+`--min-runs` to change the threshold. The project counts the runs of all its trees: the main
+checkout and its worktrees; `--all` counts every project.
+
 ## Services
 
 Long-running local processes started in the background, the native

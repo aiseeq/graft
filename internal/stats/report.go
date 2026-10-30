@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"slices"
 	"sort"
@@ -313,6 +314,18 @@ func median(v []float64) float64 {
 		return v[n/2]
 	}
 	return (v[n/2-1] + v[n/2]) / 2
+}
+
+// Percentile returns the nearest-rank percentile of v. An empty slice has no
+// percentile and returns zero.
+func Percentile(v []float64, p float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	sorted := slices.Clone(v)
+	slices.Sort(sorted)
+	rank := int(math.Ceil(p*float64(len(sorted)))) - 1
+	return sorted[max(0, min(rank, len(sorted)-1))]
 }
 
 // hitLabel is the row a cache hit belongs to: its task's, or the whole-task

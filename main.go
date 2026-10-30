@@ -320,6 +320,8 @@ func statsCmd(a *app.App, args []string) error {
 	task := fs.String("task", "", "break this `task` down into its steps; with --tests, only its tests")
 	tests := fs.Bool("tests", false, "report tests instead of tasks: the slowest, and the flaky ones")
 	maxLoad := fs.Float64("max-load", 0, "count only the runs whose 1-minute load average stayed below this `load`")
+	value := fs.String("value", "", "print one timing: wall-p50, wall-p95 or wait-p95")
+	minRuns := fs.Int("min-runs", 3, "minimum runs for --value (default 3)")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -330,6 +332,15 @@ func statsCmd(a *app.App, args []string) error {
 	if *all && *project != "" {
 		return fmt.Errorf("%w: --all and --project exclude each other", errUsage)
 	}
+	minRunsSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "min-runs" {
+			minRunsSet = true
+		}
+	})
+	if err := validateStatsValue(*value, *task, *tests, *minRuns, minRunsSet); err != nil {
+		return err
+	}
 	maxLoadSet := false
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "max-load" {
@@ -339,7 +350,26 @@ func statsCmd(a *app.App, args []string) error {
 	if maxLoadSet && (*maxLoad <= 0 || math.IsNaN(*maxLoad) || math.IsInf(*maxLoad, 0)) {
 		return fmt.Errorf("%w: --max-load: want a positive load, got %v", errUsage, *maxLoad)
 	}
-	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task, Tests: *tests, MaxLoad: *maxLoad})
+	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task, Tests: *tests, MaxLoad: *maxLoad, Value: *value, MinRuns: *minRuns})
+}
+
+func validateStatsValue(value, task string, tests bool, minRuns int, minRunsSet bool) error {
+	if value != "" && value != "wall-p50" && value != "wall-p95" && value != "wait-p95" {
+		return fmt.Errorf("%w: unknown --value %q (want wall-p50, wall-p95 or wait-p95)", errUsage, value)
+	}
+	if value == "" && minRunsSet {
+		return fmt.Errorf("%w: --min-runs requires --value", errUsage)
+	}
+	if value != "" && minRuns < 1 {
+		return fmt.Errorf("%w: --min-runs must be positive", errUsage)
+	}
+	if (value == "wall-p50" || value == "wall-p95") && task == "" {
+		return fmt.Errorf("%w: --task is required for --value %s", errUsage, value)
+	}
+	if value != "" && tests {
+		return fmt.Errorf("%w: --value and --tests exclude each other", errUsage)
+	}
+	return nil
 }
 
 // parseAge reads a positive age: whole days (7d) or a Go duration (12h).
