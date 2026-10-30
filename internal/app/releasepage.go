@@ -181,9 +181,9 @@ func freezeJournalLine(tag, contents string) (string, error) {
 	if len(parts) < 3 {
 		return "", fmt.Errorf("invalid freeze journal tag %s", tag)
 	}
-	when, err := time.Parse("20060102T150405", parts[0])
+	when, err := freezeLogTime(tag)
 	if err != nil {
-		return "", fmt.Errorf("invalid freeze journal time in %s: %w", tag, err)
+		return "", err
 	}
 	kind := parts[len(parts)-1]
 	var target, commit, reason string
@@ -206,7 +206,7 @@ func freezeJournalLine(tag, contents string) (string, error) {
 	if target == "" || commit == "" {
 		return "", fmt.Errorf("freeze journal tag %s lacks target or commit", tag)
 	}
-	return fmt.Sprintf("%s %s %s at %s: %s", kind, target, commit, when.Format("2006-01-02 15:04:05"), reason), nil
+	return fmt.Sprintf("%s %s %s at %s: %s", kind, target, commit, when.Format("2006-01-02 15:04:05 UTC"), reason), nil
 }
 
 // withheldItems are the items of the commits this release withheld, the

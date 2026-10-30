@@ -439,9 +439,21 @@ func (a *App) pushPendingFreezeLogs(repo *gitx.Repo, cfg *config.Config, f *acti
 	if err != nil {
 		return err
 	}
+	remoteTags, err := freezeLogTags(repo, cfg, f)
+	if err != nil {
+		return err
+	}
 	var errs []error
 	for tag := range strings.SplitSeq(strings.TrimSpace(listed), "\n") {
 		if tag == "" {
+			continue
+		}
+		tagTime, err := freezeLogTime(tag)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if tagTime.Before(f.time.Truncate(time.Second)) {
 			continue
 		}
 		local, err := repo.Git("rev-parse", "refs/tags/"+tag)
@@ -451,12 +463,15 @@ func (a *App) pushPendingFreezeLogs(repo *gitx.Repo, cfg *config.Config, f *acti
 		}
 		local = strings.TrimSpace(local)
 		for _, remote := range remotes {
-			found, err := listRemoteTags(repo, remote, "refs/tags/"+tag)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("checking freeze journal tag %s on %s: %w", tag, remote, err))
-				continue
+			var ref remoteTag
+			found := false
+			for _, remoteRef := range remoteTags[tag] {
+				if remoteRef.remote == remote {
+					ref, found = remoteRef, true
+					break
+				}
 			}
-			if ref, ok := found[tag]; ok {
+			if found {
 				if ref.sha != local {
 					errs = append(errs, fmt.Errorf("freeze journal tag %s differs on %s", tag, remote))
 				}
@@ -468,6 +483,20 @@ func (a *App) pushPendingFreezeLogs(repo *gitx.Repo, cfg *config.Config, f *acti
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// freezeLogTime reads the UTC time a freeze-log tag's name starts with.
+func freezeLogTime(tag string) (time.Time, error) {
+	name := tag[strings.LastIndex(tag, "/")+1:]
+	stamp, _, ok := strings.Cut(name, "-")
+	if !ok {
+		return time.Time{}, fmt.Errorf("freeze journal tag %s has no timestamp", tag)
+	}
+	parsed, err := time.Parse("20060102T150405", stamp)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parsing freeze journal tag %s time: %w", tag, err)
+	}
+	return parsed, nil
 }
 
 func (a *App) commitAdvisoryLog(repo *gitx.Repo, cfg *config.Config, f *activeFreeze, commit, task string) (string, error) {
@@ -483,7 +512,7 @@ func (a *App) writeFreezeLog(repo *gitx.Repo, cfg *config.Config, f *activeFreez
 	if err != nil {
 		return "", err
 	}
-	base := fmt.Sprintf("freeze-log/%s/%s/%s-%s", f.target, freezeSlug(f.version), now.Format("20060102T150405"), gitx.Short(commit))
+	base := fmt.Sprintf("freeze-log/%s/%s/%s-%s", f.target, freezeSlug(f.version), now.UTC().Format("20060102T150405"), gitx.Short(commit))
 	remotes, err := pushRemotes(repo, cfg)
 	if err != nil {
 		return "", err
@@ -500,7 +529,17 @@ func (a *App) writeFreezeLog(repo *gitx.Repo, cfg *config.Config, f *activeFreez
 		tag := base + suffix + "-" + kind
 		exists, err := remoteTagExists(repo, remotes, tag)
 		if err != nil {
-			return tag, err
+			local, localErr := repo.RefExists("refs/tags/" + tag)
+			if localErr != nil {
+				return tag, errors.Join(err, localErr)
+			}
+			if local {
+				continue
+			}
+			if _, createErr := repo.Git("tag", "-a", tag, commit, "-m", msg); createErr != nil {
+				return tag, errors.Join(err, createErr)
+			}
+			return tag, fmt.Errorf("freeze-log tag %s is local; checking its remotes failed: %w", tag, err)
 		}
 		if exists {
 			continue
@@ -859,7 +898,7 @@ func checkFreezeCommit(ctx context.Context, r *deployRun, f *activeFreeze, gate 
 		if err != nil || ignored {
 			return err
 		}
-		return freezeRefusalError{fmt.Errorf("%s names no item in %s", gitx.Short(commit.sha), f.name)}
+		return freezeRefusalError{fmt.Errorf("names no item in %s", f.name)}
 	}
 	var matched []string
 	var refusal error
