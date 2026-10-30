@@ -19,6 +19,7 @@ const (
 type ValueFilter struct {
 	Stat         ValueStat
 	Task         string
+	In           string
 	Since        time.Time
 	ProjectRoots map[string]bool
 	Profile      string
@@ -63,10 +64,17 @@ func valueRecord(r *Record, f ValueFilter) bool {
 	if r.Kind != KindTask || r.Time.Before(f.Since) || !projectRecord(r, f.ProjectRoots, f.Profile) || !calm(r.LoadMax, f.MaxLoad) {
 		return false
 	}
+	if f.In != "" && !matchesIn(r, f.In) {
+		return false
+	}
 	if f.Task != "" {
 		return r.Task == f.Task
 	}
 	return f.Stat != ValueWaitP95 || r.In == ""
+}
+
+func matchesIn(r *Record, in string) bool {
+	return in == "" || r.In == in
 }
 
 func projectRecord(r *Record, roots map[string]bool, profile string) bool {

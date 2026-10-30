@@ -318,6 +318,7 @@ func statsCmd(a *app.App, args []string) error {
 	project := fs.String("project", "", "`root` of the project to report (default: the current one)")
 	all := fs.Bool("all", false, "report every project")
 	task := fs.String("task", "", "break this `task` down into its steps; with --tests, only its tests")
+	in := fs.String("in", "", "select task records run in this `task`; requires --task")
 	tests := fs.Bool("tests", false, "report tests instead of tasks: the slowest, and the flaky ones")
 	maxLoad := fs.Float64("max-load", 0, "count only the runs whose 1-minute load average stayed below this `load`")
 	value := fs.String("value", "", "print one timing: wall-p50, wall-p95 or wait-p95")
@@ -332,19 +333,21 @@ func statsCmd(a *app.App, args []string) error {
 	if *all && *project != "" {
 		return fmt.Errorf("%w: --all and --project exclude each other", errUsage)
 	}
-	valueSet, minRunsSet := false, false
+	valueSet, minRunsSet, inSet := false, false, false
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "value":
 			valueSet = true
 		case "min-runs":
 			minRunsSet = true
+		case "in":
+			inSet = true
 		}
 	})
 	if valueSet && *value == "" {
 		return fmt.Errorf("%w: --value: want wall-p50, wall-p95 or wait-p95", errUsage)
 	}
-	if err := validateStatsValue(*value, *task, *tests, *minRuns, minRunsSet); err != nil {
+	if err := validateStatsValue(*value, *task, *in, inSet, *tests, *minRuns, minRunsSet); err != nil {
 		return err
 	}
 	maxLoadSet := false
@@ -356,10 +359,10 @@ func statsCmd(a *app.App, args []string) error {
 	if maxLoadSet && (*maxLoad <= 0 || math.IsNaN(*maxLoad) || math.IsInf(*maxLoad, 0)) {
 		return fmt.Errorf("%w: --max-load: want a positive load, got %v", errUsage, *maxLoad)
 	}
-	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task, Tests: *tests, MaxLoad: *maxLoad, Value: *value, MinRuns: *minRuns})
+	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task, In: *in, Tests: *tests, MaxLoad: *maxLoad, Value: *value, MinRuns: *minRuns})
 }
 
-func validateStatsValue(value, task string, tests bool, minRuns int, minRunsSet bool) error {
+func validateStatsValue(value, task, in string, inSet, tests bool, minRuns int, minRunsSet bool) error {
 	if value != "" && value != "wall-p50" && value != "wall-p95" && value != "wait-p95" {
 		return fmt.Errorf("%w: unknown --value %q (want wall-p50, wall-p95 or wait-p95)", errUsage, value)
 	}
@@ -374,6 +377,15 @@ func validateStatsValue(value, task string, tests bool, minRuns int, minRunsSet 
 	}
 	if value != "" && tests {
 		return fmt.Errorf("%w: --value and --tests exclude each other", errUsage)
+	}
+	if inSet && in == "" {
+		return fmt.Errorf("%w: --in: want a task or deploy", errUsage)
+	}
+	if inSet && task == "" {
+		return fmt.Errorf("%w: --in requires --task", errUsage)
+	}
+	if inSet && value == "wait-p95" {
+		return fmt.Errorf("%w: --value wait-p95 cannot be used with --in", errUsage)
 	}
 	return nil
 }

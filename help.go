@@ -79,7 +79,7 @@ var commands = []command{
 			"  126  the command was found but not started\n" +
 			"  127  the command was not found\n" +
 			"126 and 127 come with the line graft: exec: start <command>: …, which a command exiting 126 or 127 itself has not."},
-	{name: "stats", syntax: fixed("graft stats [--tests | --value wall-p50|wall-p95|wait-p95 [--min-runs N]] [--since 7d] [--project <root>|--all] [--task <name>] [--max-load N]"),
+	{name: "stats", syntax: fixed("graft stats [--tests | --value wall-p50|wall-p95|wait-p95 [--min-runs N]] [--since 7d] [--project <root>|--all] [--task <name> [--in <task>]] [--max-load N]"),
 		summary: text("resource use recorded for tasks: runs, wall and CPU time, peak memory, failures; --tests: the slowest tests, the skipped and the flaky ones")},
 	{name: "status", syntax: fixed("graft status"), summary: text("show services, the test database and held locks")},
 	{name: "locks", syntax: fixed("graft locks"), summary: text("show who holds graft's locks")},

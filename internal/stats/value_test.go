@@ -31,6 +31,18 @@ func TestValueWallStats(t *testing.T) {
 	}
 }
 
+func TestValueFiltersTaskByIn(t *testing.T) {
+	recs := []Record{
+		{Kind: KindTask, Task: "glint", In: "smoke", WallS: 12, Exit: 0},
+		{Kind: KindTask, Task: "glint", In: "deploy", WallS: 22, Exit: 0},
+		{Kind: KindTask, Task: "glint", WallS: 32, Exit: 0},
+	}
+	got, runs, err := Value(recs, ValueFilter{Stat: ValueWallP50, Task: "glint", In: "smoke"})
+	if err != nil || runs != 1 || got != 12 {
+		t.Errorf("wall-p50 in smoke = %v (%d runs, %v), want 12 (1 run)", got, runs, err)
+	}
+}
+
 func TestValueWaitP95UsesOuterTasksAndProjectWorktrees(t *testing.T) {
 	recs := []Record{
 		{Kind: KindTask, Task: "outer", Project: "/repo", Profile: "projectA:outer", WaitS: 1},

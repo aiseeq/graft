@@ -23,6 +23,7 @@ type StatsOptions struct {
 	// Task, when set, breaks that task down into its steps, or with Tests
 	// takes only its tests.
 	Task string
+	In   string
 	// Tests reports the tests instead of the tasks.
 	Tests bool
 	// MaxLoad, when set, takes only the runs whose load stayed below it.
@@ -46,7 +47,7 @@ func (a *App) Stats(o StatsOptions) error {
 		return err
 	}
 	since := time.Now().Add(-o.Since)
-	f := stats.Filter{Since: since, Task: o.Task, MaxLoad: o.MaxLoad}
+	f := stats.Filter{Since: since, Task: o.Task, In: o.In, MaxLoad: o.MaxLoad}
 	where := "every project"
 	if !o.All {
 		if f.Project, err = a.statsProject(o.Project); err != nil {
@@ -112,7 +113,7 @@ func (a *App) statsValue(recs []stats.Record, f stats.Filter, o StatsOptions) er
 		}
 	}
 	value, runs, err := stats.Value(recs, stats.ValueFilter{Stat: stats.ValueStat(o.Value), Task: o.Task,
-		Since: f.Since, ProjectRoots: roots, Profile: profile, MaxLoad: o.MaxLoad})
+		In: o.In, Since: f.Since, ProjectRoots: roots, Profile: profile, MaxLoad: o.MaxLoad})
 	if err != nil {
 		return err
 	}

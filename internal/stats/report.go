@@ -67,6 +67,8 @@ type Filter struct {
 	Project string
 	// Task, when set, breaks that task down into its steps.
 	Task string
+	// In selects task records run in this task.
+	In string
 	// MaxLoad, when set, takes only the runs whose highest load stayed
 	// below it; runs without a load are left out.
 	MaxLoad float64
@@ -175,7 +177,8 @@ func Summarize(recs []Record, f Filter) ([]Row, Saved) {
 
 // selects tells whether a record is of the period and the project.
 func (f Filter) selects(r *Record) bool {
-	return !r.Time.Before(f.Since) && (f.Project == "" || r.Project == f.Project)
+	return !r.Time.Before(f.Since) && (f.Project == "" || r.Project == f.Project) &&
+		(f.In == "" || (r.Kind == KindTask && r.Task == f.Task && matchesIn(r, f.In)))
 }
 
 // taskRuns are the runs of graft that ran the broken down task: the

@@ -39,6 +39,19 @@ func TestReportShowsTheDatabase(t *testing.T) {
 	}
 }
 
+func TestReportFiltersTaskByIn(t *testing.T) {
+	recs := []Record{
+		{Kind: KindTask, Task: "lint", In: "smoke", WallS: 10},
+		{Kind: KindTask, Task: "lint", In: "deploy", WallS: 20},
+		{Kind: KindTask, Task: "lint", WallS: 30},
+		{Kind: KindTask, Task: "test", In: "smoke", WallS: 40},
+	}
+	rows, _ := Summarize(recs, Filter{Task: "lint", In: "smoke"})
+	if len(rows) != 1 || rows[0].Label != TaskLabel || rows[0].Runs != 1 || rows[0].WallMed != 10 {
+		t.Errorf("report rows = %+v, want only the lint run in smoke", rows)
+	}
+}
+
 func line(table, label string) string {
 	for l := range strings.Lines(table) {
 		if strings.HasPrefix(l, label+" ") {

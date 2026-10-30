@@ -527,6 +527,9 @@ func TestStatsValueCommand(t *testing.T) {
 		{Time: now, Kind: stats.KindTask, Project: root, Profile: "work:outer", Task: "outer", WaitS: 1},
 		{Time: now, Kind: stats.KindTask, Project: root, Profile: "work:outer", Task: "outer", WaitS: 2},
 		{Time: now, Kind: stats.KindTask, Project: root, Profile: "work:outer", Task: "outer", WaitS: 3},
+		{Time: now, Kind: stats.KindTask, Project: root, Profile: "work:glint", Task: "glint", In: "smoke", WallS: 12, Exit: 0},
+		{Time: now, Kind: stats.KindTask, Project: root, Profile: "work:glint", Task: "glint", In: "deploy", WallS: 22, Exit: 0},
+		{Time: now, Kind: stats.KindTask, Project: root, Profile: "work:glint", Task: "glint", WallS: 32, Exit: 0},
 	}
 	var data strings.Builder
 	for _, rec := range recs {
@@ -544,6 +547,12 @@ func TestStatsValueCommand(t *testing.T) {
 	if out, code := f.graft("", "stats", "--all", "--value", "wall-p95", "--task", "gate", "--since", "24h"); code != 0 || out != "30\n" {
 		t.Errorf("wall-p95: exit %d, %q; want 0, %q", code, out, "30\n")
 	}
+	if out, code := f.graft("", "stats", "--value", "wall-p50", "--task", "glint", "--in", "smoke", "--min-runs", "1", "--since", "24h"); code != 0 || out != "12\n" {
+		t.Errorf("wall-p50 in smoke: exit %d, %q; want 0, %q", code, out, "12\n")
+	}
+	if out, code := f.graft("", "stats", "--all", "--task", "glint", "--in", "smoke", "--since", "24h"); code != 0 || !strings.Contains(out, "glint") || strings.Contains(out, "deploy") {
+		t.Errorf("task report in smoke: exit %d, %q; want only glint in smoke", code, out)
+	}
 	if out, code := f.graft("", "stats", "--all", "--value", "wait-p95", "--since", "24h"); code != 0 || out != "3\n" {
 		t.Errorf("outer wait-p95: exit %d, %q; want 0, %q", code, out, "3\n")
 	}
@@ -552,5 +561,11 @@ func TestStatsValueCommand(t *testing.T) {
 	}
 	if out, code := f.graft("", "stats", "--value=", "--since", "24h"); code != 2 || !strings.Contains(out, "--value: want") {
 		t.Errorf("empty --value: exit %d, %q; want a usage error", code, out)
+	}
+	if out, code := f.graft("", "stats", "--in", "smoke", "--since", "24h"); code != 2 || !strings.Contains(out, "--in requires --task") {
+		t.Errorf("--in without --task: exit %d, %q; want a usage error", code, out)
+	}
+	if out, code := f.graft("", "stats", "--value", "wait-p95", "--task", "glint", "--in", "smoke", "--since", "24h"); code != 2 || !strings.Contains(out, "cannot be used with --in") {
+		t.Errorf("wait-p95 with --in: exit %d, %q; want a usage error", code, out)
 	}
 }
