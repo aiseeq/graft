@@ -95,7 +95,9 @@ func setup(m *testing.M) (int, error) {
 		}
 	}
 	// The quiet mode of the machine the tests run on is not theirs either.
-	testEnv = append(testEnv, "GRAFT_PROC="+machine, "XDG_STATE_HOME="+filepath.Join(dir, "state"))
+	// Nor is its disk state source: without one, the disk is the fake
+	// machine's IO pressure.
+	testEnv = append(testEnv, "GRAFT_PROC="+machine, "XDG_STATE_HOME="+filepath.Join(dir, "state"), "XDG_RUNTIME_DIR="+filepath.Join(dir, "run"))
 	repoTemplate = filepath.Join(dir, "repo-template")
 	bareTemplate = filepath.Join(dir, "bare-template.git")
 	for _, args := range [][]string{
@@ -154,7 +156,7 @@ func isolatedEnv(gitconfig, userConfig, cache string) ([]string, error) {
 		return nil, err
 	}
 	drop := append(strings.Fields(string(out)), "GRAFT_COMMIT", "GRAFT_RUN_ID", "GRAFT_LOAD_PRIORITY", "GRAFT_LOAD_BUDGET", "GRAFT_LOAD_THEN", "GRAFT_LOADAVG", "GRAFT_PROC", "GRAFT_ADMITTED", "GRAFT_HEAVY", "GRAFT_THREADS", "GOMAXPROCS", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "PATH", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "APPDATA",
-		"XDG_CACHE_HOME", "LOCALAPPDATA", "GOCACHE", "GOLANGCI_LINT_CACHE")
+		"XDG_CACHE_HOME", "LOCALAPPDATA", "GOCACHE", "GOLANGCI_LINT_CACHE", "XDG_RUNTIME_DIR")
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")

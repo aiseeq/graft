@@ -53,7 +53,7 @@ leaks:                           # keep private names out of public repositories
     - {term: SomeName, reason: why this name is fine everywhere}
 load:                            # heavy tasks on a shared machine (heavy: true in a task)
   wait_above: 22                 # default: the machine's threads; heavy tasks start while fewer tasks are ready to run
-  max_io_full: 10                # default 10: % of the last minute all processes stalled on the disk (/proc/pressure/io)
+  max_io_full: 9.6               # default 9.6: % of the last 5s all processes stalled on the disk; 100 leaves the disk out
   max_mem_some: 10               # default 10: % of the last 10s some process stalled on memory (/proc/pressure/memory)
   max_swap_kbs: 1024             # default 1024: swap traffic in and out, KB/s (pswpin + pswpout of /proc/vmstat), busy only with memory pressure
   swap_window: 1s                # default 1s: how long a starting task measures the swapping
@@ -102,10 +102,16 @@ module versions are left alone.
 A heavy task, and the gate as a whole, starts when the machine is not busy,
 by the rule of `github.com/aiseeq/akit/pressure`: the tasks ready to run at
 this moment (`procs_running` of `/proc/stat`, one reading, not an average
-that lags a minute behind) below `wait_above`, the IO pressure at most
-`max_io_full`, and not the memory pressure above `max_mem_some` while the
-machine swaps more than `max_swap_kbs`: swap in use is no harm, and swapping
-without memory pressure neither. The quiet mode of `busy --quiet-until TIME`
+that lags a minute behind) below `wait_above`, no disk freeze going on and
+the IO pressure of the last 5 seconds below `max_io_full`, and not the
+memory pressure above `max_mem_some` while the machine swaps more than
+`max_swap_kbs`: swap in use is no harm, and swapping without memory pressure
+neither. The disk is read from the disk state source on
+`$XDG_RUNTIME_DIR/io-state.sock`, asked for the task's kind (its `profile`
+in the stats) and giving back a profile of it, which the task's stats line
+keeps as `disk_profile`; without the source, or when it fails, graft says so
+once per task and measures the IO pressure by the `full` total of
+`/proc/pressure/io` over `swap_window` (between readings while it waits). The quiet mode of `busy --quiet-until TIME`
 or `busy --quiet DURATION` (akit) makes the machine busy until that time,
 whatever it measures: the wait says "quiet mode until HH:MM" (the date too
 when it is not today), and `busy --quiet-off` ends it sooner. A priority task
@@ -803,6 +809,9 @@ deps and inner tasks included.
   would not make it wait` (`when: busy` on a calm machine) and `inside an
   admitted heavy task, which waits for the machine`. Absent for a task the
   host ran and without a host.
+- `disk_profile`, on the line of a heavy task this machine admitted, is the
+  profile the disk state source gave its `profile` at the admission's last
+  reading, as the source wrote it; absent without the source.
 - `step` is the step as written in `.graft.yaml`, on one line, cut to 200
   characters. `exit` is -1 when there is no exit status: killed by a signal,
   or a task that failed outside its processes.
@@ -859,8 +868,10 @@ deps and inner tasks included.
   other's lines. At 20 MB the file moves to `stats.jsonl.1` and the older
   copies one number up (`.2`, `.3`…, the highest the oldest); a copy whose
   last line is more than 15 days old is removed then, so two weekly windows
-  can be compared. `graft stats` reads them all, and when the log starts
-  after `--since`, its header names the first line instead.
+  can be compared; one that cannot be removed is warned about, and the line
+  still written. `graft stats` reads the copies that reach `--since` and the
+  oldest, and when the log starts after `--since`, its header names the
+  first line instead.
 - A failure to record is not a failure of the task: graft warns once per run
   and goes on.
 

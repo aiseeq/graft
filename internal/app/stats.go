@@ -54,7 +54,7 @@ func (a *App) Stats(o StatsOptions) error {
 	if o.Tests {
 		return a.statsTests(path, stats.TestFilter{Since: since, Project: f.Project, Task: o.Task, MaxLoad: o.MaxLoad}, where+calmNote(o.MaxLoad))
 	}
-	recs, malformed, err := stats.Load(path)
+	recs, malformed, err := stats.Load(path, since)
 	if err != nil {
 		return err
 	}
@@ -108,14 +108,14 @@ func calmNote(maxLoad float64) string {
 // file beside it.
 func (a *App) statsTests(statsPath string, f stats.TestFilter, where string) error {
 	path := stats.TestsPath(statsPath)
-	runs, malformed, err := stats.LoadTests(path)
+	runs, malformed, err := stats.LoadTests(path, f.Since)
 	if err != nil {
 		return err
 	}
 	if malformed > 0 {
 		fmt.Fprintf(a.Stderr, "graft: %s: %d malformed line(s) left out\n", path, malformed)
 	}
-	recs, malformed, err := stats.Load(statsPath)
+	recs, malformed, err := stats.Load(statsPath, f.Since)
 	if err != nil {
 		return err
 	}

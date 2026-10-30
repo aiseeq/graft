@@ -117,7 +117,7 @@ func (r *Runner) wouldWait(ctx context.Context, name string) (bool, error) {
 			return false, err
 		}
 	}
-	return loadgate.BusyNow(ctx, name, l, lockPath, r.Stderr)
+	return loadgate.BusyNow(ctx, name, r.kind(name), l, lockPath, r.Stderr)
 }
 
 func (r *Runner) journalRemoteBroken(task, reason string) error {

@@ -89,8 +89,8 @@ func (t *TestResult) UnmarshalJSON(data []byte) error {
 
 // LoadTests reads the old copies of the tests file and the file itself,
 // oldest first, as Load reads the stats.
-func LoadTests(path string) (runs []PackageRun, malformed int, err error) {
-	files, err := Files(path)
+func LoadTests(path string, since time.Time) (runs []PackageRun, malformed int, err error) {
+	files, err := Files(path, since)
 	if err != nil {
 		return nil, 0, err
 	}

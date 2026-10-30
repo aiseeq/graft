@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"debug/buildinfo"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"go/format"
@@ -142,6 +143,9 @@ type frame struct {
 	here   string
 	// program is the program a graft exec runs, which tells its kind.
 	program string
+	// diskProfile is what the disk state source gave the task's kind when
+	// the machine admitted it.
+	diskProfile json.RawMessage
 }
 
 // TestDB is the test database of test_db tasks.
@@ -438,10 +442,10 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int, reason str
 // profile is the kind of a run the admission of heavy tasks knows it by:
 // the repository's name, that of the main work tree's folder for every
 // worktree, and the task; a graft exec, whose commands differ, adds the
-// program it runs. "" when the repository cannot be read, said once, and
-// without stats.
+// program it runs. "" when the repository cannot be read, said once to the
+// stats.
 func (r *Runner) profile(f *frame) string {
-	if r.Stats == nil || r.noRepoName {
+	if r.noRepoName {
 		return ""
 	}
 	if r.repoName == "" {
@@ -454,7 +458,9 @@ func (r *Runner) profile(f *frame) string {
 			r.repoName = filepath.Base(r.Root)
 		default:
 			r.noRepoName = true
-			r.Stats.Warn(fmt.Errorf("naming the run for its profile: %w", err))
+			if r.Stats != nil {
+				r.Stats.Warn(fmt.Errorf("naming the run for its profile: %w", err))
+			}
 			return ""
 		}
 	}
@@ -1259,7 +1265,7 @@ func (r *Runner) begin(task string) *frame {
 // what it cost; the task's error itself goes back to its caller.
 func (r *Runner) end(f *frame, failed bool) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
-	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here}
+	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, DiskProfile: f.diskProfile}
 	if failed {
 		// A failure outside the processes (a missing key, a lock timeout)
 		// has no exit status of its own.
@@ -1595,8 +1601,8 @@ func sortedKeys(m map[string]string) []string {
 func (r *Runner) enterHeavy(ctx context.Context, name string) (leave func() error, err error) {
 	release := func() error { return nil }
 	if r.heavy == 0 {
-		waits, admitted, err := r.admit(ctx, name)
-		r.waitedFor(waits)
+		adm, admitted, err := r.admit(ctx, name)
+		r.waitedFor(adm)
 		if err != nil {
 			return nil, err
 		}
@@ -1615,28 +1621,37 @@ const AdmittedEnv = "GRAFT_ADMITTED"
 
 // admit waits until the machine takes a heavy task and returns how long it
 // waited, by why, and the release the task calls when it ends.
-func (r *Runner) admit(ctx context.Context, name string) (loadgate.Waits, func() error, error) {
+func (r *Runner) admit(ctx context.Context, name string) (loadgate.Admission, func() error, error) {
 	none := func() error { return nil }
 	if os.Getenv(AdmittedEnv) != "" {
-		return nil, none, nil
+		return loadgate.Admission{}, none, nil
 	}
 	l, err := r.Load()
 	if err != nil {
-		return nil, none, err
+		return loadgate.Admission{}, none, err
 	}
 	lockPath, err := loadLock()
 	if err != nil {
-		return nil, none, err
+		return loadgate.Admission{}, none, err
 	}
 	var priority *loadgate.Priority
 	p, ok, err := loadgate.PriorityFromEnv()
 	if err != nil {
-		return nil, none, err
+		return loadgate.Admission{}, none, err
 	}
 	if ok {
 		priority = &p
 	}
-	return loadgate.Wait(ctx, name, priority, l, lockPath, r.Stderr)
+	return loadgate.Wait(ctx, name, r.kind(name), priority, l, lockPath, r.Stderr)
+}
+
+// kind is the heavy task name's kind for the admission: the profile of the
+// running task of that name, or of a task of that name.
+func (r *Runner) kind(name string) string {
+	if n := len(r.frames); n > 0 && r.frames[n-1].task == name {
+		return r.profile(r.frames[n-1])
+	}
+	return r.profile(&frame{task: name})
 }
 
 // loadLock is the lock of this machine's heavy queue.
@@ -1693,10 +1708,14 @@ func (r *Runner) Waited(why string, d time.Duration) {
 	}
 }
 
-// waitedFor adds the waits of a heavy task's admission.
-func (r *Runner) waitedFor(w loadgate.Waits) {
-	for why, d := range w {
+// waitedFor adds the waits of a heavy task's admission, and gives the task
+// running its disk profile.
+func (r *Runner) waitedFor(a loadgate.Admission) {
+	for why, d := range a.Waits {
 		r.Waited(why, d)
+	}
+	if n := len(r.frames); n > 0 && a.DiskProfile != nil {
+		r.frames[n-1].diskProfile = a.DiskProfile
 	}
 }
 

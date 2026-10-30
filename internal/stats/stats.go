@@ -58,6 +58,10 @@ type Record struct {
 	// Here, on the line of a heavy task with a remote_heavy host that ran on
 	// this machine, is why it did not go to the host.
 	Here string `json:"here,omitempty"`
+	// DiskProfile, on the line of a heavy task this machine admitted, is
+	// the profile the disk state source gave its kind (Profile) at the last
+	// reading of the admission; absent without the source.
+	DiskProfile json.RawMessage `json:"disk_profile,omitempty"`
 	// Profile is the kind of the run the admission of heavy tasks knows it
 	// by: <repository>:<task>, the repository named by its main work tree's
 	// folder for every worktree, and a graft exec <repository>:exec:<the
@@ -402,12 +406,12 @@ func Append(path string, v any, maxSize int64) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("creating the stats directory: %w", err)
 	}
-	if err := rotate(path, maxSize); err != nil {
-		return err
-	}
+	// A rotation that failed part way (an old copy another process holds
+	// open on Windows) is said, and the line still written.
+	rerr := rotate(path, maxSize)
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
 	if err != nil {
-		return fmt.Errorf("opening %s: %w", path, err)
+		return errors.Join(rerr, fmt.Errorf("opening %s: %w", path, err))
 	}
 	_, err = f.Write(append(line, '\n'))
 	if err != nil {
@@ -416,7 +420,7 @@ func Append(path string, v any, maxSize int64) error {
 	if cerr := f.Close(); cerr != nil {
 		err = errors.Join(err, fmt.Errorf("closing %s: %w", path, cerr))
 	}
-	return err
+	return errors.Join(rerr, err)
 }
 
 // rotate moves a full file to path.1, the old copies one number up, and
@@ -464,19 +468,21 @@ func shift(path string) error {
 	if copies, err = oldCopies(path); err != nil {
 		return err
 	}
+	var errs []error
 	for _, c := range copies {
 		st, err := os.Stat(c.path)
 		if err != nil {
-			return fmt.Errorf("rotating %s: %w", path, err)
+			errs = append(errs, fmt.Errorf("rotating %s: %w", path, err))
+			continue
 		}
 		if time.Since(st.ModTime()) <= Retention {
 			continue
 		}
 		if err := os.Remove(c.path); err != nil {
-			return fmt.Errorf("removing the old copy %s: %w", c.path, err)
+			errs = append(errs, fmt.Errorf("removing the old copy %s: %w", c.path, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // oldCopy is a numbered old copy of a stats or tests file.
@@ -513,14 +519,26 @@ func oldCopies(path string) ([]oldCopy, error) {
 }
 
 // Files lists the old copies of path and path itself, oldest first: the
-// order to read them in.
-func Files(path string) ([]string, error) {
+// order to read them in. A copy whose last line (its modification time) is
+// before since holds nothing a report from since takes, and is left out;
+// all but the oldest, whose first line tells where the log starts.
+func Files(path string, since time.Time) ([]string, error) {
 	copies, err := oldCopies(path)
 	if err != nil {
 		return nil, err
 	}
 	files := make([]string, 0, len(copies)+1)
 	for _, c := range slices.Backward(copies) {
+		st, err := os.Stat(c.path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue // rotated away meanwhile
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", c.path, err)
+		}
+		if len(files) > 0 && st.ModTime().Before(since) {
+			continue
+		}
 		files = append(files, c.path)
 	}
 	return append(files, path), nil

@@ -6,6 +6,7 @@ package loadgate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -41,6 +42,14 @@ const (
 
 // Waits is how long a heavy task waited, by why.
 type Waits map[string]time.Duration
+
+// Admission is what a heavy task's admission saw: how long it waited, by
+// why, and the profile the disk state source gave its kind at the last
+// reading, nil without the source.
+type Admission struct {
+	Waits       Waits
+	DiskProfile json.RawMessage
+}
 
 // Total is the whole wait.
 func (w Waits) Total() time.Duration {
@@ -163,21 +172,25 @@ func (p *Priority) spend(d time.Duration) (left time.Duration, err error) {
 // together all find the same calm machine and start together. A task with a
 // priority skips the queue and the settling, and waits no longer than its
 // budget allows.
-func Wait(ctx context.Context, name string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (Waits, func() error, error) {
-	m := newMachine(l, log, name)
+//
+// kind is the task's kind as the stats profile names it, which the disk state
+// source keeps its profiles by.
+func Wait(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (Admission, func() error, error) {
+	m := newMachine(l, log, name, kind)
 	if p != nil {
-		return m.waits, released, m.admit(ctx, p)
+		err := m.admit(ctx, p)
+		return m.admission(), released, err
 	}
 	start := time.Now()
 	lk, err := lock.AcquireFIFO(ctx, lockPath, queueTimeout, "graft "+name+" (starting a heavy task)", log)
 	m.waits[WhyQueue] += time.Since(start)
 	if err != nil {
-		return m.waits, released, err
+		return m.admission(), released, err
 	}
 	if err := m.admit(ctx, nil); err != nil {
-		return m.waits, released, errors.Join(err, lk.Release())
+		return m.admission(), released, errors.Join(err, lk.Release())
 	}
-	return m.waits, settle(lk, l.Settle), nil
+	return m.admission(), settle(lk, l.Settle), nil
 }
 
 // released is the release of a task that holds nothing.
@@ -204,10 +217,13 @@ const ProcEnv = "GRAFT_PROC"
 
 // machine reads what makes the machine busy for one task.
 type machine struct {
-	l     userconfig.MachineLoad
-	log   io.Writer
-	name  string
-	meter *pressure.Meter
+	l          userconfig.MachineLoad
+	log        io.Writer
+	name, kind string
+	meter      *pressure.Meter
+	// disk is the disk state source's profile of the kind at the last
+	// reading.
+	disk json.RawMessage
 	// runnable is the last count of the tasks ready to run.
 	runnable float64
 	// unchecked holds the measures the system does not have, told once.
@@ -216,27 +232,29 @@ type machine struct {
 	waits Waits
 }
 
-func newMachine(l userconfig.MachineLoad, log io.Writer, name string) *machine {
+func newMachine(l userconfig.MachineLoad, log io.Writer, name, kind string) *machine {
 	proc := "/proc"
 	if dir := os.Getenv(ProcEnv); dir != "" {
 		proc = dir
 	}
-	return &machine{l: l, log: log, name: name, meter: pressure.NewMeter(proc), waits: Waits{}}
+	return &machine{l: l, log: log, name: name, kind: kind, meter: pressure.NewMeter(proc), waits: Waits{}}
 }
+
+func (m *machine) admission() Admission { return Admission{Waits: m.waits, DiskProfile: m.disk} }
 
 // BusyNow tells whether Wait would wait now, without entering the queue: a
 // task holds the queue's lock at lockPath (starting, or settling after its
 // start), or the machine measures Wait uses, read once, say busy. A missing
 // measure is skipped and reported as it is in Wait. An empty lockPath leaves
 // the queue out, for a task with a priority, which Wait does not queue.
-func BusyNow(ctx context.Context, name string, l userconfig.MachineLoad, lockPath string, log io.Writer) (bool, error) {
+func BusyNow(ctx context.Context, name, kind string, l userconfig.MachineLoad, lockPath string, log io.Writer) (bool, error) {
 	if lockPath != "" {
 		holders, err := lock.Holders(lockPath)
 		if err != nil || len(holders) > 0 {
 			return err == nil, err
 		}
 	}
-	b, err := newMachine(l, log, name).busy(ctx, true)
+	b, err := newMachine(l, log, name, kind).busy(ctx, true)
 	return b.why != "", err
 }
 
@@ -255,19 +273,26 @@ var measures = map[string]struct{ why, setting string }{
 
 // busy says why the machine cannot take a heavy task now, nothing when it
 // can, by the rule of a busy machine (akit's pressure): the tasks ready to
-// run at or above WaitAbove, read once, the IO pressure above its limit, or
-// the memory pressure above its limit while the machine swaps. fresh measures the swapping over SwapWindow; otherwise since
-// the last call. A measure the system lacks is skipped and told once.
+// run at or above WaitAbove, read once, a disk freeze going on or the IO
+// pressure of the last 5 seconds at or above its limit, or the memory
+// pressure above its limit while the machine swaps. fresh measures the
+// swapping, and without the disk state source the IO pressure, over
+// SwapWindow; otherwise since the last call. A measure the system lacks is
+// skipped and told once.
 func (m *machine) busy(ctx context.Context, fresh bool) (busyness, error) {
 	v, err := m.meter.Check(ctx, pressure.Limits{Runnable: m.l.WaitAbove, MaxIOFull: m.l.MaxIOFull, MaxMemSome: m.l.MaxMemSome,
-		MaxSwapKBs: m.l.MaxSwapKBs, SwapWindow: m.l.SwapWindow}, fresh)
+		MaxSwapKBs: m.l.MaxSwapKBs, SwapWindow: m.l.SwapWindow}, m.kind, fresh)
 	if err != nil {
 		return busyness{}, fmt.Errorf("measuring the machine: %w", err)
 	}
 	for _, none := range v.Skipped {
-		m.skip(none)
+		m.skip(none, v.Load.DiskFault)
 	}
 	m.runnable = float64(v.Load.Runnable)
+	m.disk = nil
+	if v.Load.Disk != nil {
+		m.disk = v.Load.Disk.Profile
+	}
 	var b busyness
 	if v.Busy() {
 		// A measure graft does not know yet still makes the machine busy.
@@ -280,8 +305,10 @@ func (m *machine) busy(ctx context.Context, fresh bool) (busyness, error) {
 	return b, nil
 }
 
-// skip says the first time that the system lacks a measure.
-func (m *machine) skip(none error) {
+// skip says the first time that the system lacks a measure. Without the disk
+// state source, which fault tells why, the disk is still measured by the IO
+// pressure's total.
+func (m *machine) skip(none, fault error) {
 	if m.unchecked[none] {
 		return
 	}
@@ -289,7 +316,14 @@ func (m *machine) skip(none error) {
 		m.unchecked = map[error]bool{}
 	}
 	m.unchecked[none] = true
-	fmt.Fprintf(m.log, "graft: %s: %v, not checked\n", m.name, none)
+	switch {
+	case errors.Is(none, pressure.ErrNoIOSource):
+		fmt.Fprintf(m.log, "graft: %s: %v, PSI total used\n", m.name, none)
+	case errors.Is(none, pressure.ErrIOSourceFailed):
+		fmt.Fprintf(m.log, "graft: %s: %v, PSI total used\n", m.name, fault)
+	default:
+		fmt.Fprintf(m.log, "graft: %s: %v, not checked\n", m.name, none)
+	}
 }
 
 // admit waits for the machine to be calm; a priority task waits no longer

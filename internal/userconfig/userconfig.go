@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aiseeq/akit/pressure"
 	"go.yaml.in/yaml/v3"
 
 	"github.com/aiseeq/graft/v2/internal/config"
@@ -155,8 +156,10 @@ func (l *Limits) normalize(path string) error {
 type MachineLoad struct {
 	// WaitAbove 0 is the machine's thread count.
 	WaitAbove float64 `yaml:"wait_above"`
-	// MaxIOFull is the share of the last minute, in percent, during which
-	// every running process stalled on the disk (/proc/pressure/io).
+	// MaxIOFull is the share of the last 5 seconds, in percent, during which
+	// every running process stalled on the disk (/proc/pressure/io), at or
+	// above which the machine is busy; a disk freeze going on makes it busy
+	// too. 100 or more leaves the disk out.
 	MaxIOFull float64 `yaml:"max_io_full"`
 	// MaxMemSome is the share of the last 10 seconds, in percent, during
 	// which some process stalled on memory (/proc/pressure/memory); 0 is the
@@ -174,7 +177,7 @@ type MachineLoad struct {
 // DefaultLoad is a shared machine's: heavy tasks start while fewer tasks are
 // ready to run than it has threads, with the disk and the swap calm. The
 // count is of this moment, so a start shows to the next one within seconds.
-var DefaultLoad = MachineLoad{MaxIOFull: 10, MaxSwapKBs: 1024, SwapWindow: time.Second,
+var DefaultLoad = MachineLoad{MaxIOFull: pressure.DefaultLimits.MaxIOFull, MaxSwapKBs: 1024, SwapWindow: time.Second,
 	Threads: 4, Settle: 10 * time.Second, Poll: 5 * time.Second}
 
 // LoadSettings is the user's load settings over the defaults; without a user

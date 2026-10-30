@@ -14,11 +14,11 @@ import (
 	"time"
 )
 
-// Load reads the old copies of the stats file and the file itself, oldest
-// first. Lines that are not records (a torn write of a crashed graft) are
-// counted in malformed and left out.
-func Load(path string) (recs []Record, malformed int, err error) {
-	files, err := Files(path)
+// Load reads the old copies of the stats file that reach since and the file
+// itself, oldest first. Lines that are not records (a torn write of a
+// crashed graft) are counted in malformed and left out.
+func Load(path string, since time.Time) (recs []Record, malformed int, err error) {
+	files, err := Files(path, since)
 	if err != nil {
 		return nil, 0, err
 	}
