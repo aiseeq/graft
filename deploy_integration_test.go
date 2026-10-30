@@ -59,6 +59,15 @@ type fakeJira struct {
 	// Progress.
 	written map[string][]fakeComment
 	entered map[string]time.Time
+	// fixChanges are the changes of a key's fix versions its history shows.
+	fixChanges map[string][]fakeFixChange
+}
+
+// fakeFixChange is one change of an item's fix versions in its history.
+type fakeFixChange struct {
+	at    time.Time
+	id    string
+	added bool
 }
 
 type fakeComment struct {
@@ -147,6 +156,15 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if when, ok := j.entered[key]; ok {
 			values = append(values, map[string]any{"created": when.Format(fakeTimeLayout), "items": []any{map[string]any{"fieldId": "status", "fromString": "Testing", "toString": "In Progress"}}})
+		}
+		for _, c := range j.fixChanges[key] {
+			item := map[string]any{"field": "Fix Version", "fieldId": "fixVersions"}
+			side := "from"
+			if c.added {
+				side = "to"
+			}
+			item[side], item[side+"String"] = c.id, j.versionName(c.id)
+			values = append(values, map[string]any{"created": c.at.Format(fakeTimeLayout), "items": []any{item}})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"isLast": true, "values": values})
 	case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "comment":
