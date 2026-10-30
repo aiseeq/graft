@@ -24,3 +24,4 @@
 - 2026-10-30 03:15 в работе — graft-master
 - 2026-10-30 03:28 note — graft-master: сделано в e5ae71d: kind=profile в Wait/BusyNow, skip «…, PSI total used» с DiskFault, MaxIOFull=pressure.DefaultLimits (9.6), disk_profile в строке задачи, XDG_RUNTIME_DIR тестов изолирован (на машине живой io-state.sock); тест интеграции 37132fa; all зелёный; отдано на проверку суб-агенту
 - 2026-10-30 03:32 note — graft-master: по ревью: без PSI текст «and no IO pressure either: the disk is not checked» (тест no PSI either), README «once per look at the machine»; пути в тикетах заменены на ~ и имена
+- 2026-10-30 03:39 note — graft-master: aguard-master 30.10: профилей вида <repo>:<task> у aguard нет (задачи graft в cgroup сессии), disk_profile пока пуст; поле необязательное, остаётся
