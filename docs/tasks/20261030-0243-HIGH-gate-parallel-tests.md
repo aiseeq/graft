@@ -18,3 +18,4 @@
 ## Журнал
 - 2026-10-30 02:43 открыт — graft-master
 - 2026-10-30 02:43 в работе — graft-master
+- 2026-10-30 03:48 note — graft-master: t.Parallel отклонён по правилу 5 test-optimization (параллельность не ускорение): test-gate wall p50 59.5 с, CPU 1m3s — CPU-bound; план — профиль CPU корневого пакета; сообщено git-admin
