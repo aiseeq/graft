@@ -25,14 +25,15 @@ func calmAfter(t *testing.T, state string, d time.Duration) {
 const splitGateConfig = "schema: 1\nversion: {mode: none}\n" +
 	"gate:\n  - task: unit\n  - task: script\n" +
 	"tasks:\n" +
-	"  unit:\n    heavy: true\n    run: [[go, test, -count=1, ./...]]\n" +
+	"  unit:\n    heavy: true\n    remote: true\n    run: [[go, test, -count=1, ./...]]\n" +
 	"  script:\n    run: [[sh, -c, 'echo here >> out']]\n"
 
 // TestBusyGateSendsItsGoStepsToTheHost: a gate that would wait for this
-// machine sends its go test and go vet steps that write no file to the
-// user's remote_heavy host, nested tasks' too, and runs every other step
-// here, each admitted by this machine's queue on its own; on a calm machine
-// the whole gate runs here.
+// machine sends the go test and go vet steps that write no file of its
+// remote: true tasks to the user's remote_heavy host, nested tasks' too, and
+// runs every other step here, the gate's own go vet included, each admitted
+// by this machine's queue on its own; on a calm machine the whole gate runs
+// here.
 func TestBusyGateSendsItsGoStepsToTheHost(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the run script is sh")
@@ -51,12 +52,10 @@ func TestBusyGateSendsItsGoStepsToTheHost(t *testing.T) {
 	calmAfter(t, state, 1500*time.Millisecond)
 	out := f.mustGraft("gate")
 	calls := callsOf(t, state)
-	for _, want := range []string{"go vet ./...", "go test -count=1 ./..."} {
-		if !strings.Contains(calls, want) {
-			t.Errorf("run got %q, want %q:\n%s", calls, want, out)
-		}
+	if !strings.Contains(calls, "go test -count=1 ./...") {
+		t.Errorf("run got %q, want the remote: true task's go test:\n%s", calls, out)
 	}
-	for _, here := range []string{"echo here", "fix", "gofmt"} {
+	for _, here := range []string{"go vet", "echo here", "fix", "gofmt"} {
 		if strings.Contains(calls, here) {
 			t.Errorf("%q went to pc: %q", here, calls)
 		}
@@ -64,7 +63,7 @@ func TestBusyGateSendsItsGoStepsToTheHost(t *testing.T) {
 	if got := readFile(t, f.path("out")); got != "here\n" {
 		t.Errorf("the script step did not run here: out = %q\n%s", got, out)
 	}
-	if !strings.Contains(out, "graft: gate: busy here: go test and go vet steps on pc, the rest waits for this machine step by step") {
+	if !strings.Contains(out, "graft: gate: busy here: go test and go vet steps of remote: true tasks on pc, the rest waits for this machine step by step") {
 		t.Errorf("the gate does not say it split:\n%s", out)
 	}
 	// The steps kept here waited for this machine.

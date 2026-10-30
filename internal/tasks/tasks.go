@@ -308,7 +308,9 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, erro
 	return true, nil
 }
 
-// gateHasEligible finds a go check in the gate's steps, task steps or deps.
+// gateHasEligible finds a go check of a task with remote: true in the gate's
+// tasks or their deps: only the project vouches that its tests pass on the
+// host, so a gate step of its own is never one.
 func gateHasEligible(gate []gateStep, cfg *config.Config) bool {
 	seen := map[string]bool{}
 	var visit func(*config.Task) bool
@@ -332,23 +334,24 @@ func gateHasEligible(gate []gateStep, cfg *config.Config) bool {
 						return true
 					}
 				}
-			} else if s.Shell == "" && goCheckNoOutput(s.Argv, nil) {
+			} else if remoteVouched(t) && s.Shell == "" && goCheckNoOutput(s.Argv, nil) {
 				return true
 			}
 		}
 		return false
 	}
 	for i := range gate {
-		gs := &gate[i]
-		if gs.step.Task != "" {
-			if visit(cfg.Tasks[gs.step.Task]) {
-				return true
-			}
-		} else if gs.step.Shell == "" && goCheckNoOutput(gs.step.Argv, nil) {
+		if gs := &gate[i]; gs.step.Task != "" && visit(cfg.Tasks[gs.step.Task]) {
 			return true
 		}
 	}
 	return false
+}
+
+// remoteVouched reports whether the project set remote: true in the task:
+// a split gate sends its go steps to the host.
+func remoteVouched(t *config.Task) bool {
+	return t.Remote != nil && *t.Remote
 }
 
 // goModules lists the directories to vet, relative to the root, "." first.
@@ -632,7 +635,7 @@ func (r *Runner) Gate(ctx context.Context) (err error) {
 	if splitGate {
 		r.gateSplit = true
 		defer func() { r.gateSplit = false }()
-		fmt.Fprintf(r.Stderr, "graft: gate: busy here: go test and go vet steps on %s, the rest waits for this machine step by step\n", r.remoteHeavy.Host)
+		fmt.Fprintf(r.Stderr, "graft: gate: busy here: go test and go vet steps of remote: true tasks on %s, the rest waits for this machine step by step\n", r.remoteHeavy.Host)
 	} else {
 		// The gate builds and tests: it is heavy as a whole, its heavy tasks
 		// admitted with it.
@@ -927,10 +930,10 @@ func (r *Runner) steps(ctx context.Context, name string, t *config.Task, args []
 func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.Task, args []string, threads string) (func(error) error, error) {
 	frame := r.frames[len(r.frames)-1]
 	wasRemote := frame.remote
-	remote := s.Shell == "" && goCheckNoOutput(s.Argv, args) && r.remoteDown == ""
+	remote := remoteVouched(t) && s.Shell == "" && goCheckNoOutput(s.Argv, args) && r.remoteDown == ""
 	if remote {
 		// A step goes to the host only as its task could: not with the test
-		// database, .env keys, remote: false or a directory the host lacks.
+		// database, .env keys or a directory the host lacks.
 		why, err := r.stayHere(ctx, t, r.taskDir(t))
 		if err != nil {
 			return nil, err

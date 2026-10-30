@@ -76,11 +76,6 @@ func ValidateRemoteHeavy(r *RemoteHeavy) error {
 }
 
 func (c *Config) validateRemoteHeavy() error {
-	for _, name := range keysOf(c.Tasks) {
-		if t := c.Tasks[name]; t.Remote != nil && *t.Remote && !t.Heavy {
-			return fmt.Errorf("tasks.%s.remote: true: only a heavy task runs on remote_heavy's host", name)
-		}
-	}
 	r := c.RemoteHeavy
 	if r == nil {
 		return nil

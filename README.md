@@ -212,14 +212,18 @@ caller set, such as `FLAG=1 graft exec --heavy -- go test ./...`, or
 `GOOS=windows … go vet`, does not see it there; keep such a run here with
 `graft exec --heavy --local` or `GRAFT_HEAVY=local`.
 A gate under the user config's `when: busy`, in a project without its own
-`remote_heavy`, that would wait here while the host answers and has an
-eligible step, runs split: `graft: gate: busy here: go test and go vet steps
-on pc, the rest waits for this machine step by step`. It takes no admission
-as a whole, nor do its heavy tasks; every `go test` and `go vet` step that
-writes no file, at any depth, runs on the host unless its task would stay
-here (test database, `.env` keys, `remote: false`, a directory the host's
-`run` cannot reach), and every other step (the gofmt check, go fix,
-installs, scripts) is admitted here for itself, then released. A host step
+`remote_heavy`, that would wait here while the host answers and has a task
+with `remote: true` (the project vouches that its tests pass on the host:
+they read nothing outside the tree that only this machine has, a tool on
+`PATH` or state under the home directory), runs split: `graft: gate: busy
+here: go test and go vet steps of remote: true tasks on pc, the rest waits
+for this machine step by step`. It takes no admission as a whole, nor do its
+heavy tasks; every `go test` and `go vet` step that writes no file of a
+`remote: true` task, at any depth, runs on the host unless the task would
+stay here (test database, `.env` keys, a directory the host's `run` cannot
+reach), and every other step (the gate's own go vet, the gofmt check, go
+fix, installs, scripts, the go steps of the other tasks) is admitted here
+for itself, then released. A gate without such a task waits here whole. A host step
 whose path breaks is said and rerun here, admitted for itself, and the
 gate's later go steps run here too. A gate whose host does not answer waits
 here whole and says why.
@@ -229,10 +233,7 @@ queues as before, `graft: build: heavy, on this machine: <why>`:
 
 - `GRAFT_HEAVY=local` in the environment (any other value is an error), or
   `graft exec --heavy --local`, which sets it for the command too;
-- `remote: false` in the task: its steps write files needed here, or its
-  tests read what only this machine has (a tool on `PATH`, state under the
-  home directory); a task that is not heavy takes it to keep its steps out
-  of a split gate, and only a heavy task takes `remote: true`;
+- `remote: false` in the task: its steps write files needed here;
 - the task uses the test database, a jest or playwright report file, `.env`
   keys (`dotenv`, `dotenv_sets`) or a `${KEY}` that is no variable of the
   task, or names `GRAFT_COMMIT_MESSAGE_FILE` in a gate: none of these is on
@@ -578,7 +579,7 @@ tasks:
     deps: [build]              # run first, each task at most once per invocation
     test_db: true              # pass the test database DSN (see below)
     heavy: true                # wait while the machine is loaded (user config load), GRAFT_THREADS set
-    remote: false              # stay on this machine though remote_heavy or a split gate would send it (true: heavy only)
+    remote: false              # heavy: stay on this machine though the project has remote_heavy (true: any step goes, and a busy gate sends its go steps)
     tests: go                  # read go test -json: print plain go test output, record every test
     dotenv: [API_KEY!, 'LOG_DIR?']  # only these .env keys reach the steps; KEY? optional, KEY! must not be empty
     dotenv_sets: [db]          # plus the keys of named sets
