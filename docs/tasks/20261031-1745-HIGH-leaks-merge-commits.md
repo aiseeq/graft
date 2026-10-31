@@ -14,3 +14,5 @@
 
 ## Журнал
 - 2026-10-31 17:45 открыт — graft-master
+- 2026-10-31 20:57 note — graft-master: 20:57 боец Luna 1031-2057-leaks-merge-commits, дерево /home/aisee/.cache/worktrees/graft/leaks-merge-commits; бриф и мера — scratchpad graft-master leaks-merge/{brief.md,accept.sh}. Не новый механизм (исправление охвата проверки) — противник не нужен.
+- 2026-10-31 21:17 note — graft-master: 21:3x Luna приняла (16 мин): обход без --no-merges, merge — git diff-tree --remerge-diff, README Git 2.36. Ревью мастера: git молча пропускает octopus в remerge-diff (warning, код 0) — добавил явную ошибку с именем коммита и тест; родители читаются одним rev-list --parents вместо git на коммит. Влито патчем на main (go.mod/go.sum бойца — подъём akit гейтом, не взят).

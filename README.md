@@ -304,7 +304,7 @@ stats` (`wait_s`).
 | `graft version --describe` | the build identity for stamping binaries: `v1.4.0-3-gabc1234[-dirty]`, `1.4.0[-dirty]` in mode `file`, `v0.0.0-<commits>-g<hash>` without a tag |
 | `graft init` | install the hooks and set `core.hooksPath`, create the `.env` file from `dotenv_template` when it is missing, install pinned tools that fail their check; safe to repeat |
 | `graft check` | run the content checks on the index |
-| `graft leaks <revision>…` | scan commits for the private names and terms of the user config (`leaks`) |
+| `graft leaks <revision>…` | scan commits, including merge resolutions and messages (Git 2.36 or newer for merges), for the private names and terms of the user config (`leaks`) |
 | `graft gate` | run the gate commands (`go vet ./...` in every Go module first, see `go_vet`, then `go fix -diff ./...` with `go_fix`, then `gofmt -l` with `go_fmt`) |
 | `graft hook pre-commit` / `prepare-commit-msg` / `post-merge` | what the installed hooks call |
 | `graft flags [status]` | is the flag raised: open journal events no exception mutes |
@@ -2046,8 +2046,13 @@ deploy:
 
   A finding names the file, line and the name or term. A line containing
   `graft:leak-ok <reason>` passes; `leaks.allow` passes a name or term
-  everywhere. `graft leaks <revision>…` runs the same scan over existing
-  commits, each against its parent, to audit a history. Pass any `git rev-list`
+  everywhere. `graft leaks <revision>…` runs the same scan over existing commits,
+  including merge messages and lines introduced while resolving or editing a
+  merge. Merge lines are found with Git's remerge diff, which compares the
+  recorded merge with Git's automatic merge and excludes ordinary changes
+  already present in either branch; scanning merge commits requires Git 2.36
+  or newer. Git does not remerge an octopus merge (more than two parents), so
+  `graft leaks` stops with an error naming it. Pass any `git rev-list`
   revisions as separate arguments; for example, `graft leaks --all` scans all
   branches and tags. A clone has no pull request refs (`refs/pull/*`) unless
   they are fetched: `git fetch origin '+refs/pull/*:refs/pull/*'` first.

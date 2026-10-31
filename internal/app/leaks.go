@@ -130,18 +130,37 @@ func (a *App) Leaks(revisions []string) error {
 	if err != nil {
 		return err
 	}
-	args := append([]string{"rev-list", "--reverse", "--no-merges"}, revisions...)
+	args := append([]string{"rev-list", "--reverse", "--parents"}, revisions...)
 	args = append(args, "--")
 	out, err := repo.Git(args...)
 	if err != nil {
 		return err
 	}
-	commits := strings.Fields(out)
+	// Each line is a commit followed by its parents.
+	var commits []string
+	if out = strings.TrimSpace(out); out != "" {
+		commits = strings.Split(out, "\n")
+	}
 	total := 0
-	for _, c := range commits {
-		lines, err := leaks.CommitLines(repo, c)
-		if err != nil {
-			return err
+	for _, entry := range commits {
+		fields := strings.Fields(entry)
+		c := fields[0]
+		var lines []leaks.Line
+		switch parents := len(fields) - 1; {
+		case parents > 2:
+			// git diff-tree --remerge-diff skips an octopus merge with a
+			// warning: refuse rather than pass its edits unchecked.
+			return fmt.Errorf("leak check for merge commit %s: %d parents, only two-parent merges can be scanned", c, parents)
+		case parents == 2:
+			lines, err = leaks.MergeCommitLines(repo, c)
+			if err != nil {
+				return fmt.Errorf("leak check for merge commit %s: reading remerge diff: %w", c, err)
+			}
+		default:
+			lines, err = leaks.CommitLines(repo, c)
+			if err != nil {
+				return err
+			}
 		}
 		msg, err := repo.Git("log", "-1", "--format=%B", c)
 		if err != nil {

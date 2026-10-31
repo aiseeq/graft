@@ -23,7 +23,7 @@ func leakRepo(t *testing.T, publicPrefix, extra string) *fixture {
 	writeFile(t, filepath.Join(private, "go.mod"), "module example.com/projectA\n")
 	writeFile(t, filepath.Join(private, "pay.go"), "package pay\n\nfunc (s *Svc) SettleInvoice() error { return nil }\nfunc (s *Svc) PolishWidget() {}\n")
 	terms := filepath.Join(root, "private-terms")
-	writeFile(t, terms, "counterparty: (?i)\\bacmepay\\b\n")
+	writeFile(t, terms, "counterparty: (?i)\\b(acmepay|mergealpha|mergebeta)\\b\n")
 	cfgDir := filepath.Join(root, "config")
 	writeUserConfig(t, cfgDir, "leaks:\n"+
 		"  public_remotes: ["+publicPrefix+"]\n"+
@@ -109,6 +109,65 @@ func TestLeaksScansHistory(t *testing.T) {
 	out, code := f.graft("", "leaks", "HEAD")
 	if code == 0 || !strings.Contains(out, "main.go:3: private name SettleInvoice") || !strings.Contains(out, "2 commits scanned") {
 		t.Errorf("exit %d:\n%s", code, out)
+	}
+}
+
+func TestLeaksScansMergeCommit(t *testing.T) {
+	f := leakRepo(t, "github.com/somebody-else/", "")
+	f.write("main.go", "package main\n\nconst value = \"base\"\n")
+	f.mustPlainCommit("feat: base value")
+	f.git("switch", "-q", "-c", "side")
+	f.write("main.go", "package main\n\nconst value = \"side\"\n")
+	f.write("ordinary.go", "package main\n\nconst ordinary = \"branch change\"\n")
+	f.mustPlainCommit("feat: side changes")
+	f.git("switch", "-q", "-")
+	f.write("main.go", "package main\n\nconst value = \"main\"\n")
+	f.mustPlainCommit("feat: main change")
+	if out, code := f.tryGit("merge", "--no-ff", "side"); code == 0 {
+		t.Fatalf("merge should conflict, exit %d:\n%s", code, out)
+	}
+	f.write("main.go", "package main\n\nconst value = \"MergeAlpha\"\n")
+	f.git("add", "main.go")
+	f.mustPlainCommit("MergeBeta merge resolution")
+
+	out, code := f.graft("", "leaks", "--all")
+	if code == 0 || !strings.Contains(out, "main.go:3: private term (counterparty) \"MergeAlpha\"") ||
+		!strings.Contains(out, "commit message:1: private term (counterparty) \"MergeBeta\"") {
+		t.Errorf("merge findings, exit %d:\n%s", code, out)
+	}
+	if strings.Contains(out, "ordinary.go") || strings.Contains(out, "branch change") {
+		t.Errorf("ordinary second-parent change was reported:\n%s", out)
+	}
+
+	clean := leakRepo(t, "github.com/somebody-else/", "")
+	clean.write("base.go", "package main\n\nconst base = 1\n")
+	clean.mustPlainCommit("feat: base")
+	clean.git("switch", "-q", "-c", "side")
+	clean.write("side.go", "package main\n\nconst side = 1\n")
+	clean.mustPlainCommit("feat: side")
+	clean.git("switch", "-q", "-")
+	clean.write("main.go", "package main\n\nconst mainValue = 1\n")
+	clean.mustPlainCommit("feat: main")
+	clean.run(clean.work, "git", "merge", "--no-ff", "-m", "merge clean branches", "side")
+	if out, code := clean.graft("", "leaks", "--all"); code != 0 {
+		t.Errorf("clean merge should have no findings, exit %d:\n%s", code, out)
+	}
+
+	// git's remerge diff skips an octopus merge: graft refuses it by name.
+	octo := leakRepo(t, "github.com/somebody-else/", "")
+	octo.write("base.go", "package main\n\nconst base = 1\n")
+	octo.mustPlainCommit("feat: base")
+	start := octo.git("branch", "--show-current")
+	for _, b := range []string{"x", "y"} {
+		octo.git("switch", "-q", "-c", b, start)
+		octo.write(b+".go", "package main\n\nconst "+b+" = 1\n")
+		octo.mustPlainCommit("feat: " + b)
+	}
+	octo.git("switch", "-q", start)
+	octo.run(octo.work, "git", "merge", "--no-ff", "-m", "octopus", "x", "y")
+	head := octo.git("rev-parse", "HEAD")
+	if out, code := octo.graft("", "leaks", "--all"); code == 0 || !strings.Contains(out, head) || !strings.Contains(out, "3 parents") {
+		t.Errorf("octopus merge should be refused by name, exit %d:\n%s", code, out)
 	}
 }
 

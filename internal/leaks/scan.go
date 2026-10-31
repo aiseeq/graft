@@ -39,6 +39,18 @@ func CommitLines(repo *gitx.Repo, commit string) ([]Line, error) {
 	return ParseDiff(out)
 }
 
+// MergeCommitLines returns lines added by resolving or editing a merge. The
+// remerge diff compares the recorded result with Git's automatic merge, so
+// changes already present in either parent are excluded.
+func MergeCommitLines(repo *gitx.Repo, commit string) ([]Line, error) {
+	args := append([]string{"-c", "core.quotePath=false", "diff-tree", "--remerge-diff", "-p", "-r", "--no-commit-id"}, diffArgs...)
+	out, err := repo.Git(append(args, commit)...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDiff(out)
+}
+
 // ParseDiff reads the added lines of a unified diff with zero context. Hunk
 // line counts, not prefixes, delimit the content: an added "++ x" line looks
 // like a file header. A line the diff removes, in any file, is moved where
