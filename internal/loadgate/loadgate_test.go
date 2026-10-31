@@ -171,6 +171,40 @@ func TestWaitNamesWhoHeldTheQueue(t *testing.T) {
 	}
 }
 
+func TestWaitWithSettleNamesWhoHeldTheSettleQueue(t *testing.T) {
+	fakeMachine(t)
+	dir := t.TempDir()
+	path, settlePath := filepath.Join(dir, "load.lock"), filepath.Join(dir, "load.settle.lock")
+	_, release, err := WaitWithSettle(context.Background(), "head", "projectA:head", nil, testLoad, path, settlePath, time.Hour, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitFiles(t, settlePath+".*.lholder", 1)
+	got := make(chan Admission, 1)
+	go func() {
+		adm, rel, err := WaitWithSettle(context.Background(), "follower", "projectA:follower", nil, testLoad, path, settlePath, time.Hour, io.Discard)
+		if err == nil {
+			_ = rel()
+		}
+		got <- adm
+	}()
+	awaitFiles(t, settlePath+".queue.*.lticket", 1)
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case adm := <-got:
+		if !strings.Contains(adm.WaitedBehind, "graft head") {
+			t.Fatalf("WaitedBehind = %q", adm.WaitedBehind)
+		}
+		if adm.Waits[WhyQueue] <= 0 {
+			t.Fatalf("queue wait = %s", adm.Waits[WhyQueue])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("follower did not leave the settle queue")
+	}
+}
+
 func TestWaitBehindQuietIsQuiet(t *testing.T) {
 	fakeMachine(t)
 	setQuiet(t, time.Now().Add(5*time.Second))
