@@ -25,7 +25,7 @@ func TestFreezeLogTimeIsUTC(t *testing.T) {
 	if sameSecond.Before(frozen.Truncate(time.Second)) {
 		t.Fatalf("record in the freeze's second is judged before it")
 	}
-	before, err := freezeLogTime("freeze-log/acc/v1-2-10/20261020T135959-abc1234-bypass")
+	before, err := freezeLogTime("freeze-log/acc/v1-2-10/20261020T135759-abc1234-bypass")
 	if err != nil {
 		t.Fatal(err)
 	}

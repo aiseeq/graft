@@ -337,8 +337,18 @@ func TestFreezeEndsWhenTheBranchReachesProd(t *testing.T) {
 		t.Errorf("thaw without a reason: exit %d\n%s", code, out)
 	}
 	d.mustGraft("deploy", "thaw", "prod", "--reason", "the release was called off")
-	if tags := d.remoteTags("freeze"); len(tags) != 0 {
-		t.Errorf("tags left after thaw = %q", tags)
+	for _, prefix := range []string{"freeze/", "freeze-log/"} {
+		if tags := d.remoteTags(prefix); len(tags) != 0 {
+			t.Errorf("%s tags left after thaw = %q", prefix, tags)
+		}
+	}
+	tags := d.remoteTags("freeze-thaw/prod/1.3.0/")
+	if len(tags) != 1 {
+		t.Fatalf("thaw record tags = %q, want one retained reason record", tags)
+	}
+	d.git("fetch", "-q", "origin", "refs/tags/"+tags[0])
+	if body := d.git("cat-file", "tag", "FETCH_HEAD"); !strings.Contains(body, "reason: the release was called off") {
+		t.Errorf("thaw record omitted its reason: %s", body)
 	}
 	d.commitFile("three.txt", "feat: PROJ-1 after the thaw")
 	d.mustGraft("deploy", "acc")

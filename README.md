@@ -1893,9 +1893,9 @@ the operation. A successful deploy of the frozen branch to the release target
 removes the freeze and journal tags from every remote only after `deployed_sha`
 and the release page journal succeed. If no release page is configured, the
 journal is reported as having no page and `deployed_sha` is sufficient. `graft deploy thaw
-<target> --reason 'reason'` ends it manually and removes those tags too.
+<target> --reason 'reason'` ends it manually and removes the active freeze and journal tags. Before removing them, it writes an annotated `freeze-thaw/<target>/<version>/<time>` tag to each remote; inspect the tag with `git show <tag>` to read the reason later.
 
-Freeze and journal tags live on the remotes. To keep removed tags from
+Freeze, thaw, and journal tags live on the remotes. To keep removed tags from
 returning in local clones, enable `fetch.pruneTags` or set
 `remote.<name>.tagOpt --no-tags` for each remote.
 

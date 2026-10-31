@@ -30,6 +30,22 @@ type freezeRefusalError struct{ error }
 var freezeTagPart = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 var errNoActiveFreeze = errors.New("no active freeze")
 
+type localFreezeLogError struct {
+	tag string
+	err error
+}
+
+func (e *localFreezeLogError) Error() string {
+	return fmt.Sprintf("freeze journal tag %s is local: %v", e.tag, e.err)
+}
+func (e *localFreezeLogError) Unwrap() error { return e.err }
+
+const freezeLogClockSkew = 2 * time.Minute
+
+func freezeLogIsCurrent(tagTime, freezeTime time.Time) bool {
+	return !tagTime.Before(freezeTime.Add(-freezeLogClockSkew))
+}
+
 func freezeSlug(s string) string { return strings.Trim(freezeTagPart.ReplaceAllString(s, "_"), "_.-") }
 
 func parseRemoteTags(out, remote string) map[string]remoteTag {
@@ -364,10 +380,68 @@ func (a *App) DeployThaw(ctx context.Context, target, reason string) error {
 	if freeze == nil {
 		return fmt.Errorf("no active freeze for %s", target)
 	}
+	if _, err := writeFreezeThawRecord(r.repo, r.cfg, freeze, reason); err != nil {
+		return err
+	}
 	if err := a.removeFreezeTags(r.repo, r.cfg, freeze); err != nil {
 		return err
 	}
 	a.printf("thawed %s at %s: %s", target, freeze.name, reason)
+	return nil
+}
+
+func writeFreezeThawRecord(repo *gitx.Repo, cfg *config.Config, f *activeFreeze, reason string) (string, error) {
+	remotes, err := pushRemotes(repo, cfg)
+	if err != nil {
+		return "", err
+	}
+	now, err := deployNow()
+	if err != nil {
+		return "", err
+	}
+	reason = strings.NewReplacer("\r\n", "; ", "\n", "; ", "\r", "; ").Replace(reason)
+	base := fmt.Sprintf("freeze-thaw/%s/%s/%s", f.target, freezeSlug(f.version), now.UTC().Format("20060102T150405"))
+	for n := 0; ; n++ {
+		tag := base
+		if n > 0 {
+			tag += fmt.Sprintf("-%d", n)
+		}
+		exists, err := remoteTagExists(repo, remotes, tag)
+		if err != nil {
+			return "", err
+		}
+		if exists {
+			continue
+		}
+		msg := fmt.Sprintf("target: %s\nversion: %s\ntime: %s\nreason: %s\n", f.target, f.name, now.UTC().Format(time.RFC3339), reason)
+		if _, err := repo.Git("tag", "-a", tag, "HEAD", "-m", msg); err != nil {
+			return "", err
+		}
+		if err := publishFreezeThawTag(repo, remotes, tag); err != nil {
+			return tag, err
+		}
+		if _, err := repo.Git("tag", "-d", tag); err != nil {
+			return tag, err
+		}
+		return tag, nil
+	}
+}
+
+func publishFreezeThawTag(repo *gitx.Repo, remotes []string, tag string) error {
+	var pushed []string
+	for _, remote := range remotes {
+		if _, err := repo.Git("push", remote, "refs/tags/"+tag); err != nil {
+			var cleanupErrs []error
+			for _, published := range pushed {
+				if _, cleanupErr := repo.Git("push", published, ":refs/tags/"+tag); cleanupErr != nil {
+					cleanupErrs = append(cleanupErrs, cleanupErr)
+				}
+			}
+			_, deleteErr := repo.Git("tag", "-d", tag)
+			return errors.Join(fmt.Errorf("publishing thaw record %s to %s: %w", tag, remote, err), errors.Join(cleanupErrs...), deleteErr)
+		}
+		pushed = append(pushed, remote)
+	}
 	return nil
 }
 
@@ -453,7 +527,8 @@ func (a *App) pushPendingFreezeLogs(repo *gitx.Repo, cfg *config.Config, f *acti
 			errs = append(errs, err)
 			continue
 		}
-		if tagTime.Before(f.time.Truncate(time.Second)) {
+		if !freezeLogIsCurrent(tagTime, f.time) {
+			a.printf("skipping freeze journal tag %s: recorded at %s, before freeze start %s beyond the %s clock-skew allowance", tag, tagTime.UTC().Format(time.RFC3339), f.time.UTC().Format(time.RFC3339), freezeLogClockSkew)
 			continue
 		}
 		local, err := repo.Git("rev-parse", "refs/tags/"+tag)
@@ -538,6 +613,9 @@ func (a *App) writeFreezeLog(repo *gitx.Repo, cfg *config.Config, f *activeFreez
 			}
 			if _, createErr := repo.Git("tag", "-a", tag, commit, "-m", msg); createErr != nil {
 				return tag, errors.Join(err, createErr)
+			}
+			if localOnly {
+				return tag, &localFreezeLogError{tag: tag, err: err}
 			}
 			return tag, fmt.Errorf("freeze-log tag %s is local; checking its remotes failed: %w", tag, err)
 		}
@@ -867,6 +945,55 @@ func bypassedCommits(repo *gitx.Repo, cfg *config.Config, f *activeFreeze) (map[
 		}
 	}
 	return out, nil
+}
+
+func removeCommitAdvisoryLogs(repo *gitx.Repo, cfg *config.Config, f *activeFreeze, commit string) error {
+	remoteTags, err := freezeLogTags(repo, cfg, f)
+	if err != nil {
+		return err
+	}
+	contents, err := readRemoteTags(repo, remoteTags)
+	if err != nil {
+		return err
+	}
+	var remove []string
+	for tag, body := range contents {
+		if strings.HasSuffix(tag, "-advisory") && strings.Contains(body, "commit: "+commit) {
+			remove = append(remove, tag)
+		}
+	}
+	local, err := repo.Git("tag", "--list", "freeze-log/"+f.target+"/"+freezeSlug(f.version)+"/*")
+	if err != nil {
+		return err
+	}
+	for tag := range strings.SplitSeq(strings.TrimSpace(local), "\n") {
+		if tag == "" || !strings.HasSuffix(tag, "-advisory") {
+			continue
+		}
+		body, err := repo.Git("cat-file", "tag", tag)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(body, "commit: "+commit) && !slices.Contains(remove, tag) {
+			remove = append(remove, tag)
+		}
+	}
+	var errs []error
+	for _, tag := range remove {
+		refsByRemote := map[string]bool{}
+		for _, ref := range remoteTags[tag] {
+			refsByRemote[ref.remote] = true
+		}
+		for _, remote := range slices.Sorted(maps.Keys(refsByRemote)) {
+			if _, err := repo.Git("push", remote, ":refs/tags/"+tag); err != nil {
+				errs = append(errs, fmt.Errorf("removing replaced freeze advisory tag %s from %s: %w", tag, remote, err))
+			}
+		}
+		if _, err := repo.Git("tag", "-d", tag); err != nil && gitx.ExitCode(err) != 1 {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func freezeLogTags(repo *gitx.Repo, cfg *config.Config, f *activeFreeze) (map[string][]remoteTag, error) {
