@@ -77,10 +77,11 @@ func ParseDiff(out string) ([]Line, error) {
 			continue
 		}
 		switch {
-		case strings.HasPrefix(raw, "+++ b/"):
-			path = strings.TrimPrefix(raw, "+++ b/")
 		case strings.HasPrefix(raw, "+++ "):
-			path = ""
+			var err error
+			if path, err = headerPath(strings.TrimPrefix(raw, "+++ ")); err != nil {
+				return nil, fmt.Errorf("diff header %q: %w", raw, err)
+			}
 		case strings.HasPrefix(raw, "@@ "):
 			fields := strings.Fields(raw)
 			if len(fields) < 3 || !strings.HasPrefix(fields[1], "-") || !strings.HasPrefix(fields[2], "+") {
@@ -105,6 +106,25 @@ func ParseDiff(out string) ([]Line, error) {
 		removed[l.Text]--
 		return true
 	}), nil
+}
+
+// headerPath reads the path of a "+++ " header, "" for /dev/null. git ends a
+// path with a space by a tab and writes one with a quote, backslash or
+// control character as a C string, which Go's octal and letter escapes read.
+func headerPath(name string) (string, error) {
+	name = strings.TrimSuffix(name, "\t")
+	if strings.HasPrefix(name, `"`) {
+		unquoted, err := strconv.Unquote(name)
+		if err != nil {
+			return "", fmt.Errorf("quoted path: %w", err)
+		}
+		name = unquoted
+	}
+	path, ok := strings.CutPrefix(name, "b/")
+	if !ok {
+		return "", nil
+	}
+	return path, nil
 }
 
 // hunkRange reads "start,count" of a hunk header; count is 1 when left out.

@@ -141,6 +141,34 @@ func TestParseDiff(t *testing.T) {
 	}
 }
 
+// TestParseDiffOddPaths: git ends a header path with a space by a tab and
+// writes a path with a quote or a control character as a C string.
+func TestParseDiffOddPaths(t *testing.T) {
+	diff := strings.Join([]string{
+		"+++ b/a b.txt\t",
+		"@@ -0,0 +1 @@",
+		"+x",
+		`+++ "b/q\"t.txt"`,
+		"@@ -0,0 +1 @@",
+		"+y",
+		`+++ "b/tab\tname.txt"`,
+		"@@ -0,0 +1 @@",
+		"+z",
+		"",
+	}, "\n")
+	lines, err := ParseDiff(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Line{{"a b.txt", 1, "x"}, {`q"t.txt`, 1, "y"}, {"tab\tname.txt", 1, "z"}}
+	if !slices.Equal(lines, want) {
+		t.Errorf("lines = %+v, want %+v", lines, want)
+	}
+	if _, err := ParseDiff("+++ \"b/broken\n"); err == nil {
+		t.Error("a malformed quoted path passed")
+	}
+}
+
 func TestCorpusExcludesOwnModules(t *testing.T) {
 	root := t.TempDir()
 	goroot, mod, cache := filepath.Join(root, "go"), filepath.Join(root, "mod"), filepath.Join(root, "cache")
