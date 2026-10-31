@@ -156,8 +156,8 @@ func TestShellRefs(t *testing.T) {
 		`echo ${x:-${TOKEN}} $$HOME ${1}`:    {"TOKEN"},
 		`echo ${A} ${B}`:                     {"A", "B"},
 	} {
-		if got := ShellRefs(s); !slices.Equal(got, want) {
-			t.Errorf("ShellRefs(%q) = %q, want %q", s, got, want)
+		if got, err := ShellRefs(s); err != nil || !slices.Equal(got, want) {
+			t.Errorf("ShellRefs(%q) = %q, %v; want %q", s, got, err, want)
 		}
 	}
 	if _, err := Refs(`echo ${w%|*}`); err == nil {

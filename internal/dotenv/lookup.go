@@ -95,26 +95,20 @@ func Expand(s string, l *Lookup) (string, error) {
 }
 
 // Refs lists the keys s refers to as ${KEY}.
-func Refs(s string) ([]string, error) {
-	var keys []string
-	_, err := expand(s, func(key string) (string, error) {
-		keys = append(keys, key)
-		return "", nil
-	}, true)
-	return keys, err
-}
+func Refs(s string) ([]string, error) { return refs(s, true) }
 
 // ShellRefs lists the keys s refers to as ${KEY}, s being a command's text
 // that graft does not expand: a ${...} that is no key, ${w%|*}, is the
 // shell's own expansion, not a reference.
-func ShellRefs(s string) []string {
+func ShellRefs(s string) ([]string, error) { return refs(s, false) }
+
+func refs(s string, strict bool) ([]string, error) {
 	var keys []string
-	// Not strict: expand fails on nothing else.
-	_, _ = expand(s, func(key string) (string, error) {
+	_, err := expand(s, func(key string) (string, error) {
 		keys = append(keys, key)
 		return "", nil
-	}, false)
-	return keys
+	}, strict)
+	return keys, err
 }
 
 // expand resolves the ${KEY} of s; strict fails on a ${ that is no key,

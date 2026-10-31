@@ -859,13 +859,11 @@ func (r *Runner) missing(t *config.Task, steps []config.Step) []string {
 		texts = append(texts, t.Env[k])
 	}
 	c.Refs(texts)
+	var argv []string
 	for _, s := range steps {
-		for _, a := range s.Argv {
-			for _, key := range dotenv.ShellRefs(a) {
-				c.require(key)
-			}
-		}
+		argv = append(argv, s.Argv...)
 	}
+	c.refsBy(argv, dotenv.ShellRefs)
 	return c.Problems()
 }
 
@@ -1831,9 +1829,12 @@ func (c *KeyCheck) Keys(keys []config.DotEnvKey) {
 }
 
 // Refs checks that every ${KEY} in texts is set.
-func (c *KeyCheck) Refs(texts []string) {
+func (c *KeyCheck) Refs(texts []string) { c.refsBy(texts, dotenv.Refs) }
+
+// refsBy requires the keys find lists in texts.
+func (c *KeyCheck) refsBy(texts []string, find func(string) ([]string, error)) {
 	for _, text := range texts {
-		refs, err := dotenv.Refs(text)
+		refs, err := find(text)
 		if err != nil {
 			c.problems = append(c.problems, err.Error())
 			continue

@@ -283,7 +283,11 @@ func dotenvRef(t *config.Task) (string, error) {
 	}
 	for _, s := range t.Run {
 		for _, a := range s.Argv {
-			refs = append(refs, dotenv.ShellRefs(a)...)
+			keys, err := dotenv.ShellRefs(a)
+			if err != nil {
+				return "", err
+			}
+			refs = append(refs, keys...)
 		}
 	}
 	for _, key := range refs {
