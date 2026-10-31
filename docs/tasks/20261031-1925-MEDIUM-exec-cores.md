@@ -1,6 +1,7 @@
 # graft exec --heavy --cores N: явный резерв ядер
 
-Статус: открыт
+Статус: готово
+Исполнитель: graft-master
 
 ## Что сделать
 
@@ -25,3 +26,4 @@
 - 2026-10-31 20:12 note — graft-master: 20:1x Luna приняла (2 захода: 1-я приёмка упала на чужом флейке TestSignalStopsTheCommand — тикет caller-gone-signal-flake, боец его не трогал). Моё ревью: разбор и границы N верны, тест ловит подмену (история 4 → резерв 1.5), удалённый путь не нужен (sh не go test). Правки сам: обёртка WaitWithSettleCores слита в WaitWithSettle с параметром cores (без полу-алиаса), фраза README перенесена из середины абзаца --settle. Ветка 13fa924, на main — патчем (main ушёл на 5b725de).
 - 2026-10-31 20:35 note — graft-master: 20:35 v2.70.0 (all зелёный после dd8fdbd), install ноут+pc; живая проба --cores 1 → живой резерв {"cores":1,...,"task":"exec"}. llmark-master уведомлён. Идёт независимая проверка (суб-агент Opus).
 - 2026-10-31 20:38 note — graft-master: 20:4x независимая проверка (суб-агент Opus): пункты 1–7 да (границы N пробами, мутации expectedReserveCores и admit ловятся TestExecCoresReservesGivenCores, верхняя граница — TestExecCoresUsage, живой резерв 1.5 с --settle 3s), п.8 нет — graft help exec без --cores (help.go:72). Исправлено: const execSyntax для usage и help, строка --cores в details; общий разрыв — тикет usage-help-drift.
+- 2026-10-31 20:42 готово — verifier-opus (session graft-master): суб-агент Opus 31.10 20:3x–20:4x: границы N пробами graft (0,-1,abc,NaN,Inf,33,22.5 → 125), мутации expectedReserveCores/admit → TestExecCoresReservesGivenCores FAIL, верхняя граница → TestExecCoresUsage FAIL; живой резерв {cores:1.5} с --settle 3s 20:36:52–20:37:09; README:172-175,328; help exec с --cores на 11727a4 (бинарь из checkout), usage = help (const execSyntax); glint: 12 findings, debt glint-debt-reserve

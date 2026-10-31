@@ -1,5 +1,5 @@
-github.com/aiseeq/akit v1.21.14 h1:8nccWEKsaVULdLh+S7OFOpHH0ic22FjYw6DU63leD0g=
-github.com/aiseeq/akit v1.21.14/go.mod h1:jnR4/oknueNXx8824Wpnkn3tAO/yniJ3qmvZirGrvxk=
+github.com/aiseeq/akit v1.21.16 h1:uus8iBqKShxIhGMbFjHUidhlPRK3GATDWsDSKLThXjQ=
+github.com/aiseeq/akit v1.21.16/go.mod h1:jnR4/oknueNXx8824Wpnkn3tAO/yniJ3qmvZirGrvxk=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/gofrs/flock v0.13.1 h1:jjREztyBeSKBZYAC+mgc1laB+xsgy4kYMf3FbKF2UBo=
 github.com/gofrs/flock v0.13.1/go.mod h1:sf4BFiHwnvgxa25DlQoDqXQnwRMEOwqxRq37P6MzzmE=
