@@ -74,21 +74,39 @@ func (a *App) Amend(ctx context.Context) error {
 		if message, err = a.withWorkers(repo, cfg, message); err != nil {
 			return errors.Join(err, restoreIndex(repo, index))
 		}
-		if _, err := repo.GitInput(strings.NewReader(message), markerEnv, "commit", "--amend", "--cleanup=verbatim", "-F", "-"); err != nil {
+		previousHead, err := repo.Git("rev-parse", "HEAD")
+		if err != nil {
 			return errors.Join(err, restoreIndex(repo, index))
 		}
-		if frozen != nil {
-			if err := a.recordCommitAdvisoryLocal(repo, cfg, frozen, advisoryFailed); err != nil {
-				return err
-			}
-		}
-		head, err := repo.Git("rev-parse", "--short", "HEAD")
-		if err != nil {
-			return err
-		}
-		a.printf("amended the last commit, now %s (not pushed)", strings.TrimSpace(head))
-		return nil
+		return a.finishAmend(repo, cfg, message, frozen, strings.TrimSpace(previousHead), advisoryFailed, index)
 	})
+}
+
+func (a *App) finishAmend(repo *gitx.Repo, cfg *config.Config, message string, frozen *activeFreeze, previousHead string, advisoryFailed []string, index savedIndex) error {
+	if _, err := repo.GitInput(strings.NewReader(message), markerEnv, "commit", "--amend", "--cleanup=verbatim", "-F", "-"); err != nil {
+		return errors.Join(err, restoreIndex(repo, index))
+	}
+	if frozen != nil {
+		if err := a.replaceAmendAdvisoryRecord(repo, cfg, frozen, previousHead, advisoryFailed); err != nil {
+			return fmt.Errorf("amend is made, but the advisory record for %s failed: %w", strings.Join(advisoryFailed, ", "), err)
+		}
+	}
+	head, err := repo.Git("rev-parse", "--short", "HEAD")
+	if err != nil {
+		return err
+	}
+	a.printf("amended the last commit, now %s (not pushed)", strings.TrimSpace(head))
+	return nil
+}
+
+func (a *App) replaceAmendAdvisoryRecord(repo *gitx.Repo, cfg *config.Config, frozen *activeFreeze, previousHead string, failed []string) error {
+	if err := removeCommitAdvisoryLogs(repo, cfg, frozen, previousHead); err != nil {
+		return fmt.Errorf("previous freeze advisory record could not be replaced: %w", err)
+	}
+	if err := a.recordCommitAdvisoryLocal(repo, cfg, frozen, failed); err != nil {
+		return fmt.Errorf("replacement freeze advisory record could not be made: %w", err)
+	}
+	return nil
 }
 
 func (a *App) recordCommitAdvisoryLocal(repo *gitx.Repo, cfg *config.Config, frozen *activeFreeze, failed []string) error {
@@ -106,7 +124,12 @@ func (a *App) recordCommitAdvisoryLocal(repo *gitx.Repo, cfg *config.Config, fro
 	for _, task := range failed {
 		tag, err := a.commitAdvisoryLogLocal(repo, cfg, frozen, strings.TrimSpace(head), task)
 		if err != nil {
-			return fmt.Errorf("amended commit %s task %s: freeze journal record could not be made: %w", gitx.Short(strings.TrimSpace(head)), task, err)
+			var localErr *localFreezeLogError
+			if !errors.As(err, &localErr) {
+				return fmt.Errorf("amended commit %s task %s: freeze journal record could not be made: %w", gitx.Short(strings.TrimSpace(head)), task, err)
+			}
+			tag = localErr.tag
+			a.printf("warning: advisory record %s is local because checking its remotes failed: %v", tag, localErr.err)
 		}
 		var commands []string
 		for _, remote := range remotes {

@@ -95,8 +95,9 @@ func TestFreezeAmendKeepsAdvisoryTagLocal(t *testing.T) {
 	if !strings.Contains(out, "not pushed") {
 		t.Fatalf("amend output does not explain that the commit was not pushed:\n%s", out)
 	}
-	if len(d.remoteTags("freeze-log/prod/1.2.10/")) != len(before) {
-		t.Fatal("amend published its advisory journal tag for an unpushed commit")
+	after := d.remoteTags("freeze-log/prod/1.2.10/")
+	if len(after) != len(before)-1 {
+		t.Fatalf("amend did not remove the previous commit's advisory tag: before=%v after=%v", before, after)
 	}
 	local := d.git("tag", "--list", "freeze-log/prod/1.2.10/*")
 	short := d.git("rev-parse", "--short", "HEAD")
