@@ -29,34 +29,25 @@ tasks:
     desc: build the binary into bin/
     run:
       - [go, build, -ldflags, '-X main.buildVersion=${GRAFT_VERSION}', -o, bin/graft, .]
+  pilot-gate:
+    desc: run the pilot gate with the already built bin/graft
+    usage: '[--no-pilot]'
+    dotenv: ['GRAFT_PILOT?']
+    run:
+      - sh: 'sh scripts/pilot-gate.sh "$PWD/bin" {args}'
   install:
     desc: install bin/graft into tools.bin_dir (a running graft keeps its file) once the gate of the pilot passes with the new binary
     usage: '[--no-pilot]'
     deps: [build, glint]
     # The pilot is a project of the user's whose gate the new binary runs
     # before it replaces the one every project's hooks run: GRAFT_PILOT in
-    # .env, a path outside this repository.
+    # .env, a path outside this repository. Run from HEAD in a disposable
+    # worktree so the owner's edits and the pilot's tracked files stay alone.
+    # Copy .env because it is ignored and may hold gate configuration; retain
+    # GOWORK from the pilot so external workspace modules remain available.
     dotenv: ['GRAFT_PILOT?']
     run:
-      - sh: |
-          set -eu
-          set -- {args}
-          if [ "$*" = --no-pilot ]; then
-            echo "install: no pilot, as asked"
-          elif [ $# -gt 0 ]; then
-            echo "install: unknown arguments: $*; the one there is: --no-pilot" >&2
-            exit 2
-          elif [ -z "${GRAFT_PILOT:-}" ]; then
-            echo "install: no pilot: set GRAFT_PILOT in .env to a project whose gate the new graft passes first, or install -- --no-pilot" >&2
-            exit 1
-          else
-            new="$PWD/bin"
-            echo "install: the gate of the pilot $GRAFT_PILOT with the new graft"
-            if ! (cd "$GRAFT_PILOT" && PATH="$new:$PATH" "$new/graft" gate); then
-              echo "install: refused: the gate of the pilot $GRAFT_PILOT failed with the new graft; ~/bin/graft is left as it was (install -- --no-pilot skips the pilot)" >&2
-              exit 1
-            fi
-          fi
+      - sh: '"$PWD/bin/graft" pilot-gate -- {args}'
       - install: bin/graft
   fmt:
     desc: format the code
