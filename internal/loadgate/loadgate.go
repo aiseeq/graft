@@ -177,21 +177,62 @@ func (p *Priority) spend(d time.Duration) (left time.Duration, err error) {
 // kind is the task's kind as the stats profile names it, which the disk state
 // source keeps its profiles by.
 func Wait(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (Admission, func() error, error) {
+	return WaitWithSettle(ctx, name, kind, p, l, lockPath, "", 0, log)
+}
+
+// WaitWithSettle admits a heavy task and, when settleLockPath is set,
+// serializes tasks that requested their own settling period on that lock.
+// The ordinary queue still settles for l.Settle.
+func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath, settleLockPath string, settleDuration time.Duration, log io.Writer) (Admission, func() error, error) {
 	m := newMachine(l, log, name, kind)
-	if p != nil {
+	if p != nil && (settleLockPath == "" || settleDuration <= 0) {
 		err := m.admit(ctx, p)
 		return m.admission(), released, err
 	}
+	holder := "graft " + name + " (starting a heavy task)"
+	var settleLock *lock.Lock
 	start := time.Now()
-	lk, err := lock.AcquireFIFO(ctx, lockPath, queueTimeout, "graft "+name+" (starting a heavy task)", log)
+	if settleLockPath != "" && settleDuration > 0 {
+		var err error
+		settleLock, err = lock.AcquireFIFO(ctx, settleLockPath, queueTimeout, holder+" with settle", log)
+		m.waits[WhyQueue] += time.Since(start)
+		if err != nil {
+			return m.admission(), released, err
+		}
+		start = time.Now()
+	}
+	if p != nil {
+		if err := m.admit(ctx, p); err != nil {
+			if settleLock != nil {
+				err = errors.Join(err, settleLock.Release())
+			}
+			return m.admission(), released, err
+		}
+		if settleLock != nil {
+			return m.admission(), settle(settleLock, settleDuration), nil
+		}
+		return m.admission(), released, nil
+	}
+	lk, err := lock.AcquireFIFO(ctx, lockPath, queueTimeout, holder, log)
 	m.waits[WhyQueue] += time.Since(start)
 	if err != nil {
+		if settleLock != nil {
+			err = errors.Join(err, settleLock.Release())
+		}
 		return m.admission(), released, err
 	}
 	if err := m.admit(ctx, nil); err != nil {
+		if settleLock != nil {
+			err = errors.Join(err, settleLock.Release())
+		}
 		return m.admission(), released, errors.Join(err, lk.Release())
 	}
-	return m.admission(), settle(lk, l.Settle), nil
+	release := settle(lk, l.Settle)
+	if settleLock != nil {
+		settleRelease := settle(settleLock, settleDuration)
+		return m.admission(), func() error { return errors.Join(release(), settleRelease()) }, nil
+	}
+	return m.admission(), release, nil
 }
 
 // released is the release of a task that holds nothing.

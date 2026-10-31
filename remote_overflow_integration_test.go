@@ -365,7 +365,12 @@ func TestUserRemoteHeavyOverflowsBehindAHeldQueue(t *testing.T) {
 		t.Skip("the run script is sh")
 	}
 	f, state := userRemoteRepo(t, overflowTasks)
-	hold, _ := f.start(f.work, "exec", "--heavy", "--local", "--settle", "1h", "--", "sleep", "60")
+	// The holder settles for an hour by its own user config: exec --settle
+	// holds only its own lock, not the queue.
+	holder, holdCfg := *f, t.TempDir()
+	writeFile(t, filepath.Join(holdCfg, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 1h, swap_window: 10ms}\n")
+	holder.env = append(slices.Clone(f.env), "XDG_CONFIG_HOME="+holdCfg)
+	hold, _ := holder.start(f.work, "exec", "--heavy", "--local", "--", "sleep", "60")
 	t.Cleanup(func() { _ = hold.Process.Signal(os.Interrupt); _ = hold.Wait() })
 	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 		if held, _ := filepath.Glob(filepath.Join(state, "cache", "graft", "load.lock.*.lholder")); len(held) > 0 {

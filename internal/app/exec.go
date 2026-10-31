@@ -13,7 +13,6 @@ import (
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/tasks"
-	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
 // Exec runs argv in the directory graft started in, a command that is not a
@@ -69,7 +68,7 @@ func exitStatus(exit *exec.ExitError) int {
 type ExecOptions struct {
 	// Heavy queues the command as a heavy task.
 	Heavy bool
-	// Settle, when set, replaces load.settle for this command.
+	// Settle holds the exec settling lock for this duration after admission.
 	Settle time.Duration
 }
 
@@ -95,12 +94,11 @@ func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
 	}
 	r := a.newRunner(root, cfg)
 	if opts.Settle > 0 {
-		load := r.Load
-		r.Load = func() (userconfig.MachineLoad, error) {
-			l, err := load()
-			l.Settle = opts.Settle
-			return l, err
+		lockPath, err := tasks.LoadSettleLock()
+		if err != nil {
+			return err
 		}
+		r.ExecSettleLock, r.ExecSettle = lockPath, opts.Settle
 	}
 	return r.Exec(ctx, a.Dir, argv, heavy)
 }

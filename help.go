@@ -73,7 +73,7 @@ var commands = []command{
 		summary: text("run a command that is not a task, recorded in the stats as exec; --heavy: queue for the machine as heavy tasks do, {threads} and GRAFT_THREADS from load.threads"),
 		details: "--local: with --heavy, run on this machine though the project has remote_heavy (GRAFT_HEAVY=local, for the grafts the command starts too).\n" +
 			"--env: with --heavy, a variable of the caller's that remote_heavy's host gets too (GRAFT_PASS_ENV, for the grafts the command starts too): the host gets the task's env, the threads and GOOS, GOARCH, GOFLAGS, CGO_ENABLED, GOEXPERIMENT, not the caller's other variables, so FOO=1 graft exec --heavy -- go test does not see FOO there; pass it with --env FOO, or keep the command here with --local.\n" +
-			"--settle: with --heavy, keep the queue for this long after the command starts, or until it ends if sooner, in place of load.settle: for a command whose load comes later than its start.\n\n" +
+			"--settle: with --heavy, hold a separate FIFO lock for this long after the command starts, or until it ends if sooner; only another --settle waits for it. The heavy-task queue still uses load.settle.\n\n" +
 			"Exit status: the command's, 128 and the signal for one a signal ended; on remote_heavy's host, the one its run gives.\n" +
 			"  125  graft itself: a usage error, -C, the config, the queue, remote_heavy's run that does not start, an interrupt that ended the command\n" +
 			"  126  the command was found but not started\n" +

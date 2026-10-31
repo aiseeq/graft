@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -156,6 +157,14 @@ func (a *App) Locks() error {
 		return err
 	}
 	paths := []string{repoLock(repo)}
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("locating the cache for the load queue: %w", err)
+	}
+	paths = append(paths,
+		filepath.Join(cache, "graft", "load.lock"),
+		filepath.Join(cache, "graft", "load.settle.lock"),
+	)
 	// A worktree's own commit lock (lock: {scope: worktree}); in the main
 	// worktree it is the repository lock itself.
 	if own := filepath.Join(repo.GitDir, lockFile); own != paths[0] {

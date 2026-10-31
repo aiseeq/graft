@@ -93,6 +93,10 @@ type Runner struct {
 	GraftVersion string
 	// NoCache runs the tasks with cache as if they had none.
 	NoCache bool
+	// ExecSettleLock and ExecSettle hold the separate settling period for
+	// graft exec --settle.
+	ExecSettleLock string
+	ExecSettle     time.Duration
 
 	lookup *dotenv.Lookup
 	base   []string
@@ -1992,6 +1996,9 @@ func (r *Runner) admit(ctx context.Context, name string) (loadgate.Admission, fu
 	if ok {
 		priority = &p
 	}
+	if r.ExecSettle > 0 && r.ExecSettleLock != "" && name == ExecTask {
+		return loadgate.WaitWithSettle(ctx, name, r.kind(name), priority, l, lockPath, r.ExecSettleLock, r.ExecSettle, r.Stderr)
+	}
 	return loadgate.Wait(ctx, name, r.kind(name), priority, l, lockPath, r.Stderr)
 }
 
@@ -2011,6 +2018,16 @@ func loadLock() (string, error) {
 		return "", fmt.Errorf("locating the cache for the load queue: %w", err)
 	}
 	return filepath.Join(cache, "graft", "load.lock"), nil
+}
+
+// LoadSettleLock is the FIFO lock for exec commands that request a settling
+// period separate from the machine's heavy-task queue.
+func LoadSettleLock() (string, error) {
+	path, err := loadLock()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(path), "load.settle.lock"), nil
 }
 
 // heavyEnv adds to the environment of a step what an admitted heavy task
