@@ -19,3 +19,4 @@
 - 2026-10-30 16:39 открыт — graft-master
 - 2026-10-31 11:09 в работе — graft-master
 - 2026-10-31 11:09 note — graft-master: 11:10 боец Luna 1031-1109-fix-freeze-polish, бриф /home/aisee/.cache/worktrees/graft-measure/brief-freeze-polish.md, приёмка: graft gate + go test -run 'FreezePolish|Freeze|Thaw|Amend' ./internal/app/ .; до пилота рабочего проекта 02.11 09:00
+- 2026-10-31 11:53 note — graft-master: 15ae6c9 в main: пункты 1–5 сделаны. Тесты TestFreezePolish* и интеграционный тест thaw красные на старом коде; приёмка брифа 'Freeze|Thaw|Amend' зелёная. Мастер вернул ослабленную проверку в TestFreezeEndsWhenTheBranchReachesProd. Дальше — all, релиз, install до пилота 02.11.
