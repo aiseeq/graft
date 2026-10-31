@@ -26,3 +26,4 @@
 - 2026-10-31 12:01 note — graft-master: akit v1.17.0 (58c1c9b) выпущен с pressure.UserLimits/ReadLimits/LimitsPath, LimitKeys, QuietNotePath; ожидание снято — берусь.
 - 2026-10-31 12:17 в работе — graft-master
 - 2026-10-31 12:17 note — graft-master: боец Luna по брифу /home/aisee/.cache/worktrees/graft-measure/brief-pressure-user-limits.md, дерево fix-pressure-user-limits. Пользовательские конфиги graft на ноуте и pc ключей порогов в load: не имеют — удаление ничего не сломает.
+- 2026-10-31 13:13 note — graft-master: e8ce532 в main. Ревью мастера: сторож фикстур ужесточён — число своих записей user config в файле ≤ числа writeTestPressure (мутация: убрал один вызов в load_integration_test.go — красный). Мутация UserLimits→DefaultLimits в loadgate роняет TestPressureUserLimitsControlSwapAdmission и TestBrokenPressureLimitsFailBusyCheck. all 13:06–13:12 зелёный; корневой пакет 120.7 с против 123.5/131.0 в прошлых all — без роста.
