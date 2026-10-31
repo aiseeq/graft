@@ -662,7 +662,10 @@ dotenv_sets:                   # key lists several tasks and services share
   arguments; `graft help` shows which tasks take them. Inside `[...]`,
   quote it: `'{args}'`, `'--run={args}'`. Unquoted, YAML reads `{args}` as a
   map and cannot parse `--run={args}`; graft says so.
-- Steps get graft's environment without git's hook variables and without
+- Steps get graft's environment without git's hook variables, without
+  `PWD` (the caller's directory, which the go command would hash into the
+  key of a test that calls `os.Getwd`: the same code called from elsewhere
+  would miss the test cache; a shell sets its own), and without
   the `.env` file: only the keys listed in `dotenv` and `dotenv_sets`, the
   `env` values, the test database DSN and `GRAFT_VERSION` are added.
   `GRAFT_VERSION` is `graft version --describe`; before the first commit

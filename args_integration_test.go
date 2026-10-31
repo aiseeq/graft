@@ -290,3 +290,25 @@ func TestTestDBUnknownActionIsUsageError(t *testing.T) {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
 }
+
+// TestStepsDoNotInheritTheCallersPWD: a step does not get the PWD of the
+// shell graft was called from, which the go command would put into the key
+// of a test that calls os.Getwd: the same code called from another
+// directory would miss the test cache. A task's own env still sets it.
+func TestStepsDoNotInheritTheCallersPWD(t *testing.T) {
+	f := tasksRepo(t, "", nil)
+	out := f.path("out.txt")
+	f.write(".graft.yaml", f.read(".graft.yaml")+`tasks:
+  bare:
+    run: [`+helperStep("env", out, "PWD")+`]
+  own:
+    env: {PWD: /own}
+    run: [`+helperStep("env", out, "PWD")+`]
+`)
+	f.env = []string{"PWD=" + t.TempDir()}
+	f.mustGraft("bare")
+	f.mustGraft("own")
+	if got := strings.Join(f.lines("out.txt"), ","); got != "PWD unset,PWD=/own" {
+		t.Errorf("PWD in the steps = %s", got)
+	}
+}

@@ -1884,8 +1884,11 @@ func BaseEnv() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing git environment variables: %w", err)
 	}
+	// PWD is the caller's directory, not the step's: the go command hashes
+	// it into the key of a test that calls os.Getwd, and the same code
+	// called from elsewhere would miss the test cache. A shell sets its own.
 	// Non-nil even when empty: the runner caches it and nil means not read yet.
-	return append([]string{}, gitx.Without(os.Environ(), append(gitVars, MarkerEnv, ExecHeavyEnv))...), nil
+	return append([]string{}, gitx.Without(os.Environ(), append(gitVars, MarkerEnv, ExecHeavyEnv, "PWD"))...), nil
 }
 
 func sortedKeys(m map[string]string) []string {
