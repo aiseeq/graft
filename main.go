@@ -323,6 +323,7 @@ func statsCmd(a *app.App, args []string) error {
 	maxLoad := fs.Float64("max-load", 0, "count only the runs whose 1-minute load average stayed below this `load`")
 	value := fs.String("value", "", "print one timing: wall-p50, wall-p95 or wait-p95")
 	minRuns := fs.Int("min-runs", 3, "minimum runs for --value (default 3)")
+	failures := fs.Bool("failures", false, "show recent failed tasks and steps with their captured reason")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -359,7 +360,10 @@ func statsCmd(a *app.App, args []string) error {
 	if maxLoadSet && (*maxLoad <= 0 || math.IsNaN(*maxLoad) || math.IsInf(*maxLoad, 0)) {
 		return fmt.Errorf("%w: --max-load: want a positive load, got %v", errUsage, *maxLoad)
 	}
-	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task, In: *in, Tests: *tests, MaxLoad: *maxLoad, Value: *value, MinRuns: *minRuns})
+	if *failures && (*tests || *value != "" || *maxLoad != 0) {
+		return fmt.Errorf("%w: --failures cannot be used with --tests, --value or --max-load", errUsage)
+	}
+	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task, In: *in, Tests: *tests, MaxLoad: *maxLoad, Value: *value, MinRuns: *minRuns, Failures: *failures})
 }
 
 func validateStatsValue(value, task, in string, inSet, tests bool, minRuns int, minRunsSet bool) error {

@@ -1,11 +1,13 @@
 package app
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/aiseeq/graft/v2/internal/gitx"
@@ -27,9 +29,10 @@ type StatsOptions struct {
 	// Tests reports the tests instead of the tasks.
 	Tests bool
 	// MaxLoad, when set, takes only the runs whose load stayed below it.
-	MaxLoad float64
-	Value   string
-	MinRuns int
+	MaxLoad  float64
+	Value    string
+	MinRuns  int
+	Failures bool
 }
 
 // overLimitsShown is how many tasks over their limits a report names, the
@@ -65,6 +68,9 @@ func (a *App) Stats(o StatsOptions) error {
 	if malformed > 0 {
 		fmt.Fprintf(a.Stderr, "graft: %s: %d malformed line(s) left out\n", path, malformed)
 	}
+	if o.Failures {
+		return a.statsFailures(recs, f, o, where, since)
+	}
 	if o.Value != "" {
 		return a.statsValue(recs, f, o)
 	}
@@ -98,6 +104,46 @@ func (a *App) Stats(o StatsOptions) error {
 	}
 	if more := len(over) - overLimitsShown; more > 0 {
 		a.printf("and %d more over their limits", more)
+	}
+	return nil
+}
+
+func (a *App) statsFailures(records []stats.Record, filter stats.Filter, o StatsOptions, where string, since time.Time) error {
+	failures := stats.FailureRuns(records, filter.Project, o.Task, o.In)
+	start := sinceText(since, earliest(records, func(r *stats.Record) time.Time { return r.Time }))
+	if len(failures) == 0 {
+		a.printf("no failures since %s", start)
+		return nil
+	}
+	a.printf("failures in %s since %s", where, start)
+	var headers bytes.Buffer
+	tw := tabwriter.NewWriter(&headers, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "TIME\tPROJECT/TREE\tTASK\tSTEP\tEXIT")
+	for _, r := range failures {
+		step := r.Step
+		if step == "" {
+			step = "(before step)"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\n", r.Time.Local().Format("2006-01-02 15:04:05"), r.Project, r.Task, step, r.Exit)
+	}
+	if err := tw.Flush(); err != nil {
+		return fmt.Errorf("formatting failure report: %w", err)
+	}
+	rows := strings.Split(strings.TrimSuffix(headers.String(), "\n"), "\n")
+	a.printf("%s", rows[0])
+	for i, r := range failures {
+		reason := r.Reason
+		if reason == "" {
+			reason = "-"
+		}
+		lines := strings.Split(reason, "\n")
+		var block strings.Builder
+		block.WriteString(rows[i+1])
+		block.WriteByte('\n')
+		for _, line := range lines {
+			fmt.Fprintf(&block, "    %s\n", line)
+		}
+		a.printf("%s", strings.TrimSuffix(block.String(), "\n"))
 	}
 	return nil
 }

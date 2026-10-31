@@ -306,7 +306,7 @@ stats` (`wait_s`).
 | `graft start` / `stop` / `restart [service]` | background services, all of them without a name |
 | `graft logs <service> [--lines N] [-f]` | the end of a service's log, or its journal; `-f` follows until Ctrl-C |
 | `graft exec [--heavy [--local] [--env <name>]... [--settle <duration>]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local`; the host gets no variable of the caller's but the go command's own unless `--env <name>` names it; `--settle` holds the queue after it starts in place of `load.settle` |
-| `graft stats [--since 7d] [--project <root>\|--all] [--task <name>]` | recorded resource use of tasks (see [Resource stats](#resource-stats)) |
+| `graft stats [--failures] [--since 7d] [--project <root>\|--all] [--task <name>]` | recorded resource use and recent failure reasons (see [Resource stats](#resource-stats)) |
 | `graft status` | services, the test database, held locks |
 | `graft locks` | who holds graft's locks |
 | `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |
@@ -953,6 +953,17 @@ A failing `step` or `task` line in `stats.jsonl` has a `reason` with up to
 to stderr when they are empty. A task line uses the first failing step's reason.
 Output sent directly to a terminal is not captured, so its failing step has
 no `reason`; this keeps the child connected to the terminal.
+
+`graft stats --failures` lists recent failed steps and task failures that
+happened before a step ran, newest first. Each row shows the time, project
+tree, task, step, exit code and the complete recorded reason. `--since` sets
+the window; `--task` selects a task, `--project` selects a project tree, and
+`--all` includes every project. Use `--in <task>` with `--task` to select
+failures from runs in that task. A red gate points to this report. When a task
+fails with the same first reason as its previous failed run in the same tree,
+graft prints how long ago that reason appeared and the consecutive failure
+number. Successful runs break the streak. Captured reasons omit graft status
+lines and warnings.
 
 A task the cache skipped is a `"kind":"cache-hit"` line with the wall and
 CPU time of the run whose pass it reused: the time the skip saved.

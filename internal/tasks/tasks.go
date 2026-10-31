@@ -130,6 +130,10 @@ type Runner struct {
 	// frames are the tasks running now, outermost first; every process a
 	// step runs counts in all of them.
 	frames []*frame
+	// failureHistory is read once from the newest journal tail when a task
+	// fails; nested failed frames share that snapshot.
+	failureHistory       []stats.Record
+	failureHistoryLoaded bool
 }
 
 // frame is a running task as the stats see it.
@@ -700,9 +704,9 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 		return reportAdvisoryFailure(gs.step.Task, stepErr, onAdvisory)
 	}
 	if gs.hint != "" {
-		return fmt.Errorf("gate failed at %q: %w\n%s", s.Source, stepErr, gs.hint)
+		return fmt.Errorf("gate failed at %q (see graft stats --failures): %w\n%s", s.Source, stepErr, gs.hint)
 	}
-	return fmt.Errorf("gate failed at %q: %w", s.Source, stepErr)
+	return fmt.Errorf("gate failed at %q (see graft stats --failures): %w", s.Source, stepErr)
 }
 
 func reportAdvisoryFailure(task string, err error, report func(string, error)) error {
@@ -1439,8 +1443,8 @@ func (r *Runner) measureWithCapture(cmd *exec.Cmd, source string, capture bool) 
 	return r.measureWithReason(cmd, source, capture, capture, nil)
 }
 
-// measureWithReason runs and records cmd; the reason of a failed step is
-// reasonSource's when it gives one, else the tail of stderr, else of stdout.
+// measureWithReason runs and records cmd; the reason of a failed step is the
+// first useful cleaned reason from reasonSource, stderr, or stdout.
 func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, captureStdout bool, reasonSource func() string) (stats.Usage, error) {
 	stdout, stderr, piped := captureStepOutput(cmd, captureStderr, captureStdout)
 	autoWaitDelay := false
@@ -1467,18 +1471,33 @@ func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, 
 		r.Stats.Warn(werr)
 	}
 	code := cmd.ProcessState.ExitCode()
-	var reason string
-	if reasonSource != nil {
-		reason = reasonSource()
-	}
-	if reason == "" && stderr != nil {
-		reason = stderr.reason()
-	}
-	if reason == "" && stdout != nil {
-		reason = stdout.reason()
-	}
+	reason := stepFailureReason(reasonSource, stderr, stdout, code)
 	r.recordStep(source, use, code, reason)
 	return use, err
+}
+
+func stepFailureReason(source func() string, stderr, stdout *tailCapture, code int) string {
+	var sourceReason string
+	if source != nil {
+		sourceReason = source()
+	}
+	var stderrReason, stdoutReason string
+	if stderr != nil {
+		stderrReason = stderr.reason()
+	}
+	if stdout != nil {
+		stdoutReason = stdout.reason()
+	}
+	for _, candidate := range []string{sourceReason, stderrReason, stdoutReason} {
+		if reason := stats.CleanReason(candidate); reason != "" {
+			return reason
+		}
+	}
+	hadOutput := sourceReason != "" || (stderr != nil && stderr.hasOutput()) || (stdout != nil && stdout.hasOutput())
+	if hadOutput {
+		return fmt.Sprintf("command failed with exit code %d", code)
+	}
+	return ""
 }
 
 // captureStepOutput tees the asked streams into tails; piped tells whether
@@ -1536,7 +1555,13 @@ func (c *tailCapture) reason() string {
 	if len(lines) > 10 {
 		lines = lines[len(lines)-10:]
 	}
-	return stats.LimitReason(strings.Join(lines, "\n"))
+	return stats.CleanReason(strings.Join(lines, "\n"))
+}
+
+func (c *tailCapture) hasOutput() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.data) > 0
 }
 
 // begin opens the stats frame of a task.
@@ -1566,6 +1591,8 @@ func (r *Runner) end(f *frame, failed bool) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
 	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, DiskProfile: f.diskProfile}
 	if failed {
+		rec.Time = time.Now()
+		rec.Project = r.Root
 		// A failure outside the processes (a missing key, a lock timeout)
 		// has no exit status of its own.
 		rec.Exit = f.exit
@@ -1573,6 +1600,9 @@ func (r *Runner) end(f *frame, failed bool) stats.Usage {
 			rec.Exit = -1
 		}
 		rec.Reason = f.reason
+		if after, count, same := r.sameFailure(rec); same {
+			fmt.Fprintf(r.Stderr, "graft: %s: %s\n", f.task, stats.RepeatFailureLine(after, count))
+		}
 	}
 	use := f.use
 	use.Wall = time.Since(f.start)
@@ -1597,6 +1627,21 @@ func (r *Runner) end(f *frame, failed bool) stats.Usage {
 		r.overLimit(f.task, use)
 	}
 	return use
+}
+
+func (r *Runner) sameFailure(current stats.Record) (time.Duration, int, bool) {
+	if !r.failureHistoryLoaded {
+		r.failureHistoryLoaded = true
+		if path, err := stats.Path(); err == nil {
+			history, _, loadErr := stats.LoadTail(path, 1<<20)
+			if loadErr == nil {
+				r.failureHistory = history
+			} else {
+				fmt.Fprintf(r.Stderr, "graft: reading previous failure history: %v\n", loadErr)
+			}
+		}
+	}
+	return stats.SameFailure(r.failureHistory, current)
 }
 
 // overLimit says when the outermost task took longer than its user config

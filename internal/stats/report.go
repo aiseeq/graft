@@ -2,6 +2,7 @@ package stats
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,16 +35,68 @@ func Load(path string, since time.Time) (recs []Record, malformed int, err error
 	return recs, malformed, nil
 }
 
-func loadFile(path string) (recs []Record, malformed int, err error) {
-	f, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
+// LoadTail reads at most maxBytes from the newest end of the stats journal,
+// including rotated copies, oldest first. A partial first line is discarded.
+func LoadTail(path string, maxBytes int64) (recs []Record, malformed int, err error) {
+	if maxBytes <= 0 {
 		return nil, 0, nil
 	}
+	files, err := Files(path, time.Time{})
 	if err != nil {
-		return nil, 0, fmt.Errorf("reading the stats: %w", err)
+		return nil, 0, err
+	}
+	remaining := maxBytes
+	var newestFirst [][]Record
+	for i := len(files) - 1; i >= 0 && remaining > 0; i-- {
+		rows, bad, read, readErr := loadTailFile(files[i], remaining)
+		if readErr != nil {
+			return nil, 0, readErr
+		}
+		remaining -= read
+		malformed += bad
+		newestFirst = append(newestFirst, rows)
+	}
+	for i := len(newestFirst) - 1; i >= 0; i-- {
+		recs = append(recs, newestFirst[i]...)
+	}
+	return recs, malformed, nil
+}
+
+func loadTailFile(path string, maxBytes int64) ([]Record, int, int64, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, 0, 0, nil
+	}
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("reading the stats: %w", err)
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
+	info, err := f.Stat()
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("reading %s: %w", path, err)
+	}
+	start := max(int64(0), info.Size()-maxBytes)
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return nil, 0, 0, fmt.Errorf("reading %s: %w", path, err)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, info.Size()-start))
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("reading %s: %w", path, err)
+	}
+	read := int64(len(data))
+	if start > 0 {
+		lineEnd := bytes.IndexByte(data, '\n')
+		if lineEnd < 0 {
+			return nil, 0, read, nil
+		}
+		data = data[lineEnd+1:]
+	}
+	recs, malformed, err := decodeRecords(bytes.NewReader(data))
+	return recs, malformed, read, err
+}
+
+func decodeRecords(reader io.Reader) (recs []Record, malformed int, err error) {
+	sc := bufio.NewScanner(reader)
 	sc.Buffer(make([]byte, 64*1024), 1<<20)
 	for sc.Scan() {
 		var r Record
@@ -54,6 +107,22 @@ func loadFile(path string) (recs []Record, malformed int, err error) {
 		recs = append(recs, r)
 	}
 	if err := sc.Err(); err != nil {
+		return recs, malformed, fmt.Errorf("scanning stats records: %w", err)
+	}
+	return recs, malformed, nil
+}
+
+func loadFile(path string) (recs []Record, malformed int, err error) {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, 0, nil
+	}
+	if err != nil {
+		return nil, 0, fmt.Errorf("reading the stats: %w", err)
+	}
+	defer f.Close()
+	recs, malformed, err = decodeRecords(f)
+	if err != nil {
 		return nil, 0, fmt.Errorf("reading %s: %w", path, err)
 	}
 	return recs, malformed, nil
