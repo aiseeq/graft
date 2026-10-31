@@ -1014,7 +1014,7 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 	if remote {
 		// A step goes to the host only as its task could: not with the test
 		// database, .env keys or a directory the host lacks.
-		why, err := r.stayHere(ctx, t, r.taskDir(t))
+		why, err := r.stayHere(t, r.taskDir(t))
 		if err != nil {
 			return nil, err
 		}

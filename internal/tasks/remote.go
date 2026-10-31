@@ -51,7 +51,7 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 		fmt.Fprintf(r.Stderr, "graft: %s: heavy, on this machine: %s\n", name, why)
 		return false, why, nil
 	}
-	why, err := r.stayHere(ctx, t, dir)
+	why, err := r.stayHere(t, dir)
 	if err != nil {
 		return false, "", err
 	}
@@ -220,7 +220,7 @@ func goCheckNoOutput(argv, args []string) bool {
 // stayHere is why the heavy task stays on this machine, "" when it goes to
 // the host: what it needs here, a test database, a report file, .env
 // values, the commit message file, or a host that does not answer.
-func (r *Runner) stayHere(ctx context.Context, t *config.Task, dir string) (string, error) {
+func (r *Runner) stayHere(t *config.Task, dir string) (string, error) {
 	switch v := os.Getenv(HeavyEnv); v {
 	case "":
 	case "local":

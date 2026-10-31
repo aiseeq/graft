@@ -45,38 +45,38 @@ func (a *App) Amend(ctx context.Context) error {
 		}
 		frozen, advisoryFailed, err := a.gateForMessage(ctx, repo, cfg, branch, message)
 		if err != nil {
-			return errors.Join(err, restoreIndex(repo, index))
+			return errors.Join(err, restoreIndex(index))
 		}
 		if err := a.stageGateChanges(repo, start, "amend"); err != nil {
-			return errors.Join(err, restoreIndex(repo, index))
+			return errors.Join(err, restoreIndex(index))
 		}
 		if empty, err := stagedIs(repo, base); err != nil || empty {
 			if err == nil {
 				err = errGateEmptiedAmend
 			}
-			return errors.Join(err, restoreIndex(repo, index))
+			return errors.Join(err, restoreIndex(index))
 		}
 		if ticketed {
 			// The amended commit is checked whole, against its parent.
 			if err := requireTicket(repo, cfg, message, base); err != nil {
-				return errors.Join(err, restoreIndex(repo, index))
+				return errors.Join(err, restoreIndex(index))
 			}
 		}
 		// The amended commit follows HEAD's parent: undoing part of HEAD is
 		// no revert.
 		parent, err := repo.Parent("HEAD")
 		if err != nil {
-			return errors.Join(err, restoreIndex(repo, index))
+			return errors.Join(err, restoreIndex(index))
 		}
 		if err := runChecks(repo, cfg, message, parent, a.Stderr); err != nil {
-			return errors.Join(err, restoreIndex(repo, index))
+			return errors.Join(err, restoreIndex(index))
 		}
 		if message, err = a.withWorkers(repo, cfg, message); err != nil {
-			return errors.Join(err, restoreIndex(repo, index))
+			return errors.Join(err, restoreIndex(index))
 		}
 		previousHead, err := repo.Git("rev-parse", "HEAD")
 		if err != nil {
-			return errors.Join(err, restoreIndex(repo, index))
+			return errors.Join(err, restoreIndex(index))
 		}
 		return a.finishAmend(repo, cfg, message, frozen, strings.TrimSpace(previousHead), advisoryFailed, index)
 	})
@@ -84,7 +84,7 @@ func (a *App) Amend(ctx context.Context) error {
 
 func (a *App) finishAmend(repo *gitx.Repo, cfg *config.Config, message string, frozen *activeFreeze, previousHead string, advisoryFailed []string, index savedIndex) error {
 	if _, err := repo.GitInput(strings.NewReader(message), markerEnv, "commit", "--amend", "--cleanup=verbatim", "-F", "-"); err != nil {
-		return errors.Join(err, restoreIndex(repo, index))
+		return errors.Join(err, restoreIndex(index))
 	}
 	if frozen != nil {
 		if err := a.replaceAmendAdvisoryRecord(repo, cfg, frozen, previousHead, advisoryFailed); err != nil {

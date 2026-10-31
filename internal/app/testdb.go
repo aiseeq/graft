@@ -90,10 +90,10 @@ func (a *App) TestDB(ctx context.Context, name string) error {
 	if !action.locked {
 		return action.run(a, ctx, repo, cfg, db)
 	}
-	return a.withTestDBLock(ctx, repo, cfg, func() error { return action.run(a, ctx, repo, cfg, db) })
+	return a.withTestDBLock(ctx, cfg, func() error { return action.run(a, ctx, repo, cfg, db) })
 }
 
-func (a *App) withTestDBLock(ctx context.Context, repo *gitx.Repo, cfg *config.Config, fn func() error) error {
+func (a *App) withTestDBLock(ctx context.Context, cfg *config.Config, fn func() error) error {
 	path, err := testDBLock(cfg.TestDB)
 	if err != nil {
 		return err
@@ -204,7 +204,7 @@ func (a *App) testDB(ctx context.Context, repo *gitx.Repo, cfg *config.Config) (
 		return tasks.TestDB{DSN: dsn}, nil
 	}
 	db := &testdb.DB{Cfg: cfg.TestDB, Log: a.Stderr, Source: source}
-	if err := a.withTestDBLock(ctx, repo, cfg, func() error { return a.testDBUp(ctx, repo, cfg, db) }); err != nil {
+	if err := a.withTestDBLock(ctx, cfg, func() error { return a.testDBUp(ctx, repo, cfg, db) }); err != nil {
 		return tasks.TestDB{}, err
 	}
 	got := tasks.TestDB{DSN: db.DSN()}

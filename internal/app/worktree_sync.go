@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -21,7 +20,7 @@ type WorktreeSyncOptions struct {
 // --autostash), so syncing needs no temporary commit past the hooks. Nothing
 // is committed or pushed. Changes that conflict with the trunk are left with
 // their conflict markers and kept in the stash too.
-func (a *App) WorktreeSync(_ context.Context, o WorktreeSyncOptions) error {
+func (a *App) WorktreeSync(o WorktreeSyncOptions) error {
 	repo, cfg, err := a.open()
 	if err != nil {
 		return err

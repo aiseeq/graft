@@ -168,26 +168,26 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	}
 	frozen, advisoryFailed, err := a.gateForMessage(ctx, repo, cfg, plan.branch, plan.message)
 	if err != nil {
-		return errors.Join(err, restoreIndex(repo, index))
+		return errors.Join(err, restoreIndex(index))
 	}
 	if err := a.stageGateChanges(repo, start, "commit"); err != nil {
-		return errors.Join(err, restoreIndex(repo, index))
+		return errors.Join(err, restoreIndex(index))
 	}
 	empty, err := gateLeftHead(repo)
 	if err != nil {
-		return errors.Join(err, restoreIndex(repo, index))
+		return errors.Join(err, restoreIndex(index))
 	}
 	if empty {
-		return errors.Join(errGateLeftHead, restoreIndex(repo, index))
+		return errors.Join(errGateLeftHead, restoreIndex(index))
 	}
 	if cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, plan.branch) {
 		if err := requireTicket(repo, cfg, plan.message, ""); err != nil {
-			return errors.Join(err, restoreIndex(repo, index))
+			return errors.Join(err, restoreIndex(index))
 		}
 	}
 	backup, err := plan.bump.apply(repo)
 	if err != nil {
-		return errors.Join(err, restoreIndex(repo, index))
+		return errors.Join(err, restoreIndex(index))
 	}
 	undo := func(cause error) error { return errors.Join(cause, restoreVersion(repo, backup)) }
 
@@ -283,7 +283,7 @@ func saveIndex(repo *gitx.Repo) (savedIndex, error) {
 	return s, nil
 }
 
-func restoreIndex(repo *gitx.Repo, s savedIndex) error {
+func restoreIndex(s savedIndex) error {
 	if s.path == "" {
 		return nil
 	}
@@ -311,11 +311,11 @@ func stageCommitStart(repo *gitx.Repo, base string) (savedIndex, commitStart, er
 		return index, commitStart{}, err
 	}
 	if _, err := repo.Git("add", "-A"); err != nil {
-		return index, commitStart{}, errors.Join(fmt.Errorf("staging the work tree before the gate: %w", err), restoreIndex(repo, index))
+		return index, commitStart{}, errors.Join(fmt.Errorf("staging the work tree before the gate: %w", err), restoreIndex(index))
 	}
 	start, err := saveCommitStart(repo, base)
 	if err != nil {
-		return index, commitStart{}, errors.Join(err, restoreIndex(repo, index))
+		return index, commitStart{}, errors.Join(err, restoreIndex(index))
 	}
 	return index, start, nil
 }

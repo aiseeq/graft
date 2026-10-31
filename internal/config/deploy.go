@@ -478,10 +478,10 @@ func (c *Config) validateFreeze(where, name string, t *DeployTarget, f *Freeze) 
 			return fmt.Errorf("%s.freeze.types[%d]: blank", where, i)
 		}
 	}
-	return c.validateFreezeAdvisory(where, name, t.Requires, t, acceptance, f)
+	return c.validateFreezeAdvisory(where, name, t, acceptance, f)
 }
 
-func (c *Config) validateFreezeAdvisory(where, name, requires string, t, acceptance *DeployTarget, f *Freeze) error {
+func (c *Config) validateFreezeAdvisory(where, name string, t, acceptance *DeployTarget, f *Freeze) error {
 	for i, task := range f.Advisory {
 		if _, ok := c.Tasks[task]; !ok {
 			return fmt.Errorf("%s.freeze.advisory[%d]: unknown task %q", where, i, task)

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -57,7 +56,7 @@ type cleaner struct {
 
 // WorktreeClean removes the worktrees and branches whose work is in the trunk
 // by content, and lists the others: in work, unmerged, or to check.
-func (a *App) WorktreeClean(_ context.Context, o WorktreeCleanOptions) error {
+func (a *App) WorktreeClean(o WorktreeCleanOptions) error {
 	repo, cfg, err := a.open()
 	if err != nil {
 		return err

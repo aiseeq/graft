@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
 	// Release windows name their time zone; Windows has no zoneinfo of its own.
 	_ "time/tzdata"
 
@@ -504,7 +505,7 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 		if len(pos) != 0 {
 			return usage
 		}
-		return a.WorktreeSync(ctx, o)
+		return a.WorktreeSync(o)
 	case len(args) > 0 && args[0] == "add":
 		fs := newFlags(a, "worktree add")
 		o := app.WorktreeAddOptions{}
@@ -536,7 +537,7 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 	if len(pos) != 0 {
 		return usage
 	}
-	return a.WorktreeClean(ctx, o)
+	return a.WorktreeClean(o)
 }
 
 // execCmd is graft exec; its own failures, usage too, exit app.ExitGraft
@@ -933,7 +934,7 @@ func runDeployCommand(ctx context.Context, a *app.App, args deployCommandArgs) e
 		return a.DeployFreeze(ctx, pos[1], strings.Join(pos[2:], " "))
 	}
 	if pos[0] == "thaw" && len(pos) == 2 && args.scriptArgs == nil {
-		return a.DeployThaw(ctx, pos[1], args.reason)
+		return a.DeployThaw(pos[1], args.reason)
 	}
 	return runDeployTarget(ctx, a, args, usage)
 }

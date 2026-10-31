@@ -362,7 +362,7 @@ func deployFreezeTrunk(repo *gitx.Repo, cfg *config.Config) error {
 }
 
 // DeployThaw ends the active freeze and removes its freeze and journal tags.
-func (a *App) DeployThaw(ctx context.Context, target, reason string) error {
+func (a *App) DeployThaw(target, reason string) error {
 	r, err := a.deployTarget(target)
 	if err != nil {
 		return err
@@ -500,7 +500,7 @@ func (a *App) removeFreezeTags(repo *gitx.Repo, cfg *config.Config, f *activeFre
 }
 
 func (a *App) freezeLog(repo *gitx.Repo, cfg *config.Config, f *activeFreeze, commit, where, kind, reason string) (string, error) {
-	return a.writeFreezeLog(repo, cfg, f, commit, where, kind, reason, true, false)
+	return a.writeFreezeLog(repo, cfg, f, commit, where, kind, reason, false)
 }
 
 func (a *App) pushPendingFreezeLogs(repo *gitx.Repo, cfg *config.Config, f *activeFreeze) error {
@@ -575,14 +575,14 @@ func freezeLogTime(tag string) (time.Time, error) {
 }
 
 func (a *App) commitAdvisoryLog(repo *gitx.Repo, cfg *config.Config, f *activeFreeze, commit, task string) (string, error) {
-	return a.writeFreezeLog(repo, cfg, f, commit, "commit", "advisory", task, true, false)
+	return a.writeFreezeLog(repo, cfg, f, commit, "commit", "advisory", task, false)
 }
 
 func (a *App) commitAdvisoryLogLocal(repo *gitx.Repo, cfg *config.Config, f *activeFreeze, commit, task string) (string, error) {
-	return a.writeFreezeLog(repo, cfg, f, commit, "commit", "advisory", task, true, true)
+	return a.writeFreezeLog(repo, cfg, f, commit, "commit", "advisory", task, true)
 }
 
-func (a *App) writeFreezeLog(repo *gitx.Repo, cfg *config.Config, f *activeFreeze, commit, where, kind, reason string, keepOnPushFailure, localOnly bool) (string, error) {
+func (a *App) writeFreezeLog(repo *gitx.Repo, cfg *config.Config, f *activeFreeze, commit, where, kind, reason string, localOnly bool) (string, error) {
 	now, err := deployNow()
 	if err != nil {
 		return "", err
@@ -629,27 +629,17 @@ func (a *App) writeFreezeLog(repo *gitx.Repo, cfg *config.Config, f *activeFreez
 			return tag, nil
 		}
 		if err := a.push(repo, remotes, []string{"refs/tags/" + tag}, false, true); err != nil {
-			if keepOnPushFailure {
-				collision, _, collisionErr := remoteFreezeTagState(repo, remotes, tag)
-				if collisionErr != nil {
-					return tag, errors.Join(err, collisionErr)
-				}
-				if !collision {
-					return tag, err
-				}
-				if _, deleteErr := repo.Git("tag", "-d", tag); deleteErr != nil {
-					return tag, errors.Join(err, deleteErr)
-				}
-				continue
+			collision, _, collisionErr := remoteFreezeTagState(repo, remotes, tag)
+			if collisionErr != nil {
+				return tag, errors.Join(err, collisionErr)
 			}
-			collision, cleanupErr := cleanupRemoteFreezeTags(repo, remotes, tag)
-			if cleanupErr != nil {
-				return tag, errors.Join(fmt.Errorf("freeze-log tag %s was not written", tag), cleanupErr)
+			if !collision {
+				return tag, err
 			}
-			if collision {
-				continue
+			if _, deleteErr := repo.Git("tag", "-d", tag); deleteErr != nil {
+				return tag, errors.Join(err, deleteErr)
 			}
-			return tag, fmt.Errorf("freeze-log tag %s was not written", tag)
+			continue
 		}
 		_, err = repo.Git("tag", "-d", tag)
 		return tag, err
