@@ -870,7 +870,7 @@ func (r *Runner) missing(t *config.Task, steps []config.Step) []string {
 	c := NewKeyCheck(r.lookup, provided)
 	c.Keys(t.Keys)
 	var texts []string
-	for _, k := range sortedKeys(t.Env) {
+	for _, k := range slices.Sorted(maps.Keys(t.Env)) {
 		texts = append(texts, t.Env[k])
 	}
 	c.Refs(texts)
@@ -1702,7 +1702,7 @@ func (r *Runner) vars(ctx context.Context, t *config.Task, report string) (map[s
 	if report != "" {
 		lookup = lookup.With(map[string]string{config.TestReportEnv: report})
 	}
-	for _, k := range sortedKeys(t.Env) {
+	for _, k := range slices.Sorted(maps.Keys(t.Env)) {
 		v, err := dotenv.Expand(t.Env[k], lookup)
 		if err != nil {
 			return nil, fmt.Errorf("env %s: %w", k, err)
@@ -1776,7 +1776,7 @@ func (r *Runner) env(t *config.Task, vars map[string]string) ([]string, error) {
 		return nil, err
 	}
 	env = append(env, keys...)
-	for _, k := range sortedKeys(vars) {
+	for _, k := range slices.Sorted(maps.Keys(vars)) {
 		v := vars[k]
 		if k == goFlagsEnv && t.Env[k] != "" {
 			if v, err = r.goFlags(v); err != nil {
@@ -1954,15 +1954,6 @@ func BaseEnv() ([]string, error) {
 	// called from elsewhere would miss the test cache. A shell sets its own.
 	// Non-nil even when empty: the runner caches it and nil means not read yet.
 	return append([]string{}, gitx.Without(os.Environ(), append(gitVars, MarkerEnv, ExecHeavyEnv, "PWD"))...), nil
-}
-
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	return keys
 }
 
 // enterHeavy admits a heavy task run on this machine, unless a running one

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -274,7 +275,7 @@ func (r *Runner) taskStaysHere(t *config.Task, dir string) string {
 // variable of graft's own, "" when there is none.
 func dotenvRef(t *config.Task) (string, error) {
 	var refs []string
-	for _, k := range sortedKeys(t.Env) {
+	for _, k := range slices.Sorted(maps.Keys(t.Env)) {
 		keys, err := dotenv.Refs(t.Env[k])
 		if err != nil {
 			return "", err
@@ -370,7 +371,7 @@ func (r *Runner) remoteCmd(ctx context.Context, cmd *exec.Cmd, vars map[string]s
 			}
 		}
 	}
-	for _, k := range sortedKeys(vars) {
+	for _, k := range slices.Sorted(maps.Keys(vars)) {
 		words = append(words, k+"="+vars[k])
 	}
 	if threads != "" {

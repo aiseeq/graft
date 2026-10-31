@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/config"
@@ -83,7 +85,7 @@ func (a *App) ProjectHelp(cfg *config.Config) error {
 	var b strings.Builder
 	if len(cfg.Tasks) > 0 {
 		var rows [][2]string
-		for _, name := range sortedNames(cfg.Tasks) {
+		for _, name := range slices.Sorted(maps.Keys(cfg.Tasks)) {
 			// A task without desc is a building block of others.
 			if t := cfg.Tasks[name]; t.Desc != "" {
 				rows = append(rows, [2]string{taskSyntax(name, t), t.Desc})
@@ -94,7 +96,7 @@ func (a *App) ProjectHelp(cfg *config.Config) error {
 	}
 	if len(cfg.Services) > 0 {
 		var rows [][2]string
-		for _, name := range sortedNames(cfg.Services) {
+		for _, name := range slices.Sorted(maps.Keys(cfg.Services)) {
 			s := cfg.Services[name]
 			desc := s.Desc
 			if s.SystemdUnit != "" {
@@ -158,7 +160,7 @@ func (a *App) Tasks() error {
 		return nil
 	}
 	var rows [][2]string
-	for _, name := range sortedNames(cfg.Tasks) {
+	for _, name := range slices.Sorted(maps.Keys(cfg.Tasks)) {
 		t := cfg.Tasks[name]
 		line := t.Desc
 		if len(t.Deps) > 0 {

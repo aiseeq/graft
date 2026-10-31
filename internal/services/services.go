@@ -20,6 +20,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/atomicfile"
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
+	"github.com/aiseeq/graft/v2/internal/fsx"
 	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/tasks"
 )
@@ -179,7 +180,7 @@ func (m *Manager) start(ctx context.Context, name string) error {
 	go func() { exited <- cmd.Wait() }()
 	if err := m.waitStarted(ctx, s, addr, exited); err != nil {
 		stopErr := proc.Kill(pid)
-		return errors.Join(fmt.Errorf("%s: %w\n%s", name, err, tail(m.path(s.Log), 20)), stopErr, removePID(m.path(s.PIDFile)))
+		return errors.Join(fmt.Errorf("%s: %w\n%s", name, err, tail(m.path(s.Log), 20)), stopErr, fsx.Remove(m.path(s.PIDFile)))
 	}
 	fmt.Fprintf(m.Log, "graft: started %s (pid %d), log %s\n", name, pid, s.Log)
 	return nil
@@ -303,7 +304,7 @@ func (m *Manager) stop(ctx context.Context, name string) error {
 			return fmt.Errorf("%s: process %d survived SIGKILL", name, pid)
 		}
 	}
-	if err := removePID(m.path(s.PIDFile)); err != nil {
+	if err := fsx.Remove(m.path(s.PIDFile)); err != nil {
 		return err
 	}
 	return m.stopped(ctx, name, s)
@@ -435,7 +436,7 @@ func (m *Manager) running(name string) (int, error) {
 		}
 	}
 	fmt.Fprintf(m.Log, "graft: %s: removing stale pid file (process %d is gone)\n", name, pid)
-	return 0, removePID(path)
+	return 0, fsx.Remove(path)
 }
 
 // isService guards against pid reuse where the platform can tell: the
@@ -556,13 +557,6 @@ func waitFor(ctx context.Context, timeout time.Duration, done func() (bool, erro
 func writePID(path string, pid int) error {
 	if err := atomicfile.Write(path, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
 		return fmt.Errorf("writing the pid file: %w", err)
-	}
-	return nil
-}
-
-func removePID(path string) error {
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
 	}
 	return nil
 }

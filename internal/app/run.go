@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -36,15 +37,6 @@ func (a *App) IsTask(name string) (bool, error) {
 	}
 	_, ok := cfg.Tasks[name]
 	return ok, nil
-}
-
-func sortedNames[V any](m map[string]V) []string {
-	names := make([]string, 0, len(m))
-	for n := range m {
-		names = append(names, n)
-	}
-	slices.Sort(names)
-	return names
 }
 
 // ServiceAction is start, stop or restart.
@@ -116,7 +108,7 @@ func (a *App) Status(ctx context.Context) error {
 	}
 	if len(cfg.Services) > 0 {
 		m := services.New(repo.Root, cfg, a.runner(repo, cfg), a.Stdout)
-		for _, name := range sortedNames(cfg.Services) {
+		for _, name := range slices.Sorted(maps.Keys(cfg.Services)) {
 			st, err := m.State(ctx, name)
 			if err != nil {
 				return err
@@ -225,7 +217,7 @@ func (a *App) checkTools(ctx context.Context, cfg *config.Config, install bool) 
 	}
 	results := make(map[string]tools.Result, len(cfg.Tools))
 	var modules []string
-	for _, name := range sortedNames(cfg.Tools) {
+	for _, name := range slices.Sorted(maps.Keys(cfg.Tools)) {
 		t := cfg.Tools[name]
 		r, err := tools.Check(ctx, name, t)
 		if err != nil {
@@ -244,7 +236,7 @@ func (a *App) checkTools(ctx context.Context, cfg *config.Config, install bool) 
 		}
 	}
 	var failed []string
-	for _, name := range sortedNames(cfg.Tools) {
+	for _, name := range slices.Sorted(maps.Keys(cfg.Tools)) {
 		t := cfg.Tools[name]
 		r := results[name]
 		if module := r.LatestModule; module != "" {

@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -171,7 +173,7 @@ func (r *Runner) keyDefinitions(addDefinition, addInputs func(...string), name s
 	if namesMessage(def) {
 		*readsMessage = true
 	}
-	for _, k := range sortedKeys(t.Env) {
+	for _, k := range slices.Sorted(maps.Keys(t.Env)) {
 		v, err := dotenv.Expand(t.Env[k], r.lookup)
 		if err != nil {
 			return fmt.Errorf("task %s: env %s: %w", name, k, err)

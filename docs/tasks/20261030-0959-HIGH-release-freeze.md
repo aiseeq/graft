@@ -1,6 +1,7 @@
 # Заморозка приёмки релиза: graft deploy freeze, отказы requires-цели, advisory-задачи
 
-Статус: в работе
+Статус: ждёт
+Ждёт: 2026-11-02 12:00 CET: итог пилота мастер рабочего проекта
 Исполнитель: graft-master
 
 ## Вход
@@ -65,3 +66,5 @@ deploy:
 - 2026-10-30 16:24 note — graft-master: graft-master: work-admin 16:2x: срок — релиз graft с заморозкой и «Тебе передать» к ПН 02.11 09:00 CET (пилот рабочего проекта перенесён на понедельник); раунд 10 (/home/aisee/.cache/worktrees/graft-measure/review-release-freeze-10.md: C1 старые freeze-log из fetch, C2 запись при сбое проверки remote, C3 журнал на ошибке после скрипта, C4 двойной sha) у бойца 1030-1007; all9 на 05037dd зелёный (12m33s под нагрузкой). Известное ограничение: запись, не ушедшая ни на один remote, — только в этом клоне.
 - 2026-10-30 16:38 note — graft-master: graft-master: раунд 10 закоммичен 55d547f (боец C1–C4 + моё: имя freeze-log в UTC, общий freezeLogTime с freezeJournalLine, строка журнала с UTC, сравнение с f.time до секунды; тест internal/app/freeze_round10_test.go). Идут: all10, перепроверка Opus diff 05037dd..55d547f.
 - 2026-10-30 16:42 note — graft-master: graft-master: all10 на 55d547f зелёный; перепроверка Opus раунда 10 — готово к влитию (LOW → тикет freeze-polish). graft worktree sync на 384da99 (конфликт go.mod/go.sum: akit v1.14.1 из trunk), ветка 8a4ba1a → origin/feat/release-freeze-3; идёт all11.
+- 2026-10-31 11:09 note — graft-master: 31.10 11:1x сверка: раунд 10 влит 8a4ba1a (после чистки истории), в релизах с v2.60.0; пилот — мастер рабочего проекта в ПН 02.11 09:00 CET (его тикет в Jira, принял 30.10 16:52). LOW-остаток — freeze-polish.
+- 2026-10-31 11:09 ждёт — graft-master — 2026-11-02 12:00 CET: итог пилота мастер рабочего проекта

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/aiseeq/graft/v2/internal/fsx"
 	"github.com/gofrs/flock"
 )
 
@@ -32,7 +33,7 @@ func createLive(dir, pattern string, data []byte) (*flock.Flock, string, error) 
 		name := f.Name()
 		_, writeErr := f.Write(data)
 		if err := errors.Join(writeErr, f.Close()); err != nil {
-			return nil, "", errors.Join(err, removeMissing(name))
+			return nil, "", errors.Join(err, fsx.Remove(name))
 		}
 		beforeLock(name)
 		fl := flock.New(name, flock.SetFlag(os.O_RDONLY))
@@ -42,7 +43,7 @@ func createLive(dir, pattern string, data []byte) (*flock.Flock, string, error) 
 			continue
 		}
 		if err != nil {
-			return nil, "", errors.Join(fmt.Errorf("locking %s: %w", name, err), removeMissing(name))
+			return nil, "", errors.Join(fmt.Errorf("locking %s: %w", name, err), fsx.Remove(name))
 		}
 		if !ok {
 			// A reader holds it, about to remove it as dead.
@@ -50,7 +51,7 @@ func createLive(dir, pattern string, data []byte) (*flock.Flock, string, error) 
 		}
 		held, err := fl.Stat()
 		if err != nil {
-			return nil, "", errors.Join(err, fl.Unlock(), removeMissing(name))
+			return nil, "", errors.Join(err, fl.Unlock(), fsx.Remove(name))
 		}
 		if now, err := os.Stat(name); err == nil && os.SameFile(held, now) {
 			return fl, name, nil
@@ -95,14 +96,7 @@ func gone(name string) (bool, error) {
 // another process has open, reading it or probing it, keeps it: unlocked,
 // the next reader removes it.
 func removeDead(name string) error {
-	if err := removeMissing(name); err != nil && !busy(err) {
-		return err
-	}
-	return nil
-}
-
-func removeMissing(name string) error {
-	if err := os.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := fsx.Remove(name); err != nil && !busy(err) {
 		return err
 	}
 	return nil
