@@ -161,7 +161,7 @@ type MachineLoad struct {
 // DefaultLoad is a shared machine's: heavy tasks start while fewer tasks are
 // ready to run than it has threads, with the disk and the swap calm. The
 // count is of this moment, so a start shows to the next one within seconds.
-var DefaultLoad = MachineLoad{Threads: 4, Settle: 10 * time.Second, Poll: 5 * time.Second}
+var DefaultLoad = MachineLoad{Threads: 4, Settle: 30 * time.Second, Poll: 5 * time.Second}
 
 // LoadSettings is the user's load settings over the defaults; without a user
 // config it is the defaults.

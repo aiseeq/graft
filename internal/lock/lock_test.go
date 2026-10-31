@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -38,6 +39,86 @@ func TestAcquireWaitsForHolder(t *testing.T) {
 	}
 	if err := second.Release(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReserveConcurrentWriters(t *testing.T) {
+	dir := t.TempDir()
+	const n = 16
+	releases := make([]func() error, n)
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rel, err := Reserve(dir, "load.lock.*.reserve", fmt.Appendf(nil, `{"cores":%d}`, i))
+			if err == nil {
+				releases[i] = rel
+			}
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := LiveData(dir, "load.lock.*.reserve")
+	if err != nil || len(data) != n {
+		t.Fatalf("LiveData = %d, %v; want %d", len(data), err, n)
+	}
+	for _, rel := range releases {
+		if err := rel(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestReserveCorruptIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	release, err := Reserve(dir, "load.lock.*.reserve", []byte("{broken"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	files, err := filepath.Glob(filepath.Join(dir, "load.lock.*.reserve"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("reserve files = %v, %v; want one", files, err)
+	}
+	_, err = LiveData(dir, "load.lock.*.reserve")
+	if err == nil || !strings.Contains(err.Error(), files[0]) {
+		t.Fatalf("LiveData error = %v; want exact path %s", err, files[0])
+	}
+}
+
+func TestReserveDeadOwnerIsNotCounted(t *testing.T) {
+	if dir := os.Getenv("GRAFT_TEST_RESERVE_OWNER"); dir != "" {
+		_, err := Reserve(dir, "load.lock.*.reserve", []byte(`{"cores":3}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	dir := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestReserveDeadOwnerIsNotCounted$")
+	cmd.Env = append(os.Environ(), "GRAFT_TEST_RESERVE_OWNER="+dir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("reserve owner subprocess: %v\n%s", err, output)
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "load.lock.*.reserve"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("reserve files = %v, %v; want one file from dead owner", files, err)
+	}
+	data, err := LiveData(dir, "load.lock.*.reserve")
+	if err != nil || len(data) != 0 {
+		t.Fatalf("LiveData = %v, %v; want no dead reservation", data, err)
+	}
+	if _, err := os.Stat(files[0]); !os.IsNotExist(err) {
+		t.Fatalf("dead reserve remains: %v", err)
 	}
 }
 

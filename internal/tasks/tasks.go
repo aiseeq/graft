@@ -166,8 +166,13 @@ type frame struct {
 	program string
 	// diskProfile is what the disk state source gave the task's kind when
 	// the machine admitted it.
-	diskProfile  json.RawMessage
-	waitedBehind string
+	diskProfile      json.RawMessage
+	waitedBehind     string
+	reserveCores     float64
+	reserveSince     time.Time
+	reserveEnd       func() string
+	reserveStoppedAt func() time.Time
+	reserveRelease   func() error
 }
 
 // TestDB is the test database of test_db tasks.
@@ -1610,6 +1615,22 @@ func (r *Runner) begin(task string) *frame {
 func (r *Runner) end(f *frame, failed bool) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
 	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, DiskProfile: f.diskProfile, WaitedBehind: f.waitedBehind}
+	if f.reserveRelease != nil {
+		if err := f.reserveRelease(); err != nil {
+			fmt.Fprintf(r.Stderr, "graft: %s: releasing reserve: %v\n", f.task, err)
+		}
+		rec.ReserveCores = f.reserveCores
+		stoppedAt := time.Now()
+		if f.reserveStoppedAt != nil {
+			if at := f.reserveStoppedAt(); !at.IsZero() {
+				stoppedAt = at
+			}
+		}
+		rec.ReserveS = stoppedAt.Sub(f.reserveSince).Seconds()
+		if f.reserveEnd != nil {
+			rec.ReserveEnd = f.reserveEnd()
+		}
+	}
 	if failed {
 		rec.Time = time.Now()
 		rec.Project = r.Root
@@ -1968,6 +1989,14 @@ func (r *Runner) enterHeavy(ctx context.Context, name string) (leave func() erro
 			return nil, err
 		}
 		release = admitted
+		if n := len(r.frames); n > 0 && adm.ReserveCores > 0 {
+			f := r.frames[n-1]
+			f.reserveCores = adm.ReserveCores
+			f.reserveSince = adm.ReserveSince
+			f.reserveEnd = adm.ReserveEnd
+			f.reserveStoppedAt = adm.ReserveStoppedAt
+			f.reserveRelease = admitted
+		}
 	}
 	r.heavy++
 	return func() error {

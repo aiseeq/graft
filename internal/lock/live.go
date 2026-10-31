@@ -1,11 +1,13 @@
 package lock
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 
 	"github.com/aiseeq/graft/v2/internal/fsx"
 	"github.com/gofrs/flock"
@@ -62,6 +64,62 @@ func createLive(dir, pattern string, data []byte) (*flock.Flock, string, error) 
 		}
 	}
 	return nil, "", fmt.Errorf("could not keep a live file %s in %s: readers took it for dead %d times", pattern, dir, liveAttempts)
+}
+
+// Reserve creates a live file with data and keeps it until release is called
+// or the owner process exits.
+func Reserve(dir, pattern string, data []byte) (release func() error, err error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("creating reserve directory: %w", err)
+	}
+	fl, name, err := createLive(dir, pattern, data)
+	if err != nil {
+		return nil, err
+	}
+	var once sync.Once
+	var releaseErr error
+	return func() error {
+		once.Do(func() { releaseErr = releaseLive(fl, name) })
+		return releaseErr
+	}, nil
+}
+
+// LiveFile is the path and contents of one live file.
+type LiveFile struct {
+	Path string
+	Data []byte
+}
+
+// LiveData reads live files matching glob and removes dead ones.
+// A live file that cannot be read fails the scan with its path.
+func LiveData(dir, glob string) ([]LiveFile, error) {
+	pattern := filepath.Join(dir, glob)
+	names, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("listing live files %s: %w", pattern, err)
+	}
+	var rows []LiveFile
+	for _, name := range names {
+		dead, err := gone(name)
+		if err != nil {
+			return nil, err
+		}
+		if dead {
+			continue
+		}
+		data, err := os.ReadFile(name)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading live file %s: %w", name, err)
+		}
+		if !json.Valid(data) {
+			return nil, fmt.Errorf("decoding live file %s: invalid JSON", name)
+		}
+		rows = append(rows, LiveFile{Path: name, Data: data})
+	}
+	return rows, nil
 }
 
 // releaseLive gives a live file up and removes it.

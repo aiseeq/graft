@@ -113,11 +113,12 @@ func (r *Runner) wouldWait(ctx context.Context, name string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	lockPath := ""
-	if !priority {
-		if lockPath, err = loadLock(); err != nil {
-			return false, err
-		}
+	lockPath, err := loadLock()
+	if err != nil {
+		return false, err
+	}
+	if priority {
+		return loadgate.BusyNowWithReserves(ctx, name, r.kind(name), l, lockPath, false, r.Stderr)
 	}
 	return loadgate.BusyNow(ctx, name, r.kind(name), l, lockPath, r.Stderr)
 }

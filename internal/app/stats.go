@@ -89,6 +89,21 @@ func (a *App) Stats(o StatsOptions) error {
 	if err := stats.Render(a.Stdout, rows, label, o.All); err != nil {
 		return err
 	}
+	if o.Task == "" {
+		reserveRecords := make([]stats.Record, 0, len(recs))
+		for _, rec := range recs {
+			if f.Project != "" && rec.Project != f.Project || o.In != "" && rec.In != o.In {
+				continue
+			}
+			if o.MaxLoad > 0 && (rec.LoadMax == nil || *rec.LoadMax >= o.MaxLoad) {
+				continue
+			}
+			reserveRecords = append(reserveRecords, rec)
+		}
+		if line := stats.ReserveSummary(reserveRecords); line != "" {
+			a.printf("%s", line)
+		}
+	}
 	if saved.Hits > 0 {
 		a.printf("%s", stats.FormatSaved(saved))
 	}

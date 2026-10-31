@@ -2,6 +2,7 @@ package loadgate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
@@ -34,6 +36,7 @@ func fakeMachine(t *testing.T) (setRunnable func(int), setIO func(string), setSw
 		}
 	}
 	t.Setenv(ProcEnv, dir)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
@@ -70,6 +73,257 @@ func fakeMachine(t *testing.T) (setRunnable func(int), setIO func(string), setSw
 	setIO("0.00")
 	setSwap(7)
 	return setRunnable, setIO, setSwap
+}
+
+func TestReserveLightTasksStartBackToBack(t *testing.T) {
+	fakeMachine(t)
+	oldPoll, oldWindow := reservePollInterval, reserveWindow
+	reservePollInterval = 5 * time.Millisecond
+	reserveWindow = 20 * time.Millisecond
+	defer func() { reservePollInterval, reserveWindow = oldPoll, oldWindow }()
+	l := testLoad
+	l.Settle = 300 * time.Millisecond
+	path := filepath.Join(t.TempDir(), "load.lock")
+	_, release, err := Wait(context.Background(), "first", "projectA:first", nil, l, path, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	started := time.Now()
+	_, release2, err := Wait(context.Background(), "second", "projectA:second", nil, l, path, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release2()
+	if time.Since(started) >= l.Settle {
+		t.Fatalf("second task waited %s", time.Since(started))
+	}
+}
+
+func TestReserveSumHoldsTheHead(t *testing.T) {
+	_, _, _ = fakeMachine(t)
+	setRunnable := func(n int) {
+		d := os.Getenv(ProcEnv)
+		var b strings.Builder
+		b.WriteString("cpu 1 1 1 1\n")
+		for i := range 22 {
+			fmt.Fprintf(&b, "cpu%d 1 1 1 1\n", i)
+		}
+		fmt.Fprintf(&b, "procs_running %d\n", n+1)
+		_ = os.WriteFile(filepath.Join(d, "stat"), []byte(b.String()), 0o644)
+	}
+	path := filepath.Join(t.TempDir(), "load.lock")
+	setRunnable(8)
+	rel, err := lock.Reserve(filepath.Dir(path), filepath.Base(path)+".*.reserve", []byte(`{"cores":14,"admitted":"x","task":"first"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Millisecond)
+	defer cancel()
+	adm, _, err := Wait(ctx, "head", "projectA:head", nil, testLoad, path, io.Discard)
+	if err == nil || adm.Waits[WhyReserve] == 0 {
+		t.Fatalf("admission = %+v, %v; want reserve wait", adm, err)
+	}
+	if err := rel(); err != nil {
+		t.Fatal(err)
+	}
+	_, release, err := Wait(context.Background(), "head", "projectA:head", nil, testLoad, path, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = release()
+	setRunnable(8)
+	rel, err = lock.Reserve(filepath.Dir(path), filepath.Base(path)+".*.reserve", []byte(`{"cores":13,"admitted":"x","task":"first"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+	_, release, err = Wait(context.Background(), "head", "projectA:head", nil, testLoad, path, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = release()
+}
+
+func TestReserveDefaultRunnableIsThreads(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(1)
+	path := filepath.Join(t.TempDir(), "load.lock")
+	noReserve := newMachine(testLoad, io.Discard, "head", "projectA:head")
+	noReserve.limits.Runnable = 0
+	if err := noReserve.admitWithReserves(context.Background(), nil, path); err != nil {
+		t.Fatalf("runnable 1 with no reserve: %v", err)
+	}
+
+	reserve, err := lock.Reserve(filepath.Dir(path), filepath.Base(path)+".*.reserve", []byte(`{"cores":22,"admitted":"x","task":"first"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reserve()
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	withReserve := newMachine(testLoad, io.Discard, "head", "projectA:head")
+	withReserve.limits.Runnable = 0
+	err = withReserve.admitWithReserves(ctx, nil, path)
+	if err == nil || withReserve.waits[WhyReserve] == 0 {
+		t.Fatalf("admission wait = %v, %v; want wait at default thread limit", withReserve.waits, err)
+	}
+}
+
+func TestReserveReleasedOnCPU(t *testing.T) {
+	var n float64
+	testReserveEnd(t, "cpu", func() float64 {
+		n += .1
+		return n
+	})
+}
+func TestReserveReleasedAtTheCap(t *testing.T) { testReserveEnd(t, "cap", func() float64 { return 0 }) }
+func TestReserveReleasedWhenTheTaskEnds(t *testing.T) {
+	testReserveEnd(t, "done", func() float64 { return 0 })
+}
+func TestReserveUnreadableCPU(t *testing.T) { testReserveEnd(t, "unread", func() float64 { return 0 }) }
+
+func testReserveEnd(t *testing.T, want string, reader func() float64) {
+	t.Helper()
+	oldP, oldW, oldR := reservePollInterval, reserveWindow, reserveCPUReader
+	reservePollInterval = 5 * time.Millisecond
+	if want == "cpu" {
+		reserveWindow = 100 * time.Millisecond
+	} else {
+		reserveWindow = 20 * time.Millisecond
+	}
+	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldP, oldW, oldR }()
+	switch want {
+	case "unread":
+		reserveCPUReader = func(int) (float64, error) { return 0, fmt.Errorf("synthetic proc read") }
+	default:
+		reserveCPUReader = func(int) (float64, error) { return reader(), nil }
+	}
+	path := filepath.Join(t.TempDir(), "load.lock")
+	cap := 60 * time.Millisecond
+	if want == "cpu" {
+		cap = 300 * time.Millisecond
+	}
+	if want == "done" {
+		cap = time.Second
+	}
+	release, _, end, _, err := startReserve(path, "task", 1, cap, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for end() == "" && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if want == "done" {
+		if err := release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for end() == "" && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := end(); got != want {
+		t.Fatalf("reserve end %q; want %q", got, want)
+	}
+	_ = release()
+}
+
+func TestReserveMissedHistoryStillMeetsRunnable(t *testing.T) {
+	fakeMachine(t)
+	setProfileHistory(t, "projectA:next", 1)
+	d := os.Getenv(ProcEnv)
+	b := fmt.Sprintf("cpu 1 1 1 1\nprocs_running %d\n", 25)
+	_ = os.WriteFile(filepath.Join(d, "stat"), []byte(b), 0o644)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	adm, _, err := Wait(ctx, "next", "projectA:next", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), io.Discard)
+	if err == nil || adm.Waits[WhyLoad] == 0 {
+		t.Fatalf("high runnable admitted: %+v %v", adm, err)
+	}
+}
+
+func TestReserveHugeHeadRunsAlone(t *testing.T) {
+	fakeMachine(t)
+	setProfileHistory(t, "projectA:huge", 22)
+	path := filepath.Join(t.TempDir(), "load.lock")
+	adm, release, err := Wait(context.Background(), "huge", "projectA:huge", nil, testLoad, path, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if adm.ReserveCores != 22 {
+		t.Fatalf("reserve = %v", adm.ReserveCores)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, _, err = Wait(ctx, "next", "projectA:next", nil, testLoad, path, io.Discard)
+	if err == nil {
+		t.Fatal("next passed huge live reservation")
+	}
+}
+
+func TestReservePriorityWritesItsReserve(t *testing.T) {
+	fakeMachine(t)
+	setProfileHistory(t, "projectA:priority", 22)
+	path := filepath.Join(t.TempDir(), "load.lock")
+	p := &Priority{For: "deploy", Budget: filepath.Join(t.TempDir(), "budget")}
+	_ = os.WriteFile(p.Budget, []byte("1000000000"), 0o644)
+	adm, release, err := Wait(context.Background(), "priority", "projectA:priority", p, testLoad, path, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if adm.ReserveCores != 22 {
+		t.Fatalf("priority reserve = %v", adm.ReserveCores)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+	next, _, err := Wait(ctx, "next", "projectA:next", nil, testLoad, path, io.Discard)
+	if err == nil || next.Waits[WhyReserve] == 0 {
+		t.Fatalf("next admission = %+v, %v", next, err)
+	}
+}
+
+func setProfileHistory(t *testing.T, profile string, value float64) {
+	t.Helper()
+	dir := filepath.Join(os.Getenv("XDG_CACHE_HOME"), "graft")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(map[string][]float64{profile: {value}})
+	if err := os.WriteFile(filepath.Join(dir, "load.cores.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestTreeCPUCountsReapedChildren(t *testing.T) {
+	root := t.TempDir()
+	pid := os.Getpid()
+	dir := filepath.Join(root, fmt.Sprint(pid))
+	if err := os.MkdirAll(filepath.Join(dir, "task", "1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fields := make([]string, 15)
+	fields[0] = "S"
+	for i := 1; i < len(fields); i++ {
+		fields[i] = "0"
+	}
+	fields[11] = "0"
+	fields[12] = "0"
+	fields[13] = "25"
+	fields[14] = "25"
+	line := fmt.Sprintf("%d (synthetic) %s\n", pid, strings.Join(fields, " "))
+	if err := os.WriteFile(filepath.Join(dir, "stat"), []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "task", "1", "children"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(ProcEnv, root)
+	got, err := treeCPU(pid)
+	if err != nil || got != .5 {
+		t.Fatalf("treeCPU = %v, %v; want .5", got, err)
+	}
 }
 
 func TestDirtyWritebackKBReadsProcEnv(t *testing.T) {
@@ -144,81 +398,100 @@ func awaitFiles(t *testing.T, pattern string, count int) {
 
 var testLoad = userconfig.MachineLoad{Settle: time.Hour, Poll: 10 * time.Millisecond}
 
-// TestCalmMachineStartsOneAtATime: on a calm machine a task starts at once,
-// and the next one waits while the first settles, until it ends or the
-// settling is over.
-func TestCalmMachineStartsOneAtATime(t *testing.T) {
-	fakeMachine(t)
+// TestCalmMachineStartsBackToBack checks that a light task does not hold the
+// FIFO lock for the reservation cap.
+func TestCalmMachineStartsBackToBack(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(21)
+	setProfileHistory(t, "projectA:build", 1)
+	setProfileHistory(t, "projectA:test", 1)
 	lockPath := filepath.Join(t.TempDir(), "load.lock")
 	var log strings.Builder
 	waited, release, err := wait(context.Background(), "build", nil, testLoad, lockPath, &log)
 	if err != nil || waited.Total() > 100*time.Millisecond || log.Len() != 0 {
 		t.Fatalf("waited %s, %v:\n%s", waited, err, log.String())
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
-	if _, _, err := wait(ctx, "test", nil, testLoad, lockPath, &log); err == nil {
-		t.Error("the next task started while the first settled")
+	blocked, _, err := wait(ctx, "test", nil, testLoad, lockPath, &log)
+	if err == nil || blocked[WhyReserve] == 0 {
+		t.Fatalf("second task wait = %v, %v; want it held by first reserve", blocked, err)
 	}
 	if err := release(); err != nil {
 		t.Fatal(err)
 	}
-	if err := release(); err != nil {
-		t.Errorf("a second release: %v", err)
+	_, release2, err := wait(context.Background(), "test", nil, testLoad, lockPath, &log)
+	if err != nil {
+		t.Fatalf("second task did not start after the first reserve was removed: %v", err)
 	}
-	waited, release, err = wait(context.Background(), "test", nil, testLoad, lockPath, &log)
-	if err != nil || waited.Total() > 100*time.Millisecond {
-		t.Fatalf("after the first ended: waited %s, %v:\n%s", waited, err, log.String())
-	}
-	if err := release(); err != nil {
+	if err := release2(); err != nil {
 		t.Fatal(err)
 	}
-	// The settling ends by itself.
-	short := testLoad
-	short.Settle = 20 * time.Millisecond
-	if _, release, err = wait(context.Background(), "build", nil, short, lockPath, &log); err != nil {
+}
+
+func TestWaitWithSettleReleasesSettleLockOnHistoryError(t *testing.T) {
+	fakeMachine(t)
+	cache, err := os.UserCacheDir()
+	if err != nil {
 		t.Fatal(err)
 	}
-	defer release()
-	if waited, release, err := wait(context.Background(), "test", nil, short, lockPath, &log); err != nil || waited.Total() > time.Second {
-		t.Errorf("after the settling: waited %s, %v", waited, err)
-	} else if err := release(); err != nil {
-		t.Error(err)
+	history := filepath.Join(cache, "graft", "load.cores.json")
+	if err := os.MkdirAll(filepath.Dir(history), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(history, []byte("{broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	lockPath, settlePath := filepath.Join(dir, "load.lock"), filepath.Join(dir, "load.settle.lock")
+	_, _, err = WaitWithSettle(context.Background(), "head", "projectA:bad", nil, testLoad, lockPath, settlePath, time.Hour, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), history) {
+		t.Fatalf("WaitWithSettle error = %v; want corrupt history path %s", err, history)
+	}
+	next, err := lock.Acquire(context.Background(), settlePath, time.Second, "next settle", io.Discard)
+	if err != nil {
+		t.Fatalf("settle lock remained held after admission error: %v", err)
+	}
+	if err := next.Release(); err != nil {
+		t.Fatal(err)
 	}
 }
 
 func TestWaitNamesWhoHeldTheQueue(t *testing.T) {
-	fakeMachine(t)
+	setRunnable, _, _ := fakeMachine(t)
 	path := filepath.Join(t.TempDir(), "load.lock")
 	l := testLoad
 	l.Settle = time.Hour
-	_, release, err := Wait(context.Background(), "head", "projectA:head", nil, l, path, io.Discard)
-	if err != nil {
-		t.Fatal(err)
+	setRunnable(22)
+	type result struct {
+		adm Admission
+		rel func() error
+		err error
 	}
+	got := make(chan result, 2)
+	go func() {
+		adm, rel, err := Wait(context.Background(), "head", "projectA:head", nil, l, path, io.Discard)
+		got <- result{adm, rel, err}
+	}()
 	awaitFiles(t, path+".*.lholder", 1)
-	got := make(chan Admission, 1)
 	go func() {
 		adm, rel, err := Wait(context.Background(), "follower", "projectA:follower", nil, l, path, io.Discard)
-		if err == nil {
-			_ = rel()
-		}
-		if err != nil {
-			adm.Waits = nil
-		}
-		got <- adm
+		got <- result{adm, rel, err}
 	}()
 	awaitFiles(t, path+".queue.*.lticket", 1)
-	if err := release(); err != nil {
+	setRunnable(1)
+	head, follower := <-got, <-got
+	if head.err != nil || follower.err != nil {
+		t.Fatalf("head/follower errors: %v / %v", head.err, follower.err)
+	}
+	if !strings.Contains(follower.adm.WaitedBehind, "graft head") {
+		t.Fatalf("WaitedBehind = %q", follower.adm.WaitedBehind)
+	}
+	if err := head.rel(); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case adm := <-got:
-		if !strings.Contains(adm.WaitedBehind, "graft head") {
-			t.Fatalf("WaitedBehind = %q", adm.WaitedBehind)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("follower did not leave the queue")
+	if err := follower.rel(); err != nil {
+		t.Fatal(err)
 	}
 }
 

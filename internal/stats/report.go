@@ -547,6 +547,30 @@ func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error
 	return tw.Flush()
 }
 
+// ReserveSummary reports how admitted task reservations ended. Empty is
+// returned when no task record contains a reservation.
+func ReserveSummary(recs []Record) string {
+	total, cpu, cap, done := 0, 0, 0, 0
+	for _, r := range recs {
+		if r.Kind != KindTask || r.ReserveCores <= 0 {
+			continue
+		}
+		total++
+		switch r.ReserveEnd {
+		case "cpu":
+			cpu++
+		case "cap":
+			cap++
+		case "done":
+			done++
+		}
+	}
+	if total == 0 {
+		return ""
+	}
+	return fmt.Sprintf("reserve: %d tasks, снят по CPU %d, по сроку %d (%d%%), кончились раньше %d", total, cpu, cap, (cap*100+total/2)/total, done)
+}
+
 func formatSeconds(s float64) string {
 	d := time.Duration(s * float64(time.Second))
 	switch {

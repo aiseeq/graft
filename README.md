@@ -53,7 +53,7 @@ leaks:                           # keep private names out of public repositories
     - {term: SomeName, reason: why this name is fine everywhere}
 load:                            # heavy tasks on a shared machine (heavy: true in a task)
   threads: 4                     # default 4: {threads} in steps, GRAFT_THREADS and GOMAXPROCS in heavy tasks
-  settle: 10s                    # default 10s: a heavy task that starts gives its load this long to show before the next
+  settle: 30s                    # default 30s: maximum lifetime of an expected CPU reservation
   poll: 5s                       # default 5s; 0 anywhere here means the default
 limits:                          # graft stats marks the tasks over them, by median without the waits; a run over says so when it ends
   gate: 1m                       # default 1m: the gate of a commit as a whole
@@ -129,10 +129,13 @@ for any busy machine. A measure akit reports and graft does not know yet
 makes the machine busy too, by its own words. A measure the system lacks (no `/proc/stat`,
 no `/proc/loadavg`, a kernel without PSI) is skipped and said. Heavy tasks of
 all projects, on a calm machine too, queue under one lock in the user cache
-(`graft/load.lock`) in ticket order and start one at a time: a task that
-starts holds the queue for `settle`, or until it ends if sooner, so the next
-one measures the machine with its load on it; tasks that measured together
-would all find the same calm machine and start together. A heavy task inside
+(`graft/load.lock`) in ticket order. After measuring the machine, a task
+writes a live reservation for its expected CPU use and releases the queue
+lock immediately. Later admissions include those reservations in the
+runnable threshold until the task reaches half its expected CPU rate over
+two seconds, ends, or `load.settle` expires (30 seconds by default). The last
+20 whole-task CPU measurements estimate expected use; a new profile reserves
+four cores. The load average, IO, and swap checks still apply. A heavy task inside
 a heavy task or the gate was admitted with it, and so is a graft that the
 steps of an admitted task start (they carry `GRAFT_ADMITTED`). Priority tasks
 from `graft deploy` bypass the queue and may start ahead of queued tasks.
@@ -178,9 +181,9 @@ the steps of its heavy tasks and its `graft exec --heavy` go there first,
 skipping this machine's queue. A project's `when` defaults to `always`. The
 same fields may be set in the user config; a project's setting replaces the
 whole user setting. In user config, `when` defaults to `busy`: graft reads
-the load rule once, and whether another heavy task holds the queue (starting,
-or settling after its start), and sends eligible work to the host only when
-this machine's heavy queue would wait. On a calm machine it runs locally without
+the load rule once, and whether another heavy task has a live CPU reservation,
+and sends eligible work to the host only when this machine's heavy queue would
+wait. On a calm machine it runs locally without
 a host line. Set `when: always` to send eligible work every time.
 
 ```yaml
@@ -234,8 +237,8 @@ stay here (test database, `.env` keys, a directory the host's `run` cannot
 reach), and every other step (the gate's own go vet, the gofmt check, go
 fix, installs, scripts, the go steps of the other tasks) runs here under
 one admission: the first of them waits for this machine, the rest run under
-its admission to the gate's end, its queue lock gone after `load.settle` as
-any task's. A gate without such a task waits here whole. A host step
+its admission to the gate's end, its reservation released when CPU use is
+visible, the task ends, or `load.settle` expires. A gate without such a task waits here whole. A host step
 whose path breaks is said and rerun here under that admission, and the
 gate's later go steps run here too. A gate whose host does not answer waits
 here whole and says why.
@@ -269,9 +272,10 @@ heavy runs here wherever its caller runs.
 
 `graft deploy` gives its heavy tasks, and those of every graft its script
 starts, a priority (`GRAFT_LOAD_PRIORITY`, `GRAFT_LOAD_BUDGET`,
-`GRAFT_LOAD_THEN`): they skip the queue and the settling, a deploy not
-standing behind the test runs of every project, and wait for the machine
-out of one budget for the whole deploy, `deploy.load_wait`; when it is spent
+`GRAFT_LOAD_THEN`): they skip the queue, a deploy not standing behind the
+test runs of every project, and check the machine with live reservations
+included. Once admitted, they write their own reservation. They wait out of
+one budget for the whole deploy, `deploy.load_wait`; when it is spent
 they start, or with `then: fail` fail the deploy. Only waiting spends the
 budget, the waits of tasks side by side adding up: a task that finds the
 machine calm late in a long deploy takes nothing from it. The budget lives in
@@ -845,9 +849,9 @@ deps and inner tasks included.
 - `wait_why` splits `wait_s` by what was waited for, in seconds: `queue`
   (behind other heavy tasks), `load`, `io`, `swap` (each over its limit;
   the time between two readings goes to what the first found), `quiet` (the
-  quiet mode of akit's busy), a measure graft does not know yet by its own
-  name, `settle`
-  (the hold after a wait), `lock` (a task lock) and `sudo` (a deploy's
+  quiet mode of akit's busy), `reserve` (live expected CPU reservations), a
+  measure graft does not know yet by its own name, `lock` (a task lock) and
+  `sudo` (a deploy's
   confirmation). Absent when nothing waited.
 - `waited_behind`, on a task line that waited for a queue or lock, names the
   command and task ahead of it (for example `graft build (starting a heavy
@@ -866,6 +870,12 @@ deps and inner tasks included.
 - `disk_profile`, on the line of a heavy task this machine admitted, is the
   profile the disk state source gave its `profile` at the admission's last
   reading, as the source wrote it; absent without the source.
+- `reserve_cores`, `reserve_s` and `reserve_end` record expected CPU use, how
+  long the reservation lived, and whether it ended by CPU use (`cpu`), the
+  configured maximum (`cap`), task completion (`done`) or unreadable process
+  data (`unread`). The default stats report adds a line below the table with
+  the task count, CPU releases, cap releases and their share, and tasks that
+  ended before either release condition.
 - `step` is the step as written in `.graft.yaml`, on one line, cut to 200
   characters. `exit` is -1 when there is no exit status: killed by a signal,
   or a task that failed outside its processes.

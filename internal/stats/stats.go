@@ -14,13 +14,17 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gofrs/flock"
+
+	"github.com/aiseeq/graft/v2/internal/atomicfile"
 )
 
 // MaxSize is the size at which the file is moved to its newest old copy
@@ -128,7 +132,10 @@ type Record struct {
 	// hold after a wait, and load is the load average there), a task lock
 	// (lock) and a deploy's sudo confirmation (sudo). Absent when nothing
 	// waited, and in lines written before graft 2.40.
-	WaitWhy map[string]float64 `json:"wait_why,omitempty"`
+	WaitWhy      map[string]float64 `json:"wait_why,omitempty"`
+	ReserveCores float64            `json:"reserve_cores,omitempty"`
+	ReserveS     float64            `json:"reserve_s,omitempty"`
+	ReserveEnd   string             `json:"reserve_end,omitempty"`
 	// Host names the machine of remote_heavy the steps ran on; absent for
 	// this one. Their CPU time and memory are of the command that sent them
 	// there, not of the work.
@@ -373,7 +380,128 @@ func NewRecorder(warn io.Writer) *Recorder {
 // Recorder.
 func (r *Recorder) Write(rec Record) {
 	rec.Run, rec.Parent = run, parent
-	r.append(r.path, rec, MaxSize)
+	if rec.Kind != KindTask || rec.Profile == "" || rec.WallS < 1 {
+		r.append(r.path, rec, MaxSize)
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	err := r.err
+	if err == nil {
+		err = appendTaskAndHistory(r.path, rec)
+	}
+	r.warnLocked(err)
+}
+
+type coreHistory map[string][]float64
+
+func historyPath(statsPath string) string {
+	return filepath.Join(filepath.Dir(statsPath), "load.cores.json")
+}
+
+func appendTaskAndHistory(path string, rec Record) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	fl := flock.New(path + ".lock")
+	if err := fl.Lock(); err != nil {
+		return fmt.Errorf("locking %s: %w", fl.Path(), err)
+	}
+	defer fl.Unlock()
+	if err := appendUnderLock(path, rec, MaxSize); err != nil {
+		return err
+	}
+	hp := historyPath(path)
+	history := coreHistory{}
+	data, err := os.ReadFile(hp)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("reading %s: %w", hp, err)
+	}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &history); err != nil {
+			return fmt.Errorf("decoding %s: %w", hp, err)
+		}
+	}
+	if history == nil {
+		history = coreHistory{}
+	}
+	history[rec.Profile] = append(history[rec.Profile], (rec.UserS+rec.SysS)/rec.WallS)
+	if len(history[rec.Profile]) > 20 {
+		history[rec.Profile] = slices.Clone(history[rec.Profile][len(history[rec.Profile])-20:])
+	}
+	data, err = json.Marshal(history)
+	if err != nil {
+		return err
+	}
+	return atomicfile.Write(hp, append(data, '\n'), 0o644)
+}
+
+// appendUnderLock appends a stats record while the caller holds path.lock,
+// which also protects the matching CPU history update.
+func appendUnderLock(path string, v any, maxSize int64) error {
+	line, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("encoding the stats line: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating the stats directory: %w", err)
+	}
+	var rerr error
+	if full, err := isFull(path, maxSize); err != nil {
+		rerr = err
+	} else if full {
+		rerr = shift(path)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
+	if err != nil {
+		return errors.Join(rerr, fmt.Errorf("opening %s: %w", path, err))
+	}
+	_, err = f.Write(append(line, '\n'))
+	if err != nil {
+		err = fmt.Errorf("writing %s: %w", path, err)
+	}
+	if cerr := f.Close(); cerr != nil {
+		err = errors.Join(err, fmt.Errorf("closing %s: %w", path, cerr))
+	}
+	return errors.Join(rerr, err)
+}
+
+// ExpectedCores estimates the CPU cores a profile will use from its last 20
+// whole-task measurements, rounded up to half a core.
+func ExpectedCores(profile string) (float64, error) {
+	path, err := Path()
+	if err != nil {
+		return 0, err
+	}
+	hp := historyPath(path)
+	if err := os.MkdirAll(filepath.Dir(hp), 0o755); err != nil {
+		return 0, fmt.Errorf("creating the stats directory: %w", err)
+	}
+	fl := flock.New(path + ".lock")
+	if err := fl.Lock(); err != nil {
+		return 0, fmt.Errorf("locking %s: %w", fl.Path(), err)
+	}
+	defer fl.Unlock()
+	data, err := os.ReadFile(hp)
+	if errors.Is(err, os.ErrNotExist) {
+		return min(4.0, float64(runtime.NumCPU())), nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("reading %s: %w", hp, err)
+	}
+	history := coreHistory{}
+	if err := json.Unmarshal(data, &history); err != nil {
+		return 0, fmt.Errorf("decoding %s: %w", hp, err)
+	}
+	values := history[profile]
+	if len(values) == 0 {
+		return min(4.0, float64(runtime.NumCPU())), nil
+	}
+	sort.Float64s(values)
+	n := min(len(values), 20)
+	p90 := values[(9*n+9)/10-1]
+	cores := math.Ceil(p90*2) / 2
+	return min(max(cores, 0.5), float64(runtime.NumCPU())), nil
 }
 
 // WriteTests appends a package run to the tests file, the same way.

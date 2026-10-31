@@ -1,12 +1,48 @@
 package stats
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestExpectedCoresP90(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+	dir := filepath.Join(cache, "graft")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	values := make([]float64, 20)
+	for i := range values {
+		values[i] = float64(i+1) / 2
+	}
+	data, err := json.Marshal(coreHistory{"projectA:build": values})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "load.cores.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ExpectedCores("projectA:build")
+	want := min(9.0, float64(runtime.NumCPU()))
+	if err != nil || got != want {
+		t.Fatalf("ExpectedCores = %v, %v; want %v", got, err, want)
+	}
+	if err := os.Remove(filepath.Join(dir, "load.cores.json")); err != nil {
+		t.Fatal(err)
+	}
+	got, err = ExpectedCores("new")
+	if err != nil || got != 4 {
+		t.Fatalf("ExpectedCores without history = %v, %v; want 4", got, err)
+	}
+}
 
 func TestUsageKeepsPartialLoadPeakAndRejectsUnknownStep(t *testing.T) {
 	peak := Usage{}

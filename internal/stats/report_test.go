@@ -39,6 +39,13 @@ func TestReportShowsTheDatabase(t *testing.T) {
 	}
 }
 
+func TestReportReserveShare(t *testing.T) {
+	recs := []Record{{Kind: KindTask, Task: "one", ReserveCores: 1, ReserveEnd: "done"}, {Kind: KindTask, Task: "two", ReserveCores: 2, ReserveEnd: "cap"}}
+	if got := ReserveSummary(recs); !strings.Contains(got, "по сроку 1 (50%)") {
+		t.Fatalf("ReserveSummary = %q", got)
+	}
+}
+
 func TestReportFiltersTaskByIn(t *testing.T) {
 	recs := []Record{
 		{Kind: KindTask, Task: "lint", In: "smoke", Run: "r1", WallS: 10},

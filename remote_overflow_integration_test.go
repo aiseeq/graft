@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aiseeq/graft/v2/internal/loadgate"
+	"github.com/aiseeq/graft/v2/internal/lock"
 )
 
 // userRemoteRepo is a Go project without remote_heavy on a machine whose
@@ -399,33 +400,31 @@ func TestUserRemoteHeavyStopsACancelledStepWithSIGTERM(t *testing.T) {
 	}
 }
 
-// TestUserRemoteHeavyOverflowsBehindAHeldQueue: a heavy task that holds this
-// machine's queue (starting, or settling after its start) makes the next one
-// wait here, so that one goes to the host though the machine is calm.
-func TestUserRemoteHeavyOverflowsBehindAHeldQueue(t *testing.T) {
+// TestUserRemoteHeavyOverflowsBehindALiveReserve: a live reservation makes
+// the next task wait here, so it goes to the host though the machine is calm.
+func TestUserRemoteHeavyOverflowsBehindALiveReserve(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the run script is sh")
 	}
 	f, state := userRemoteRepo(t, overflowTasks)
-	// The holder settles for an hour by its own user config: exec --settle
-	// holds only its own lock, not the queue.
-	holder, holdCfg := *f, t.TempDir()
-	writeFile(t, filepath.Join(holdCfg, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 1h}\n")
-	writeTestPressure(t, holdCfg)
-	holder.env = append(slices.Clone(f.env), "XDG_CONFIG_HOME="+holdCfg)
-	hold, _ := holder.start(f.work, "exec", "--heavy", "--local", "--", "sleep", "60")
-	t.Cleanup(func() { _ = hold.Process.Signal(os.Interrupt); _ = hold.Wait() })
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if held, _ := filepath.Glob(filepath.Join(state, "cache", "graft", "load.lock.*.lholder")); len(held) > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the first exec did not take the queue")
-		}
+	reserveData, err := json.Marshal(struct {
+		Cores    int    `json:"cores"`
+		Admitted string `json:"admitted"`
+		Task     string `json:"task"`
+	}{22, time.Now().Format(time.RFC3339Nano), "projectA"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseReserve, err := lock.Reserve(filepath.Join(state, "cache", "graft"), "load.lock.*.reserve", reserveData)
+	if err != nil {
+		t.Fatal(err)
 	}
 	out := f.mustGraft("vet")
 	if !strings.Contains(out, "graft: vet: heavy, on pc") || !strings.Contains(callsOf(t, state), "go vet ./...") {
 		t.Errorf("behind a held queue vet stayed here:\n%s\ncalls: %q", out, callsOf(t, state))
+	}
+	if err := releaseReserve(); err != nil {
+		t.Fatal(err)
 	}
 	// A graft a step of an admitted task starts does not queue: it runs here.
 	admitted := *f
