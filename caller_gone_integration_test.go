@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -72,8 +74,8 @@ func TestSignalStopsTheCommand(t *testing.T) {
 	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
 		t.Run(sig.String(), func(t *testing.T) {
 			t.Run("exec", func(t *testing.T) {
-				marker := filepath.Join(t.TempDir(), "finished")
-				cmd, out, errOut := callerCommand(t, "exec", "--", "sh", "-c", `trap 'kill "$child"; wait "$child"; exit 0' TERM; (sleep 0.45; : > "$1"; sleep 20) & child=$!; echo ready; wait "$child"`, "sh", marker)
+				pidFile := filepath.Join(t.TempDir(), "child.pid")
+				cmd, out, errOut := callerCommand(t, "exec", "--", "sh", "-c", `trap 'kill "$child"; wait "$child"; exit 0' TERM; (sh -c 'echo "$$" > "$1"; exec sleep 20' sh "$1") & child=$!; while [ ! -s "$1" ]; do sleep 0.01; done; echo ready; wait "$child"`, "sh", pidFile)
 				ready, err := bufio.NewReader(out).ReadString('\n')
 				if err != nil || ready != "ready\n" {
 					t.Fatalf("command did not start: %q, %v", ready, err)
@@ -82,17 +84,17 @@ func TestSignalStopsTheCommand(t *testing.T) {
 				if err := cmd.Process.Signal(sig); err != nil {
 					t.Fatal(err)
 				}
-				waitForFileAbsent(t, marker, 500*time.Millisecond)
 				waitForEOF(t, out, errOut)
 				if err := waitProcess(t, cmd); err == nil {
 					t.Fatal("graft exited successfully after cancellation")
 				} else if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 125 {
 					t.Fatalf("graft exit = %v, want 125", err)
 				}
+				waitForProcessGone(t, pidFile)
 			})
 			t.Run("task", func(t *testing.T) {
-				marker := filepath.Join(t.TempDir(), "finished")
-				script := `trap 'kill "$child"; wait "$child"; exit 0' TERM; (sleep 0.6; : > ` + marker + `) & child=$!; echo ready; wait "$child"`
+				pidFile := filepath.Join(t.TempDir(), "child.pid")
+				script := `trap 'kill "$child"; wait "$child"; exit 0' TERM; (sh -c 'echo "$$" > "$1"; exec sleep 20' sh ` + yamlQuote(pidFile) + `) & child=$!; while [ ! -s ` + yamlQuote(pidFile) + ` ]; do sleep 0.01; done; echo ready; wait "$child"`
 				f := tasksRepo(t, "tasks:\n  wait:\n    run: [{sh: "+yamlQuote(script)+"}]\n", nil)
 				cmd, out, errOut := startPiped(t, f.work, f.env, "wait")
 				ready, err := bufio.NewReader(out).ReadString('\n')
@@ -102,10 +104,10 @@ func TestSignalStopsTheCommand(t *testing.T) {
 				if err := cmd.Process.Signal(sig); err != nil {
 					t.Fatal(err)
 				}
-				waitForFileAbsent(t, marker, 800*time.Millisecond)
 				if err := waitProcess(t, cmd); err == nil {
 					t.Fatal("graft task exited successfully after cancellation")
 				}
+				waitForProcessGone(t, pidFile)
 				_ = out.Close()
 				_ = errOut.Close()
 			})
@@ -113,20 +115,51 @@ func TestSignalStopsTheCommand(t *testing.T) {
 	}
 }
 
-func waitForFileAbsent(t *testing.T, path string, duration time.Duration) {
+func waitForProcessGone(t *testing.T, pidFile string) {
+	t.Helper()
+	pid := waitForProcessID(t, pidFile)
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		err := signalProcessZero(pid)
+		if errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("check child process %d: %v", pid, err)
+		}
+		select {
+		case <-ticker.C:
+		case <-timer.C:
+			t.Fatalf("child process %d is still alive", pid)
+		}
+	}
+}
+
+func waitForProcessID(t *testing.T, pidFile string) int {
 	t.Helper()
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
-	timer := time.NewTimer(duration)
+	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
 	for {
+		data, err := os.ReadFile(pidFile)
+		if err == nil {
+			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+			if err != nil {
+				t.Fatalf("invalid child pid %q: %v", data, err)
+			}
+			return pid
+		}
+		if !os.IsNotExist(err) {
+			t.Fatalf("read child pid: %v", err)
+		}
 		select {
 		case <-ticker.C:
-			if _, err := os.Stat(path); !os.IsNotExist(err) {
-				t.Fatalf("command reached its marker: %v", err)
-			}
 		case <-timer.C:
-			return
+			t.Fatalf("child pid file %s was not written", pidFile)
 		}
 	}
 }
@@ -177,14 +210,18 @@ func TestIgnoredHangupKeepsRunning(t *testing.T) {
 }
 
 func TestCallerGoneStopsTheCommand(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "finished")
-	cmd, out, errOut := callerCommand(t, "exec", "--", "sh", "-c", `trap 'kill "$child"; wait "$child"; exit 0' TERM; (sleep 0.45; : > "$1"; sleep 20) & child=$!; echo ready; wait "$child"`, "sh", marker)
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	cmd, out, errOut := callerCommand(t, "exec", "--", "sh", "-c", `trap 'kill "$child"; wait "$child"; exit 0' TERM; (sh -c 'echo "$$" > "$1"; exec sleep 20' sh "$1") & child=$!; while [ ! -s "$1" ]; do sleep 0.01; done; echo ready; wait "$child"`, "sh", pidFile)
+	ready, err := bufio.NewReader(out).ReadString('\n')
+	if err != nil || ready != "ready\n" {
+		t.Fatalf("command did not start: %q, %v", ready, err)
+	}
 	_ = out.Close()
 	_ = errOut.Close()
-	waitForFileAbsent(t, marker, 500*time.Millisecond)
 	if err := waitProcess(t, cmd); err == nil {
 		t.Fatal("graft exited successfully after both readers closed")
 	}
+	waitForProcessGone(t, pidFile)
 }
 
 func TestCallerGoneWaitingDoesNotStart(t *testing.T) {
@@ -278,21 +315,21 @@ func TestLocalStepTreeKilledAfterGrace(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses Unix process groups")
 	}
-	marker := filepath.Join(t.TempDir(), "finished")
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, "sh", "-c", `trap '' TERM; (sleep 0.4; : > "$1"; sleep 20) & wait`, "sh", marker)
+	cmd := exec.CommandContext(ctx, "sh", "-c", `trap '' TERM; (sh -c 'echo "$$" > "$1"; exec sleep 20' sh "$1") & wait`, "sh", pidFile)
 	proc.StopOnCancel(cmd, 200*time.Millisecond, func(error) {})
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(30 * time.Millisecond)
+	waitForProcessID(t, pidFile)
 	cancel()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	waitForFileAbsent(t, marker, 450*time.Millisecond)
 	if err := <-done; err == nil {
 		t.Fatal("cancelled step returned successfully")
 	}
+	waitForProcessGone(t, pidFile)
 }
 
 func TestDeployKeepsTodaysSignals(t *testing.T) {
