@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -211,8 +212,10 @@ func calmNote(maxLoad float64) string {
 // tasks a graft reran to a pass; statsPath is the stats file, the tests
 // file beside it.
 func (a *App) statsTests(statsPath string, f stats.TestFilter, where string) error {
+	oldGC := debug.SetGCPercent(30) // runtime-gc-tuning: safe — tests journal acceptance measured below 200 MB RSS at this setting
+	defer debug.SetGCPercent(oldGC)
 	path := stats.TestsPath(statsPath)
-	runs, malformed, err := stats.LoadTests(path, f.Since)
+	rep, firstTest, malformed, err := stats.SummarizeTestFile(path, f, testsLimit)
 	if err != nil {
 		return err
 	}
@@ -230,8 +233,7 @@ func (a *App) statsTests(statsPath string, f stats.TestFilter, where string) err
 	if f.Task != "" {
 		what = "tests of task " + f.Task
 	}
-	a.printf("%s in %s since %s, the %d slowest by median", what, where, sinceText(f.Since, earliest(runs, func(r *stats.PackageRun) time.Time { return r.Time })), testsLimit)
-	rep := stats.SummarizeTests(runs, f, testsLimit)
+	a.printf("%s in %s since %s, the %d slowest by median", what, where, sinceText(f.Since, firstTest), testsLimit)
 	rep.Reruns = stats.Reruns(recs, f)
 	if len(rep.Packages) == 0 && len(rep.Reruns) == 0 {
 		a.printf("nothing recorded (%s); a task records its tests with tests: go", path)

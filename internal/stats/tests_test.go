@@ -24,7 +24,7 @@ func TestSkippedTests(t *testing.T) {
 		run(1, skip("TestCorpus", "no corpus"), TestResult{Name: "TestLive", Result: ResultPass}),
 		run(2, TestResult{Name: "TestCorpus", Result: ResultPass}),
 	}
-	rep := SummarizeTests(runs, TestFilter{}, 2)
+	rep := summarizeTests(runs, TestFilter{}, 2)
 	if rep.SkippedAll != 3 || len(rep.Skipped) != 2 {
 		t.Fatalf("skipped %d, rows %+v", rep.SkippedAll, rep.Skipped)
 	}
@@ -32,7 +32,7 @@ func TestSkippedTests(t *testing.T) {
 		t.Errorf("first row %+v", r)
 	}
 	var out strings.Builder
-	if err := RenderTests(&out, SummarizeTests(runs, TestFilter{}, 3), false); err != nil {
+	if err := RenderTests(&out, summarizeTests(runs, TestFilter{}, 3), false); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
@@ -86,7 +86,7 @@ func TestSlashNamesAndFlakyTestsRemainVisible(t *testing.T) {
 		{Time: at.Add(time.Minute), Project: "projectA", Package: "web", Runner: "playwright", Result: ResultPass, Tree: "tree", Tests: []TestResult{{Name: "[chromium] opens /login", Result: ResultFlaky, WallS: 3}}},
 		{Time: at, Project: "projectA", Package: "go/pkg", Runner: "go", Result: ResultPass, Tests: []TestResult{{Name: "TestTable/case", Result: ResultFail}}},
 	}
-	report := SummarizeTests(runs, TestFilter{}, 10)
+	report := summarizeTests(runs, TestFilter{}, 10)
 	if len(report.Tests) != 2 || len(report.Flaky) != 2 {
 		t.Fatalf("slash tests missing: %+v", report)
 	}
