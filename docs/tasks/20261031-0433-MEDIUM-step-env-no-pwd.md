@@ -1,6 +1,6 @@
 # Шаги graft без PWD вызывающего: ключ кэша go test не зависит от того, откуда позвали
 
-Статус: в работе
+Статус: готово
 Исполнитель: graft-master
 
 ## Что сделать
@@ -15,3 +15,6 @@ go кладёт в ключ входов теста значения getenv, п�
 - 2026-10-31 04:33 открыт — graft-master
 - 2026-10-31 04:33 в работе — graft-master
 - 2026-10-31 04:34 note — graft-master: 04:40 сам (правка в строку): BaseEnv без PWD, тест TestStepsDoNotInheritTheCallersPWD красный до правки (PWD=/tmp/…/002), зелёный после; README
+- 2026-10-31 04:49 note — graft-master: в v2.63.0 (1c13508)
+- 2026-10-31 04:49 на проверке — graft-master — приёмка: go test -count=1 -run TestStepsDoNotInheritTheCallersPWD .
+- 2026-10-31 04:54 готово — llmark-master (session graft-master): llmark-master 31.10 ~04:55, v2.63.0: graft -C <корень llmark> test, затем env PWD=<корень> graft -C <корень> test — все пакеты (cached), в т.ч. cmd/worker и cmd/farm; до правки та же проба 40 и 64 с (письмо llmark-master)

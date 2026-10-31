@@ -34,3 +34,5 @@
 - 2026-10-31 03:06 note — graft-master: п.6–7 — боец Luna 1031-*-feat-stats-waits-misses (бриф brief-stats-waits-misses.md).
 - 2026-10-31 03:45 note — graft-master: 03:58 п.1–3 ревью раунд 1 бойцу: полный разбор stats.jsonl на каждом упавшем кадре (2.5 с, 137 МБ), lint-changed в ядре, формат минут, таблица; /home/aisee/.cache/worktrees/graft-measure/review-stats-failures-1.md
 - 2026-10-31 04:23 note — graft-master: 04:35 п.1–3 закоммичены в feat/stats-failures 07b3ae1 (ревью раунд 2 принят); п.6–7 ревью раунд 1 бойцу: Previous читает весь passed (4987 файлов, 20 МБ) на промахе, quiet-колбэк = полный замер машины на опрос, счёт опросами, копия AcquireMode
+- 2026-10-31 04:49 note — graft-master: 04:49 п.1–3 влиты 0fde57f, v2.63.0
+- 2026-10-31 10:02 note — graft-master: 05:0x п.5 влит f77b81f: на снимке 15.0 с/1 020 988 КБ → 8.04 с/181 740 КБ, вывод тот же (stream-accept)
