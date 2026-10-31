@@ -126,19 +126,29 @@ func setup(m *testing.M) (int, error) {
 	if err := writeTestFile(filepath.Join(dir, "userconfig", "graft", "config.yaml"), testLoadConfig); err != nil {
 		return 0, err
 	}
+	if err := writeTestFile(filepath.Join(dir, "userconfig", "akit", "pressure.yaml"), testPressureConfig); err != nil {
+		return 0, err
+	}
 	return m.Run(), nil
 }
 
-// testLoadConfig is the user config's load of every test: short settling,
-// so the tests' heavy tasks and gates, one at a time, do not wait out a
-// laptop's 30s for each other, nor the default 1s swap window each gate.
-const testLoadConfig = "load: {settle: 10ms, poll: 20ms, swap_window: 10ms}\n"
+// testLoadConfig keeps the tests' heavy tasks and gates from settling for
+// 10s each; machine pressure thresholds live in testPressureConfig instead.
+const testLoadConfig = "load: {settle: 10ms, poll: 20ms}\n"
+
+const testPressureConfig = "swap_window: 10ms\n"
 
 // writeUserConfig writes the graft user config of a test's own config home,
 // body after testLoadConfig: a config without load would take the defaults.
 func writeUserConfig(t *testing.T, cfgDir, body string) {
 	t.Helper()
 	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), testLoadConfig+body)
+	writeTestPressure(t, cfgDir)
+}
+
+func writeTestPressure(t *testing.T, cfgDir string) {
+	t.Helper()
+	writeFile(t, filepath.Join(cfgDir, "akit", "pressure.yaml"), testPressureConfig)
 }
 
 // writeTestFile writes a file of the tests' setup, its directory too.
@@ -324,11 +334,20 @@ func TestUserConfigsCarryTheTestLoad(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Each user config written with its own load: needs its own test
+		// pressure limits; writeUserConfig writes both.
+		direct := 0
 		for i, line := range strings.Split(string(src), "\n") {
-			if strings.Contains(line, needle) &&
-				!strings.Contains(line, "load:") && !strings.Contains(line, "testLoadConfig") {
+			if !strings.Contains(line, needle) || strings.Contains(line, "testLoadConfig") {
+				continue
+			}
+			direct++
+			if !strings.Contains(line, "load:") {
 				t.Errorf("%s:%d writes a user config without the test load, use writeUserConfig:\n%s", f, i+1, strings.TrimSpace(line))
 			}
+		}
+		if calls := strings.Count(string(src), "writeTestPressure(t, "); calls < direct {
+			t.Errorf("%s writes %d user configs of its own and the test pressure limits %d times; use writeUserConfig or writeTestPressure", f, direct, calls)
 		}
 	}
 }

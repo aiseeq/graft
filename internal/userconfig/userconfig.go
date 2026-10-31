@@ -148,37 +148,20 @@ func (l *Limits) normalize(path string) error {
 	return nil
 }
 
-// MachineLoad is when a heavy task may start on this machine: the tasks
-// ready to run below WaitAbove, the IO pressure at most MaxIOFull, and not
-// the memory pressure above MaxMemSome while it swaps more than MaxSwapKBs.
-// Heavy tasks start one at a time, each giving
-// its load Settle to show before the next one measures the machine.
+// MachineLoad tunes how heavy tasks run on this machine. Pressure limits
+// come from akit's pressure settings; graft keeps its task queue controls
+// here. Heavy tasks start one at a time, each giving its load Settle to show
+// before the next one measures the machine.
 type MachineLoad struct {
-	// WaitAbove 0 is the machine's thread count.
-	WaitAbove float64 `yaml:"wait_above"`
-	// MaxIOFull is the share of the last 5 seconds, in percent, during which
-	// every running process stalled on the disk (/proc/pressure/io), at or
-	// above which the machine is busy; a disk freeze going on makes it busy
-	// too. 100 or more leaves the disk out.
-	MaxIOFull float64 `yaml:"max_io_full"`
-	// MaxMemSome is the share of the last 10 seconds, in percent, during
-	// which some process stalled on memory (/proc/pressure/memory); 0 is the
-	// rule's own default.
-	MaxMemSome float64 `yaml:"max_mem_some"`
-	// MaxSwapKBs is the swap traffic in and out, in KB per second, measured
-	// over SwapWindow: swap in use is no harm, swapping is.
-	MaxSwapKBs float64       `yaml:"max_swap_kbs"`
-	SwapWindow time.Duration `yaml:"swap_window"`
-	Threads    int           `yaml:"threads"`
-	Settle     time.Duration `yaml:"settle"`
-	Poll       time.Duration `yaml:"poll"`
+	Threads int           `yaml:"threads"`
+	Settle  time.Duration `yaml:"settle"`
+	Poll    time.Duration `yaml:"poll"`
 }
 
 // DefaultLoad is a shared machine's: heavy tasks start while fewer tasks are
 // ready to run than it has threads, with the disk and the swap calm. The
 // count is of this moment, so a start shows to the next one within seconds.
-var DefaultLoad = MachineLoad{MaxIOFull: pressure.DefaultLimits.MaxIOFull, MaxSwapKBs: 1024, SwapWindow: time.Second,
-	Threads: 4, Settle: 10 * time.Second, Poll: 5 * time.Second}
+var DefaultLoad = MachineLoad{Threads: 4, Settle: 10 * time.Second, Poll: 5 * time.Second}
 
 // LoadSettings is the user's load settings over the defaults; without a user
 // config it is the defaults.
@@ -195,33 +178,20 @@ func LoadSettings() (MachineLoad, error) {
 
 func (l *MachineLoad) normalize(path string) error {
 	d := DefaultLoad
-	for _, f := range []struct {
-		v   *float64
-		def float64
-	}{{&l.MaxIOFull, d.MaxIOFull}, {&l.MaxSwapKBs, d.MaxSwapKBs}} {
-		if *f.v == 0 {
-			*f.v = f.def
-		}
-	}
 	if l.Threads == 0 {
 		l.Threads = d.Threads
 	}
 	if l.Settle == 0 {
 		l.Settle = d.Settle
 	}
-	if l.SwapWindow == 0 {
-		l.SwapWindow = d.SwapWindow
-	}
 	if l.Poll == 0 {
 		l.Poll = d.Poll
 	}
 	switch {
-	case l.WaitAbove < 0 || l.MaxIOFull < 0 || l.MaxMemSome < 0 || l.MaxSwapKBs < 0:
-		return fmt.Errorf("%s: load: wait_above, max_io_full, max_mem_some and max_swap_kbs must be positive", path)
 	case l.Threads < 0:
 		return fmt.Errorf("%s: load.threads: %d is negative", path, l.Threads)
-	case l.Settle < 0 || l.Poll < 0 || l.SwapWindow < 0:
-		return fmt.Errorf("%s: load: settle, poll and swap_window must be positive", path)
+	case l.Settle < 0 || l.Poll < 0:
+		return fmt.Errorf("%s: load: settle and poll must be positive", path)
 	}
 	return nil
 }
@@ -291,6 +261,9 @@ func Load() (*Config, string, error) {
 	if err != nil {
 		return nil, path, fmt.Errorf("reading the user config: %w", err)
 	}
+	if err := rejectMovedLoadLimits(data, path); err != nil {
+		return nil, path, err
+	}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	var cfg Config
@@ -327,6 +300,34 @@ func Load() (*Config, string, error) {
 		}
 	}
 	return &cfg, path, nil
+}
+
+func rejectMovedLoadLimits(data []byte, path string) error {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return nil
+	}
+	root := doc.Content[0]
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value != "load" || root.Content[i+1].Kind != yaml.MappingNode {
+			continue
+		}
+		for j := 0; j+1 < len(root.Content[i+1].Content); j += 2 {
+			key := root.Content[i+1].Content[j].Value
+			switch key {
+			case "wait_above", "max_io_full", "max_mem_some", "max_swap_kbs", "swap_window":
+				pressurePath, err := pressure.LimitsPath()
+				if err != nil {
+					return fmt.Errorf("%s: load: %s moved to pressure.yaml (%s): %w", path, key, strings.Join(pressure.LimitKeys, ", "), err)
+				}
+				return fmt.Errorf("%s: load: %s moved to %s (keys: %s)", path, key, pressurePath, strings.Join(pressure.LimitKeys, ", "))
+			}
+		}
+	}
+	return nil
 }
 
 func (l *Leaks) normalize(path string) error {

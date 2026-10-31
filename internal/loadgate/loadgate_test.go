@@ -35,6 +35,15 @@ func fakeMachine(t *testing.T) (setRunnable func(int), setIO func(string), setSw
 	}
 	t.Setenv(ProcEnv, dir)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	limitsPath := filepath.Join(configHome, "akit", "pressure.yaml")
+	if err := os.MkdirAll(filepath.Dir(limitsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(limitsPath, []byte("runnable: 22\nmax_io_full: 10\nmax_swap_kbs: 1024\nswap_window: 20ms\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	setRunnable = func(n int) {
 		var stat strings.Builder
 		stat.WriteString("cpu  1 1 1 1\n")
@@ -74,6 +83,36 @@ func TestDirtyWritebackKBReadsProcEnv(t *testing.T) {
 	}
 }
 
+func TestPressureUserLimitsControlSwapAdmission(t *testing.T) {
+	_, _, setSwap := fakeMachine(t)
+	proc := os.Getenv(ProcEnv)
+	if err := os.WriteFile(filepath.Join(proc, "pressure", "memory"), []byte("some avg10=25.00 avg60=0.00 avg300=0.00 total=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	path := filepath.Join(configHome, "akit", "pressure.yaml")
+	if err := os.WriteFile(path, []byte("runnable: 22\nmax_io_full: 10\nmax_mem_some: 10\nmax_swap_kbs: 1e20\nswap_window: 10ms\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	swapping(t, setSwap)
+	busy, err := BusyNow(context.Background(), "build", "projectA:build", testLoad, "", io.Discard)
+	if err != nil || busy {
+		t.Fatalf("BusyNow = %v, %v with pressure.yaml max_swap_kbs 1e20; want admitted", busy, err)
+	}
+}
+
+func TestBrokenPressureLimitsFailBusyCheck(t *testing.T) {
+	fakeMachine(t)
+	path := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "akit", "pressure.yaml")
+	if err := os.WriteFile(path, []byte("max_swap_kbs: not-a-number\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := BusyNow(context.Background(), "build", "projectA:build", testLoad, "", io.Discard)
+	if err == nil || !strings.Contains(err.Error(), path) {
+		t.Fatalf("BusyNow error = %v; want pressure limits error naming %s", err, path)
+	}
+}
+
 // wait is Wait for a task of projectA, with only its waits.
 func wait(ctx context.Context, name string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (Waits, func() error, error) {
 	adm, release, err := Wait(ctx, name, "projectA:"+name, p, l, lockPath, log)
@@ -102,8 +141,7 @@ func awaitFiles(t *testing.T, pattern string, count int) {
 	}
 }
 
-var testLoad = userconfig.MachineLoad{WaitAbove: 22, MaxIOFull: 10, MaxSwapKBs: 1024,
-	SwapWindow: 20 * time.Millisecond, Settle: time.Hour, Poll: 10 * time.Millisecond}
+var testLoad = userconfig.MachineLoad{Settle: time.Hour, Poll: 10 * time.Millisecond}
 
 // TestCalmMachineStartsOneAtATime: on a calm machine a task starts at once,
 // and the next one waits while the first settles, until it ends or the
@@ -302,7 +340,7 @@ func TestBusyDiskAndSwapHoldTasks(t *testing.T) {
 		name, want string
 		busy       func(t *testing.T, setIO func(string), setSwap func(int64))
 	}{
-		{"io", "IO pressure 35.0% of the last 5s is at or above 10% (user config load.max_io_full)",
+		{"io", "IO pressure 35.0% of the last 5s is at or above 10% (pressure.yaml max_io_full)",
 			func(_ *testing.T, setIO func(string), _ func(int64)) { setIO("35.00") }},
 		{"swap", "memory pressure 25.0% is above 10% while swapping",
 			func(t *testing.T, _ func(string), setSwap func(int64)) {
@@ -327,7 +365,7 @@ func TestBusyDiskAndSwapHoldTasks(t *testing.T) {
 				// A look after the first measures the swapping since the
 				// one before, a poll ago: the fake's writer, stalled for
 				// longer under -race, must not leave a look with none.
-				l.Poll, l.SwapWindow = 100*time.Millisecond, 100*time.Millisecond
+				l.Poll = 100 * time.Millisecond
 			}
 			var log strings.Builder
 			p := &Priority{For: "graft deploy prod", Budget: newBudget(t, time.Hour)}

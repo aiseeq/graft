@@ -38,8 +38,9 @@ func userRemoteRepoRun(t *testing.T, tasks, state, run string) *fixture {
 		"a.go":        "package a\n",
 	})
 	cfgDir := t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms, swap_window: 10ms}\n"+
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms}\n"+
 		"remote_heavy: {host: pc, up: [sh, "+yamlQuote(filepath.Join(state, "up.sh"))+"], run: "+run+", threads: 8}\n")
+	writeTestPressure(t, cfgDir)
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, filepath.Join(state, "proc"), 0), "XDG_CACHE_HOME="+filepath.Join(state, "cache"))
 	return f
 }
@@ -409,7 +410,8 @@ func TestUserRemoteHeavyOverflowsBehindAHeldQueue(t *testing.T) {
 	// The holder settles for an hour by its own user config: exec --settle
 	// holds only its own lock, not the queue.
 	holder, holdCfg := *f, t.TempDir()
-	writeFile(t, filepath.Join(holdCfg, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 1h, swap_window: 10ms}\n")
+	writeFile(t, filepath.Join(holdCfg, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 1h}\n")
+	writeTestPressure(t, holdCfg)
 	holder.env = append(slices.Clone(f.env), "XDG_CONFIG_HOME="+holdCfg)
 	hold, _ := holder.start(f.work, "exec", "--heavy", "--local", "--", "sleep", "60")
 	t.Cleanup(func() { _ = hold.Process.Signal(os.Interrupt); _ = hold.Wait() })

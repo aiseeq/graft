@@ -55,8 +55,16 @@ func TestTrimWaitsForDirty(t *testing.T) {
 func TestTrimWaitsForBusyDisk(t *testing.T) {
 	trimProc(t, 1, 1)
 	serveTrimDisk(t, 1000)
-	load := userconfig.MachineLoad{WaitAbove: 10, MaxIOFull: 10, MaxSwapKBs: 1024,
-		SwapWindow: time.Millisecond, Poll: 5 * time.Millisecond}
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	limits := filepath.Join(configHome, "akit", "pressure.yaml")
+	if err := os.MkdirAll(filepath.Dir(limits), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(limits, []byte("runnable: 10\nmax_io_full: 10\nmax_swap_kbs: 1024\nswap_window: 1ms\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	load := userconfig.MachineLoad{Poll: 5 * time.Millisecond}
 	checker := loadgate.NewBusyChecker("gocache trim", trimKind, load, nil)
 	proceed, waited, err := waitForTrimBatch(context.Background(), 35*time.Millisecond, load.Poll,
 		trimMemoryCalm, checker.Busy)

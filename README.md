@@ -52,11 +52,6 @@ leaks:                           # keep private names out of public repositories
   allow:
     - {term: SomeName, reason: why this name is fine everywhere}
 load:                            # heavy tasks on a shared machine (heavy: true in a task)
-  wait_above: 22                 # default: the machine's threads; heavy tasks start while fewer tasks are ready to run
-  max_io_full: 9.6               # default 9.6: % of the last 5s all processes stalled on the disk; 100 leaves the disk out
-  max_mem_some: 10               # default 10: % of the last 10s some process stalled on memory (/proc/pressure/memory)
-  max_swap_kbs: 1024             # default 1024: swap traffic in and out, KB/s (pswpin + pswpout of /proc/vmstat), busy only with memory pressure
-  swap_window: 1s                # default 1s: how long a starting task measures the swapping
   threads: 4                     # default 4: {threads} in steps, GRAFT_THREADS and GOMAXPROCS in heavy tasks
   settle: 10s                    # default 10s: a heavy task that starts gives its load this long to show before the next
   poll: 5s                       # default 5s; 0 anywhere here means the default
@@ -78,6 +73,12 @@ remote_heavy:
 install:
   hosts: [pc]                   # copy installed binaries to the same absolute path
 ```
+
+Machine pressure limits are shared with akit's `busy` command. Set them in
+`<user config dir>/akit/pressure.yaml` (Linux: `~/.config/akit/pressure.yaml`),
+using the [akit pressure keys and defaults](https://github.com/aiseeq/akit/blob/main/pressure/limits.go).
+The keys are `runnable`, `max_io_full`, `max_mem_some`, `max_swap_kbs` and
+`swap_window`; graft's `load:` holds only its task queue settings.
 
 With `commit.conventional` graft commit wants the subject as `type(scope)!:
 description`, the type one of build, chore, ci, docs, feat, fix, perf,
@@ -102,7 +103,7 @@ module versions are left alone.
 A heavy task, and the gate as a whole, starts when the machine is not busy,
 by the rule of `github.com/aiseeq/akit/pressure`: the tasks ready to run at
 this moment (`procs_running` of `/proc/stat`, one reading, not an average
-that lags a minute behind) below `wait_above`, no disk freeze going on and
+that lags a minute behind) below `runnable`, no disk freeze going on and
 the IO pressure of the last 5 seconds below `max_io_full`, and not the
 memory pressure above `max_mem_some` while the machine swaps more than
 `max_swap_kbs`: swap in use is no harm, and swapping without memory pressure

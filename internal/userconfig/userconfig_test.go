@@ -1,8 +1,13 @@
 package userconfig
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/aiseeq/akit/pressure"
 )
 
 func TestRemoteIsPublic(t *testing.T) {
@@ -79,13 +84,34 @@ func TestLeaksNormalize(t *testing.T) {
 
 func TestLoadNormalize(t *testing.T) {
 	l := MachineLoad{Threads: 8}
-	if err := l.normalize("cfg"); err != nil || l.WaitAbove != 0 || l.MaxIOFull != 9.6 || l.MaxSwapKBs != 1024 ||
-		l.SwapWindow != time.Second || l.Threads != 8 || l.Settle != DefaultLoad.Settle {
+	if err := l.normalize("cfg"); err != nil || l.Threads != 8 || l.Settle != DefaultLoad.Settle {
 		t.Errorf("defaults: %+v, %v", l, err)
 	}
-	for _, bad := range []MachineLoad{{WaitAbove: -1}, {Threads: -1}, {Poll: -1}, {MaxIOFull: -1}, {SwapWindow: -1}} {
+	for _, bad := range []MachineLoad{{Threads: -1}, {Poll: -1}, {Settle: -1}} {
 		if err := bad.normalize("cfg"); err == nil {
 			t.Errorf("%+v: want an error", bad)
+		}
+	}
+}
+
+func TestLoadPressureLimitsMustMoveToAkit(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	for _, key := range []string{"max_io_full", "wait_above"} {
+		path := filepath.Join(cfgDir, "graft", "config.yaml")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("load: {"+key+": 10}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err := Load()
+		pressurePath, pathErr := pressure.LimitsPath()
+		if pathErr != nil {
+			t.Fatal(pathErr)
+		}
+		if err == nil || !strings.Contains(err.Error(), path+": load: "+key+" moved to "+pressurePath) || !strings.Contains(err.Error(), strings.Join(pressure.LimitKeys, ", ")) {
+			t.Errorf("load key %s: got %v, want moved-key error naming %s and keys %v", key, err, pressurePath, pressure.LimitKeys)
 		}
 	}
 }

@@ -332,6 +332,8 @@ func DirtyWritebackKB() (int64, error) {
 // machine reads what makes the machine busy for one task.
 type machine struct {
 	l          userconfig.MachineLoad
+	limits     pressure.Limits
+	limitsErr  error
 	log        io.Writer
 	name, kind string
 	meter      *pressure.Meter
@@ -351,7 +353,8 @@ func newMachine(l userconfig.MachineLoad, log io.Writer, name, kind string) *mac
 	if dir := os.Getenv(ProcEnv); dir != "" {
 		proc = dir
 	}
-	return &machine{l: l, log: log, name: name, kind: kind, meter: pressure.NewMeter(proc), waits: Waits{}}
+	limits, limitsErr := pressure.UserLimits()
+	return &machine{l: l, limits: limits, limitsErr: limitsErr, log: log, name: name, kind: kind, meter: pressure.NewMeter(proc), waits: Waits{}}
 }
 
 func (m *machine) admission() Admission { return Admission{Waits: m.waits, DiskProfile: m.disk} }
@@ -401,23 +404,25 @@ type busyness struct{ why, text string }
 // measures are the rule's measures as the waits name them, with what sets
 // each limit.
 var measures = map[string]struct{ why, setting string }{
-	pressure.CPU:   {WhyLoad, "user config load.wait_above"},
-	pressure.IO:    {WhyIO, "user config load.max_io_full"},
-	pressure.Swap:  {WhySwap, "user config load.max_mem_some, load.max_swap_kbs"},
+	pressure.CPU:   {WhyLoad, "pressure.yaml runnable"},
+	pressure.IO:    {WhyIO, "pressure.yaml max_io_full"},
+	pressure.Swap:  {WhySwap, "pressure.yaml max_mem_some, max_swap_kbs"},
 	pressure.Quiet: {WhyQuiet, "busy --quiet-off ends it"},
 }
 
 // busy says why the machine cannot take a heavy task now, nothing when it
-// can, by the rule of a busy machine (akit's pressure): the tasks ready to
-// run at or above WaitAbove, read once, a disk freeze going on or the IO
-// pressure of the last 5 seconds at or above its limit, or the memory
-// pressure above its limit while the machine swaps. fresh measures the
-// swapping, and without the disk state source the IO pressure, over
-// SwapWindow; otherwise since the last call. A measure the system lacks is
+// can, by akit's rule: the tasks ready to run at or above runnable, read
+// once, a disk freeze going on or the IO pressure of the last 5 seconds at
+// or above its limit, or the memory pressure above its limit while the
+// machine swaps. fresh measures the swapping, and without the disk state
+// source the IO pressure, over the configured swap window; otherwise since
+// the last call. A measure the system lacks is
 // skipped and told once.
 func (m *machine) busy(ctx context.Context, fresh bool) (busyness, error) {
-	v, err := m.meter.Check(ctx, pressure.Limits{Runnable: m.l.WaitAbove, MaxIOFull: m.l.MaxIOFull, MaxMemSome: m.l.MaxMemSome,
-		MaxSwapKBs: m.l.MaxSwapKBs, SwapWindow: m.l.SwapWindow}, m.kind, fresh)
+	if m.limitsErr != nil {
+		return busyness{}, fmt.Errorf("reading pressure limits: %w", m.limitsErr)
+	}
+	v, err := m.meter.Check(ctx, m.limits, m.kind, fresh)
 	if err != nil {
 		return busyness{}, fmt.Errorf("measuring the machine: %w", err)
 	}

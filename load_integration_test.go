@@ -78,7 +78,8 @@ tasks:
 	})
 	proc := filepath.Join(state, "proc")
 	cfgDir := t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms, swap_window: 10ms}\n")
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms}\n")
+	writeTestPressure(t, cfgDir)
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, proc, 30), "XDG_CACHE_HOME="+t.TempDir())
 
 	read := func() string {
@@ -108,7 +109,7 @@ tasks:
 	if !strings.Contains(log.String(), "graft: build: sh -c echo threads=6 ") {
 		t.Errorf("the step is echoed without its thread count:\n%s", log.String())
 	}
-	if !strings.Contains(log.String(), "build: runnable 30 is at or above 22 (user config load.wait_above), waiting") || !strings.Contains(log.String(), "build: runnable 17, starting after ") {
+	if !strings.Contains(log.String(), "build: runnable 30 is at or above 22 (pressure.yaml runnable), waiting") || !strings.Contains(log.String(), "build: runnable 17, starting after ") {
 		t.Errorf("no wait reported:\n%s", log.String())
 	}
 }
@@ -122,7 +123,8 @@ func TestHeavyTaskWaitIsRecorded(t *testing.T) {
 	})
 	proc := t.TempDir()
 	cfgDir, cache := t.TempDir(), t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {poll: 20ms, settle: 10ms, swap_window: 10ms}\n")
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {poll: 20ms, settle: 10ms}\n")
+	writeTestPressure(t, cfgDir)
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, proc, 30), "XDG_CACHE_HOME="+cache)
 	cmd := exec.Command(graftBin, "outer")
 	cmd.Dir = f.work
@@ -166,7 +168,8 @@ func TestDeployPrioritySkipsTheQueue(t *testing.T) {
 		".graft.yaml": "schema: 1\nversion: {mode: none}\ntasks:\n  build:\n    heavy: true\n    run: [" + helperStep("ok") + "]\n",
 	})
 	cfgDir := t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {poll: 20ms, settle: 1h, swap_window: 10ms}\n")
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {poll: 20ms, settle: 1h}\n")
+	writeTestPressure(t, cfgDir)
 	cache := t.TempDir()
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, t.TempDir(), 30), "XDG_CACHE_HOME="+cache)
 	queued := exec.Command(graftBin, "build")
@@ -211,7 +214,8 @@ func TestExecHeavyWaitsForLoad(t *testing.T) {
 	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n", "sub/keep": ""})
 	proc := t.TempDir()
 	cfgDir, cache := t.TempDir(), t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms, swap_window: 10ms}\n")
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms}\n")
+	writeTestPressure(t, cfgDir)
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, proc, 30), "XDG_CACHE_HOME="+cache)
 	sub := filepath.Join(f.work, "sub")
 
@@ -287,11 +291,12 @@ func TestGateQueuesForTheMachine(t *testing.T) {
 	})
 	proc := t.TempDir()
 	cfgDir := t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {poll: 20ms, settle: 10ms, swap_window: 10ms}\n")
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {poll: 20ms, settle: 10ms}\n")
+	writeTestPressure(t, cfgDir)
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, proc, 30), "XDG_CACHE_HOME="+t.TempDir())
 	cmd, log := f.start(f.work, "gate")
 	waitFor(t, func() bool {
-		return strings.Contains(log.String(), "gate: runnable 30 is at or above 22 (user config load.wait_above), waiting")
+		return strings.Contains(log.String(), "gate: runnable 30 is at or above 22 (pressure.yaml runnable), waiting")
 	})
 	if strings.Contains(log.String(), "gate 1/1") {
 		t.Fatalf("the gate ran at runnable 30:\n%s", log.String())
