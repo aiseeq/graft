@@ -69,11 +69,12 @@ var commands = []command{
 		applies: func(c *config.Config) bool { return len(c.Tasks) > 0 }},
 	{name: "start", syntax: fixed("graft start|stop|restart [service]", "graft logs <service> [--lines N] [-f]"), summary: text("start services in the background or through systemd --user; stop, restart, logs"),
 		applies: func(c *config.Config) bool { return len(c.Services) > 0 }},
-	{name: "exec", syntax: fixed("graft exec [--heavy [--local] [--env <name>]... [--settle <duration>]] -- <command> [args]"),
+	{name: "exec", syntax: fixed(execSyntax),
 		summary: text("run a command that is not a task, recorded in the stats as exec; --heavy: queue for the machine as heavy tasks do, {threads} and GRAFT_THREADS from load.threads"),
 		details: "--local: with --heavy, run on this machine though the project has remote_heavy (GRAFT_HEAVY=local, for the grafts the command starts too).\n" +
 			"--env: with --heavy, a variable of the caller's that remote_heavy's host gets too (GRAFT_PASS_ENV, for the grafts the command starts too): the host gets the task's env, the threads and GOOS, GOARCH, GOFLAGS, CGO_ENABLED, GOEXPERIMENT, not the caller's other variables, so FOO=1 graft exec --heavy -- go test does not see FOO there; pass it with --env FOO, or keep the command here with --local.\n" +
-			"--settle: with --heavy, hold a separate FIFO lock for this long after the command starts, or until it ends if sooner; only another --settle waits for it. The heavy-task queue still uses load.settle.\n\n" +
+			"--settle: with --heavy, hold a separate FIFO lock for this long after the command starts, or until it ends if sooner; only another --settle waits for it. The heavy-task queue still uses load.settle.\n" +
+			"--cores: with --heavy, reserve this many cores (above 0, at most the machine's threads) instead of the estimate from the command's history, for a command whose load runs outside its process tree; released the same way.\n\n" +
 			"Exit status: the command's, 128 and the signal for one a signal ended; on remote_heavy's host, the one its run gives.\n" +
 			"  125  graft itself: a usage error, -C, the config, the queue, remote_heavy's run that does not start, an interrupt that ended the command\n" +
 			"  126  the command was found but not started\n" +

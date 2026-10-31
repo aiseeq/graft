@@ -581,10 +581,13 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 	return a.WorktreeClean(o)
 }
 
+// execSyntax is graft exec's usage, in its error and in graft help.
+const execSyntax = "graft exec [--heavy [--local] [--env <name>]... [--settle <duration>] [--cores <n>]] -- <command> [args]"
+
 // execCmd is graft exec; its own failures, usage too, exit app.ExitGraft
 // (run).
 func execCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := fmt.Errorf("%w: graft exec [--heavy [--local] [--env <name>]... [--settle <duration>] [--cores <n>]] -- <command> [args]", errUsage)
+	usage := fmt.Errorf("%w: %s", errUsage, execSyntax)
 	var opts app.ExecOptions
 	var local bool
 	var pass []string
