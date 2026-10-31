@@ -40,7 +40,7 @@ func TestGocacheTrimTakesTheCacheOfGoEnv(t *testing.T) {
 	if _, err := os.Stat(old); err != nil {
 		t.Errorf("the dry run removed an entry: %v", err)
 	}
-	if out := f.mustGraft("gocache", "trim", "--apply"); !strings.HasPrefix(out, "graft: removed 1 entries") {
+	if out := f.mustGraft("gocache", "trim", "--apply"); !strings.Contains(out, "graft: removed 1 entries") {
 		t.Errorf("apply:\n%s", out)
 	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {

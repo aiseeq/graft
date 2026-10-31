@@ -86,6 +86,7 @@ func setup(m *testing.M) (int, error) {
 	// load of the machine the tests run on.
 	machine := filepath.Join(dir, "machine")
 	for name, content := range map[string]string{
+		"meminfo":         "Dirty: 0 kB\nWriteback: 0 kB\n",
 		"stat":            "cpu  1 1 1 1\ncpu0 1 1 1 1\nprocs_running 1\n",
 		"pressure/io":     "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n",
 		"pressure/memory": "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n",

@@ -62,6 +62,18 @@ func fakeMachine(t *testing.T) (setRunnable func(int), setIO func(string), setSw
 	return setRunnable, setIO, setSwap
 }
 
+func TestDirtyWritebackKBReadsProcEnv(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "meminfo"), []byte("MemTotal: 10 kB\nDirty: 123 kB\nWriteback: 456 kB\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(ProcEnv, dir)
+	got, err := DirtyWritebackKB()
+	if err != nil || got != 579 {
+		t.Fatalf("DirtyWritebackKB() = %d, %v; want 579, nil", got, err)
+	}
+}
+
 // wait is Wait for a task of projectA, with only its waits.
 func wait(ctx context.Context, name string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (Waits, func() error, error) {
 	adm, release, err := Wait(ctx, name, "projectA:"+name, p, l, lockPath, log)

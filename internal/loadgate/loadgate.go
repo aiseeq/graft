@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -284,6 +285,50 @@ func settle(lk *lock.Lock, d time.Duration) func() error {
 // machine: for tests.
 const ProcEnv = "GRAFT_PROC"
 
+// DirtyWritebackKB reads the memory the machine has queued to write, in kB.
+func DirtyWritebackKB() (int64, error) {
+	proc := "/proc"
+	if dir := os.Getenv(ProcEnv); dir != "" {
+		proc = dir
+	}
+	path := filepath.Join(proc, "meminfo")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("read memory writeback state: %w", err)
+	}
+	var dirty, writeback int64
+	var haveDirty, haveWriteback bool
+	for line := range strings.SplitSeq(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		key := strings.TrimSuffix(fields[0], ":")
+		if key != "Dirty" && key != "Writeback" {
+			continue
+		}
+		if len(fields) < 2 {
+			return 0, fmt.Errorf("read memory writeback state: malformed %s line", key)
+		}
+		value, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("read memory writeback state: malformed %s value %q", key, fields[1])
+		}
+		switch key {
+		case "Dirty":
+			dirty = value
+			haveDirty = true
+		case "Writeback":
+			writeback = value
+			haveWriteback = true
+		}
+	}
+	if !haveDirty || !haveWriteback {
+		return 0, fmt.Errorf("read memory writeback state: %s is missing Dirty or Writeback", path)
+	}
+	return dirty + writeback, nil
+}
+
 // machine reads what makes the machine busy for one task.
 type machine struct {
 	l          userconfig.MachineLoad
@@ -331,6 +376,21 @@ func BusyNow(ctx context.Context, name, kind string, l userconfig.MachineLoad, l
 		}
 	}
 	b, err := newMachine(l, log, name, kind).busy(ctx, true)
+	return b.why != "", err
+}
+
+// BusyChecker keeps the pressure meter across readings, so repeated checks
+// measure since the previous reading without waiting for another swap window.
+type BusyChecker struct{ machine *machine }
+
+// NewBusyChecker makes an immediate machine-load checker for a task kind.
+func NewBusyChecker(name, kind string, l userconfig.MachineLoad, log io.Writer) *BusyChecker {
+	return &BusyChecker{machine: newMachine(l, log, name, kind)}
+}
+
+// Busy reports whether the machine currently fails the load rule.
+func (c *BusyChecker) Busy(ctx context.Context) (bool, error) {
+	b, err := c.machine.busy(ctx, false)
 	return b.why != "", err
 }
 

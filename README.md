@@ -317,7 +317,7 @@ stats` (`wait_s`).
 | `graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h]` | remove the worktrees and branches whose work is in the trunk by content; list the rest |
 | `graft worktree sync [--trunk <ref>]` | move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted (see Worktrees) |
 | `graft tools [install]` | check the pinned tools; install the failing ones |
-| `graft gocache trim [--older 25h] [--apply]` | remove the Go build cache entries unused for longer than `--older` (see [Go build cache](#go-build-cache)) |
+| `graft gocache trim [--older 25h] [--apply] [--max-wait 30m]` | remove the Go build cache entries unused for longer than `--older` (see [Go build cache](#go-build-cache)) |
 | `graft help` | the commands the project's `.graft.yaml` uses, its tasks (those with `desc`, with their arguments) and services |
 | `graft help <command>`, `graft <command> -h` | one command's part of `graft help`, with details such as the exit codes of `exec`; a command with flags lists them after it |
 | `graft --version` | print graft's own version |
@@ -2141,7 +2141,13 @@ own files stay, and a directory without the README go writes there is
 refused. Without `--apply` it only reports what it would remove and what it
 keeps. A removed entry is a cache miss: go rebuilds the package the next time
 it is needed, so a project not built for a day builds cold once, and a
-project in use stays warm. Run it daily from a timer, for instance a
+project in use stays warm. With `--apply`, graft removes entries in batches
+of up to 1000 entries or 256 MiB, syncing the cache filesystem after each
+batch. Before a batch it waits until `Dirty` plus `Writeback` in
+`/proc/meminfo` is below 64 MiB and the machine's disk pressure is calm.
+`--max-wait` (30m by default) bounds the total wait; when it expires, graft
+reports what remains for the next run. Without `--apply` it reports the
+would-be removals immediately. Run it daily from a timer, for instance a
 systemd user unit with `ExecStart=` the absolute path of graft and `gocache
 trim --apply`, and `OnCalendar=daily`: systemd does not look in `~/bin`.
 

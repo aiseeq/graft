@@ -462,15 +462,16 @@ func testDBCmd(ctx context.Context, a *app.App, args []string) error {
 	return err
 }
 
-// gocacheCmd is graft gocache trim [--older 25h] [--apply].
+// gocacheCmd is graft gocache trim [--older 25h] [--apply] [--max-wait 30m].
 func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := fmt.Errorf("%w: graft gocache trim [--older 25h] [--apply]", errUsage)
+	usage := fmt.Errorf("%w: graft gocache trim [--older 25h] [--apply] [--max-wait 30m]", errUsage)
 	if len(args) == 0 || args[0] != "trim" {
 		return usage
 	}
 	fs := newFlags(a, "gocache trim")
 	apply := fs.Bool("apply", false, "remove; without it only report")
 	older := fs.Duration("older", 25*time.Hour, "remove the entries unused for longer than this")
+	maxWait := fs.Duration("max-wait", 30*time.Minute, "stop waiting for a quiet machine after this long")
 	pos, err := parseInterspersed(fs, args[1:])
 	if err != nil {
 		return err
@@ -483,7 +484,10 @@ func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
 	if *older <= gocache.MarkInterval {
 		return fmt.Errorf("%w: --older %s: want more than %s, how seldom go marks an entry used", errUsage, *older, gocache.MarkInterval)
 	}
-	return a.GocacheTrim(ctx, *older, *apply)
+	if *maxWait < 0 {
+		return fmt.Errorf("%w: --max-wait %s: want zero or more", errUsage, *maxWait)
+	}
+	return a.GocacheTrim(ctx, *older, *apply, *maxWait)
 }
 
 func worktreeCmd(ctx context.Context, a *app.App, args []string) error {

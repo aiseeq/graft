@@ -90,8 +90,8 @@ var commands = []command{
 		applies: func(c *config.Config) bool { return len(c.Tools) > 0 }},
 	{name: "worktree", syntax: fixed("graft worktree add [--trunk <ref>] <branch> [<base>]", "graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h]", "graft worktree sync [--trunk <ref>]"),
 		summary: text("a worktree under the user's cache, with go.work's neighbours linked; remove the worktrees and branches whose work is in the trunk by content; move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted")},
-	{name: "gocache", syntax: fixed("graft gocache trim [--older 25h] [--apply]"),
-		summary: text("remove the entries of the Go build cache unused for longer than --older, where go keeps them five days; without --apply only report")},
+	{name: "gocache", syntax: fixed("graft gocache trim [--older 25h] [--apply] [--max-wait 30m]"),
+		summary: text("remove the entries of the Go build cache unused for longer than --older, where go keeps them five days; without --apply only report; --max-wait limits waiting for a calm machine")},
 	{name: "help", syntax: fixed("graft help [<command>]", "graft <command> -h", "graft --version"), summary: text("this text; one command's part of it; the version of graft itself")},
 }
 
