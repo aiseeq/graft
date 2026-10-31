@@ -120,6 +120,9 @@ type Runner struct {
 	heavy int
 	// gateSplit runs a busy user's gate one process step at a time.
 	gateSplit bool
+	// splitLeave releases the admission the steps a split gate keeps here
+	// share, nil until the first of them takes it.
+	splitLeave func() error
 	// execHeavyTask is the top-level task that graft exec --heavy of graft
 	// asked to run as heavy (ExecHeavyEnv), "" without it.
 	execHeavyTask string
@@ -645,8 +648,14 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 	}
 	if splitGate {
 		r.gateSplit = true
-		defer func() { r.gateSplit = false }()
-		fmt.Fprintf(r.Stderr, "graft: gate: busy here: go test and go vet steps of remote: true tasks on %s, the rest waits for this machine step by step\n", r.remoteHeavy.Host)
+		defer func() {
+			r.gateSplit = false
+			if r.splitLeave != nil {
+				err = errors.Join(err, r.splitLeave())
+				r.splitLeave = nil
+			}
+		}()
+		fmt.Fprintf(r.Stderr, "graft: gate: busy here: go test and go vet steps of remote: true tasks on %s, the rest waits for this machine once\n", r.remoteHeavy.Host)
 	} else {
 		// The gate builds and tests: it is heavy as a whole, its heavy tasks
 		// admitted with it.
@@ -691,14 +700,11 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 	if gs.run != nil {
 		run := func() error { return gs.run(ctx) }
 		if r.gateSplit {
-			leave, herr := r.enterHeavy(ctx, stats.GateTask)
-			if herr != nil {
-				return herr
+			if err := r.enterSplit(ctx, stats.GateTask); err != nil {
+				return err
 			}
-			stepErr = errors.Join(r.measureFunc(s.Source, run), leave())
-		} else {
-			stepErr = r.measureFunc(s.Source, run)
 		}
+		stepErr = r.measureFunc(s.Source, run)
 	} else {
 		stepErr = r.step(ctx, s, gs.task, nil, threads)
 	}
@@ -983,8 +989,24 @@ func (r *Runner) steps(ctx context.Context, name string, t *config.Task, args []
 	return nil
 }
 
-// prepareGateStep places one process step of a split gate and releases its
-// admission after the step.
+// enterSplit admits the steps a split gate keeps here: the first of them
+// waits for this machine, the rest run under its admission to the gate's
+// end, so that a busy machine does not queue each cheap step again. Its
+// lock on the queue goes after load.settle as any admission's.
+func (r *Runner) enterSplit(ctx context.Context, name string) error {
+	if r.splitLeave != nil {
+		return nil
+	}
+	leave, err := r.enterHeavy(ctx, name)
+	if err != nil {
+		return err
+	}
+	r.splitLeave = leave
+	return nil
+}
+
+// prepareGateStep places one process step of a split gate, admitted here
+// with the gate's other steps here or sent to the host.
 func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.Task, args []string, threads string) (func(error) error, error) {
 	frame := r.frames[len(r.frames)-1]
 	wasRemote := frame.remote
@@ -999,11 +1021,8 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 		remote = why == ""
 	}
 	frame.remote = remote
-	var leave func() error
 	if !remote {
-		var err error
-		leave, err = r.enterHeavy(ctx, frame.task)
-		if err != nil {
+		if err := r.enterSplit(ctx, frame.task); err != nil {
 			frame.remote = wasRemote
 			return nil, err
 		}
@@ -1019,19 +1038,15 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 				stepErr = errors.Join(stepErr, err)
 			} else {
 				frame.remote = false
-				localLeave, err := r.enterHeavy(ctx, frame.task)
-				if err != nil {
+				if err := r.enterSplit(ctx, frame.task); err != nil {
 					stepErr = err
 				} else {
 					split := r.gateSplit
 					r.gateSplit = false
-					stepErr = errors.Join(r.step(ctx, s, t, args, threads), localLeave())
+					stepErr = r.step(ctx, s, t, args, threads)
 					r.gateSplit = split
 				}
 			}
-		}
-		if leave != nil {
-			stepErr = errors.Join(stepErr, leave())
 		}
 		frame.remote = wasRemote
 		return stepErr

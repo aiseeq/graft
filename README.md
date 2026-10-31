@@ -221,14 +221,16 @@ with `remote: true` (the project vouches that its tests pass on the host:
 they read nothing outside the tree that only this machine has, a tool on
 `PATH` or state under the home directory), runs split: `graft: gate: busy
 here: go test and go vet steps of remote: true tasks on pc, the rest waits
-for this machine step by step`. It takes no admission as a whole, nor do its
+for this machine once`. It takes no admission as a whole, nor do its
 heavy tasks; every `go test` and `go vet` step that writes no file of a
 `remote: true` task, at any depth, runs on the host unless the task would
 stay here (test database, `.env` keys, a directory the host's `run` cannot
 reach), and every other step (the gate's own go vet, the gofmt check, go
-fix, installs, scripts, the go steps of the other tasks) is admitted here
-for itself, then released. A gate without such a task waits here whole. A host step
-whose path breaks is said and rerun here, admitted for itself, and the
+fix, installs, scripts, the go steps of the other tasks) runs here under
+one admission: the first of them waits for this machine, the rest run under
+its admission to the gate's end, its queue lock gone after `load.settle` as
+any task's. A gate without such a task waits here whole. A host step
+whose path breaks is said and rerun here under that admission, and the
 gate's later go steps run here too. A gate whose host does not answer waits
 here whole and says why.
 Each heavy task

@@ -16,3 +16,5 @@
 - 2026-10-31 10:11 открыт — graft-master
 - 2026-10-31 10:11 в работе — graft-master
 - 2026-10-31 10:11 note — graft-master: 10:15 боец Luna, бриф /home/aisee/.cache/worktrees/graft-measure/brief-gocache-trim-freeze.md; доля GOCACHE в записи: ~100 ГиБ/сут из ~875 ГиБ/сут nvme0n1 (12 881 ГиБ sectors written за 353 ч аптайма) ≈ 11%
+- 2026-10-31 10:37 note — graft-master: 11:1x боец сдал раунд 1 (пачки ≤1000 записей/256 МиБ, Dirty+Writeback<64 МиБ, busy kind gocache-trim, syncfs, --max-wait 30m; синтетика 50k×100 КБ: 1.37 с → 5.20 с, 50 пачек). Ревью раунд 1: свод двойной классификации записи, мера meminfo в loadgate — review-gocache-trim-1.md
+- 2026-10-31 10:39 note — graft-master: мёртвый параметр entry(apply=false) отдан glint-master: тикет glint 20261031-1038-MEDIUM-param-always-same-constant, находки в graft пришлёт

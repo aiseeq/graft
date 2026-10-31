@@ -39,8 +39,8 @@ const splitGateConfig = "schema: 1\nversion: {mode: none}\n" +
 // TestBusyGateSendsItsGoStepsToTheHost: a gate that would wait for this
 // machine sends the go test and go vet steps that write no file of its
 // remote: true tasks to the user's remote_heavy host, nested tasks' too, and
-// runs every other step here, the gate's own go vet included, each admitted
-// by this machine's queue on its own; on a calm machine the whole gate runs
+// runs every other step here, the gate's own go vet included, under one
+// admission of this machine's queue; on a calm machine the whole gate runs
 // here.
 func TestBusyGateSendsItsGoStepsToTheHost(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -71,12 +71,64 @@ func TestBusyGateSendsItsGoStepsToTheHost(t *testing.T) {
 	if got := readFile(t, f.path("out")); got != "here\n" {
 		t.Errorf("the script step did not run here: out = %q\n%s", got, out)
 	}
-	if !strings.Contains(out, "graft: gate: busy here: go test and go vet steps of remote: true tasks on pc, the rest waits for this machine step by step") {
+	if !strings.Contains(out, "graft: gate: busy here: go test and go vet steps of remote: true tasks on pc, the rest waits for this machine once") {
 		t.Errorf("the gate does not say it split:\n%s", out)
 	}
 	// The steps kept here waited for this machine.
 	if !strings.Contains(out, "starting after") {
 		t.Errorf("no step waited for this machine:\n%s", out)
+	}
+}
+
+// TestBusyGateWaitsForThisMachineOnce: the steps a split gate keeps here
+// share one admission, taken by the first of them and held to the gate's
+// end: a busy machine does not hold each cheap step of the gate in the queue
+// again.
+func TestBusyGateWaitsForThisMachineOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, "")
+	proc := filepath.Join(state, "proc")
+	// The first step here loads the machine again, as the other tasks of a
+	// busy machine do.
+	writeFile(t, filepath.Join(state, "first.sh"), "echo first >> out\n"+
+		"sed -i 's/^procs_running .*/procs_running 31/' "+yamlQuote(filepath.Join(proc, "stat"))+"\n")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none}\n"+
+		"gate:\n  - task: unit\n  - task: first\n  - task: second\n"+
+		"tasks:\n"+
+		"  unit:\n    heavy: true\n    remote: true\n    run: [[go, test, -count=1, ./...]]\n"+
+		"  first:\n    run: [[sh, "+yamlQuote(filepath.Join(state, "first.sh"))+"]]\n"+
+		"  second:\n    run: [[sh, -c, 'echo second >> out']]\n")
+	loaded(t, state)
+	calmAfter(t, state, time.Second)
+	// A gate that waits again for the second step finds the machine calm a
+	// second after the first step loaded it, so that it still ends.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var seen string
+		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			data, _ := os.ReadFile(f.path("out"))
+			if seen = string(data); strings.Contains(seen, "first") {
+				time.Sleep(time.Second)
+				setRunnable(t, proc, 1)
+				return
+			}
+		}
+		t.Errorf("the first step did not run in 20s: out = %q", seen)
+		setRunnable(t, proc, 1)
+	}()
+	t.Cleanup(func() { <-done })
+	out := f.mustGraft("gate")
+	if got := readFile(t, f.path("out")); got != "first\nsecond\n" {
+		t.Errorf("the steps did not run here in order: out = %q\n%s", got, out)
+	}
+	if !strings.Contains(callsOf(t, state), "go test -count=1 ./...") {
+		t.Errorf("the go test did not go to pc: %q\n%s", callsOf(t, state), out)
+	}
+	if n := strings.Count(out, "starting after"); n != 1 {
+		t.Errorf("the steps here waited for this machine %d times, want once:\n%s", n, out)
 	}
 }
 
