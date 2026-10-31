@@ -21,3 +21,4 @@
 - 2026-10-31 15:36 открыт — graft-master
 - 2026-10-31 15:36 в работе — graft-master
 - 2026-10-31 15:43 note — graft-master: 15:43 автор Terra запущен: worker 1031-1543-spec-as-built, бриф и мера scratchpad graft-master spec/{brief.md,accept.sh}. ТЗ приватно в /home/aisee/.claude/tools/graft/spec.md (дополнение git-admin 15:4x: цитаты и id транскриптов — не в публичную репу; как у akit). Мера проверена: нет файла → 1.
+- 2026-10-31 16:39 note — graft-master: 16:4x автор Terra: принято, 18 мин, 0.076% недели OpenAI; 691 ссылка, но 118–2068 — README почти дословно (1187 строк). В приёмку — предел 20 дословных строк README (детектор на этом ТЗ: 1187 → красный). worker continue (правка-по-ревью): убрать копию, добрать покрытие своими словами.

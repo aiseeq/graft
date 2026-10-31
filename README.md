@@ -95,6 +95,10 @@ bump, and nothing is pushed. Merging the branch brings the gate (see Hooks).
 gate and before a manual `graft gate`, graft raises matching requirements in
 tracked `go.mod` files to the latest versions visible through the user's Go
 proxy settings, then tidies the module and refreshes an existing vendor tree.
+A public proxy answers `@latest` from a cache that lags a push by up to half
+an hour, so list your own prefixes in `GONOPROXY` (`go env -w
+GONOPROXY=example.com/you/*`): their latest version then comes from the
+repository itself.
 Offline or otherwise unknown latest versions produce a warning and leave that
 module file alone. If a raised version makes the gate fail, the commit stops
 and the raised files stay in the work tree for repair. Without this setting,
