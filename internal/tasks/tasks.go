@@ -1301,9 +1301,6 @@ func (r *Runner) prepareExec(ctx context.Context, f *frame, t *config.Task, dir 
 // execCommand builds the command of an exec, on the host when remote;
 // innerGraft marks a graft started by a heavy exec to admit its task itself.
 func (r *Runner) execCommand(ctx context.Context, dir string, argv []string, t *config.Task, source string, remote, innerGraft bool, remoteStderr *bytes.Buffer) (*exec.Cmd, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
 	s, threads, err := r.threads(config.Step{Argv: argv, Source: source}, t)
 	if err != nil {
 		return nil, err

@@ -22,6 +22,8 @@
 - 2026-10-31 16:25 note — graft-master: 16:25 противник (Terra) → приёмка в тикете; проверка брифа (Terra): одно расхождение — установка и замер на хосте у мастера, в бриф дописано. Боец Luna 1031-1625-exec-caller-gone (фича-инструмента), ветка exec-caller-gone; бриф и accept.sh — scratchpad мастера caller-gone/.
 - 2026-10-31 18:10 note — graft-master: 18:3x Luna: принято (93 мин, 0.029% недели OpenAI), мутации: без SIGTERM → красный TestSignalStopsTheCommand/terminated; по одному каналу → красный OneChannelKeepsRunning. Ревью мастера: только exec (нужно все команды кроме deploy/priority), localStopGrace 300 мс → 10 с переменной, env-интервал с молчаливым фолбеком, recover в сторожке. worker continue.
 - 2026-10-31 18:48 note — graft-master: 18:4x Luna: правки по 5 пунктам ревью, идёт приёмка; моё ревью diff: наблюдатель только при обоих FIFO/сокетах, StopOnCancel 10 с, ctx до старта, deploy/priority исключены; akit в go.mod в патч не беру.
+- 2026-10-31 19:22 note — graft-master: 19:21 влито 59eb417 (дерево Luna 3 раунда: область — все команды кроме deploy/priority, grace 10 с, ошибка env интервала, без recover; гонка TestWaitNamesWhoHeldTheQueue перенесена на версию main руками), all зелёный, v2.69.0 на ноуте и pc. Замер на pc 19:21:49: timeout 5 ssh pc 'graft exec --heavy --local -- sleep 41' → exit 124, через ~5 с pgrep 'sleep 41' пусто, своих graft exec нет. Дальше — независимая проверка, sc2go-master.
+- 2026-10-31 19:27 note — graft-master: 19:3x независимая проверка (суб-агент Opus, бриф scratchpad caller-gone/verify-brief.md): 5 из 6 сценариев да, натурный замер на pc да (с проверкой посередине: graft и sleep живы под timeout, через 6 с после exit 124 — нет); №7 нет — тест проверял отмену в ожидании, мутация «убрать ctx.Err() в execCommand» зелёная. Разбор: гонку закрывает exec.Cmd.Start (исходник Go 1.26 проверен), проверка убрана как дубль, тест переименован в TestSigtermWhileWaitingDoesNotStart, приёмка №7 переписана.
 
 ## Приёмка (противник замысла 16:3x, Terra; ответ — scratchpad caller-gone/answer.md мастера)
 Принято:
@@ -29,7 +31,7 @@
 - №2 `| head` при stderr в файл или tty: сторож не ставится. Тест TestCallerGoneHeadWithStderrFile.
 - №3 вложенный graft: внешний разбор читает до EOF; правило №1 закрывает. Отдельного теста нет.
 - №4 deploy: `graft deploy` и graft с priority в env — сигналы как сейчас (только Ctrl-C), без сторожа. Тест TestDeployKeepsTodaysSignals.
-- №7 гонка допуска и отмены: после допуска проверка ctx до запуска. Тест TestCancelAtAdmissionDoesNotStart.
+- №7 гонка допуска и отмены: закрыта самим exec.Cmd.Start — при отменённом ctx процесс не стартует (Go 1.26 os/exec/exec.go:702–706), после старта снимает StopOnCancel; своя проверка ctx в execCommand была дублем и убрана. Отмена во время ожидания — TestSigtermWhileWaitingDoesNotStart (SIGTERM) и TestCallerGoneWaitingDoesNotStart (обрыв труб).
 - №8 потомки, игнорирующие SIGTERM: локальные шаги — StopOnCancel (SIGTERM, через срок killTree), а не SIGKILL одному лидеру. Тест TestLocalStepTreeKilledAfterGrace.
 Отклонено:
 - №5 SIGHUP фоновой задаче: сейчас SIGHUP и так убивает graft, оставляя потомка; nohup (SIGHUP проигнорирован при старте) не перехватываем — хуже не становится.

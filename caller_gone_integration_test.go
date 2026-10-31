@@ -249,7 +249,10 @@ func TestCallerGoneHeadWithStderrFile(t *testing.T) {
 	}
 }
 
-func TestCancelAtAdmissionDoesNotStart(t *testing.T) {
+// TestSigtermWhileWaitingDoesNotStart: a cancel that lands at admission
+// itself needs no check of graft's: exec.Cmd.Start of a cancelled context
+// starts nothing, and a started one StopOnCancel stops.
+func TestSigtermWhileWaitingDoesNotStart(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses Unix signals")
 	}
