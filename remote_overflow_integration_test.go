@@ -291,6 +291,47 @@ func TestInstallCopiesToTheUsersHosts(t *testing.T) {
 	}
 }
 
+// TestInstallHereDoesNotStopAtAHostDown: a host down does not stop the
+// install of the other files here; the step tries the host once and fails
+// naming it and every file it did not get.
+func TestInstallHereDoesNotStopAtAHostDown(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake rsync is sh")
+	}
+	dest := filepath.Join(t.TempDir(), "bin")
+	f := installRepo(t, dest)
+	f.write("scripts/two.sh", "#!/bin/sh\necho two\n")
+	f.git("add", "-A")
+	f.git("commit", "-q", "-m", "two scripts")
+	state := t.TempDir()
+	fake := filepath.Join(state, "fakebin")
+	writeFile(t, filepath.Join(fake, "rsync"), "#!/bin/sh\n"+
+		`echo "$*" >> "`+filepath.Join(state, "rsync")+`"`+"\n"+
+		`echo "ssh: Could not resolve hostname pc" >&2; exit 255`+"\n")
+	if err := os.Chmod(filepath.Join(fake, "rsync"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgDir := t.TempDir()
+	writeUserConfig(t, cfgDir, "install: {hosts: [pc]}\n")
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, "PATH="+fake+string(os.PathListSeparator)+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out, code := f.graft("", "install-script")
+	for _, name := range []string{"run.sh", "two.sh"} {
+		if _, err := os.Stat(filepath.Join(dest, name)); err != nil {
+			t.Errorf("%s was not installed here: %v\n%s", name, err, out)
+		}
+		if !strings.Contains(out, name) {
+			t.Errorf("the failure does not name %s:\n%s", name, out)
+		}
+	}
+	if code == 0 || !strings.Contains(out, "pc") || !strings.Contains(out, "Could not resolve hostname") {
+		t.Errorf("a host down: exit %d\n%s", code, out)
+	}
+	if n := strings.Count(readFile(t, filepath.Join(state, "rsync")), "\n"); n != 1 {
+		t.Errorf("rsync to the host down ran %d times, want once", n)
+	}
+}
+
 const inDirTasks = `  indir:
     heavy: true
     remote: true

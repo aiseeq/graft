@@ -641,8 +641,10 @@ dotenv_sets:                   # key lists several tasks and services share
   left alone (a symlink there, say to the build output, is replaced with a
   file), and each file prints `graft: install: <name> <revision> ->
   <path>`. With `install.hosts` in the user config, the same file is sent by
-  `rsync` to each host at that absolute path, creating its directory; a failed
-  host fails the step after the local install. A task with an install step is
+  `rsync` to each host at that absolute path, creating its directory, once
+  every file is installed here; a host that fails is not tried for the rest
+  of the files, and the step fails naming it, its error and the files it did
+  not get. A task with an install step is
   never cached. The usual install
   of a project's program:
 

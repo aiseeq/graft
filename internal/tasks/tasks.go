@@ -2240,20 +2240,31 @@ func (r *Runner) install(ctx context.Context, s config.Step, t *config.Task) err
 	default:
 		hosts = cfg.Install.Hosts
 	}
+	// Every file is installed here before any host: a host down does not
+	// leave the rest of them old here.
 	for _, candidate := range candidates {
 		if err := r.writeInstall(candidate); err != nil {
 			return err
 		}
-		for _, host := range hosts {
+	}
+	var errs []error
+	for _, host := range hosts {
+		for i, candidate := range candidates {
 			cmd := exec.CommandContext(ctx, "rsync", "--archive", "--mkpath", candidate.source, host+":"+candidate.destination)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
-				return fmt.Errorf("install %s to %s: rsync: %w: %s", candidate.name, host, err, strings.TrimSpace(string(out)))
+				// A host that failed once is not tried for the other files.
+				var missed []string
+				for _, c := range candidates[i:] {
+					missed = append(missed, c.name)
+				}
+				errs = append(errs, fmt.Errorf("install to %s: rsync: %w: %s; not there: %s", host, err, strings.TrimSpace(string(out)), strings.Join(missed, ", ")))
+				break
 			}
 			fmt.Fprintf(r.Stderr, "graft: install: %s %s -> %s:%s\n", candidate.name, shortRevision(candidate.revision), host, candidate.destination)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 type installCandidate struct {
