@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -76,7 +77,7 @@ func (c *Config) validateCache() error {
 		}
 		c.cacheExclude = append(c.cacheExclude, re)
 	}
-	for _, name := range keysOf(c.Tasks) {
+	for _, name := range slices.Sorted(maps.Keys(c.Tasks)) {
 		t := c.Tasks[name]
 		if t.Cache == nil {
 			continue

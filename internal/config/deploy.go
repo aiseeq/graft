@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -317,7 +318,7 @@ func (c *Config) ShipsNothing(files []string) bool {
 	if len(files) == 0 || len(c.Deploy.Targets) == 0 {
 		return false
 	}
-	for _, n := range keysOf(c.Deploy.Targets) {
+	for _, n := range slices.Sorted(maps.Keys(c.Deploy.Targets)) {
 		r := c.Deploy.Targets[n].ApprovedRelease
 		if r == nil || !r.Ignored(files) {
 			return false
@@ -382,7 +383,7 @@ func (c *Config) validateDeploy() error {
 	if err := c.validateReleaseNotes(); err != nil {
 		return err
 	}
-	for _, name := range keysOf(d.Targets) {
+	for _, name := range slices.Sorted(maps.Keys(d.Targets)) {
 		if err := c.validateTarget(name, d.Targets[name]); err != nil {
 			return err
 		}

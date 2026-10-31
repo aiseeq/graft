@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -241,7 +242,7 @@ func (c *Config) validateReleasePage(where string, t *DeployTarget) error {
 	}
 	for k := range p.Labels {
 		if _, ok := PageLabels[k]; !ok {
-			return fmt.Errorf("%s.labels: unknown %q (%s)", where, k, strings.Join(keysOf(PageLabels), ", "))
+			return fmt.Errorf("%s.labels: unknown %q (%s)", where, k, strings.Join(slices.Sorted(maps.Keys(PageLabels)), ", "))
 		}
 	}
 	return nil
@@ -281,7 +282,7 @@ func (c *Config) validateHotfix() error {
 // hold their release candidate.
 func (d *Deploy) HoldingWindows(name string) []string {
 	var out []string
-	for _, n := range keysOf(d.Targets) {
+	for _, n := range slices.Sorted(maps.Keys(d.Targets)) {
 		t := d.Targets[n]
 		if t.Requires == name && t.Window != nil && t.Window.Cutoff != nil {
 			out = append(out, n)

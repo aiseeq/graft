@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net/url"
 	"os"
@@ -505,7 +506,7 @@ var (
 )
 
 func (c *Config) validateTasks() error {
-	for _, name := range keysOf(c.Tasks) {
+	for _, name := range slices.Sorted(maps.Keys(c.Tasks)) {
 		if err := c.validateTask(name, c.Tasks[name]); err != nil {
 			return err
 		}
@@ -617,7 +618,7 @@ func (c *Config) checkTaskCycles() error {
 		state[name] = done
 		return nil
 	}
-	for _, name := range keysOf(c.Tasks) {
+	for _, name := range slices.Sorted(maps.Keys(c.Tasks)) {
 		if err := visit(name, nil); err != nil {
 			return err
 		}
@@ -626,7 +627,7 @@ func (c *Config) checkTaskCycles() error {
 }
 
 func (c *Config) validateServices() error {
-	for _, name := range keysOf(c.Services) {
+	for _, name := range slices.Sorted(maps.Keys(c.Services)) {
 		s := c.Services[name]
 		where := "services." + name
 		if !taskNameRe.MatchString(name) {
@@ -662,7 +663,7 @@ func (c *Config) validateServices() error {
 }
 
 func (c *Config) validateDotEnvSets() error {
-	for _, name := range keysOf(c.DotEnvSets) {
+	for _, name := range slices.Sorted(maps.Keys(c.DotEnvSets)) {
 		if !taskNameRe.MatchString(name) {
 			return fmt.Errorf("dotenv_sets.%s: invalid name", name)
 		}
@@ -885,7 +886,7 @@ func (t *TestDB) validateTmpfs() error {
 }
 
 func (c *Config) validateTools() error {
-	for _, name := range keysOf(c.Tools) {
+	for _, name := range slices.Sorted(maps.Keys(c.Tools)) {
 		t := c.Tools[name]
 		where := "tools." + name
 		switch {

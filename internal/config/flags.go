@@ -3,8 +3,9 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
-	"sort"
+	"slices"
 )
 
 // Flags configures graft flags: the project's journal of events that need a
@@ -156,7 +157,7 @@ func (c *Config) validateFlagsSQL(s *FlagsSQL) error {
 	if s.Actor == "" {
 		s.Actor = "graft"
 	}
-	return c.validatePerEnv("flags.sql.psql", keysOf(s.Psql), func(env string) error {
+	return c.validatePerEnv("flags.sql.psql", slices.Sorted(maps.Keys(s.Psql)), func(env string) error {
 		if !s.Psql[env].IsSet() {
 			return fmt.Errorf("flags.sql.psql.%s: empty command", env)
 		}
@@ -183,7 +184,7 @@ func (c *Config) validateFlagsHTTP(h *FlagsHTTP) error {
 	if len(h.OpenStatuses) == 0 {
 		return errors.New("flags.http.open_statuses: required")
 	}
-	return c.validatePerEnv("flags.http.transport", keysOf(h.Transport), func(env string) error {
+	return c.validatePerEnv("flags.http.transport", slices.Sorted(maps.Keys(h.Transport)), func(env string) error {
 		return c.validateTransport(env, h.Transport[env])
 	})
 }
@@ -245,13 +246,4 @@ func (f FlagFields) validate(where string, valid func(string) bool) error {
 		}
 	}
 	return nil
-}
-
-func keysOf[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
