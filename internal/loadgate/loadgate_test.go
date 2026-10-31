@@ -396,6 +396,16 @@ func awaitFiles(t *testing.T, pattern string, count int) {
 	}
 }
 
+type waitLogWriter struct{ observed chan struct{} }
+
+func (w waitLogWriter) Write(p []byte) (int, error) {
+	select {
+	case w.observed <- struct{}{}:
+	default:
+	}
+	return len(p), nil
+}
+
 var testLoad = userconfig.MachineLoad{Settle: time.Hour, Poll: 10 * time.Millisecond}
 
 // TestCalmMachineStartsBackToBack checks that a light task does not hold the
@@ -474,11 +484,19 @@ func TestWaitNamesWhoHeldTheQueue(t *testing.T) {
 		got <- result{adm, rel, err}
 	}()
 	awaitFiles(t, path+".*.lholder", 1)
+	observed := make(chan struct{}, 1)
 	go func() {
-		adm, rel, err := Wait(context.Background(), "follower", "projectA:follower", nil, l, path, io.Discard)
+		adm, rel, err := Wait(context.Background(), "follower", "projectA:follower", nil, l, path, waitLogWriter{observed: observed})
 		got <- result{adm, rel, err}
 	}()
 	awaitFiles(t, path+".queue.*.lticket", 1)
+	// A ticket can exist before the follower observes the queue head. Wait for
+	// that observation before admitting the head, or this test races the first poll.
+	select {
+	case <-observed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("follower did not observe the queue head")
+	}
 	setRunnable(1)
 	head, follower := <-got, <-got
 	if head.err != nil || follower.err != nil {

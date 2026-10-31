@@ -139,7 +139,9 @@ four cores. The load average, IO, and swap checks still apply. A heavy task insi
 a heavy task or the gate was admitted with it, and so is a graft that the
 steps of an admitted task start (they carry `GRAFT_ADMITTED`). Priority tasks
 from `graft deploy` bypass the queue and may start ahead of queued tasks.
-Ctrl-C stops the wait.
+Ctrl-C, SIGTERM, or an unignored SIGHUP stops the wait and command. If both
+caller output pipes close, graft stops them too; deploy keeps its existing
+signal behavior.
 
 The steps of a heavy task and of the gate, and a step with `{threads}`, get `GOMAXPROCS` set to `threads`
 unless the task's `env` or the environment sets it: one Go program does not take every thread of
@@ -152,8 +154,9 @@ A heavy command that is no task of the project (a one-off `go test`, a
 build, an e2e run) takes the same queue with `graft exec --heavy -- <command>
 [args]`: it runs in the current directory once the machine admits it, `{threads}`
 in its arguments and `GRAFT_THREADS` set to `threads`, and graft exits with
-its exit status, 128 and the signal for one a signal ended. Its own failures
-exit as `env`'s do, with a `graft: …` line, so a caller tells them from the
+its exit status, 128 and the signal for one a signal ended. SIGTERM, an
+unignored SIGHUP, or both closed caller output pipes stop the command. Its own
+failures exit as `env`'s do, with a `graft: …` line, so a caller tells them from the
 command's: 125 graft itself (a usage error, `-C`, the config, the queue,
 `remote_heavy`'s `run` that does not start, an interrupt that ended the
 command), 126 a command found but not started, 127 one not found, these two

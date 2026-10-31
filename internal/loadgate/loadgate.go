@@ -428,13 +428,16 @@ func startReserve(lockPath, name string, cores float64, cap time.Duration, log i
 		}
 		setStoppedAt()
 	}
+	// The goroutine outlives the call: it reads its settings from here, not
+	// from the package variables a test may swap meanwhile.
+	interval, window, readCPU := reservePollInterval, reserveWindow, reserveCPUReader
 	go func() {
 		type sample struct {
 			at  time.Time
 			cpu float64
 		}
 		samples := []sample{}
-		ticker := time.NewTicker(reservePollInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		deadline := time.NewTimer(cap)
 		defer deadline.Stop()
@@ -451,7 +454,7 @@ func startReserve(lockPath, name string, cores float64, cap time.Duration, log i
 				if unread {
 					continue
 				}
-				cpu, err := reserveCPUReader(os.Getpid())
+				cpu, err := readCPU(os.Getpid())
 				if err != nil {
 					fmt.Fprintf(log, "graft: %s: reading reserved CPU: %v\n", name, err)
 					setEnd("unread")
@@ -460,10 +463,10 @@ func startReserve(lockPath, name string, cores float64, cap time.Duration, log i
 				}
 				at := time.Now()
 				samples = append(samples, sample{at, cpu})
-				for len(samples) > 1 && at.Sub(samples[1].at) >= reserveWindow {
+				for len(samples) > 1 && at.Sub(samples[1].at) >= window {
 					samples = samples[1:]
 				}
-				if len(samples) > 1 && at.Sub(samples[0].at) >= reserveWindow && (cpu-samples[0].cpu)/at.Sub(samples[0].at).Seconds() >= cores/2 {
+				if len(samples) > 1 && at.Sub(samples[0].at) >= window && (cpu-samples[0].cpu)/at.Sub(samples[0].at).Seconds() >= cores/2 {
 					setEnd("cpu")
 					drop()
 					return

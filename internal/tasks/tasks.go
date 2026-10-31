@@ -36,6 +36,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/loadavg"
 	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/lock"
+	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/testreport"
 	"github.com/aiseeq/graft/v2/internal/tools"
@@ -1120,6 +1121,7 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	}
 	cmd.Dir = r.taskDir(t)
 	cmd.Env = env
+	r.stopLocalCommand(cmd, !r.frames[len(r.frames)-1].remote)
 	if r.frames[len(r.frames)-1].remote {
 		cmd = r.remoteCmd(ctx, cmd, vars, threads)
 	}
@@ -1299,6 +1301,9 @@ func (r *Runner) prepareExec(ctx context.Context, f *frame, t *config.Task, dir 
 // execCommand builds the command of an exec, on the host when remote;
 // innerGraft marks a graft started by a heavy exec to admit its task itself.
 func (r *Runner) execCommand(ctx context.Context, dir string, argv []string, t *config.Task, source string, remote, innerGraft bool, remoteStderr *bytes.Buffer) (*exec.Cmd, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s, threads, err := r.threads(config.Step{Argv: argv, Source: source}, t)
 	if err != nil {
 		return nil, err
@@ -1317,6 +1322,7 @@ func (r *Runner) execCommand(ctx context.Context, dir string, argv []string, t *
 	}
 	cmd := exec.CommandContext(ctx, commandArgv[0], commandArgv[1:]...)
 	cmd.Dir, cmd.Env = dir, env
+	r.stopLocalCommand(cmd, !remote)
 	if remote {
 		cmd = r.remoteCmd(ctx, cmd, nil, threads)
 	}
@@ -1325,6 +1331,21 @@ func (r *Runner) execCommand(ctx context.Context, dir string, argv []string, t *
 		cmd.Stderr = io.MultiWriter(r.Stderr, remoteStderr)
 	}
 	return cmd, nil
+}
+
+// localStopGrace lets a cancelled local command clean up before its tree is killed.
+var localStopGrace = 10 * time.Second
+
+func (r *Runner) stopLocalCommand(cmd *exec.Cmd, local bool) {
+	if local {
+		proc.StopOnCancel(cmd, localStopGrace, func(err error) {
+			if r.Stats != nil {
+				r.Stats.Warn(fmt.Errorf("stopping command tree: %w", err))
+			}
+		})
+		// measureWithReason sets the output-pipe WaitDelay for local steps.
+		cmd.WaitDelay = 0
+	}
 }
 
 // Exec runs argv in dir, a command that is not a task, recorded as the task

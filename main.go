@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	// Release windows name their time zone; Windows has no zoneinfo of its own.
@@ -30,7 +31,9 @@ import (
 	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/gocache"
 	"github.com/aiseeq/graft/v2/internal/hooks"
+	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/message"
+	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/tasks"
 	"github.com/aiseeq/graft/v2/internal/version"
@@ -69,10 +72,47 @@ func main() {
 	a := &app.App{Dir: wd, ToolVersion: toolVersion(), Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}
 	// Ctrl-C stops a lock wait or a gate command instead of leaving them
 	// running behind the user's back.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stopSignals := signal.NotifyContext(context.Background(), signalSet(os.Args[1:])...)
+	stopCaller := func() {}
+	pipeSignals := make(chan os.Signal, 1)
+	watchCaller := callerGoneWatch(os.Args[1:])
+	if watchCaller {
+		signal.Notify(pipeSignals, syscall.SIGPIPE)
+		defer signal.Stop(pipeSignals)
+		interval, err := proc.CallerGoneInterval()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "graft:", err)
+			os.Exit(failed)
+		}
+		ctx, stopCaller = proc.WatchCaller(ctx, interval)
+	}
 	code := run(ctx, a, os.Args[1:])
-	stop()
+	stopCaller()
+	stopSignals()
 	os.Exit(code)
+}
+
+func signalSet(args []string) []os.Signal {
+	signals := []os.Signal{os.Interrupt}
+	if deployCall(args) || os.Getenv(loadgate.EnvPriority) != "" {
+		return signals
+	}
+	signals = append(signals, syscall.SIGTERM)
+	if !signal.Ignored(syscall.SIGHUP) {
+		signals = append(signals, syscall.SIGHUP)
+	}
+	return signals
+}
+
+func callerGoneWatch(args []string) bool {
+	return !deployCall(args) && os.Getenv(loadgate.EnvPriority) == ""
+}
+
+func deployCall(args []string) bool {
+	for len(args) > 1 && args[0] == "-C" {
+		args = args[2:]
+	}
+	return len(args) > 0 && args[0] == "deploy"
 }
 
 // execCall reports a graft exec command line, after any -C.
