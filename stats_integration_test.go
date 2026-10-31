@@ -24,6 +24,7 @@ type statsLine struct {
 	Task         string             `json:"task"`
 	CacheChanged []string           `json:"cache_changed"`
 	WaitedBehind string             `json:"waited_behind"`
+	ReserveCores float64            `json:"reserve_cores"`
 	Top          string             `json:"top"`
 	In           string             `json:"in"`
 	Step         string             `json:"step"`

@@ -1,6 +1,6 @@
 # graft exec: не стартовать и снимать задачу, когда вызвавший ушёл (обрыв ssh без tty, SIGTERM, SIGHUP)
 
-Статус: в работе
+Статус: готово
 Исполнитель: graft-master
 
 ## Что сделать
@@ -24,6 +24,7 @@
 - 2026-10-31 18:48 note — graft-master: 18:4x Luna: правки по 5 пунктам ревью, идёт приёмка; моё ревью diff: наблюдатель только при обоих FIFO/сокетах, StopOnCancel 10 с, ctx до старта, deploy/priority исключены; akit в go.mod в патч не беру.
 - 2026-10-31 19:22 note — graft-master: 19:21 влито 59eb417 (дерево Luna 3 раунда: область — все команды кроме deploy/priority, grace 10 с, ошибка env интервала, без recover; гонка TestWaitNamesWhoHeldTheQueue перенесена на версию main руками), all зелёный, v2.69.0 на ноуте и pc. Замер на pc 19:21:49: timeout 5 ssh pc 'graft exec --heavy --local -- sleep 41' → exit 124, через ~5 с pgrep 'sleep 41' пусто, своих graft exec нет. Дальше — независимая проверка, sc2go-master.
 - 2026-10-31 19:27 note — graft-master: 19:3x независимая проверка (суб-агент Opus, бриф scratchpad caller-gone/verify-brief.md): 5 из 6 сценариев да, натурный замер на pc да (с проверкой посередине: graft и sleep живы под timeout, через 6 с после exit 124 — нет); №7 нет — тест проверял отмену в ожидании, мутация «убрать ctx.Err() в execCommand» зелёная. Разбор: гонку закрывает exec.Cmd.Start (исходник Go 1.26 проверен), проверка убрана как дубль, тест переименован в TestSigtermWhileWaitingDoesNotStart, приёмка №7 переписана.
+- 2026-10-31 19:34 готово — verifier-opus (session graft-master): суб-агент Opus 31.10 19:2x–19:4x (бриф scratchpad graft-master caller-gone/verify-brief.md): сценарии №1,2,4,8, SIGPIPE — тесты PASS, мутация Notify(SIGPIPE) роняет TestCallerGoneStopsTheCommand; натурно на pc 19:23 — под timeout graft и sleep 41 живы, через 6 с после exit 124 нет; №7 после 5b725de — exec.Cmd.Start (Go 1.26 exec.go:702–706) не стартует при отменённом ctx, тесты PASS (лог caller-gone/verify-test2.log); glint: 11 findings, debt glint-debt-reserve
 
 ## Приёмка (противник замысла 16:3x, Terra; ответ — scratchpad caller-gone/answer.md мастера)
 Принято:

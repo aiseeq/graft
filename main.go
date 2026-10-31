@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -583,7 +584,7 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 // execCmd is graft exec; its own failures, usage too, exit app.ExitGraft
 // (run).
 func execCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := fmt.Errorf("%w: graft exec [--heavy [--local] [--env <name>]... [--settle <duration>]] -- <command> [args]", errUsage)
+	usage := fmt.Errorf("%w: graft exec [--heavy [--local] [--env <name>]... [--settle <duration>] [--cores <n>]] -- <command> [args]", errUsage)
 	var opts app.ExecOptions
 	var local bool
 	var pass []string
@@ -612,18 +613,36 @@ func execCmd(ctx context.Context, a *app.App, args []string) error {
 			}
 			opts.Settle = d
 			args = args[1:]
+		case "--cores":
+			if len(args) < 2 {
+				return usage
+			}
+			cores, err := parseExecCores(args[1])
+			if err != nil {
+				return err
+			}
+			opts.Cores = cores
+			args = args[1:]
 		default:
 			return usage
 		}
 		args = args[1:]
 	}
-	if len(args) < 2 || ((local || opts.Settle > 0 || len(pass) > 0) && !opts.Heavy) {
+	if len(args) < 2 || ((local || opts.Settle > 0 || opts.Cores > 0 || len(pass) > 0) && !opts.Heavy) {
 		return usage
 	}
 	if err := exportExecEnv(pass, local); err != nil {
 		return err
 	}
 	return a.Exec(ctx, args[1:], opts)
+}
+
+func parseExecCores(value string) (float64, error) {
+	cores, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(cores) || math.IsInf(cores, 0) || cores <= 0 || cores > float64(runtime.NumCPU()) {
+		return 0, fmt.Errorf("%w: exec --cores %q: want a number of cores above 0, at most %d", errUsage, value, runtime.NumCPU())
+	}
+	return cores, nil
 }
 
 // exportExecEnv hands graft exec's --env names and --local to the grafts the

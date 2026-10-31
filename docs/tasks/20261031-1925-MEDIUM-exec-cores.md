@@ -22,3 +22,4 @@
 ## Журнал
 - 2026-10-31 19:25 открыт — graft-master
 - 2026-10-31 19:25 note — graft-master: 19:5x боец Luna 1031-1925-exec-cores, дерево /home/aisee/.cache/worktrees/graft/exec-cores; бриф и мера — scratchpad graft-master exec-cores/{brief.md,accept.sh}. Брифом проверен worker run.
+- 2026-10-31 20:12 note — graft-master: 20:1x Luna приняла (2 захода: 1-я приёмка упала на чужом флейке TestSignalStopsTheCommand — тикет caller-gone-signal-flake, боец его не трогал). Моё ревью: разбор и границы N верны, тест ловит подмену (история 4 → резерв 1.5), удалённый путь не нужен (sh не go test). Правки сам: обёртка WaitWithSettleCores слита в WaitWithSettle с параметром cores (без полу-алиаса), фраза README перенесена из середины абзаца --settle. Ветка 13fa924, на main — патчем (main ушёл на 5b725de).

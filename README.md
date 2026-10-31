@@ -169,7 +169,10 @@ and is only recorded. `--settle <duration>` holds a separate FIFO lock for
 that long after the command starts, or until it ends if sooner. Only another
 `exec --settle` waits for this lock; other heavy tasks use the ordinary queue
 and `load.settle`. This is for a command whose load comes later than its start,
-such as an agent that takes a minute to get going.
+such as an agent that takes a minute to get going. `--cores <n>` makes the
+command's reservation n cores instead of the estimate from its history, for a
+command whose load runs outside its process tree, such as an admission that
+starts an agent elsewhere; it is released the same way.
 
 `graft exec --heavy -- graft <task>` takes no queue slot itself: it starts the
 inner graft with `GRAFT_EXEC_HEAVY=1`, by which that graft runs its top-level
@@ -322,7 +325,7 @@ stats` (`wait_s`).
 | `graft start` / `stop` / `restart [service]` | background services, all of them without a name |
 | `graft logs <service> [--lines N] [-f]` | the end of a service's log, or its journal; `-f` follows until Ctrl-C |
 | `graft stats [--failures] [--since 7d] [--project <root>\|--all] [--task <name>]` | recorded resource use and recent failure reasons (see [Resource stats](#resource-stats)) |
-| `graft exec [--heavy [--local] [--env <name>]... [--settle <duration>]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local`; the host gets no variable of the caller's but the go command's own unless `--env <name>` names it; `--settle` holds a separate FIFO lock for this long, waited on only by another `exec --settle` |
+| `graft exec [--heavy [--local] [--env <name>]... [--settle <duration>] [--cores <n>]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local`; the host gets no variable of the caller's but the go command's own unless `--env <name>` names it; `--settle` holds a separate FIFO lock for this long, waited on only by another `exec --settle`; `--cores` sets the live reservation instead of using history |
 | `graft status` | services, the test database, held locks |
 | `graft locks` | who holds graft's locks |
 | `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |

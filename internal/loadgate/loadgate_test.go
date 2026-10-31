@@ -454,7 +454,7 @@ func TestWaitWithSettleReleasesSettleLockOnHistoryError(t *testing.T) {
 	}
 	dir := t.TempDir()
 	lockPath, settlePath := filepath.Join(dir, "load.lock"), filepath.Join(dir, "load.settle.lock")
-	_, _, err = WaitWithSettle(context.Background(), "head", "projectA:bad", nil, testLoad, lockPath, settlePath, time.Hour, io.Discard)
+	_, _, err = WaitWithSettle(context.Background(), "head", "projectA:bad", nil, testLoad, lockPath, settlePath, time.Hour, 0, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), history) {
 		t.Fatalf("WaitWithSettle error = %v; want corrupt history path %s", err, history)
 	}
@@ -517,14 +517,14 @@ func TestWaitWithSettleNamesWhoHeldTheSettleQueue(t *testing.T) {
 	fakeMachine(t)
 	dir := t.TempDir()
 	path, settlePath := filepath.Join(dir, "load.lock"), filepath.Join(dir, "load.settle.lock")
-	_, release, err := WaitWithSettle(context.Background(), "head", "projectA:head", nil, testLoad, path, settlePath, time.Hour, io.Discard)
+	_, release, err := WaitWithSettle(context.Background(), "head", "projectA:head", nil, testLoad, path, settlePath, time.Hour, 0, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
 	awaitFiles(t, settlePath+".*.lholder", 1)
 	got := make(chan Admission, 1)
 	go func() {
-		adm, rel, err := WaitWithSettle(context.Background(), "follower", "projectA:follower", nil, testLoad, path, settlePath, time.Hour, io.Discard)
+		adm, rel, err := WaitWithSettle(context.Background(), "follower", "projectA:follower", nil, testLoad, path, settlePath, time.Hour, 0, io.Discard)
 		if err == nil {
 			_ = rel()
 		}

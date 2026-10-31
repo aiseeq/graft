@@ -70,6 +70,8 @@ type ExecOptions struct {
 	Heavy bool
 	// Settle holds the exec settling lock for this duration after admission.
 	Settle time.Duration
+	// Cores is the requested live reservation for this heavy exec.
+	Cores float64
 }
 
 func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
@@ -93,6 +95,7 @@ func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
 		return err
 	}
 	r := a.newRunner(root, cfg)
+	r.ExecCores = opts.Cores
 	if opts.Settle > 0 {
 		lockPath, err := tasks.LoadSettleLock()
 		if err != nil {

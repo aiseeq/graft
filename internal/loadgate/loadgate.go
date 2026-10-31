@@ -191,16 +191,17 @@ func (p *Priority) spend(d time.Duration) (left time.Duration, err error) {
 // kind is the task's kind as the stats profile names it, which the disk state
 // source keeps its profiles by.
 func Wait(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (Admission, func() error, error) {
-	return WaitWithSettle(ctx, name, kind, p, l, lockPath, "", 0, log)
+	return WaitWithSettle(ctx, name, kind, p, l, lockPath, "", 0, 0, log)
 }
 
 // WaitWithSettle admits a heavy task and, when settleLockPath is set,
 // serializes tasks that requested their own settling period on that lock.
-// The ordinary queue writes a live reservation before releasing its lock.
-func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath, settleLockPath string, settleDuration time.Duration, log io.Writer) (Admission, func() error, error) {
+// The ordinary queue writes a live reservation before releasing its lock:
+// cores when positive, else the profile's estimate.
+func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath, settleLockPath string, settleDuration time.Duration, cores float64, log io.Writer) (Admission, func() error, error) {
 	m := newMachine(l, log, name, kind)
 	if p != nil && (settleLockPath == "" || settleDuration <= 0) {
-		return reservePriority(ctx, m, name, kind, p, l, lockPath, log)
+		return reservePriority(ctx, m, name, kind, p, l, lockPath, cores, log)
 	}
 	holder := "graft " + name + " (starting a heavy task)"
 	var settleLock *lock.Lock
@@ -254,7 +255,7 @@ func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userc
 		}
 		return m.behind(behind), released, errors.Join(err, lk.Release())
 	}
-	cores, err := stats.ExpectedCores(kind)
+	cores, err = expectedReserveCores(kind, cores)
 	if err != nil {
 		if settleLock != nil {
 			err = errors.Join(err, settleLock.Release())
@@ -375,11 +376,11 @@ func liveReserveCores(lockPath string) (float64, error) {
 	return sum, nil
 }
 
-func reservePriority(ctx context.Context, m *machine, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (Admission, func() error, error) {
+func reservePriority(ctx context.Context, m *machine, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath string, cores float64, log io.Writer) (Admission, func() error, error) {
 	if err := m.admitWithReserves(ctx, p, lockPath); err != nil {
 		return m.admission(), released, err
 	}
-	cores, err := stats.ExpectedCores(kind)
+	cores, err := expectedReserveCores(kind, cores)
 	if err != nil {
 		return m.admission(), released, err
 	}
@@ -390,6 +391,13 @@ func reservePriority(ctx context.Context, m *machine, name, kind string, p *Prio
 	a := m.admission()
 	a.ReserveCores, a.ReserveSince, a.ReserveEnd, a.ReserveStoppedAt = cores, since, end, stoppedAt
 	return a, rel, nil
+}
+
+func expectedReserveCores(kind string, cores float64) (float64, error) {
+	if cores > 0 {
+		return cores, nil
+	}
+	return stats.ExpectedCores(kind)
 }
 
 func startReserve(lockPath, name string, cores float64, cap time.Duration, log io.Writer) (func() error, time.Time, func() string, func() time.Time, error) {

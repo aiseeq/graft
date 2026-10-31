@@ -98,6 +98,8 @@ type Runner struct {
 	// graft exec --settle.
 	ExecSettleLock string
 	ExecSettle     time.Duration
+	// ExecCores overrides the history estimate for graft exec's reservation.
+	ExecCores float64
 
 	lookup *dotenv.Lookup
 	base   []string
@@ -2050,8 +2052,8 @@ func (r *Runner) admit(ctx context.Context, name string) (loadgate.Admission, fu
 	if ok {
 		priority = &p
 	}
-	if r.ExecSettle > 0 && r.ExecSettleLock != "" && name == ExecTask {
-		return loadgate.WaitWithSettle(ctx, name, r.kind(name), priority, l, lockPath, r.ExecSettleLock, r.ExecSettle, r.Stderr)
+	if name == ExecTask && (r.ExecSettle > 0 && r.ExecSettleLock != "" || r.ExecCores > 0) {
+		return loadgate.WaitWithSettle(ctx, name, r.kind(name), priority, l, lockPath, r.ExecSettleLock, r.ExecSettle, r.ExecCores, r.Stderr)
 	}
 	return loadgate.Wait(ctx, name, r.kind(name), priority, l, lockPath, r.Stderr)
 }
