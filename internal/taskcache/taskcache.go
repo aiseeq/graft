@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/aiseeq/graft/v2/internal/fsx"
 )
 
 // keep is how long a pass is kept.
@@ -164,7 +166,7 @@ func prune(dir string) error {
 			continue
 		}
 		if time.Since(info.ModTime()) > keep {
-			if err := os.Remove(filepath.Join(dir, f.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+			if err := fsx.Remove(filepath.Join(dir, f.Name())); err != nil {
 				errs = append(errs, err)
 			}
 		}

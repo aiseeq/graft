@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/fsx"
 	"github.com/aiseeq/graft/v2/internal/jira"
 )
 
@@ -180,7 +181,7 @@ func writeHeld(r *deployRun, held []heldItem) error {
 		return err
 	}
 	if len(held) == 0 {
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := fsx.Remove(path); err != nil {
 			return fmt.Errorf("clearing the items held on %s: %w", r.name, err)
 		}
 		return nil

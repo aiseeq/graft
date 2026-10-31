@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/fsx"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/hooks"
 	"github.com/aiseeq/graft/v2/internal/message"
@@ -287,7 +288,7 @@ func restoreIndex(repo *gitx.Repo, s savedIndex) error {
 		return nil
 	}
 	if !s.exists {
-		if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := fsx.Remove(s.path); err != nil {
 			return fmt.Errorf("restoring the git index: %w", err)
 		}
 		return nil

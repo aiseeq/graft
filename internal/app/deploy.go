@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -21,6 +20,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/deploy"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
 	"github.com/aiseeq/graft/v2/internal/envs"
+	"github.com/aiseeq/graft/v2/internal/fsx"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/jira"
 	"github.com/aiseeq/graft/v2/internal/loadgate"
@@ -153,7 +153,7 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 		}
 		defer func() {
 			for _, f := range []string{budget, budget + ".lock"} {
-				if err := os.Remove(f); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				if err := fsx.Remove(f); err != nil {
 					fmt.Fprintf(a.Stderr, "graft: warning: removing the budget for waiting: %v\n", err)
 				}
 			}

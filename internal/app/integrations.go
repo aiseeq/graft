@@ -11,6 +11,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/deploy"
 	"github.com/aiseeq/graft/v2/internal/envs"
+	"github.com/aiseeq/graft/v2/internal/fsx"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 )
 
@@ -31,7 +32,7 @@ func (a *App) checkIntegrations(ctx context.Context, r *deployRun) error {
 	if _, err := deploy.ReadIntegrationExceptions(exceptionsPath(r.repo, in)); err != nil {
 		return fmt.Errorf("deploy %s: nothing was deployed: %w", r.name, err)
 	}
-	if err := os.Remove(integrationsMarker(r.repo, r.name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := fsx.Remove(integrationsMarker(r.repo, r.name)); err != nil {
 		return err
 	}
 	a.printf("the deploy script compares the integrations with %s: graft deploy check-integrations <build>", r.target.Requires)
