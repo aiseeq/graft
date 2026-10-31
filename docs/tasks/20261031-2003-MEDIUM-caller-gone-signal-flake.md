@@ -1,6 +1,7 @@
 # TestSignalStopsTheCommand: гонка маркера со временем на нагруженной машине
 
-Статус: открыт
+Статус: готово
+Исполнитель: graft-master
 
 ## Что сделать
 
@@ -18,3 +19,4 @@
 - 2026-10-31 20:03 открыт — graft-master
 - 2026-10-31 20:58 note — graft-master: 21:0x боец Luna (правка-инструмента), дерево /home/aisee/.cache/worktrees/graft/caller-gone-signal-flake; бриф и мера — scratchpad graft-master flake/{brief.md,accept.sh} (20 прогонов, правки только в тестах).
 - 2026-10-31 21:14 note — graft-master: 21:1x Luna приняла: ожидание смерти pid ребёнка (kill 0 → ESRCH, потолок 5 с) вместо маркера в 4 тестах; красный старого при задержке 700 мс перед сигналом, новый зелёный; 20 прогонов зелёные. Ревью: в TestLocalStepTreeKilledAfterGrace TERM игнорируется наследованием, так что смерть sleep доказывает killTree. Влито ff 1f7a1e3. Дальше — независимая проверка.
+- 2026-10-31 21:21 готово — verifier-opus (session graft-master): Проверка a5ed143 (свежий контекст) на 1f7a1e3: задержка 1 с перед сигналом — новый вариант ok 14.058s (16 PASS), старый 1f7a1e3^ красный в 4 подтестах Signal, CallerGone, LocalStepTreeKilledAfterGrace; мутации продукта (SIGTERM из signalSet, StopOnCancel без SIGTERM, без killTree) — тесты красные; -count=20 по caller-gone ok 22.3s; зомби: ложного «мёртв» нет (ESRCH), ложное «жив» даёт только красный тест.; glint: 12 findings, debt glint-debt-reserve

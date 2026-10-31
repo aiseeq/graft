@@ -171,6 +171,24 @@ func TestLeaksScansMergeCommit(t *testing.T) {
 	}
 }
 
+// TestLeaksNamesAnyFileName: git quotes a path with a quote, and with
+// core.quotePath=false leaves a byte outside UTF-8 raw inside the quotes,
+// which Go's unquoting would turn into U+FFFD. The name goes straight into the
+// index: not every file system takes it.
+func TestLeaksNamesAnyFileName(t *testing.T) {
+	f := leakRepo(t, "github.com/somebody-else/", "")
+	f.git("config", "core.quotePath", "false")
+	f.write("blob", "AcmePay\n")
+	blob := f.git("hash-object", "-w", "blob")
+	name := "bad\xff\"q.txt"
+	f.git("update-index", "--add", "--cacheinfo", "100644,"+blob+","+name)
+	f.run(f.work, "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "feat: odd name")
+	out, code := f.graft("", "leaks", "HEAD")
+	if code == 0 || !strings.Contains(out, "  "+name+":1: private term (counterparty) \"AcmePay\"") {
+		t.Errorf("exit %d:\n%q", code, out)
+	}
+}
+
 // TestLeaksTakesAnyRevisions: every argument goes to git rev-list, so --all
 // reaches a commit only a tag holds.
 func TestLeaksTakesAnyRevisions(t *testing.T) {
