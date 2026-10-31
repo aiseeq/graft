@@ -24,12 +24,6 @@ type Corpus struct {
 	words []string // sorted
 }
 
-// Has reports whether public code uses word.
-func (c *Corpus) Has(word string) bool {
-	_, ok := slices.BinarySearch(c.words, word)
-	return ok
-}
-
 // corpusMinLen bounds the words the index keeps, below any sensible
 // min_name_length, so a config change needs no new index.
 const corpusMinLen = 6

@@ -208,11 +208,18 @@ func (r *Rules) readModule(path string) error {
 // Modules lists the module paths of the private sources.
 func (r *Rules) Modules() []string { return r.modules }
 
-// DropCommon forgets the private names public Go code also uses: those are
-// common words of the language's ecosystem, not the private project's own.
+// DropCommon forgets the private names public Go code also uses, in any
+// letter case: those are common words of the language's ecosystem, not the
+// private project's own, and a private SendResponse is the public
+// sendResponse exported.
 func (r *Rules) DropCommon(c *Corpus) {
+	byLower := map[string][]string{}
 	for name := range r.names {
-		if c.Has(name) {
+		lower := strings.ToLower(name)
+		byLower[lower] = append(byLower[lower], name)
+	}
+	for _, w := range c.words {
+		for _, name := range byLower[strings.ToLower(w)] {
 			delete(r.names, name)
 		}
 	}

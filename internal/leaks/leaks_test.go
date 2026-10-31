@@ -92,9 +92,9 @@ func TestScanLine(t *testing.T) {
 
 func TestDropCommon(t *testing.T) {
 	r := testRules(t)
-	r.DropCommon(&Corpus{words: []string{"LedgerEntryKind", "QuoteBook"}})
+	r.DropCommon(&Corpus{words: []string{"quoteBook", "settleinvoice"}})
 	if _, ok := r.names["QuoteBook"]; ok || r.Names() != 2 {
-		t.Errorf("names after dropping the common ones: %v", r.names)
+		t.Errorf("names after dropping the common ones in any case: %v", r.names)
 	}
 }
 
@@ -157,7 +157,7 @@ func TestCorpusExcludesOwnModules(t *testing.T) {
 		t.Fatal(err)
 	}
 	for word, want := range map[string]bool{"StdlibPrinter": true, "CommonHelper": true, "CaseWord": true, "LeakedName": false, "CachedOnly": false} {
-		if c.Has(word) != want {
+		if has(c, word) != want {
 			t.Errorf("Has(%s) = %v, want %v", word, !want, want)
 		}
 	}
@@ -170,7 +170,7 @@ func TestCorpusExcludesOwnModules(t *testing.T) {
 	if c, err = LoadCorpus(cache, []string{"example.com/Someone/"}, &log); err != nil {
 		t.Fatal(err)
 	}
-	if !c.Has("NewcomerName") || !c.Has("CommonHelper") || !strings.Contains(log.String(), "1 public Go modules") {
+	if !has(c, "NewcomerName") || !has(c, "CommonHelper") || !strings.Contains(log.String(), "1 public Go modules") {
 		t.Errorf("incremental load: %q", log.String())
 	}
 }
@@ -212,4 +212,10 @@ func TestParseDiffMoves(t *testing.T) {
 	if !slices.Equal(lines, want) {
 		t.Errorf("lines = %v, want %v", lines, want)
 	}
+}
+
+// has reports whether the corpus holds word exactly.
+func has(c *Corpus, word string) bool {
+	_, ok := slices.BinarySearch(c.words, word)
+	return ok
 }
