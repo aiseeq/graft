@@ -105,9 +105,10 @@ and the raised files stay in the work tree for repair. Without this setting,
 module versions are left alone.
 
 A heavy task, and the gate as a whole, starts when the machine is not busy,
-by the rule of `github.com/aiseeq/akit/pressure`: the tasks ready to run at
-this moment (`procs_running` of `/proc/stat`, one reading, not an average
-that lags a minute behind) below `runnable`, no disk freeze going on and
+by the rule of `github.com/aiseeq/akit/pressure`: both the tasks ready to run
+at this moment (`procs_running` of `/proc/stat`, one reading) and the
+1-minute load average below `runnable` (the instant count alone would let a
+short dip on an overloaded machine start more work), no disk freeze going on and
 the IO pressure of the last 5 seconds below `max_io_full`, and not the
 memory pressure above `max_mem_some` while the machine swaps more than
 `max_swap_kbs`: swap in use is no harm, and swapping without memory pressure
@@ -126,7 +127,7 @@ when it is not today), and `busy --quiet-off` ends it sooner. A priority task
 of `graft deploy` waits for it no longer than `deploy.load_wait` allows, as
 for any busy machine. A measure akit reports and graft does not know yet
 makes the machine busy too, by its own words. A measure the system lacks (no `/proc/stat`,
-a kernel without PSI) is skipped and said. Heavy tasks of
+no `/proc/loadavg`, a kernel without PSI) is skipped and said. Heavy tasks of
 all projects, on a calm machine too, queue under one lock in the user cache
 (`graft/load.lock`) in ticket order and start one at a time: a task that
 starts holds the queue for `settle`, or until it ends if sooner, so the next

@@ -19,3 +19,4 @@
 - 2026-10-31 16:38 открыт — graft-master
 - 2026-10-31 16:39 note — graft-master: 16:4x решение: не код, а настройка Go — go env -w GONOPROXY=<частные префиксы>,github.com/aiseeq/* на ноуте (было пусто → равно GOPRIVATE); GOPRIVATE и sumdb не тронуты. Проверка: go list -m -json sc2kit@latest → Origin.URL github (direct). Код graft не меняю: тесты modules_integration идут через file:// GOPROXY, принудительный direct их ломает; README — абзац про GONOPROXY. PC: go env пуст, graft commit там не идёт — не трогаю. Живая проверка — @latest graft сразу после следующего push.
 - 2026-10-31 16:39 в работе — graft-master
+- 2026-10-31 16:48 note — graft-master: PC (по просьбе соседней сессии: приёмки --pc гоняют graft gate там): go env -w GONOPROXY=github.com/aiseeq/* (GOPRIVATE там пуст); go list sc2kit@latest → Origin.URL github.
