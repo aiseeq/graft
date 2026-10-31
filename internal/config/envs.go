@@ -2,9 +2,10 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"path"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -115,12 +116,7 @@ func (c *Config) RequireEnv(where, name string) error {
 
 // EnvNames lists the configured environments in a stable order.
 func (c *Config) EnvNames() []string {
-	names := make([]string, 0, len(c.Envs))
-	for n := range c.Envs {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(c.Envs))
 }
 
 // checkRemoteArgv refuses ${KEY} in an argv command bound to an ssh

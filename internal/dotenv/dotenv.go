@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -61,12 +62,7 @@ func (f *File) Get(key string) (string, bool) {
 
 // Keys returns the keys the file defines, sorted.
 func (f *File) Keys() []string {
-	keys := make([]string, 0, len(f.values))
-	for k := range f.values {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	return keys
+	return slices.Sorted(maps.Keys(f.values))
 }
 
 // parseLine returns ok=false for blank and comment lines.
