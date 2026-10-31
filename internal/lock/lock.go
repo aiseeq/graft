@@ -49,7 +49,9 @@ type Lock struct {
 	note     string
 	// Waited is how long taking it waited for other holders; 0 when it
 	// was free.
-	Waited time.Duration
+	Waited       time.Duration
+	WaitedBehind string
+	WaitedQuiet  time.Duration
 }
 
 // Acquire takes the exclusive lock at path. See AcquireMode.
@@ -57,10 +59,12 @@ func Acquire(ctx context.Context, path string, timeout time.Duration, holder str
 	return AcquireMode(ctx, path, Exclusive, timeout, holder, log)
 }
 
-// AcquireFIFO takes the exclusive lock at path in ticket order. Tickets are
-// shared by processes through live files next to the lock (createLive), and
-// the tickets no process holds are removed while inspecting the queue.
-func AcquireFIFO(ctx context.Context, path string, timeout time.Duration, holder string, log io.Writer) (lk *Lock, retErr error) {
+// AcquireFIFOObserved also lets a waiter classify intervals while it is
+// behind the queue head. The callback returns true when the head's blocker
+// is quiet mode. Tickets are shared by processes through live files next to
+// the lock, and the tickets no process holds are removed while inspecting the
+// queue.
+func AcquireFIFOObserved(ctx context.Context, path string, timeout time.Duration, holder string, log io.Writer, quiet func() (bool, error)) (lk *Lock, retErr error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("creating the lock directory: %w", err)
 	}
@@ -80,36 +84,35 @@ func AcquireFIFO(ctx context.Context, path string, timeout time.Duration, holder
 			}
 		}
 	}()
-	return waitFIFO(waitCtx, ctx, path, timeout, start, ticket, holder, log)
+	return waitFIFO(waitCtx, ctx, path, timeout, start, ticket, holder, log, quiet)
 }
 
-func waitFIFO(waitCtx, ctx context.Context, path string, timeout time.Duration, start time.Time, ticket, holder string, log io.Writer) (*Lock, error) {
+func waitFIFO(waitCtx, ctx context.Context, path string, timeout time.Duration, start time.Time, ticket, holder string, log io.Writer, quiet func() (bool, error)) (*Lock, error) {
 	var said string
+	var behind string
+	var waitedQuiet time.Duration
 	for {
-		guard, err := queueGuard(waitCtx, path)
+		queue, err := queueForTicket(waitCtx, path, ticket)
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return nil, fmt.Errorf("lock %s still queued after %s (%s)", filepath.Base(path), timeout, Describe(path))
+		}
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-				return nil, fmt.Errorf("lock %s still queued after %s (%s)", filepath.Base(path), timeout, Describe(path))
-			}
 			return nil, err
-		}
-		queue, err := readQueue(path)
-		unlockErr := guard.Close()
-		if err := errors.Join(err, unlockErr); err != nil {
-			return nil, err
-		}
-		if !slices.ContainsFunc(queue, func(e queueEntry) bool { return e.path == ticket }) {
-			return nil, fmt.Errorf("ticket for lock %s disappeared: %s", filepath.Base(path), ticket)
 		}
 		if queue[0].path == ticket {
 			remaining := timeout - time.Since(start)
 			if remaining <= 0 {
 				return nil, fmt.Errorf("lock %s still queued after %s (%s)", filepath.Base(path), timeout, Describe(path))
 			}
-			lk, err := Acquire(waitCtx, path, remaining, holder, log)
+			lk, err := AcquireObserved(waitCtx, path, Exclusive, remaining, holder, log, quiet)
 			if err != nil {
 				return nil, err
 			}
+			waitedQuiet += lk.WaitedQuiet
+			if behind != "" {
+				lk.WaitedBehind = behind
+			}
+			lk.WaitedQuiet = waitedQuiet
 			return lk, nil
 		}
 		var ahead []string
@@ -120,17 +123,54 @@ func waitFIFO(waitCtx, ctx context.Context, path string, timeout time.Duration, 
 			ahead = append(ahead, entry.holder)
 		}
 		message := strings.Join(ahead, "; ")
+		if behind == "" && len(ahead) > 0 {
+			behind = ahead[0]
+		}
 		if message != said {
 			fmt.Fprintf(log, "graft: waiting in the %s queue behind %s\n", filepath.Base(path), message)
 			said = message
 		}
-		if err := sleepRetry(waitCtx); err != nil {
+		quietWait, err := waitRetryObserved(waitCtx, quiet)
+		waitedQuiet += quietWait
+		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 				return nil, fmt.Errorf("lock %s still queued after %s (%s)", filepath.Base(path), timeout, Describe(path))
 			}
 			return nil, err
 		}
 	}
+}
+
+func waitRetryObserved(ctx context.Context, quiet func() (bool, error)) (time.Duration, error) {
+	start := time.Now()
+	quietAtStart := false
+	if quiet != nil {
+		var err error
+		quietAtStart, err = quiet()
+		if err != nil {
+			return 0, err
+		}
+	}
+	err := sleepRetry(ctx)
+	if quietAtStart {
+		return time.Since(start), err
+	}
+	return 0, err
+}
+
+func queueForTicket(ctx context.Context, path, ticket string) ([]queueEntry, error) {
+	guard, err := queueGuard(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	queue, readErr := readQueue(path)
+	if err := errors.Join(readErr, guard.Close()); err != nil {
+		return nil, err
+	}
+	if !slices.ContainsFunc(queue, func(e queueEntry) bool { return e.path == ticket }) {
+		return nil, fmt.Errorf("ticket for lock %s disappeared: %s", filepath.Base(path), ticket)
+	}
+	return queue, nil
 }
 
 type queueEntry struct {
@@ -254,33 +294,59 @@ func sleepRetry(ctx context.Context) error {
 // incompatible holders. Waiting stops early when ctx is cancelled. holder
 // describes this process and is shown to anyone who has to wait.
 func AcquireMode(ctx context.Context, path string, mode Mode, timeout time.Duration, holder string, log io.Writer) (*Lock, error) {
+	return AcquireObserved(ctx, path, mode, timeout, holder, log, nil)
+}
+
+// AcquireObserved takes the lock and counts time spent waiting while quiet
+// mode is active. quiet is checked once at the start of each retry interval.
+func AcquireObserved(ctx context.Context, path string, mode Mode, timeout time.Duration, holder string, log io.Writer, quiet func() (bool, error)) (*Lock, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("creating the lock directory: %w", err)
 	}
 	fl := flock.New(path)
-	try, tryCtx := fl.TryLock, fl.TryLockContext
+	try := fl.TryLock
 	if mode == Shared {
-		try, tryCtx = fl.TryRLock, fl.TryRLockContext
+		try = fl.TryRLock
 	}
 	ok, err := try()
 	if err != nil {
 		return nil, fmt.Errorf("locking %s: %w", path, err)
 	}
 	var waited time.Duration
+	var waitedBehind string
+	var waitedQuiet time.Duration
 	if !ok {
+		waitedBehind = Describe(path)
 		start := time.Now()
 		fmt.Fprintf(log, "graft: waiting for the %s lock %s (%s), up to %s\n", mode, filepath.Base(path), Describe(path), timeout)
 		waitCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		ok, err = tryCtx(waitCtx, retryDelay)
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("lock %s still held after %s (%s)", filepath.Base(path), timeout, Describe(path))
-		}
-		if err != nil {
-			return nil, fmt.Errorf("locking %s: %w", path, err)
-		}
-		if !ok {
-			return nil, fmt.Errorf("could not lock %s", path)
+		for {
+			ok, err = try()
+			if err != nil {
+				return nil, fmt.Errorf("locking %s: %w", path, err)
+			}
+			if ok {
+				break
+			}
+			intervalStart := time.Now()
+			quietAtStart := false
+			if quiet != nil {
+				quietAtStart, err = quiet()
+				if err != nil {
+					return nil, err
+				}
+			}
+			err = sleepRetry(waitCtx)
+			if quietAtStart {
+				waitedQuiet += time.Since(intervalStart)
+			}
+			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				return nil, fmt.Errorf("lock %s still held after %s (%s)", filepath.Base(path), timeout, Describe(path))
+			}
+			if err != nil {
+				return nil, fmt.Errorf("locking %s: %w", path, err)
+			}
 		}
 		waited = time.Since(start)
 	}
@@ -293,7 +359,7 @@ func AcquireMode(ctx context.Context, path string, mode Mode, timeout time.Durat
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("writing lock holder note: %w", err), fl.Unlock())
 	}
-	return &Lock{fl: fl, noteLock: noteLock, note: note, Waited: waited}, nil
+	return &Lock{fl: fl, noteLock: noteLock, note: note, Waited: waited, WaitedBehind: waitedBehind, WaitedQuiet: waitedQuiet}, nil
 }
 
 // Release gives the lock up.

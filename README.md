@@ -839,6 +839,10 @@ deps and inner tasks included.
   name, `settle`
   (the hold after a wait), `lock` (a task lock) and `sudo` (a deploy's
   confirmation). Absent when nothing waited.
+- `waited_behind`, on a task line that waited for a queue or lock, names the
+  command and task ahead of it (for example `graft build (starting a heavy
+  task)`). Queue time overlapping quiet mode is counted as `quiet`, not
+  `queue`.
 - `host`, on the lines of a task run on the host of `remote_heavy` and of
   its steps, names that host; absent for this machine. Their CPU time,
   memory and disk IO are those of the command that sent the step there, not
@@ -968,6 +972,13 @@ lines and warnings.
 
 A task the cache skipped is a `"kind":"cache-hit"` line with the wall and
 CPU time of the run whose pass it reused: the time the skip saved.
+
+A task cache miss is recorded as `"kind":"cache-miss"` when an earlier pass
+of that task exists in the same work tree. `cache_changed` lists the parts
+that differ from that pass: `tree`, `definition`, `inputs` (environment,
+`.env`, arguments and declared cache inputs), or `graft`. The cache stores a
+hash of each part alongside the pass; input values themselves are not written
+to stats.
 
 `graft stats` reports the current project for the last 7 days, one row per
 task, the heaviest in memory first: runs, median and maximum wall time,

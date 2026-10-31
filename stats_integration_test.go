@@ -18,30 +18,32 @@ import (
 
 // statsLine is one line of stats.jsonl as the tests read it.
 type statsLine struct {
-	Time     time.Time          `json:"time"`
-	Kind     string             `json:"kind"`
-	Project  string             `json:"project"`
-	Task     string             `json:"task"`
-	Top      string             `json:"top"`
-	In       string             `json:"in"`
-	Step     string             `json:"step"`
-	Steps    int                `json:"steps"`
-	WallS    float64            `json:"wall_s"`
-	UserS    float64            `json:"user_s"`
-	SysS     float64            `json:"sys_s"`
-	MaxRSSMB *float64           `json:"max_rss_mb"`
-	TreeMB   *float64           `json:"tree_mem_mb"`
-	LoadMin  *float64           `json:"load_start"`
-	LoadMax  *float64           `json:"load_max"`
-	DBCPUS   *float64           `json:"db_cpu_s"`
-	DBMemMB  *float64           `json:"db_mem_mb"`
-	WaitS    float64            `json:"wait_s"`
-	WaitWhy  map[string]float64 `json:"wait_why"`
-	Host     string             `json:"host"`
-	Here     string             `json:"here"`
-	Exit     int                `json:"exit"`
-	Run      string             `json:"run"`
-	Parent   string             `json:"parent"`
+	Time         time.Time          `json:"time"`
+	Kind         string             `json:"kind"`
+	Project      string             `json:"project"`
+	Task         string             `json:"task"`
+	CacheChanged []string           `json:"cache_changed"`
+	WaitedBehind string             `json:"waited_behind"`
+	Top          string             `json:"top"`
+	In           string             `json:"in"`
+	Step         string             `json:"step"`
+	Steps        int                `json:"steps"`
+	WallS        float64            `json:"wall_s"`
+	UserS        float64            `json:"user_s"`
+	SysS         float64            `json:"sys_s"`
+	MaxRSSMB     *float64           `json:"max_rss_mb"`
+	TreeMB       *float64           `json:"tree_mem_mb"`
+	LoadMin      *float64           `json:"load_start"`
+	LoadMax      *float64           `json:"load_max"`
+	DBCPUS       *float64           `json:"db_cpu_s"`
+	DBMemMB      *float64           `json:"db_mem_mb"`
+	WaitS        float64            `json:"wait_s"`
+	WaitWhy      map[string]float64 `json:"wait_why"`
+	Host         string             `json:"host"`
+	Here         string             `json:"here"`
+	Exit         int                `json:"exit"`
+	Run          string             `json:"run"`
+	Parent       string             `json:"parent"`
 }
 
 // statsRepo is a task repository whose graft keeps its stats in a cache of

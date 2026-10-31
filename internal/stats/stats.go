@@ -45,7 +45,8 @@ const (
 	KindTask = "task" // a task as a whole, everything it ran included
 	// KindCacheHit is a task the cache skipped, with the costs of the run
 	// whose pass it reused: what the skip saved.
-	KindCacheHit = "cache-hit"
+	KindCacheHit  = "cache-hit"
+	KindCacheMiss = "cache-miss"
 )
 
 // Record is one line of the stats file.
@@ -68,6 +69,10 @@ type Record struct {
 	// first word of its command>.
 	Profile string `json:"profile,omitempty"`
 	Task    string `json:"task"`
+	// CacheChanged names the key components that differ from the last pass.
+	CacheChanged []string `json:"cache_changed,omitempty"`
+	// WaitedBehind names the command and task holding the queue or lock.
+	WaitedBehind string `json:"waited_behind,omitempty"`
 	// Top is what the task ran under: the graft command (commit, gate,
 	// deploy, ...) or, for graft <task>, the outermost task.
 	Top string `json:"top"`
@@ -139,6 +144,11 @@ type Record struct {
 	// lines written before graft 2.19.
 	Run    string `json:"run,omitempty"`
 	Parent string `json:"parent,omitempty"`
+}
+
+// CacheMiss returns a stats line naming the key components that changed.
+func CacheMiss(task string, changed []string) Record {
+	return Record{Kind: KindCacheMiss, Task: task, CacheChanged: changed}
 }
 
 // EnvRun carries the run of a graft to the processes it starts: a graft

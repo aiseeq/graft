@@ -48,8 +48,9 @@ type Waits map[string]time.Duration
 // why, and the profile the disk state source gave its kind at the last
 // reading, nil without the source.
 type Admission struct {
-	Waits       Waits
-	DiskProfile json.RawMessage
+	Waits        Waits
+	DiskProfile  json.RawMessage
+	WaitedBehind string
 }
 
 // Total is the whole wait.
@@ -192,29 +193,39 @@ func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userc
 	holder := "graft " + name + " (starting a heavy task)"
 	var settleLock *lock.Lock
 	start := time.Now()
+	behind := ""
 	if settleLockPath != "" && settleDuration > 0 {
 		var err error
-		settleLock, err = lock.AcquireFIFO(ctx, settleLockPath, queueTimeout, holder+" with settle", log)
+		settleLock, err = lock.AcquireFIFOObserved(ctx, settleLockPath, queueTimeout, holder+" with settle", log, nil)
 		m.waits[WhyQueue] += time.Since(start)
 		if err != nil {
 			return m.admission(), released, err
 		}
+		behind = settleLock.WaitedBehind
 		start = time.Now()
 	}
 	if p != nil {
 		if err := m.admit(ctx, p); err != nil {
-			if settleLock != nil {
-				err = errors.Join(err, settleLock.Release())
-			}
-			return m.admission(), released, err
+			return m.behind(behind), released, errors.Join(err, settleLock.Release())
 		}
-		if settleLock != nil {
-			return m.admission(), settle(settleLock, settleDuration), nil
-		}
-		return m.admission(), released, nil
+		return m.behind(behind), settle(settleLock, settleDuration), nil
 	}
-	lk, err := lock.AcquireFIFO(ctx, lockPath, queueTimeout, holder, log)
-	m.waits[WhyQueue] += time.Since(start)
+	quiet, err := quietMode()
+	if err != nil {
+		if settleLock != nil {
+			err = errors.Join(err, settleLock.Release())
+		}
+		return m.behind(behind), released, err
+	}
+	lk, err := lock.AcquireFIFOObserved(ctx, lockPath, queueTimeout, holder, log, quiet)
+	waited := time.Since(start)
+	if lk != nil && lk.WaitedQuiet > 0 {
+		m.waits[WhyQuiet] += min(lk.WaitedQuiet, waited)
+	}
+	m.waits[WhyQueue] += max(0, waited-m.waits[WhyQuiet])
+	if lk != nil && lk.WaitedBehind != "" {
+		behind = lk.WaitedBehind
+	}
 	if err != nil {
 		if settleLock != nil {
 			err = errors.Join(err, settleLock.Release())
@@ -225,14 +236,30 @@ func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userc
 		if settleLock != nil {
 			err = errors.Join(err, settleLock.Release())
 		}
-		return m.admission(), released, errors.Join(err, lk.Release())
+		return m.behind(behind), released, errors.Join(err, lk.Release())
 	}
 	release := settle(lk, l.Settle)
 	if settleLock != nil {
 		settleRelease := settle(settleLock, settleDuration)
-		return m.admission(), func() error { return errors.Join(release(), settleRelease()) }, nil
+		return m.behind(behind), func() error { return errors.Join(release(), settleRelease()) }, nil
 	}
-	return m.admission(), release, nil
+	return m.behind(behind), release, nil
+}
+
+// quietMode reads only akit's quiet-until state. Queue polling must not run
+// the machine meter: it reads procfs, disk state and pressure windows.
+func quietMode() (func() (bool, error), error) {
+	path, err := pressure.QuietPath()
+	if err != nil {
+		return nil, fmt.Errorf("reading quiet mode path: %w", err)
+	}
+	return func() (bool, error) {
+		until, err := pressure.ReadQuiet(path)
+		if err != nil {
+			return false, fmt.Errorf("reading quiet mode: %w", err)
+		}
+		return time.Now().Before(until), nil
+	}, nil
 }
 
 // released is the release of a task that holds nothing.
@@ -283,6 +310,13 @@ func newMachine(l userconfig.MachineLoad, log io.Writer, name, kind string) *mac
 }
 
 func (m *machine) admission() Admission { return Admission{Waits: m.waits, DiskProfile: m.disk} }
+
+// behind is the admission of a task that waited in a queue behind holder.
+func (m *machine) behind(holder string) Admission {
+	adm := m.admission()
+	adm.WaitedBehind = holder
+	return adm
+}
 
 // BusyNow tells whether Wait would wait now, without entering the queue: a
 // task holds the queue's lock at lockPath (starting, or settling after its

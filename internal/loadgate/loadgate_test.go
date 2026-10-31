@@ -68,6 +68,28 @@ func wait(ctx context.Context, name string, p *Priority, l userconfig.MachineLoa
 	return adm.Waits, release, err
 }
 
+func awaitFiles(t *testing.T, pattern string, count int) {
+	t.Helper()
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) >= count {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for %d files matching %s; found %d", count, pattern, len(matches))
+		}
+	}
+}
+
 var testLoad = userconfig.MachineLoad{WaitAbove: 22, MaxIOFull: 10, MaxSwapKBs: 1024,
 	SwapWindow: 20 * time.Millisecond, Settle: time.Hour, Poll: 10 * time.Millisecond}
 
@@ -111,6 +133,80 @@ func TestCalmMachineStartsOneAtATime(t *testing.T) {
 		t.Errorf("after the settling: waited %s, %v", waited, err)
 	} else if err := release(); err != nil {
 		t.Error(err)
+	}
+}
+
+func TestWaitNamesWhoHeldTheQueue(t *testing.T) {
+	fakeMachine(t)
+	path := filepath.Join(t.TempDir(), "load.lock")
+	l := testLoad
+	l.Settle = time.Hour
+	_, release, err := Wait(context.Background(), "head", "projectA:head", nil, l, path, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitFiles(t, path+".*.lholder", 1)
+	got := make(chan Admission, 1)
+	go func() {
+		adm, rel, err := Wait(context.Background(), "follower", "projectA:follower", nil, l, path, io.Discard)
+		if err == nil {
+			_ = rel()
+		}
+		if err != nil {
+			adm.Waits = nil
+		}
+		got <- adm
+	}()
+	awaitFiles(t, path+".queue.*.lticket", 1)
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case adm := <-got:
+		if !strings.Contains(adm.WaitedBehind, "graft head") {
+			t.Fatalf("WaitedBehind = %q", adm.WaitedBehind)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("follower did not leave the queue")
+	}
+}
+
+func TestWaitBehindQuietIsQuiet(t *testing.T) {
+	fakeMachine(t)
+	setQuiet(t, time.Now().Add(5*time.Second))
+	path := filepath.Join(t.TempDir(), "load.lock")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	first := make(chan struct{})
+	go func() {
+		_, _, _ = Wait(ctx, "head", "projectA:head", nil, testLoad, path, io.Discard)
+		close(first)
+	}()
+	awaitFiles(t, path+".*.lholder", 1)
+	followerCtx, stop := context.WithTimeout(context.Background(), 3500*time.Millisecond)
+	defer stop()
+	type waitResult struct {
+		adm Admission
+		err error
+	}
+	got := make(chan waitResult, 1)
+	go func() {
+		adm, _, err := Wait(followerCtx, "follower", "projectA:follower", nil, testLoad, path, io.Discard)
+		got <- waitResult{adm: adm, err: err}
+	}()
+	awaitFiles(t, path+".queue.*.lticket", 1)
+	var result waitResult
+	select {
+	case result = <-got:
+	case <-time.After(4 * time.Second):
+		t.Fatal("follower did not leave the queue")
+	}
+	if result.err == nil {
+		t.Fatal("quiet machine admitted a task")
+	}
+	<-first
+	if result.adm.Waits[WhyQuiet] <= 0 || result.adm.Waits[WhyQueue] >= result.adm.Waits[WhyQuiet] {
+		t.Fatalf("waits = %v, want quiet queue attribution", result.adm.Waits)
 	}
 }
 

@@ -41,6 +41,43 @@ func TestAcquireWaitsForHolder(t *testing.T) {
 	}
 }
 
+func TestAcquireObservedCountsElapsedQuietTime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "observed.lock")
+	holder, err := Acquire(context.Background(), path, time.Second, "holder", &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan fifoResult, 1)
+	observed := make(chan struct{}, 4)
+	go func() {
+		lk, err := AcquireObserved(context.Background(), path, Exclusive, 3*time.Second, "waiter", &bytes.Buffer{}, func() (bool, error) {
+			select {
+			case observed <- struct{}{}:
+			default:
+			}
+			return true, nil
+		})
+		result <- fifoResult{lock: lk, err: err}
+	}()
+	for range 3 {
+		select {
+		case <-observed:
+		case <-time.After(2 * time.Second):
+			t.Fatal("lock waiter did not retry three times")
+		}
+	}
+	if err := holder.Release(); err != nil {
+		t.Fatal(err)
+	}
+	got := receiveLock(t, result)
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	defer got.lock.Release()
+	if got.lock.WaitedQuiet < 300*time.Millisecond || got.lock.WaitedQuiet > got.lock.Waited {
+		t.Errorf("quiet wait = %s, total lock wait = %s", got.lock.WaitedQuiet, got.lock.Waited)
+	}
+}
 func TestAcquireFIFO(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "load.lock")
 	holder, err := Acquire(context.Background(), path, time.Second, "occupant", &bytes.Buffer{})
@@ -51,7 +88,7 @@ func TestAcquireFIFO(t *testing.T) {
 	var firstLog, secondLog safeBuffer
 	start := func(name string, log *safeBuffer) {
 		go func() {
-			lk, err := AcquireFIFO(context.Background(), path, 5*time.Second, name, log)
+			lk, err := AcquireFIFOObserved(context.Background(), path, 5*time.Second, name, log, nil)
 			results <- fifoResult{lk, err}
 		}()
 	}
@@ -108,7 +145,7 @@ func TestAcquireFIFODropsDeadTicket(t *testing.T) {
 	results := make(chan fifoResult, 1)
 	var log safeBuffer
 	go func() {
-		lk, err := AcquireFIFO(context.Background(), path, 5*time.Second, "live", &log)
+		lk, err := AcquireFIFOObserved(context.Background(), path, 5*time.Second, "live", &log, nil)
 		results <- fifoResult{lock: lk, err: err}
 	}()
 	for deadline := time.Now().Add(3 * time.Second); !strings.Contains(log.String(), "behind") && time.Now().Before(deadline); {

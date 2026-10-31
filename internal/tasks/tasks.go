@@ -163,7 +163,8 @@ type frame struct {
 	program string
 	// diskProfile is what the disk state source gave the task's kind when
 	// the machine admitted it.
-	diskProfile json.RawMessage
+	diskProfile  json.RawMessage
+	waitedBehind string
 }
 
 // TestDB is the test database of test_db tasks.
@@ -1593,7 +1594,7 @@ func (r *Runner) begin(task string) *frame {
 // what it cost; the task's error itself goes back to its caller.
 func (r *Runner) end(f *frame, failed bool) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
-	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, DiskProfile: f.diskProfile}
+	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, DiskProfile: f.diskProfile, WaitedBehind: f.waitedBehind}
 	if failed {
 		rec.Time = time.Now()
 		rec.Project = r.Root
@@ -2084,6 +2085,9 @@ func (r *Runner) waitedFor(a loadgate.Admission) {
 	if n := len(r.frames); n > 0 && a.DiskProfile != nil {
 		r.frames[n-1].diskProfile = a.DiskProfile
 	}
+	if n := len(r.frames); n > 0 && a.WaitedBehind != "" {
+		r.frames[n-1].waitedBehind = a.WaitedBehind
+	}
 }
 
 // ThreadsEnv carries the user config's load.threads into a heavy task.
@@ -2154,6 +2158,9 @@ func (r *Runner) lock(ctx context.Context, task string, l *config.TaskLock) (rel
 		return nil, 0, err
 	}
 	r.held[l.Name] = mode
+	if lk.Waited > 0 && len(r.frames) > 0 {
+		r.frames[len(r.frames)-1].waitedBehind = lk.WaitedBehind
+	}
 	return func() error {
 		delete(r.held, l.Name)
 		return lk.Release()

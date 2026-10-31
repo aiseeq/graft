@@ -3,9 +3,32 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestCacheMissNamesTheChangedPart(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "input")
+	writeFile(t, input, "one\n")
+	f, statsFile := statsRepo(t, "tasks:\n  verify:\n    cache:\n      files: ["+yamlQuote(input)+"]\n    run: ["+helperStep("ok")+"]\n")
+	if _, code := f.graft("", "verify"); code != 0 {
+		t.Fatal("first run failed")
+	}
+	writeFile(t, input, "two\n")
+	if _, code := f.graft("", "verify"); code != 0 {
+		t.Fatal("second run failed")
+	}
+	for _, line := range readStats(t, statsFile) {
+		if line.Kind == "cache-miss" && line.Task == "verify" {
+			if !slices.Contains(line.CacheChanged, "inputs") {
+				t.Fatalf("cache miss did not name inputs: %+v", line)
+			}
+			return
+		}
+	}
+	t.Fatal("no cache-miss stats record")
+}
 
 // cacheConfig is a task with cache, a dep, an inner task and inputs from
 // outside the tree. .graft.yaml itself is excluded from the tree, so a

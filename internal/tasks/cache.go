@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,7 +30,8 @@ const NoCacheEnv = "GRAFT_NO_CACHE"
 // The key is returned to keep the pass of a run; an error means the task
 // runs without the cache.
 func (r *Runner) cached(ctx context.Context, name string, args []string) (key string, hit bool, err error) {
-	if key, err = r.cacheKey(ctx, name, args); err != nil {
+	var parts map[string]string
+	if key, parts, err = r.cacheKey(ctx, name, args); err != nil {
 		return "", false, err
 	}
 	dir, err := taskcache.Dir()
@@ -37,8 +39,21 @@ func (r *Runner) cached(ctx context.Context, name string, args []string) (key st
 		return "", false, err
 	}
 	e, ok, err := taskcache.Lookup(dir, key)
-	if err != nil || !ok {
+	if err != nil {
 		return key, false, err
+	}
+	if !ok {
+		if previous, found, err := taskcache.Previous(dir, r.Root, name); err != nil {
+			return key, false, err
+		} else if found {
+			changed := taskcache.ChangedParts(previous.Parts, parts)
+			outermost := name
+			if len(r.frames) > 0 {
+				outermost = r.frames[0].task
+			}
+			r.write(stats.CacheMiss(name, changed), stats.Usage{}, outermost)
+		}
+		return key, false, nil
 	}
 	fmt.Fprintf(r.Stderr, "graft: %s: passed on this tree %s, skipped (cache; --no-cache runs it)\n", name, e.Time.Local().Format("2006-01-02 15:04"))
 	outermost := name
@@ -55,7 +70,7 @@ func seconds(s float64) time.Duration { return time.Duration(s * float64(time.Se
 // keep stores the pass of a task run with its costs, unless what the key
 // covers changed while it ran: the run then passed on something else.
 func (r *Runner) keep(ctx context.Context, key, name string, args []string, use stats.Usage) {
-	after, err := r.cacheKey(ctx, name, args)
+	after, parts, err := r.cacheKey(ctx, name, args)
 	if err == nil && after != key {
 		fmt.Fprintf(r.Stderr, "graft: %s: passed, but the tree or its inputs changed while it ran: not kept in the cache\n", name)
 		return
@@ -66,7 +81,7 @@ func (r *Runner) keep(ctx context.Context, key, name string, args []string, use 
 	}
 	if err == nil {
 		err = taskcache.Store(dir, key, taskcache.Entry{Project: r.Root, Task: name, Time: time.Now(),
-			WallS: use.Wall.Seconds(), UserS: use.User.Seconds(), SysS: use.Sys.Seconds()})
+			WallS: use.Wall.Seconds(), UserS: use.User.Seconds(), SysS: use.Sys.Seconds(), Parts: parts})
 	}
 	if err != nil {
 		fmt.Fprintf(r.Stderr, "graft: %s: passed, but the pass is not kept in the cache: %v\n", name, err)
@@ -79,18 +94,21 @@ func (r *Runner) keep(ctx context.Context, key, name string, args []string, use 
 // keys, the commit message in the gate when they name its file, the
 // arguments, the cache inputs, and this graft. GRAFT_VERSION is left out: it changes with
 // every commit.
-func (r *Runner) cacheKey(ctx context.Context, name string, args []string) (string, error) {
-	h := sha256.New()
-	add := func(parts ...string) {
+func (r *Runner) cacheKey(ctx context.Context, name string, args []string) (string, map[string]string, error) {
+	hashes := map[string]hash.Hash{"tree": sha256.New(), "definition": sha256.New(), "inputs": sha256.New(), "graft": sha256.New()}
+	addTo := func(h hash.Hash, parts ...string) {
 		for _, p := range parts {
 			fmt.Fprintf(h, "%d:%s\n", len(p), p)
 		}
 	}
-	add("graft task cache 1", r.GraftVersion, runtime.GOOS, runtime.GOARCH, name, fmt.Sprint(len(args)))
-	add(args...)
+	addDefinition := func(p ...string) { addTo(hashes["definition"], p...) }
+	addInputs := func(p ...string) { addTo(hashes["inputs"], p...) }
+	addTo(hashes["graft"], "graft task cache 1", r.GraftVersion, runtime.GOOS, runtime.GOARCH, name)
+	addTo(hashes["inputs"], "args", fmt.Sprint(len(args)))
+	addInputs(args...)
 	repo, err := r.repo()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	paths := r.Config.CachePaths(name)
 	tree, err := repo.ContentID(func(path string) bool {
@@ -108,31 +126,38 @@ func (r *Runner) cacheKey(ctx context.Context, name string, args []string) (stri
 		return true
 	})
 	if err != nil {
-		return "", fmt.Errorf("reading the work tree: %w", err)
+		return "", nil, fmt.Errorf("reading the work tree: %w", err)
 	}
-	add(tree)
+	addTo(hashes["tree"], tree)
 	readsMessage := false
-	if err := r.keyDefinitions(add, name, map[string]bool{}, &readsMessage); err != nil {
-		return "", err
+	if err := r.keyDefinitions(addDefinition, addInputs, name, map[string]bool{}, &readsMessage); err != nil {
+		return "", nil, err
 	}
 	if path, ok := r.Extra[MessageFileEnv]; ok && readsMessage {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return "", fmt.Errorf("the commit message for the cache key: %w", err)
+			return "", nil, fmt.Errorf("the commit message for the cache key: %w", err)
 		}
-		add("message", string(data))
+		addInputs("message", string(data))
 	}
-	if err := r.keyInputs(ctx, add, r.Config.Tasks[name].Cache); err != nil {
-		return "", err
+	if err := r.keyInputs(ctx, addInputs, r.Config.Tasks[name].Cache); err != nil {
+		return "", nil, err
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	parts := make(map[string]string, len(hashes))
+	h := sha256.New()
+	var buf []byte
+	for _, part := range taskcache.PartNames {
+		buf = hashes[part].Sum(buf[:0])
+		parts[part] = hex.EncodeToString(buf)
+		addTo(h, part, parts[part])
+	}
+	return hex.EncodeToString(h.Sum(nil)), parts, nil
 }
 
-// keyDefinitions adds the task, its deps and inner tasks: each definition as
-// configured and the values its env and .env keys take now. readsMessage is
-// set when one of them names the commit message file: only then does the
-// message count, or no gate of a new commit would ever skip.
-func (r *Runner) keyDefinitions(add func(...string), name string, seen map[string]bool, readsMessage *bool) error {
+// keyDefinitions adds the task, its deps and inner tasks. Definitions and
+// configuration values go to their own key parts. readsMessage is set when
+// one names the commit message file: only then does the message count.
+func (r *Runner) keyDefinitions(addDefinition, addInputs func(...string), name string, seen map[string]bool, readsMessage *bool) error {
 	if seen[name] {
 		return nil
 	}
@@ -142,7 +167,7 @@ func (r *Runner) keyDefinitions(add func(...string), name string, seen map[strin
 	if err != nil {
 		return fmt.Errorf("task %s for the cache key: %w", name, err)
 	}
-	add("task", name, string(def))
+	addDefinition("task", name, string(def))
 	if namesMessage(def) {
 		*readsMessage = true
 	}
@@ -151,28 +176,28 @@ func (r *Runner) keyDefinitions(add func(...string), name string, seen map[strin
 		if err != nil {
 			return fmt.Errorf("task %s: env %s: %w", name, k, err)
 		}
-		add(k, v)
+		addInputs("env", k, v)
 	}
 	values, err := KeyValues(r.lookup, t.Keys)
 	if err != nil {
 		return fmt.Errorf("task %s: %w", name, err)
 	}
-	add(values...)
+	addInputs(values...)
 	if t.TestDB {
 		db, err := json.Marshal(r.Config.TestDB)
 		if err != nil {
 			return fmt.Errorf("test_db for the cache key: %w", err)
 		}
-		add("test_db", string(db))
+		addDefinition("test_db", string(db))
 	}
 	for _, d := range t.Deps {
-		if err := r.keyDefinitions(add, d, seen, readsMessage); err != nil {
+		if err := r.keyDefinitions(addDefinition, addInputs, d, seen, readsMessage); err != nil {
 			return err
 		}
 	}
 	for _, s := range t.Run {
 		if s.Task != "" {
-			if err := r.keyDefinitions(add, s.Task, seen, readsMessage); err != nil {
+			if err := r.keyDefinitions(addDefinition, addInputs, s.Task, seen, readsMessage); err != nil {
 				return err
 			}
 		}
