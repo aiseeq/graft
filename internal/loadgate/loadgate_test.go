@@ -235,9 +235,16 @@ func TestReserveMissedHistoryStillMeetsRunnable(t *testing.T) {
 	d := os.Getenv(ProcEnv)
 	b := fmt.Sprintf("cpu 1 1 1 1\nprocs_running %d\n", 25)
 	_ = os.WriteFile(filepath.Join(d, "stat"), []byte(b), 0o644)
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	// The wait is cut when it says it waits, not after a fixed time: a busy
+	// machine under -race may not even measure within one.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	adm, _, err := Wait(ctx, "next", "projectA:next", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), io.Discard)
+	observed := make(chan struct{}, 1)
+	go func() {
+		<-observed
+		cancel()
+	}()
+	adm, _, err := Wait(ctx, "next", "projectA:next", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), waitLogWriter{observed: observed})
 	if err == nil || adm.Waits[WhyLoad] == 0 {
 		t.Fatalf("high runnable admitted: %+v %v", adm, err)
 	}
