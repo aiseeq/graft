@@ -136,7 +136,7 @@ func TestInstallStepNonGoFile(t *testing.T) {
 func TestInstallStepDefaultDir(t *testing.T) {
 	f := installRepo(t, filepath.Join(t.TempDir(), "unused"))
 	userBin, cfgHome := t.TempDir(), t.TempDir()
-	writeFile(t, filepath.Join(cfgHome, "graft", "config.yaml"), "tools:\n  bin_dir: "+userBin+"\n")
+	writeUserConfig(t, cfgHome, "tools:\n  bin_dir: "+userBin+"\n")
 	f.env = []string{"XDG_CONFIG_HOME=" + cfgHome, "APPDATA=" + cfgHome}
 	f.mustGraft("install-default")
 	if _, err := os.Stat(filepath.Join(userBin, "tool")); err != nil {

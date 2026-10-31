@@ -273,22 +273,22 @@ func (r *Runner) taskStaysHere(t *config.Task, dir string) string {
 // dotenvRef is the first ${KEY} of the task's env and argv that is no
 // variable of graft's own, "" when there is none.
 func dotenvRef(t *config.Task) (string, error) {
-	var texts []string
+	var refs []string
 	for _, k := range sortedKeys(t.Env) {
-		texts = append(texts, t.Env[k])
-	}
-	for _, s := range t.Run {
-		texts = append(texts, s.Argv...)
-	}
-	for _, text := range texts {
-		refs, err := dotenv.Refs(text)
+		keys, err := dotenv.Refs(t.Env[k])
 		if err != nil {
 			return "", err
 		}
-		for _, key := range refs {
-			if _, own := t.Env[key]; !own && key != VersionEnv {
-				return key, nil
-			}
+		refs = append(refs, keys...)
+	}
+	for _, s := range t.Run {
+		for _, a := range s.Argv {
+			refs = append(refs, dotenv.ShellRefs(a)...)
+		}
+	}
+	for _, key := range refs {
+		if _, own := t.Env[key]; !own && key != VersionEnv {
+			return key, nil
 		}
 	}
 	return "", nil

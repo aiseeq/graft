@@ -463,7 +463,7 @@ func TestStatsMarkTasksOverTheLimits(t *testing.T) {
 	}
 	f, _ := statsRepo(t, "gate:\n  - sh: sleep 0.3\ntasks:\n  slow:\n    run: [[sh, -c, 'sleep 0.5']]\n  quick:\n    run: ["+helperStep("ok")+"]\n")
 	cfgDir := t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "limits: {gate: 200ms, task: 400ms}\n")
+	writeUserConfig(t, cfgDir, "limits: {gate: 200ms, task: 400ms}\n")
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
 	// A run over its limit says so as it ends.
 	if out := f.mustGraft("gate"); !strings.Contains(out, "graft: over the limit: gate took ") || !strings.Contains(out, " without waits, above 200ms (user config limits.gate)\n") {
@@ -489,7 +489,7 @@ func TestStatsMarkTasksOverTheLimits(t *testing.T) {
 	if out := f.mustGraft("stats", "--task", "slow"); strings.Contains(out, "over the limit") {
 		t.Errorf("a broken down task is marked:\n%s", out)
 	}
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "limits: {gate: -1s}\n")
+	writeUserConfig(t, cfgDir, "limits: {gate: -1s}\n")
 	if out, code := f.graft("", "stats"); code == 0 || !strings.Contains(out, "limits: gate and task must be positive") {
 		t.Errorf("a negative limit: exit %d\n%s", code, out)
 	}
@@ -503,7 +503,7 @@ func TestRunOverLimitOnce(t *testing.T) {
 	}
 	f, _ := statsRepo(t, "tasks:\n  outer:\n    deps: [slow]\n    run: ["+helperStep("ok")+"]\n  slow:\n    run: [[sh, -c, 'sleep 0.3']]\n  broken:\n    run: [[sh, -c, 'sleep 0.3; exit 3']]\n")
 	cfgDir := t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "limits: {task: 200ms}\n")
+	writeUserConfig(t, cfgDir, "limits: {task: 200ms}\n")
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
 	out := f.mustGraft("outer")
 	if strings.Count(out, "over the limit") != 1 || !strings.Contains(out, "graft: over the limit: outer took ") {

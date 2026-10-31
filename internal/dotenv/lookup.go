@@ -91,7 +91,7 @@ func (l *Lookup) Values(keys []string) ([]string, error) {
 // Expand replaces ${KEY} with the value of KEY and $$ with $. Any other $ is
 // kept as is, so a literal $ needs no escaping unless it precedes {.
 func Expand(s string, l *Lookup) (string, error) {
-	return expand(s, l.Value)
+	return expand(s, l.Value, true)
 }
 
 // Refs lists the keys s refers to as ${KEY}.
@@ -100,11 +100,26 @@ func Refs(s string) ([]string, error) {
 	_, err := expand(s, func(key string) (string, error) {
 		keys = append(keys, key)
 		return "", nil
-	})
+	}, true)
 	return keys, err
 }
 
-func expand(s string, resolve func(string) (string, error)) (string, error) {
+// ShellRefs lists the keys s refers to as ${KEY}, s being a command's text
+// that graft does not expand: a ${...} that is no key, ${w%|*}, is the
+// shell's own expansion, not a reference.
+func ShellRefs(s string) []string {
+	var keys []string
+	// Not strict: expand fails on nothing else.
+	_, _ = expand(s, func(key string) (string, error) {
+		keys = append(keys, key)
+		return "", nil
+	}, false)
+	return keys
+}
+
+// expand resolves the ${KEY} of s; strict fails on a ${ that is no key,
+// otherwise such text is kept as is.
+func expand(s string, resolve func(string) (string, error), strict bool) (string, error) {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
 		if s[i] != '$' || i+1 >= len(s) {
@@ -117,10 +132,18 @@ func expand(s string, resolve func(string) (string, error)) (string, error) {
 			i++
 		case '{':
 			end := strings.IndexByte(s[i+2:], '}')
+			if end < 0 && !strict {
+				b.WriteString(s[i:])
+				return b.String(), nil
+			}
 			if end < 0 {
 				return "", fmt.Errorf("unterminated ${ in %q", s)
 			}
 			key := s[i+2 : i+2+end]
+			if !keyRe.MatchString(key) && !strict {
+				b.WriteByte('$')
+				continue
+			}
 			if !keyRe.MatchString(key) {
 				return "", fmt.Errorf("invalid variable name %q in %q", key, s)
 			}

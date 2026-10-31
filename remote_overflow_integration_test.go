@@ -268,7 +268,7 @@ func TestInstallCopiesToTheUsersHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfgDir := t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "install: {hosts: [pc]}\n")
+	writeUserConfig(t, cfgDir, "install: {hosts: [pc]}\n")
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, "PATH="+fake+string(os.PathListSeparator)+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	installed := filepath.Join(dest, "tool")

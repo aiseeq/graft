@@ -493,7 +493,7 @@ func newDeployFixture(t *testing.T, config func(state string, q func(string) str
 	cfgDir := t.TempDir()
 	envFile := filepath.Join(cfgDir, "jira.env")
 	writeFile(t, envFile, "JIRA_BASE_URL="+srv.URL+"\nJIRA_EMAIL=me@example.com\nJIRA_API_TOKEN=secret-token\n")
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "jira:\n  env_file: "+envFile+"\n")
+	writeUserConfig(t, cfgDir, "jira:\n  env_file: "+envFile+"\n")
 
 	q := func(p string) string { return yamlQuote(filepath.Join(state, p)) }
 	f := newRepo(t, map[string]string{

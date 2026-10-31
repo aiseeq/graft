@@ -30,7 +30,7 @@ func TestToolsUnpinnedFollowLatest(t *testing.T) {
 			"tools:\n  fake: {go_install: " + plain + "}\n  checked: {go_install: " + checked + ", check: [checked], expect: checked}\n",
 	})
 	bin, cfgDir := t.TempDir(), t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "tools: {bin_dir: "+yamlQuote(bin)+"}\n")
+	writeUserConfig(t, cfgDir, "tools: {bin_dir: "+yamlQuote(bin)+"}\n")
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, "APPDATA="+cfgDir,
 		"GOPROXY="+proxy, "GOSUMDB=off", "GOPRIVATE=", "GONOPROXY=", "GONOSUMDB=", "GOFLAGS=-modcacherw",
 		"GOMODCACHE="+filepath.Join(t.TempDir(), "modcache"), "GOBIN="+bin,

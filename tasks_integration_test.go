@@ -488,12 +488,7 @@ func TestTools(t *testing.T) {
 	// tools.bin_dir from the user config, on PATH ahead of the copy in use:
 	// graft warns that the install would shadow it.
 	userBin, cfgHome := t.TempDir(), t.TempDir()
-	if err := os.MkdirAll(filepath.Join(cfgHome, "graft"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(cfgHome, "graft", "config.yaml"), []byte("tools:\n  bin_dir: "+userBin+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeUserConfig(t, cfgHome, "tools:\n  bin_dir: "+userBin+"\n")
 	list := string(os.PathListSeparator)
 	f.env = []string{"XDG_CONFIG_HOME=" + cfgHome, "PATH=" + fakeBin + list + userBin + list + binDir + list + os.Getenv("PATH")}
 	out, _ = f.graft("", "tools", "install")

@@ -121,6 +121,13 @@ func TestExecHeavyRunsOnRemoteHost(t *testing.T) {
 	if got := f.read("out"); got != "exec=8 heavy=local\nexec=6 heavy=local\n" {
 		t.Errorf("exec output: %q", got)
 	}
+	// The shell's own ${w%|*} is no .env key: the command runs, on the host.
+	if out := f.mustGraft("exec", "--heavy", "--", "sh", "-c", `w="a|b"; echo ${w%|*} >> out`); !strings.Contains(out, "graft: exec: heavy, on pc") {
+		t.Errorf("exec --heavy with a shell expansion:\n%s", out)
+	}
+	if got := f.read("out"); !strings.HasSuffix(got, "\na\n") {
+		t.Errorf("exec output after the shell expansion: %q", got)
+	}
 	sub := f.path("sub")
 	if err := os.Mkdir(sub, 0o755); err != nil {
 		t.Fatal(err)

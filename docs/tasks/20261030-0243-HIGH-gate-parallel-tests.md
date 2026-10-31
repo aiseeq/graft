@@ -1,7 +1,6 @@
 # Гейт graft выше 60 с: тесты корневого пакета идут строго подряд
 
-Статус: ждёт
-Ждёт: 2026-10-31 06:10
+Статус: в работе
 Исполнитель: graft-master
 
 ## Вход
@@ -34,3 +33,5 @@
 - 2026-10-30 09:27 note — graft-master: Простой по тестам (prof/idle.sh, каждый тест отдельно, простой = wall − CPU): 12 тестов ≈ 20 с, все — нарочные ожидания (calmAfter, settle, выборки памяти/диска по 200 мс, WaitDelay 2 с у FailReasons). Правка: calmAfter возвращает stop — ExecOfGraft не ждёт таймер 3 с после graft (3.24 → 1.10 с); три варианта KeepsHere — один гейт с тремя задачами (5.0 → 1.7 с). Мутация (без remoteVouched в prepareGateStep) роняет KeepsHere на local-heavy и local-plain.
 - 2026-10-30 09:29 note — graft-master: Перенос в test-race (all), правило 4 test-optimization («длинные сценарии — стадия перед release»): 6 тестов с нарочными ожиданиями в стабильном коде под skipWaitInShort — FailReasonsDoNotWaitForABackgroundChild 2.2 с, StatsMarkTasksOverTheLimits 1.9, StepDiskIO 1.7, StepMemoryOfTheProcessTree 1.6, ExecSettleHoldsTheQueueForThisCommand 1.4, StatsRecordTheMachineLoad 1.2 (≈10 с wall). Тесты remote/split (активная зона) остаются в гейте. Строка CLAUDE.md:8 — пункт Сну в project-queue.md.
 - 2026-10-30 09:31 ждёт — graft-master — 2026-10-31 06:10
+- 2026-10-31 02:29 note — graft-master: Сон 31.10 02:50 (через dream-master, итог git-admin): корневой пакет 265→321 тест, test-gate wall 75 с; 36 новых тестов заморозки (Freeze/Frozen/Advisory/Round9/Thaw) по 1.3–2.5 с, 24–55 с на прогон. Вопрос: что в них стоит 1–2 с, нужны ли в гейте целиком.
+- 2026-10-31 02:29 в работе — graft-master

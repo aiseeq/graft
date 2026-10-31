@@ -146,3 +146,21 @@ func TestSetRoundTrip(t *testing.T) {
 		t.Error("Set on a missing file must fail")
 	}
 }
+
+// TestShellRefs: in a command's text a ${...} that is no key is the shell's
+// own expansion, and the keys around it are still references.
+func TestShellRefs(t *testing.T) {
+	for s, want := range map[string][]string{
+		`w="a|b"; echo ${w%|*}`:              nil,
+		`echo ${item%%:*} ${API_KEY} ${open`: {"API_KEY"},
+		`echo ${x:-${TOKEN}} $$HOME ${1}`:    {"TOKEN"},
+		`echo ${A} ${B}`:                     {"A", "B"},
+	} {
+		if got := ShellRefs(s); !slices.Equal(got, want) {
+			t.Errorf("ShellRefs(%q) = %q, want %q", s, got, want)
+		}
+	}
+	if _, err := Refs(`echo ${w%|*}`); err == nil {
+		t.Error("Refs of a text graft expands must still fail on a ${ that is no key")
+	}
+}

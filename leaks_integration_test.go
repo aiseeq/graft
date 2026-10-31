@@ -25,7 +25,7 @@ func leakRepo(t *testing.T, publicPrefix, extra string) *fixture {
 	terms := filepath.Join(root, "private-terms")
 	writeFile(t, terms, "counterparty: (?i)\\bacmepay\\b\n")
 	cfgDir := filepath.Join(root, "config")
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "leaks:\n"+
+	writeUserConfig(t, cfgDir, "leaks:\n"+
 		"  public_remotes: ["+publicPrefix+"]\n"+
 		"  private_sources: ["+yamlQuote(private)+"]\n"+
 		"  terms_file: "+yamlQuote(terms)+"\n"+

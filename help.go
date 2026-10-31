@@ -44,11 +44,11 @@ var commands = []command{
 		"graft flags [status] [--env E]",
 		"graft flags show <id> [--env E]",
 		"graft flags ack <id> --reason R [--env E]",
-		"graft flags mute <id> --reason R [--match S] [--all-envs] [--env E]",
+		"graft flags mute <id> --reason R [--match S] [--in subject|body|key] [--all-envs] [--env E]",
 	), summary: text("review the project's event journal: status, show, ack, mute"),
 		applies: func(c *config.Config) bool { return c.Flags != nil }},
 	{name: "deploy", syntax: fixed(
-		"graft deploy [--redeploy] [--unapproved] [--past-freeze REASON] <target> [-- script args]",
+		"graft deploy [--redeploy] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] <target> [-- script args]",
 		"graft deploy freeze <target> [Jira version]",
 		"graft deploy thaw <target> --reason REASON",
 		"graft deploy status <target> [-- args]",

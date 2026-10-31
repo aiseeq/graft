@@ -858,10 +858,14 @@ func (r *Runner) missing(t *config.Task, steps []config.Step) []string {
 	for _, k := range sortedKeys(t.Env) {
 		texts = append(texts, t.Env[k])
 	}
-	for _, s := range steps {
-		texts = append(texts, s.Argv...)
-	}
 	c.Refs(texts)
+	for _, s := range steps {
+		for _, a := range s.Argv {
+			for _, key := range dotenv.ShellRefs(a) {
+				c.require(key)
+			}
+		}
+	}
 	return c.Problems()
 }
 

@@ -122,12 +122,22 @@ func setup(m *testing.M) (int, error) {
 			return 0, fmt.Errorf("creating template hooks directory: %w", err)
 		}
 	}
-	// Short settling: the tests' heavy tasks and gates, one at a time, do
-	// not wait out a laptop's 30s for each other.
-	if err := writeTestFile(filepath.Join(dir, "userconfig", "graft", "config.yaml"), "load: {settle: 10ms, poll: 20ms, swap_window: 10ms}\n"); err != nil {
+	if err := writeTestFile(filepath.Join(dir, "userconfig", "graft", "config.yaml"), testLoadConfig); err != nil {
 		return 0, err
 	}
 	return m.Run(), nil
+}
+
+// testLoadConfig is the user config's load of every test: short settling,
+// so the tests' heavy tasks and gates, one at a time, do not wait out a
+// laptop's 30s for each other, nor the default 1s swap window each gate.
+const testLoadConfig = "load: {settle: 10ms, poll: 20ms, swap_window: 10ms}\n"
+
+// writeUserConfig writes the graft user config of a test's own config home,
+// body after testLoadConfig: a config without load would take the defaults.
+func writeUserConfig(t *testing.T, cfgDir, body string) {
+	t.Helper()
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), testLoadConfig+body)
 }
 
 // writeTestFile writes a file of the tests' setup, its directory too.
@@ -295,6 +305,30 @@ func TestChildInputsKeyTheCache(t *testing.T) {
 	testinputs.Env()
 	if err := testinputs.Files(filepath.Join("testdata", "gatehelper")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestUserConfigsCarryTheTestLoad: a test writing its own graft user config
+// goes through writeUserConfig or sets load itself; without it every gate of
+// the test waits out the default swap window.
+func TestUserConfigsCarryTheTestLoad(t *testing.T) {
+	files, err := filepath.Glob("*_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Split, so this line does not match itself.
+	needle := `"graft", "config` + `.yaml")`
+	for _, f := range files {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			if strings.Contains(line, needle) &&
+				!strings.Contains(line, "load:") && !strings.Contains(line, "testLoadConfig") {
+				t.Errorf("%s:%d writes a user config without the test load, use writeUserConfig:\n%s", f, i+1, strings.TrimSpace(line))
+			}
+		}
 	}
 }
 
@@ -753,7 +787,7 @@ func TestHookLetsLocalBranchCommit(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "gate-ran")
 	f := hookRepoWithGraftedBase(t, gateStep("touch", marker))
 	cfgDir := t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "commit: {local_branches: ['nightly/*']}\n")
+	writeUserConfig(t, cfgDir, "commit: {local_branches: ['nightly/*']}\n")
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
 	// The base commit ran the gate.
 	if err := os.Remove(marker); err != nil {
@@ -1223,7 +1257,7 @@ func TestCommitConventional(t *testing.T) {
 	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"})
 	f.mustGraft("commit", "-m", "first commit, any subject")
 	cfgDir := t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "commit: {conventional: true}\n")
+	writeUserConfig(t, cfgDir, "commit: {conventional: true}\n")
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
 	f.write("a.txt", "a\n")
 	before := f.gitIn(f.work, "rev-parse", "HEAD")

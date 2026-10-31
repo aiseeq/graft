@@ -124,9 +124,7 @@ func modulesRepo(t *testing.T, goproxy, userConfig, call string) *fixture {
 		"tool/main.go":   "package main\n\nimport \"" + ownLib + "\"\n\nfunc main() { println(lib." + call + "()) }\n",
 	})
 	cfgDir := t.TempDir()
-	if userConfig != "" {
-		writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), userConfig)
-	}
+	writeUserConfig(t, cfgDir, userConfig)
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, "APPDATA="+cfgDir,
 		"GOPROXY="+goproxy, "GOSUMDB=off", "GOPRIVATE=", "GONOPROXY=", "GONOSUMDB=", "GOFLAGS=-modcacherw",
 		"GOMODCACHE="+filepath.Join(t.TempDir(), "modcache"))
@@ -280,7 +278,7 @@ func TestToolsInstallTakesOwnToolsAtLatest(t *testing.T) {
 		"VERSION":     "1.2.3\n", "web/package.json": "{\n  \"version\": \"1.2.3\"\n}\n", "app.yaml": "name: app\nversion: \"1.2.3\"\n",
 	}, "origin")
 	bin, cfgDir := t.TempDir(), t.TempDir()
-	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), latestConfig+"tools: {bin_dir: "+yamlQuote(bin)+"}\n")
+	writeUserConfig(t, cfgDir, latestConfig+"tools: {bin_dir: "+yamlQuote(bin)+"}\n")
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, "APPDATA="+cfgDir,
 		"GOPROXY="+proxy, "GOSUMDB=off", "GOPRIVATE=", "GONOPROXY=", "GONOSUMDB=", "GOFLAGS=-modcacherw",
 		"GOMODCACHE="+filepath.Join(t.TempDir(), "modcache"),
