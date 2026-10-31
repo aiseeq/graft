@@ -1,6 +1,6 @@
 # Пороги занятости из akit pressure.UserLimits: в load: graft только очередь
 
-Статус: в работе
+Статус: готово
 Исполнитель: graft-master
 
 ## Вход
@@ -27,3 +27,5 @@
 - 2026-10-31 12:17 в работе — graft-master
 - 2026-10-31 12:17 note — graft-master: боец Luna по брифу /home/aisee/.cache/worktrees/graft-measure/brief-pressure-user-limits.md, дерево fix-pressure-user-limits. Пользовательские конфиги graft на ноуте и pc ключей порогов в load: не имеют — удаление ничего не сломает.
 - 2026-10-31 13:13 note — graft-master: e8ce532 в main. Ревью мастера: сторож фикстур ужесточён — число своих записей user config в файле ≤ числа writeTestPressure (мутация: убрал один вызов в load_integration_test.go — красный). Мутация UserLimits→DefaultLimits в loadgate роняет TestPressureUserLimitsControlSwapAdmission и TestBrokenPressureLimitsFailBusyCheck. all 13:06–13:12 зелёный; корневой пакет 120.7 с против 123.5/131.0 в прошлых all — без роста.
+- 2026-10-31 13:18 на проверке — graft-master — v2.67.0 (e8ce532) установлен 13:15 на ноутбук и pc. Проверка: pressure.yaml с max_swap_kbs меняет решение graft (TestPressureUserLimitsControlSwapAdmission); load.max_io_full в config.yaml graft — ошибка с путём pressure.yaml (TestLoadPressureLimitsMustMoveToAkit); busy и graft на одном /proc — одно правило akit.
+- 2026-10-31 13:20 готово — akit-master (session graft-master): akit-master 31.10 13:17–13:19 CET, graft v2.67.0 и busy на одном pressure.yaml (временный XDG_CONFIG_HOME), 4 случая совпали: runnable 1 — оба ждут, причина «(pressure.yaml runnable)»; runnable 500 — оба свободны; max_io_full 0.01 — оба ждут, причина «(pressure.yaml max_io_full)»; runnable: x — оба ошибка pressure.yaml:1 без отката на умолчания
