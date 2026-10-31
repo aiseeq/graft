@@ -34,7 +34,7 @@
 - 2026-10-31 03:06 note — graft-master: п.6–7 — боец Luna 1031-*-feat-stats-waits-misses (бриф brief-stats-waits-misses.md).
 - 2026-10-31 03:45 note — graft-master: 03:58 п.1–3 ревью раунд 1 бойцу: полный разбор stats.jsonl на каждом упавшем кадре (2.5 с, 137 МБ), lint-changed в ядре, формат минут, таблица; /home/aisee/.cache/worktrees/graft-measure/review-stats-failures-1.md
 - 2026-10-31 04:23 note — graft-master: 04:35 п.1–3 закоммичены в feat/stats-failures 07b3ae1 (ревью раунд 2 принят); п.6–7 ревью раунд 1 бойцу: Previous читает весь passed (4987 файлов, 20 МБ) на промахе, quiet-колбэк = полный замер машины на опрос, счёт опросами, копия AcquireMode
-- 2026-10-31 04:49 note — graft-master: 04:49 п.1–3 влиты 0fde57f, v2.63.0
-- 2026-10-31 10:02 note — graft-master: 05:0x п.5 влит f77b81f: на снимке 15.0 с/1 020 988 КБ → 8.04 с/181 740 КБ, вывод тот же (stream-accept)
-- 2026-10-31 10:30 note — graft-master: п.6–7 влиты 40e15b5 (+тест 59ca5b5): waited_behind/quiet в ожиданиях, промах кэша называет изменившиеся входы
+- 2026-10-31 04:49 note — graft-master: 04:49 п.1–3 влиты 7c7b501, v2.63.0
+- 2026-10-31 10:02 note — graft-master: 05:0x п.5 влит 827a2a9: на снимке 15.0 с/1 020 988 КБ → 8.04 с/181 740 КБ, вывод тот же (stream-accept)
+- 2026-10-31 10:30 note — graft-master: п.6–7 влиты 8c31914 (+тест acebbb2): waited_behind/quiet в ожиданиях, промах кэша называет изменившиеся входы
 - 2026-10-31 10:32 note — graft-master: 10:3x итог отправлен git-admin и dream-master; п.4 — stats-disk-fields (ждёт 01.11 13:00), п.9 у akit-master (отдал Сон), п.11–12 FYI

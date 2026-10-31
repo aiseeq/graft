@@ -16,5 +16,5 @@
 
 ## Журнал
 - 2026-10-31 02:45 открыт — graft-master
-- 2026-10-31 03:16 note — graft-master: Сделано в 3a14f76: dotenv.ShellRefs (нестрогий разбор: ${…} не-ключ — раскрытие оболочки), его берут dotenvRef (remote.go) и проверка ключей задачи (tasks.go) для argv; env задач и deploy/envs остаются строгими. Тесты: TestShellRefs, шаг в TestExecHeavyRunsOnRemoteHost (без фикса: invalid variable name "w%|*", с фиксом — команда на хосте, печатает a).
-- 2026-10-31 03:16 на проверке — graft-master — 3a14f76
+- 2026-10-31 03:16 note — graft-master: Сделано в 1596ae2: dotenv.ShellRefs (нестрогий разбор: ${…} не-ключ — раскрытие оболочки), его берут dotenvRef (remote.go) и проверка ключей задачи (tasks.go) для argv; env задач и deploy/envs остаются строгими. Тесты: TestShellRefs, шаг в TestExecHeavyRunsOnRemoteHost (без фикса: invalid variable name "w%|*", с фиксом — команда на хосте, печатает a).
+- 2026-10-31 03:16 на проверке — graft-master — 1596ae2

@@ -16,7 +16,7 @@
 - 2026-10-31 03:46 открыт — graft-master
 - 2026-10-31 03:46 в работе — graft-master
 - 2026-10-31 03:46 note — graft-master: 03:50 боец Luna 1031-0346-feat-exec-settle-own-queue, бриф /home/aisee/.cache/worktrees/graft-measure/brief-exec-settle-own-queue.md
-- 2026-10-31 10:23 note — graft-master: 10:5x в v2.64.0 (a075b3e), установлено 34080b4; all на a075b3e зелёный (scratchpad all-a075b3e.log)
+- 2026-10-31 10:23 note — graft-master: 10:5x в v2.64.0 (0b99f15), установлено da94314; all на 0b99f15 зелёный (scratchpad all-0b99f15.log)
 - 2026-10-31 10:23 note — graft-master: поправка: время релиза 10:20, не 10:5x
 - 2026-10-31 10:23 на проверке — graft-master — приёмка: go test -count=1 -run TestExecSettle -v .; go test -count=1 ./internal/loadgate/
 - 2026-10-31 10:31 готово — llmark-master (session graft-master): llmark-master 31.10 10:23 CET, v2.64.0, живая проба на ноуте: держатель exec --heavy --local --settle 40s -- sleep 40; обычный exec --heavy ждал 19 с (прежний держатель + load.settle 10 с, не 40 с), --settle 1s — 30 с за держателем; graft locks показал load и load.settle

@@ -22,5 +22,5 @@
 - 2026-10-31 03:03 note — graft-master: Боец Luna 1031-0303-fix-install-pilot-tree (багфикс-по-тикету): бриф /home/aisee/.cache/worktrees/graft-measure/brief-install-pilot-tree.md, дерево /home/aisee/.cache/worktrees/graft/fix-install-pilot-tree, приёмка — graft gate + go test -run Pilot с PASS. После — ревью diff и независимая проверка.
 - 2026-10-31 03:45 note — graft-master: 03:58 ревью раунд 1 бойцу: $PWD в argv-шаге не раскрывается (install отказал бы всегда), ложное сообщение при отказе worktree add, нет теста проводки; /home/aisee/.cache/worktrees/graft-measure/review-install-pilot-tree-1.md
 - 2026-10-31 04:23 note — graft-master: 04:30 ревью раунда 2 принят, e7c0d7d в fix/install-pilot-tree; задача pilot-gate + скрипт
-- 2026-10-31 04:49 note — graft-master: 04:49 влито eb1f463, v2.63.0, go run . install с настоящим пилотом: gate passed во временном дереве; go.mod пилота с mtime 30.10 17:41 (остаток прошлой установки) не тронут, git worktree list пилота — только main
+- 2026-10-31 04:49 note — graft-master: 04:49 влито 2e1875b, v2.63.0, go run . install с настоящим пилотом: gate passed во временном дереве; go.mod пилота с mtime 30.10 17:41 (остаток прошлой установки) не тронут, git worktree list пилота — только main
 - 2026-10-31 04:49 на проверке — graft-master — приёмка: go test -short -count=1 -run Pilot -v .; go run . install; stat go.mod пилота
