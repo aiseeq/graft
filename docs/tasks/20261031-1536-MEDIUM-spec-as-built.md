@@ -1,7 +1,7 @@
 # ТЗ graft «как сделано» и критика Terra
 
-Статус: в работе
-Исполнитель: graft-master
+Статус: готово
+Исполнитель: terra
 
 ## Вход
 - Задание лида через git-admin 31.10 ~15:40 (поправка: критик один — Terra). Бриф общий: /home/aisee/docs/reverse-spec/brief.md. Образец — пилот в соседнем репо (aguard, тикет spec-as-built).
@@ -25,3 +25,4 @@
 - 2026-10-31 17:18 note — graft-master: 17:2x автор, 2-й заход: 120 строк, 287 ссылок, дословного README ≤20 — моя приёмка ok. Критик Terra (ревью) запущен, worktree spec-critic на c3561a7.
 - 2026-10-31 17:20 note — graft-master: автор: worker done влито; заход 1 — 18 мин, 0.076% недели OpenAI; заход 2 (правка-по-ревью) — итого 27 мин, 0.060% по отчёту worker; очередь до старта 36 мин + 14 мин.
 - 2026-10-31 17:46 note — graft-master: 17:4x критик Terra: 15 мин, 0.036% недели OpenAI; находок 6. Разбор (scratchpad spec/triage.md): принято 3 — F1 → tk leaks-merge-commits (HIGH), F3 → tk gocache-batch-bound (LOW), F5 → правка README сразу; отклонено 3 — F2 дубль queue-adversary (T1, резерв), F4 одноимённых репо на машине нет, F6 дубль gocache-trim-freeze. Проверка разбора — свежий суб-агент.
+- 2026-10-31 17:55 готово — graft-master: Проверка разбора свежим суб-агентом (Opus, бриф scratchpad spec/triage-check-brief.md): 6 из 6 решений верны; уточнения внесены (F1 приёмка без diff первого родителя, F4 довод, F6 пороги в приёмку gocache-trim-freeze, README /proc/loadavg) — коммит e5bb920; итог git-admin отправлен 17:5x

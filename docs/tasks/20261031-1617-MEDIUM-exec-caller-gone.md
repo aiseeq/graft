@@ -20,6 +20,8 @@
 - 2026-10-31 16:18 note — graft-master: 16:2x замер на втором хосте: timeout 5 ssh <хост> graft exec --heavy --local -- sleep 41 → sshd-session ушёл, graft ppid 1, sleep 41 жив; fd0/fd1 — pipe. Допуск за секунды: живёт и запущенная задача. Вопрос 1 закрыт тестом TestGoTestThroughATerminal (\r\n и строки graft — те же runs). Ответ sc2go-master отправлен; план: SIGTERM/SIGHUP (не игнорированный) → отмена ctx; POLLERR/POLLHUP stdout/stderr (pipe/socket) → отмена; stdin и pdeathsig — нет (echo|graft, nohup). Дальше противник.
 - 2026-10-31 16:18 в работе — graft-master
 - 2026-10-31 16:25 note — graft-master: 16:25 противник (Terra) → приёмка в тикете; проверка брифа (Terra): одно расхождение — установка и замер на хосте у мастера, в бриф дописано. Боец Luna 1031-1625-exec-caller-gone (фича-инструмента), ветка exec-caller-gone; бриф и accept.sh — scratchpad мастера caller-gone/.
+- 2026-10-31 18:10 note — graft-master: 18:3x Luna: принято (93 мин, 0.029% недели OpenAI), мутации: без SIGTERM → красный TestSignalStopsTheCommand/terminated; по одному каналу → красный OneChannelKeepsRunning. Ревью мастера: только exec (нужно все команды кроме deploy/priority), localStopGrace 300 мс → 10 с переменной, env-интервал с молчаливым фолбеком, recover в сторожке. worker continue.
+- 2026-10-31 18:48 note — graft-master: 18:4x Luna: правки по 5 пунктам ревью, идёт приёмка; моё ревью diff: наблюдатель только при обоих FIFO/сокетах, StopOnCancel 10 с, ctx до старта, deploy/priority исключены; akit в go.mod в патч не беру.
 
 ## Приёмка (противник замысла 16:3x, Terra; ответ — scratchpad caller-gone/answer.md мастера)
 Принято:
