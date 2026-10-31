@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -21,6 +22,7 @@ func trimProc(t *testing.T, dirty, writeback int) string {
 	for name, data := range map[string]string{
 		"meminfo":         fmt.Sprintf("Dirty: %d kB\nWriteback: %d kB\n", dirty, writeback),
 		"stat":            "cpu 1 1 1 1\ncpu0 1 1 1 1\nprocs_running 1\n",
+		"loadavg":         "0.00 0.00 0.00 1/100 1\n",
 		"vmstat":          "nr_free_pages 1\npswpin 0\npswpout 0\n",
 		"pressure/memory": "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n",
 		"pressure/io":     "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n",
@@ -65,7 +67,7 @@ func TestTrimWaitsForBusyDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 	load := userconfig.MachineLoad{Poll: 5 * time.Millisecond}
-	checker := loadgate.NewBusyChecker("gocache trim", trimKind, load, nil)
+	checker := loadgate.NewBusyChecker("gocache trim", trimKind, load, io.Discard)
 	proceed, waited, err := waitForTrimBatch(context.Background(), 35*time.Millisecond, load.Poll,
 		trimMemoryCalm, checker.Busy)
 	if err != nil || proceed || waited < 30*time.Millisecond {

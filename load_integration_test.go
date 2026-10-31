@@ -22,6 +22,7 @@ func fakeMachine(t *testing.T, dir string, runnable int) string {
 	writeFile(t, filepath.Join(dir, "pressure", "io"), "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n")
 	writeFile(t, filepath.Join(dir, "pressure", "memory"), "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n")
 	writeFile(t, filepath.Join(dir, "vmstat"), "pswpin 7\npswpout 3\n")
+	writeFile(t, filepath.Join(dir, "loadavg"), "0.00 0.00 0.00 1/100 1\n")
 	setRunnable(t, dir, runnable)
 	return "GRAFT_PROC=" + dir
 }

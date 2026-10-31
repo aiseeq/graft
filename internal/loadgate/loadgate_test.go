@@ -54,6 +54,7 @@ func fakeMachine(t *testing.T) (setRunnable func(int), setIO func(string), setSw
 		fmt.Fprintf(&stat, "procs_running %d\n", n+1)
 		write("stat", stat.String())
 	}
+	write("loadavg", "0.00 0.00 0.00 1/100 1\n")
 	write(filepath.Join("pressure", "memory"), "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n")
 	write(filepath.Join("pressure", "io"), "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n")
 	disk := fakeDisk(t)
@@ -490,5 +491,19 @@ func TestPriorityFromEnv(t *testing.T) {
 	t.Setenv(EnvPriority, "")
 	if p, ok, err := PriorityFromEnv(); ok || err != nil {
 		t.Errorf("no priority: %+v, %v", p, err)
+	}
+}
+
+// TestLoadAverageHoldsACalmMoment: a 1-minute load average at or above
+// runnable makes the machine busy even when few tasks are ready to run this
+// moment.
+func TestLoadAverageHoldsACalmMoment(t *testing.T) {
+	fakeMachine(t)
+	if err := os.WriteFile(filepath.Join(os.Getenv(ProcEnv), "loadavg"), []byte("30.00 10.00 5.00 1/100 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	busy, err := BusyNow(context.Background(), "build", "projectA:build", testLoad, "", io.Discard)
+	if err != nil || !busy {
+		t.Fatalf("BusyNow = %v, %v with load average 30 over runnable 22; want busy", busy, err)
 	}
 }
