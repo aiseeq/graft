@@ -17,13 +17,15 @@ type Line struct {
 }
 
 // diffArgs make git print every added and removed line, the added with its
-// number in the new file, paths unquoted. Files the change removes are in it
-// too: their lines may move to another file.
+// number in the new file. Files the change removes are in it too: their lines
+// may move to another file. The callers set core.quotePath=true: git then
+// escapes every byte above ASCII in a quoted path, which headerPath reads back
+// exactly, where a raw byte outside UTF-8 would not survive unquoting.
 var diffArgs = []string{"-U0", "--no-color", "--no-ext-diff", "--no-renames", "--diff-filter=AMTD", "--src-prefix=a/", "--dst-prefix=b/"}
 
 // StagedLines returns the lines the index adds to HEAD.
 func StagedLines(repo *gitx.Repo) ([]Line, error) {
-	out, err := repo.Git(append([]string{"-c", "core.quotePath=false", "diff", "--cached"}, diffArgs...)...)
+	out, err := repo.Git(append([]string{"-c", "core.quotePath=true", "diff", "--cached"}, diffArgs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -32,7 +34,7 @@ func StagedLines(repo *gitx.Repo) ([]Line, error) {
 
 // CommitLines returns the lines a commit adds to its first parent.
 func CommitLines(repo *gitx.Repo, commit string) ([]Line, error) {
-	out, err := repo.Git(append([]string{"-c", "core.quotePath=false", "diff-tree", "-p", "-r", "--root", "--no-commit-id"}, append(diffArgs, commit)...)...)
+	out, err := repo.Git(append([]string{"-c", "core.quotePath=true", "diff-tree", "-p", "-r", "--root", "--no-commit-id"}, append(diffArgs, commit)...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +45,7 @@ func CommitLines(repo *gitx.Repo, commit string) ([]Line, error) {
 // remerge diff compares the recorded result with Git's automatic merge, so
 // changes already present in either parent are excluded.
 func MergeCommitLines(repo *gitx.Repo, commit string) ([]Line, error) {
-	args := append([]string{"-c", "core.quotePath=false", "diff-tree", "--remerge-diff", "-p", "-r", "--no-commit-id"}, diffArgs...)
+	args := append([]string{"-c", "core.quotePath=true", "diff-tree", "--remerge-diff", "-p", "-r", "--no-commit-id"}, diffArgs...)
 	out, err := repo.Git(append(args, commit)...)
 	if err != nil {
 		return nil, err
@@ -109,8 +111,9 @@ func ParseDiff(out string) ([]Line, error) {
 }
 
 // headerPath reads the path of a "+++ " header, "" for /dev/null. git ends a
-// path with a space by a tab and writes one with a quote, backslash or
-// control character as a C string, which Go's octal and letter escapes read.
+// path with a space by a tab and writes one with a quote, backslash, control
+// character or byte above ASCII as a C string, which Go's octal and letter
+// escapes read.
 func headerPath(name string) (string, error) {
 	name = strings.TrimSuffix(name, "\t")
 	if strings.HasPrefix(name, `"`) {
