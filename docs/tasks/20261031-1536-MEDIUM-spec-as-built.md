@@ -20,3 +20,4 @@
 ## Журнал
 - 2026-10-31 15:36 открыт — graft-master
 - 2026-10-31 15:36 в работе — graft-master
+- 2026-10-31 15:43 note — graft-master: 15:43 автор Terra запущен: worker 1031-1543-spec-as-built, бриф и мера scratchpad graft-master spec/{brief.md,accept.sh}. ТЗ приватно в /home/aisee/.claude/tools/graft/spec.md (дополнение git-admin 15:4x: цитаты и id транскриптов — не в публичную репу; как у akit). Мера проверена: нет файла → 1.

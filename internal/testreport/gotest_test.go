@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aiseeq/graft/v2/internal/stats"
 )
@@ -209,5 +211,31 @@ func TestGoTestSkipReasonAmongParallelOutput(t *testing.T) {
 	}
 	if got := summary(runs); !strings.Contains(got, `["TestDebt",0.01,"skip","a_test.go:22: debt (candidate groundPick):; second line"]`) {
 		t.Errorf("runs:\n%s", got)
+	}
+}
+
+// A stream through a terminal (ssh -tt) ends its lines with \r\n and carries
+// the remote graft's own stderr lines between the events: the runs are the
+// same as from the plain stream.
+func TestGoTestThroughATerminal(t *testing.T) {
+	stream, err := os.ReadFile("testdata/go-test.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := feed(t, NewGoTest(&strings.Builder{}, false), string(stream))
+	tty := "graft: waiting for the write lock\r\n" + strings.ReplaceAll(string(stream), "\n", "\r\n") + "graft: done\r\n"
+	var out strings.Builder
+	got := feed(t, NewGoTest(&out, false), tty)
+	for i := range got {
+		got[i].Time = time.Time{}
+	}
+	for i := range plain {
+		plain[i].Time = time.Time{}
+	}
+	if !reflect.DeepEqual(got, plain) {
+		t.Fatalf("runs through a terminal differ:\n got %+v\nwant %+v", got, plain)
+	}
+	if !strings.Contains(out.String(), "graft: waiting for the write lock") {
+		t.Fatalf("graft's own line not printed:\n%s", out.String())
 	}
 }
