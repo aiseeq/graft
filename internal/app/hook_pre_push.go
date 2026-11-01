@@ -91,20 +91,11 @@ func pushedTags(repo *gitx.Repo, local, exclusions []string) ([]pushedTag, error
 			case "commit":
 				sha = ""
 			case "tag":
-				body, err := repo.Git("cat-file", "tag", sha)
+				t, object, err := readTag(repo, sha)
 				if err != nil {
 					return nil, err
 				}
-				header, message, _ := strings.Cut(body, "\n\n")
-				var object, name string
-				for line := range strings.SplitSeq(header, "\n") {
-					if v, ok := strings.CutPrefix(line, "object "); ok {
-						object = v
-					} else if v, ok := strings.CutPrefix(line, "tag "); ok {
-						name = v
-					}
-				}
-				tags = append(tags, pushedTag{sha: sha, name: name, message: strings.TrimRight(message, "\n")})
+				tags = append(tags, t)
 				at[sha] = true
 				sha = object
 			default:
@@ -113,6 +104,26 @@ func pushedTags(repo *gitx.Repo, local, exclusions []string) ([]pushedTag, error
 		}
 	}
 	return tags, nil
+}
+
+// readTag reads an annotated tag: its name and message, and the object it
+// tags.
+func readTag(repo *gitx.Repo, sha string) (pushedTag, string, error) {
+	body, err := repo.Git("cat-file", "tag", sha)
+	if err != nil {
+		return pushedTag{}, "", err
+	}
+	header, message, _ := strings.Cut(body, "\n\n")
+	t := pushedTag{sha: sha, message: strings.TrimRight(message, "\n")}
+	var object string
+	for line := range strings.SplitSeq(header, "\n") {
+		if v, ok := strings.CutPrefix(line, "object "); ok {
+			object = v
+		} else if v, ok := strings.CutPrefix(line, "tag "); ok {
+			t.name = v
+		}
+	}
+	return t, object, nil
 }
 
 // scanTagMessages scans the messages of the pushed annotated tags and prints
@@ -129,7 +140,11 @@ func (a *App) scanTagMessages(repo *gitx.Repo, rules *leaks.Rules, tags []pushed
 		}
 		a.printf("tag %s (%s)", t.name, gitx.Short(t.sha))
 		for _, f := range found {
-			fmt.Fprintf(a.Stdout, "  %s:%d: %s\n", f.Path, f.Line, f.Reason)
+			path := f.Path
+			if path == leaks.MessagePath {
+				path = "tag message"
+			}
+			fmt.Fprintf(a.Stdout, "  %s:%d: %s\n", path, f.Line, f.Reason)
 		}
 		total += len(found)
 	}

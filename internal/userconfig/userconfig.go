@@ -394,9 +394,11 @@ func checkRemotePrefixes(path, key string, prefixes []string) error {
 // prefixes and under none of the private ones, compared as NormalizeRemote
 // puts them.
 func (l *Leaks) RemoteIsPublic(url string) bool {
-	norm := NormalizeRemote(url)
+	// Case is ignored: hosts such as GitHub take the owner in any case, and
+	// a public match too many only scans more.
+	norm := strings.ToLower(NormalizeRemote(url))
 	under := func(prefixes []string) bool {
-		return slices.ContainsFunc(prefixes, func(p string) bool { return strings.HasPrefix(norm, p) })
+		return slices.ContainsFunc(prefixes, func(p string) bool { return strings.HasPrefix(norm, strings.ToLower(p)) })
 	}
 	return under(l.PublicRemotes) && !under(l.PrivateRemotes)
 }

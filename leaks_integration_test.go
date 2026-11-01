@@ -524,7 +524,7 @@ func TestPrePushScansAnnotatedTagMessage(t *testing.T) {
 	tag := f.git("rev-parse", "v1")
 	zero := strings.Repeat("0", 40)
 	out, code := f.graft("refs/tags/v1 "+tag+" refs/tags/v1 "+zero+"\n", "hook", "pre-push", "origin", f.remote("origin"))
-	if code == 0 || !strings.Contains(out, "tag v1") || !strings.Contains(out, `private term (counterparty) "AcmePay"`) {
+	if code == 0 || !strings.Contains(out, "tag v1") || !strings.Contains(out, `tag message:1: private term (counterparty) "AcmePay"`) {
 		t.Fatalf("tag message hook: exit %d\n%s", code, out)
 	}
 	tree := f.git("rev-parse", "HEAD^{tree}")
