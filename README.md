@@ -77,8 +77,9 @@ install:
 Machine pressure limits are shared with akit's `busy` command. Set them in
 `<user config dir>/akit/pressure.yaml` (Linux: `~/.config/akit/pressure.yaml`),
 using the [akit pressure keys and defaults](https://github.com/aiseeq/akit/blob/main/pressure/limits.go).
-The keys are `runnable`, `max_io_full`, `max_mem_some`, `max_swap_kbs` and
-`swap_window`; graft's `load:` holds only its task queue settings.
+The keys are `runnable`, `max_io_full`, `max_dirty_mb`, `max_mem_some`,
+`max_swap_kbs` and `swap_window`; graft's `load:` holds only its task queue
+settings.
 
 With `commit.conventional` graft commit wants the subject as `type(scope)!:
 description`, the type one of build, chore, ci, docs, feat, fix, perf,
@@ -109,7 +110,9 @@ by the rule of `github.com/aiseeq/akit/pressure`: both the tasks ready to run
 at this moment (`procs_running` of `/proc/stat`, one reading) and the
 1-minute load average below `runnable` (the instant count alone would let a
 short dip on an overloaded machine start more work), no disk freeze going on and
-the IO pressure of the last 5 seconds below `max_io_full`, and not the
+the IO pressure of the last 5 seconds below `max_io_full`, no write-out
+going on (dirty and writeback memory of `/proc/meminfo` below
+`max_dirty_mb`), and not the
 memory pressure above `max_mem_some` while the machine swaps more than
 `max_swap_kbs`: swap in use is no harm, and swapping without memory pressure
 neither. The disk is read from the disk state source on

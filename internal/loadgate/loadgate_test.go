@@ -60,6 +60,7 @@ func fakeMachine(t *testing.T) (setRunnable func(int), setIO func(string), setSw
 	write("loadavg", "0.00 0.00 0.00 1/100 1\n")
 	write(filepath.Join("pressure", "memory"), "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n")
 	write(filepath.Join("pressure", "io"), "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n")
+	write("meminfo", "Dirty:              1024 kB\nWriteback:             0 kB\n")
 	disk := fakeDisk(t)
 	setIO = func(full string) {
 		pct, err := strconv.ParseFloat(full, 64)
@@ -666,7 +667,7 @@ func TestQuietModeOverHoldsNoTask(t *testing.T) {
 	}
 }
 
-// TestBusyDiskAndSwapHoldTasks: IO pressure or swapping above its limit, or
+// TestBusyDiskAndSwapHoldTasks: IO pressure, write-out or swapping above its limit, or
 // the quiet mode, holds a task as the load does, and it says why.
 func TestBusyDiskAndSwapHoldTasks(t *testing.T) {
 	for _, c := range []struct {
@@ -675,6 +676,12 @@ func TestBusyDiskAndSwapHoldTasks(t *testing.T) {
 	}{
 		{"io", "IO pressure 35.0% of the last 5s is at or above 10% (pressure.yaml max_io_full)",
 			func(_ *testing.T, setIO func(string), _ func(int64)) { setIO("35.00") }},
+		{"writeback", "dirty and writeback memory 200 MiB is at or above 64 MiB (pressure.yaml max_dirty_mb)",
+			func(t *testing.T, _ func(string), _ func(int64)) {
+				if err := os.WriteFile(filepath.Join(os.Getenv(ProcEnv), "meminfo"), []byte("Dirty:            153600 kB\nWriteback:         51200 kB\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}},
 		{"swap", "memory pressure 25.0% is above 10% while swapping",
 			func(t *testing.T, _ func(string), setSwap func(int64)) {
 				dir := os.Getenv(ProcEnv)

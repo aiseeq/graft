@@ -33,11 +33,13 @@ const queueTimeout = 24 * time.Hour
 const (
 	// WhyQueue is the wait behind other heavy tasks for the queue's lock.
 	WhyQueue = "queue"
-	// WhyLoad, WhyIO and WhySwap are the waits for the load, the IO
-	// pressure and the swapping to fall below their limits.
-	WhyLoad = "load"
-	WhyIO   = "io"
-	WhySwap = "swap"
+	// WhyLoad, WhyIO, WhyWriteback and WhySwap are the waits for the load,
+	// the IO pressure, the dirty and writeback memory and the swapping to
+	// fall below their limits.
+	WhyLoad      = "load"
+	WhyIO        = "io"
+	WhyWriteback = "writeback"
+	WhySwap      = "swap"
 	// WhyReserve is waiting for live expected-core reservations.
 	WhyReserve = "reserve"
 	// WhyQuiet is the wait for the quiet mode akit's busy --quiet-until
@@ -683,10 +685,11 @@ type busyness struct{ why, text string }
 // measures are the rule's measures as the waits name them, with what sets
 // each limit.
 var measures = map[string]struct{ why, setting string }{
-	pressure.CPU:   {WhyLoad, "pressure.yaml runnable"},
-	pressure.IO:    {WhyIO, "pressure.yaml max_io_full"},
-	pressure.Swap:  {WhySwap, "pressure.yaml max_mem_some, max_swap_kbs"},
-	pressure.Quiet: {WhyQuiet, "busy --quiet-off ends it"},
+	pressure.CPU:       {WhyLoad, "pressure.yaml runnable"},
+	pressure.IO:        {WhyIO, "pressure.yaml max_io_full"},
+	pressure.Writeback: {WhyWriteback, "pressure.yaml max_dirty_mb"},
+	pressure.Swap:      {WhySwap, "pressure.yaml max_mem_some, max_swap_kbs"},
+	pressure.Quiet:     {WhyQuiet, "busy --quiet-off ends it"},
 }
 
 // busy says why the machine cannot take a heavy task now, nothing when it
