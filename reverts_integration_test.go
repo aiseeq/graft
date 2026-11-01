@@ -96,3 +96,34 @@ func TestAmendRevertsAgainstParent(t *testing.T) {
 		t.Errorf("amend taking back the parent: exit %d\n%s", code, out)
 	}
 }
+
+// TestCommitTakingAFileOutOfTheIndexIsNoRevert: git rm --cached of a file a
+// recent commit added, with a .gitignore rule for it, as graft's hint for a
+// committed file says, keeps the file on disk: no take-back. Deleting a file
+// still is one.
+func TestCommitTakingAFileOutOfTheIndexIsNoRevert(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.write("VERSION", "1.0.1\n")
+	f.mustPlainCommit("feat: base")
+	f.write("notes/a.md", "a\n")
+	f.write("notes/b.md", "b\n")
+	f.write("d.txt", "d\n")
+	f.mustPlainCommit("feat: notes")
+	x := f.git("rev-parse", "HEAD")
+
+	f.git("rm", "-q", "--cached", "notes/a.md", "notes/b.md")
+	f.write(".gitignore", "/notes/\n")
+	f.mustGraft("commit", "-m", "chore: notes stay local")
+	if out := f.git("ls-files", "notes"); out != "" {
+		t.Fatalf("notes still in the index: %q", out)
+	}
+
+	f.git("rm", "-q", "d.txt")
+	if out, code := f.graft("", "commit", "-m", "chore: tidy"); code == 0 || !strings.Contains(out, "d.txt: takes back "+x[:12]) {
+		t.Errorf("a deleted file: exit %d\n%s", code, out)
+	}
+}

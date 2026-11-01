@@ -2,7 +2,9 @@ package checks
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,7 +21,8 @@ import (
 // merged work that way, a deleted file as much as changed lines. A revert that
 // is meant names the commit (7 characters of its hash or more, as git prints
 // it short) or the file in the message. Files moved by the commit, the
-// version files graft bumps and the exceptions do not count. A partial
+// version files graft bumps, the exceptions and files taken out of the index
+// that stay on disk, ignored, do not count. A partial
 // take-back, part of the commit's diff of a file, is not seen: the check is
 // per file. base is the commit the staged tree is to follow: HEAD for a new
 // commit, HEAD's parent for an amend, whose own commit is the one being
@@ -95,7 +98,7 @@ func revertCandidates(repo *gitx.Repo, cfg config.Reverts, versionFiles []string
 	if err != nil {
 		return nil, err
 	}
-	var files []string
+	var files, deleted []string
 	fields := strings.Split(out, "\x00")
 	for i := 0; i+1 < len(fields); i++ {
 		status := fields[i]
@@ -106,10 +109,44 @@ func revertCandidates(repo *gitx.Repo, cfg config.Reverts, versionFiles []string
 		}
 		i++
 		files = append(files, fields[i])
+		if status == "D" {
+			deleted = append(deleted, fields[i])
+		}
+	}
+	untracked, err := ignoredOnDisk(repo, deleted)
+	if err != nil {
+		return nil, err
 	}
 	return slices.DeleteFunc(files, func(f string) bool {
-		return f == "" || slices.Contains(versionFiles, f) || config.Matches(cfg.Exceptions, f)
+		return f == "" || slices.Contains(versionFiles, f) || config.Matches(cfg.Exceptions, f) || slices.Contains(untracked, f)
 	}), nil
+}
+
+// ignoredOnDisk are the files of deleted that stay in the work tree and that
+// .gitignore now ignores: taken out of the index (git rm --cached and a rule,
+// as graft's own hint for a committed file says), not out of the work.
+func ignoredOnDisk(repo *gitx.Repo, deleted []string) ([]string, error) {
+	var onDisk []string
+	for _, f := range deleted {
+		_, err := os.Lstat(filepath.Join(repo.Root, filepath.FromSlash(f)))
+		switch {
+		case err == nil:
+			onDisk = append(onDisk, f)
+		case !errors.Is(err, fs.ErrNotExist):
+			return nil, fmt.Errorf("a file the commit removes: %w", err)
+		}
+	}
+	if len(onDisk) == 0 {
+		return nil, nil
+	}
+	out, err := repo.GitInput(strings.NewReader(strings.Join(onDisk, "\x00")+"\x00"), nil, "check-ignore", "--stdin", "-z")
+	if gitx.ExitCode(err) == 1 {
+		return nil, nil // none of them ignored
+	}
+	if err != nil {
+		return nil, fmt.Errorf("checking which removed files .gitignore ignores: %w", err)
+	}
+	return slices.DeleteFunc(strings.Split(out, "\x00"), func(f string) bool { return f == "" }), nil
 }
 
 // recentCommit is a commit of the base's first-parent line with the files

@@ -64,7 +64,7 @@ func dropTestDatabases(admin string, drop func(name string) bool) error {
 		if !drop(name) {
 			continue
 		}
-		if _, err := db.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)"); err != nil { //nolint:query-in-loop // DROP DATABASE takes one database
+		if _, err := db.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)"); err != nil {
 			return fmt.Errorf("dropping %s: %w", name, err)
 		}
 	}

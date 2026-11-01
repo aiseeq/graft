@@ -2096,8 +2096,10 @@ up to date and release again.
   lines. A revert that is meant names the commit (7 characters of its hash
   or more, the short form git prints) or the file in the message; `git revert` names the commit, and in
   a rebase, merge, cherry-pick or revert the message git prepared counts.
-  Moves, the version files and `exceptions` do not count. A partial
-  take-back, part of a commit's diff of a file, is not seen.
+  Moves, the version files and `exceptions` do not count, nor does a file
+  taken out of the index that stays on disk and that `.gitignore` ignores
+  (`git rm --cached` and a rule, as the hint for a committed file says). A
+  partial take-back, part of a commit's diff of a file, is not seen.
 - **Leaks**: with `leaks` in the user config, a commit to a repository that
   has a remote under `public_remotes` is checked for private names in the
   lines it adds and in its message; a line the commit removes elsewhere,
