@@ -104,6 +104,13 @@ type Runner struct {
 	ExecSettle     time.Duration
 	// ExecCores overrides the history estimate for graft exec's reservation.
 	ExecCores float64
+	// ExecMemoryMax is graft exec --memory-max, "" for the default ceiling.
+	ExecMemoryMax string
+	// heavyPlace is where the heavy work of this process runs and under
+	// what memory ceiling; noCeilingNoted says the line that it has none
+	// was printed.
+	heavyPlace     iosched.Placement
+	noCeilingNoted bool
 
 	lookup *dotenv.Lookup
 	base   []string
@@ -890,7 +897,7 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 	} else {
 		// The gate builds and tests: it is heavy as a whole, its heavy tasks
 		// admitted with it.
-		leave, err := r.enterHeavy(ctx, stats.GateTask)
+		leave, err := r.enterHeavy(ctx, stats.GateTask, "")
 		if err != nil {
 			return err
 		}
@@ -1207,7 +1214,7 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 		return err
 	}
 	err = r.steps(ctx, name, t, args)
-	if leave, fallback, herr := r.fallbackBrokenRemote(ctx, name); fallback {
+	if leave, fallback, herr := r.fallbackBrokenRemote(ctx, name, taskMemoryMax(t)); fallback {
 		if herr != nil {
 			return errors.Join(err, herr)
 		}
@@ -1237,7 +1244,15 @@ func (r *Runner) placeTask(ctx context.Context, f *frame, name string, t *config
 	if remote {
 		return none, nil
 	}
-	return r.enterHeavy(ctx, name)
+	return r.enterHeavy(ctx, name, taskMemoryMax(t))
+}
+
+// taskMemoryMax is the task's memory_max, "" when it sets none.
+func taskMemoryMax(t *config.Task) string {
+	if t == nil || t.MemoryMax.Kind == 0 {
+		return ""
+	}
+	return t.MemoryMax.Value
 }
 
 func (r *Runner) steps(ctx context.Context, name string, t *config.Task, args []string) error {
@@ -1275,7 +1290,7 @@ func (r *Runner) enterSplit(ctx context.Context, name string) error {
 	if r.splitLeave != nil {
 		return nil
 	}
-	leave, err := r.enterHeavy(ctx, name)
+	leave, err := r.enterHeavy(ctx, name, "")
 	if err != nil {
 		return err
 	}
@@ -1433,7 +1448,7 @@ func (r *Runner) noteBrokenRemote(cmd *exec.Cmd, err error, stderr string) {
 // fallbackBrokenRemote, after the running task or exec was sent to the
 // user's host and run told the path broke, says so, journals it and takes
 // the heavy queue here; fallback is false when nothing broke.
-func (r *Runner) fallbackBrokenRemote(ctx context.Context, name string) (func() error, bool, error) {
+func (r *Runner) fallbackBrokenRemote(ctx context.Context, name, memoryMax string) (func() error, bool, error) {
 	if len(r.frames) == 0 || !r.frames[len(r.frames)-1].remote || r.remoteBrokenReason == "" {
 		return nil, false, nil
 	}
@@ -1444,7 +1459,7 @@ func (r *Runner) fallbackBrokenRemote(ctx context.Context, name string) (func() 
 		return nil, true, err
 	}
 	r.frames[len(r.frames)-1].remote = false
-	leave, err := r.enterHeavy(ctx, name)
+	leave, err := r.enterHeavy(ctx, name, memoryMax)
 	return leave, true, err
 }
 
@@ -1567,7 +1582,7 @@ func (r *Runner) prepareExec(ctx context.Context, f *frame, t *config.Task, dir 
 	if remote {
 		return nil, nil
 	}
-	return r.enterHeavy(ctx, ExecTask)
+	return r.enterHeavy(ctx, ExecTask, r.ExecMemoryMax)
 }
 
 // execCommand builds the command of an exec, on the host when remote;
@@ -1649,7 +1664,7 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 	}
 	_, err = r.measure(cmd, source)
 	r.noteBrokenRemote(cmd, err, remoteStderr.String())
-	if leave, fallback, herr := r.fallbackBrokenRemote(ctx, ExecTask); fallback {
+	if leave, fallback, herr := r.fallbackBrokenRemote(ctx, ExecTask, r.ExecMemoryMax); fallback {
 		if herr != nil {
 			return errors.Join(err, herr)
 		}
@@ -1768,6 +1783,7 @@ func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, 
 			cmd.WaitDelay, autoWaitDelay = backgroundPipeWait, true
 		}
 	}
+	before := r.memoryEventsBefore(source)
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		return stats.Usage{}, fmt.Errorf("start %s: %w", cmd.Path, err)
@@ -1778,6 +1794,10 @@ func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, 
 		err = nil
 	}
 	seen := watch.Stop()
+	memoryErr := r.memoryFailure(before, source)
+	if memoryErr != nil {
+		err = errors.Join(err, memoryErr)
+	}
 	if len(r.frames) == 0 {
 		return stats.Usage{}, err
 	}
@@ -1787,8 +1807,72 @@ func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, 
 	}
 	code := cmd.ProcessState.ExitCode()
 	reason := stepFailureReason(reasonSource, stderr, stdout, code)
+	if memoryErr != nil {
+		reason = memoryErr.Error()
+		if code == 0 {
+			code = 1
+		}
+	}
 	r.recordStep(source, use, code, reason)
 	return use, err
+}
+
+// memoryEventsBefore reads the memory events of the heavy scope graft holds
+// the work in, before a step; nil when it holds none.
+func (r *Runner) memoryEventsBefore(source string) map[string]uint64 {
+	if r.heavy == 0 || r.heavyPlace.Ceiling == 0 {
+		return nil
+	}
+	events, err := iosched.MemoryEvents(os.Getenv(loadgate.ProcEnv))
+	if err != nil {
+		fmt.Fprintf(r.Stderr, "graft: %s: memory ceiling not watched: %v\n", source, err)
+		return nil
+	}
+	return events
+}
+
+// memoryFailure is the error of a step during which the kernel killed
+// processes of the heavy scope, nil when it killed none.
+func (r *Runner) memoryFailure(before map[string]uint64, source string) error {
+	if before == nil {
+		return nil
+	}
+	after, err := iosched.MemoryEvents(os.Getenv(loadgate.ProcEnv))
+	if err != nil {
+		return fmt.Errorf("memory ceiling of %s: %w", source, err)
+	}
+	return memoryKills(r.heavyPlace, before, after, currentTask(r))
+}
+
+// memoryKills says what the growth of memory.events from before to after
+// means for a step of task in heavy scope p: oom counts reaching the scope's
+// own ceiling, oom_kill the processes killed for it or for a limit above.
+func memoryKills(p iosched.Placement, before, after map[string]uint64, task string) error {
+	killed := after["oom_kill"] - min(before["oom_kill"], after["oom_kill"])
+	if killed == 0 {
+		return nil
+	}
+	if after["oom"] > before["oom"] {
+		raise := "set memory_max of task " + task + " in .graft.yaml"
+		if task == ExecTask {
+			raise = "pass --memory-max to graft exec"
+		}
+		return fmt.Errorf("heavy scope %s hit its memory ceiling %s (%s): the kernel killed %d process(es) during this step; to give it more, %s",
+			p.Scope, iosched.Bytes(p.Ceiling), p.Source, killed, raise)
+	}
+	above := "a memory limit above it"
+	if p.Slice != "" {
+		above = fmt.Sprintf("the ceiling of %s, all heavy work there together (%s)", p.Slice, iosched.Bytes(p.SliceMax))
+	}
+	return fmt.Errorf("the kernel killed %d process(es) of heavy scope %s during this step below its own ceiling %s: at %s or for lack of machine memory",
+		killed, p.Scope, iosched.Bytes(p.Ceiling), above)
+}
+
+func currentTask(r *Runner) string {
+	if len(r.frames) > 0 {
+		return r.frames[len(r.frames)-1].task
+	}
+	return ExecTask
 }
 
 func stepFailureReason(source func() string, stderr, stdout *tailCapture, code int) string {
@@ -2268,9 +2352,10 @@ func BaseEnv() ([]string, error) {
 }
 
 // enterHeavy admits a heavy task run on this machine, unless a running one
-// was admitted and took it in, and counts it running; leave, when the task
-// ends, gives its admission up.
-func (r *Runner) enterHeavy(ctx context.Context, name string) (leave func() error, err error) {
+// was admitted and took it in, counts it running, and holds it under the
+// memory ceiling memoryMax asks for ("" for the default); leave, when the
+// task ends, gives its admission up.
+func (r *Runner) enterHeavy(ctx context.Context, name, memoryMax string) (leave func() error, err error) {
 	release := func() error { return nil }
 	admittedHere := r.heavy == 0
 	if admittedHere {
@@ -2289,7 +2374,11 @@ func (r *Runner) enterHeavy(ctx context.Context, name string) (leave func() erro
 			f.reserveRelease = admitted
 		}
 	}
-	message, err := iosched.Enter(ctx, os.Getpid(), os.Getenv(loadgate.ProcEnv))
+	req := iosched.Request{Value: memoryMax, Source: "memory_max of task " + name}
+	if name == ExecTask {
+		req.Source = "--memory-max"
+	}
+	place, err := iosched.Configure(ctx, os.Getpid(), os.Getenv(loadgate.ProcEnv), req)
 	if err != nil {
 		releaseErr := release()
 		if releaseErr != nil {
@@ -2300,9 +2389,13 @@ func (r *Runner) enterHeavy(ctx context.Context, name string) (leave func() erro
 		}
 		return nil, err
 	}
-	if message != "" {
-		fmt.Fprintf(r.Stderr, "graft: %s: %s\n", name, message)
+	if place.Ceiling > 0 {
+		r.heavyPlace = place
 	}
+	if place.Message != "" && !(place.NoCeiling && r.noCeilingNoted) {
+		fmt.Fprintf(r.Stderr, "graft: %s: %s\n", name, place.Message)
+	}
+	r.noCeilingNoted = r.noCeilingNoted || place.NoCeiling
 	r.heavy++
 	return func() error {
 		r.heavy--

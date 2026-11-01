@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aiseeq/graft/v2/internal/memorymax"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -167,6 +168,8 @@ type Task struct {
 	// Heavy holds the task back while the machine is loaded (the user
 	// config's load) and passes it GRAFT_THREADS.
 	Heavy bool `yaml:"heavy"`
+	// MemoryMax sets the memory ceiling of heavy work started by this task.
+	MemoryMax yaml.Node `yaml:"memory_max"`
 	// Remote false keeps a heavy task on this machine though the project has
 	// remote_heavy: a task whose steps write files it needs here. True sends
 	// a heavy task's every step, and lets a split gate send the go test and
@@ -535,6 +538,9 @@ func (c *Config) validateTask(name string, t *Task) error {
 	if t == nil || (len(t.Run) == 0 && len(t.Deps) == 0) {
 		return fmt.Errorf("%s: needs run or deps", where)
 	}
+	if err := validateTaskMemoryMax(name, t); err != nil {
+		return err
+	}
 	if t.Dir != "" {
 		if err := checkRelPath(where+".dir", t.Dir); err != nil {
 			return err
@@ -568,6 +574,22 @@ func validateInstallDestinations(where string, steps []Step) error {
 		if s.Install != nil && s.Install.To != "" && !filepath.IsAbs(s.Install.To) && !strings.HasPrefix(s.Install.To, "~/") && s.Install.To != "~" {
 			return fmt.Errorf("%s.run: install to: must be an absolute path or start with ~/", where)
 		}
+	}
+	return nil
+}
+
+func validateTaskMemoryMax(name string, t *Task) error {
+	if t.MemoryMax.Kind == 0 {
+		return nil
+	}
+	if !t.Heavy {
+		return fmt.Errorf("tasks.%s.memory_max: requires heavy: true", name)
+	}
+	if t.MemoryMax.Tag == "!!null" || t.MemoryMax.Kind != yaml.ScalarNode {
+		return fmt.Errorf("tasks.%s.memory_max: expected a size or percentage", name)
+	}
+	if _, _, err := memorymax.Parse(t.MemoryMax.Value); err != nil {
+		return fmt.Errorf("tasks.%s.memory_max %q: %w", name, t.MemoryMax.Value, err)
 	}
 	return nil
 }

@@ -76,19 +76,27 @@ func TestExecCoresReservesGivenCores(t *testing.T) {
 
 func TestExecCoresUsage(t *testing.T) {
 	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"})
-	for _, args := range [][]string{
-		{"exec", "--heavy", "--cores", "0", "--", "true"},
-		{"exec", "--heavy", "--cores", "-1", "--", "true"},
-		{"exec", "--heavy", "--cores", "x", "--", "true"},
-		{"exec", "--heavy", "--cores", strconv.Itoa(runtime.NumCPU() + 1), "--", "true"},
-		{"exec", "--cores", "1", "--", "true"},
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"exec", "--heavy", "--cores", "0", "--", "true"}, "--cores"},
+		{[]string{"exec", "--heavy", "--cores", "-1", "--", "true"}, "--cores"},
+		{[]string{"exec", "--heavy", "--cores", "x", "--", "true"}, "--cores"},
+		{[]string{"exec", "--heavy", "--cores", strconv.Itoa(runtime.NumCPU() + 1), "--", "true"}, "--cores"},
+		{[]string{"exec", "--cores", "1", "--", "true"}, "--cores"},
+		{[]string{"exec", "--memory-max", "1G", "--", "true"}, "graft exec"},
+		{[]string{"exec", "--heavy", "--memory-max", "0", "--", "true"}, "--memory-max"},
 	} {
-		out, code := f.graft("", args...)
-		if code != 125 || !strings.Contains(out, "--cores") {
-			t.Errorf("graft %q: exit %d, want usage error\n%s", args, code, out)
+		out, code := f.graft("", tc.args...)
+		if code != 125 || !strings.Contains(out, tc.want) {
+			t.Errorf("graft %q: exit %d, want usage error mentioning %s\n%s", tc.args, code, tc.want, out)
 		}
 	}
 	if out, code := f.graft("", "exec", "--heavy", "--cores"); code != 125 || !strings.Contains(out, "graft exec") {
 		t.Errorf("missing --cores value: exit %d\n%s", code, out)
+	}
+	if out, code := f.graft("", "exec", "--heavy", "--memory-max"); code != 125 || !strings.Contains(out, "graft exec") {
+		t.Errorf("missing --memory-max value: exit %d\n%s", code, out)
 	}
 }

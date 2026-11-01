@@ -33,6 +33,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/gocache"
 	"github.com/aiseeq/graft/v2/internal/hooks"
 	"github.com/aiseeq/graft/v2/internal/loadgate"
+	"github.com/aiseeq/graft/v2/internal/memorymax"
 	"github.com/aiseeq/graft/v2/internal/message"
 	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/stats"
@@ -582,7 +583,7 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 }
 
 // execSyntax is graft exec's usage, in its error and in graft help.
-const execSyntax = "graft exec [--heavy [--local] [--env <name>]... [--settle <duration>] [--cores <n>]] -- <command> [args]"
+const execSyntax = "graft exec [--heavy [--local] [--env <name>]... [--settle <duration>] [--cores <n>] [--memory-max <value>]] -- <command> [args]"
 
 // execCmd is graft exec; its own failures, usage too, exit app.ExitGraft
 // (run).
@@ -597,7 +598,7 @@ func execCmd(ctx context.Context, a *app.App, args []string) error {
 		}
 		args = args[consumed:]
 	}
-	if len(args) < 2 || ((local || opts.Settle > 0 || opts.Cores > 0 || len(pass) > 0) && !opts.Heavy) {
+	if len(args) < 2 || ((local || opts.Settle > 0 || opts.Cores > 0 || opts.MemoryMax != "" || len(pass) > 0) && !opts.Heavy) {
 		return execUsage()
 	}
 	if err := exportExecEnv(pass, local); err != nil {
@@ -643,6 +644,15 @@ func parseExecFlag(args []string, opts *app.ExecOptions, local *bool, pass *[]st
 			return 0, err
 		}
 		opts.Cores = cores
+		return 2, nil
+	case "--memory-max":
+		if len(args) < 2 {
+			return 0, usage
+		}
+		if _, _, err := memorymax.Parse(args[1]); err != nil {
+			return 0, fmt.Errorf("%w: exec --memory-max %q: %w", errUsage, args[1], err)
+		}
+		opts.MemoryMax = args[1]
 		return 2, nil
 	default:
 		return 0, usage

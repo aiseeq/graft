@@ -72,6 +72,8 @@ type ExecOptions struct {
 	Settle time.Duration
 	// Cores is the requested live reservation for this heavy exec.
 	Cores float64
+	// MemoryMax overrides the default ceiling for this heavy command.
+	MemoryMax string
 }
 
 func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
@@ -96,6 +98,7 @@ func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
 	}
 	r := a.newRunner(root, cfg)
 	r.ExecCores = opts.Cores
+	r.ExecMemoryMax = opts.MemoryMax
 	if opts.Settle > 0 {
 		lockPath, err := tasks.LoadSettleLock()
 		if err != nil {

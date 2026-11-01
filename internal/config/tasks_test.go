@@ -81,6 +81,27 @@ func TestParseTasks(t *testing.T) {
 	}
 }
 
+func TestTaskMemoryMax(t *testing.T) {
+	data := strings.Replace(tasksBase, "    desc: lint\n", "    desc: lint\n    heavy: true\n    memory_max: 12G\n", 1)
+	cfg, err := Parse([]byte(data))
+	if err != nil || cfg.Tasks["lint"].MemoryMax.Value != "12G" {
+		t.Fatalf("parse memory_max: task=%+v err=%v", cfg.Tasks["lint"], err)
+	}
+	for _, value := range []string{"0", "101%", "12GB", "-1G", "''", ""} {
+		bad := strings.Replace(data, "memory_max: 12G", "memory_max: "+value, 1)
+		if _, err := Parse([]byte(bad)); err == nil || !strings.Contains(err.Error(), "tasks.lint.memory_max") {
+			t.Errorf("memory_max %s error = %v", value, err)
+		}
+	}
+	if _, err := Parse([]byte(strings.Replace(data, "    heavy: true\n", "", 1))); err == nil || !strings.Contains(err.Error(), "tasks.lint.memory_max") {
+		t.Errorf("memory_max without heavy error = %v", err)
+	}
+	empty := strings.Replace(data, "memory_max: 12G", "memory_max: ''", 1)
+	if _, err := Parse([]byte(empty)); err == nil {
+		t.Error("empty memory_max accepted")
+	}
+}
+
 // TestParseTestDBSocket: a socket database has no port, its socket lives
 // under the user's cache and the DSN names that directory.
 func TestParseTestDBSocket(t *testing.T) {

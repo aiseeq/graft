@@ -186,6 +186,31 @@ it and take the caller's handle away), and systems without a user systemd
 manager in place. The heavy scope is `PartOf` its source: stopping the source
 scope stops the work, while the caller exiting first leaves it running.
 
+The heavy scope has a memory ceiling: `MemoryMax` 40% of RAM (`MemTotal`)
+by default, `MemorySwapMax=0`, and `OOMPolicy=continue`. A runaway test or
+build then dies alone at the ceiling instead of pushing the machine into swap,
+and graft, which systemd would otherwise stop with the whole scope, reports it.
+A task sets its own ceiling with `memory_max: 12G` (binary K, M, G) or
+`memory_max: 60%` beside `heavy: true`; `graft exec --heavy --memory-max 12G
+-- …` does it for one command. A heavy scope's ceiling only goes up: a later
+heavy task of the same graft, or a graft started inside it, raises it to its
+own when that is larger. All heavy work of a `*-graft.slice` together stays
+under `MemoryMax` 50% of RAM. A scope graft is alone in and that has no limits
+gets `MemoryMax` and `MemorySwapMax=0` in place; systemd does not change
+`OOMPolicy` on a running scope, and with its default, stop, the first kill at
+the ceiling stops the scope, graft with it (graft still reports the ceiling,
+exit 125); start it with `-p OOMPolicy=continue` to keep graft running. Where graft sets no ceiling and nothing above its
+cgroup has `memory.max`, it says so once: `no memory ceiling: …`.
+
+A step during which the kernel killed processes of the heavy scope fails,
+even when it exited 0, and the error says which limit it was:
+
+    heavy scope graft-heavy-123.scope hit its memory ceiling 12.2 GiB (40% of RAM, the default): the kernel killed 1 process(es) during this step; to give it more, set memory_max of task test in .graft.yaml
+
+or, when the scope's own ceiling was not reached, a limit above it (the
+slice's) or the machine's lack of memory. The same text is the step's reason in
+stats. Other systems accept `memory_max` and `--memory-max` and set nothing.
+
 `graft exec --heavy -- graft <task>` takes no queue slot itself: it starts the
 inner graft with `GRAFT_EXEC_HEAVY=1`, by which that graft runs its top-level
 task, or the command of its `graft exec`, as heavy (placed on the host or
@@ -627,6 +652,7 @@ tasks:
     deps: [build]              # run first, each task at most once per invocation
     test_db: true              # pass the test database DSN (see below)
     heavy: true                # wait while the machine is loaded (user config load), GRAFT_THREADS set
+    memory_max: 12G            # heavy only: scope memory ceiling; size in binary K/M/G or 1..100% of RAM
     remote: false              # heavy: stay on this machine though the project has remote_heavy (true: any step goes, and a busy gate sends its go steps)
     tests: go                  # read go test -json: print plain go test output, record every test
     dotenv: [API_KEY!, 'LOG_DIR?']  # only these .env keys reach the steps; KEY? optional, KEY! must not be empty
