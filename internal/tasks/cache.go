@@ -149,19 +149,32 @@ func (r *Runner) cacheKey(ctx context.Context, name string, args []string) (stri
 		return "", nil, fmt.Errorf("reading the work tree: %w", err)
 	}
 	addTo(hashes["tree"], tree)
+	// Several targets may share a file (package-lock.json keeps the version
+	// twice): every target masks the same buffer, as Write bumps it, and the
+	// file counts once with all its version fields masked.
+	normalized := map[string][]byte{}
+	var syncOrder []string
 	for _, target := range syncTargets {
 		if !syncInTree[target.Path] {
 			continue
 		}
-		content, err := os.ReadFile(filepath.Join(r.Root, filepath.FromSlash(target.Path)))
-		if err != nil {
-			return "", nil, fmt.Errorf("cache key: %s: %w", target.Path, err)
+		content, ok := normalized[target.Path]
+		if !ok {
+			read, err := os.ReadFile(filepath.Join(r.Root, filepath.FromSlash(target.Path)))
+			if err != nil {
+				return "", nil, fmt.Errorf("cache key: %w", err)
+			}
+			content = read
+			syncOrder = append(syncOrder, target.Path)
 		}
-		normalized, err := target.Replace(content, "__GRAFT_CACHE_VERSION__")
+		masked, err := target.Replace(content, "__GRAFT_CACHE_VERSION__")
 		if err != nil {
-			return "", nil, fmt.Errorf("cache key: %s: %w", target.Path, err)
+			return "", nil, fmt.Errorf("cache key: %w", err)
 		}
-		addTo(hashes["tree"], "version.sync", target.Path, string(normalized))
+		normalized[target.Path] = masked
+	}
+	for _, path := range syncOrder {
+		addTo(hashes["tree"], "version.sync", path, string(normalized[path]))
 	}
 	readsMessage := false
 	if err := r.keyDefinitions(addDefinition, addInputs, name, map[string]bool{}, &readsMessage); err != nil {
