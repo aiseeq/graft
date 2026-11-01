@@ -90,11 +90,12 @@ func WatchCaller(parent context.Context, interval time.Duration) (context.Contex
 func pollCallerGone(polls []unix.PollFd) (bool, error) {
 	for i := range polls {
 		polls[i].Revents = 0
-		// A signal that interrupts the zero-timeout poll is not an answer:
-		// ask again.
 		_, err := unixPoll(polls[i:i+1], 0)
-		for errors.Is(err, unix.EINTR) {
-			_, err = unixPoll(polls[i:i+1], 0)
+		if errors.Is(err, unix.EINTR) {
+			// A signal interrupted the zero-timeout poll: no answer this
+			// time, the next tick asks again. Asking again at once could
+			// spin while signals keep coming.
+			return false, nil
 		}
 		if err != nil {
 			return false, fmt.Errorf("fd %d: %w", polls[i].Fd, err)

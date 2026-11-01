@@ -18,3 +18,4 @@
 - 2026-11-01 03:55 в работе — graft-master
 - 2026-11-01 03:59 note — graft-master: ce5358f на main: unixPoll — шов для теста, повтор при EINTR; тест TestCallerGonePollRetriesAnInterruptedPoll красный до правки (FAIL), после — пакет -race -count=3 зелёный. Дальше — независимая проверка вместе с другими перед релизом.
 - 2026-11-01 03:59 на проверке — graft-master
+- 2026-11-01 04:54 note — graft-master: проверка суб-агентом 04:47: ce5358f принят (мутация красная, all зелёный), замечание — повтор на EINTR без предела: при постоянном EINTR 15,5 млн вызовов за 500 мс. Правка: EINTR → (false, nil), опрос на следующем тике; тесты TestCallerGonePollLeavesAnInterruptedPollToTheNextTick (1 вызов на EINTR) и TestCallerWatcherSurvivesAnInterruptedPoll (WatchCaller отменяет с errorsCallerGone после 3 EINTR — пункт приёмки про отмену контекста); мутация без обработки EINTR — оба красные. sc2go-master 04:42 видел ту же строку на PC под v2.69.0 — уйдёт с релизом.

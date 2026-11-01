@@ -18,3 +18,4 @@
 ## Журнал
 - 2026-11-01 03:34 открыт — graft-master
 - 2026-11-01 03:34 в работе — graft-master
+- 2026-11-01 04:38 note — graft-master: черновик плана: /home/aisee/.cache/claude-tmp/claude-1000/-home-aisee-git-graft/6dd74d34-dbba-4316-870e-fc5df0088d96/scratchpad/pc/plan-d.md (п.1–5; при занятом ноуте 31.10 п.1–4 ≈22 CPU-ч, с корпусом ≈47 из 64); сторона worker п.4–5 — на согласование llmark-master
