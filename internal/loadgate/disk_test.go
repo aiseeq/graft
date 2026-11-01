@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -74,6 +76,10 @@ func (d *diskSource) asked() []string {
 func (d *diskSource) answer(t *testing.T, conn net.Conn) {
 	defer conn.Close()
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	if errors.Is(err, io.EOF) && len(line) == 0 {
+		// A look the wait's end cut short closes before it asks.
+		return
+	}
 	if err != nil {
 		t.Errorf("disk source: %v", err)
 		return

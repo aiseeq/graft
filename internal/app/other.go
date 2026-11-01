@@ -209,7 +209,10 @@ type ReleaseOptions struct {
 // history has no version tag yet.
 var InitialRelease = version.Semver{Major: 0, Minor: 1, Patch: 0}
 
-// Release tags the pushed HEAD with the project version and pushes the tag.
+// Release tags a published HEAD with the project version and pushes the tag.
+// HEAD must already be on every remote (graft commit pushed it, maybe on
+// another branch); on a branch, that branch is pushed first, so a branch
+// fast-forwarded to pushed work goes out before its tag.
 // In file mode the version is the committed version file; in git-tag mode it
 // is the next version after the latest tag.
 func (a *App) Release(ctx context.Context, opts ReleaseOptions) error {
@@ -236,6 +239,15 @@ func (a *App) Release(ctx context.Context, opts ReleaseOptions) error {
 		}
 		if err := requirePublished(repo, remotes); err != nil {
 			return err
+		}
+		branch, err := repo.Branch()
+		if err != nil && !errors.Is(err, gitx.ErrDetachedHead) {
+			return err
+		}
+		if err == nil {
+			if err := a.push(repo, remotes, []string{"refs/heads/" + branch}, false, hasConfiguredFreeze(cfg)); err != nil {
+				return err
+			}
 		}
 		if _, err := repo.Git("tag", "-a", tag, "-m", tag); err != nil {
 			return err

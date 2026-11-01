@@ -317,7 +317,7 @@ stats` (`wait_s`).
 | `graft commit --minor` / `--major` | same with a minor / major bump (version mode `file` only) |
 | `graft commit -F msg.txt` / `-F -` | message from a file / from stdin, byte for byte |
 | `graft amend` | lock, stage work before the gate, gate, stage paths changed since the amended commit's parent (including the amended commit's files), `ticket.required` on the whole amended commit, checks, `git commit --amend --no-edit`, no push; restores the original index if the gate or a later step fails or the gate leaves the amended commit as its parent has it, and refuses a commit that is already on a remote unless only on branches in `push.force_with_lease` |
-| `graft release` | tag the pushed HEAD with the version, push the tag to every remote |
+| `graft release` | refuse a HEAD no remote has yet; push the current branch (one fast-forwarded to pushed work), tag HEAD with the version, push the tag to every remote |
 | `graft release --minor` / `--major` / `--version X.Y.Z` | choose the next tag (version mode `git-tag` only) |
 | `graft version` | print the project version |
 | `graft version bump [--minor\|--major]` | raise the version in the version file and its synced files without committing, for a script that folds the bump into its own commit (merging a work branch whose commits skipped it) |
@@ -877,7 +877,7 @@ deps and inner tasks included.
   it ran waited before their steps: for the load in the queue of heavy
   tasks and for their locks. Absent when nothing waited.
 - `wait_why` splits `wait_s` by what was waited for, in seconds: `queue`
-  (behind other heavy tasks), `load`, `io`, `swap` (each over its limit;
+  (behind other heavy tasks), `load`, `io`, `writeback`, `swap` (each over its limit;
   the time between two readings goes to what the first found), `quiet` (the
   quiet mode of akit's busy), `reserve` (live expected CPU reservations), a
   measure graft does not know yet by its own name, `lock` (a task lock) and

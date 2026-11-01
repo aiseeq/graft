@@ -32,7 +32,7 @@ func text(s string) func(*config.Config) string {
 var commands = []command{
 	{name: "commit", syntax: func(c *config.Config) []string { return []string{app.CommitSyntax(c)} }, summary: app.CommitSummary},
 	{name: "amend", syntax: fixed("graft amend"), summary: text("gate, stage all, check, fold into the last unpushed commit")},
-	{name: "release", syntax: releaseSyntax, summary: text("tag the pushed HEAD with the version and push the tag"),
+	{name: "release", syntax: releaseSyntax, summary: text("tag the pushed HEAD with the version, after pushing its branch, and push the tag"),
 		applies: func(c *config.Config) bool { return c.Version.Mode != config.ModeNone }},
 	{name: "version", syntax: fixed("graft version [--describe]", "graft version bump [--minor|--major]"), summary: text("print the project version; --describe: the build identity, for stamping binaries; bump: raise it in the files without committing (version mode file)")},
 	{name: "init", syntax: fixed("graft init"), summary: text("install the git hooks (core.hooksPath) and the pinned tools")},

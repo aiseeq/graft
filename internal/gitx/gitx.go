@@ -137,13 +137,16 @@ func ExitCode(err error) int {
 	return -1
 }
 
+// ErrDetachedHead means HEAD does not point at a branch.
+var ErrDetachedHead = errors.New("HEAD is detached")
+
 // Branch returns the short name of the checked-out branch. A detached HEAD is
 // an error: there is no branch to push and no branch name to take a key from.
 func (r *Repo) Branch() (string, error) {
 	out, err := r.Git("symbolic-ref", "--short", "-q", "HEAD")
 	if err != nil {
 		if ExitCode(err) == 1 {
-			return "", errors.New("HEAD is detached: check out a branch first")
+			return "", fmt.Errorf("%w: check out a branch first", ErrDetachedHead)
 		}
 		return "", err
 	}

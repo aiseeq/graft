@@ -87,14 +87,7 @@ func enter(ctx context.Context, pid int, procRoot string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read current cgroup: %w", err)
 	}
-	var cg string
-	for line := range strings.SplitSeq(string(data), "\n") {
-		fields := strings.SplitN(line, ":", 3)
-		if len(fields) == 3 && fields[0] == "0" && fields[1] == "" {
-			cg = fields[2]
-			break
-		}
-	}
+	cg := unifiedCgroup(string(data))
 	if cg == "" {
 		return "", nil
 	}
@@ -102,16 +95,9 @@ func enter(ctx context.Context, pid int, procRoot string) (string, error) {
 		return "", nil
 	}
 	base := path.Join("/sys/fs/cgroup", cg)
-	limits := make(map[string]string, 3)
-	for _, key := range limitFiles {
-		b, readErr := os.ReadFile(path.Join(base, key))
-		if readErr != nil {
-			if os.IsNotExist(readErr) {
-				continue
-			}
-			return "", fmt.Errorf("read cgroup limit %s: %w", key, readErr)
-		}
-		limits[key] = strings.TrimSpace(string(b))
+	limits, err := readLimits(base)
+	if err != nil {
+		return "", err
 	}
 	procs, err := os.ReadFile(path.Join(base, "cgroup.procs"))
 	if err != nil {
@@ -130,21 +116,59 @@ func enter(ctx context.Context, pid int, procRoot string) (string, error) {
 	if err := transient(ctx, move.scope, "fail", scopeProperties(move, pid)...); err != nil {
 		return "", fmt.Errorf("create heavy scope %s: %w", move.scope, err)
 	}
+	if err := waitMoved(ctx, self, move.scope); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("moved from %s to %s in %s (IOWeight=%d)", move.source, move.scope, move.slice, ioWeight), nil
+}
+
+// unifiedCgroup is the cgroup v2 path of a /proc/<pid>/cgroup text, "" for
+// none.
+func unifiedCgroup(data string) string {
+	for line := range strings.SplitSeq(data, "\n") {
+		fields := strings.SplitN(line, ":", 3)
+		if len(fields) == 3 && fields[0] == "0" && fields[1] == "" {
+			return fields[2]
+		}
+	}
+	return ""
+}
+
+// readLimits reads the limit files of the cgroup at base; a file the cgroup
+// lacks (its controller is off there) is no limit.
+func readLimits(base string) (map[string]string, error) {
+	limits := make(map[string]string, len(limitFiles))
+	for _, key := range limitFiles {
+		b, err := os.ReadFile(path.Join(base, key))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read cgroup limit %s: %w", key, err)
+		}
+		limits[key] = strings.TrimSpace(string(b))
+	}
+	return limits, nil
+}
+
+// waitMoved waits up to 5 seconds for the process's cgroup file self to name
+// the new scope: systemd moves it when the start job runs.
+func waitMoved(ctx context.Context, self, scope string) error {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		current, readErr := os.ReadFile(self)
-		if readErr == nil && strings.Contains(string(current), "/"+move.scope) {
-			return fmt.Sprintf("moved from %s to %s in %s (IOWeight=%d)", move.source, move.scope, move.slice, ioWeight), nil
+		current, err := os.ReadFile(self)
+		if err == nil && strings.Contains(string(current), "/"+scope) {
+			return nil
 		}
 		timer := time.NewTimer(50 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return "", ctx.Err()
+			return ctx.Err()
 		case <-timer.C:
 		}
 	}
-	return "", fmt.Errorf("process did not enter heavy scope %s within 5s", move.scope)
+	return fmt.Errorf("process did not enter heavy scope %s within 5s", scope)
 }
 
 // ensureSlice creates the shared slice with its weight, or, when it is
