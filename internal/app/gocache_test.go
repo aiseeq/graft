@@ -135,3 +135,20 @@ func serveTrimDisk(t *testing.T, ioFullMS int) {
 		}
 	}()
 }
+
+// TestTrimMemoryCalmWithoutTheMeasure: where the machine reports no memory
+// queued to write (no /proc/meminfo outside Linux), a batch waits for the
+// busy check alone instead of failing the trim.
+func TestTrimMemoryCalmWithoutTheMeasure(t *testing.T) {
+	t.Setenv(loadgate.ProcEnv, t.TempDir())
+	measured := dirtyMeasured
+	t.Cleanup(func() { dirtyMeasured = measured })
+	dirtyMeasured = func() bool { return false }
+	if calm, err := trimMemoryCalm(); err != nil || !calm {
+		t.Fatalf("without the measure: calm %v, error %v", calm, err)
+	}
+	dirtyMeasured = measured
+	if _, err := trimMemoryCalm(); err == nil {
+		t.Fatal("with the measure and no meminfo: no error")
+	}
+}

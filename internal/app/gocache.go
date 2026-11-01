@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -17,6 +19,13 @@ import (
 
 const maxDirtyWritebackKB = 64 * 1024
 const trimKind = "gocache-trim"
+
+// dirtyMeasured is whether the machine reports the memory queued to write:
+// Linux does in /proc/meminfo, and a test's GRAFT_PROC stands for it.
+// Elsewhere a batch waits for the busy check alone.
+var dirtyMeasured = func() bool {
+	return runtime.GOOS == "linux" || os.Getenv(loadgate.ProcEnv) != ""
+}
 
 // GocacheTrim removes, with apply, the entries of the Go build cache of
 // go env GOCACHE not used for longer than older, or tells how many it
@@ -72,6 +81,9 @@ func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, 
 }
 
 func trimMemoryCalm() (bool, error) {
+	if !dirtyMeasured() {
+		return true, nil
+	}
 	dirtyWriteback, err := loadgate.DirtyWritebackKB()
 	if err != nil {
 		return false, err

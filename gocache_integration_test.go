@@ -58,3 +58,49 @@ func TestGocacheTrimTakesTheCacheOfGoEnv(t *testing.T) {
 		t.Errorf("GOCACHE=off: exit %d\n%s", code, out)
 	}
 }
+
+// TestGocacheTrimApplyWaitsForTheMachine: --apply waits before a batch
+// while the machine has much memory queued to write, and with --max-wait
+// spent removes nothing and says so.
+func TestGocacheTrimApplyWaitsForTheMachine(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"})
+	cache := t.TempDir()
+	old := filepath.Join(cache, "3f", strings.Repeat("3", 64)+"-d")
+	if err := os.MkdirAll(filepath.Dir(old), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(old, []byte("entry"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(old, time.Now().Add(-48*time.Hour), time.Now().Add(-48*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, "README"), []byte("This directory holds cached build artifacts from the Go build system.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	machine := t.TempDir()
+	for name, content := range map[string]string{
+		"meminfo":         "Dirty: 900000 kB\nWriteback: 0 kB\n",
+		"stat":            "cpu  1 1 1 1\ncpu0 1 1 1 1\nprocs_running 1\n",
+		"loadavg":         "0.00 0.00 0.00 1/100 1\n",
+		"pressure/io":     "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n",
+		"pressure/memory": "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n",
+		"vmstat":          "pswpin 0\npswpout 0\n",
+	} {
+		path := filepath.Join(machine, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.env = append(f.env, "GOCACHE="+cache, "GRAFT_PROC="+machine)
+	out := f.mustGraft("gocache", "trim", "--apply", "--max-wait", "1s")
+	if !strings.Contains(out, "graft: removed 0 entries") || !strings.Contains(out, "1 entries, 5 B remain") || !strings.Contains(out, "waited 1s") {
+		t.Errorf("a busy machine's trim:\n%s", out)
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Errorf("the trim removed an entry while the machine was busy: %v", err)
+	}
+}

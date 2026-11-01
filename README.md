@@ -2189,7 +2189,9 @@ it is needed, so a project not built for a day builds cold once, and a
 project in use stays warm. With `--apply`, graft removes entries in batches
 of up to 1000 entries or 256 MiB, syncing the cache filesystem after each
 batch. Before a batch it waits until `Dirty` plus `Writeback` in
-`/proc/meminfo` is below 64 MiB and the machine's disk pressure is calm.
+`/proc/meminfo` is below 64 MiB (where the system reports it: Linux) and
+the machine is calm by the heavy-task busy check (runnable threads, IO
+pressure, memory pressure while swapping, `busy --quiet`).
 `--max-wait` (30m by default) bounds the total wait; when it expires, graft
 reports what remains for the next run. Without `--apply` it reports the
 would-be removals immediately. Run it daily from a timer, for instance a
