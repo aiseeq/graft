@@ -321,7 +321,7 @@ stats` (`wait_s`).
 | `graft commit --minor` / `--major` | same with a minor / major bump (version mode `file` only) |
 | `graft commit -F msg.txt` / `-F -` | message from a file / from stdin, byte for byte |
 | `graft amend` | lock, stage work before the gate, gate, stage paths changed since the amended commit's parent (including the amended commit's files), `ticket.required` on the whole amended commit, checks, `git commit --amend --no-edit`, no push; restores the original index if the gate or a later step fails or the gate leaves the amended commit as its parent has it, and refuses a commit that is already on a remote unless only on branches in `push.force_with_lease` |
-| `graft release` | refuse a HEAD no remote has yet; push the current branch (one fast-forwarded to pushed work), tag HEAD with the version, push the tag to every remote |
+| `graft release` | refuse a HEAD no remote has yet; push the current branch to the remotes whose branch lacks HEAD (one fast-forwarded to pushed work), tag HEAD with the version, push the tag to every remote |
 | `graft release --minor` / `--major` / `--version X.Y.Z` | choose the next tag (version mode `git-tag` only) |
 | `graft version` | print the project version |
 | `graft version bump [--minor\|--major]` | raise the version in the version file and its synced files without committing, for a script that folds the bump into its own commit (merging a work branch whose commits skipped it) |
@@ -2032,10 +2032,11 @@ deploy:
 - **none**: no version at all.
 
 `graft release` only tags a HEAD that every push remote already has. On a
-branch, it first pushes that branch to the remotes whose copy of it lacks HEAD
-(a branch fast-forwarded to pushed work); a branch that is already there,
-behind its remote, or absent from the remote is not pushed. A rejected branch
-push leaves no tag: fetch, bring the branch up to date and release again.
+branch, it first pushes that branch to the remotes whose branch lacks HEAD
+(a branch fast-forwarded to pushed work), asking the remote when the clone has
+no copy of its branch; a branch that is already there, behind its remote, or
+absent from the remote is not pushed. A failed branch push leaves no tag: when
+the remote rejected it, fetch, bring the branch up to date and release again.
 
 ### Checks
 

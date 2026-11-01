@@ -258,8 +258,9 @@ func (a *App) Release(ctx context.Context, opts ReleaseOptions) error {
 }
 
 // pushBehindBranch pushes branch to the remotes whose copy of it lags behind
-// HEAD, so the tag does not point past the branch there. A rejected push names
-// the way out: the remote branch moved on since this clone last fetched it.
+// HEAD, so the tag does not point past the branch there. A failed push leaves
+// no tag; git's output above it tells a rejection (the remote branch moved on
+// since this clone last fetched it) from a network or access failure.
 func (a *App) pushBehindBranch(repo *gitx.Repo, remotes []string, branch string, noFollowTags bool) error {
 	behind, err := remotesBehind(repo, remotes, branch)
 	if err != nil || len(behind) == 0 {
@@ -268,35 +269,66 @@ func (a *App) pushBehindBranch(repo *gitx.Repo, remotes []string, branch string,
 	err = a.push(repo, behind, []string{"refs/heads/" + branch}, false, noFollowTags)
 	var pushErr *PushError
 	if errors.As(err, &pushErr) {
-		return fmt.Errorf("branch %s was not pushed to %s, no tag is made: git fetch, bring the branch up to date, and run graft release again",
+		return fmt.Errorf("branch %s was not pushed to %s, no tag is made; if the remote rejected it, git fetch, bring the branch up to date, and run graft release again",
 			branch, strings.Join(pushErr.Failed, ", "))
 	}
 	return err
 }
 
-// remotesBehind are the remotes whose copy of branch, as this clone last saw
-// it, lacks HEAD. A remote without the branch is left alone: release does not
-// create branches there, and the tagged commit is on it already.
+// remotesBehind are the remotes whose branch lacks HEAD. A remote without the
+// branch is left alone: release does not create branches there, and the tagged
+// commit is on it already.
 func remotesBehind(repo *gitx.Repo, remotes []string, branch string) ([]string, error) {
 	var behind []string
 	for _, r := range remotes {
-		ref := "refs/remotes/" + r + "/" + branch
-		exists, err := repo.RefExists(ref)
+		tip, err := remoteBranchTip(repo, r, branch)
 		if err != nil {
 			return nil, err
 		}
-		if !exists {
+		if tip == "" {
 			continue
 		}
-		has, err := repo.IsAncestor("HEAD", ref)
+		known, err := repo.RefExists(tip + "^{commit}")
 		if err != nil {
 			return nil, err
 		}
-		if !has {
-			behind = append(behind, r)
+		if known {
+			has, err := repo.IsAncestor("HEAD", tip)
+			if err != nil {
+				return nil, err
+			}
+			if has {
+				continue
+			}
 		}
+		// A tip this clone has not fetched is not known to hold HEAD: the push
+		// either fast-forwards it or is rejected, and no tag is made then.
+		behind = append(behind, r)
 	}
 	return behind, nil
+}
+
+// remoteBranchTip is the commit of branch on remote: this clone's copy of it,
+// or, when the clone has none (the branch was never fetched from there), the
+// remote's own answer; "" when the remote has no such branch.
+func remoteBranchTip(repo *gitx.Repo, remote, branch string) (string, error) {
+	ref := "refs/remotes/" + remote + "/" + branch
+	exists, err := repo.RefExists(ref)
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		return ref, nil
+	}
+	out, err := repo.Git("ls-remote", remote, "refs/heads/"+branch)
+	if err != nil {
+		return "", fmt.Errorf("look up branch %s on %s: %w", branch, remote, err)
+	}
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		return "", nil
+	}
+	return fields[0], nil
 }
 
 // requirePublished refuses to tag a commit the remotes do not have yet.
