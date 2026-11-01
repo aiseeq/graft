@@ -25,3 +25,4 @@
 - 2026-11-01 06:14 ждёт — graft-master — 2026-11-01 14:00
 - 2026-11-01 06:34 note — graft-master: 06:3x: worker pc видит /home/aisee/bin (llmark 12f439b), проба мастера — glint check graft в песочнице pc: No issues found, 361 файл. Релиз v2.71.0 (all зелёный, авторы — noreply, leaks 0), установлен на ноут и pc; hosts.json пишется (graft → pc). graft: задаче glint remote: true (cf10fc4). Ждёт: glint-master — graft install glint (запись копии glint), затем первый занятый гейт с glint на pc и замер до/после.
 - 2026-11-01 06:50 note — graft-master: 06:5x: glint-master поставил glint через v2.71.0, hosts.json: /home/aisee/bin/glint 56e05b43… = sha256 на ноуте и pc (сверка мастера). Механизм живой; ждёт первого занятого гейта с glint на pc и замера до/после (14:00).
+- 2026-11-01 07:17 note — graft-master: Первый живой: 07:15:11 glint check graft — на pc, 7,3 с (коммит 6853096, занятый гейт).
