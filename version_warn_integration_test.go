@@ -15,10 +15,12 @@ func TestCommitWarnsWithoutVersion(t *testing.T) {
 	}{
 		{"none without reason", "{mode: none}", "the project has no version (version.mode none)"},
 		{"none with reason", "{mode: none, reason: 'notes, never released'}", ""},
-		{"git-tag without tags", "{mode: git-tag}", "no v* version tag; graft release tags the first, v0.1.0"},
+		{"git-tag without tags", "{mode: git-tag}", "no v* version tag reachable from HEAD; graft release tags the first, v0.1.0"},
+		{"git-tag, another prefix", "{mode: git-tag, tag_prefix: rel-}", "no rel-* version tag"},
+		{"file", "{mode: file}", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: " + c.version + "\n" + gate})
+			f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: " + c.version + "\n" + gate, "VERSION": "0.1.0\n"})
 			f.write("a.txt", "a\n")
 			out := f.mustGraft("commit", "-m", "feat: a")
 			if c.want == "" {
@@ -30,10 +32,18 @@ func TestCommitWarnsWithoutVersion(t *testing.T) {
 			if !strings.Contains(out, c.want) {
 				t.Errorf("no %q in:\n%s", c.want, out)
 			}
-			if c.version != "{mode: git-tag}" {
+			if !strings.Contains(c.version, "git-tag") {
 				return
 			}
+			// A tag under another prefix is not the project's version.
 			f.git("tag", "-a", "v0.1.0", "-m", "v0.1.0")
+			if c.version != "{mode: git-tag}" {
+				f.write("c.txt", "c\n")
+				if out := f.mustGraft("commit", "-m", "feat: c"); !strings.Contains(out, c.want) {
+					t.Errorf("a v tag silenced prefix rel-:\n%s", out)
+				}
+				f.git("tag", "-a", "rel-0.1.0", "-m", "rel-0.1.0")
+			}
 			f.write("b.txt", "b\n")
 			if out := f.mustGraft("commit", "-m", "feat: b"); strings.Contains(out, "has no version") {
 				t.Errorf("warned after the first tag:\n%s", out)

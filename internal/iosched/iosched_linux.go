@@ -203,7 +203,7 @@ func configure(ctx context.Context, pid int, procRoot string, req Request) (Plac
 	sole := soleProcess(string(procs), pid)
 	switch holds(cg, limits, sole, ownScope, req.Held) {
 	case heavyHeld:
-		return raise(ctx, cg, limits, ceiling, source, total)
+		return raise(ctx, cg, limits, ceiling, source, total, req.explicit())
 	case soleScope:
 		return holdSole(ctx, path.Base(cg), ceiling, source)
 	}
@@ -270,7 +270,7 @@ func unplaced(procRoot, cg, limited string, explicit bool, source string) (Place
 
 // raise lifts the ceiling of a scope graft holds to ceiling when it is
 // lower, and keeps it otherwise, silently.
-func raise(ctx context.Context, cg string, limits map[string]string, ceiling int64, source string, total int64) (Placement, error) {
+func raise(ctx context.Context, cg string, limits map[string]string, ceiling int64, source string, total int64, explicit bool) (Placement, error) {
 	unit, parent, _ := userScope(cg)
 	p := Placement{Scope: unit}
 	if strings.HasSuffix(parent, "-graft.slice") {
@@ -284,7 +284,10 @@ func raise(ctx context.Context, cg string, limits map[string]string, ceiling int
 		}
 		current = n
 	}
-	if current >= ceiling {
+	// The default does not raise a ceiling a parent graft set: the parent's
+	// own request, lower than the default, holds the work it starts through
+	// any wrapper.
+	if current >= ceiling || current > 0 && !explicit {
 		p.Ceiling, p.Source = current, "the ceiling the heavy scope already has"
 		return p, nil
 	}

@@ -156,22 +156,27 @@ func TestRaise(t *testing.T) {
 	t.Cleanup(func() { setCeiling = setScope })
 	const cg = "/user.slice/user-1000.slice/user@1000.service/agents-graft.slice/graft-heavy-7.scope"
 	for _, c := range []struct {
-		current string
-		ceiling int64
-		want    int64
-		set     bool
+		current  string
+		ceiling  int64
+		explicit bool
+		want     int64
+		set      bool
 	}{
-		{"4294967296", 8 << 30, 8 << 30, true},
-		{"8589934592", 4 << 30, 8 << 30, false},
-		{"max", 4 << 30, 4 << 30, true},
+		{"4294967296", 8 << 30, true, 8 << 30, true},
+		{"8589934592", 4 << 30, true, 8 << 30, false},
+		{"max", 4 << 30, true, 4 << 30, true},
+		// The default leaves a lower ceiling a parent asked for, and sets
+		// one where there is none.
+		{"1073741824", 40 << 30, false, 1 << 30, false},
+		{"max", 40 << 30, false, 40 << 30, true},
 	} {
 		set = nil
-		p, err := raise(context.Background(), cg, map[string]string{"memory.max": c.current}, c.ceiling, "memory_max of task t 8G", 100<<30)
+		p, err := raise(context.Background(), cg, map[string]string{"memory.max": c.current}, c.ceiling, "memory_max of task t 8G", 100<<30, c.explicit)
 		if err != nil || p.Ceiling != c.want || (len(set) > 0) != c.set || p.Slice != "agents-graft.slice" || p.SliceMax != 50<<30 {
 			t.Errorf("raise from %s to %d: %+v, %v, set %v", c.current, c.ceiling, p, err, set)
 		}
 	}
-	if _, err := raise(context.Background(), cg, map[string]string{"memory.max": "lots"}, 1, "", 100); err == nil {
+	if _, err := raise(context.Background(), cg, map[string]string{"memory.max": "lots"}, 1, "", 100, true); err == nil {
 		t.Error("raise accepted an unreadable memory.max")
 	}
 }

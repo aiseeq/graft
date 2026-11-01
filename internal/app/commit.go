@@ -56,9 +56,7 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 	if len(stale) > 0 {
 		a.warn("the hooks are out of date (%s); run graft init", strings.Join(stale, "; "))
 	}
-	if err := a.warnUnversioned(repo, cfg); err != nil {
-		return err
-	}
+	a.warnUnversioned(repo, cfg)
 	err = a.withLock(ctx, commitLock(repo, cfg), cfg, "graft commit", func() error {
 		plan, err := prepareCommit(repo, cfg, msg, opts.Level)
 		if err != nil {
@@ -518,7 +516,7 @@ func tagExists(repo *gitx.Repo, tag string) (bool, error) {
 
 // warnUnversioned warns on a project with no version: mode none without a
 // reason for it, or git-tag mode before its first version tag.
-func (a *App) warnUnversioned(repo *gitx.Repo, cfg *config.Config) error {
+func (a *App) warnUnversioned(repo *gitx.Repo, cfg *config.Config) {
 	switch cfg.Version.Mode {
 	case config.ModeNone:
 		if strings.TrimSpace(cfg.Version.Reason) == "" {
@@ -526,12 +524,13 @@ func (a *App) warnUnversioned(repo *gitx.Repo, cfg *config.Config) error {
 		}
 	case config.ModeGitTag:
 		_, found, err := latestTag(repo, cfg.Version.TagPrefix)
-		if err != nil {
-			return err
-		}
-		if !found {
-			a.warn("the project has no version yet: no %s* version tag; graft release tags the first, %s%s", cfg.Version.TagPrefix, cfg.Version.TagPrefix, InitialRelease)
+		switch {
+		case err != nil:
+			// A warning only: the tags it cannot read are graft release's
+			// to refuse, not the commit's.
+			a.warn("cannot tell the project's version from its %s* tags: %v", cfg.Version.TagPrefix, err)
+		case !found:
+			a.warn("the project has no version yet: no %s* version tag reachable from HEAD; graft release tags the first, %s%s", cfg.Version.TagPrefix, cfg.Version.TagPrefix, InitialRelease)
 		}
 	}
-	return nil
 }
