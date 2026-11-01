@@ -2251,8 +2251,8 @@ refused. Without `--apply` it only reports what it would remove and what it
 keeps. A removed entry is a cache miss: go rebuilds the package the next time
 it is needed, so a project not built for a day builds cold once, and a
 project in use stays warm. With `--apply`, graft removes entries in batches
-of up to 1000 entries or 256 MiB, syncing the cache filesystem after each
-batch. Before a batch it waits until `Dirty` plus `Writeback` in
+of up to 1000 entries or 256 MiB (an entry bigger than that is a batch
+of its own), syncing the cache filesystem after each batch. Before a batch it waits until `Dirty` plus `Writeback` in
 `/proc/meminfo` is below 64 MiB (where the system reports it: Linux) and
 the machine is calm by the heavy-task busy check (runnable threads, IO
 pressure, memory pressure while swapping, `busy --quiet`).

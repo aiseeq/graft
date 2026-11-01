@@ -1,6 +1,7 @@
 package gocache
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -161,5 +162,41 @@ func TestTrimBatchesAndLeavesTheRemainderWhenAdmissionStops(t *testing.T) {
 	}
 	if batches != 2 || r.Removed != BatchEntries || r.Remaining != 5 {
 		t.Errorf("batches %d, result %+v", batches, r)
+	}
+}
+
+// TestTrimPutsAnEntryOverTheByteBoundInABatchOfItsOwn: an entry bigger than
+// BatchBytes is one removal; it closes the batch before it and goes alone,
+// as the README says.
+func TestTrimPutsAnEntryOverTheByteBoundInABatchOfItsOwn(t *testing.T) {
+	now := time.Now()
+	dir := cacheDir(t, now, nil)
+	for i, size := range []int64{3, BatchBytes + 1, 3} {
+		path := filepath.Join(dir, "00", strings.Repeat("a", 60)+fmt.Sprintf("%04x", i)+"-a")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f, err := os.Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Sparse: the size counts, the disk stays empty.
+		if err := errors.Join(f.Truncate(size), f.Close()); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, now.Add(-48*time.Hour), now.Add(-48*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var batches int
+	r, err := TrimWithOptions(dir, 25*time.Hour, now, Options{Apply: true, BeforeBatch: func() (bool, error) {
+		batches++
+		return true, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batches != 3 || r.Removed != 3 || r.RemovedBytes != BatchBytes+7 {
+		t.Errorf("batches %d, result %+v; want 3 batches, the big entry alone", batches, r)
 	}
 }
