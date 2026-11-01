@@ -2033,8 +2033,9 @@ deploy:
 
 `graft release` only tags a HEAD that every push remote already has. On a
 branch, it first pushes that branch to the remotes whose copy of it lacks HEAD
-(a branch fast-forwarded to pushed work); a branch that is already there, or
-behind its remote, is not pushed. A rejected branch push leaves no tag.
+(a branch fast-forwarded to pushed work); a branch that is already there,
+behind its remote, or absent from the remote is not pushed. A rejected branch
+push leaves no tag: fetch, bring the branch up to date and release again.
 
 ### Checks
 

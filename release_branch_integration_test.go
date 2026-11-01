@@ -60,7 +60,7 @@ func TestReleaseRefusesDivergedBranchWithoutTag(t *testing.T) {
 	f.run(other, "git", "push", "-q", "origin", "main")
 
 	out, code := f.graft("", "release")
-	if code == 0 || !strings.Contains(out, "push failed for 1 of 1 remotes") {
+	if code == 0 || !strings.Contains(out, "branch main was not pushed to origin, no tag is made: git fetch") {
 		t.Fatalf("diverged release: exit %d\n%s", code, out)
 	}
 	if _, code := f.tryGit("show-ref", "--verify", "--quiet", "refs/tags/v0.1.0"); code == 0 {
@@ -105,6 +105,24 @@ func TestReleaseBehindBranchTagsWithoutPush(t *testing.T) {
 	}
 	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main"); got != remoteMain {
 		t.Errorf("origin/main = %s, want it untouched at %s", got, remoteMain)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/tags/v0.1.0^{commit}"); got != head {
+		t.Errorf("remote tag points to %s, want %s", got, head)
+	}
+}
+
+// TestReleaseLeavesBranchAbsentFromRemote: a local branch on pushed work is
+// tagged, but release does not create it on the remote.
+func TestReleaseLeavesBranchAbsentFromRemote(t *testing.T) {
+	f := releaseBranchRepo(t)
+	f.git("checkout", "-q", "-b", "local-prep")
+	head := f.git("rev-parse", "HEAD")
+
+	if out, code := f.graft("", "release"); code != 0 {
+		t.Fatalf("graft release on a local branch: exit %d\n%s", code, out)
+	}
+	if _, code := f.exec(f.remote("origin"), "", "git", "show-ref", "--verify", "--quiet", "refs/heads/local-prep"); code == 0 {
+		t.Error("release created local-prep on the remote")
 	}
 	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/tags/v0.1.0^{commit}"); got != head {
 		t.Errorf("remote tag points to %s, want %s", got, head)
