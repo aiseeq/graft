@@ -245,8 +245,14 @@ func (a *App) Release(ctx context.Context, opts ReleaseOptions) error {
 			return err
 		}
 		if err == nil {
-			if err := a.push(repo, remotes, []string{"refs/heads/" + branch}, false, hasConfiguredFreeze(cfg)); err != nil {
+			behind, err := remotesWithoutHead(repo, remotes, branch)
+			if err != nil {
 				return err
+			}
+			if len(behind) > 0 {
+				if err := a.push(repo, behind, []string{"refs/heads/" + branch}, false, hasConfiguredFreeze(cfg)); err != nil {
+					return err
+				}
 			}
 		}
 		if _, err := repo.Git("tag", "-a", tag, "-m", tag); err != nil {
@@ -258,6 +264,31 @@ func (a *App) Release(ctx context.Context, opts ReleaseOptions) error {
 }
 
 // requirePublished refuses to tag a commit the remotes do not have yet.
+// remotesWithoutHead are the remotes whose copy of branch, as this clone last
+// saw it, lacks HEAD: a branch that already has it, or is ahead of it, needs
+// no push for the tag.
+func remotesWithoutHead(repo *gitx.Repo, remotes []string, branch string) ([]string, error) {
+	var behind []string
+	for _, r := range remotes {
+		ref := "refs/remotes/" + r + "/" + branch
+		exists, err := repo.RefExists(ref)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			has, err := repo.IsAncestor("HEAD", ref)
+			if err != nil {
+				return nil, err
+			}
+			if has {
+				continue
+			}
+		}
+		behind = append(behind, r)
+	}
+	return behind, nil
+}
+
 func requirePublished(repo *gitx.Repo, remotes []string) error {
 	published, err := repo.RemotesContaining("HEAD")
 	if err != nil {

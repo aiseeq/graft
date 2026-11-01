@@ -4,7 +4,6 @@ package iosched
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path"
 	"reflect"
@@ -47,7 +46,7 @@ func TestDecide(t *testing.T) {
 			}
 			if move {
 				want := []string{"5", "PIDs", "au", "1", "42", "Slice", "s", tt.wantSlice,
-					"BindsTo", "as", "1", tt.wantSource, "After", "as", "1", tt.wantSource,
+					"PartOf", "as", "1", tt.wantSource, "After", "as", "1", tt.wantSource,
 					"CollectMode", "s", "inactive-or-failed", "0"}
 				if properties := scopeProperties(got, 42); !reflect.DeepEqual(properties, want) {
 					t.Fatalf("scope properties = %q, want %q", properties, want)
@@ -79,19 +78,16 @@ func TestEnterSystemd(t *testing.T) {
 		t.Skip("test process is not in a scope under a user manager")
 	}
 	base := path.Join("/sys/fs/cgroup", cg)
-	limits := map[string]string{}
-	for _, key := range limitFiles {
-		value, readErr := os.ReadFile(path.Join(base, key))
-		if errors.Is(readErr, os.ErrNotExist) {
-			continue
-		}
-		if readErr != nil {
-			t.Fatalf("cannot inspect current scope limit %s: %v", key, readErr)
-		}
-		limits[key] = strings.TrimSpace(string(value))
+	limits, err := readLimits(base)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := decide(cg, limits, false, os.Getpid()); !ok {
-		t.Skip("test process is not in an unlimited scope under a user manager")
+	procs, err := os.ReadFile(path.Join(base, "cgroup.procs"))
+	if err != nil {
+		t.Fatalf("cannot read the processes of the scope: %v", err)
+	}
+	if _, ok := decide(cg, limits, soleProcess(string(procs), os.Getpid()), os.Getpid()); !ok {
+		t.Skip("test process is alone in its scope or the scope has a limit")
 	}
 	message, err := Enter(context.Background(), os.Getpid(), "")
 	if err != nil {

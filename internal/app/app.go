@@ -331,7 +331,7 @@ func (e *PushError) Error() string {
 	for _, r := range e.Failed {
 		retry = append(retry, retryPushCommand(r, e.Refs, e.Lease, e.NoFollowTags))
 	}
-	return fmt.Sprintf("push failed for %d of %d remotes (%s); the commit is made locally, retry with: %s",
+	return fmt.Sprintf("push failed for %d of %d remotes (%s); local refs are kept, retry with: %s",
 		len(e.Failed), e.Total, strings.Join(e.Failed, ", "), strings.Join(retry, "; "))
 }
 

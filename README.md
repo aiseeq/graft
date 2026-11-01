@@ -179,8 +179,12 @@ command whose load runs outside its process tree, such as an admission that
 starts an agent elsewhere; it is released the same way.
 
 After admission, Linux graft moves heavy work from an unlimited user scope
-into a shared `*-graft.slice` with `IOWeight=10`. It leaves services, scopes
-with memory or CPU limits, and systems without a user systemd manager in place.
+into a shared `*-graft.slice` with `IOWeight=10`: all heavy work of that slice
+shares the one weight. It leaves services, scopes with memory or CPU limits,
+a scope graft is alone in (`systemd-run --scope graft …`: the move would empty
+it and take the caller's handle away), and systems without a user systemd
+manager in place. The heavy scope is `PartOf` its source: stopping the source
+scope stops the work, while the caller exiting first leaves it running.
 
 `graft exec --heavy -- graft <task>` takes no queue slot itself: it starts the
 inner graft with `GRAFT_EXEC_HEAVY=1`, by which that graft runs its top-level
@@ -2027,7 +2031,10 @@ deploy:
   plain `vX.Y.Z` (such as `v1.0.0-rc1`) are ignored.
 - **none**: no version at all.
 
-`graft release` only tags a HEAD that every push remote already has.
+`graft release` only tags a HEAD that every push remote already has. On a
+branch, it first pushes that branch to the remotes whose copy of it lacks HEAD
+(a branch fast-forwarded to pushed work); a branch that is already there, or
+behind its remote, is not pushed. A rejected branch push leaves no tag.
 
 ### Checks
 

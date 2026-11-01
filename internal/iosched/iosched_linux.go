@@ -49,8 +49,8 @@ func decide(cgroup string, limits map[string]string, sole bool, pid int) (plan, 
 		return plan{}, false
 	}
 	// Alone in its scope (systemd-run --scope graft …), the move would leave
-	// the scope empty: systemd stops an empty scope, and BindsTo stops the
-	// heavy scope with it, killing the task.
+	// the scope empty: systemd drops an empty scope, and the caller's handle
+	// on the work (stopping its scope) would no longer reach it.
 	if sole {
 		return plan{}, false
 	}
@@ -64,9 +64,13 @@ func decide(cgroup string, limits map[string]string, sole bool, pid int) (plan, 
 	return plan{source: unit, slice: newSlice, scope: fmt.Sprintf("graft-heavy-%d.scope", pid)}, true
 }
 
+// scopeProperties make the heavy scope PartOf its source: stopping the source
+// scope stops the work, as when it ran there, while the source emptying on its
+// own (the caller exits, the work goes on) leaves it running. BindsTo would
+// stop it then too.
 func scopeProperties(p plan, pid int) []string {
 	return []string{"5", "PIDs", "au", "1", strconv.Itoa(pid), "Slice", "s", p.slice,
-		"BindsTo", "as", "1", p.source, "After", "as", "1", p.source,
+		"PartOf", "as", "1", p.source, "After", "as", "1", p.source,
 		"CollectMode", "s", "inactive-or-failed", "0"}
 }
 

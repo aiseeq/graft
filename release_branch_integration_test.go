@@ -82,3 +82,31 @@ func TestReleaseDetachedHeadStillRequiresPublishedCommit(t *testing.T) {
 		t.Fatalf("detached release: exit %d\n%s", code, out)
 	}
 }
+
+// TestReleaseBehindBranchTagsWithoutPush: a branch behind its remote already
+// has HEAD there; release tags it without pushing the branch.
+func TestReleaseBehindBranchTagsWithoutPush(t *testing.T) {
+	f := releaseBranchRepo(t)
+	head := f.git("rev-parse", "HEAD")
+
+	other := filepath.Join(f.base, "other")
+	f.run(f.base, "git", "clone", "--quiet", "--branch", "main", f.remote("origin"), other)
+	f.run(other, "git", "config", "user.name", "Test User")
+	f.run(other, "git", "config", "user.email", "test@example.invalid")
+	writeFile(t, filepath.Join(other, "remote.txt"), "remote\n")
+	f.run(other, "git", "add", "-A")
+	f.run(other, "git", "commit", "-q", "-m", "feat: remote")
+	f.run(other, "git", "push", "-q", "origin", "main")
+	remoteMain := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main")
+	f.git("fetch", "-q", "origin")
+
+	if out, code := f.graft("", "release"); code != 0 {
+		t.Fatalf("graft release behind its remote: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main"); got != remoteMain {
+		t.Errorf("origin/main = %s, want it untouched at %s", got, remoteMain)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/tags/v0.1.0^{commit}"); got != head {
+		t.Errorf("remote tag points to %s, want %s", got, head)
+	}
+}
