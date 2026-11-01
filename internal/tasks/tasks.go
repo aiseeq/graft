@@ -57,6 +57,15 @@ const MarkerEnv = "GRAFT_COMMIT"
 // top-level task instead of holding an outer queue slot.
 const ExecHeavyEnv = "GRAFT_EXEC_HEAVY"
 
+// ExecMemoryMaxEnv passes graft exec --heavy --memory-max to the graft it
+// starts, which admits the work itself: the larger of it and the inner
+// task's own ceiling holds.
+const ExecMemoryMaxEnv = "GRAFT_EXEC_MEMORY_MAX"
+
+// HeldScopeEnv names, to the steps of heavy work, the scope graft holds it
+// in under a memory ceiling: a graft they start may raise that ceiling.
+const HeldScopeEnv = "GRAFT_HEAVY_SCOPE"
+
 // ArgsPlaceholder in a step receives the arguments given after --.
 const ArgsPlaceholder = config.ArgsPlaceholder
 
@@ -985,7 +994,7 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 	if gs.run != nil {
 		run := func() error { return gs.run(ctx) }
 		if r.gateSplit {
-			if err := r.enterSplit(ctx, stats.GateTask); err != nil {
+			if err := r.enterSplit(ctx, stats.GateTask, ""); err != nil {
 				return err
 			}
 		}
@@ -1286,11 +1295,13 @@ func (r *Runner) steps(ctx context.Context, name string, t *config.Task, args []
 // waits for this machine, the rest run under its admission to the gate's
 // end, so that a busy machine does not queue each cheap step again. Its
 // lock on the queue goes after load.settle as any admission's.
-func (r *Runner) enterSplit(ctx context.Context, name string) error {
+func (r *Runner) enterSplit(ctx context.Context, name, memoryMax string) error {
 	if r.splitLeave != nil {
-		return nil
+		// Admitted already: a task of the gate asking for more raises the
+		// ceiling.
+		return r.holdCeiling(ctx, name, memoryMax)
 	}
-	leave, err := r.enterHeavy(ctx, name, "")
+	leave, err := r.enterHeavy(ctx, name, memoryMax)
 	if err != nil {
 		return err
 	}
@@ -1315,7 +1326,7 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 	}
 	frame.remote = remote
 	if !remote {
-		if err := r.enterSplit(ctx, frame.task); err != nil {
+		if err := r.enterSplit(ctx, frame.task, taskMemoryMax(t)); err != nil {
 			frame.remote = wasRemote
 			return nil, err
 		}
@@ -1331,7 +1342,7 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 				stepErr = errors.Join(stepErr, err)
 			} else {
 				frame.remote = false
-				if err := r.enterSplit(ctx, frame.task); err != nil {
+				if err := r.enterSplit(ctx, frame.task, taskMemoryMax(t)); err != nil {
 					stepErr = err
 				} else {
 					split := r.gateSplit
@@ -1599,6 +1610,9 @@ func (r *Runner) execCommand(ctx context.Context, dir string, argv []string, t *
 	env = r.heavyEnv(env, t, threads)
 	if innerGraft {
 		env = append(env, ExecHeavyEnv+"=1")
+		if r.ExecMemoryMax != "" {
+			env = append(env, ExecMemoryMaxEnv+"="+r.ExecMemoryMax)
+		}
 	}
 	commandArgv, env, err := trimRun(ctx, dir, s.Argv, env, remote)
 	if err != nil {
@@ -2348,7 +2362,7 @@ func BaseEnv() ([]string, error) {
 	// it into the key of a test that calls os.Getwd, and the same code
 	// called from elsewhere would miss the test cache. A shell sets its own.
 	// Non-nil even when empty: the runner caches it and nil means not read yet.
-	return append([]string{}, gitx.Without(os.Environ(), append(gitVars, MarkerEnv, ExecHeavyEnv, "PWD"))...), nil
+	return append([]string{}, gitx.Without(os.Environ(), append(gitVars, MarkerEnv, ExecHeavyEnv, ExecMemoryMaxEnv, HeldScopeEnv, "PWD"))...), nil
 }
 
 // enterHeavy admits a heavy task run on this machine, unless a running one
@@ -2374,12 +2388,7 @@ func (r *Runner) enterHeavy(ctx context.Context, name, memoryMax string) (leave 
 			f.reserveRelease = admitted
 		}
 	}
-	req := iosched.Request{Value: memoryMax, Source: "memory_max of task " + name}
-	if name == ExecTask {
-		req.Source = "--memory-max"
-	}
-	place, err := iosched.Configure(ctx, os.Getpid(), os.Getenv(loadgate.ProcEnv), req)
-	if err != nil {
+	if err := r.holdCeiling(ctx, name, memoryMax); err != nil {
 		releaseErr := release()
 		if releaseErr != nil {
 			err = errors.Join(err, fmt.Errorf("release heavy admission: %w", releaseErr))
@@ -2389,6 +2398,28 @@ func (r *Runner) enterHeavy(ctx context.Context, name, memoryMax string) (leave 
 		}
 		return nil, err
 	}
+	r.heavy++
+	return func() error {
+		r.heavy--
+		return release()
+	}, nil
+}
+
+// holdCeiling places the heavy work of task name under the memory ceiling
+// memoryMax asks for ("" for the default), raising the one graft already
+// holds it under when that is lower.
+func (r *Runner) holdCeiling(ctx context.Context, name, memoryMax string) error {
+	req := iosched.Request{Value: memoryMax, Source: "memory_max of task " + name, Held: os.Getenv(HeldScopeEnv)}
+	if name == ExecTask {
+		req.Source = "--memory-max"
+	}
+	if outer := os.Getenv(ExecMemoryMaxEnv); outer != "" {
+		req.Outer, req.OuterSource = outer, "--memory-max of the graft exec that started this graft"
+	}
+	place, err := iosched.Configure(ctx, os.Getpid(), os.Getenv(loadgate.ProcEnv), req)
+	if err != nil {
+		return err
+	}
 	if place.Ceiling > 0 {
 		r.heavyPlace = place
 	}
@@ -2396,11 +2427,7 @@ func (r *Runner) enterHeavy(ctx context.Context, name, memoryMax string) (leave 
 		fmt.Fprintf(r.Stderr, "graft: %s: %s\n", name, place.Message)
 	}
 	r.noCeilingNoted = r.noCeilingNoted || place.NoCeiling
-	r.heavy++
-	return func() error {
-		r.heavy--
-		return release()
-	}, nil
+	return nil
 }
 
 // AdmittedEnv marks the steps of a heavy task this machine admitted: a graft
@@ -2480,6 +2507,9 @@ func (r *Runner) heavyEnv(env []string, t *config.Task, threads string) []string
 	}
 	if r.heavy > 0 && !r.frames[len(r.frames)-1].remote {
 		env = append(env, AdmittedEnv+"=1")
+		if r.heavyPlace.Scope != "" {
+			env = append(env, HeldScopeEnv+"="+r.heavyPlace.Scope)
+		}
 	}
 	return env
 }

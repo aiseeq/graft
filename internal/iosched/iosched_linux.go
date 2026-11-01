@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -94,14 +95,15 @@ const (
 	heavyHeld             // a scope graft gave a ceiling: raise it, never lower
 )
 
-// holds says how graft holds the ceiling of the scope cgroup names; owned is
-// the scope this process gave a ceiling when it was alone in it.
-func holds(cgroup string, limits map[string]string, sole bool, owned string) held {
+// holds says how graft holds the ceiling of the scope cgroup names; owned
+// are the scopes this process or a parent graft gave a ceiling (a scope it
+// was alone in included).
+func holds(cgroup string, limits map[string]string, sole bool, owned ...string) held {
 	unit, parent, ok := userScope(cgroup)
 	if !ok {
 		return notHeld
 	}
-	if strings.HasSuffix(parent, "-graft.slice") && strings.HasPrefix(unit, "graft-heavy-") || unit == owned {
+	if strings.HasSuffix(parent, "-graft.slice") && strings.HasPrefix(unit, "graft-heavy-") || slices.Contains(owned, unit) {
 		return heavyHeld
 	}
 	if sole && limitedBy(limits) == "" {
@@ -139,16 +141,29 @@ func sliceProperties(max int64) []string {
 
 func sliceCeiling(total int64) int64 { return total * SlicePercent / 100 }
 
-// ceilingOf resolves the request against total RAM and says where it came from.
+// ceilingOf resolves the request against total RAM, the larger of its own
+// value and the outer one, and says where it came from. The ceiling is whole
+// pages, as systemd keeps it, so that a later request for the same compares
+// equal.
 func ceilingOf(req Request, total int64) (int64, string, error) {
-	if req.Value == "" {
-		return total * DefaultPercent / 100, fmt.Sprintf("%d%% of RAM, the default", DefaultPercent), nil
+	page := int64(os.Getpagesize())
+	if !req.explicit() {
+		return total / 100 * DefaultPercent / page * page, fmt.Sprintf("%d%% of RAM, the default", DefaultPercent), nil
 	}
-	ceiling, err := memorymax.Resolve(req.Value, total)
-	if err != nil {
-		return 0, "", fmt.Errorf("%s %q: %w", req.Source, req.Value, err)
+	best, source := int64(0), ""
+	for _, c := range []struct{ value, source string }{{req.Value, req.Source}, {req.Outer, req.OuterSource}} {
+		if c.value == "" {
+			continue
+		}
+		ceiling, err := memorymax.Resolve(c.value, total)
+		if err != nil {
+			return 0, "", fmt.Errorf("%s %q: %w", c.source, c.value, err)
+		}
+		if ceiling > best {
+			best, source = ceiling, c.source+" "+c.value
+		}
 	}
-	return ceiling, fmt.Sprintf("%s %s", req.Source, req.Value), nil
+	return max(best/page*page, page), source, nil
 }
 
 func configure(ctx context.Context, pid int, procRoot string, req Request) (Placement, error) {
@@ -186,28 +201,15 @@ func configure(ctx context.Context, pid int, procRoot string, req Request) (Plac
 		return Placement{}, fmt.Errorf("read the processes of the scope: %w", err)
 	}
 	sole := soleProcess(string(procs), pid)
-	switch holds(cg, limits, sole, ownScope) {
+	switch holds(cg, limits, sole, ownScope, req.Held) {
 	case heavyHeld:
 		return raise(ctx, cg, limits, ceiling, source, total)
 	case soleScope:
-		unit := path.Base(cg)
-		if err := setCeiling(ctx, unit, ceiling); err != nil {
-			return Placement{}, fmt.Errorf("set memory ceiling on scope %s: %w", unit, err)
-		}
-		ownScope = unit
-		return Placement{Message: fmt.Sprintf("alone in %s: memory ceiling %s (%s) set on it; with OOMPolicy=stop, systemd's default, the first kill at the ceiling also stops the scope, graft with it (systemd-run -p OOMPolicy=continue keeps it running)", unit, Bytes(ceiling), source),
-			Ceiling: ceiling, Source: source, Scope: unit}, nil
+		return holdSole(ctx, path.Base(cg), ceiling, source)
 	}
 	move, ok := decide(cg, limits, sole, pid, ceiling)
 	if !ok {
-		if move.limited != "" {
-			return Placement{Message: fmt.Sprintf("not moved: scope has %s limit", move.limited)}, nil
-		}
-		limited, err := memoryLimited(procRoot, cg)
-		if err != nil || limited {
-			return Placement{}, err
-		}
-		return Placement{Message: fmt.Sprintf("no memory ceiling: graft cannot place %s, and neither it nor a parent has memory.max", cg), NoCeiling: true}, nil
+		return unplaced(procRoot, cg, move.limited, req.explicit(), source)
 	}
 	sliceMax := sliceCeiling(total)
 	if err := ensureSlice(ctx, move.slice, sliceMax); err != nil {
@@ -223,6 +225,47 @@ func configure(ctx context.Context, pid int, procRoot string, req Request) (Plac
 		Message: fmt.Sprintf("moved from %s to %s in %s (IOWeight=%d, memory ceiling %s: %s)", move.source, move.scope, move.slice, ioWeight, Bytes(ceiling), source),
 		Ceiling: ceiling, Source: source, Scope: move.scope, Slice: move.slice, SliceMax: sliceMax,
 	}, nil
+}
+
+// holdSole gives the scope graft is alone in the ceiling and says, when its
+// OOMPolicy is not continue, that a kill at it stops graft too.
+func holdSole(ctx context.Context, unit string, ceiling int64, source string) (Placement, error) {
+	if err := setCeiling(ctx, unit, ceiling); err != nil {
+		return Placement{}, fmt.Errorf("set memory ceiling on scope %s: %w", unit, err)
+	}
+	ownScope = unit
+	message := fmt.Sprintf("alone in %s: memory ceiling %s (%s) set on it", unit, Bytes(ceiling), source)
+	policy, err := oomPolicy(ctx, unit)
+	if err != nil {
+		return Placement{}, err
+	}
+	if policy != "continue" {
+		message += fmt.Sprintf("; with its OOMPolicy=%s, the first kill at the ceiling also stops the scope, graft with it (systemd-run -p OOMPolicy=continue keeps it running)", policy)
+	}
+	return Placement{Message: message, Ceiling: ceiling, Source: source, Scope: unit}, nil
+}
+
+// unplaced is the placement of work graft neither moves nor holds: limited
+// names the limit of its scope, "" for none; explicit says the ceiling source
+// names was asked for, and so is said not applied.
+func unplaced(procRoot, cg, limited string, explicit bool, source string) (Placement, error) {
+	skip := ""
+	if explicit {
+		skip = fmt.Sprintf("; %s not applied", source)
+	}
+	if limited != "" {
+		return Placement{Message: fmt.Sprintf("not moved: scope has %s limit%s", limited, skip)}, nil
+	}
+	held, err := memoryLimited(procRoot, cg)
+	switch {
+	case err != nil:
+		return Placement{}, err
+	case held && !explicit:
+		return Placement{}, nil
+	case held:
+		return Placement{Message: fmt.Sprintf("memory ceiling %s not applied: graft cannot place %s, and memory.max of it or a parent holds it", source, cg)}, nil
+	}
+	return Placement{Message: fmt.Sprintf("no memory ceiling: graft cannot place %s, and neither it nor a parent has memory.max%s", cg, skip), NoCeiling: true}, nil
 }
 
 // raise lifts the ceiling of a scope graft holds to ceiling when it is
@@ -341,6 +384,15 @@ func ensureSlice(ctx context.Context, name string, max int64) error {
 	return nil
 }
 
+// oomPolicy is the OOMPolicy of a loaded user unit.
+func oomPolicy(ctx context.Context, unit string) (string, error) {
+	out, err := userCommand(ctx, "systemctl", "--user", "show", "--property=OOMPolicy", "--value", unit).Output()
+	if err != nil {
+		return "", fmt.Errorf("read OOMPolicy of %s: %w", unit, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // setScope gives a running scope the memory ceiling, for this boot only.
 func setScope(ctx context.Context, name string, ceiling int64) error {
 	return manager(ctx, "SetUnitProperties", "sba(sv)", append([]string{name, "true", "2"}, ceilingProperties(ceiling)...)...)
@@ -388,17 +440,22 @@ func transient(ctx context.Context, name string, mode string, args ...string) er
 // manager calls a method of the user systemd manager by busctl.
 func manager(ctx context.Context, method, signature string, args ...string) error {
 	all := append([]string{"--user", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", method, signature}, args...)
-	cmd := exec.CommandContext(ctx, "busctl", all...)
-	if os.Getenv("XDG_RUNTIME_DIR") == "" && os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" {
-		// busctl --user finds the user bus by these; the manager the cgroup
-		// path names runs for this user, with its bus in the user's runtime
-		// directory.
-		cmd.Env = append(os.Environ(), fmt.Sprintf("XDG_RUNTIME_DIR=/run/user/%d", os.Getuid()))
-	}
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := userCommand(ctx, "busctl", all...).CombinedOutput(); err != nil {
 		return fmt.Errorf("busctl: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// userCommand is a command that talks to the user's systemd manager.
+func userCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if os.Getenv("XDG_RUNTIME_DIR") == "" && os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" {
+		// --user finds the user bus by these; the manager the cgroup path
+		// names runs for this user, with its bus in the user's runtime
+		// directory.
+		cmd.Env = append(os.Environ(), fmt.Sprintf("XDG_RUNTIME_DIR=/run/user/%d", os.Getuid()))
+	}
+	return cmd
 }
 
 // firstField is the first word of a cgroup file's value, "" for none.

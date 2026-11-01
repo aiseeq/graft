@@ -4,6 +4,7 @@ package memorymax
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -33,7 +34,7 @@ func Parse(value string) (bytes int64, percent int, err error) {
 	if !ok || err != nil || n <= 0 || strconv.FormatInt(n, 10) != digits {
 		return 0, 0, errSyntax
 	}
-	if n > (1<<63-1)>>shift {
+	if n > math.MaxInt64>>shift {
 		return 0, 0, fmt.Errorf("size %s is too large", value)
 	}
 	return n << shift, 0, nil

@@ -139,8 +139,10 @@ func TestHolds(t *testing.T) {
 		{name: "alone in a service", cgroup: user + "app.slice/worker-1.service", sole: true, want: notHeld},
 		{name: "shared scope", cgroup: user + "agents.slice/agent-1.scope", want: notHeld},
 		{name: "scope named like heavy outside the graft slice", cgroup: user + "agents.slice/graft-heavy-7.scope", want: notHeld},
+		{name: "a parent graft's sole scope", cgroup: user + "app.slice/run-1.scope", owned: "run-1.scope", limits: map[string]string{"memory.max": "314572800"}, want: heavyHeld},
+		{name: "a parent graft's scope, another one here", cgroup: user + "app.slice/run-2.scope", owned: "run-1.scope", limits: map[string]string{"memory.max": "314572800"}, want: notHeld},
 	} {
-		if got := holds(c.cgroup, c.limits, c.sole, c.owned); got != c.want {
+		if got := holds(c.cgroup, c.limits, c.sole, "", c.owned); got != c.want {
 			t.Errorf("%s: holds = %d, want %d", c.name, got, c.want)
 		}
 	}
@@ -185,6 +187,22 @@ func TestCeilingOf(t *testing.T) {
 	}
 	if _, _, err := ceilingOf(Request{Value: "12GB", Source: "--memory-max"}, 100<<30); err == nil {
 		t.Error("12GB accepted")
+	}
+	// The graft exec that started this graft asked for more or less: the
+	// larger holds, with its source.
+	outer := Request{Value: "300M", Source: "--memory-max", Outer: "1G", OuterSource: "outer"}
+	if got, source, err := ceilingOf(outer, 100<<30); err != nil || got != 1<<30 || source != "outer 1G" {
+		t.Errorf("300M inside 1G = %d, %q, %v", got, source, err)
+	}
+	outer.Value, outer.Outer = "1G", "300M"
+	if got, source, err := ceilingOf(outer, 100<<30); err != nil || got != 1<<30 || source != "--memory-max 1G" {
+		t.Errorf("1G inside 300M = %d, %q, %v", got, source, err)
+	}
+	if got, _, err := ceilingOf(Request{Outer: "45%", OuterSource: "outer"}, 100<<30); err != nil || got != 45<<30 {
+		t.Errorf("45%% outer, none here = %d, %v", got, err)
+	}
+	if _, _, err := ceilingOf(Request{Outer: "x", OuterSource: "outer"}, 100<<30); err == nil {
+		t.Error("bad outer accepted")
 	}
 }
 

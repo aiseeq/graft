@@ -192,18 +192,24 @@ build then dies alone at the ceiling instead of pushing the machine into swap,
 and graft, which systemd would otherwise stop with the whole scope, reports it.
 A task sets its own ceiling with `memory_max: 12G` (binary K, M, G) or
 `memory_max: 60%` beside `heavy: true`; `graft exec --heavy --memory-max 12G
--- …` does it for one command. A heavy scope's ceiling only goes up: a later
-heavy task of the same graft, or a graft started inside it, raises it to its
-own when that is larger. All heavy work of a `*-graft.slice` together stays
-under `MemoryMax` 50% of RAM. A scope graft is alone in and that has no limits
-gets `MemoryMax` and `MemorySwapMax=0` in place; systemd does not change
+-- …` does it for one command, and for the graft it starts (`graft exec
+--heavy --memory-max 16G -- graft all`: the larger of 16G and the task's
+own). A heavy scope's ceiling only goes up: a later heavy task of the same
+graft, a task of a gate split between machines, or a graft started inside it
+(`GRAFT_HEAVY_SCOPE` names the scope to its steps) raises it to its own when
+that is larger. All heavy work of a `*-graft.slice` together stays under
+`MemoryMax` 50% of RAM. A scope graft is alone in and that has no limits gets
+`MemoryMax` and `MemorySwapMax=0` in place; systemd does not change
 `OOMPolicy` on a running scope, and with its default, stop, the first kill at
 the ceiling stops the scope, graft with it (graft still reports the ceiling,
-exit 125); start it with `-p OOMPolicy=continue` to keep graft running. Where graft sets no ceiling and nothing above its
-cgroup has `memory.max`, it says so once: `no memory ceiling: …`.
+exit 125); start it with `-p OOMPolicy=continue` to keep graft running. Where
+graft sets no ceiling and nothing above its cgroup has `memory.max`, it says
+so once: `no memory ceiling: …`; an asked ceiling it cannot set (a service,
+a scope with its own limits) is named as not applied.
 
 A step during which the kernel killed processes of the heavy scope fails,
-even when it exited 0, and the error says which limit it was:
+even when it exited 0 (`graft exec` then exits 125), and the error says which
+limit it was:
 
     heavy scope graft-heavy-123.scope hit its memory ceiling 12.2 GiB (40% of RAM, the default): the kernel killed 1 process(es) during this step; to give it more, set memory_max of task test in .graft.yaml
 

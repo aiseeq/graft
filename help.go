@@ -75,9 +75,9 @@ var commands = []command{
 			"--env: with --heavy, a variable of the caller's that remote_heavy's host gets too (GRAFT_PASS_ENV, for the grafts the command starts too): the host gets the task's env, the threads and GOOS, GOARCH, GOFLAGS, CGO_ENABLED, GOEXPERIMENT, not the caller's other variables, so FOO=1 graft exec --heavy -- go test does not see FOO there; pass it with --env FOO, or keep the command here with --local.\n" +
 			"--settle: with --heavy, hold a separate FIFO lock for this long after the command starts, or until it ends if sooner; only another --settle waits for it. The heavy-task queue still uses load.settle.\n" +
 			"--cores: with --heavy, reserve this many cores (above 0, at most the machine's threads) instead of the estimate from the command's history, for a command whose load runs outside its process tree; released the same way.\n\n" +
-			"--memory-max: with --heavy, set the memory ceiling as a size such as 12G or a percentage of RAM; the default is 40% of RAM, a larger ceiling of an enclosing heavy scope stays.\n\n" +
+			"--memory-max: with --heavy, set the memory ceiling as a size such as 12G or a percentage of RAM; the default is 40% of RAM. A graft the command starts gets it too, the larger of it and the graft's own holding; a larger ceiling of an enclosing heavy scope stays.\n\n" +
 			"Exit status: the command's, 128 and the signal for one a signal ended; on remote_heavy's host, the one its run gives.\n" +
-			"  125  graft itself: a usage error, -C, the config, the queue, remote_heavy's run that does not start, an interrupt that ended the command\n" +
+			"  125  graft itself: a usage error, -C, the config, the queue, remote_heavy's run that does not start, an interrupt that ended the command, a command that exited 0 while the kernel killed processes of its heavy scope at a memory limit\n" +
 			"  126  the command was found but not started\n" +
 			"  127  the command was not found\n" +
 			"126 and 127 come with the line graft: exec: start <command>: …, which a command exiting 126 or 127 itself has not."},

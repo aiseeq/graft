@@ -17,10 +17,18 @@ const (
 
 // Request is the memory ceiling heavy work asks for: Value as memory_max
 // takes it ("12G", "40%"), "" for the default; Source names where it was set
-// (memory_max of task X, --memory-max), for the lines that cite it.
+// (memory_max of task X, --memory-max), for the lines that cite it. Outer is
+// the ceiling of the graft exec --heavy that started this graft, with its
+// OuterSource: the larger of the two holds. Held is the scope a parent graft
+// holds the work in: this graft may raise its ceiling.
 type Request struct {
-	Value, Source string
+	Value, Source      string
+	Outer, OuterSource string
+	Held               string
 }
+
+// explicit says the request names a ceiling, not the default.
+func (r Request) explicit() bool { return r.Value != "" || r.Outer != "" }
 
 // Placement is what Configure did with the cgroup of the heavy work.
 type Placement struct {
