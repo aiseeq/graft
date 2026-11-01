@@ -3,24 +3,31 @@ package testdb
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
+	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
 // testPrefix names the databases of this test binary: the test runs of two
 // checkouts share the server, and a common name would have each drop the
 // other's databases.
-var testPrefix = fmt.Sprintf("graft_testdb_test_%d", os.Getpid())
+var testPrefix = fmt.Sprintf("%s%d", testBinaryPrefix, os.Getpid())
 
-// TestMain drops the source and the template of this binary after its tests.
+// TestMain drops the databases of this binary after its tests, and those
+// test binaries that are no longer running left behind.
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if admin := os.Getenv("GRAFT_TEST_PG_DSN"); admin != "" {
-		if err := dropTestDatabases(admin); err != nil {
+		if err := dropTestDatabases(admin, leftBehind); err != nil {
 			fmt.Fprintln(os.Stderr, "testdb:", err)
 			code = 1
 		}
@@ -28,18 +35,73 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func dropTestDatabases(admin string) error {
+// dropTestDatabases drops the test databases drop picks: the source, the
+// template and the copies. A copy is dropped as an orphan only by a binary of
+// the same prefix, and no later binary has this one's pid.
+func dropTestDatabases(admin string, drop func(name string) bool) error {
 	db, err := sql.Open("pgx", admin)
 	if err != nil {
 		return fmt.Errorf("opening the admin database: %w", err)
 	}
 	defer db.Close()
-	for _, name := range []string{testPrefix + templateSuffix, testPrefix + sourceSuffix} {
-		if _, err := db.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)"); err != nil {
+	rows, err := db.Query("SELECT datname FROM pg_database WHERE starts_with(datname, $1)", testBinaryPrefix)
+	if err != nil {
+		return fmt.Errorf("listing the test databases: %w", err)
+	}
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return fmt.Errorf("listing the test databases: %w", err)
+		}
+		names = append(names, name)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return fmt.Errorf("listing the test databases: %w", err)
+	}
+	for _, name := range names {
+		if !drop(name) {
+			continue
+		}
+		if _, err := db.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)"); err != nil { //nolint:query-in-loop // DROP DATABASE takes one database
 			return fmt.Errorf("dropping %s: %w", name, err)
 		}
 	}
 	return nil
+}
+
+// testBinaryPrefix starts the names of every test binary's databases, the
+// pid after it.
+const testBinaryPrefix = "graft_testdb_test_"
+
+var testBinaryRe = regexp.MustCompile(`^` + testBinaryPrefix + `([0-9]+)_`)
+
+// leftBehind reports whether name is a database of this binary or of a test
+// binary that is no longer running on this machine.
+func leftBehind(name string) bool {
+	m := testBinaryRe.FindStringSubmatch(name)
+	if m == nil {
+		return false
+	}
+	pid, err := strconv.Atoi(m[1])
+	if err != nil {
+		return false
+	}
+	return pid == os.Getpid() || !running(pid)
+}
+
+// running reports whether a process with pid runs here. On Windows finding
+// the process opens it, so a found one runs.
+func running(pid int) bool {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	return p.Signal(syscall.Signal(0)) == nil
 }
 
 // source prepares a source database with a migration version and the extra
@@ -523,6 +585,69 @@ func TestOrphanCopiesAreDropped(t *testing.T) {
 	for name, kept := range names {
 		if exists(t, db, name) != kept {
 			t.Errorf("%s: kept %v, want %v", name, !kept, kept)
+		}
+	}
+}
+
+// TestDropsWhatFinishedBinariesLeft: the copies of a binary that ended carry
+// its pid in the prefix, and no later binary drops them as orphans; the
+// cleanup drops them, and leaves a running binary's databases alone.
+func TestDropsWhatFinishedBinariesLeft(t *testing.T) {
+	admin := os.Getenv("GRAFT_TEST_PG_DSN")
+	if admin == "" {
+		t.Skip("GRAFT_TEST_PG_DSN is not set: run graft test")
+	}
+	ended := exec.Command("true")
+	if err := ended.Run(); err != nil {
+		t.Fatal(err)
+	}
+	dead := fmt.Sprintf("%s%d_copy_000000000000p00000000000", testBinaryPrefix, ended.Process.Pid)
+	live := fmt.Sprintf("%s%d_copy_000000000000p00000000000", testBinaryPrefix, os.Getppid())
+	db, err := sql.Open("pgx", admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Registered first, it runs after the drops below.
+	t.Cleanup(func() { db.Close() })
+	for _, name := range []string{dead, live} {
+		if _, err := db.Exec("CREATE DATABASE " + name); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if _, err := db.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)"); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	ours := func(name string) bool { return (name == dead || name == live) && leftBehind(name) }
+	if err := dropTestDatabases(admin, ours); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]bool{dead: false, live: true} {
+		var n int
+		if err := db.QueryRow("SELECT count(*) FROM pg_database WHERE datname = $1", name).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if (n == 1) != want {
+			t.Errorf("%s: present=%v, want %v", name, n == 1, want)
+		}
+	}
+}
+
+func TestLeftBehind(t *testing.T) {
+	ended := exec.Command("true")
+	if err := ended.Run(); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]bool{
+		fmt.Sprintf("%s%d_template", testBinaryPrefix, os.Getpid()):     true,
+		fmt.Sprintf("%s%d_copy_x", testBinaryPrefix, ended.Process.Pid): true,
+		fmt.Sprintf("%s%d_copy_x", testBinaryPrefix, os.Getppid()):      false,
+		"graft_testdb_projecta_source":                                  false,
+		testBinaryPrefix + "x_copy":                                     false,
+	} {
+		if got := leftBehind(name); got != want {
+			t.Errorf("leftBehind(%q) = %v, want %v", name, got, want)
 		}
 	}
 }
