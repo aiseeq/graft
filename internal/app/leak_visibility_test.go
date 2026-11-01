@@ -19,10 +19,18 @@ func TestGitHubRepoURLs(t *testing.T) {
 		"ssh://github.com/owner/projectA",
 		"git@github.com:owner/projectA.git",
 		"git@github.com:owner/projectA",
+		"ssh://git@github.com:22/owner/projectA.git",
+		"https://GitHub.com/owner/projectA.git",
+		"git@github.com:/owner/projectA.git",
 	} {
-		owner, repo, ok, err := githubRepo(raw)
-		if err != nil || !ok || owner != "owner" || repo != "projectA" {
-			t.Errorf("githubRepo(%q) = %q, %q, %v, %v", raw, owner, repo, ok, err)
+		owner, repo, ok := githubRepo(raw)
+		if !ok || owner != "owner" || repo != "projectA" {
+			t.Errorf("githubRepo(%q) = %q, %q, %v", raw, owner, repo, ok)
+		}
+	}
+	for _, raw := range []string{"git@gitlab.com:owner/projectA.git", "https://github.com/owner", "/srv/git/projectA.git"} {
+		if _, _, ok := githubRepo(raw); ok {
+			t.Errorf("githubRepo(%q) took it for a GitHub repository", raw)
 		}
 	}
 }
@@ -71,8 +79,13 @@ func TestGitHubVisibilityControlsLeakCheck(t *testing.T) {
 	if err != nil || !public || !strings.Contains(stderr.String(), "gh unavailable") || !strings.Contains(stderr.String(), "private_remotes") {
 		t.Fatalf("failed lookup: public=%v err=%v stderr=%q", public, err, stderr.String())
 	}
+	// A public prefix on another host is public by the prefix alone, gh
+	// not asked.
 	calls = 0
-	if public, err := remoteIsPublic(context.Background(), "https://code.example/owner/projectA", l, &stderr); err != nil || public || calls != 0 {
+	runGitHubVisibility = func(context.Context, string, string) (string, error) { calls++; return "private", nil }
+	other := *l
+	other.PublicRemotes = append(other.PublicRemotes, "code.example/owner/")
+	if public, err := remoteIsPublic(context.Background(), "https://code.example/owner/projectA", &other, &stderr); err != nil || !public || calls != 0 {
 		t.Fatalf("non-GitHub URL: public=%v err=%v calls=%d", public, err, calls)
 	}
 }

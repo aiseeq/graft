@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/url"
 	"os/exec"
 	"strings"
 	"sync"
@@ -35,37 +34,22 @@ var visibilityCache = struct {
 	values map[string]string
 }{values: map[string]string{}}
 
-func githubRepo(urlText string) (string, string, bool, error) {
-	text := strings.TrimSpace(urlText)
-	var path string
-	if strings.Contains(text, "://") {
-		u, err := url.Parse(text)
-		if err != nil {
-			return "", "", false, fmt.Errorf("parsing repository URL: %w", err)
-		}
-		if !strings.EqualFold(u.Hostname(), "github.com") {
-			return "", "", false, nil
-		}
-		path = u.Path
-	} else {
-		if at := strings.LastIndex(text, "@"); at >= 0 {
-			text = text[at+1:]
-		}
-		host, p, ok := strings.Cut(text, ":")
-		if !ok || !strings.EqualFold(host, "github.com") {
-			return "", "", false, nil
-		}
-		path = p
+// githubRepo is the owner and name of a GitHub repository URL; ok is false
+// for another host or a path that is not owner/name.
+func githubRepo(urlText string) (owner, name string, ok bool) {
+	rest, found := strings.CutPrefix(userconfig.NormalizeRemote(strings.TrimSpace(urlText)), "github.com/")
+	if !found {
+		return "", "", false
 	}
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", false, nil
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) != 2 || parts[0] == "" {
+		return "", "", false
 	}
-	parts[1] = strings.TrimSuffix(parts[1], ".git")
-	if parts[1] == "" {
-		return "", "", false, nil
+	name = strings.TrimSuffix(parts[1], ".git")
+	if name == "" {
+		return "", "", false
 	}
-	return parts[0], parts[1], true, nil
+	return parts[0], name, true
 }
 
 func remoteIsPublic(ctx context.Context, url string, l *userconfig.Leaks, log io.Writer) (bool, error) {
@@ -75,10 +59,7 @@ func remoteIsPublic(ctx context.Context, url string, l *userconfig.Leaks, log io
 	if !l.GitHubVisibility {
 		return true, nil
 	}
-	owner, name, github, err := githubRepo(url)
-	if err != nil {
-		return false, err
-	}
+	owner, name, github := githubRepo(url)
 	if !github {
 		return true, nil
 	}

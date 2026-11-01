@@ -391,22 +391,42 @@ func checkRemotePrefixes(path, key string, prefixes []string) error {
 }
 
 // RemoteIsPublic reports whether a remote URL falls under one of the public
-// prefixes and under none of the private ones. scp-like (git@host:path) and
-// URL forms compare as host/path.
+// prefixes and under none of the private ones, compared as NormalizeRemote
+// puts them.
 func (l *Leaks) RemoteIsPublic(url string) bool {
-	norm := url
-	if _, rest, ok := strings.Cut(norm, "://"); ok {
-		norm = rest
-	} else if host, p, ok := strings.Cut(norm, ":"); ok && !strings.Contains(host, "/") {
-		norm = host + "/" + p
-	}
-	if at := strings.Index(norm, "@"); at >= 0 && at < strings.Index(norm+"/", "/") {
-		norm = norm[at+1:]
-	}
+	norm := NormalizeRemote(url)
 	under := func(prefixes []string) bool {
 		return slices.ContainsFunc(prefixes, func(p string) bool { return strings.HasPrefix(norm, p) })
 	}
 	return under(l.PublicRemotes) && !under(l.PrivateRemotes)
+}
+
+// NormalizeRemote puts a remote URL as host/path: the scp-like form
+// (git@host:path) and URL forms (ssh://git@host:22/path, https://token@Host/path)
+// lose the user, the port and leading slashes of the path, and the host is
+// lower case, as host names are. A local path, or a file:// URL's path, stays
+// as it is.
+func NormalizeRemote(url string) string {
+	if scheme, rest, ok := strings.Cut(url, "://"); ok {
+		if strings.EqualFold(scheme, "file") {
+			return rest
+		}
+		hostPart, p, _ := strings.Cut(rest, "/")
+		if at := strings.LastIndex(hostPart, "@"); at >= 0 {
+			hostPart = hostPart[at+1:]
+		}
+		if h, _, ok := strings.Cut(hostPart, ":"); ok {
+			hostPart = h
+		}
+		return strings.ToLower(hostPart) + "/" + strings.TrimLeft(p, "/")
+	}
+	if hostPart, p, ok := strings.Cut(url, ":"); ok && !strings.Contains(hostPart, "/") {
+		if at := strings.LastIndex(hostPart, "@"); at >= 0 {
+			hostPart = hostPart[at+1:]
+		}
+		return strings.ToLower(hostPart) + "/" + strings.TrimLeft(p, "/")
+	}
+	return url
 }
 
 // ErrNotFound means the user has no graft config file.

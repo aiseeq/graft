@@ -377,3 +377,23 @@ func splitLines(s string) []string {
 	}
 	return lines
 }
+
+// OpenObjects resolves the repository dir is in for commands that read its
+// objects and refs only: a work tree as Open does, or else a bare repository
+// (or the inside of .git), whose Root is then its git directory.
+func OpenObjects(dir string) (*Repo, error) {
+	repo, err := Open(dir)
+	if !errors.Is(err, ErrNotRepo) {
+		return repo, err
+	}
+	out, bareErr := run(dir, []string{"LC_ALL=C"}, nil, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir")
+	if bareErr != nil {
+		return nil, errors.Join(err, bareErr)
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 2 {
+		return nil, fmt.Errorf("unexpected git rev-parse output: %q", out)
+	}
+	gitDir := filepath.FromSlash(lines[0])
+	return &Repo{Root: gitDir, GitDir: gitDir, CommonDir: filepath.FromSlash(lines[1])}, nil
+}

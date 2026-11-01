@@ -651,6 +651,13 @@ func (a *App) InitGlobal() error {
 	if err != nil {
 		return err
 	}
+	runs, version, err := hooks.GitRunsConfigHooks()
+	if err != nil {
+		return err
+	}
+	if !runs {
+		a.warn("git %s runs no hooks from its config: the pre-push leak check needs git %d.%d or newer", version, hooks.GlobalHooksSince[0], hooks.GlobalHooksSince[1])
+	}
 	if len(changes) == 0 {
 		a.printf("global pre-push leak hook already installed, nothing changed")
 		return nil

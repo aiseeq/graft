@@ -62,3 +62,22 @@ func TestInstallGlobalIsIdempotentAndKeepsEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestRunsConfigHooks: git runs hooks from its config since 2.54, Git for
+// Windows' version suffix included.
+func TestRunsConfigHooks(t *testing.T) {
+	for out, want := range map[string]bool{
+		"git version 2.53.1\n":           false,
+		"git version 2.54.0\n":           true,
+		"git version 2.56.0.windows.1\n": true,
+		"git version 3.0\n":              true,
+		"git version 1.99.9\n":           false,
+	} {
+		if got, _, err := runsConfigHooks(out); err != nil || got != want {
+			t.Errorf("%q: %v, %v; want %v", out, got, err, want)
+		}
+	}
+	if _, _, err := runsConfigHooks("git versión dos\n"); err == nil {
+		t.Error("unreadable version accepted")
+	}
+}

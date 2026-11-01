@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/gitx"
@@ -165,6 +166,38 @@ func Install(repo *gitx.Repo, dir string) ([]Change, error) {
 		return append(changes, Change{What: "set core.hooksPath to " + dir}), nil
 	}
 	return append(changes, Change{What: fmt.Sprintf("rewrote core.hooksPath from %q to %q", current, dir)}), nil
+}
+
+// GlobalHooksSince is the first git that runs hooks from its config.
+var GlobalHooksSince = [2]int{2, 54}
+
+// GitRunsConfigHooks says whether the git on PATH runs hooks from its config,
+// and which version it is.
+func GitRunsConfigHooks() (bool, string, error) {
+	out, err := exec.Command("git", "version").Output()
+	if err != nil {
+		return false, "", fmt.Errorf("git version: %w", err)
+	}
+	return runsConfigHooks(string(out))
+}
+
+// runsConfigHooks reads the output of git version.
+func runsConfigHooks(out string) (bool, string, error) {
+	text := strings.TrimSpace(out)
+	fields := strings.Fields(text)
+	if len(fields) < 3 {
+		return false, text, fmt.Errorf("git version: unexpected output %q", text)
+	}
+	parts := strings.SplitN(fields[2], ".", 3)
+	if len(parts) < 2 {
+		return false, text, fmt.Errorf("git version: unexpected output %q", text)
+	}
+	major, errMajor := strconv.Atoi(parts[0])
+	minor, errMinor := strconv.Atoi(parts[1])
+	if errMajor != nil || errMinor != nil {
+		return false, text, fmt.Errorf("git version: unexpected output %q", text)
+	}
+	return major > GlobalHooksSince[0] || major == GlobalHooksSince[0] && minor >= GlobalHooksSince[1], fields[2], nil
 }
 
 // InstallGlobal registers the pre-push hook with Git's global hook config.

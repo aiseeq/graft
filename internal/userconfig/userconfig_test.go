@@ -20,6 +20,10 @@ func TestRemoteIsPublic(t *testing.T) {
 		"git@github.com:other/tool.git":             false,
 		"git@bitbucket.org:someone/tool.git":        false,
 		"/srv/git/someone/tool.git":                 false,
+		"ssh://git@github.com:22/someone/tool.git":  true,
+		"https://GitHub.com/someone/tool.git":       true,
+		"git@github.com:/someone/tool.git":          true,
+		"git@GITHUB.COM:someone/tool":               true,
 	} {
 		if got := l.RemoteIsPublic(url); got != want {
 			t.Errorf("%s: %v, want %v", url, got, want)

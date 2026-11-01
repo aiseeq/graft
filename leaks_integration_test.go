@@ -480,3 +480,87 @@ func TestLeaksTakesAnyRevisions(t *testing.T) {
 		t.Errorf("an option rev-list rejects must fail:\n%s", out)
 	}
 }
+
+// TestPrePushFromBareRepository: the global hook runs in bare repositories
+// too (git push --mirror from a mirror clone): without leak settings or to a
+// target that is not public it lets the push through, and to a public one it
+// scans the commits.
+func TestPrePushFromBareRepository(t *testing.T) {
+	f := leakRepo(t, "/", "")
+	installGlobalPrePush(f, filepath.Join(f.base, "global-stdin"))
+	f.write("main.go", "package main\n\n// SettleInvoice\nfunc main() {}\n")
+	f.git("add", "main.go")
+	f.git("-c", "core.hooksPath="+t.TempDir(), "commit", "--no-verify", "-m", "feat: leak")
+	mirror := filepath.Join(f.base, "mirror.git")
+	f.git("clone", "-q", "--mirror", f.work, mirror)
+	newTarget := func(name string) string {
+		target := filepath.Join(f.base, name)
+		if err := os.CopyFS(target, os.DirFS(bareTemplate)); err != nil {
+			t.Fatal(err)
+		}
+		return target
+	}
+	out, code := f.exec(mirror, "", "git", "push", "--mirror", newTarget("public.git"))
+	if code == 0 || !strings.Contains(out, "private name SettleInvoice") {
+		t.Fatalf("mirror push of a leak to a public target: exit %d\n%s", code, out)
+	}
+	empty := filepath.Join(f.base, "no-config")
+	if err := os.MkdirAll(empty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	setFixtureEnv(f, "XDG_CONFIG_HOME="+empty, "APPDATA="+empty)
+	if out, code := f.exec(mirror, "", "git", "push", "--mirror", newTarget("unchecked.git")); code != 0 {
+		t.Fatalf("mirror push without leak settings: exit %d\n%s", code, out)
+	}
+}
+
+// TestPrePushScansAnnotatedTagMessage: an annotated tag's message is scanned
+// even when the commit it tags is at the target already, and a push of a
+// tree is refused rather than let through unread.
+func TestPrePushScansAnnotatedTagMessage(t *testing.T) {
+	f := leakRepo(t, "/", "")
+	f.git("push", "origin", "HEAD:refs/heads/main")
+	f.git("tag", "-a", "v1", "-m", "release for AcmePay")
+	tag := f.git("rev-parse", "v1")
+	zero := strings.Repeat("0", 40)
+	out, code := f.graft("refs/tags/v1 "+tag+" refs/tags/v1 "+zero+"\n", "hook", "pre-push", "origin", f.remote("origin"))
+	if code == 0 || !strings.Contains(out, "tag v1") || !strings.Contains(out, `private term (counterparty) "AcmePay"`) {
+		t.Fatalf("tag message hook: exit %d\n%s", code, out)
+	}
+	tree := f.git("rev-parse", "HEAD^{tree}")
+	out, code = f.graft("refs/tags/t "+tree+" refs/tags/t "+zero+"\n", "hook", "pre-push", "origin", f.remote("origin"))
+	if code == 0 || !strings.Contains(out, "a tree: graft scans commits and tag messages only") {
+		t.Fatalf("tree push hook: exit %d\n%s", code, out)
+	}
+}
+
+// TestGitHubVisibilityDecidesTheCheck: with leaks.github_visibility, a
+// repository gh calls private is not checked by graft commit or the pre-push
+// hook, and one it calls public is.
+func TestGitHubVisibilityDecidesTheCheck(t *testing.T) {
+	f := leakRepo(t, "github.com/someone/", "  github_visibility: true\n")
+	bin := filepath.Join(f.base, "fake-gh")
+	writeFile(t, filepath.Join(bin, "gh"), "#!/bin/sh\ncat \"$FAKE_GH_ANSWER\"\n")
+	if err := os.Chmod(filepath.Join(bin, "gh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	answer := filepath.Join(f.base, "gh-answer")
+	setFixtureEnv(f, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "FAKE_GH_ANSWER="+answer)
+	zero := strings.Repeat("0", 40)
+
+	writeFile(t, answer, "private\n")
+	f.write("main.go", "package main\n\n// SettleInvoice\nfunc main() {}\n")
+	if out, code := f.graft("", "commit", "-m", "feat: private one"); code != 0 {
+		t.Fatalf("commit to a private repository: exit %d\n%s", code, out)
+	}
+	head := f.git("rev-parse", "HEAD")
+	if out, code := f.graft("refs/heads/x "+head+" refs/heads/x "+zero+"\n", "hook", "pre-push", "origin", "git@github.com:someone/tool.git"); code != 0 || strings.Contains(out, "commits scanned") {
+		t.Fatalf("pre-push to a private repository: exit %d\n%s", code, out)
+	}
+
+	writeFile(t, answer, "public\n")
+	f.write("main.go", "package main\n\n// SettleInvoice again\nfunc main() {}\n")
+	if out, code := f.graft("", "commit", "-m", "feat: public one"); code == 0 || !strings.Contains(out, "private name SettleInvoice") {
+		t.Fatalf("commit to a public repository: exit %d\n%s", code, out)
+	}
+}

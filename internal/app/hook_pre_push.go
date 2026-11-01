@@ -2,26 +2,31 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/leaks"
 )
 
 // HookPrePush scans commits that the push target does not already contain.
+// The hook is global, so it runs for any repository: one without leak
+// settings or pushing elsewhere than a public target is let through before
+// anything is opened, and a bare repository is read as one.
 func (a *App) HookPrePush(ctx context.Context, _ string, targetURL string) error {
-	repo, err := gitx.Open(a.Dir)
-	if err != nil {
-		return err
-	}
 	settings, ok, err := leakSettings()
 	if err != nil || !ok {
 		return err
 	}
 	public, err := remoteIsPublic(ctx, targetURL, settings, a.Stderr)
 	if err != nil || !public {
+		return err
+	}
+	repo, err := gitx.OpenObjects(a.Dir)
+	if err != nil {
 		return err
 	}
 	refs, err := io.ReadAll(a.Stdin)
@@ -36,21 +41,106 @@ func (a *App) HookPrePush(ctx context.Context, _ string, targetURL string) error
 	if err != nil {
 		return err
 	}
+	tags, err := pushedTags(repo, local, exclusions)
+	if err != nil {
+		return err
+	}
 	commits, err := pushedCommits(repo, local, exclusions)
 	if err != nil {
 		return err
 	}
-	if len(commits) == 0 {
+	if len(commits) == 0 && len(tags) == 0 {
 		return nil
 	}
 	rules, err := loadLeakRules(settings, a.Stderr)
 	if err != nil {
 		return err
 	}
-	if err := a.scanLeakCommits(repo, rules, commits); err != nil {
-		return fmt.Errorf("%w; knowingly bypass with git push --no-verify", err)
+	found, err := a.scanTagMessages(repo, rules, tags)
+	if err != nil {
+		return err
+	}
+	if err := a.scanLeakCommits(repo, rules, commits); err != nil || found > 0 {
+		return fmt.Errorf("%w; knowingly bypass with git push --no-verify", errors.Join(err, tagFindings(found)))
 	}
 	return nil
+}
+
+// pushedTag is an annotated tag a push brings, with its message.
+type pushedTag struct {
+	sha, name, message string
+}
+
+// pushedTags reads the annotated tags among the pushed objects not at the
+// target, tags of tags included, and refuses a push of a tree or a blob:
+// graft scans commits and tag messages only, and says so rather than letting
+// one through unread.
+func pushedTags(repo *gitx.Repo, local, exclusions []string) ([]pushedTag, error) {
+	at := map[string]bool{}
+	for _, sha := range exclusions {
+		at[sha] = true
+	}
+	var tags []pushedTag
+	for _, sha := range local {
+		for sha != "" && !at[sha] {
+			kind, err := repo.Git("cat-file", "-t", sha)
+			if err != nil {
+				return nil, err
+			}
+			switch kind = strings.TrimSpace(kind); kind {
+			case "commit":
+				sha = ""
+			case "tag":
+				body, err := repo.Git("cat-file", "tag", sha)
+				if err != nil {
+					return nil, err
+				}
+				header, message, _ := strings.Cut(body, "\n\n")
+				var object, name string
+				for line := range strings.SplitSeq(header, "\n") {
+					if v, ok := strings.CutPrefix(line, "object "); ok {
+						object = v
+					} else if v, ok := strings.CutPrefix(line, "tag "); ok {
+						name = v
+					}
+				}
+				tags = append(tags, pushedTag{sha: sha, name: name, message: strings.TrimRight(message, "\n")})
+				at[sha] = true
+				sha = object
+			default:
+				return nil, fmt.Errorf("the push sends %s, a %s: graft scans commits and tag messages only; knowingly bypass with git push --no-verify", gitx.Short(sha), kind)
+			}
+		}
+	}
+	return tags, nil
+}
+
+// scanTagMessages scans the messages of the pushed annotated tags and prints
+// their findings; it returns how many there were.
+func (a *App) scanTagMessages(repo *gitx.Repo, rules *leaks.Rules, tags []pushedTag) (int, error) {
+	total := 0
+	for _, t := range tags {
+		found, err := rules.Scan(repo, "", nil, t.message)
+		if err != nil {
+			return 0, err
+		}
+		if len(found) == 0 {
+			continue
+		}
+		a.printf("tag %s (%s)", t.name, gitx.Short(t.sha))
+		for _, f := range found {
+			fmt.Fprintf(a.Stdout, "  %s:%d: %s\n", f.Path, f.Line, f.Reason)
+		}
+		total += len(found)
+	}
+	return total, nil
+}
+
+func tagFindings(n int) error {
+	if n == 0 {
+		return nil
+	}
+	return fmt.Errorf("%d private names or terms found in tag messages", n)
 }
 
 func pushedSHAs(input string) (local, remote []string) {
@@ -115,14 +205,13 @@ func targetObjects(repo *gitx.Repo, targetURL string, fromInput []string) ([]str
 }
 
 func pushedCommits(repo *gitx.Repo, local, exclusions []string) ([]string, error) {
-	args := []string{"rev-list", "--reverse", "--parents"}
-	args = append(args, local...)
+	// The revisions go on stdin: a target with thousands of refs is past
+	// the command line length Windows allows.
+	input := strings.Join(local, "\n") + "\n"
 	if len(exclusions) > 0 {
-		args = append(args, "--not")
-		args = append(args, exclusions...)
+		input += "--not\n" + strings.Join(exclusions, "\n") + "\n"
 	}
-	args = append(args, "--")
-	out, err := repo.Git(args...)
+	out, err := repo.GitInput(strings.NewReader(input), nil, "rev-list", "--reverse", "--parents", "--stdin")
 	if err != nil {
 		return nil, err
 	}
