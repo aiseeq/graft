@@ -212,7 +212,9 @@ func (r *Runner) glintMismatch(t *config.Task, args []string) string {
 }
 
 func glintCheckNoOutput(argv, args []string) bool {
-	if len(argv) < 2 || (argv[0] != "glint" && !strings.HasSuffix(filepath.ToSlash(argv[0]), "/glint")) || argv[1] != "check" {
+	// A relative path would resolve against the step's directory, which the
+	// check against install's record does not see: such a glint stays here.
+	if len(argv) < 2 || (argv[0] != "glint" && !(filepath.IsAbs(argv[0]) && strings.HasSuffix(filepath.ToSlash(argv[0]), "/glint"))) || argv[1] != "check" {
 		return false
 	}
 	for _, arg := range expandArgs(argv[2:], args) {

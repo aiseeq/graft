@@ -214,11 +214,12 @@ whole tree and runs the command where it was started needs. A step
 interrupted here sends `run` SIGTERM, so it can take its work off the host,
 and kills it 30 seconds later. `up` runs once per graft, at the first heavy task. With user-configured
 `remote_heavy`, tasks whose every step is a `go test` or `go vet` command
-that writes no output file can use the host. A `glint check` step can use it
-too when the glint found on this machine's `PATH` has the same SHA-256 as the
-file the install step recorded for that host and absolute destination in
-`<user cache dir>/graft/hosts.json`; otherwise it stays here and says which
-hashes differ. `glint check` with `--cpuprofile` stays here; `-o` and
+that writes no output file can use the host. A `glint check` step (glint by name or by an absolute path; a relative path
+stays here) can use it too when that glint, found here as the step finds it,
+has the same SHA-256 as the file the install step recorded for that host and
+absolute destination in `<user cache dir>/graft/hosts.json`; the host then
+runs that destination by its path, not what its `PATH` finds. Otherwise the
+step stays here and says which hashes differ. `glint check` with `--cpuprofile` stays here; `-o` and
 `--output` select the report format and are allowed. The registry records what install copied, so a glint replaced
 by hand on the host is not detected, and the host has its own cold glint
 cache. A task with `remote: true` can
