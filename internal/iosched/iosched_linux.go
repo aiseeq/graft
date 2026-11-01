@@ -23,8 +23,9 @@ type plan struct {
 	limited              string
 }
 
-// decide contains the environment-independent cgroup placement rules.
-func decide(cgroup string, limits map[string]string, pid int) (plan, bool) {
+// decide contains the environment-independent cgroup placement rules; sole
+// says the process is the only one in its scope.
+func decide(cgroup string, limits map[string]string, sole bool, pid int) (plan, bool) {
 	p := path.Clean("/" + strings.TrimSpace(cgroup))
 	parts := strings.Split(strings.Trim(p, "/"), "/")
 	userManager := false
@@ -45,6 +46,12 @@ func decide(cgroup string, limits map[string]string, pid int) (plan, bool) {
 		return plan{}, false
 	}
 	if strings.HasSuffix(parent, "-graft.slice") {
+		return plan{}, false
+	}
+	// Alone in its scope (systemd-run --scope graft …), the move would leave
+	// the scope empty: systemd stops an empty scope, and BindsTo stops the
+	// heavy scope with it, killing the task.
+	if sole {
 		return plan{}, false
 	}
 	for _, key := range limitFiles {
@@ -91,7 +98,7 @@ func enter(ctx context.Context, pid int, procRoot string) (string, error) {
 	if cg == "" {
 		return "", nil
 	}
-	if _, ok := decide(cg, nil, pid); !ok {
+	if _, ok := decide(cg, nil, false, pid); !ok {
 		return "", nil
 	}
 	base := path.Join("/sys/fs/cgroup", cg)
@@ -106,7 +113,11 @@ func enter(ctx context.Context, pid int, procRoot string) (string, error) {
 		}
 		limits[key] = strings.TrimSpace(string(b))
 	}
-	move, ok := decide(cg, limits, pid)
+	procs, err := os.ReadFile(path.Join(base, "cgroup.procs"))
+	if err != nil {
+		return "", fmt.Errorf("read the processes of the scope: %w", err)
+	}
+	move, ok := decide(cg, limits, soleProcess(string(procs), pid), pid)
 	if !ok {
 		if move.limited != "" {
 			return fmt.Sprintf("not moved: scope has %s limit", move.limited), nil
@@ -123,7 +134,7 @@ func enter(ctx context.Context, pid int, procRoot string) (string, error) {
 	for time.Now().Before(deadline) {
 		current, readErr := os.ReadFile(self)
 		if readErr == nil && strings.Contains(string(current), "/"+move.scope) {
-			return fmt.Sprintf("moved from %s to %s (IOWeight=%d)", move.source, move.scope, ioWeight), nil
+			return fmt.Sprintf("moved from %s to %s in %s (IOWeight=%d)", move.source, move.scope, move.slice, ioWeight), nil
 		}
 		timer := time.NewTimer(50 * time.Millisecond)
 		select {
@@ -157,6 +168,12 @@ func transient(ctx context.Context, name string, mode string, args ...string) er
 func manager(ctx context.Context, method, signature string, args ...string) error {
 	all := append([]string{"--user", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", method, signature}, args...)
 	cmd := exec.CommandContext(ctx, "busctl", all...)
+	if os.Getenv("XDG_RUNTIME_DIR") == "" && os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" {
+		// busctl --user finds the user bus by these; the manager the cgroup
+		// path names runs for this user, with its bus in the user's runtime
+		// directory.
+		cmd.Env = append(os.Environ(), fmt.Sprintf("XDG_RUNTIME_DIR=/run/user/%d", os.Getuid()))
+	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("busctl: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -169,4 +186,14 @@ func firstField(value string) string {
 		return fields[0]
 	}
 	return ""
+}
+
+// soleProcess says whether pid is the only process cgroup.procs lists.
+func soleProcess(procs string, pid int) bool {
+	for line := range strings.SplitSeq(procs, "\n") {
+		if line = strings.TrimSpace(line); line != "" && line != strconv.Itoa(pid) {
+			return false
+		}
+	}
+	return true
 }

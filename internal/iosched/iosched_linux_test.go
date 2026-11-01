@@ -17,6 +17,7 @@ func TestDecide(t *testing.T) {
 	tests := []struct {
 		name, cgroup string
 		limits       map[string]string
+		sole         bool
 		wantSlice    string
 		wantSource   string
 		wantLimited  string
@@ -29,11 +30,12 @@ func TestDecide(t *testing.T) {
 		{name: "cpu limit", cgroup: scope, limits: map[string]string{"cpu.max": "100000 100000"}, wantLimited: "cpu.max"},
 		{name: "unlimited scope", cgroup: scope, limits: map[string]string{"memory.max": "max", "memory.high": "max", "cpu.max": "max 100000"}, wantSlice: "agents-graft.slice", wantSource: "console.scope"},
 		{name: "cpu.max file absent", cgroup: scope, limits: map[string]string{"memory.max": "max", "memory.high": "max"}, wantSlice: "agents-graft.slice", wantSource: "console.scope"},
+		{name: "alone in its scope", cgroup: scope, limits: map[string]string{}, sole: true},
 		{name: "nested slice", cgroup: "/user.slice/user@1000.service/agents-x.slice/console.scope", limits: map[string]string{}, wantSlice: "agents-x-graft.slice", wantSource: "console.scope"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, move := decide(tt.cgroup, tt.limits, 42)
+			got, move := decide(tt.cgroup, tt.limits, tt.sole, 42)
 			if tt.wantSlice == "" && move {
 				t.Fatalf("unexpected move: %+v", got)
 			}
@@ -73,7 +75,7 @@ func TestEnterSystemd(t *testing.T) {
 			cg = fields[2]
 		}
 	}
-	if _, ok := decide(cg, nil, os.Getpid()); !ok {
+	if _, ok := decide(cg, nil, false, os.Getpid()); !ok {
 		t.Skip("test process is not in a scope under a user manager")
 	}
 	base := path.Join("/sys/fs/cgroup", cg)
@@ -88,7 +90,7 @@ func TestEnterSystemd(t *testing.T) {
 		}
 		limits[key] = strings.TrimSpace(string(value))
 	}
-	if _, ok := decide(cg, limits, os.Getpid()); !ok {
+	if _, ok := decide(cg, limits, false, os.Getpid()); !ok {
 		t.Skip("test process is not in an unlimited scope under a user manager")
 	}
 	message, err := Enter(context.Background(), os.Getpid(), "")
@@ -110,5 +112,17 @@ func TestEnterStandInMachine(t *testing.T) {
 	message, err := Enter(context.Background(), os.Getpid(), t.TempDir())
 	if err != nil || message != "" {
 		t.Fatalf("Enter = %q, %v; want nothing", message, err)
+	}
+}
+
+// TestSoleProcess: only the process itself in cgroup.procs is alone.
+func TestSoleProcess(t *testing.T) {
+	for _, c := range []struct {
+		procs string
+		want  bool
+	}{{"42\n", true}, {"", true}, {"7\n42\n", false}, {"42\n43\n", false}} {
+		if got := soleProcess(c.procs, 42); got != c.want {
+			t.Errorf("soleProcess(%q) = %v, want %v", c.procs, got, c.want)
+		}
 	}
 }
