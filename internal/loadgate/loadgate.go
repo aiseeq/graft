@@ -204,28 +204,29 @@ func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userc
 		return reservePriority(ctx, m, name, kind, p, l, lockPath, cores, log)
 	}
 	holder := "graft " + name + " (starting a heavy task)"
-	var settleLock *lock.Lock
-	start := time.Now()
-	behind := ""
-	if settleLockPath != "" && settleDuration > 0 {
-		var err error
-		settleLock, err = lock.AcquireFIFOObserved(ctx, settleLockPath, queueTimeout, holder+" with settle", log, nil)
-		m.waits[WhyQueue] += time.Since(start)
-		if err != nil {
-			return m.admission(), released, err
-		}
-		behind = settleLock.WaitedBehind
-		start = time.Now()
+	settleLock, behind, start, err := acquireSettle(ctx, m, settleLockPath, settleDuration, holder, log)
+	if err != nil {
+		return m.admission(), released, err
 	}
+	return waitQueued(ctx, m, p, kind, l, lockPath, cores, settleLock, settleDuration, start, behind, log)
+}
+
+func acquireSettle(ctx context.Context, m *machine, settleLockPath string, settleDuration time.Duration, holder string, log io.Writer) (*lock.Lock, string, time.Time, error) {
+	start := time.Now()
+	if settleLockPath == "" || settleDuration <= 0 {
+		return nil, "", start, nil
+	}
+	settleLock, err := lock.AcquireFIFOObserved(ctx, settleLockPath, queueTimeout, holder+" with settle", log, nil)
+	m.waits[WhyQueue] += time.Since(start)
+	if err != nil {
+		return nil, "", start, err
+	}
+	return settleLock, settleLock.WaitedBehind, time.Now(), nil
+}
+
+func waitQueued(ctx context.Context, m *machine, p *Priority, kind string, l userconfig.MachineLoad, lockPath string, cores float64, settleLock *lock.Lock, settleDuration time.Duration, start time.Time, behind string, log io.Writer) (Admission, func() error, error) {
 	if p != nil {
-		if err := m.admit(ctx, p); err != nil {
-			var releaseErr error
-			if settleLock != nil {
-				releaseErr = settleLock.Release()
-			}
-			return m.behind(behind), released, errors.Join(err, releaseErr)
-		}
-		return m.behind(behind), settle(settleLock, settleDuration), nil
+		return waitPriority(ctx, m, p, settleLock, settleDuration, behind)
 	}
 	quiet, err := quietMode()
 	if err != nil {
@@ -234,6 +235,7 @@ func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userc
 		}
 		return m.behind(behind), released, err
 	}
+	holder := "graft " + m.name + " (starting a heavy task)"
 	lk, err := lock.AcquireFIFOObserved(ctx, lockPath, queueTimeout, holder, log, quiet)
 	waited := time.Since(start)
 	if lk != nil && lk.WaitedQuiet > 0 {
@@ -262,7 +264,7 @@ func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userc
 		}
 		return m.behind(behind), released, errors.Join(err, lk.Release())
 	}
-	release, since, end, stoppedAt, err := startReserve(lockPath, name, cores, l.Settle, log)
+	release, since, end, stoppedAt, err := startReserve(lockPath, m.name, cores, l.Settle, log)
 	if err != nil {
 		if settleLock != nil {
 			err = errors.Join(err, settleLock.Release())
@@ -283,6 +285,17 @@ func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userc
 		return adm, func() error { return errors.Join(release(), settleRelease()) }, nil
 	}
 	return adm, release, nil
+}
+
+func waitPriority(ctx context.Context, m *machine, p *Priority, settleLock *lock.Lock, settleDuration time.Duration, behind string) (Admission, func() error, error) {
+	if err := m.admit(ctx, p); err != nil {
+		var releaseErr error
+		if settleLock != nil {
+			releaseErr = settleLock.Release()
+		}
+		return m.behind(behind), released, errors.Join(err, releaseErr)
+	}
+	return m.behind(behind), settle(settleLock, settleDuration), nil
 }
 
 func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath string) error {
@@ -430,16 +443,28 @@ func startReserve(lockPath, name string, cores float64, cap time.Duration, log i
 		}
 		mu.Unlock()
 	}
+	var dropOnce sync.Once
+	var dropErr error
 	drop := func() {
-		if err := rel(); err != nil {
-			fmt.Fprintf(log, "graft: %s: releasing reserve: %v\n", name, err)
-		}
-		setStoppedAt()
+		dropOnce.Do(func() {
+			dropErr = rel()
+			if dropErr != nil {
+				fmt.Fprintf(log, "graft: %s: releasing reserve: %v\n", name, dropErr)
+			}
+			setStoppedAt()
+		})
 	}
 	// The goroutine outlives the call: it reads its settings from here, not
 	// from the package variables a test may swap meanwhile.
 	interval, window, readCPU := reservePollInterval, reserveWindow, reserveCPUReader
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(log, "graft: %s: panic in reserve poll: %v\n", name, r)
+				setEnd("panic")
+				drop()
+			}
+		}()
 		type sample struct {
 			at  time.Time
 			cpu float64
@@ -484,9 +509,8 @@ func startReserve(lockPath, name string, cores float64, cap time.Duration, log i
 	}()
 	return func() error {
 		once.Do(func() { setEnd("done"); close(done) })
-		err := rel()
-		setStoppedAt()
-		return err
+		drop()
+		return dropErr
 	}, since, func() string { mu.Lock(); defer mu.Unlock(); return end }, func() time.Time { mu.Lock(); defer mu.Unlock(); return stoppedAt }, nil
 }
 

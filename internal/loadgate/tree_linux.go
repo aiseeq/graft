@@ -55,7 +55,7 @@ func treeCPU(root int) (float64, error) {
 		}
 		matches, err := filepath.Glob(filepath.Join(procRoot, strconv.Itoa(pid), "task", "*", "children"))
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("finding child process files for %d: %w", pid, err)
 		}
 		for _, path := range matches {
 			b, e := os.ReadFile(path)

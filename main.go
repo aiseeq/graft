@@ -587,57 +587,67 @@ const execSyntax = "graft exec [--heavy [--local] [--env <name>]... [--settle <d
 // execCmd is graft exec; its own failures, usage too, exit app.ExitGraft
 // (run).
 func execCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := fmt.Errorf("%w: %s", errUsage, execSyntax)
 	var opts app.ExecOptions
 	var local bool
 	var pass []string
 	for len(args) > 0 && args[0] != "--" {
-		switch args[0] {
-		case "--heavy":
-			opts.Heavy = true
-		case "--local":
-			local = true
-		case "--env":
-			if len(args) < 2 {
-				return usage
-			}
-			if args[1] == "" || strings.ContainsAny(args[1], "=,") {
-				return fmt.Errorf("%w: exec --env %q: want the name of a variable", errUsage, args[1])
-			}
-			pass = append(pass, args[1])
-			args = args[1:]
-		case "--settle":
-			if len(args) < 2 {
-				return usage
-			}
-			d, err := time.ParseDuration(args[1])
-			if err != nil || d <= 0 {
-				return fmt.Errorf("%w: exec --settle %q: want a duration above 0, such as 60s", errUsage, args[1])
-			}
-			opts.Settle = d
-			args = args[1:]
-		case "--cores":
-			if len(args) < 2 {
-				return usage
-			}
-			cores, err := parseExecCores(args[1])
-			if err != nil {
-				return err
-			}
-			opts.Cores = cores
-			args = args[1:]
-		default:
-			return usage
+		consumed, err := parseExecFlag(args, &opts, &local, &pass)
+		if err != nil {
+			return err
 		}
-		args = args[1:]
+		args = args[consumed:]
 	}
 	if len(args) < 2 || ((local || opts.Settle > 0 || opts.Cores > 0 || len(pass) > 0) && !opts.Heavy) {
-		return usage
+		return execUsage()
 	}
 	if err := exportExecEnv(pass, local); err != nil {
 		return err
 	}
 	return a.Exec(ctx, args[1:], opts)
+}
+
+func execUsage() error { return fmt.Errorf("%w: %s", errUsage, execSyntax) }
+
+func parseExecFlag(args []string, opts *app.ExecOptions, local *bool, pass *[]string) (int, error) {
+	usage := execUsage()
+	switch args[0] {
+	case "--heavy":
+		opts.Heavy = true
+	case "--local":
+		*local = true
+	case "--env":
+		if len(args) < 2 {
+			return 0, usage
+		}
+		if args[1] == "" || strings.ContainsAny(args[1], "=,") {
+			return 0, fmt.Errorf("%w: exec --env %q: want the name of a variable", errUsage, args[1])
+		}
+		*pass = append(*pass, args[1])
+		return 2, nil
+	case "--settle":
+		if len(args) < 2 {
+			return 0, usage
+		}
+		d, err := time.ParseDuration(args[1])
+		if err != nil || d <= 0 {
+			return 0, fmt.Errorf("%w: exec --settle %q: want a duration above 0, such as 60s", errUsage, args[1])
+		}
+		opts.Settle = d
+		return 2, nil
+	case "--cores":
+		if len(args) < 2 {
+			return 0, usage
+		}
+		cores, err := parseExecCores(args[1])
+		if err != nil {
+			return 0, err
+		}
+		opts.Cores = cores
+		return 2, nil
+	default:
+		return 0, usage
+	}
+	return 1, nil
 }
 
 func parseExecCores(value string) (float64, error) {

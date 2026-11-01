@@ -401,7 +401,7 @@ func historyPath(statsPath string) string {
 
 func appendTaskAndHistory(path string, rec Record) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return fmt.Errorf("creating the stats directory %s: %w", filepath.Dir(path), err)
 	}
 	fl := flock.New(path + ".lock")
 	if err := fl.Lock(); err != nil {
@@ -431,7 +431,7 @@ func appendTaskAndHistory(path string, rec Record) error {
 	}
 	data, err = json.Marshal(history)
 	if err != nil {
-		return err
+		return fmt.Errorf("encoding the CPU history %s: %w", hp, err)
 	}
 	return atomicfile.Write(hp, append(data, '\n'), 0o644)
 }

@@ -100,6 +100,40 @@ func TestReserveLightTasksStartBackToBack(t *testing.T) {
 	}
 }
 
+func TestReservePollPanicIsLoggedAndDropped(t *testing.T) {
+	fakeMachine(t)
+	oldPoll, oldReader := reservePollInterval, reserveCPUReader
+	reservePollInterval = time.Millisecond
+	reserveCPUReader = func(int) (float64, error) { panic("synthetic reserve panic") }
+	defer func() { reservePollInterval, reserveCPUReader = oldPoll, oldReader }()
+
+	var log strings.Builder
+	l := testLoad
+	l.Settle = time.Hour
+	path := filepath.Join(t.TempDir(), "load.lock")
+	adm, release, err := Wait(context.Background(), "panic-check", "projectA:panic-check", nil, l, path, &log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if !adm.ReserveStoppedAt().IsZero() {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if adm.ReserveStoppedAt().IsZero() {
+		t.Fatal("reserve was not stopped after panic")
+	}
+	if got := log.String(); !strings.Contains(got, "graft: panic-check: panic in reserve poll: synthetic reserve panic") {
+		t.Fatalf("panic log = %q", got)
+	}
+	if sum, err := liveReserveCores(path); err != nil || sum != 0 {
+		t.Fatalf("live reserve cores = %v, %v; want 0", sum, err)
+	}
+}
+
 func TestReserveSumHoldsTheHead(t *testing.T) {
 	_, _, _ = fakeMachine(t)
 	setRunnable := func(n int) {

@@ -51,13 +51,9 @@ func (a *App) Stats(o StatsOptions) error {
 		return err
 	}
 	since := time.Now().Add(-o.Since)
-	f := stats.Filter{Since: since, Task: o.Task, In: o.In, MaxLoad: o.MaxLoad}
-	where := "every project"
-	if !o.All {
-		if f.Project, err = a.statsProject(o.Project); err != nil {
-			return err
-		}
-		where = f.Project
+	f, where, err := a.statsFilter(o, since)
+	if err != nil {
+		return err
 	}
 	if o.Tests {
 		return a.statsTests(path, stats.TestFilter{Since: since, Project: f.Project, Task: o.Task, MaxLoad: o.MaxLoad}, where+calmNote(o.MaxLoad))
@@ -75,6 +71,23 @@ func (a *App) Stats(o StatsOptions) error {
 	if o.Value != "" {
 		return a.statsValue(recs, f, o)
 	}
+	return a.statsTasks(recs, path, f, o, where, since)
+}
+
+func (a *App) statsFilter(o StatsOptions, since time.Time) (stats.Filter, string, error) {
+	f := stats.Filter{Since: since, Task: o.Task, In: o.In, MaxLoad: o.MaxLoad}
+	where := "every project"
+	if !o.All {
+		project, err := a.statsProject(o.Project)
+		if err != nil {
+			return f, "", err
+		}
+		f.Project, where = project, project
+	}
+	return f, where, nil
+}
+
+func (a *App) statsTasks(recs []stats.Record, path string, f stats.Filter, o StatsOptions, where string, since time.Time) error {
 	what := "tasks"
 	label := "TASK"
 	if o.Task != "" {
@@ -91,14 +104,15 @@ func (a *App) Stats(o StatsOptions) error {
 	}
 	if o.Task == "" {
 		reserveRecords := make([]stats.Record, 0, len(recs))
-		for _, rec := range recs {
+		for i := range recs {
+			rec := &recs[i]
 			if f.Project != "" && rec.Project != f.Project || o.In != "" && rec.In != o.In {
 				continue
 			}
 			if o.MaxLoad > 0 && (rec.LoadMax == nil || *rec.LoadMax >= o.MaxLoad) {
 				continue
 			}
-			reserveRecords = append(reserveRecords, rec)
+			reserveRecords = append(reserveRecords, *rec)
 		}
 		if line := stats.ReserveSummary(reserveRecords); line != "" {
 			a.printf("%s", line)

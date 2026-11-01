@@ -13,6 +13,7 @@ import (
 )
 
 var callerGoneInterval = time.Second
+var callerGonePoll = pollCallerGone
 
 func CallerGoneInterval() (time.Duration, error) {
 	const name = "GRAFT_TEST_CALLER_GONE_INTERVAL"
@@ -55,6 +56,11 @@ func WatchCaller(parent context.Context, interval time.Duration) (context.Contex
 		polls = append(polls, unix.PollFd{Fd: int32(f.Fd()), Events: unix.POLLERR | unix.POLLHUP})
 	}
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "graft: caller watcher: panic in poll: %v\n", r)
+			}
+		}()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -63,7 +69,7 @@ func WatchCaller(parent context.Context, interval time.Duration) (context.Contex
 				return
 			case <-ticker.C:
 			}
-			allGone, err := pollCallerGone(polls)
+			allGone, err := callerGonePoll(polls)
 			if err != nil {
 				_, _ = fmt.Fprintf(os.Stderr, "graft: caller watcher poll: %v\n", err)
 				return

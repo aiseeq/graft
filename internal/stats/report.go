@@ -551,7 +551,8 @@ func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error
 // returned when no task record contains a reservation.
 func ReserveSummary(recs []Record) string {
 	total, cpu, cap, done := 0, 0, 0, 0
-	for _, r := range recs {
+	for i := range recs {
+		r := &recs[i]
 		if r.Kind != KindTask || r.ReserveCores <= 0 {
 			continue
 		}
