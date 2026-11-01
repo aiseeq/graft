@@ -1,6 +1,7 @@
 # План D п.3: glint check на PC при занятом ноуте, со сверкой версии glint
 
-Статус: в работе
+Статус: ждёт
+Ждёт: 2026-11-01 14:00
 Исполнитель: graft-master
 
 ## Вход
@@ -20,3 +21,5 @@
 - 2026-11-01 05:12 note — graft-master: сверка версии без обращения к PC: install пишет sha256 скопированного на хост файла в <cache>/graft/hosts.json, перед отправкой glint check сравнивается sha glint по PATH. Боец Luna: бриф /home/aisee/.cache/worktrees/graft-measure/brief-pc-glint-remote.md, дерево /home/aisee/.cache/worktrees/graft/pc-glint-remote, приёмка accept-pc-glint-remote.sh (gate + 4 названных теста).
 - 2026-11-01 05:12 в работе — graft-master
 - 2026-11-01 05:55 note — graft-master: Боец Luna 1101-0512 принят (4/4, 34 мин, 0,018% недели). Ревью мастера: sha сверялась у glint по PATH, даже если шаг задаёт путь — исправлено мной (glintCopy(argv0), exec.LookPath(argv0)). Коммит 8dddb8b в ветке. Независимое ревью Terra: бриф graft-measure/review-pc-glint-remote.md, ответ → .answer.md.
+- 2026-11-01 06:14 note — graft-master: Ревью Terra (повтор, review-pc-glint-remote.answer2.md): правки п.1 и п.6 верны; новый край — относительный путь glint разрешался от каталога процесса — исправлен (d4c3bb1→6f0679a: glint только по имени или абсолютному пути, TestGlintCheckNoOutput, мутация красная). Мутации m1–m6 по тестам приёмки — все красные (мастер). Влито ff в main: 95d88cc, 8aa50b3, 6f0679a. Блокер эффекта: песочница worker pc не видит /home/aisee/bin (glint и graft там нет, PATH без него) — запрос llmark-master 06:2x. Дальше: после правки worker — проба worker pc … glint check, релиз, glint-master: install glint новым graft (запись hosts.json), задачам glint в гейтах — remote: true (рассылка п.1); замер до/после.
+- 2026-11-01 06:14 ждёт — graft-master — 2026-11-01 14:00
