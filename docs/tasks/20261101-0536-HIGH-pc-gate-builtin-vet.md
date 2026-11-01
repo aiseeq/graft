@@ -28,3 +28,4 @@
 ## Журнал
 - 2026-11-01 05:36 открыт — graft-master
 - 2026-11-01 05:37 note — graft-master: Исполнитель — боец Luna после влития pc-glint-remote: те же места (prepareGateStep, splitBusyGate), иначе конфликт. Сообщено git-admin и lead 05:3x.
+- 2026-11-01 07:14 note — graft-master: Боец Luna 1101-0624: заход 1 (15 мин) + доводка по ревью Terra (17 мин), приёмка 4/4 оба раза. Ревью Terra (graft-measure/review-pc-gate-builtin-vet.answer.md): п.1,3,4 приняты; дефекты 2 (строка деления не учитывала stayHere и glint), 5 (повтор здесь не доказан, снята проверка неделения), 6 (Source + builtin — дубль), 7 (хост project) — исправлены бойцом с мутациями. Мастер: два обхода задач гейта (gateHasRemoteTask и remoteGateTaskKinds) сведены в один — деление теперь тоже учитывает stayHere. Влито ff: f6c5bfc, 3fb61ca. Расход: Terra — одна проверка на тикет (лид 07:00), повтор Terra не делаю. Дальше — релиз, замер до/после (встроенные vet/fix на ноуте при load ≥ 16 за сутки).
