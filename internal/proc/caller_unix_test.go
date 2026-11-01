@@ -5,6 +5,7 @@ package proc
 import (
 	"bufio"
 	"context"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -14,15 +15,24 @@ import (
 )
 
 func TestCallerWatcherPollPanicIsLogged(t *testing.T) {
+	// WatchCaller watches only when both stdout and stderr are pipes or
+	// sockets: give it pipes whatever go test was started with.
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdoutR.Close()
+	defer stdoutW.Close()
+	go func() { _, _ = io.Copy(io.Discard, stdoutR) }()
 	stderrR, stderrW, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer stderrR.Close()
 	defer stderrW.Close()
-	oldStderr := os.Stderr
-	os.Stderr = stderrW
-	defer func() { os.Stderr = oldStderr }()
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = stdoutW, stderrW
+	defer func() { os.Stdout, os.Stderr = oldStdout, oldStderr }()
 
 	oldPoll := callerGonePoll
 	callerGonePoll = func([]unix.PollFd) (bool, error) {
