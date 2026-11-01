@@ -2119,8 +2119,13 @@ up to date and release again.
     tests, fixtures, comments, docs or the message is a finding.
   - **terms**: every match of a `terms_file` regexp.
 
-  A finding names the file, line and the name or term. Only text files are
-  checked; binary files are skipped because Git's diff does not use `--text`.
+  A finding names the file, line and the name or term. Only the files git's
+  diff shows as text are checked (graft does not pass `--text`): a binary
+  file, and a text file that `.gitattributes` marks `-diff` or `binary`, is
+  skipped. A picture's metadata (PNG text chunks, EXIF, PDF XMP) is not
+  read either. Binary files meet the large files check instead, in `graft
+  commit` and `graft commit --amend` only: the pre-push hook and `graft
+  leaks` do not run it.
   A line containing
   `graft:leak-ok <reason>` passes; `leaks.allow` passes a name or term
   everywhere. `graft leaks <revision>…` runs the same scan over existing commits,
