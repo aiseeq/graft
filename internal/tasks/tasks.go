@@ -6,6 +6,7 @@ package tasks
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"debug/buildinfo"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aiseeq/graft/v2/internal/atomicfile"
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
 	"github.com/aiseeq/graft/v2/internal/envs"
@@ -41,6 +43,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/testreport"
 	"github.com/aiseeq/graft/v2/internal/tools"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
+	"github.com/gofrs/flock"
 	"golang.org/x/term"
 )
 
@@ -136,6 +139,8 @@ type Runner struct {
 	remoteHeavy        *config.RemoteHeavy
 	userRemote         bool
 	remoteBrokenReason string
+	glintMu            sync.Mutex
+	glintCopies        map[string]glintCopyCheck
 
 	// frames are the tasks running now, outermost first; every process a
 	// step runs counts in all of them.
@@ -312,12 +317,13 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, erro
 	if !busy {
 		return false, nil
 	}
-	if !gateHasEligible(gate, r.Config) {
-		return false, nil
-	}
 	rhCopy := *rh
 	previousRemoteHeavy := r.remoteHeavy
 	r.remoteHeavy = &rhCopy
+	if !r.gateHasEligible(gate) {
+		r.remoteHeavy = previousRemoteHeavy
+		return false, nil
+	}
 	if down := r.remoteUp(ctx); down != "" {
 		r.remoteHeavy = previousRemoteHeavy
 		r.remoteAsked, r.remoteDown = true, down
@@ -331,7 +337,7 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, erro
 // gateHasEligible finds a go check of a task with remote: true in the gate's
 // tasks or their deps: only the project vouches that its tests pass on the
 // host, so a gate step of its own is never one.
-func gateHasEligible(gate []gateStep, cfg *config.Config) bool {
+func (r *Runner) gateHasEligible(gate []gateStep) bool {
 	seen := map[string]bool{}
 	var visit func(*config.Task) bool
 	visit = func(t *config.Task) bool {
@@ -341,7 +347,7 @@ func gateHasEligible(gate []gateStep, cfg *config.Config) bool {
 		for _, dep := range t.Deps {
 			if !seen[dep] {
 				seen[dep] = true
-				if visit(cfg.Tasks[dep]) {
+				if visit(r.Config.Tasks[dep]) {
 					return true
 				}
 			}
@@ -350,18 +356,18 @@ func gateHasEligible(gate []gateStep, cfg *config.Config) bool {
 			if s.Task != "" {
 				if !seen[s.Task] {
 					seen[s.Task] = true
-					if visit(cfg.Tasks[s.Task]) {
+					if visit(r.Config.Tasks[s.Task]) {
 						return true
 					}
 				}
-			} else if remoteVouched(t) && s.Shell == "" && goCheckNoOutput(s.Argv, nil) {
+			} else if remoteVouched(t) && s.Shell == "" && (goCheckNoOutput(s.Argv, nil) || r.glintEligible(s.Argv, nil)) {
 				return true
 			}
 		}
 		return false
 	}
 	for i := range gate {
-		if gs := &gate[i]; gs.step.Task != "" && visit(cfg.Tasks[gs.step.Task]) {
+		if gs := &gate[i]; gs.step.Task != "" && visit(r.Config.Tasks[gs.step.Task]) {
 			return true
 		}
 	}
@@ -372,6 +378,149 @@ func gateHasEligible(gate []gateStep, cfg *config.Config) bool {
 // a split gate sends its go steps to the host.
 func remoteVouched(t *config.Task) bool {
 	return t.Remote != nil && *t.Remote
+}
+
+type glintCopyCheck struct {
+	local, installed string
+	ok               bool
+}
+
+func (r *Runner) glintEligible(argv, args []string) bool {
+	if !glintCheckNoOutput(argv, args) || r.remoteHeavy == nil {
+		return false
+	}
+	return r.glintCopy(argv[0]).ok
+}
+
+// glintCopy compares the glint a step names (argv0, found as the step would
+// find it: a path as it is, a bare name by PATH) with the copy install
+// recorded on the host, once per process for each host and path.
+func (r *Runner) glintCopy(argv0 string) glintCopyCheck {
+	name, err := exec.LookPath(argv0)
+	if err != nil && !errors.Is(err, exec.ErrNotFound) {
+		fmt.Fprintf(r.Stderr, "graft: looking up glint: %v\n", err)
+	}
+	if err == nil {
+		abs, absErr := filepath.Abs(name)
+		if absErr != nil {
+			fmt.Fprintf(r.Stderr, "graft: resolving glint path %s: %v\n", name, absErr)
+		} else {
+			name = abs
+		}
+	}
+	key := r.remoteHeavy.Host + "\x00" + name
+	r.glintMu.Lock()
+	defer r.glintMu.Unlock()
+	if r.glintCopies == nil {
+		r.glintCopies = map[string]glintCopyCheck{}
+	}
+	check, cached := r.glintCopies[key]
+	if !cached {
+		check.local = "none"
+		if err == nil {
+			data, readErr := os.ReadFile(name)
+			if readErr != nil {
+				fmt.Fprintf(r.Stderr, "graft: reading glint %s: %v\n", name, readErr)
+			} else {
+				sum := sha256.Sum256(data)
+				check.local = fmt.Sprintf("%x", sum)
+			}
+		}
+		var readErr error
+		check.installed, readErr = installedGlintSHA(r.remoteHeavy.Host, name)
+		if readErr != nil {
+			fmt.Fprintf(r.Stderr, "graft: reading installed glint record: %v\n", readErr)
+			check.installed = ""
+		}
+		check.ok = check.local != "none" && check.local == check.installed
+		r.glintCopies[key] = check
+	}
+	return check
+}
+
+func (r *Runner) glintStayReason(argv0 string) string {
+	check := r.glintCopy(argv0)
+	if check.ok {
+		return "only go test and go vet steps that write no file can use user remote_heavy"
+	}
+	return "glint here (" + shortSHA(check.local) + ") is not the one install copied to " + r.remoteHeavy.Host + " (" + shortSHA(check.installed) + ")"
+}
+
+func shortSHA(sum string) string {
+	if sum == "" {
+		return "none"
+	}
+	if len(sum) > 12 {
+		return sum[:12]
+	}
+	return sum
+}
+
+func hostCopiesPath() (string, error) {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("locating the user cache: %w", err)
+	}
+	return filepath.Join(cache, "graft", "hosts.json"), nil
+}
+
+func installedGlintSHA(host, path string) (string, error) {
+	file, err := hostCopiesPath()
+	if err != nil {
+		return "", fmt.Errorf("locating cache: %w", err)
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("reading %s: %w", file, err)
+	}
+	var copies map[string]map[string]string
+	if err := json.Unmarshal(data, &copies); err != nil {
+		return "", fmt.Errorf("decoding %s: %w", file, err)
+	}
+	return copies[host][path], nil
+}
+
+func recordHostCopy(host, path, sum string) error {
+	file, err := hostCopiesPath()
+	if err != nil {
+		return fmt.Errorf("locating host copy registry: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		return fmt.Errorf("creating host copy registry: %w", err)
+	}
+	fl := flock.New(file + ".lock")
+	if err := fl.Lock(); err != nil {
+		return fmt.Errorf("locking host copy registry: %w", err)
+	}
+	defer fl.Unlock()
+	copies := map[string]map[string]string{}
+	data, err := os.ReadFile(file)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("reading host copy registry: %w", err)
+	}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &copies); err != nil {
+			return fmt.Errorf("decoding host copy registry: %w", err)
+		}
+	}
+	if copies == nil {
+		copies = map[string]map[string]string{}
+	}
+	if copies[host] == nil {
+		copies[host] = map[string]string{}
+	}
+	copies[host][path] = sum
+	data, err = json.MarshalIndent(copies, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding host copy registry: %w", err)
+	}
+	if err := atomicfile.Write(file, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("writing host copy registry: %w", err)
+	}
+	return nil
 }
 
 // goModules lists the directories to vet, relative to the root, "." first.
@@ -1018,7 +1167,7 @@ func (r *Runner) enterSplit(ctx context.Context, name string) error {
 func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.Task, args []string, threads string) (func(error) error, error) {
 	frame := r.frames[len(r.frames)-1]
 	wasRemote := frame.remote
-	remote := remoteVouched(t) && s.Shell == "" && goCheckNoOutput(s.Argv, args) && r.remoteDown == ""
+	remote := remoteVouched(t) && s.Shell == "" && (goCheckNoOutput(s.Argv, args) || r.glintEligible(s.Argv, args)) && r.remoteDown == ""
 	if remote {
 		// A step goes to the host only as its task could: not with the test
 		// database, .env keys or a directory the host lacks.
@@ -2309,6 +2458,16 @@ func (r *Runner) install(ctx context.Context, s config.Step, t *config.Task) err
 				}
 				errs = append(errs, fmt.Errorf("install to %s: rsync: %w: %s; not there: %s", host, err, strings.TrimSpace(string(out)), strings.Join(missed, ", ")))
 				break
+			}
+			if abs, absErr := filepath.Abs(candidate.destination); absErr != nil {
+				errs = append(errs, fmt.Errorf("install to %s: resolving destination %s: %w", host, candidate.destination, absErr))
+				break
+			} else {
+				sum := sha256.Sum256(candidate.data)
+				if err := recordHostCopy(host, abs, fmt.Sprintf("%x", sum)); err != nil {
+					errs = append(errs, fmt.Errorf("install to %s: %w", host, err))
+					break
+				}
 			}
 			fmt.Fprintf(r.Stderr, "graft: install: %s %s -> %s:%s\n", candidate.name, shortRevision(candidate.revision), host, candidate.destination)
 		}

@@ -213,8 +213,15 @@ task's `dir`, `graft exec` in a subdirectory), as a `run` that carries the
 whole tree and runs the command where it was started needs. A step
 interrupted here sends `run` SIGTERM, so it can take its work off the host,
 and kills it 30 seconds later. `up` runs once per graft, at the first heavy task. With user-configured
-`remote_heavy`, only tasks whose every step is a `go test` or `go vet` command
-that writes no output file can use the host; a task with `remote: true` can
+`remote_heavy`, tasks whose every step is a `go test` or `go vet` command
+that writes no output file can use the host. A `glint check` step can use it
+too when the glint found on this machine's `PATH` has the same SHA-256 as the
+file the install step recorded for that host and absolute destination in
+`<user cache dir>/graft/hosts.json`; otherwise it stays here and says which
+hashes differ. `glint check` with `--cpuprofile` stays here; `-o` and
+`--output` select the report format and are allowed. The registry records what install copied, so a glint replaced
+by hand on the host is not detected, and the host has its own cold glint
+cache. A task with `remote: true` can
 send any heavy work. Output flags such as `-o`, `-coverprofile` and `-trace`
 (also as `-test.coverprofile`), `-fuzz` and `-mod=mod` keep the task here, in the step or in the arguments given for `{args}`: a
 `go test -v {args} ./...` task goes with `-run TestX` and stays with
@@ -663,7 +670,8 @@ dotenv_sets:                   # key lists several tasks and services share
   `rsync` to each host at that absolute path, creating its directory, once
   every file is installed here; a host that fails is not tried for the rest
   of the files, and the step fails naming it, its error and the files it did
-  not get. A task with an install step is
+  not get. Successful host copies are recorded by host and absolute path in
+  `<user cache dir>/graft/hosts.json` for the glint check placement rule. A task with an install step is
   never cached. The usual install
   of a project's program:
 

@@ -58,7 +58,10 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 	if why != "" {
 		return stay(why)
 	}
-	if r.userRemote && t.Remote == nil && !userRemoteEligible(t, args) {
+	if r.userRemote && t.Remote == nil && !r.userRemoteEligible(t, args) {
+		if glintTask(t, args) {
+			return stay(r.glintStayReason(t.Run[0].Argv[0]))
+		}
 		return stay("only go test and go vet steps that write no file can use user remote_heavy")
 	}
 	if rh.When == "busy" {
@@ -170,7 +173,7 @@ func (r *Runner) journalRemoteBroken(task, reason string) error {
 
 // userRemoteEligible accepts only go test and go vet invocations whose
 // arguments cannot request an output file.
-func userRemoteEligible(t *config.Task, args []string) bool {
+func (r *Runner) userRemoteEligible(t *config.Task, args []string) bool {
 	if t.Remote != nil && *t.Remote {
 		return true
 	}
@@ -179,11 +182,50 @@ func userRemoteEligible(t *config.Task, args []string) bool {
 	}
 	for _, step := range t.Run {
 		if step.Shell != "" || step.Install != nil || step.Task != "" || step.ServiceAction != "" ||
-			!goCheckNoOutput(step.Argv, args) {
+			!(goCheckNoOutput(step.Argv, args) || glintCheckNoOutput(step.Argv, args) && r.glintEligible(step.Argv, args)) {
 			return false
 		}
 	}
 	return true
+}
+
+func glintTask(t *config.Task, args []string) bool {
+	if len(t.Run) == 0 {
+		return false
+	}
+	for _, step := range t.Run {
+		if step.Shell != "" || step.Install != nil || step.Task != "" || step.ServiceAction != "" || !glintCheckNoOutput(step.Argv, args) {
+			return false
+		}
+	}
+	return true
+}
+
+func glintCheckNoOutput(argv, args []string) bool {
+	if len(argv) < 2 || (argv[0] != "glint" && !strings.HasSuffix(filepath.ToSlash(argv[0]), "/glint")) || argv[1] != "check" {
+		return false
+	}
+	for _, arg := range expandArgs(argv[2:], args) {
+		if arg == "--cpuprofile" || strings.HasPrefix(arg, "--cpuprofile=") {
+			return false
+		}
+	}
+	return true
+}
+
+func expandArgs(argv, args []string) []string {
+	var words []string
+	for _, arg := range argv {
+		switch {
+		case arg == ArgsPlaceholder:
+			words = append(words, args...)
+		case strings.Contains(arg, ArgsPlaceholder) && len(args) == 1:
+			words = append(words, strings.Replace(arg, ArgsPlaceholder, args[0], 1))
+		default:
+			words = append(words, arg)
+		}
+	}
+	return words
 }
 
 // outputFlags are the go test and go vet flags that leave a file on the
@@ -198,18 +240,7 @@ func goCheckNoOutput(argv, args []string) bool {
 	if len(argv) < 2 || argv[0] != "go" || (argv[1] != "test" && argv[1] != "vet") {
 		return false
 	}
-	var words []string
-	for _, arg := range argv[2:] {
-		switch {
-		case arg == ArgsPlaceholder:
-			words = append(words, args...)
-		case strings.Contains(arg, ArgsPlaceholder) && len(args) == 1:
-			// Inside a word {args} takes exactly one argument.
-			words = append(words, strings.Replace(arg, ArgsPlaceholder, args[0], 1))
-		default:
-			words = append(words, arg)
-		}
-	}
+	words := expandArgs(argv[2:], args)
 	for _, arg := range words {
 		if !strings.HasPrefix(arg, "-") {
 			continue

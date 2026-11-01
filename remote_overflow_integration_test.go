@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,6 +15,151 @@ import (
 	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/lock"
 )
+
+func fakeGlint(t *testing.T, f *fixture) (string, string) {
+	t.Helper()
+	dir := filepath.Join(f.base, "glint-bin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "glint")
+	writeFile(t, path, "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env, "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	return path, fmt.Sprintf("%x", sum)
+}
+
+func writeHostGlint(t *testing.T, state, host, path, sum string) {
+	t.Helper()
+	file := filepath.Join(state, "cache", "graft", "hosts.json")
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(map[string]map[string]string{host: {path: sum}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUserRemoteHeavyGlintGoesWhenInstallCopiedIt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, "  lint:\n    heavy: true\n    run: [[glint, check, ./...]]\n")
+	path, sum := fakeGlint(t, f)
+	writeHostGlint(t, state, "pc", path, sum)
+	loaded(t, state)
+	cmd, out := f.start(f.work, "lint")
+	waitFor(t, func() bool { return strings.Contains(out.String(), "heavy, on pc") })
+	setRunnable(t, filepath.Join(state, "proc"), 0)
+	if err := cmd.Wait(); err != nil || !strings.Contains(out.String(), "heavy, on pc") || !strings.Contains(callsOf(t, state), "glint check ./...") {
+		t.Fatalf("matching glint copy was not sent: %v\n%s\ncalls: %q", err, out.String(), callsOf(t, state))
+	}
+}
+
+func TestUserRemoteHeavyGlintStaysWithoutTheSameCopy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	for _, c := range []struct{ name, sum, extra, reason string }{
+		{"missing", "", "", "glint here ("},
+		{"different", strings.Repeat("a", 64), "", "glint here ("},
+		{"cpuprofile", "", "--cpuprofile=cpu.out", "only go test and go vet"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			run := "glint, check, ./..."
+			if c.extra != "" {
+				run += ", " + c.extra
+			}
+			f, state := userRemoteRepo(t, "  lint:\n    heavy: true\n    run: [["+run+"]]\n")
+			path, _ := fakeGlint(t, f)
+			if c.sum != "" {
+				writeHostGlint(t, state, "pc", path, c.sum)
+			}
+			loaded(t, state)
+			cmd, out := f.start(f.work, "lint")
+			waitFor(t, func() bool { return strings.Contains(out.String(), "heavy, on this machine:") })
+			setRunnable(t, filepath.Join(state, "proc"), 0)
+			if err := cmd.Wait(); err != nil || !strings.Contains(out.String(), c.reason) || callsOf(t, state) != "" {
+				t.Errorf("glint should stay: %v\n%s\ncalls: %q", err, out.String(), callsOf(t, state))
+			}
+		})
+	}
+}
+
+func TestUserRemoteHeavyGlintInABusyGateSplit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, "")
+	path, sum := fakeGlint(t, f)
+	writeHostGlint(t, state, "pc", path, sum)
+	config := strings.Replace(splitGateConfig, "  unit:\n    heavy: true\n    remote: true\n    run: [[go, test, -count=1, ./...]]\n", "  unit:\n    heavy: true\n    remote: true\n    run: [[go, vet, ./...], [glint, check, ./...]]\n", 1)
+	f.write(".graft.yaml", config)
+	loaded(t, state)
+	calmAfter(t, state, 1500*time.Millisecond)
+	out := f.mustGraft("gate")
+	calls := callsOf(t, state)
+	if !strings.Contains(calls, "go vet ./...") || !strings.Contains(calls, "glint check ./...") || !strings.Contains(out, "echo here") {
+		t.Errorf("gate split did not send both checks and keep other work here:\n%s\ncalls: %q", out, calls)
+	}
+}
+
+func TestInstallRecordsTheCopyOnTheHost(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake rsync is sh")
+	}
+	dest := filepath.Join(t.TempDir(), "bin")
+	f := installRepo(t, dest)
+	state, cache, cfgDir, fakebin := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	writeUserConfig(t, cfgDir, "tools: {bin_dir: "+yamlQuote(dest)+"}\ninstall: {hosts: [pc]}\n")
+	writeFile(t, filepath.Join(fakebin, "rsync"), "#!/bin/sh\n[ ! -e \""+filepath.Join(state, "fail")+"\" ] || exit 1\nsrc=$3\ndst=${4#*:}\nmkdir -p \"$(dirname \"$dst\")\"\ncp \"$src\" \"$dst\"\n")
+	if err := os.Chmod(filepath.Join(fakebin, "rsync"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, "APPDATA="+cfgDir, "XDG_CACHE_HOME="+cache, "LOCALAPPDATA="+cache, "PATH="+fakebin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := os.WriteFile(filepath.Join(state, "fail"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, code := f.graft("", "install-script"); code == 0 {
+		t.Fatal("failed rsync passed")
+	}
+	registry := filepath.Join(cache, "graft", "hosts.json")
+	if _, err := os.Stat(registry); !os.IsNotExist(err) {
+		t.Fatalf("failed rsync wrote the host registry: %v", err)
+	}
+	if err := os.Remove(filepath.Join(state, "fail")); err != nil {
+		t.Fatal(err)
+	}
+	f.mustGraft("install-script")
+	installed := filepath.Join(dest, "run.sh")
+	data, err := os.ReadFile(installed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	var copies map[string]map[string]string
+	encoded, err := os.ReadFile(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(encoded, &copies); err != nil {
+		t.Fatal(err)
+	}
+	if copies["pc"][installed] != fmt.Sprintf("%x", sum) {
+		t.Errorf("host copy registry: %#v", copies)
+	}
+}
 
 // userRemoteRepo is a Go project without remote_heavy on a machine whose
 // user config names one, in its default when: busy. Its run logs the argv
