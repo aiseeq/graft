@@ -198,7 +198,7 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 			return undo(err)
 		}
 	}
-	if err := runChecks(repo, cfg, plan.message, "HEAD", a.Stderr); err != nil {
+	if err := runChecks(ctx, repo, cfg, plan.message, "HEAD", a.Stderr); err != nil {
 		return undo(err)
 	}
 	msg, err := a.withWorkers(repo, cfg, plan.message)

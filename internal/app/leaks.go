@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -56,7 +57,7 @@ func loadLeakRules(l *userconfig.Leaks, log io.Writer) (*leaks.Rules, error) {
 }
 
 // publicRemote returns the first remote of repo under a public prefix.
-func publicRemote(repo *gitx.Repo, l *userconfig.Leaks) (string, bool, error) {
+func publicRemote(ctx context.Context, repo *gitx.Repo, l *userconfig.Leaks, log io.Writer) (string, bool, error) {
 	remotes, err := repo.Remotes()
 	if err != nil {
 		return "", false, err
@@ -66,7 +67,11 @@ func publicRemote(repo *gitx.Repo, l *userconfig.Leaks) (string, bool, error) {
 		if err != nil {
 			return "", false, err
 		}
-		if l.RemoteIsPublic(strings.TrimSpace(url)) {
+		public, err := remoteIsPublic(ctx, strings.TrimSpace(url), l, log)
+		if err != nil {
+			return "", false, err
+		}
+		if public {
 			return r, true, nil
 		}
 	}
@@ -75,12 +80,12 @@ func publicRemote(repo *gitx.Repo, l *userconfig.Leaks) (string, bool, error) {
 
 // leakFindings scans the staged lines and the message of a commit to a public
 // repository for the user's private names and terms.
-func leakFindings(repo *gitx.Repo, message string, log io.Writer) ([]checks.Finding, error) {
+func leakFindings(ctx context.Context, repo *gitx.Repo, message string, log io.Writer) ([]checks.Finding, error) {
 	settings, ok, err := leakSettings()
 	if err != nil || !ok {
 		return nil, err
 	}
-	if _, public, err := publicRemote(repo, settings); err != nil || !public {
+	if _, public, err := publicRemote(ctx, repo, settings, log); err != nil || !public {
 		return nil, err
 	}
 	rules, err := loadLeakRules(settings, log)
@@ -141,7 +146,12 @@ func (a *App) Leaks(revisions []string) error {
 	if out = strings.TrimSpace(out); out != "" {
 		commits = strings.Split(out, "\n")
 	}
+	return a.scanLeakCommits(repo, rules, commits)
+}
+
+func (a *App) scanLeakCommits(repo *gitx.Repo, rules *leaks.Rules, commits []string) error {
 	total := 0
+	var err error
 	for _, entry := range commits {
 		fields := strings.Fields(entry)
 		c := fields[0]
@@ -188,7 +198,7 @@ func (a *App) Leaks(revisions []string) error {
 	}
 	a.printf("%d commits scanned against %d private names", len(commits), rules.Names())
 	if total > 0 {
-		return fmt.Errorf("%d private names or terms found", total)
+		return fmt.Errorf("%d private names or terms found; inspect the named commit with graft leaks <commit>", total)
 	}
 	return nil
 }

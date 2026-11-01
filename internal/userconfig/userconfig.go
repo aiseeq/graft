@@ -199,6 +199,7 @@ func (l *MachineLoad) normalize(path string) error {
 // Leaks keeps the user's private names out of their public repositories. The
 // lists stay here, outside any repository.
 type Leaks struct {
+	GitHubVisibility bool `yaml:"github_visibility"`
 	// PublicRemotes are remote URL prefixes, host/path form
 	// (github.com/someone/): a repository pushing to one is public.
 	PublicRemotes []string `yaml:"public_remotes"`

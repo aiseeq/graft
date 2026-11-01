@@ -47,10 +47,10 @@ func (a *App) HookPreCommit(ctx context.Context) error {
 			return errors.New(commitHowTo(cfg))
 		}
 		a.printf("commit on %s, a local branch (commit.local_branches of the user config): the checks only, no gate, version or push", local)
-		return runChecks(repo, cfg, "", "HEAD", a.Stderr)
+		return runChecks(ctx, repo, cfg, "", "HEAD", a.Stderr)
 	}
 	a.printf("%s commit: running the checks and the gate", kind)
-	if err := runChecks(repo, cfg, "", "HEAD", a.Stderr); err != nil {
+	if err := runChecks(ctx, repo, cfg, "", "HEAD", a.Stderr); err != nil {
 		return err
 	}
 	if err := a.gate(ctx, repo, cfg); err != nil {

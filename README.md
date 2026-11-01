@@ -2115,7 +2115,9 @@ up to date and release again.
     tests, fixtures, comments, docs or the message is a finding.
   - **terms**: every match of a `terms_file` regexp.
 
-  A finding names the file, line and the name or term. A line containing
+  A finding names the file, line and the name or term. Only text files are
+  checked; binary files are skipped because Git's diff does not use `--text`.
+  A line containing
   `graft:leak-ok <reason>` passes; `leaks.allow` passes a name or term
   everywhere. `graft leaks <revision>…` runs the same scan over existing commits,
   including merge messages and lines introduced while resolving or editing a
@@ -2125,7 +2127,14 @@ up to date and release again.
   or newer. Git does not remerge an octopus merge (more than two parents), so
   `graft leaks` stops with an error naming it. Pass any `git rev-list`
   revisions as separate arguments; for example, `graft leaks --all` scans all
-  branches and tags. A clone has no pull request refs (`refs/pull/*`) unless
+  branches and tags. `graft init --global` installs Git's global `pre-push`
+  hook, which checks outgoing commits made outside `graft commit`; Git 2.54
+  or newer is required. It checks the push URL and objects currently at that
+  destination. Findings stop the push. `git push --no-verify` knowingly skips
+  hooks. Set `leaks.github_visibility: true` in the user config to ask `gh`
+  for GitHub repository visibility. Private and internal repositories are
+  treated as private. If `gh` cannot answer, the check treats the target as
+  public and explains why. A clone has no pull request refs (`refs/pull/*`) unless
   they are fetched: `git fetch origin '+refs/pull/*:refs/pull/*'` first.
 
 ## Worktrees

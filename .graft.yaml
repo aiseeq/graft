@@ -49,6 +49,7 @@ tasks:
     run:
       - sh: '"$PWD/bin/graft" pilot-gate -- {args}'
       - install: bin/graft
+      - sh: '"$PWD/bin/graft" init --global'
   fmt:
     desc: format the code
     run: [gofmt -w .]

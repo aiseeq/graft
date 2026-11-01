@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -70,6 +71,266 @@ func TestCommitRefusesPrivateNamesInPublicRepo(t *testing.T) {
 	f.write("settle.go", "package main\n\nfunc SettleInvoice() {}\n")
 	if out, code := f.graft("", "commit", "-m", "feat: own settle"); code != 0 {
 		t.Errorf("own declaration: %d\n%s", code, out)
+	}
+}
+
+func TestPrePushScansNewlyOutgoingCommit(t *testing.T) {
+	f := leakRepo(t, "/", "")
+	f.git("push", "origin", "HEAD:refs/heads/main")
+	f.write("main.go", "package main\n\n// SettleInvoice\nfunc main() {}\n")
+	f.git("add", "main.go")
+	f.git("-c", "core.hooksPath="+t.TempDir(), "commit", "--no-verify", "-m", "feat: AcmePay")
+	local := f.git("rev-parse", "HEAD")
+	remote := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main")
+	input := "refs/heads/main " + local + " refs/heads/main " + remote + "\n"
+	out, code := f.exec(f.work, input, graftBin, "hook", "pre-push", "origin", f.remote("origin"))
+	if code == 0 || !strings.Contains(out, "main.go:3: private name SettleInvoice") || !strings.Contains(out, "git push --no-verify") {
+		t.Fatalf("pre-push exit %d:\n%s", code, out)
+	}
+}
+
+func TestPrePushUsesFreshTargetRefsInsteadOfTrackingRefs(t *testing.T) {
+	f := leakRepo(t, "/", "")
+	base := f.git("rev-parse", "HEAD")
+	f.git("push", f.remote("origin"), "HEAD:refs/heads/main")
+	f.git("fetch", f.remote("origin"), "refs/heads/main:refs/remotes/origin/main")
+	f.write("main.go", "package main\n\n// SettleInvoice\nfunc main() {}\n")
+	f.git("add", "main.go")
+	f.git("-c", "core.hooksPath="+t.TempDir(), "commit", "--no-verify", "-m", "feat: AcmePay")
+	local := f.git("rev-parse", "HEAD")
+	f.git("push", f.remote("origin"), "HEAD:refs/heads/main")
+	f.git("fetch", f.remote("origin"), "refs/heads/main:refs/remotes/origin/main")
+	f.gitIn(f.remote("origin"), "update-ref", "refs/heads/main", base)
+	input := "refs/heads/main " + local + " refs/heads/main " + strings.Repeat("0", 40) + "\n"
+	out, code := f.graft(input, "hook", "pre-push", "origin", f.remote("origin"))
+	if code == 0 || !strings.Contains(out, "main.go:3: private name SettleInvoice") {
+		t.Fatalf("stale tracking ref did not protect the target: exit %d\n%s", code, out)
+	}
+}
+
+func TestPrePushScansLeakingAncestorWhenPushingCleanChild(t *testing.T) {
+	f := leakRepo(t, "/", "")
+	f.write("main.go", "package main\n\n// SettleInvoice\nfunc main() {}\n")
+	f.git("add", "main.go")
+	f.git("-c", "core.hooksPath="+t.TempDir(), "commit", "--no-verify", "-m", "feat: private change")
+	f.write("ordinary.go", "package main\n\nconst value = 1\n")
+	f.git("add", "ordinary.go")
+	f.git("-c", "core.hooksPath="+t.TempDir(), "commit", "--no-verify", "-m", "feat: ordinary child")
+	local := f.git("rev-parse", "HEAD")
+	input := "refs/heads/main " + local + " refs/heads/main " + strings.Repeat("0", 40) + "\n"
+	out, code := f.graft(input, "hook", "pre-push", "origin", f.remote("origin"))
+	if code == 0 || !strings.Contains(out, "main.go:3: private name SettleInvoice") {
+		t.Fatalf("leaking ancestor was not scanned: exit %d\n%s", code, out)
+	}
+}
+
+func setFixtureEnv(f *fixture, values ...string) {
+	f.t.Helper()
+	keys := make(map[string]bool, len(values))
+	for _, value := range values {
+		key, _, _ := strings.Cut(value, "=")
+		keys[key] = true
+	}
+	filtered := f.env[:0]
+	for _, value := range f.env {
+		key, _, _ := strings.Cut(value, "=")
+		if !keys[key] {
+			filtered = append(filtered, value)
+		}
+	}
+	f.env = append(filtered, values...)
+}
+
+func installGlobalPrePush(f *fixture, capture string) {
+	f.t.Helper()
+	global := filepath.Join(f.base, "global.gitconfig")
+	setFixtureEnv(f, "GIT_CONFIG_GLOBAL="+global)
+	if out, code := f.graft("", "init", "--global"); code != 0 {
+		f.t.Fatalf("graft init --global: exit %d\n%s", code, out)
+	}
+	bin := filepath.Join(f.base, "graft-wrapper")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	wrapper := filepath.Join(bin, "graft")
+	writeFile(f.t, wrapper, "#!/bin/sh\ncat > \"$GRAFT_STDIN_CAPTURE\"\nprintf '%s\\n' \"$@\" > \"$GRAFT_ARGS_CAPTURE\"\nexec \"$GRAFT_REAL\" \"$@\" < \"$GRAFT_STDIN_CAPTURE\"\n")
+	if err := os.Chmod(wrapper, 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	path := bin + string(os.PathListSeparator) + os.Getenv("PATH")
+	setFixtureEnv(f, "PATH="+path, "GRAFT_STDIN_CAPTURE="+capture,
+		"GRAFT_ARGS_CAPTURE="+capture+".args", "GRAFT_REAL="+graftBin)
+}
+
+func installLocalPrePush(t *testing.T, f *fixture, capture string) {
+	t.Helper()
+	hooks := filepath.Join(f.base, "repo-hooks")
+	hook := filepath.Join(hooks, "pre-push")
+	writeFile(t, hook, "#!/bin/sh\ncat > \"$LOCAL_STDIN_CAPTURE\"\n[ \"$LOCAL_HOOK_EXIT\" != 1 ]\n")
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.git("config", "core.hooksPath", hooks)
+	setFixtureEnv(f, "LOCAL_STDIN_CAPTURE="+capture, "LOCAL_HOOK_EXIT=0")
+}
+
+func TestPrePushGlobalHookRunsWithRepositoryHookAndChecksTwoRefs(t *testing.T) {
+	f := leakRepo(t, "/", "")
+	f.git("push", "origin", "HEAD:refs/heads/main")
+	globalCapture := filepath.Join(f.base, "global-stdin")
+	localCapture := filepath.Join(f.base, "local-stdin")
+	installGlobalPrePush(f, globalCapture)
+	installLocalPrePush(t, f, localCapture)
+
+	base := f.git("rev-parse", "HEAD")
+	f.git("switch", "-q", "-c", "leaking")
+	f.write("main.go", "package main\n\n// SettleInvoice\nfunc main() {}\n")
+	f.git("add", "main.go")
+	f.git("-c", "core.hooksPath="+t.TempDir(), "commit", "--no-verify", "-m", "feat: AcmePay")
+	f.git("switch", "-q", "-c", "clean", base)
+	f.write("ordinary.go", "package main\n\nconst value = 1\n")
+	f.git("add", "ordinary.go")
+	f.git("-c", "core.hooksPath="+t.TempDir(), "commit", "--no-verify", "-m", "feat: ordinary")
+	out, code := f.tryGit("push", "origin", "leaking:refs/heads/leaking", "clean:refs/heads/clean")
+	if code == 0 || !strings.Contains(out, "main.go:3: private name SettleInvoice") {
+		t.Fatalf("global hook did not reject a leak in the second ref: exit %d\n%s", code, out)
+	}
+	globalInput, localInput := readFile(t, globalCapture), readFile(t, localCapture)
+	if globalInput != localInput || strings.Count(strings.TrimSpace(globalInput), "\n") != 1 ||
+		!strings.Contains(globalInput, "refs/heads/leaking") || !strings.Contains(globalInput, "refs/heads/clean") {
+		t.Fatalf("hooks did not receive the same two-ref stdin:\nglobal: %q\nlocal:  %q", globalInput, localInput)
+	}
+	if out, code := f.tryGit("push", "origin", "clean:refs/heads/clean"); code != 0 {
+		t.Fatalf("clean push: exit %d\n%s", code, out)
+	}
+	if strings.Count(strings.TrimSpace(readFile(t, globalCapture)), "\n") != 0 || readFile(t, globalCapture) != readFile(t, localCapture) {
+		t.Fatalf("hooks did not both run for clean push: global=%q local=%q", readFile(t, globalCapture), readFile(t, localCapture))
+	}
+	setFixtureEnv(f, "LOCAL_HOOK_EXIT=1")
+	out, code = f.tryGit("push", "origin", "clean:refs/heads/blocked")
+	if code == 0 {
+		t.Fatalf("repository hook refusal did not cancel push: exit %d\n%s", code, out)
+	}
+	if input := readFile(t, localCapture); !strings.Contains(input, "refs/heads/blocked") {
+		t.Fatalf("repository hook did not receive refused push: %q", input)
+	}
+	if _, refCode := f.exec(f.remote("origin"), "", "git", "show-ref", "--verify", "--quiet", "refs/heads/blocked"); refCode == 0 {
+		t.Fatal("repository hook refusal still created the remote branch")
+	}
+}
+
+func TestPrePushGlobalHookSkipsNonPublicTarget(t *testing.T) {
+	f := leakRepo(t, "github.com/someone/", "")
+	capture := filepath.Join(f.base, "global-stdin")
+	installGlobalPrePush(f, capture)
+	f.write("main.go", "package main\n\n// SettleInvoice\nfunc main() {}\n")
+	f.git("add", "main.go")
+	f.git("-c", "core.hooksPath="+t.TempDir(), "commit", "--no-verify", "-m", "feat: AcmePay")
+	if out, code := f.tryGit("push", "origin", "HEAD:refs/heads/main"); code != 0 {
+		t.Fatalf("non-public target should accept the push: exit %d\n%s", code, out)
+	}
+}
+
+func TestPrePushScansCommitPublishedElsewhere(t *testing.T) {
+	f := leakRepo(t, "/", "")
+	other := filepath.Join(f.base, "other-public.git")
+	if err := os.CopyFS(other, os.DirFS(bareTemplate)); err != nil {
+		t.Fatal(err)
+	}
+	f.write("main.go", "package main\n\n// SettleInvoice\nfunc main() {}\n")
+	f.git("add", "main.go")
+	f.git("-c", "core.hooksPath="+t.TempDir(), "commit", "--no-verify", "-m", "feat: AcmePay")
+	local := f.git("rev-parse", "HEAD")
+	f.git("push", f.remote("origin"), "HEAD:refs/heads/main")
+	input := "refs/heads/main " + local + " refs/heads/main " + strings.Repeat("0", 40) + "\n"
+	out, code := f.graft(input, "hook", "pre-push", "origin", other)
+	if code == 0 || !strings.Contains(out, "private name SettleInvoice") {
+		t.Fatalf("commit present in another public repository was not scanned: exit %d\n%s", code, out)
+	}
+}
+
+func TestPrePushScansMergeParentsForEmptyTarget(t *testing.T) {
+	f := leakRepo(t, "/", "")
+	start := f.git("branch", "--show-current")
+	f.git("switch", "-q", "-c", "private-side")
+	f.write("private.go", "package main\n\n// SettleInvoice\nfunc privateChange() {}\n")
+	f.git("add", "private.go")
+	f.git("-c", "core.hooksPath="+t.TempDir(), "commit", "--no-verify", "-m", "feat: AcmePay")
+	f.git("switch", "-q", start)
+	f.write("ordinary.go", "package main\n\nconst ordinary = 1\n")
+	f.git("add", "ordinary.go")
+	f.git("-c", "core.hooksPath="+t.TempDir(), "commit", "--no-verify", "-m", "feat: ordinary")
+	f.git("merge", "--no-ff", "-m", "merge branches", "private-side")
+	local := f.git("rev-parse", "HEAD")
+	input := "refs/heads/main " + local + " refs/heads/main " + strings.Repeat("0", 40) + "\n"
+	out, code := f.graft(input, "hook", "pre-push", "origin", f.remote("origin"))
+	if code == 0 || !strings.Contains(out, "private name SettleInvoice") {
+		t.Fatalf("leaking merge parent was not scanned: exit %d\n%s", code, out)
+	}
+}
+
+func TestPrePushUsesPushURLForVisibilityAndRange(t *testing.T) {
+	f := leakRepo(t, "/", "")
+	public := filepath.Join(f.base, "public-target.git")
+	if err := os.CopyFS(public, os.DirFS(bareTemplate)); err != nil {
+		t.Fatal(err)
+	}
+	var configPath string
+	for _, value := range f.env {
+		if after, ok := strings.CutPrefix(value, "XDG_CONFIG_HOME="); ok {
+			configPath = filepath.Join(after, "graft", "config"+".yaml")
+		}
+	}
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture's initial public prefix is replaced with the target push path.
+	old := "public_remotes: [/]"
+	updated := "public_remotes: [" + yamlQuote(filepath.ToSlash(public)) + "]"
+	if !strings.Contains(string(config), old) {
+		t.Fatalf("fixture config lacks %q", old)
+	}
+	if err := os.WriteFile(configPath, []byte(strings.Replace(string(config), old, updated, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.git("config", "remote.origin.url", f.remote("origin"))
+	f.git("config", "--unset-all", "remote.origin.pushurl")
+	f.git("config", "--add", "remote.origin.pushurl", public)
+	capture := filepath.Join(f.base, "global-stdin")
+	installGlobalPrePush(f, capture)
+	f.write("main.go", "package main\n\n// SettleInvoice\nfunc main() {}\n")
+	f.git("add", "main.go")
+	f.git("-c", "core.hooksPath="+t.TempDir(), "commit", "--no-verify", "-m", "feat: AcmePay")
+	out, code := f.tryGit("push", "origin", "HEAD:refs/heads/main")
+	if code == 0 || !strings.Contains(out, "private name SettleInvoice") {
+		t.Fatalf("public pushurl was not checked: exit %d\n%s", code, out)
+	}
+	if !strings.Contains(readFile(t, capture+".args"), public) {
+		t.Fatalf("global hook did not receive push URL %q: %q", public, readFile(t, capture+".args"))
+	}
+}
+
+func TestPrePushDeleteRefSkipsCommitScan(t *testing.T) {
+	f := leakRepo(t, "/", "")
+	f.git("push", "origin", "HEAD:refs/heads/main")
+	remote := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main")
+	input := "refs/heads/main " + strings.Repeat("0", 40) + " refs/heads/main " + remote + "\n"
+	out, code := f.graft(input, "hook", "pre-push", "origin", f.remote("origin"))
+	if code != 0 || strings.Contains(out, "commits scanned") {
+		t.Fatalf("delete-ref hook: exit %d, output %q", code, out)
+	}
+}
+
+func TestPrePushExistingTargetTagSkipsCommitScan(t *testing.T) {
+	f := leakRepo(t, "/", "")
+	f.git("push", "origin", "HEAD:refs/heads/main")
+	local := f.git("rev-parse", "HEAD")
+	f.git("tag", "v1", local)
+	input := "refs/tags/v1 " + local + " refs/tags/v1 " + strings.Repeat("0", 40) + "\n"
+	out, code := f.graft(input, "hook", "pre-push", "origin", f.remote("origin"))
+	if code != 0 || strings.Contains(out, "commits scanned") {
+		t.Fatalf("published tag hook: exit %d, output %q", code, out)
 	}
 }
 

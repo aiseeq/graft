@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -164,6 +165,61 @@ func Install(repo *gitx.Repo, dir string) ([]Change, error) {
 		return append(changes, Change{What: "set core.hooksPath to " + dir}), nil
 	}
 	return append(changes, Change{What: fmt.Sprintf("rewrote core.hooksPath from %q to %q", current, dir)}), nil
+}
+
+// InstallGlobal registers the pre-push hook with Git's global hook config.
+func InstallGlobal() ([]Change, error) {
+	get := func(key string) (string, error) {
+		cmd := exec.Command("git", "config", "--global", "--get", key)
+		out, err := cmd.Output()
+		if err != nil {
+			var exit *exec.ExitError
+			if errors.As(err, &exit) && exit.ExitCode() == 1 {
+				return "", nil
+			}
+			return "", fmt.Errorf("git config --global --get %s: %w", key, err)
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+	const key = "hook.graft-leaks.command"
+	const command = "graft hook pre-push"
+	var changes []Change
+	old, err := get(key)
+	if err != nil {
+		return nil, err
+	}
+	if old != command {
+		cmd := exec.Command("git", "config", "--global", "--replace-all", key, command)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("git config --global %s: %w: %s", key, err, strings.TrimSpace(string(out)))
+		}
+		if old == "" {
+			changes = append(changes, Change{What: "set " + key + " to " + command})
+		} else {
+			changes = append(changes, Change{What: fmt.Sprintf("rewrote %s from %q to %q", key, old, command)})
+		}
+	}
+	events, err := exec.Command("git", "config", "--global", "--get-all", "hook.graft-leaks.event").Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			return nil, fmt.Errorf("git config --global --get-all hook.graft-leaks.event: %w", err)
+		}
+	}
+	found := false
+	for event := range strings.FieldsSeq(string(events)) {
+		if event == "pre-push" {
+			found = true
+		}
+	}
+	if !found {
+		cmd := exec.Command("git", "config", "--global", "--add", "hook.graft-leaks.event", "pre-push")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("git config --global hook.graft-leaks.event: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		changes = append(changes, Change{What: "added pre-push to hook.graft-leaks.event"})
+	}
+	return changes, nil
 }
 
 // checkHooksPath refuses to repoint core.hooksPath away from another hooks

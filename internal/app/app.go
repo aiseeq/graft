@@ -233,7 +233,7 @@ func (e *ChecksError) Error() string {
 // files, the version files agreeing with each other, and in a public
 // repository, the user's private names in the added lines and in message.
 // revertBase is what the revert check holds the index to (checks.Reverts).
-func runChecks(repo *gitx.Repo, cfg *config.Config, message, revertBase string, log io.Writer) error {
+func runChecks(ctx context.Context, repo *gitx.Repo, cfg *config.Config, message, revertBase string, log io.Writer) error {
 	staged, err := checks.Staged(repo)
 	if err != nil {
 		return err
@@ -274,7 +274,7 @@ func runChecks(repo *gitx.Repo, cfg *config.Config, message, revertBase string, 
 		return err
 	}
 	findings = append(findings, ruleFindings...)
-	leakFound, err := leakFindings(repo, message, log)
+	leakFound, err := leakFindings(ctx, repo, message, log)
 	if err != nil {
 		return err
 	}

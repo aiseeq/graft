@@ -35,11 +35,11 @@ var commands = []command{
 	{name: "release", syntax: releaseSyntax, summary: text("tag the pushed HEAD with the version, after pushing its branch, and push the tag"),
 		applies: func(c *config.Config) bool { return c.Version.Mode != config.ModeNone }},
 	{name: "version", syntax: fixed("graft version [--describe]", "graft version bump [--minor|--major]"), summary: text("print the project version; --describe: the build identity, for stamping binaries; bump: raise it in the files without committing (version mode file)")},
-	{name: "init", syntax: fixed("graft init"), summary: text("install the git hooks (core.hooksPath) and the pinned tools")},
+	{name: "init", syntax: fixed("graft init", "graft init --global"), summary: text("install the git hooks and pinned tools; --global: install the leak pre-push hook for all repositories")},
 	{name: "check", syntax: fixed("graft check"), summary: text("scan the staged changes for secrets, binaries, large files, version drift")},
 	{name: "leaks", syntax: fixed("graft leaks <revision>…"), summary: text("scan commits for the private names and terms of the user config (leaks)")},
 	{name: "gate", syntax: fixed("graft gate"), summary: text("run the gate (go vet ./... in every Go module first; go_vet.enabled: false or go_vet.exclude, with a reason, skips it)")},
-	{name: "hook", syntax: fixed("graft hook (pre-commit|post-merge)"), summary: text("entry point of the installed hooks")},
+	{name: "hook", syntax: fixed("graft hook (pre-commit|post-merge)", "graft hook pre-push <remote> <url>"), summary: text("entry point of the installed hooks")},
 	{name: "flags", syntax: fixed(
 		"graft flags [status] [--env E]",
 		"graft flags show <id> [--env E]",

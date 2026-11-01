@@ -262,9 +262,12 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 	case "amend":
 		return noArgs(a, cmd, rest, func() error { return a.Amend(ctx) })
 	case "init":
+		if len(rest) == 1 && rest[0] == "--global" {
+			return a.InitGlobal()
+		}
 		return noArgs(a, cmd, rest, func() error { return a.Init(ctx) })
 	case "check":
-		return noArgs(a, cmd, rest, a.Check)
+		return noArgs(a, cmd, rest, func() error { return a.Check(ctx) })
 	case "leaks":
 		if len(rest) == 0 {
 			return fmt.Errorf("%w: graft leaks <revision>…", errUsage)
@@ -885,6 +888,11 @@ func hookCmd(ctx context.Context, a *app.App, args []string) error {
 		return a.HookPrepareCommitMsg(args[1])
 	case hooks.PostMerge:
 		return a.HookPostMerge(ctx)
+	case "pre-push":
+		if len(args) != 3 {
+			return fmt.Errorf("%w: hook pre-push <remote> <url>", errUsage)
+		}
+		return a.HookPrePush(ctx, args[1], args[2])
 	default:
 		return fmt.Errorf("%w: unknown hook %q", errUsage, args[0])
 	}

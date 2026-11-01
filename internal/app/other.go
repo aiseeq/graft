@@ -68,7 +68,7 @@ func (a *App) Amend(ctx context.Context) error {
 		if err != nil {
 			return errors.Join(err, restoreIndex(index))
 		}
-		if err := runChecks(repo, cfg, message, parent, a.Stderr); err != nil {
+		if err := runChecks(ctx, repo, cfg, message, parent, a.Stderr); err != nil {
 			return errors.Join(err, restoreIndex(index))
 		}
 		if message, err = a.withWorkers(repo, cfg, message); err != nil {
@@ -645,6 +645,22 @@ func (a *App) Init(ctx context.Context) error {
 	return a.checkTools(ctx, cfg, true)
 }
 
+// InitGlobal installs the user's Git-wide pre-push leak hook.
+func (a *App) InitGlobal() error {
+	changes, err := hooks.InstallGlobal()
+	if err != nil {
+		return err
+	}
+	if len(changes) == 0 {
+		a.printf("global pre-push leak hook already installed, nothing changed")
+		return nil
+	}
+	for _, change := range changes {
+		a.printf("%s", change.What)
+	}
+	return nil
+}
+
 // initDotEnv copies dotenv_template to the dotenv file, readable by the owner
 // only, when the dotenv file does not exist; an existing one is never touched.
 func (a *App) initDotEnv(repo *gitx.Repo, cfg *config.Config) error {
@@ -675,12 +691,12 @@ func (a *App) initDotEnv(repo *gitx.Repo, cfg *config.Config) error {
 }
 
 // Check runs the staged content checks on demand.
-func (a *App) Check() error {
+func (a *App) Check(ctx context.Context) error {
 	repo, cfg, err := a.open()
 	if err != nil {
 		return err
 	}
-	if err := runChecks(repo, cfg, "", "HEAD", a.Stderr); err != nil {
+	if err := runChecks(ctx, repo, cfg, "", "HEAD", a.Stderr); err != nil {
 		return err
 	}
 	a.printf("checks passed")
