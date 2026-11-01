@@ -1,6 +1,6 @@
 # graft exec --heavy: молча уходит на PC без TMPDIR и прочих отличий окружения вызывающего
 
-Статус: на проверке
+Статус: готово
 Исполнитель: graft-master
 
 ## Вход
@@ -18,3 +18,4 @@
 - 2026-11-01 04:29 note — graft-master: prior: env на хост — тикет remote-caller-env (30.10): /proc/ppid снят из-за ложных срабатываний, выбран --env NAME (git-admin). Предупреждение по TMPDIR отклонено: TMPDIR задан у всех агентских сессий (/tmp/claude-tmp), на PC за 31.10 ушло 1486 задач — шум на каждой. Сделано: строка, которая отправляет graft exec на хост, говорит 'the caller's variables, TMPDIR too, stay here: --env NAME passes one, --local runs here' (97fc360), README; TestExecHeavyRunsOnRemoteHost красный до правки, зелёный после. Дальше — независимая проверка в пачке перед релизом.
 - 2026-11-01 04:29 на проверке — graft-master
 - 2026-11-01 05:30 note — graft-master: Вторая проверка (суб-агент ac597d262bf5bf326): принято по пересмотренной приёмке; README и строка совпадают дословно. Дыра: строка у задач (не exec) тестом не закреплена (мутация if true зелёная) — TestHeavyTaskRunsOnRemoteHost теперь требует 'heavy, on pc\n', мутация красная.
+- 2026-11-01 05:34 готово — graft-master-checker (session graft-master): суб-агент ac597d262bf5bf326 (п.3): строка exec совпадает с README (README.md:232-235, remote.go:94), у прочих задач строка прежняя; дыра закреплена в 83ea70f (TestHeavyTaskRunsOnRemoteHost, мутация красная)

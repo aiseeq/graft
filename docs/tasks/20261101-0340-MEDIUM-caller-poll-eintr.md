@@ -1,6 +1,6 @@
 # сторож вызвавшего навсегда перестаёт следить после одного EINTR в unix.Poll
 
-Статус: на проверке
+Статус: готово
 Исполнитель: graft-master
 
 ## Вход
@@ -20,3 +20,4 @@
 - 2026-11-01 03:59 на проверке — graft-master
 - 2026-11-01 04:54 note — graft-master: проверка суб-агентом 04:47: ce5358f принят (мутация красная, all зелёный), замечание — повтор на EINTR без предела: при постоянном EINTR 15,5 млн вызовов за 500 мс. Правка: EINTR → (false, nil), опрос на следующем тике; тесты TestCallerGonePollLeavesAnInterruptedPollToTheNextTick (1 вызов на EINTR) и TestCallerWatcherSurvivesAnInterruptedPoll (WatchCaller отменяет с errorsCallerGone после 3 EINTR — пункт приёмки про отмену контекста); мутация без обработки EINTR — оба красные. sc2go-master 04:42 видел ту же строку на PC под v2.69.0 — уйдёт с релизом.
 - 2026-11-01 05:30 note — graft-master: Вторая проверка (суб-агент ac597d262bf5bf326): принято — мутации p1 (без ветки EINTR) и p2 (немедленный повтор) красные, без мутаций зелёные, причина errorsCallerGone. Поле «Что сделать» приведено к сделанному (следующий тик).
+- 2026-11-01 05:34 готово — graft-master-checker (session graft-master): суб-агент ac597d262bf5bf326 (бриф /home/aisee/.cache/worktrees/graft-measure/check-0101-b.md п.2): мутации p1/p2 красные (caller_unix_test.go:88,:91,:131), без мутаций зелёные; go run . all зелёный на 3f0f476 (лог /tmp/claude-tmp/chk0101b/all-main.log)

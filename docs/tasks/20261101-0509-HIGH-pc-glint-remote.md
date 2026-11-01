@@ -19,3 +19,4 @@
 - 2026-11-01 05:09 открыт — graft-master
 - 2026-11-01 05:12 note — graft-master: сверка версии без обращения к PC: install пишет sha256 скопированного на хост файла в <cache>/graft/hosts.json, перед отправкой glint check сравнивается sha glint по PATH. Боец Luna: бриф /home/aisee/.cache/worktrees/graft-measure/brief-pc-glint-remote.md, дерево /home/aisee/.cache/worktrees/graft/pc-glint-remote, приёмка accept-pc-glint-remote.sh (gate + 4 названных теста).
 - 2026-11-01 05:12 в работе — graft-master
+- 2026-11-01 05:55 note — graft-master: Боец Luna 1101-0512 принят (4/4, 34 мин, 0,018% недели). Ревью мастера: sha сверялась у glint по PATH, даже если шаг задаёт путь — исправлено мной (glintCopy(argv0), exec.LookPath(argv0)). Коммит 8dddb8b в ветке. Независимое ревью Terra: бриф graft-measure/review-pc-glint-remote.md, ответ → .answer.md.
