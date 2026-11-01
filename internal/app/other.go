@@ -88,7 +88,7 @@ func (a *App) finishAmend(repo *gitx.Repo, cfg *config.Config, message string, f
 	}
 	if frozen != nil {
 		if err := a.replaceAmendAdvisoryRecord(repo, cfg, frozen, previousHead, advisoryFailed); err != nil {
-			return fmt.Errorf("amend is made, but the advisory record for %s failed: %w", strings.Join(advisoryFailed, ", "), err)
+			return fmt.Errorf("amend is made, but %w", err)
 		}
 	}
 	head, err := repo.Git("rev-parse", "--short", "HEAD")
@@ -99,12 +99,21 @@ func (a *App) finishAmend(repo *gitx.Repo, cfg *config.Config, message string, f
 	return nil
 }
 
+// replaceAmendAdvisoryRecord records the amended commit's advisory entry
+// here and takes the replaced commit's entries away. The new entry is made
+// whatever the removal meets: a remote that does not answer leaves the old
+// entries there, not the amend without one.
 func (a *App) replaceAmendAdvisoryRecord(repo *gitx.Repo, cfg *config.Config, frozen *activeFreeze, previousHead string, failed []string) error {
-	if err := removeCommitAdvisoryLogs(repo, cfg, frozen, previousHead); err != nil {
-		return fmt.Errorf("previous freeze advisory record could not be replaced: %w", err)
-	}
+	checks := strings.Join(failed, ", ")
+	removeErr := removeCommitAdvisoryLogs(repo, cfg, frozen, previousHead)
 	if err := a.recordCommitAdvisoryLocal(repo, cfg, frozen, failed); err != nil {
-		return fmt.Errorf("replacement freeze advisory record could not be made: %w", err)
+		if removeErr != nil {
+			err = errors.Join(err, fmt.Errorf("removing the replaced commit's: %w", removeErr))
+		}
+		return fmt.Errorf("the freeze advisory record for %s failed: %w", checks, err)
+	}
+	if removeErr != nil {
+		return fmt.Errorf("the freeze advisory record for %s is made, while the replaced commit's could not be removed: %w", checks, removeErr)
 	}
 	return nil
 }

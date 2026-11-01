@@ -129,3 +129,31 @@ func freezePolishGit(t *testing.T, dir string, args ...string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// TestFreezePolishAmendWithoutRemotesRecordsHere: amend under a freeze with
+// its remote unreachable makes the amended commit's advisory record here,
+// takes the replaced commit's local record away, and says the remote part
+// failed; before, the failed listing of the remote left no record at all.
+func TestFreezePolishAmendWithoutRemotesRecordsHere(t *testing.T) {
+	repo, cfg, oldHead, _ := freezePolishFixture(t, false)
+	f := &activeFreeze{target: "projectA", version: "1.2.3"}
+	old := "freeze-log/projectA/1.2.3/20261030T100000-abcdef1-advisory"
+	freezePolishGit(t, repo.Root, "tag", "-a", old, oldHead, "-m", "target: commit", "-m", "commit: "+oldHead, "-m", "reason: lint failed")
+	var output bytes.Buffer
+	a := &App{Stdout: &output}
+	err := a.finishAmend(repo, cfg, "base, amended\n", f, oldHead, []string{"lint"}, savedIndex{})
+	if err == nil || !strings.Contains(err.Error(), "amend is made, but the freeze advisory record for lint is made, while the replaced commit's could not be removed") {
+		t.Fatalf("amend error = %v", err)
+	}
+	newHead := freezePolishGit(t, repo.Root, "rev-parse", "HEAD")
+	if newHead == oldHead {
+		t.Fatal("the commit was not amended")
+	}
+	tags := strings.Fields(freezePolishGit(t, repo.Root, "tag", "--list", "freeze-log/projectA/1.2.3/*"))
+	if len(tags) != 1 || tags[0] == old {
+		t.Fatalf("local records = %q, want the amended commit's only", tags)
+	}
+	if body := freezePolishGit(t, repo.Root, "cat-file", "tag", tags[0]); !strings.Contains(body, "commit: "+newHead) {
+		t.Fatalf("the record names another commit:\n%s", body)
+	}
+}

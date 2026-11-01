@@ -938,13 +938,14 @@ func bypassedCommits(repo *gitx.Repo, cfg *config.Config, f *activeFreeze) (map[
 }
 
 func removeCommitAdvisoryLogs(repo *gitx.Repo, cfg *config.Config, f *activeFreeze, commit string) error {
-	remoteTags, err := freezeLogTags(repo, cfg, f)
-	if err != nil {
-		return err
-	}
-	contents, err := readRemoteTags(repo, remoteTags)
-	if err != nil {
-		return err
+	// The remotes not answering, the entries here go all the same.
+	remoteTags, remoteErr := freezeLogTags(repo, cfg, f)
+	contents := map[string]string{}
+	if remoteErr == nil {
+		var err error
+		if contents, err = readRemoteTags(repo, remoteTags); err != nil {
+			return err
+		}
 	}
 	var remove []string
 	for tag, body := range contents {
@@ -969,6 +970,9 @@ func removeCommitAdvisoryLogs(repo *gitx.Repo, cfg *config.Config, f *activeFree
 		}
 	}
 	var errs []error
+	if remoteErr != nil {
+		errs = append(errs, fmt.Errorf("the remotes' records: %w", remoteErr))
+	}
 	for _, tag := range remove {
 		refsByRemote := map[string]bool{}
 		for _, ref := range remoteTags[tag] {

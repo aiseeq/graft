@@ -290,10 +290,12 @@ with `remote: true` (the project vouches that its tests pass on the host:
 they read nothing outside the tree that only this machine has, a tool on
 `PATH` or state under the home directory), or built-in `go vet` or `go fix
 -diff` steps, runs split. Its `graft: gate: busy here: …` line names the
-built-in checks and go steps of `remote: true` tasks sent to the host. It
-takes no admission as a whole, nor do its heavy tasks; the built-in `go vet`
-and `go fix -diff` steps, and every `go test` and `go vet` step that writes
-no file of a `remote: true` task at any depth, run on the host unless the
+built-in checks, go steps and glint checks of `remote: true` tasks sent to
+the host. It takes no admission as a whole, nor do its heavy tasks; the
+built-in `go vet` and `go fix -diff` steps, and every `go test` and `go vet`
+step that writes no file and every `glint check` step (glint by name or
+absolute path, its copy on the host the one install recorded) of a `remote:
+true` task at any depth, run on the host unless the
 task would stay here (test database, `.env` keys, a directory the host's
 `run` cannot reach). Every other step (the gofmt check, installs, scripts,
 the go steps of the other tasks) runs here under one admission: the first
