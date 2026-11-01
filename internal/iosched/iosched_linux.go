@@ -48,7 +48,8 @@ func decide(cgroup string, limits map[string]string, pid int) (plan, bool) {
 		return plan{}, false
 	}
 	for _, key := range limitFiles {
-		if value, ok := limits[key]; ok && strings.TrimSpace(value) != "max" {
+		// cpu.max is "$MAX $PERIOD": the quota alone says the limit.
+		if value, ok := limits[key]; ok && firstField(value) != "max" {
 			return plan{limited: key}, false
 		}
 	}
@@ -160,4 +161,12 @@ func manager(ctx context.Context, method, signature string, args ...string) erro
 		return fmt.Errorf("busctl: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// firstField is the first word of a cgroup file's value, "" for none.
+func firstField(value string) string {
+	if fields := strings.Fields(value); len(fields) > 0 {
+		return fields[0]
+	}
+	return ""
 }

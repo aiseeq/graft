@@ -3,6 +3,7 @@ package tasks
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,10 +110,21 @@ func TestCheckGoFmtListsAConflictOnce(t *testing.T) {
 	git("merge", "-q", "other")
 	var out bytes.Buffer
 	r := &Runner{Root: root, Config: &config.Config{}, Stdout: &out}
-	if err := r.checkGoFmt(context.Background(), []string{"."}); err == nil {
-		t.Fatal("a file with conflict markers must fail")
+	if err := r.checkGoFmt(context.Background(), []string{"."}); err == nil || !strings.Contains(err.Error(), "a.go") {
+		t.Fatalf("a file with conflict markers must fail naming it: %v", err)
 	}
 	if n := strings.Count(out.String(), "a.go"); n != 1 {
 		t.Errorf("a.go listed %d times:\n%s", n, out.String())
+	}
+}
+
+// TestBuiltinStepFailureHasReason: a gate step graft does in its own process
+// gives its error as the reason of the failure, which stats --failures shows.
+func TestBuiltinStepFailureHasReason(t *testing.T) {
+	f := &frame{task: "gate"}
+	r := &Runner{frames: []*frame{f}}
+	err := r.measureFunc(GoFmtSource, func() error { return errors.New("Go files need formatting: a.go") })
+	if err == nil || f.reason != "Go files need formatting: a.go" || f.exit != 1 {
+		t.Fatalf("err %v, frame reason %q exit %d", err, f.reason, f.exit)
 	}
 }

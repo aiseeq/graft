@@ -1,6 +1,6 @@
 # Тяжёлые задачи graft (exec --heavy, гейт, тесты) — IOWeight=10 при постоянном iocost
 
-Статус: в работе
+Статус: на проверке
 Исполнитель: graft-master
 
 ## Что сделать
@@ -24,3 +24,6 @@
 - 2026-11-01 14:25 note — graft-master: Противник (adversary-io-weight.answer.md рядом с брифом): принято — #2 сумма весов многих тяжёлых → общая подслайса <P>-graft.slice с IOWeight=10 (проба transient slice 14:3x: io.weight 10); #5 протёкший GRAFT_ADMITTED → решение по cgroup, не по env; #6 ошибка переноса — ошибка задачи; #7 лимиты scope → не переносить при memory.max/high/cpu.max (сейчас у 17 agent-scope лимитов нет). Вне графта: #3 agents.slice 40 vs app.slice 100 — настройка слайсов лида; #4 сервисы не-бойцы остаются со своим весом; #8 commit/push после гейта под весом 10 — приемлемо. Бриф Luna: /home/aisee/.cache/claude-tmp/claude-1000/-home-aisee-git-graft/004ae628-6547-47e2-96e1-dc2539f82859/scratchpad/brief-heavy-io-weight.md, дерево /home/aisee/.cache/worktrees/graft/heavy-io-weight.
 - 2026-11-01 14:25 note — graft-master: Боец Luna 1101-1425-heavy-io-weight запущен.
 - 2026-11-01 14:44 note — graft-master: Сдача Luna 14:43 (без коммита, гейт зелёный). Ревью мастера 14:45: живой exec --heavy из agent-scope падает — нет cpu.max (контроллер cpu не включён в agents.slice) → ошибка; плюс потеря ошибки busctl в ensureSlice и обнуление reserveRelease кадра во вложенном вызове. Доводка: worker continue, бриф brief-heavy-io-weight-r2.md.
+- 2026-11-01 15:42 note — graft-master: Влито e12647a (правки Luna + мастер: GRAFT_PROC для cgroup — гейт падал на интеграционных тестах, вес слайсы через SetUnitProperties). go run . all зелёный: гейт и test-race перенеслись. Релиз v2.74.0, install ноут+pc. Живая проверка 15:3x: graft-heavy-<pid>.scope, Slice=agents-graft.slice, BindsTo=agent-scope, io.weight слайсы 10; scope юнита после выхода убран.
+- 2026-11-01 15:42 на проверке — graft-master — на независимую проверку
+- 2026-11-01 15:44 note — graft-master: Проверка Terra (check-two.answer.md, песочница только чтение — команды не шли): не принято. Принято к правке: cpu.max без лимита — «max 100000», код ждал «max» → перенос пропускался бы (баг, чиню: первое поле). Уточнение приёмки: вес стоит на общей слайсе <P>-graft.slice (замысел после противника #2), у scope IOWeight не задан — проверять IOWeight=10 = 10 и Slice scope. Процесс graft остаётся в слайсе до выхода (commit/push после гейта) — принято замыслом (противник #8). Повторная проверка — суб-агентом без песочницы.

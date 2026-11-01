@@ -681,7 +681,10 @@ func (r *Runner) checkGoFmt(ctx context.Context, modules []string) error {
 		// A file in a merge conflict is listed once per stage.
 		bad = slices.Compact(bad)
 		fmt.Fprintln(r.Stdout, strings.Join(bad, "\n"))
-		return errors.New("Go files need formatting")
+		if len(bad) == 1 {
+			return fmt.Errorf("Go files need formatting: %s", bad[0])
+		}
+		return fmt.Errorf("Go files need formatting: %s and %d more", bad[0], len(bad)-1)
 	}
 	return nil
 }
@@ -724,11 +727,15 @@ func goFmtInModule(file string, dirs, selected map[string]bool) bool {
 }
 
 // measureFunc runs a gate step done in graft's process and records it as
-// measure records a command's step.
+// measure records a command's step, its error the reason of a failure.
 func (r *Runner) measureFunc(source string, run func() error) error {
 	start := time.Now()
 	err := run()
-	r.recordStep(source, stats.Usage{Wall: time.Since(start)}, stepExit(err), "")
+	reason := ""
+	if err != nil {
+		reason = err.Error()
+	}
+	r.recordStep(source, stats.Usage{Wall: time.Since(start)}, stepExit(err), reason)
 	return err
 }
 

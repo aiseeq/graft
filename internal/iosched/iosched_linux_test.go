@@ -27,7 +27,7 @@ func TestDecide(t *testing.T) {
 		{name: "memory max limit", cgroup: scope, limits: map[string]string{"memory.max": "1G"}, wantLimited: "memory.max"},
 		{name: "memory high limit", cgroup: scope, limits: map[string]string{"memory.high": "2G"}, wantLimited: "memory.high"},
 		{name: "cpu limit", cgroup: scope, limits: map[string]string{"cpu.max": "100000 100000"}, wantLimited: "cpu.max"},
-		{name: "unlimited scope", cgroup: scope, limits: map[string]string{"memory.max": "max", "memory.high": "max", "cpu.max": "max"}, wantSlice: "agents-graft.slice", wantSource: "console.scope"},
+		{name: "unlimited scope", cgroup: scope, limits: map[string]string{"memory.max": "max", "memory.high": "max", "cpu.max": "max 100000"}, wantSlice: "agents-graft.slice", wantSource: "console.scope"},
 		{name: "cpu.max file absent", cgroup: scope, limits: map[string]string{"memory.max": "max", "memory.high": "max"}, wantSlice: "agents-graft.slice", wantSource: "console.scope"},
 		{name: "nested slice", cgroup: "/user.slice/user@1000.service/agents-x.slice/console.scope", limits: map[string]string{}, wantSlice: "agents-x-graft.slice", wantSource: "console.scope"},
 	}
