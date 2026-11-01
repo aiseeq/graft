@@ -112,8 +112,8 @@ func TestHeavyTaskStaysHere(t *testing.T) {
 func TestExecHeavyRunsOnRemoteHost(t *testing.T) {
 	f, state := remoteRepo(t, 8, remoteTasks)
 	cmd := []string{"sh", "-c", "echo exec=$GRAFT_THREADS heavy=$GRAFT_HEAVY >> out"}
-	if out := f.mustGraft(append([]string{"exec", "--heavy", "--"}, cmd...)...); !strings.Contains(out, "graft: exec: heavy, on pc") {
-		t.Errorf("exec --heavy:\n%s", out)
+	if out := f.mustGraft(append([]string{"exec", "--heavy", "--"}, cmd...)...); !strings.Contains(out, "graft: exec: heavy, on pc (the caller's variables, TMPDIR too, stay here: --env NAME passes one, --local runs here)") {
+		t.Errorf("exec --heavy: want the line that says the caller's variables stay here:\n%s", out)
 	}
 	calm(t, state)
 	if out := f.mustGraft(append([]string{"exec", "--heavy", "--local", "--"}, cmd...)...); !strings.Contains(out, "on this machine: GRAFT_HEAVY=local") {

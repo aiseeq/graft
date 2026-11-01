@@ -1,8 +1,8 @@
 # glint: 11 находок в коде резерва и снятия при уходе вызвавшего
 
-Статус: ждёт
+Статус: готово
 Ждёт: установка glint с фиксом closer-delegated-close (glint-master пишет); затем glint check и tk done
-Исполнитель: graft-master
+Исполнитель: luna-1101-0242
 
 ## Что сделать
 
@@ -50,3 +50,4 @@ SUMMARY: 11 issues found
 - 2026-11-01 03:40 note — graft-master: Независимая проверка (суб-агент, 03:20–03:35): код, поведение, glint (2 — только flock FP), all зелёный (2-й прогон; 1-й — флак TestBusyDiskAndSwapHoldTasks/io при нагрузке мутаций), утечек нет; ДЕФЕКТ: TestCallerWatcherPollPanicIsLogged краснеет при stdout в файл/tty — моя правка на ревью убрала подмену stdout, а WatchCaller следит лишь при pipe на обоих. Исправлено: stdout тоже pipe; file-mode и -race -count=3 зелёные. Находка вне объёма: pollCallerGone не повторяет unix.Poll при EINTR — тикет caller-poll-eintr.
 - 2026-11-01 03:41 note — graft-master: Повторная проверка (тот же суб-агент) 03:41: принято — file-mode, pty, пакет, -race -count=3, мутация без recover краснеет. Влито ff 0bf7d52 на main. tk done — после установки фикса glint closer-delegated-close (flock FP).
 - 2026-11-01 03:41 ждёт — graft-master — установка glint с фиксом closer-delegated-close (glint-master пишет); затем glint check и tk done
+- 2026-11-01 04:11 готово — graft-master: glint a82a37b (v1.83.7-296, фикс closer-delegated-close) на main ce5358f: GOWORK=off glint check --no-cache -s low . — No issues found (354 файла). Код 62d93fc+0bf7d52, независимая проверка суб-агентом 01.11 03:20–03:41: принято (all зелёный, мутации recover краснеют, поведение то же).

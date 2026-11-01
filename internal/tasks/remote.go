@@ -88,7 +88,13 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 		}
 		return stay(rh.Host + " did not answer (" + r.remoteDown + ")")
 	}
-	fmt.Fprintf(r.Stderr, "graft: %s: heavy, on %s\n", name, rh.Host)
+	if name == ExecTask {
+		// The command line is the caller's: say what of its environment does
+		// not travel, as a test that reads TMPDIR or a flag would differ there.
+		fmt.Fprintf(r.Stderr, "graft: %s: heavy, on %s (the caller's variables, TMPDIR too, stay here: --env NAME passes one, --local runs here)\n", name, rh.Host)
+	} else {
+		fmt.Fprintf(r.Stderr, "graft: %s: heavy, on %s\n", name, rh.Host)
+	}
 	return true, "", nil
 }
 

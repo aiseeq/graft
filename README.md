@@ -229,7 +229,10 @@ environment: `FLAG=1 graft exec --heavy -- go test ./...` does not see
 `FLAG` there. Pass such a variable with `graft exec --heavy --env FLAG --
 …` (repeatable; it sets `GRAFT_PASS_ENV`, a comma-separated list the grafts
 the command starts read too), or keep the run here with `graft exec --heavy
---local` or `GRAFT_HEAVY=local`.
+--local` or `GRAFT_HEAVY=local`. `graft exec` says so on the line that sends
+it: `graft: exec: heavy, on pc (the caller's variables, TMPDIR too, stay
+here: --env NAME passes one, --local runs here)`; a test that depends on the
+file system of `TMPDIR` belongs with `--local`.
 A gate under the user config's `when: busy`, in a project without its own
 `remote_heavy`, that would wait here while the host answers and has a task
 with `remote: true` (the project vouches that its tests pass on the host:
