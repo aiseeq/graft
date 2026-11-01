@@ -241,11 +241,11 @@ type gateStep struct {
 }
 
 func isBuiltinGoVet(s config.Step) bool {
-	return (s.Source == GoVetSource || strings.HasPrefix(s.Source, GoVetSource+" (")) && goCheckNoOutput(s.Argv, nil)
+	return len(s.Argv) > 1 && s.Argv[1] == "vet" && goCheckNoOutput(s.Argv, nil)
 }
 
 func isBuiltinGoFixDiff(s config.Step) bool {
-	return (s.Source == GoFixSource || strings.HasPrefix(s.Source, GoFixSource+" (")) && goFixDiffNoOutput(s.Argv)
+	return goFixDiffNoOutput(s.Argv)
 }
 
 func builtinGateGoCheck(s config.Step) bool {
@@ -333,7 +333,12 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, erro
 	rhCopy := *rh
 	previousRemoteHeavy := r.remoteHeavy
 	r.remoteHeavy = &rhCopy
-	if !r.gateHasEligible(gate) {
+	eligible, err := r.gateHasEligible(gate)
+	if err != nil {
+		r.remoteHeavy = previousRemoteHeavy
+		return false, err
+	}
+	if !eligible {
 		r.remoteHeavy = previousRemoteHeavy
 		return false, nil
 	}
@@ -349,27 +354,38 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, erro
 
 // gateHasEligible finds a built-in Go check or a go check of a task with
 // remote: true in the gate's tasks or their deps.
-func (r *Runner) gateHasEligible(gate []gateStep) bool {
+func (r *Runner) gateHasEligible(gate []gateStep) (bool, error) {
 	for i := range gate {
-		if gate[i].builtin && builtinGateGoCheck(gate[i].step) {
-			return true
+		gs := &gate[i]
+		if gs.builtin && builtinGateGoCheck(gs.step) {
+			why, err := r.stayHere(gs.task, r.taskDir(gs.task))
+			if err != nil {
+				return false, err
+			}
+			if why == "" {
+				return true, nil
+			}
 		}
 	}
-	return r.gateHasRemoteTask(gate)
+	goSteps, glintSteps, err := r.remoteGateTaskKinds(gate)
+	return goSteps || glintSteps, err
 }
 
-func (r *Runner) gateHasRemoteTask(gate []gateStep) bool {
+// remoteGateTaskKinds reports the remote task step kinds that can leave the
+// work tree, using the same command checks as placement: whether a busy gate
+// splits and what its line names.
+func (r *Runner) remoteGateTaskKinds(gate []gateStep) (goSteps, glintSteps bool, err error) {
 	seen := map[string]bool{}
-	var visit func(*config.Task) bool
-	visit = func(t *config.Task) bool {
+	var visit func(*config.Task) error
+	visit = func(t *config.Task) error {
 		if t == nil {
-			return false
+			return nil
 		}
 		for _, dep := range t.Deps {
 			if !seen[dep] {
 				seen[dep] = true
-				if visit(r.Config.Tasks[dep]) {
-					return true
+				if err := visit(r.Config.Tasks[dep]); err != nil {
+					return err
 				}
 			}
 		}
@@ -377,22 +393,50 @@ func (r *Runner) gateHasRemoteTask(gate []gateStep) bool {
 			if s.Task != "" {
 				if !seen[s.Task] {
 					seen[s.Task] = true
-					if visit(r.Config.Tasks[s.Task]) {
-						return true
+					if err := visit(r.Config.Tasks[s.Task]); err != nil {
+						return err
 					}
 				}
-			} else if remoteVouched(t) && s.Shell == "" && (goCheckNoOutput(s.Argv, nil) || r.glintEligible(s.Argv, nil)) {
-				return true
+				continue
 			}
+			goCheck, glintCheck, err := r.remoteGateTaskKind(t, s)
+			if err != nil {
+				return err
+			}
+			goSteps = goSteps || goCheck
+			glintSteps = glintSteps || glintCheck
 		}
-		return false
+		return nil
 	}
 	for i := range gate {
-		if gs := &gate[i]; gs.step.Task != "" && visit(r.Config.Tasks[gs.step.Task]) {
-			return true
+		if gate[i].step.Task == "" {
+			continue
+		}
+		name := gate[i].step.Task
+		if !seen[name] {
+			seen[name] = true
+			if err := visit(r.Config.Tasks[name]); err != nil {
+				return false, false, err
+			}
 		}
 	}
-	return false
+	return goSteps, glintSteps, nil
+}
+
+func (r *Runner) remoteGateTaskKind(t *config.Task, s config.Step) (goCheck, glintCheck bool, err error) {
+	if !remoteVouched(t) || s.Shell != "" {
+		return false, false, nil
+	}
+	goCheck = goCheckNoOutput(s.Argv, nil)
+	glintCheck = !goCheck && r.glintEligible(s.Argv, nil)
+	if !goCheck && !glintCheck {
+		return false, false, nil
+	}
+	why, err := r.stayHere(t, r.taskDir(t))
+	if err != nil || why != "" {
+		return false, false, err
+	}
+	return goCheck, glintCheck, nil
 }
 
 // remoteVouched reports whether the project set remote: true in the task:
@@ -830,7 +874,11 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 				r.splitLeave = nil
 			}
 		}()
-		fmt.Fprintf(r.Stderr, "graft: gate: busy here: %s on %s, the rest waits for this machine once\n", r.splitGateDescription(steps), r.remoteHeavy.Host)
+		description, err := r.splitGateDescription(steps)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(r.Stderr, "graft: gate: busy here: %s on %s, the rest waits for this machine once\n", description, r.remoteHeavy.Host)
 	} else {
 		// The gate builds and tests: it is heavy as a whole, its heavy tasks
 		// admitted with it.
@@ -848,14 +896,25 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 	return nil
 }
 
-func (r *Runner) splitGateDescription(gate []gateStep) string {
+func (r *Runner) splitGateDescription(gate []gateStep) (string, error) {
 	var parts []string
 	vet, fix := false, false
 	for i := range gate {
-		switch {
-		case gate[i].builtin && isBuiltinGoVet(gate[i].step):
+		gs := &gate[i]
+		if !gs.builtin || !builtinGateGoCheck(gs.step) {
+			continue
+		}
+		why, err := r.stayHere(gs.task, r.taskDir(gs.task))
+		if err != nil {
+			return "", err
+		}
+		if why != "" {
+			continue
+		}
+		if isBuiltinGoVet(gs.step) {
 			vet = true
-		case gate[i].builtin && isBuiltinGoFixDiff(gate[i].step):
+		}
+		if isBuiltinGoFixDiff(gs.step) {
 			fix = true
 		}
 	}
@@ -865,16 +924,23 @@ func (r *Runner) splitGateDescription(gate []gateStep) string {
 	if fix {
 		parts = append(parts, "built-in go fix -diff")
 	}
-	if r.gateHasRemoteTask(gate) {
+	goSteps, glintSteps, err := r.remoteGateTaskKinds(gate)
+	if err != nil {
+		return "", err
+	}
+	if goSteps {
 		parts = append(parts, "go test and go vet steps of remote: true tasks")
 	}
+	if glintSteps {
+		parts = append(parts, "glint check steps of remote: true tasks")
+	}
 	if len(parts) == 2 {
-		return parts[0] + " and " + parts[1]
+		return parts[0] + " and " + parts[1], nil
 	}
 	if len(parts) > 2 {
-		return strings.Join(parts[:len(parts)-1], ", ") + ", and " + parts[len(parts)-1]
+		return strings.Join(parts[:len(parts)-1], ", ") + ", and " + parts[len(parts)-1], nil
 	}
-	return parts[0]
+	return strings.Join(parts, " and "), nil
 }
 
 func (r *Runner) preflightGate(steps []gateStep, advisory func(string) bool) error {

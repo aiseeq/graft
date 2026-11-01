@@ -68,3 +68,23 @@ func TestBusyGateWithoutRemoteTasksSendsBuiltinVet(t *testing.T) {
 		t.Errorf("the gate did not wait for this machine:\n%s", out)
 	}
 }
+
+// TestBusyGateWithoutEligibleStepsWaitsWhole keeps a gate together when it
+// has no built-in Go checks and no remote: true task checks.
+func TestBusyGateWithoutEligibleStepsWaitsWhole(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, "")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none}\ngo_vet: {enabled: false, reason: checks disabled in this test}\n"+
+		"gate: [{task: script}]\ntasks:\n  script:\n    run: [[sh, -c, 'echo here >> out']]\n")
+	loaded(t, state)
+	calmAfter(t, state, 1500*time.Millisecond)
+	out := f.mustGraft("gate")
+	if calls := callsOf(t, state); calls != "" {
+		t.Errorf("a gate without eligible steps went to pc: %q\n%s", calls, out)
+	}
+	if strings.Contains(out, "gate: busy here") || !strings.Contains(out, "starting after") {
+		t.Errorf("the gate did not wait here as a whole:\n%s", out)
+	}
+}

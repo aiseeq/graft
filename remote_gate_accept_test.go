@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -123,12 +124,77 @@ func TestBusyGateBuiltinVetBackHereWhenThePathBreaks(t *testing.T) {
 	}
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", builtinSplitGateConfig)
+	goPath, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim := filepath.Join(f.base, "go-bin")
+	if err := os.MkdirAll(shim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(f.base, "go-calls")
+	writeFile(t, filepath.Join(shim, "go"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> "+yamlQuote(log)+"\nexec "+yamlQuote(goPath)+" \"$@\"\n")
+	if err := os.Chmod(filepath.Join(shim, "go"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env, "PATH="+shim+string(os.PathListSeparator)+os.Getenv("PATH"))
 	writeFile(t, filepath.Join(state, "broken"), "")
 	loaded(t, state)
 	calmAfter(t, state, time.Second)
 	out := f.mustGraft("gate")
 	if !strings.Contains(out, "pc path broken") || !strings.Contains(out, "running here") {
 		t.Errorf("the broken built-in vet path is not said:\n%s", out)
+	}
+	if got := readFile(t, log); !strings.Contains(got, "vet ./...") {
+		t.Errorf("go vet was not repeated here after the path broke: go calls = %q\n%s", got, out)
+	}
+}
+
+func TestBusyGateDescriptionOmitsBuiltinKeptInSubdirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, "")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none}\n"+
+		"gate:\n  - task: lint\n  - task: script\ntasks:\n"+
+		"  lint:\n    heavy: true\n    remote: true\n    run: [[glint, check, ./...]]\n"+
+		"  script:\n    run: [[sh, -c, 'echo here >> out']]\n")
+	if err := os.Remove(f.path("go.mod")); err != nil {
+		t.Fatal(err)
+	}
+	f.write("sub/go.mod", "module example.com/sub\n\ngo 1.22\n")
+	f.write("sub/a.go", "package sub\n")
+	path, sum := fakeGlint(t, f)
+	writeHostGlint(t, state, "pc", path, sum)
+	loaded(t, state)
+	calmAfter(t, state, 1500*time.Millisecond)
+	out := f.mustGraft("gate")
+	if !strings.Contains(out, "glint check steps of remote: true tasks") || strings.Contains(out, "built-in go vet") {
+		t.Errorf("the description named a built-in check kept in the subdirectory:\n%s", out)
+	}
+	if calls := callsOf(t, state); !strings.Contains(calls, "glint check ./...") || strings.Contains(calls, "go vet") {
+		t.Errorf("unexpected host steps with the subdirectory check kept here: %q\n%s", calls, out)
+	}
+}
+
+func TestBusyGateDescriptionNamesRemoteGlint(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, "  lint:\n    heavy: true\n    remote: true\n    run: [[glint, check, ./...]]\n")
+	cfg := strings.Replace(builtinSplitGateConfig, "gate:\n  - task: script\n", "gate:\n  - task: lint\n  - task: script\n", 1) +
+		"  lint:\n    heavy: true\n    remote: true\n    run: [[glint, check, ./...]]\n"
+	f.write(".graft.yaml", cfg)
+	path, sum := fakeGlint(t, f)
+	writeHostGlint(t, state, "pc", path, sum)
+	loaded(t, state)
+	calmAfter(t, state, 1500*time.Millisecond)
+	out := f.mustGraft("gate")
+	if !strings.Contains(out, "glint check steps of remote: true tasks") {
+		t.Errorf("the description omitted the eligible glint step:\n%s", out)
+	}
+	if !strings.Contains(callsOf(t, state), "glint check ./...") {
+		t.Errorf("the eligible glint step did not go to pc: %q\n%s", callsOf(t, state), out)
 	}
 }
 
@@ -141,7 +207,7 @@ func TestBusyGateBuiltinVetStaysWithProjectRemoteHeavy(t *testing.T) {
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", "schema: 1\nversion: {mode: none}\n"+
 		"go_fix: {enabled: true}\n"+
-		"remote_heavy: {host: project, up: [sh, -c, 'true'], run: [sh, -c, 'true'], threads: 8}\n"+
+		"remote_heavy: {host: pchost, up: [sh, -c, 'true'], run: [sh, -c, 'true'], threads: 8}\n"+
 		"gate: [{task: script}]\ntasks:\n  script:\n    run: [[sh, -c, 'echo here >> out']]\n")
 	loaded(t, state)
 	calmAfter(t, state, 1500*time.Millisecond)
