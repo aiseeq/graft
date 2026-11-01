@@ -148,6 +148,7 @@ func TestParseErrors(t *testing.T) {
 		"missing mode":              "schema: 1\nversion: {}\n",
 		"bad mode":                  "schema: 1\nversion:\n  mode: semver\n",
 		"sync outside file mode":    "schema: 1\nversion:\n  mode: git-tag\n  sync: [{path: a, format: plain}]\n",
+		"reason outside none":       "schema: 1\nversion:\n  mode: git-tag\n  reason: r\n",
 		"regex without group":       "schema: 1\nversion:\n  mode: file\n  sync: [{path: a, format: regex, pattern: 'v.*'}]\n",
 		"regex two groups":          "schema: 1\nversion:\n  mode: file\n  sync: [{path: a, format: regex, pattern: '(a)(b)'}]\n",
 		"json without key":          "schema: 1\nversion:\n  mode: file\n  sync: [{path: a, format: json}]\n",

@@ -576,6 +576,9 @@ version:
   mode: file                    # required: file | git-tag | none
   file: VERSION                 # file mode; default VERSION, MAJOR.MINOR.PATCH (.BUILD on build branches)
   tag_prefix: v                 # default v
+  # reason: ...                 # mode none: why the project has no version; without it every
+                                # graft commit warns. git-tag mode without a version tag warns
+                                # too, until graft release tags the first (v0.1.0)
   tag_on_commit: false          # file mode: tag every commit v<version> and push the tag
   skip_branches: ['w/*']        # file mode: commits on these branches leave the version alone;
                                 # the branch they are merged into bumps (graft version bump)

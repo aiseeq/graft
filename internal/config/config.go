@@ -102,6 +102,9 @@ type Version struct {
 	TagPrefix   string     `yaml:"tag_prefix"`
 	TagOnCommit bool       `yaml:"tag_on_commit"`
 	Sync        []SyncFile `yaml:"sync"`
+	// Reason says why a project in mode none has no version; graft commit
+	// warns without it.
+	Reason string `yaml:"reason"`
 	// SkipBranches are branch globs whose commits leave the version alone:
 	// work branches rebased onto the trunk, where the bump happens on merge.
 	SkipBranches []string `yaml:"skip_branches"`
@@ -368,6 +371,9 @@ func (c *Config) validateVersion() error {
 	v := &c.Version
 	if v.TagPrefix == "" {
 		v.TagPrefix = DefaultTagPrefix
+	}
+	if v.Reason != "" && v.Mode != ModeNone {
+		return fmt.Errorf("version.reason applies only to mode %q: it says why a project has no version", ModeNone)
 	}
 	switch v.Mode {
 	case ModeFile:
