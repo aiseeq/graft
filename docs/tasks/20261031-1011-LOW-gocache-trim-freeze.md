@@ -1,6 +1,6 @@
 # Ночной gocache trim без фризов машины
 
-Статус: на проверке
+Статус: готово
 Ждёт: 2026-11-01 05:00 CET: замер ночного trim 04:30
 Исполнитель: graft-master
 
@@ -26,3 +26,5 @@
 - 2026-11-01 05:16 на проверке — graft-master
 - 2026-11-01 06:46 note — graft-master: Независимая проверка (суб-агент a86c55fc8f80d7022, бриф graft-measure/check-gocache-trim.md, 06:35–06:41): п.3 пороги — принят (Dirty+Writeback ≥ 64 МиБ: 261 с из 2329 в окне против 308 до — trim грязных не нагнал; из 15,6 мин ожидания на dirty ≤ ~4,5 мин, остальное busy). Дефекты: (1) без /proc/meminfo (Windows, macOS) trim --apply падал, ничего не удаляя — регрессия 05f17b8; (2) проводка ожидания в команде не покрыта (мутация 'убрать options.BeforeBatch' зелёная); (3) README: «disk pressure» — на деле весь busy-чек; (4) формулировка ночи: заторов ≥ 1 с от trim 0, но два мелких (0,9 с и 0,5 с) — писатель сам trim (76 и 70 МБ); GUI-счёт 56/53 упирался в потолок сторожа (MaxPerHour 60) — не довод; (5) CPU на запись в 4,5 раза выше старого (0,64 мс против 0,14) — 3 мин 55 с за ночь, по «имеет ли значение» не трогаю. Исправлено: (1) dirtyMeasured — вне Linux без GRAFT_PROC пачка ждёт только busy, TestTrimMemoryCalmWithoutTheMeasure; (2) TestGocacheTrimApplyWaitsForTheMachine — Dirty 900 МБ, --max-wait 1s → removed 0, remain 1, waited 1s; мутация BeforeBatch — красный; (3) README.
 - 2026-11-01 06:50 note — graft-master: Исправления дефектов 1–3 — b28cad4 (main). Повторная независимая проверка исправлений — в следующей пачке проверок.
+- 2026-11-01 07:29 note — graft-master: Повторная независимая проверка исправлений b28cad4 — Terra (worker ask, бриф graft-measure/recheck-gocache-trim.md), одна на тикет по экономии до 02.11 11:00.
+- 2026-11-01 07:32 готово — graft-master-checker (session graft-master): Повторная независимая проверка исправлений b28cad4 — Terra, worker 1101-0730-recheck-trim (бриф /home/aisee/.cache/worktrees/graft-measure/recheck-gocache-trim.md): (1) мутация «ошибка без meminfo» → TestTrimMemoryCalmWithoutTheMeasure красный (calm false, error missing meminfo); (2) мутация «убрать BeforeBatch» → TestGocacheTrimApplyWaitsForTheMachine красный (removed 1, waited 0s); без мутаций -count=20 -race оба набора зелёные; GOOS=windows go vet и GOOS=darwin go build проходят; (3) README:2192 — busy-чек целиком, Dirty/Writeback только на Linux. Первая проверка (06:46) приняла ночь и пороги.
