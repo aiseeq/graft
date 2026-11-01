@@ -55,8 +55,10 @@ func TestHeavyTaskRunsOnRemoteHost(t *testing.T) {
 	f, state := remoteRepo(t, 8, remoteTasks)
 	f.env = append(f.env, "GOFLAGS=-p=3")
 	out := f.mustGraft("build")
-	if !strings.Contains(out, "graft: build: heavy, on pc") {
-		t.Errorf("no line naming the host:\n%s", out)
+	if !strings.Contains(out, "graft: build: heavy, on pc\n") {
+		// A task's steps are the project's, not the caller's command: the
+		// line about the caller's variables is exec's alone.
+		t.Errorf("no line naming the host, or the exec line on a task:\n%s", out)
 	}
 	if got := f.read("out"); got != "threads=8 env=8 heavy=local mode=fast\n" {
 		t.Errorf("the step on the host: %q", got)

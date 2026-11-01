@@ -109,72 +109,8 @@ func (r *Runner) cacheKey(ctx context.Context, name string, args []string) (stri
 	addTo(hashes["graft"], "graft task cache 1", r.GraftVersion, runtime.GOOS, runtime.GOARCH, name)
 	addTo(hashes["inputs"], "args", fmt.Sprint(len(args)))
 	addInputs(args...)
-	repo, err := r.repo()
-	if err != nil {
+	if err := r.treeKey(name, func(p ...string) { addTo(hashes["tree"], p...) }); err != nil {
 		return "", nil, err
-	}
-	paths := r.Config.CachePaths(name)
-	includePath := func(path string) bool {
-		if len(paths) == 0 {
-			return true
-		}
-		for _, re := range paths {
-			if re.MatchString(path) {
-				return true
-			}
-		}
-		return false
-	}
-	syncTargets := version.Targets(r.Config.Version)[1:]
-	isSync := make(map[string]bool, len(syncTargets))
-	for _, target := range syncTargets {
-		isSync[target.Path] = true
-	}
-	// A sync file the key's tree would hold counts below by its content
-	// less the version, which graft commit bumps.
-	syncInTree := map[string]bool{}
-	tree, err := repo.ContentID(func(path string) bool {
-		if isSync[path] {
-			if !r.Config.CacheExcludeMatches(path) && includePath(path) {
-				syncInTree[path] = true
-			}
-			return true
-		}
-		if r.Config.CacheExcluded(path) {
-			return true
-		}
-		return !includePath(path)
-	})
-	if err != nil {
-		return "", nil, fmt.Errorf("reading the work tree: %w", err)
-	}
-	addTo(hashes["tree"], tree)
-	// Several targets may share a file (package-lock.json keeps the version
-	// twice): every target masks the same buffer, as Write bumps it, and the
-	// file counts once with all its version fields masked.
-	normalized := map[string][]byte{}
-	var syncOrder []string
-	for _, target := range syncTargets {
-		if !syncInTree[target.Path] {
-			continue
-		}
-		content, ok := normalized[target.Path]
-		if !ok {
-			read, err := os.ReadFile(filepath.Join(r.Root, filepath.FromSlash(target.Path)))
-			if err != nil {
-				return "", nil, fmt.Errorf("cache key: %w", err)
-			}
-			content = read
-			syncOrder = append(syncOrder, target.Path)
-		}
-		masked, err := target.Replace(content, "__GRAFT_CACHE_VERSION__")
-		if err != nil {
-			return "", nil, fmt.Errorf("cache key: %w", err)
-		}
-		normalized[target.Path] = masked
-	}
-	for _, path := range syncOrder {
-		addTo(hashes["tree"], "version.sync", path, string(normalized[path]))
 	}
 	readsMessage := false
 	if err := r.keyDefinitions(addDefinition, addInputs, name, map[string]bool{}, &readsMessage); err != nil {
@@ -312,4 +248,79 @@ func (r *Runner) inputPath(f string) (string, error) {
 // message file: a step may read it.
 func namesMessage(def []byte) bool {
 	return strings.Contains(string(def), MessageFileEnv)
+}
+
+// treeKey adds the work tree to a task's cache key: its content as git would
+// commit it, less cache_exclude, the version file and what the task's
+// cache.paths leave out, and every sync file the tree holds with its version
+// fields masked.
+func (r *Runner) treeKey(name string, add func(parts ...string)) error {
+	repo, err := r.repo()
+	if err != nil {
+		return err
+	}
+	paths := r.Config.CachePaths(name)
+	includePath := func(path string) bool {
+		if len(paths) == 0 {
+			return true
+		}
+		for _, re := range paths {
+			if re.MatchString(path) {
+				return true
+			}
+		}
+		return false
+	}
+	syncTargets := version.Targets(r.Config.Version)[1:]
+	isSync := make(map[string]bool, len(syncTargets))
+	for _, target := range syncTargets {
+		isSync[target.Path] = true
+	}
+	// A sync file the key's tree would hold counts below by its content
+	// less the version, which graft commit bumps.
+	syncInTree := map[string]bool{}
+	tree, err := repo.ContentID(func(path string) bool {
+		if isSync[path] {
+			if !r.Config.CacheExcludeMatches(path) && includePath(path) {
+				syncInTree[path] = true
+			}
+			return true
+		}
+		if r.Config.CacheExcluded(path) {
+			return true
+		}
+		return !includePath(path)
+	})
+	if err != nil {
+		return fmt.Errorf("reading the work tree: %w", err)
+	}
+	add(tree)
+	// Several targets may share a file (package-lock.json keeps the version
+	// twice): every target masks the same buffer, as Write bumps it, and the
+	// file counts once with all its version fields masked.
+	normalized := map[string][]byte{}
+	var syncOrder []string
+	for _, target := range syncTargets {
+		if !syncInTree[target.Path] {
+			continue
+		}
+		content, ok := normalized[target.Path]
+		if !ok {
+			read, err := os.ReadFile(filepath.Join(r.Root, filepath.FromSlash(target.Path)))
+			if err != nil {
+				return fmt.Errorf("cache key: %w", err)
+			}
+			content = read
+			syncOrder = append(syncOrder, target.Path)
+		}
+		masked, err := target.Replace(content, "__GRAFT_CACHE_VERSION__")
+		if err != nil {
+			return fmt.Errorf("cache key: %w", err)
+		}
+		normalized[target.Path] = masked
+	}
+	for _, path := range syncOrder {
+		add("version.sync", path, string(normalized[path]))
+	}
+	return nil
 }
