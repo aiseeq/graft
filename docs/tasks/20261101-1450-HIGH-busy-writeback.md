@@ -1,6 +1,6 @@
 # loadgate: мера writeback из akit v1.22.15 (Dirty+Writeback ≥ max_dirty_mb), подсказка ключа
 
-Статус: в работе
+Статус: на проверке
 Исполнитель: graft-master
 
 ## Что сделать
@@ -19,3 +19,5 @@
 ## Журнал
 - 2026-11-01 14:50 открыт — graft-master
 - 2026-11-01 14:50 в работе — graft-master
+- 2026-11-01 15:24 note — graft-master: Коммиты 4e91154 (мера writeback, подсказка, calm meminfo в подделке), 542ef26 (akit v1.22.16 по поправке akit-master: порог по умолчанию — vm.dirty_background_* машины; в подделке dirty_background_bytes 64 MiB). Первый гейт 542ef26 упал: shm 61/64 МБ в graft-test-pg (сегменты DSM за 13 дней без клиентов) — docker restart, повтор зелёный. go run . all — зелёный. Релиз v2.73.0, install ноут+pc (sha 542ef26).
+- 2026-11-01 15:24 на проверке — graft-master — на независимую проверку

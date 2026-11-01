@@ -178,6 +178,10 @@ command's reservation n cores instead of the estimate from its history, for a
 command whose load runs outside its process tree, such as an admission that
 starts an agent elsewhere; it is released the same way.
 
+After admission, Linux graft moves heavy work from an unlimited user scope
+into a shared `*-graft.slice` with `IOWeight=10`. It leaves services, scopes
+with memory or CPU limits, and systems without a user systemd manager in place.
+
 `graft exec --heavy -- graft <task>` takes no queue slot itself: it starts the
 inner graft with `GRAFT_EXEC_HEAVY=1`, by which that graft runs its top-level
 task, or the command of its `graft exec`, as heavy (placed on the host or

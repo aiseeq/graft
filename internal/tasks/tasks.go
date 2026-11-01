@@ -34,6 +34,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/dotenv"
 	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/iosched"
 	"github.com/aiseeq/graft/v2/internal/lintcache"
 	"github.com/aiseeq/graft/v2/internal/loadavg"
 	"github.com/aiseeq/graft/v2/internal/loadgate"
@@ -2264,7 +2265,8 @@ func BaseEnv() ([]string, error) {
 // ends, gives its admission up.
 func (r *Runner) enterHeavy(ctx context.Context, name string) (leave func() error, err error) {
 	release := func() error { return nil }
-	if r.heavy == 0 {
+	admittedHere := r.heavy == 0
+	if admittedHere {
 		adm, admitted, err := r.admit(ctx, name)
 		r.waitedFor(adm)
 		if err != nil {
@@ -2279,6 +2281,20 @@ func (r *Runner) enterHeavy(ctx context.Context, name string) (leave func() erro
 			f.reserveStoppedAt = adm.ReserveStoppedAt
 			f.reserveRelease = admitted
 		}
+	}
+	message, err := iosched.Enter(ctx, os.Getpid(), os.Getenv(loadgate.ProcEnv))
+	if err != nil {
+		releaseErr := release()
+		if releaseErr != nil {
+			err = errors.Join(err, fmt.Errorf("release heavy admission: %w", releaseErr))
+		}
+		if admittedHere && len(r.frames) > 0 {
+			r.frames[len(r.frames)-1].reserveRelease = nil
+		}
+		return nil, err
+	}
+	if message != "" {
+		fmt.Fprintf(r.Stderr, "graft: %s: %s\n", name, message)
 	}
 	r.heavy++
 	return func() error {
