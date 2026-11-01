@@ -88,6 +88,53 @@ func TestProjectRecordUsesPathWhenProfileIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestValueExcludesNestedRunsFromAnotherProject(t *testing.T) {
+	recs := []Record{
+		{Kind: KindTask, Run: "outer", Project: "/src/projectB", Task: "gate"},
+		{Kind: KindTask, Run: "nested", Parent: "outer", Project: "/src/projectA/worktree", Profile: "projectA:lint", Task: "lint", WallS: 100, Exit: 0},
+		{Kind: KindTask, Run: "standalone", Project: "/src/projectA/worktree", Profile: "projectA:lint", Task: "lint", WallS: 10, Exit: 0},
+		{Kind: KindTask, Run: "local-outer", Project: "/src/projectA/worktree", Task: "gate"},
+		{Kind: KindTask, Run: "local-nested", Parent: "local-outer", Project: "/src/projectA/worktree", Profile: "projectA:lint", Task: "lint", WallS: 20, Exit: 0},
+	}
+	got, runs, err := Value(recs, ValueFilter{
+		Stat: ValueWallP50, Task: "lint", Profile: "projectA",
+		ProjectRoots: map[string]bool{"/src/projectA": true},
+	})
+	if err != nil || runs != 2 || got != 15 {
+		t.Errorf("wall-p50 = %v (%d runs, %v), want 15 (2 runs)", got, runs, err)
+	}
+}
+
+func TestValueNestedRunInAnotherWorktreeOfTheSameRepository(t *testing.T) {
+	recs := []Record{
+		{Kind: KindTask, Run: "outer", Project: "/src/projectA", Profile: "projectA:accept", Task: "accept"},
+		{Kind: KindTask, Run: "nested", Parent: "outer", Project: "/cache/worktrees/projectA/w1", Profile: "projectA:lint", Task: "lint", WallS: 10, Exit: 0},
+		{Kind: KindTask, Run: "pilot-outer", Project: "/src/projectB", Profile: "projectB:pilot-gate", Task: "pilot-gate"},
+		{Kind: KindTask, Run: "pilot", Parent: "pilot-outer", Project: "/tmp/copy/projectA", Profile: "projectA:lint", Task: "lint", WallS: 100, Exit: 0},
+	}
+	got, runs, err := Value(recs, ValueFilter{
+		Stat: ValueWallP50, Task: "lint", Profile: "projectA",
+		ProjectRoots: map[string]bool{"/src/projectA": true},
+	})
+	if err != nil || runs != 1 || got != 10 {
+		t.Errorf("wall-p50 = %v (%d runs, %v), want 10 (1 run): a run under another worktree of its repository counts, one under another repository does not", got, runs, err)
+	}
+}
+
+func TestValueNestedRunParentCycle(t *testing.T) {
+	recs := []Record{{
+		Kind: KindTask, Run: "cycle", Parent: "cycle", Project: "/src/projectA",
+		Profile: "projectA:lint", Task: "lint", WallS: 10, Exit: 0,
+	}}
+	got, runs, err := Value(recs, ValueFilter{
+		Stat: ValueWallP50, Task: "lint", Profile: "projectA",
+		ProjectRoots: map[string]bool{"/src/projectA": true},
+	})
+	if err != nil || runs != 1 || got != 10 {
+		t.Errorf("wall-p50 with cyclic parent = %v (%d runs, %v), want 10 (1 run)", got, runs, err)
+	}
+}
+
 func TestPercentileNearestRank(t *testing.T) {
 	if got := Percentile([]float64{9, 1, 5, 3}, .5); got != 3 {
 		t.Errorf("p50 = %v, want 3", got)

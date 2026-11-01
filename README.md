@@ -1068,7 +1068,8 @@ the wait for the machine. `wall-p95` gives the nearest-rank 95th percentile, and
 `--task` uses outer task runs. The default minimum is three runs. Fewer runs
 prints no value, explains the count on stderr and exits with code 3; set
 `--min-runs` to change the threshold. The project counts the runs of all its trees: the main
-checkout and its worktrees; `--all` counts every project.
+checkout and its worktrees; runs nested under a recorded parent from another project are
+excluded; `--all` counts every project.
 
 Use `--in <task>` with `--task <name>` to select runs of that task whose
 `in` field names the task or deploy that ran it. For example,
