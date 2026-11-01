@@ -125,7 +125,21 @@ func (r *Runner) cacheKey(ctx context.Context, name string, args []string) (stri
 		}
 		return false
 	}
+	syncTargets := version.Targets(r.Config.Version)[1:]
+	isSync := make(map[string]bool, len(syncTargets))
+	for _, target := range syncTargets {
+		isSync[target.Path] = true
+	}
+	// A sync file the key's tree would hold counts below by its content
+	// less the version, which graft commit bumps.
+	syncInTree := map[string]bool{}
 	tree, err := repo.ContentID(func(path string) bool {
+		if isSync[path] {
+			if !r.Config.CacheExcludeMatches(path) && includePath(path) {
+				syncInTree[path] = true
+			}
+			return true
+		}
 		if r.Config.CacheExcluded(path) {
 			return true
 		}
@@ -135,15 +149,11 @@ func (r *Runner) cacheKey(ctx context.Context, name string, args []string) (stri
 		return "", nil, fmt.Errorf("reading the work tree: %w", err)
 	}
 	addTo(hashes["tree"], tree)
-	for _, target := range version.Targets(r.Config.Version)[1:] {
-		if !includePath(target.Path) {
+	for _, target := range syncTargets {
+		if !syncInTree[target.Path] {
 			continue
 		}
 		content, err := os.ReadFile(filepath.Join(r.Root, filepath.FromSlash(target.Path)))
-		if errors.Is(err, os.ErrNotExist) {
-			addTo(hashes["tree"], "version.sync", target.Path, "absent")
-			continue
-		}
 		if err != nil {
 			return "", nil, fmt.Errorf("cache key: %s: %w", target.Path, err)
 		}
@@ -151,7 +161,7 @@ func (r *Runner) cacheKey(ctx context.Context, name string, args []string) (stri
 		if err != nil {
 			return "", nil, fmt.Errorf("cache key: %s: %w", target.Path, err)
 		}
-		addTo(hashes["tree"], "version.sync", target.Path, "present", string(normalized))
+		addTo(hashes["tree"], "version.sync", target.Path, string(normalized))
 	}
 	readsMessage := false
 	if err := r.keyDefinitions(addDefinition, addInputs, name, map[string]bool{}, &readsMessage); err != nil {

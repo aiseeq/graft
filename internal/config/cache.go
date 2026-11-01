@@ -66,7 +66,12 @@ func (c *Config) VersionFiles() []string {
 // keys on: cache_exclude and the version files, which graft commit changes
 // itself.
 func (c *Config) CacheExcluded(path string) bool {
-	return slices.Contains(c.VersionFiles(), path) || slices.ContainsFunc(c.cacheExclude, func(re *regexp.Regexp) bool { return re.MatchString(path) })
+	return slices.Contains(c.VersionFiles(), path) || c.CacheExcludeMatches(path)
+}
+
+// CacheExcludeMatches tells whether cache_exclude names path.
+func (c *Config) CacheExcludeMatches(path string) bool {
+	return slices.ContainsFunc(c.cacheExclude, func(re *regexp.Regexp) bool { return re.MatchString(path) })
 }
 
 func (c *Config) validateCache() error {

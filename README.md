@@ -761,7 +761,7 @@ dotenv_sets:                   # key lists several tasks and services share
   2026-10-16 10:12, skipped`. The key covers the work tree by content (every
   file `git add -A` would commit; a rebase or a commit of the same changes
   keeps it), less `cache_exclude` and the version file graft commit bumps;
-  sync files are included with their version fields normalised;
+  a sync file the tree holds counts with its version fields normalised;
   the definition of the task, its deps and inner tasks; the values their
   `env` and `.env` keys take; the arguments; this graft's version and
   platform; and, in the gate, the commit message when one of them names
