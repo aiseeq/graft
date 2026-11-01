@@ -170,6 +170,55 @@ func TestTaskCacheIsSharedByWorktrees(t *testing.T) {
 	}
 }
 
+func TestCacheVersionSync(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "out.txt")
+	f := tasksRepo(t, "", map[string]string{
+		"VERSION":   "1.0.0\n",
+		"lock.json": `{"version":"1.0.0","dependency":"old"}`,
+	})
+	f.write(".graft.yaml", `schema: 1
+version:
+  mode: file
+  file: VERSION
+  sync:
+    - {path: lock.json, format: json, key: [version]}
+tasks:
+  verify:
+    cache: tree
+    run: [`+helperStep("append", out, "run")+`]
+`)
+	f.git("add", "-A")
+	f.git("-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "init")
+
+	expect := func(what string, ran bool) {
+		t.Helper()
+		before := 0
+		if data, err := os.ReadFile(out); err == nil {
+			before = strings.Count(string(data), "\n")
+		}
+		got, code := f.graft("", "verify")
+		if code != 0 {
+			t.Fatalf("%s: exit %d\n%s", what, code, got)
+		}
+		data, err := os.ReadFile(out)
+		lines := 0
+		if err == nil {
+			lines = strings.Count(string(data), "\n")
+		}
+		if ran != (lines == before+1) || (!ran && !strings.Contains(got, "skipped (cache")) {
+			t.Errorf("%s: want ran=%v, lines %d -> %d\n%s", what, ran, before, lines, got)
+		}
+	}
+
+	expect("first run", true)
+	expect("unchanged", false)
+	f.write("lock.json", `{"version":"1.0.0","dependency":"new"}`)
+	expect("dependency changed", true)
+	f.write("lock.json", `{"version":"2.0.0","dependency":"new"}`)
+	f.write("VERSION", "2.0.0\n")
+	expect("version changed", false)
+}
+
 // TestTaskCacheRefusesSideEffects: a task that deploys, releases, pushes or
 // acts on services must run every time.
 func TestTaskCacheRefusesSideEffects(t *testing.T) {

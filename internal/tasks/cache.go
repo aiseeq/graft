@@ -22,6 +22,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/taskcache"
+	"github.com/aiseeq/graft/v2/internal/version"
 )
 
 // NoCacheEnv set to 1 runs every task as if it had no cache, in graft
@@ -91,11 +92,11 @@ func (r *Runner) keep(ctx context.Context, key, name string, args []string, use 
 }
 
 // cacheKey is the hash of everything the result of the task depends on: the
-// work tree without cache_exclude and the version files, the definition of
-// the task with its deps and inner tasks, the values of their env and .env
-// keys, the commit message in the gate when they name its file, the
-// arguments, the cache inputs, and this graft. GRAFT_VERSION is left out: it changes with
-// every commit.
+// work tree without cache_exclude, the version file and normalised sync files,
+// the definition of the task with its deps and inner tasks, the values of
+// their env and .env keys, the commit message in the gate when they name its
+// file, the arguments, the cache inputs, and this graft. GRAFT_VERSION is left
+// out: it changes with every commit.
 func (r *Runner) cacheKey(ctx context.Context, name string, args []string) (string, map[string]string, error) {
 	hashes := map[string]hash.Hash{"tree": sha256.New(), "definition": sha256.New(), "inputs": sha256.New(), "graft": sha256.New()}
 	addTo := func(h hash.Hash, parts ...string) {
@@ -113,24 +114,45 @@ func (r *Runner) cacheKey(ctx context.Context, name string, args []string) (stri
 		return "", nil, err
 	}
 	paths := r.Config.CachePaths(name)
+	includePath := func(path string) bool {
+		if len(paths) == 0 {
+			return true
+		}
+		for _, re := range paths {
+			if re.MatchString(path) {
+				return true
+			}
+		}
+		return false
+	}
 	tree, err := repo.ContentID(func(path string) bool {
 		if r.Config.CacheExcluded(path) {
 			return true
 		}
-		if len(paths) == 0 {
-			return false
-		}
-		for _, re := range paths {
-			if re.MatchString(path) {
-				return false
-			}
-		}
-		return true
+		return !includePath(path)
 	})
 	if err != nil {
 		return "", nil, fmt.Errorf("reading the work tree: %w", err)
 	}
 	addTo(hashes["tree"], tree)
+	for _, target := range version.Targets(r.Config.Version)[1:] {
+		if !includePath(target.Path) {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(r.Root, filepath.FromSlash(target.Path)))
+		if errors.Is(err, os.ErrNotExist) {
+			addTo(hashes["tree"], "version.sync", target.Path, "absent")
+			continue
+		}
+		if err != nil {
+			return "", nil, fmt.Errorf("cache key: %s: %w", target.Path, err)
+		}
+		normalized, err := target.Replace(content, "__GRAFT_CACHE_VERSION__")
+		if err != nil {
+			return "", nil, fmt.Errorf("cache key: %s: %w", target.Path, err)
+		}
+		addTo(hashes["tree"], "version.sync", target.Path, "present", string(normalized))
+	}
 	readsMessage := false
 	if err := r.keyDefinitions(addDefinition, addInputs, name, map[string]bool{}, &readsMessage); err != nil {
 		return "", nil, err
