@@ -2035,8 +2035,10 @@ deploy:
 branch, it first pushes that branch to the remotes whose branch lacks HEAD
 (a branch fast-forwarded to pushed work), asking the remote when the clone has
 no copy of its branch; a branch that is already there, behind its remote, or
-absent from the remote is not pushed. A failed branch push leaves no tag: when
-the remote rejected it, fetch, bring the branch up to date and release again.
+absent from the remote is not pushed. A remote branch that moved past HEAD
+since the last fetch is not known to hold HEAD: its push is rejected. A failed
+branch push leaves no tag: when the remote rejected it, fetch, bring the branch
+up to date and release again.
 
 ### Checks
 
