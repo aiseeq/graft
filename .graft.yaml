@@ -100,6 +100,9 @@ tasks:
   glint:
     desc: static analysis
     heavy: true
+    # A busy gate sends glint check to the remote_heavy host when the glint
+    # here is the copy install recorded there (hosts.json).
+    remote: true
     run: [glint check ./...]
   all:
     desc: everything, before install
