@@ -245,17 +245,18 @@ A gate under the user config's `when: busy`, in a project without its own
 `remote_heavy`, that would wait here while the host answers and has a task
 with `remote: true` (the project vouches that its tests pass on the host:
 they read nothing outside the tree that only this machine has, a tool on
-`PATH` or state under the home directory), runs split: `graft: gate: busy
-here: go test and go vet steps of remote: true tasks on pc, the rest waits
-for this machine once`. It takes no admission as a whole, nor do its
-heavy tasks; every `go test` and `go vet` step that writes no file of a
-`remote: true` task, at any depth, runs on the host unless the task would
-stay here (test database, `.env` keys, a directory the host's `run` cannot
-reach), and every other step (the gate's own go vet, the gofmt check, go
-fix, installs, scripts, the go steps of the other tasks) runs here under
-one admission: the first of them waits for this machine, the rest run under
-its admission to the gate's end, its reservation released when CPU use is
-visible, the task ends, or `load.settle` expires. A gate without such a task waits here whole. A host step
+`PATH` or state under the home directory), or built-in `go vet` or `go fix
+-diff` steps, runs split. Its `graft: gate: busy here: …` line names the
+built-in checks and go steps of `remote: true` tasks sent to the host. It
+takes no admission as a whole, nor do its heavy tasks; the built-in `go vet`
+and `go fix -diff` steps, and every `go test` and `go vet` step that writes
+no file of a `remote: true` task at any depth, run on the host unless the
+task would stay here (test database, `.env` keys, a directory the host's
+`run` cannot reach). Every other step (the gofmt check, installs, scripts,
+the go steps of the other tasks) runs here under one admission: the first
+of them waits for this machine, the rest run under its admission to the
+gate's end, its reservation released when CPU use is visible, the task
+ends, or `load.settle` expires. A gate without such a step waits here whole. A host step
 whose path breaks is said and rerun here under that admission, and the
 gate's later go steps run here too. A gate whose host does not answer waits
 here whole and says why.

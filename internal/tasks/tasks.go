@@ -233,10 +233,23 @@ const goFmtHint = "run gofmt -w <files> and commit them"
 // gateStep is a step of the gate with the task that sets its directory,
 // and what to do when it fails.
 type gateStep struct {
-	step config.Step
-	task *config.Task
-	hint string
-	run  func(context.Context) error
+	step    config.Step
+	task    *config.Task
+	hint    string
+	run     func(context.Context) error
+	builtin bool
+}
+
+func isBuiltinGoVet(s config.Step) bool {
+	return (s.Source == GoVetSource || strings.HasPrefix(s.Source, GoVetSource+" (")) && goCheckNoOutput(s.Argv, nil)
+}
+
+func isBuiltinGoFixDiff(s config.Step) bool {
+	return (s.Source == GoFixSource || strings.HasPrefix(s.Source, GoFixSource+" (")) && goFixDiffNoOutput(s.Argv)
+}
+
+func builtinGateGoCheck(s config.Step) bool {
+	return isBuiltinGoVet(s) || isBuiltinGoFixDiff(s)
 }
 
 // gateSteps is the gate: go vet ./... in every Go module of the tree first,
@@ -266,7 +279,7 @@ func (r *Runner) gateSteps() ([]gateStep, error) {
 		for _, dir := range mods {
 			steps = append(steps, gateStep{
 				step: config.Step{Argv: []string{"go", "vet", "./..."}, Source: inModule(GoVetSource, dir)},
-				task: &config.Task{Dir: dir, Env: r.Config.GoVet.Env},
+				task: &config.Task{Dir: dir, Env: r.Config.GoVet.Env}, builtin: true,
 			})
 		}
 	}
@@ -275,7 +288,7 @@ func (r *Runner) gateSteps() ([]gateStep, error) {
 		for _, dir := range mods {
 			steps = append(steps, gateStep{
 				step: config.Step{Argv: []string{"go", "fix", "-diff", "./..."}, Source: inModule(GoFixSource, dir)},
-				task: &config.Task{Dir: dir, Env: r.Config.GoVet.Env},
+				task: &config.Task{Dir: dir, Env: r.Config.GoVet.Env}, builtin: true,
 				hint: goFixHint,
 			})
 		}
@@ -334,10 +347,18 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, erro
 	return true, nil
 }
 
-// gateHasEligible finds a go check of a task with remote: true in the gate's
-// tasks or their deps: only the project vouches that its tests pass on the
-// host, so a gate step of its own is never one.
+// gateHasEligible finds a built-in Go check or a go check of a task with
+// remote: true in the gate's tasks or their deps.
 func (r *Runner) gateHasEligible(gate []gateStep) bool {
+	for i := range gate {
+		if gate[i].builtin && builtinGateGoCheck(gate[i].step) {
+			return true
+		}
+	}
+	return r.gateHasRemoteTask(gate)
+}
+
+func (r *Runner) gateHasRemoteTask(gate []gateStep) bool {
 	seen := map[string]bool{}
 	var visit func(*config.Task) bool
 	visit = func(t *config.Task) bool {
@@ -809,7 +830,7 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 				r.splitLeave = nil
 			}
 		}()
-		fmt.Fprintf(r.Stderr, "graft: gate: busy here: go test and go vet steps of remote: true tasks on %s, the rest waits for this machine once\n", r.remoteHeavy.Host)
+		fmt.Fprintf(r.Stderr, "graft: gate: busy here: %s on %s, the rest waits for this machine once\n", r.splitGateDescription(steps), r.remoteHeavy.Host)
 	} else {
 		// The gate builds and tests: it is heavy as a whole, its heavy tasks
 		// admitted with it.
@@ -825,6 +846,35 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 		}
 	}
 	return nil
+}
+
+func (r *Runner) splitGateDescription(gate []gateStep) string {
+	var parts []string
+	vet, fix := false, false
+	for i := range gate {
+		switch {
+		case gate[i].builtin && isBuiltinGoVet(gate[i].step):
+			vet = true
+		case gate[i].builtin && isBuiltinGoFixDiff(gate[i].step):
+			fix = true
+		}
+	}
+	if vet {
+		parts = append(parts, "built-in go vet")
+	}
+	if fix {
+		parts = append(parts, "built-in go fix -diff")
+	}
+	if r.gateHasRemoteTask(gate) {
+		parts = append(parts, "go test and go vet steps of remote: true tasks")
+	}
+	if len(parts) == 2 {
+		return parts[0] + " and " + parts[1]
+	}
+	if len(parts) > 2 {
+		return strings.Join(parts[:len(parts)-1], ", ") + ", and " + parts[len(parts)-1]
+	}
+	return parts[0]
 }
 
 func (r *Runner) preflightGate(steps []gateStep, advisory func(string) bool) error {
@@ -860,7 +910,7 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 		}
 		stepErr = r.measureFunc(s.Source, run)
 	} else {
-		stepErr = r.step(ctx, s, gs.task, nil, threads)
+		stepErr = r.step(ctx, s, gs.task, nil, threads, gs.builtin)
 	}
 	if stepErr == nil {
 		return nil
@@ -1124,7 +1174,7 @@ func (r *Runner) steps(ctx context.Context, name string, t *config.Task, args []
 			return fmt.Errorf("task %s: %w", name, err)
 		}
 		fmt.Fprintf(r.Stderr, "graft: %s: %s\n", name, s.Source)
-		err = r.step(ctx, s, t, args, threads)
+		err = r.step(ctx, s, t, args, threads, false)
 		if err == nil {
 			continue
 		}
@@ -1161,10 +1211,10 @@ func (r *Runner) enterSplit(ctx context.Context, name string) error {
 
 // prepareGateStep places one process step of a split gate, admitted here
 // with the gate's other steps here or sent to the host.
-func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.Task, args []string, threads string) (func(error) error, error) {
+func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.Task, args []string, threads string, builtin bool) (func(error) error, error) {
 	frame := r.frames[len(r.frames)-1]
 	wasRemote := frame.remote
-	remote := remoteVouched(t) && s.Shell == "" && (goCheckNoOutput(s.Argv, args) || r.glintEligible(s.Argv, args)) && r.remoteDown == ""
+	remote := s.Shell == "" && r.remoteDown == "" && (builtin && builtinGateGoCheck(s) || remoteVouched(t) && (goCheckNoOutput(s.Argv, args) || r.glintEligible(s.Argv, args)))
 	if remote {
 		// A step goes to the host only as its task could: not with the test
 		// database, .env keys or a directory the host lacks.
@@ -1197,7 +1247,7 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 				} else {
 					split := r.gateSplit
 					r.gateSplit = false
-					stepErr = r.step(ctx, s, t, args, threads)
+					stepErr = r.step(ctx, s, t, args, threads, builtin)
 					r.gateSplit = split
 				}
 			}
@@ -1209,12 +1259,12 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 
 // step runs s, its {threads} already filled; threads is the thread count a
 // heavy task passes as GRAFT_THREADS.
-func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args []string, threads string) (err error) {
+func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args []string, threads string, builtin bool) (err error) {
 	if s.Task != "" {
 		return r.run(ctx, s.Task, nil)
 	}
 	if r.gateSplit {
-		finish, prepareErr := r.prepareGateStep(ctx, s, t, args, threads)
+		finish, prepareErr := r.prepareGateStep(ctx, s, t, args, threads, builtin)
 		if prepareErr != nil {
 			return prepareErr
 		}

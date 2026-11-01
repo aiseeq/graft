@@ -37,6 +37,20 @@ func TestGlintCheckNoOutput(t *testing.T) {
 	}
 }
 
+func TestGoFixDiffOnlyGoesWithDiff(t *testing.T) {
+	for _, c := range []struct {
+		argv []string
+		want bool
+	}{
+		{[]string{"go", "fix", "-diff", "./..."}, true},
+		{[]string{"go", "fix", "./..."}, false},
+	} {
+		if got := goFixDiffNoOutput(c.argv); got != c.want {
+			t.Errorf("goFixDiffNoOutput(%q) = %v, want %v", c.argv, got, c.want)
+		}
+	}
+}
+
 func TestGoCheckNoOutput(t *testing.T) {
 	for _, c := range []struct {
 		argv, args []string

@@ -267,6 +267,12 @@ func goCheckNoOutput(argv, args []string) bool {
 	return true
 }
 
+// goFixDiffNoOutput admits only the built-in go fix -diff command: go fix
+// without -diff rewrites source files on the machine where it runs.
+func goFixDiffNoOutput(argv []string) bool {
+	return len(argv) == 4 && argv[0] == "go" && argv[1] == "fix" && argv[2] == "-diff" && argv[3] == "./..."
+}
+
 // stayHere is why the heavy task stays on this machine, "" when it goes to
 // the host: what it needs here, a test database, a report file, .env
 // values, the commit message file, or a host that does not answer.

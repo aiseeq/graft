@@ -63,7 +63,7 @@ func TestBusyGateSendsItsGoStepsToTheHost(t *testing.T) {
 	if !strings.Contains(calls, "go test -count=1 ./...") {
 		t.Errorf("run got %q, want the remote: true task's go test:\n%s", calls, out)
 	}
-	for _, here := range []string{"go vet", "echo here", "fix", "gofmt"} {
+	for _, here := range []string{"echo here", "fix", "gofmt"} {
 		if strings.Contains(calls, here) {
 			t.Errorf("%q went to pc: %q", here, calls)
 		}
@@ -71,12 +71,86 @@ func TestBusyGateSendsItsGoStepsToTheHost(t *testing.T) {
 	if got := readFile(t, f.path("out")); got != "here\n" {
 		t.Errorf("the script step did not run here: out = %q\n%s", got, out)
 	}
-	if !strings.Contains(out, "graft: gate: busy here: go test and go vet steps of remote: true tasks on pc, the rest waits for this machine once") {
+	if !strings.Contains(out, "graft: gate: busy here: built-in go vet and go test and go vet steps of remote: true tasks on pc, the rest waits for this machine once") {
 		t.Errorf("the gate does not say it split:\n%s", out)
 	}
 	// The steps kept here waited for this machine.
 	if !strings.Contains(out, "starting after") {
 		t.Errorf("no step waited for this machine:\n%s", out)
+	}
+}
+
+const builtinSplitGateConfig = "schema: 1\nversion: {mode: none}\ngo_fix: {enabled: true}\n" +
+	"gate:\n  - task: script\ntasks:\n" +
+	"  script:\n    run: [[sh, -c, 'echo here >> out']]\n"
+
+// TestBusyGateSendsBuiltinVetToTheHost sends the read-only built-in Go
+// checks to the user's host while gofmt and configured scripts stay here.
+func TestBusyGateSendsBuiltinVetToTheHost(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, "")
+	f.write(".graft.yaml", builtinSplitGateConfig)
+	loaded(t, state)
+	calmAfter(t, state, 1500*time.Millisecond)
+	out := f.mustGraft("gate")
+	calls := callsOf(t, state)
+	for _, want := range []string{"go vet ./...", "go fix -diff ./..."} {
+		if !strings.Contains(calls, want) {
+			t.Errorf("run got %q, want built-in %q:\n%s", calls, want, out)
+		}
+	}
+	if strings.Contains(calls, "gofmt") || strings.Contains(calls, "echo here") {
+		t.Errorf("a local gate step went to pc: %q", calls)
+	}
+	if got := readFile(t, f.path("out")); got != "here\n" {
+		t.Errorf("the script step did not run here: out = %q\n%s", got, out)
+	}
+	if n := strings.Count(out, "starting after"); n != 1 {
+		t.Errorf("the steps here waited for this machine %d times, want once:\n%s", n, out)
+	}
+	if !strings.Contains(out, "built-in go vet and built-in go fix -diff") {
+		t.Errorf("the gate does not name its built-in remote steps:\n%s", out)
+	}
+}
+
+// TestBusyGateBuiltinVetBackHereWhenThePathBreaks reruns a built-in vet here
+// after the host path breaks and lets the gate pass.
+func TestBusyGateBuiltinVetBackHereWhenThePathBreaks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, "")
+	f.write(".graft.yaml", builtinSplitGateConfig)
+	writeFile(t, filepath.Join(state, "broken"), "")
+	loaded(t, state)
+	calmAfter(t, state, time.Second)
+	out := f.mustGraft("gate")
+	if !strings.Contains(out, "pc path broken") || !strings.Contains(out, "running here") {
+		t.Errorf("the broken built-in vet path is not said:\n%s", out)
+	}
+}
+
+// TestBusyGateBuiltinVetStaysWithProjectRemoteHeavy keeps the built-in vet
+// local when the project has its own remote_heavy setting.
+func TestBusyGateBuiltinVetStaysWithProjectRemoteHeavy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, "")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none}\n"+
+		"go_fix: {enabled: true}\n"+
+		"remote_heavy: {host: project, up: [sh, -c, 'true'], run: [sh, -c, 'true'], threads: 8}\n"+
+		"gate: [{task: script}]\ntasks:\n  script:\n    run: [[sh, -c, 'echo here >> out']]\n")
+	loaded(t, state)
+	calmAfter(t, state, 1500*time.Millisecond)
+	out := f.mustGraft("gate")
+	if calls := callsOf(t, state); calls != "" {
+		t.Errorf("built-in checks went to the user's host: %q\n%s", calls, out)
+	}
+	if strings.Contains(out, "gate: busy here") {
+		t.Errorf("project remote_heavy gate was split:\n%s", out)
 	}
 }
 
