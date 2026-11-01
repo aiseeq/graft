@@ -687,7 +687,7 @@ type busyness struct{ why, text string }
 var measures = map[string]struct{ why, setting string }{
 	pressure.CPU:       {WhyLoad, "pressure.yaml runnable"},
 	pressure.IO:        {WhyIO, "pressure.yaml max_io_full"},
-	pressure.Writeback: {WhyWriteback, "pressure.yaml max_dirty_mb"},
+	pressure.Writeback: {WhyWriteback, "pressure.yaml max_dirty_mb, else vm.dirty_background_bytes or _ratio"},
 	pressure.Swap:      {WhySwap, "pressure.yaml max_mem_some, max_swap_kbs"},
 	pressure.Quiet:     {WhyQuiet, "busy --quiet-off ends it"},
 }

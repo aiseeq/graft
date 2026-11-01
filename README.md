@@ -112,7 +112,8 @@ at this moment (`procs_running` of `/proc/stat`, one reading) and the
 short dip on an overloaded machine start more work), no disk freeze going on and
 the IO pressure of the last 5 seconds below `max_io_full`, no write-out
 going on (dirty and writeback memory of `/proc/meminfo` below
-`max_dirty_mb`), and not the
+`max_dirty_mb`, by default the machine's own background write-out threshold
+`vm.dirty_background_bytes` or `_ratio`), and not the
 memory pressure above `max_mem_some` while the machine swaps more than
 `max_swap_kbs`: swap in use is no harm, and swapping without memory pressure
 neither. The disk is read from the disk state source on
