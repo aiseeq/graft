@@ -43,9 +43,15 @@ func trimProc(t *testing.T, dirty, writeback int) string {
 func TestTrimWaitsForDirty(t *testing.T) {
 	root := trimProc(t, maxDirtyWritebackKB, 1)
 	var calls int
+	// The new meminfo replaces the old one whole: written in place, a poll
+	// could read it truncated, as the kernel's never is.
+	next := filepath.Join(t.TempDir(), "meminfo")
+	if err := os.WriteFile(next, []byte("Dirty: 1 kB\nWriteback: 1 kB\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	go func() {
 		time.Sleep(30 * time.Millisecond)
-		_ = os.WriteFile(filepath.Join(root, "meminfo"), []byte("Dirty: 1 kB\nWriteback: 1 kB\n"), 0o644)
+		_ = os.Rename(next, filepath.Join(root, "meminfo"))
 	}()
 	proceed, waited, err := waitForTrimBatch(context.Background(), time.Second, 5*time.Millisecond,
 		trimMemoryCalm, func(context.Context) (bool, error) { calls++; return false, nil })

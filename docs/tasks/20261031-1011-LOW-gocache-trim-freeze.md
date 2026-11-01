@@ -1,6 +1,6 @@
 # Ночной gocache trim без фризов машины
 
-Статус: ждёт
+Статус: на проверке
 Ждёт: 2026-11-01 05:00 CET: замер ночного trim 04:30
 Исполнитель: graft-master
 
@@ -22,3 +22,5 @@
 - 2026-10-31 10:39 note — graft-master: мёртвый параметр entry(apply=false) отдан glint-master: тикет glint 20261031-1038-MEDIUM-param-always-same-constant, находки в graft пришлёт
 - 2026-10-31 11:08 note — graft-master: 11:0x влито 05f17b8 (после чистки истории; было 5963b33), v2.65.0 установлен на ноут и PC; all зелёный 10:54–11:00. Дальше — ночь 01.11 04:30: aguard cases.jsonl + journalctl --user -u graft-gocache-trim → git-admin со строкой ~11% записи SSD.
 - 2026-10-31 11:08 ждёт — graft-master — 2026-11-01 05:00 CET: замер ночного trim 04:30
+- 2026-11-01 05:16 note — graft-master: замер ночи 01.11 (journalctl --user -u graft-gocache-trim): старт 04:30, конец 05:08:48 — 38 мин 48 с wall, 3 мин 55 с CPU, удалено 366 630 записей / 47,4 ГиБ, оставлено 668 344 / 110,4 ГиБ, ожидание машины 15 мин 36 с. Сторож aguard: GUI-фризы (gui/slices.json) в окне 04:30–05:09 — 56 срезов, из них D (диск) 14, max 6,8 с; час до trim (03:30–04:09) — 53, D 14, max 20,0 с: trim фризов не добавил. IO-заторы (io/cases.jsonl): окно trim — 38, сумма 7,9 с, max 0,9 с; час до — 22, 7,7 с, max 2,3 с; та же ночь 31.10 со старым trim — 55, 24,7 с, max 2,8 с, 15 по ≥ 0,5 с. Пороги (1000 записей, 256 МиБ, Dirty+Writeback 64 МиБ) оставлены. Попутно: строка 'caller watcher poll: fd 1: interrupted system call' в 04:32:30 — тот же EINTR (caller-poll-eintr). Доля GOCACHE в записи SSD ~11% (10:11 31.10).
+- 2026-11-01 05:16 на проверке — graft-master

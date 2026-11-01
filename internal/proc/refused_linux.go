@@ -21,7 +21,7 @@ func Refused(path string) error {
 		return fmt.Errorf("the process status: %w", err)
 	}
 	label := ""
-	if _, err := os.Stat("/sys/fs/selinux/enforce"); err == nil {
+	if _, err := os.Stat(selinuxEnforce); err == nil {
 		if label, err = selinuxLabel(path); err != nil {
 			return err
 		}
@@ -33,6 +33,9 @@ func Refused(path string) error {
 	}
 	return nil
 }
+
+// selinuxEnforce exists where SELinux is on; a test points it elsewhere.
+var selinuxEnforce = "/sys/fs/selinux/enforce"
 
 // selinuxLabel is the SELinux label of the file, "" for none.
 func selinuxLabel(path string) (string, error) {

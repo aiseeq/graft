@@ -80,14 +80,23 @@ tasks:
     env: {GRAFT_TEST_DOCKER: '1'}
     run: ['go test -json -p {threads} -race -count=1 ./...']
   test-gate:
-    desc: the gate's tests, all but the ones that create docker containers, run the go command against modules or wait on purpose (test-race in all runs those)
-    test_db: true
+    desc: the gate's tests, all but the ones that create docker containers, run the go command against modules or wait on purpose (test-race in all runs those); the PostgreSQL ones skip here and run in test-gate-db
+    # They pass on the user's remote_heavy host too (01.11: go test -short on
+    # it green but one test of this machine's SELinux, fixed): a busy gate
+    # may send them there.
+    remote: true
     heavy: true
     tests: go
     run: ['go test -json -p {threads} -short ./...']
+  test-gate-db:
+    desc: the gate's tests on the test database, the packages that read GRAFT_TEST_PG_DSN
+    test_db: true
+    heavy: true
+    tests: go
+    run: ['go test -json -p {threads} -short ./internal/flags/ ./internal/testdb/ ./testdb/']
   smoke:
     desc: the commit gate
-    run: [{task: fmt-check}, {task: vet}, {task: glint}, {task: test-gate}]
+    run: [{task: fmt-check}, {task: vet}, {task: glint}, {task: test-gate}, {task: test-gate-db}]
   glint:
     desc: static analysis
     heavy: true

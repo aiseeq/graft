@@ -1,0 +1,21 @@
+# План D п.3: glint check на PC при занятом ноуте, со сверкой версии glint
+
+Статус: в работе
+Исполнитель: graft-master
+
+## Вход
+- pc-offload-plan, «ок» лида 01.11 05:1x: glint 10,3 CPU-ч на ноуте 31.10, 6,9 при load ≥ 16; правило user remote_heavy пускает только go test/vet (userRemoteEligible, internal/tasks/remote.go), деление гейта — тоже только go test/vet.
+
+## Что сделать
+- `glint check` без флагов, пишущих файл (-o в файл и т. п. — сверить с glint check -h), — допустимый шаг для user remote_heavy и для деления занятого гейта, как go test/vet.
+- Перед отправкой сверять версию glint на хосте с ноутом (одна проверка на прогон graft); не совпала — шаг здесь со строкой `graft: <task>: heavy, on this machine: glint on pc is <v1>, here <v2>`.
+- README.
+
+## Приёмка
+- Тесты на фейковом хосте: glint-шаг уходит; с флагом записи файла — остаётся; другая версия glint на хосте — остаётся со строкой.
+- До/после: CPU-ч glint на ноуте при load ≥ 16 по stats за сопоставимые сутки, ожидание допуска на PC не дольше ноута.
+
+## Журнал
+- 2026-11-01 05:09 открыт — graft-master
+- 2026-11-01 05:12 note — graft-master: сверка версии без обращения к PC: install пишет sha256 скопированного на хост файла в <cache>/graft/hosts.json, перед отправкой glint check сравнивается sha glint по PATH. Боец Luna: бриф /home/aisee/.cache/worktrees/graft-measure/brief-pc-glint-remote.md, дерево /home/aisee/.cache/worktrees/graft/pc-glint-remote, приёмка accept-pc-glint-remote.sh (gate + 4 названных теста).
+- 2026-11-01 05:12 в работе — graft-master

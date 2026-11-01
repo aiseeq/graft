@@ -2,6 +2,7 @@ package proc
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -48,6 +49,11 @@ func RefusedCommand(dir, name string) error {
 		path = found
 	case !filepath.IsAbs(name):
 		path = filepath.Join(dir, name)
+	}
+	// A program that is not there is said so on every machine, not only
+	// where reading its SELinux label finds it missing.
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("finding %s: %w", name, err)
 	}
 	return Refused(path)
 }
