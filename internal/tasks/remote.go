@@ -59,8 +59,8 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 		return stay(why)
 	}
 	if r.userRemote && t.Remote == nil && !r.userRemoteEligible(t, args) {
-		if glintTask(t, args) {
-			return stay(r.glintStayReason(t.Run[0].Argv[0]))
+		if argv0 := r.glintMismatch(t, args); argv0 != "" {
+			return stay(r.glintStayReason(argv0))
 		}
 		return stay("only go test and go vet steps that write no file can use user remote_heavy")
 	}
@@ -189,16 +189,26 @@ func (r *Runner) userRemoteEligible(t *config.Task, args []string) bool {
 	return true
 }
 
-func glintTask(t *config.Task, args []string) bool {
-	if len(t.Run) == 0 {
-		return false
-	}
+// glintMismatch names the glint of the first glint check step whose copy on
+// the host is not the one here, when that alone keeps the task here: every
+// other step is a go check or a glint check that may go. Otherwise "".
+func (r *Runner) glintMismatch(t *config.Task, args []string) string {
+	mismatch := ""
 	for _, step := range t.Run {
-		if step.Shell != "" || step.Install != nil || step.Task != "" || step.ServiceAction != "" || !glintCheckNoOutput(step.Argv, args) {
-			return false
+		if step.Shell != "" || step.Install != nil || step.Task != "" || step.ServiceAction != "" {
+			return ""
+		}
+		switch {
+		case goCheckNoOutput(step.Argv, args):
+		case glintCheckNoOutput(step.Argv, args):
+			if mismatch == "" && !r.glintCopy(step.Argv[0]).ok {
+				mismatch = step.Argv[0]
+			}
+		default:
+			return ""
 		}
 	}
-	return true
+	return mismatch
 }
 
 func glintCheckNoOutput(argv, args []string) bool {
@@ -418,7 +428,7 @@ func (r *Runner) remoteCmd(ctx context.Context, cmd *exec.Cmd, vars map[string]s
 			words = append(words, "GOMAXPROCS="+threads)
 		}
 	}
-	words = append(words, cmd.Args...)
+	words = append(words, r.hostArgs(cmd)...)
 	remote := exec.CommandContext(ctx, words[0], words[1:]...)
 	remote.Dir, remote.Env = r.Root, cmd.Env
 	if r.runNamesRoot() {
@@ -436,4 +446,19 @@ func (r *Runner) hostOf(f *frame) string {
 		return ""
 	}
 	return r.remoteHeavy.Host
+}
+
+// hostArgs is the command line a step runs on the host. A glint check whose
+// copy install recorded there names that copy by its path: the host's PATH
+// may find another glint first.
+func (r *Runner) hostArgs(cmd *exec.Cmd) []string {
+	if !glintCheckNoOutput(cmd.Args, nil) || !r.glintCopy(cmd.Args[0]).ok {
+		return cmd.Args
+	}
+	abs, err := filepath.Abs(cmd.Path)
+	if err != nil {
+		fmt.Fprintf(r.Stderr, "graft: resolving glint path %s: %v; the host finds glint by its PATH\n", cmd.Path, err)
+		return cmd.Args
+	}
+	return append([]string{abs}, cmd.Args[1:]...)
 }

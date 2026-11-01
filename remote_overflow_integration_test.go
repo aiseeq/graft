@@ -62,8 +62,10 @@ func TestUserRemoteHeavyGlintGoesWhenInstallCopiedIt(t *testing.T) {
 	cmd, out := f.start(f.work, "lint")
 	waitFor(t, func() bool { return strings.Contains(out.String(), "heavy, on pc") })
 	setRunnable(t, filepath.Join(state, "proc"), 0)
-	if err := cmd.Wait(); err != nil || !strings.Contains(out.String(), "heavy, on pc") || !strings.Contains(callsOf(t, state), "glint check ./...") {
-		t.Fatalf("matching glint copy was not sent: %v\n%s\ncalls: %q", err, out.String(), callsOf(t, state))
+	// The host runs the copy install recorded, by its path: the host's PATH
+	// may find another glint first.
+	if err := cmd.Wait(); err != nil || !strings.Contains(out.String(), "heavy, on pc") || !strings.Contains(callsOf(t, state), path+" check ./...") {
+		t.Fatalf("matching glint copy was not sent by its path %s: %v\n%s\ncalls: %q", path, err, out.String(), callsOf(t, state))
 	}
 }
 
@@ -71,17 +73,19 @@ func TestUserRemoteHeavyGlintStaysWithoutTheSameCopy(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the run script is sh")
 	}
-	for _, c := range []struct{ name, sum, extra, reason string }{
-		{"missing", "", "", "glint here ("},
-		{"different", strings.Repeat("a", 64), "", "glint here ("},
-		{"cpuprofile", "", "--cpuprofile=cpu.out", "only go test and go vet"},
+	for _, c := range []struct{ name, sum, extra, vet, reason string }{
+		{"missing", "", "", "", "glint here ("},
+		{"different", strings.Repeat("a", 64), "", "", "glint here ("},
+		{"cpuprofile", "", "--cpuprofile=cpu.out", "", "only go test and go vet"},
+		// go vet beside it may go: the glint copy alone keeps the task here.
+		{"beside go vet", strings.Repeat("a", 64), "", "[go, vet, ./...], ", "glint here ("},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			run := "glint, check, ./..."
 			if c.extra != "" {
 				run += ", " + c.extra
 			}
-			f, state := userRemoteRepo(t, "  lint:\n    heavy: true\n    run: [["+run+"]]\n")
+			f, state := userRemoteRepo(t, "  lint:\n    heavy: true\n    run: ["+c.vet+"["+run+"]]\n")
 			path, _ := fakeGlint(t, f)
 			if c.sum != "" {
 				writeHostGlint(t, state, "pc", path, c.sum)

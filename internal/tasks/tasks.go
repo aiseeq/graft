@@ -440,9 +440,6 @@ func (r *Runner) glintCopy(argv0 string) glintCopyCheck {
 
 func (r *Runner) glintStayReason(argv0 string) string {
 	check := r.glintCopy(argv0)
-	if check.ok {
-		return "only go test and go vet steps that write no file can use user remote_heavy"
-	}
 	return "glint here (" + shortSHA(check.local) + ") is not the one install copied to " + r.remoteHeavy.Host + " (" + shortSHA(check.installed) + ")"
 }
 
