@@ -116,10 +116,10 @@ type Runner struct {
 	// ExecMemoryMax is graft exec --memory-max, "" for the default ceiling.
 	ExecMemoryMax string
 	// heavyPlace is where the heavy work of this process runs and under
-	// what memory ceiling; noCeilingNoted says the line that it has none
-	// was printed.
-	heavyPlace     iosched.Placement
-	noCeilingNoted bool
+	// what memory ceiling; placeNoted holds the placement lines printed, so
+	// that each step of a split gate does not print them again.
+	heavyPlace iosched.Placement
+	placeNoted map[string]bool
 
 	lookup *dotenv.Lookup
 	base   []string
@@ -1867,9 +1867,13 @@ func memoryKills(p iosched.Placement, before, after map[string]uint64, task stri
 		return nil
 	}
 	if after["oom"] > before["oom"] {
-		raise := "set memory_max of task " + task + " in .graft.yaml"
+		above := " above " + iosched.Bytes(p.Ceiling)
+		raise := "set memory_max of task " + task + " in .graft.yaml" + above
 		if task == ExecTask {
-			raise = "pass --memory-max to graft exec"
+			raise = "pass --memory-max" + above + " to graft exec"
+		}
+		if p.Source == outerMemorySource {
+			raise = "pass --memory-max" + above + " to the graft exec that started this graft, or " + raise
 		}
 		return fmt.Errorf("heavy scope %s hit its memory ceiling %s (%s): the kernel killed %d process(es) during this step; to give it more, %s",
 			p.Scope, iosched.Bytes(p.Ceiling), p.Source, killed, raise)
@@ -2414,21 +2418,32 @@ func (r *Runner) holdCeiling(ctx context.Context, name, memoryMax string) error 
 		req.Source = "--memory-max"
 	}
 	if outer := os.Getenv(ExecMemoryMaxEnv); outer != "" {
-		req.Outer, req.OuterSource = outer, "--memory-max of the graft exec that started this graft"
+		req.Outer, req.OuterSource = outer, outerMemorySource
 	}
-	place, err := iosched.Configure(ctx, os.Getpid(), os.Getenv(loadgate.ProcEnv), req)
+	place, err := configureHeavy(ctx, os.Getpid(), os.Getenv(loadgate.ProcEnv), req)
 	if err != nil {
 		return err
 	}
 	if place.Ceiling > 0 {
 		r.heavyPlace = place
 	}
-	if place.Message != "" && !(place.NoCeiling && r.noCeilingNoted) {
+	if place.Message != "" && !r.placeNoted[place.Message] {
 		fmt.Fprintf(r.Stderr, "graft: %s: %s\n", name, place.Message)
+		if r.placeNoted == nil {
+			r.placeNoted = map[string]bool{}
+		}
+		r.placeNoted[place.Message] = true
 	}
-	r.noCeilingNoted = r.noCeilingNoted || place.NoCeiling
 	return nil
 }
+
+// outerMemorySource names the ceiling a graft exec --memory-max asked for
+// the graft it started.
+const outerMemorySource = "--memory-max of the graft exec that started this graft"
+
+// configureHeavy places the heavy work under its memory ceiling; tests
+// replace it.
+var configureHeavy = iosched.Configure
 
 // AdmittedEnv marks the steps of a heavy task this machine admitted: a graft
 // they start was admitted with them and does not queue again.

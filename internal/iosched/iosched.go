@@ -43,9 +43,6 @@ type Placement struct {
 	Scope    string
 	Slice    string
 	SliceMax int64
-	// NoCeiling says no memory.max holds the work: graft set none, and
-	// neither its cgroup nor a parent has one.
-	NoCeiling bool
 }
 
 // Configure moves the current process into the shared heavy-work slice when

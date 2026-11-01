@@ -265,7 +265,7 @@ func unplaced(procRoot, cg, limited string, explicit bool, source string) (Place
 	case held:
 		return Placement{Message: fmt.Sprintf("memory ceiling %s not applied: graft cannot place %s, and memory.max of it or a parent holds it", source, cg)}, nil
 	}
-	return Placement{Message: fmt.Sprintf("no memory ceiling: graft cannot place %s, and neither it nor a parent has memory.max%s", cg, skip), NoCeiling: true}, nil
+	return Placement{Message: fmt.Sprintf("no memory ceiling: graft cannot place %s, and neither it nor a parent has memory.max%s", cg, skip)}, nil
 }
 
 // raise lifts the ceiling of a scope graft holds to ceiling when it is

@@ -211,7 +211,7 @@ A step during which the kernel killed processes of the heavy scope fails,
 even when it exited 0 (`graft exec` then exits 125), and the error says which
 limit it was:
 
-    heavy scope graft-heavy-123.scope hit its memory ceiling 12.2 GiB (40% of RAM, the default): the kernel killed 1 process(es) during this step; to give it more, set memory_max of task test in .graft.yaml
+    heavy scope graft-heavy-123.scope hit its memory ceiling 12.2 GiB (40% of RAM, the default): the kernel killed 1 process(es) during this step; to give it more, set memory_max of task test in .graft.yaml above 12.2 GiB
 
 or, when the scope's own ceiling was not reached, a limit above it (the
 slice's) or the machine's lack of memory. The same text is the step's reason in
