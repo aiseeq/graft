@@ -4,6 +4,7 @@ package proc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -14,6 +15,9 @@ import (
 
 var callerGoneInterval = time.Second
 var callerGonePoll = pollCallerGone
+
+// unixPoll is unix.Poll; a test makes it fail with EINTR.
+var unixPoll = unix.Poll
 
 func CallerGoneInterval() (time.Duration, error) {
 	const name = "GRAFT_TEST_CALLER_GONE_INTERVAL"
@@ -86,7 +90,13 @@ func WatchCaller(parent context.Context, interval time.Duration) (context.Contex
 func pollCallerGone(polls []unix.PollFd) (bool, error) {
 	for i := range polls {
 		polls[i].Revents = 0
-		if _, err := unix.Poll(polls[i:i+1], 0); err != nil {
+		// A signal that interrupts the zero-timeout poll is not an answer:
+		// ask again.
+		_, err := unixPoll(polls[i:i+1], 0)
+		for errors.Is(err, unix.EINTR) {
+			_, err = unixPoll(polls[i:i+1], 0)
+		}
+		if err != nil {
 			return false, fmt.Errorf("fd %d: %w", polls[i].Fd, err)
 		}
 		if polls[i].Revents&(unix.POLLERR|unix.POLLHUP) == 0 {

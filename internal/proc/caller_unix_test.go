@@ -68,3 +68,25 @@ func TestCallerWatcherPollPanicIsLogged(t *testing.T) {
 		}
 	}
 }
+
+func TestCallerGonePollRetriesAnInterruptedPoll(t *testing.T) {
+	oldPoll := unixPoll
+	defer func() { unixPoll = oldPoll }()
+	calls := 0
+	unixPoll = func(fds []unix.PollFd, timeout int) (int, error) {
+		calls++
+		if calls == 1 {
+			return 0, unix.EINTR
+		}
+		fds[0].Revents = unix.POLLHUP
+		return 1, nil
+	}
+	polls := []unix.PollFd{{Fd: 1, Events: unix.POLLERR | unix.POLLHUP}, {Fd: 2, Events: unix.POLLERR | unix.POLLHUP}}
+	gone, err := pollCallerGone(polls)
+	if err != nil {
+		t.Fatalf("pollCallerGone after EINTR: %v", err)
+	}
+	if !gone {
+		t.Fatal("pollCallerGone = false, want true: both fds hung up after the interrupted poll")
+	}
+}
