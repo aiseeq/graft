@@ -1872,7 +1872,7 @@ func memoryKills(p iosched.Placement, before, after map[string]uint64, task stri
 		if task == ExecTask {
 			raise = "pass --memory-max" + above + " to graft exec"
 		}
-		if p.Source == outerMemorySource {
+		if strings.HasPrefix(p.Source, outerMemorySource+" ") {
 			raise = "pass --memory-max" + above + " to the graft exec that started this graft, or " + raise
 		}
 		return fmt.Errorf("heavy scope %s hit its memory ceiling %s (%s): the kernel killed %d process(es) during this step; to give it more, %s",

@@ -48,7 +48,8 @@ func TestMemoryKills(t *testing.T) {
 // TestMemoryKillsOuter: a ceiling an outer graft exec --memory-max holds is
 // raised there, or by the task's memory_max above it.
 func TestMemoryKillsOuter(t *testing.T) {
-	p := iosched.Placement{Ceiling: 1 << 30, Source: outerMemorySource, Scope: "graft-heavy-7.scope"}
+	// iosched names the source with the value it asked for.
+	p := iosched.Placement{Ceiling: 1 << 30, Source: outerMemorySource + " 1G", Scope: "graft-heavy-7.scope"}
 	err := memoryKills(p, map[string]uint64{}, map[string]uint64{"oom": 1, "oom_kill": 1}, "test")
 	want := "pass --memory-max above 1.0 GiB to the graft exec that started this graft, or set memory_max of task test in .graft.yaml above 1.0 GiB"
 	if err == nil || !strings.Contains(err.Error(), want) {
