@@ -1,6 +1,8 @@
 # glint: 11 находок в коде резерва и снятия при уходе вызвавшего
 
-Статус: открыт
+Статус: ждёт
+Ждёт: установка glint с фиксом closer-delegated-close (glint-master пишет); затем glint check и tk done
+Исполнитель: graft-master
 
 ## Что сделать
 
@@ -41,3 +43,10 @@ SUMMARY: 11 issues found
 
 ## Журнал
 - 2026-10-31 19:28 открыт — graft-master
+- 2026-11-01 02:41 note — graft-master: Сон 01.11 (dream-master, glint на 1363fd01): +1 находка main.go:589 execCmd cyclomatic 23 — в объём тикета. Разбор: closer-never-closed stats.go:406/480 — ложные (gofrs/flock v0.13.1: Unlock → reset → resetFh закрывает fh, Close() = Unlock(); при ошибке Lock — ensureFhState) → glint-master. Остальные 10 настоящие: complexity Stats/WaitWithSettle/execCmd, range-копии stats.Record ×2, recover в опросных горутинах ×2 (с логом, резерв снимается), error-wrap ×3. Исполнитель — боец Luna (класс glint-рефакторинг).
+- 2026-11-01 02:41 в работе — graft-master
+- 2026-11-01 02:42 note — graft-master: Боец Luna 1101-0242-glint-debt-reserve: бриф /home/aisee/.cache/worktrees/graft-measure/brief-glint-debt-reserve.md, приёмка /home/aisee/.cache/worktrees/graft-measure/accept-glint-debt-reserve.sh (gate + 0 glint кроме flock FP), дерево /home/aisee/.cache/worktrees/graft/glint-debt-reserve. FP flock отправлен glint-master.
+- 2026-11-01 03:22 note — graft-master: Боец принят (31 мин). Ревью мастера: тест caller_unix — убран подмен stdout и sleep 10ms (ожидание строки stderr со сроком 10 с); -race -count=5 зелёный; мутация без recover — panic/FAIL. Коммит 62d93fc на glint-debt-reserve (включает akit→latest из гейта). Дальше — независимая проверка суб-агентом.
+- 2026-11-01 03:40 note — graft-master: Независимая проверка (суб-агент, 03:20–03:35): код, поведение, glint (2 — только flock FP), all зелёный (2-й прогон; 1-й — флак TestBusyDiskAndSwapHoldTasks/io при нагрузке мутаций), утечек нет; ДЕФЕКТ: TestCallerWatcherPollPanicIsLogged краснеет при stdout в файл/tty — моя правка на ревью убрала подмену stdout, а WatchCaller следит лишь при pipe на обоих. Исправлено: stdout тоже pipe; file-mode и -race -count=3 зелёные. Находка вне объёма: pollCallerGone не повторяет unix.Poll при EINTR — тикет caller-poll-eintr.
+- 2026-11-01 03:41 note — graft-master: Повторная проверка (тот же суб-агент) 03:41: принято — file-mode, pty, пакет, -race -count=3, мутация без recover краснеет. Влито ff 0bf7d52 на main. tk done — после установки фикса glint closer-delegated-close (flock FP).
+- 2026-11-01 03:41 ждёт — graft-master — установка glint с фиксом closer-delegated-close (glint-master пишет); затем glint check и tk done
