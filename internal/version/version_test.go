@@ -263,3 +263,27 @@ version:
 		t.Errorf("restore:\n%s", got)
 	}
 }
+
+// TestWriteRefusesADisagreeingSyncFile: a sync file with another version
+// than the version file fails the bump, naming both, and nothing is written.
+func TestWriteRefusesADisagreeingSyncFile(t *testing.T) {
+	root := t.TempDir()
+	for name, content := range map[string]string{"VERSION": "3.0.0\n", "app.go": "const Version = \"3.0.7\"\n"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := config.Parse([]byte("schema: 1\nversion:\n  mode: file\n  sync: [{path: app.go, format: regex, pattern: 'Version = \"([^\"]*)\"'}]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Write(root, cfg.Version, Semver{Major: 3, Minor: 0, Patch: 1})
+	if err == nil || !strings.Contains(err.Error(), "app.go has version 3.0.7, VERSION has 3.0.0") {
+		t.Fatalf("got %v", err)
+	}
+	for name, want := range map[string]string{"VERSION": "3.0.0\n", "app.go": "const Version = \"3.0.7\"\n"} {
+		if got, _ := os.ReadFile(filepath.Join(root, name)); string(got) != want {
+			t.Errorf("%s changed to %q", name, got)
+		}
+	}
+}

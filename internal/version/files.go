@@ -356,7 +356,8 @@ func Write(root string, v config.Version, next Semver) (*Backup, error) {
 	// the same buffer in turn, and the file is written once.
 	var plan []*pending
 	byPath := map[string]*pending{}
-	for _, t := range Targets(v) {
+	current, currentPath := "", ""
+	for i, t := range Targets(v) {
 		p, ok := byPath[t.Path]
 		if !ok {
 			content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(t.Path)))
@@ -366,6 +367,18 @@ func Write(root string, v config.Version, next Semver) (*Backup, error) {
 			p = &pending{path: t.Path, original: content, updated: content}
 			byPath[t.Path] = p
 			plan = append(plan, p)
+		}
+		// Every sync target holds the version the version file has: one
+		// that differs was edited by hand or merged wrong, and the bump
+		// would overwrite it unseen.
+		has, err := t.Extract(p.original)
+		if err != nil {
+			return nil, err
+		}
+		if i == 0 {
+			current, currentPath = has, t.Path
+		} else if has != current {
+			return nil, fmt.Errorf("%s has version %s, %s has %s: make them agree before the bump", t.Path, has, currentPath, current)
 		}
 		updated, err := t.Replace(p.updated, next.String())
 		if err != nil {
