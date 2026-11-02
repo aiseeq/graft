@@ -845,9 +845,14 @@ dotenv_sets:                   # key lists several tasks and services share
   stream had events. The check accepts simple regexp values using letters,
   digits, `_`, `-`, and regexp operators; shell steps, wrappers, values with
   character classes, escapes, spaces, or non-printable characters are not
-  checked. Alternatives matching the empty string, such as `^$`, and runs
-  with `-bench`, `-fuzz`, `-list` or `-skip` are not checked, nor a `-run`
-  after `-args`, which goes to the test binary.
+  checked. Nor is a command line with a word the check does not know: every
+  word after `go test` must be a package path (`.`, `./…`, `../…`, or one
+  with a slash) or one of `-run -count -p -timeout -tags -parallel -cpu
+  -shuffle -coverprofile -covermode -coverpkg -vet -mod -ldflags -gcflags`
+  with its value, or the switches `-json -short -race -v -failfast -trimpath
+  -cover` (on); so `-args`, `--`, `-v=false`, `-n`, `-list`, `-skip`,
+  `-bench` and `-fuzz` leave the step unchecked. Alternatives matching the
+  empty string, such as `^$`, are not checked either.
 - `cache: tree` skips a task that already passed on the same inputs, its
   deps and inner tasks with it: `graft: lint: passed on this tree
   2026-10-16 10:12, skipped`. The key covers the work tree by content (every

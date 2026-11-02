@@ -132,6 +132,11 @@ func TestGoTestRunAlternatives(t *testing.T) {
 		{"list with two dashes", []string{"--list=Test", "-run", "TestGone"}, nil, nil},
 		{"skip", []string{"-run", "TestGone", "-test.skip", "TestGone"}, nil, nil},
 		{"run after -args", []string{"-run", "TestReal", "./...", "-args", "-run", "TestGone"}, []string{"TestReal"}, nil},
+		{"binary flags after -args", []string{"go", "test", "-json", "./pkg", "-run", "TestGone", "-args", "-test.run=TestReal"}, []string{"TestReal"}, nil},
+		{"positional word", []string{"go", "test", "-json", "./pkg", "-v", "positional", "-run=TestGone"}, nil, nil},
+		{"verbose off", []string{"go", "test", "-json", "./pkg", "-v=false", "-run", "TestGone"}, nil, nil},
+		{"unknown flag", []string{"go", "test", "-json", "-n", "-run", "TestGone", "./..."}, nil, nil},
+		{"known flags", []string{"go", "test", "-json", "-count=1", "-p", "4", "-short", "-race", "-v=true", "-run", "TestReal|TestGone", "./...", "example.com/m/pkg"}, []string{"TestReal"}, []string{"TestGone"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -125,42 +125,68 @@ func compileRunRegexp(pattern string) (*regexp.Regexp, bool) {
 	return re, err == nil
 }
 
-// goTestRun is the -run value go test applies; false when there is none or
-// the run is not meant to run what -run selects: it lists tests, skips some,
-// benchmarks or fuzzes. Words after -args are the test binary's arguments.
+// goTestFlags are the go test flags whose meaning the -run check knows: true
+// takes a value, false is a switch. A word that is neither one of them nor a
+// package path leaves the run unchecked: -args, --, -v=false (no run events),
+// -n, -list, -skip, -bench, -fuzz and any flag that changes what runs or what
+// the stream shows.
+var goTestFlags = map[string]bool{
+	"run": true, "count": true, "p": true, "timeout": true, "tags": true,
+	"parallel": true, "cpu": true, "shuffle": true, "coverprofile": true,
+	"covermode": true, "coverpkg": true, "vet": true, "mod": true,
+	"ldflags": true, "gcflags": true,
+	"json": false, "short": false, "race": false, "v": false, "failfast": false,
+	"trimpath": false, "cover": false,
+}
+
+// goTestRun is the -run value a go test command line applies, false when it
+// has none or holds a word the check does not know (see goTestFlags).
+// words may start with go test.
 func goTestRun(words []string) (string, bool) {
+	if len(words) >= 2 && words[0] == "go" && words[1] == "test" {
+		words = words[2:]
+	}
 	var value string
 	found := false
 	for i := 0; i < len(words); i++ {
-		flag := words[i]
-		if strings.HasPrefix(flag, "--") && len(flag) > 2 {
-			flag = flag[1:] // go's flags take one dash or two
-		}
-		if flag == "-args" {
-			break
-		}
-		inline := ""
-		if before, after, has := strings.Cut(flag, "="); has {
-			flag, inline = before, after
-		}
-		if flag != "-run" && flag != "-test.run" {
-			switch strings.TrimPrefix(flag, "-test.") {
-			case "-bench", "bench", "-fuzz", "fuzz", "-list", "list", "-skip", "skip":
+		word := words[i]
+		if !strings.HasPrefix(word, "-") {
+			if !goPackagePath(word) {
 				return "", false
 			}
 			continue
 		}
-		found = true
-		if inline != "" || strings.Contains(words[i], "=") {
-			value = inline
-		} else if i+1 < len(words) {
+		name := strings.TrimPrefix(strings.TrimPrefix(word, "-"), "-")
+		name = strings.TrimPrefix(name, "test.")
+		name, inline, hasValue := strings.Cut(name, "=")
+		takesValue, known := goTestFlags[name]
+		switch {
+		case !known:
+			return "", false
+		case !takesValue:
+			// A switch is on, or the check does not know the run.
+			if hasValue && inline != "true" {
+				return "", false
+			}
+			continue
+		case !hasValue:
+			if i+1 >= len(words) {
+				return "", false
+			}
 			i++
-			value = words[i]
-		} else {
-			found = false
+			inline = words[i]
+		}
+		if name == "run" {
+			value, found = inline, true
 		}
 	}
 	return value, found
+}
+
+// goPackagePath says whether word names packages the way a go test command
+// line does: a relative path or pattern, or an import path with a slash.
+func goPackagePath(word string) bool {
+	return word == "." || strings.HasPrefix(word, "./") || strings.HasPrefix(word, "../") || strings.Contains(word, "/")
 }
 
 // splitRunPattern follows testing's split at separators outside regexp groups.
