@@ -1132,10 +1132,12 @@ func (r *Runner) gateStepLine(gs *gateStep, s config.Step, number, total int) (s
 	}
 	// The gate did not split, so remote_heavy is off for its steps: the
 	// placement is asked with the settings the gate decided by.
-	saved := r.remoteHeavy
-	r.remoteHeavy = r.gateCosts.remote
-	remote, reason, err := r.gateStepPlacement(s, gs.task, stats.GateTask, true)
-	r.remoteHeavy = saved
+	remote, reason, err := func() (bool, string, error) {
+		saved := r.remoteHeavy
+		r.remoteHeavy = r.gateCosts.remote
+		defer func() { r.remoteHeavy = saved }()
+		return r.gateStepPlacement(s, gs.task, stats.GateTask, true)
+	}()
 	if err != nil {
 		return "", nil, err
 	}
