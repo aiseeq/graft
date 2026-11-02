@@ -890,7 +890,7 @@ func TestGoTestPackagesFromArgs(t *testing.T) {
     run: ['go test -p 2 -json {args} ./...']
 `, nil)
 	fakeBin := t.TempDir()
-	script := "#!/bin/sh\n[ \"$1\" = env ] && exit 0\necho \"$*\" >> " + f.path("go.txt") + "\ncase \"$*\" in *TestGone*) name=TestReal ;; *) name=TestFake ;; esac\nprintf '{\"Action\":\"run\",\"Package\":\"projectA/pkg\",\"Test\":\"%s\"}\\n' \"$name\"\nprintf '{\"Action\":\"pass\",\"Package\":\"projectA/pkg\",\"Test\":\"%s\"}\\n' \"$name\"\nprintf '{\"Action\":\"pass\",\"Package\":\"projectA/pkg\"}\\n'\n"
+	script := "#!/bin/sh\n[ \"$1\" = env ] && { echo \"$GOFLAGS\"; exit 0; }\necho \"$*\" >> " + f.path("go.txt") + "\ncase \"$*\" in *TestGone*) name=TestReal ;; *) name=TestFake ;; esac\nprintf '{\"Action\":\"run\",\"Package\":\"projectA/pkg\",\"Test\":\"%s\"}\\n' \"$name\"\nprintf '{\"Action\":\"pass\",\"Package\":\"projectA/pkg\",\"Test\":\"%s\"}\\n' \"$name\"\nprintf '{\"Action\":\"pass\",\"Package\":\"projectA/pkg\"}\\n'\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -922,6 +922,10 @@ func TestGoTestPackagesFromArgs(t *testing.T) {
 	want := "test -trimpath -p 2 -json -run ./x ./cmd/worker/,test -trimpath -p 2 -json -v -coverprofile c.out ./...,test -trimpath -p 2 -json -run TestGone ./..."
 	if got := strings.Join(f.lines("go.txt"), ","); got != want {
 		t.Errorf("go got\n%s\nwant\n%s", got, want)
+	}
+	f.env = append(f.env, "GOFLAGS=-skip=TestOther")
+	if out, code := f.graft("", "test", "--", "-run", "TestGone"); code != 0 {
+		t.Errorf("a -skip of GOFLAGS left the -run check on (exit %d):\n%s", code, out)
 	}
 }
 

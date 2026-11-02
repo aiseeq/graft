@@ -1586,6 +1586,21 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	return err
 }
 
+// checkRunWords hands the report the go test command line as go reads it:
+// the flags of GOFLAGS (the environment's, or go env -w's) before its own
+// words, which override them.
+func (r *Runner) checkRunWords(report *testreport.GoTest, cmd *exec.Cmd, words []string) {
+	goenv := exec.Command("go", "env", "GOFLAGS")
+	goenv.Env, goenv.Dir = cmd.Env, cmd.Dir
+	out, err := goenv.Output()
+	if err != nil {
+		fmt.Fprintf(r.Stderr, "graft: reading GOFLAGS for the -run check: %v; -run not checked\n", err)
+		return
+	}
+	line := append([]string{"go", "test"}, strings.Fields(string(out))...)
+	report.CheckRunWords(append(line, words[2:]...))
+}
+
 func isDirectGoTest(argv []string) bool {
 	return len(argv) >= 2 && argv[0] == "go" && argv[1] == "test"
 }
@@ -1895,8 +1910,8 @@ func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
 func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string, directGoTest bool, remoteStderr *bytes.Buffer) error {
 	tree := r.treeID()
 	report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
-	if directGoTest {
-		report.CheckRunWords(words)
+	if directGoTest && testreport.HasRun(words) {
+		r.checkRunWords(report, cmd, words)
 	}
 	cmd.Stdout = report
 	// The stats line takes its reason from the parsed stream, so the report
@@ -2006,7 +2021,7 @@ func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, 
 		sourceReason = reasonSource()
 	}
 	reason := stepFailureReason(sourceReason, stderr, stdout, code)
-	missing := successfulGoTestHasMissingRunNames(code, err, missingRunNames)
+	missing := successfulGoTestHasMissingRunNames(code, missingRunNames)
 	code, err = failGoTestStepOnMissingRunNames(missing, sourceReason, code, err)
 	if memoryErr != nil {
 		reason = memoryErr.Error()
@@ -2018,7 +2033,7 @@ func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, 
 	return use, err
 }
 
-func successfulGoTestHasMissingRunNames(code int, err error, missingRunNames func() bool) bool {
+func successfulGoTestHasMissingRunNames(code int, missingRunNames func() bool) bool {
 	// The reason names the missing alternatives on exit 0 whatever err is,
 	// so the step fails on them on exit 0 too: its stats line agrees.
 	if code != 0 || missingRunNames == nil {

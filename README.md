@@ -850,9 +850,14 @@ dotenv_sets:                   # key lists several tasks and services share
   with a slash) or one of `-run -count -p -timeout -tags -parallel -cpu
   -shuffle -coverprofile -covermode -coverpkg -vet -mod -ldflags -gcflags`
   with its value, or the switches `-json -short -race -v -failfast -trimpath
-  -cover` (on); so `-args`, `--`, `-v=false`, `-n`, `-list`, `-skip`,
-  `-bench` and `-fuzz` leave the step unchecked. Alternatives matching the
-  empty string, such as `^$`, are not checked either.
+  -cover` (on), the package paths one run of words and `-count` at least 1;
+  so `-args`, `--`, `-v=false`, `-count=0`, `-n`, `-list`, `-skip`,
+  `-bench`, `-fuzz` and a path after flags that follow the packages (an
+  argument of the test binary) leave the step unchecked. The flags of
+  `GOFLAGS` (as `go env GOFLAGS` gives them, `go env -w` included) count as
+  words before the command's own, so `GOFLAGS=-skip=TestA` leaves it
+  unchecked too. Alternatives matching the empty string, such as `^$`, are
+  not checked either.
 - `cache: tree` skips a task that already passed on the same inputs, its
   deps and inner tasks with it: `graft: lint: passed on this tree
   2026-10-16 10:12, skipped`. The key covers the work tree by content (every

@@ -135,6 +135,11 @@ func TestGoTestRunAlternatives(t *testing.T) {
 		{"binary flags after -args", []string{"go", "test", "-json", "./pkg", "-run", "TestGone", "-args", "-test.run=TestReal"}, []string{"TestReal"}, nil},
 		{"positional word", []string{"go", "test", "-json", "./pkg", "-v", "positional", "-run=TestGone"}, nil, nil},
 		{"verbose off", []string{"go", "test", "-json", "./pkg", "-v=false", "-run", "TestGone"}, nil, nil},
+		{"packages split by flags", []string{"go", "test", "-json", ".", "-run", "TestA", "./foo", "-run", "TestB"}, []string{"TestA"}, nil},
+		{"count zero", []string{"go", "test", "-json", "-count=0", "-run", "TestA", "./..."}, nil, nil},
+		{"packages before and after flags", []string{"go", "test", "-json", "-count", "1", "./a", "./b", "-run", "TestReal|TestGone"}, []string{"TestReal"}, []string{"TestGone"}},
+		{"GOFLAGS skip", []string{"go", "test", "-skip=TestA", "-json", "-run", "TestA", "./..."}, nil, nil},
+		{"GOFLAGS run overridden", []string{"go", "test", "-run=TestGone", "-mod=mod", "-json", "-run", "TestReal", "./..."}, []string{"TestReal"}, nil},
 		{"unknown flag", []string{"go", "test", "-json", "-n", "-run", "TestGone", "./..."}, nil, nil},
 		{"known flags", []string{"go", "test", "-json", "-count=1", "-p", "4", "-short", "-race", "-v=true", "-run", "TestReal|TestGone", "./...", "example.com/m/pkg"}, []string{"TestReal"}, []string{"TestGone"}},
 	}

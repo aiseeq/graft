@@ -83,6 +83,18 @@ func NewGoTest(out io.Writer, verbose bool) *GoTest {
 	return &GoTest{out: out, verbose: verbose, pkgs: map[string]*goPackage{}}
 }
 
+// HasRun says whether a go test command line sets -run: only then is the
+// GOFLAGS the check also reads worth asking go for.
+func HasRun(words []string) bool {
+	for _, word := range words {
+		name, _, _ := strings.Cut(strings.TrimLeft(word, "-"), "=")
+		if strings.HasPrefix(word, "-") && strings.TrimPrefix(name, "test.") == "run" {
+			return true
+		}
+	}
+	return false
+}
+
 // CheckRunWords checks each top-level -run alternative against tests that
 // emitted a run event. Invalid expressions are left for go test to report.
 func (g *GoTest) CheckRunWords(words []string) {
@@ -148,14 +160,19 @@ func goTestRun(words []string) (string, bool) {
 	}
 	var value string
 	found := false
+	// The packages are one run of words: a path after flags that follow
+	// them is an argument of the test binary, and so is every word after it.
+	packages, afterPackages := false, false
 	for i := 0; i < len(words); i++ {
 		word := words[i]
 		if !strings.HasPrefix(word, "-") {
-			if !goPackagePath(word) {
+			if !goPackagePath(word) || afterPackages {
 				return "", false
 			}
+			packages = true
 			continue
 		}
+		afterPackages = packages
 		name := strings.TrimPrefix(strings.TrimPrefix(word, "-"), "-")
 		name = strings.TrimPrefix(name, "test.")
 		name, inline, hasValue := strings.Cut(name, "=")
@@ -176,11 +193,25 @@ func goTestRun(words []string) (string, bool) {
 			i++
 			inline = words[i]
 		}
-		if name == "run" {
+		switch name {
+		case "run":
 			value, found = inline, true
+		case "count":
+			// -count=0 runs nothing; a count that is not a number fails
+			// go test itself, which then names it.
+			if !atLeastOne(inline) {
+				return "", false
+			}
 		}
 	}
 	return value, found
+}
+
+// atLeastOne says whether value is decimal digits of a number of at least 1;
+// the other forms flag takes (0x10, +1, 1_000) leave the step unchecked.
+func atLeastOne(value string) bool {
+	digits := strings.TrimLeft(value, "0")
+	return digits != "" && strings.Trim(digits, "0123456789") == ""
 }
 
 // goPackagePath says whether word names packages the way a go test command
