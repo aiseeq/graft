@@ -157,3 +157,33 @@ func TestFreezePolishAmendWithoutRemotesRecordsHere(t *testing.T) {
 		t.Fatalf("the record names another commit:\n%s", body)
 	}
 }
+
+// TestFreezePolishUnreadRemoteRecordsKeepNoLocalOne: the remotes answer, but
+// their records cannot be read (the same tag differs between two remotes): the
+// replaced commit's record here goes all the same, the remotes' tags stay, and
+// the error says the remote part failed.
+func TestFreezePolishUnreadRemoteRecordsKeepNoLocalOne(t *testing.T) {
+	repo, cfg, head, remote := freezePolishFixture(t, true)
+	backup := filepath.Join(filepath.Dir(remote), "backup.git")
+	freezePolishGit(t, repo.Root, "init", "--bare", "-q", backup)
+	freezePolishGit(t, repo.Root, "remote", "add", "backup", backup)
+	f := &activeFreeze{target: "projectA", version: "1.2.3"}
+	tag := "freeze-log/projectA/1.2.3/20261030T100000-abcdef1-advisory"
+	freezePolishGit(t, repo.Root, "tag", "-a", tag, head, "-m", "target: commit", "-m", "commit: "+head, "-m", "reason: other")
+	freezePolishGit(t, repo.Root, "push", "-q", "backup", "refs/tags/"+tag)
+	freezePolishGit(t, repo.Root, "tag", "-f", "-a", tag, head, "-m", "target: commit", "-m", "commit: "+head, "-m", "reason: lint failed")
+	freezePolishGit(t, repo.Root, "push", "-q", "origin", "refs/tags/"+tag)
+
+	err := removeCommitAdvisoryLogs(repo, cfg, f, head)
+	if err == nil || !strings.Contains(err.Error(), "the remotes' records: tag "+tag+" differs between remotes") {
+		t.Fatalf("error = %v", err)
+	}
+	if got := freezePolishGit(t, repo.Root, "tag", "--list", tag); got != "" {
+		t.Fatalf("the replaced commit's record stays here: %s", got)
+	}
+	for _, r := range []string{remote, backup} {
+		if got := freezePolishGit(t, r, "for-each-ref", "--format=%(refname)", "refs/tags/"+tag); got == "" {
+			t.Fatalf("an unread tag went from %s", r)
+		}
+	}
+}

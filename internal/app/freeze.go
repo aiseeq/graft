@@ -942,9 +942,13 @@ func removeCommitAdvisoryLogs(repo *gitx.Repo, cfg *config.Config, f *activeFree
 	remoteTags, remoteErr := freezeLogTags(repo, cfg, f)
 	contents := map[string]string{}
 	if remoteErr == nil {
-		var err error
-		if contents, err = readRemoteTags(repo, remoteTags); err != nil {
-			return err
+		read, err := readRemoteTags(repo, remoteTags)
+		if err != nil {
+			// Unread, the remotes' tags are left as they are; the entries
+			// here go all the same, as when the remotes do not answer.
+			remoteErr, remoteTags = err, nil
+		} else {
+			contents = read
 		}
 	}
 	var remove []string

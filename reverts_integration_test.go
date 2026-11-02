@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -125,5 +128,48 @@ func TestCommitTakingAFileOutOfTheIndexIsNoRevert(t *testing.T) {
 	f.git("rm", "-q", "d.txt")
 	if out, code := f.graft("", "commit", "-m", "chore: tidy"); code == 0 || !strings.Contains(out, "d.txt: takes back "+x[:12]) {
 		t.Errorf("a deleted file: exit %d\n%s", code, out)
+	}
+}
+
+// TestCommitReplacingAFolderIsNoErrorOfTheTakeBackCheck: a tracked folder that
+// a plain file replaced is gone, a take-back the subject can name, not an
+// error of the check; one that an ignored symbolic link replaced keeps its
+// files on disk, no take-back.
+func TestCommitReplacingAFolderIsNoErrorOfTheTakeBackCheck(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic links need privileges on windows")
+	}
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.write("VERSION", "1.0.1\n")
+	f.mustPlainCommit("feat: base")
+	f.write("notes/a.md", "a\n")
+	f.write("tasks/one.md", "one\n")
+	f.mustPlainCommit("feat: notes and tasks")
+	x := f.git("rev-parse", "HEAD")
+
+	store := filepath.Join(f.base, "store")
+	if err := os.CopyFS(store, os.DirFS(filepath.Join(f.work, "tasks"))); err != nil {
+		t.Fatal(err)
+	}
+	f.git("rm", "-q", "-r", "--cached", "tasks")
+	if err := os.RemoveAll(filepath.Join(f.work, "tasks")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(store, filepath.Join(f.work, "tasks")); err != nil {
+		t.Fatal(err)
+	}
+	f.write(".gitignore", "/tasks\n")
+	f.mustGraft("commit", "-m", "chore: tasks move to a store of their own")
+
+	if err := os.RemoveAll(filepath.Join(f.work, "notes")); err != nil {
+		t.Fatal(err)
+	}
+	f.write("notes", "now a file\n")
+	if out, code := f.graft("", "commit", "-m", "chore: notes in one file"); code == 0 || !strings.Contains(out, "notes/a.md: takes back "+x[:12]) {
+		t.Errorf("a folder a file replaced: exit %d\n%s", code, out)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
@@ -124,29 +125,76 @@ func revertCandidates(repo *gitx.Repo, cfg config.Reverts, versionFiles []string
 
 // ignoredOnDisk are the files of deleted that stay in the work tree and that
 // .gitignore now ignores: taken out of the index (git rm --cached and a rule,
-// as graft's own hint for a committed file says), not out of the work.
+// as graft's own hint for a committed file says), not out of the work. A file
+// reached through a symbolic link that replaced one of its folders counts when
+// .gitignore ignores the link; a file whose folder a plain file replaced is
+// gone.
 func ignoredOnDisk(repo *gitx.Repo, deleted []string) ([]string, error) {
-	var onDisk []string
+	byPath := map[string][]string{} // the path check-ignore asks about: the file, or the link on its way
+	var paths []string
 	for _, f := range deleted {
-		_, err := os.Lstat(filepath.Join(repo.Root, filepath.FromSlash(f)))
-		switch {
-		case err == nil:
-			onDisk = append(onDisk, f)
-		case !errors.Is(err, fs.ErrNotExist):
+		p, err := pathOnDisk(repo.Root, f)
+		if err != nil {
 			return nil, fmt.Errorf("a file the commit removes: %w", err)
 		}
+		if p == "" {
+			continue
+		}
+		if _, seen := byPath[p]; !seen {
+			paths = append(paths, p)
+		}
+		byPath[p] = append(byPath[p], f)
 	}
-	if len(onDisk) == 0 {
+	if len(paths) == 0 {
 		return nil, nil
 	}
-	out, err := repo.GitInput(strings.NewReader(strings.Join(onDisk, "\x00")+"\x00"), nil, "check-ignore", "--stdin", "-z")
+	out, err := repo.GitInput(strings.NewReader(strings.Join(paths, "\x00")+"\x00"), nil, "check-ignore", "--stdin", "-z")
 	if gitx.ExitCode(err) == 1 {
 		return nil, nil // none of them ignored
 	}
 	if err != nil {
 		return nil, fmt.Errorf("checking which removed files .gitignore ignores: %w", err)
 	}
-	return slices.DeleteFunc(strings.Split(out, "\x00"), func(f string) bool { return f == "" }), nil
+	var ignored []string
+	for p := range strings.SplitSeq(out, "\x00") {
+		ignored = append(ignored, byPath[p]...)
+	}
+	return ignored, nil
+}
+
+// pathOnDisk is the path of the work tree that keeps file f there: f itself,
+// or the first symbolic link among its folders when f is reached through it;
+// "" when f is gone, a plain file standing where one of its folders was too.
+func pathOnDisk(root, f string) (string, error) {
+	parts := strings.Split(f, "/")
+	dir := root
+	for i, part := range parts {
+		dir = filepath.Join(dir, part)
+		info, err := os.Lstat(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if i == len(parts)-1 {
+			return f, nil
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			target, err := os.Stat(filepath.Join(root, filepath.FromSlash(f)))
+			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || err == nil && target.IsDir() {
+				return "", nil
+			}
+			if err != nil {
+				return "", err
+			}
+			return strings.Join(parts[:i+1], "/"), nil
+		}
+		if !info.IsDir() {
+			return "", nil
+		}
+	}
+	return "", nil
 }
 
 // recentCommit is a commit of the base's first-parent line with the files

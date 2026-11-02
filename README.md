@@ -2100,8 +2100,9 @@ up to date and release again.
   a rebase, merge, cherry-pick or revert the message git prepared counts.
   Moves, the version files and `exceptions` do not count, nor does a file
   taken out of the index that stays on disk and that `.gitignore` ignores
-  (`git rm --cached` and a rule, as the hint for a committed file says). A
-  partial take-back, part of a commit's diff of a file, is not seen.
+  (`git rm --cached` and a rule, as the hint for a committed file says), or
+  whose folder an ignored symbolic link replaced that still reaches it; a
+  folder a plain file replaced is taken back. A partial take-back, part of a commit's diff of a file, is not seen.
 - **Leaks**: with `leaks` in the user config, a commit to a repository that
   has a remote under `public_remotes` is checked for private names in the
   lines it adds and in its message; a line the commit removes elsewhere,
@@ -2123,9 +2124,13 @@ up to date and release again.
   diff shows as text are checked (graft does not pass `--text`): a binary
   file, and a text file that `.gitattributes` marks `-diff` or `binary`, is
   skipped. A picture's metadata (PNG text chunks, EXIF, PDF XMP) is not
-  read either. Binary files meet the large files check instead, in `graft
-  commit` and `graft commit --amend` only: the pre-push hook and `graft
-  leaks` do not run it.
+  read either, unless the user's git config gives the file a `textconv`
+  diff driver: the check of a commit graft makes reads the staged diff, with
+  that driver's text, while the pre-push hook and `graft leaks` read the
+  commits' raw diff without it. Binary files meet the large files check
+  instead, in the checks of a commit graft makes (`graft commit`, `--amend`,
+  `graft check`, the pre-commit hook): the pre-push hook and `graft leaks`
+  do not run it.
   A line containing
   `graft:leak-ok <reason>` passes; `leaks.allow` passes a name or term
   everywhere. `graft leaks <revision>…` runs the same scan over existing commits,
