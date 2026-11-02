@@ -443,6 +443,16 @@ func startGraft(t *testing.T, f *fixture, args ...string) *runningGraft {
 
 func (g *runningGraft) name() string { return "graft " + strings.Join(g.args, " ") }
 
+// kill ends the graft and waits for it, at most ten seconds: the output is
+// whole once it is reaped.
+func (g *runningGraft) kill() {
+	_ = g.cmd.Process.Kill()
+	select {
+	case <-g.done:
+	case <-time.After(10 * time.Second):
+	}
+}
+
 // end waits for the graft to end, at most graftRunLimit, and returns its
 // output; a graft that failed or still runs fails the test.
 func (g *runningGraft) end(t *testing.T) string {
@@ -453,8 +463,7 @@ func (g *runningGraft) end(t *testing.T) string {
 			t.Fatalf("%s: %v\n%s", g.name(), err, g.out.String())
 		}
 	case <-time.After(graftRunLimit):
-		_ = g.cmd.Process.Kill()
-		<-g.done
+		g.kill()
 		t.Fatalf("%s still ran after %s:\n%s", g.name(), graftRunLimit, g.out.String())
 	}
 	return g.out.String()
@@ -474,8 +483,7 @@ func startWaitingForMachine(t *testing.T, f *fixture, args ...string) *runningGr
 		case err := <-g.done:
 			t.Fatalf("%s ended (%v) without waiting for this machine:\n%s", g.name(), err, g.out.String())
 		case <-deadline:
-			_ = g.cmd.Process.Kill()
-			<-g.done
+			g.kill()
 			t.Fatalf("%s did not start waiting for this machine within 30s:\n%s", g.name(), g.out.String())
 		case <-tick.C:
 		}
