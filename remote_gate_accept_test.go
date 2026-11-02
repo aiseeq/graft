@@ -6,28 +6,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
-
-// calmAfter makes the loaded machine of state calm after d. The returned
-// stop drops a calm still to come once a graft that need not wait is over.
-func calmAfter(t *testing.T, state string, d time.Duration) (stop func()) {
-	t.Helper()
-	done := make(chan struct{})
-	timer := time.AfterFunc(d, func() {
-		defer close(done)
-		setRunnable(t, filepath.Join(state, "proc"), 1)
-	})
-	stop = sync.OnceFunc(func() {
-		if !timer.Stop() {
-			<-done
-		}
-	})
-	t.Cleanup(stop)
-	return stop
-}
 
 const splitGateConfig = "schema: 1\nversion: {mode: none}\n" +
 	"gate:\n  - task: unit\n  - task: script\n" +
@@ -233,7 +214,7 @@ func TestBusyGateWaitsForThisMachineOnce(t *testing.T) {
 		"  first:\n    run: [[sh, "+yamlQuote(filepath.Join(state, "first.sh"))+"]]\n"+
 		"  second:\n    run: [[sh, -c, 'echo second >> out']]\n")
 	loaded(t, state)
-	cmd, outBuf := startWaitingForMachine(t, f, "gate")
+	g := startWaitingForMachine(t, f, "gate")
 	setRunnable(t, proc, 1)
 	// A gate that waits again for the second step finds the machine calm a
 	// second after the first step loaded it, so that it still ends.
@@ -253,10 +234,7 @@ func TestBusyGateWaitsForThisMachineOnce(t *testing.T) {
 		setRunnable(t, proc, 1)
 	}()
 	t.Cleanup(func() { <-done })
-	if err := cmd.Wait(); err != nil {
-		t.Fatalf("graft gate: %v\n%s", err, outBuf.String())
-	}
-	out := outBuf.String()
+	out := g.end(t)
 	if got := readFile(t, f.path("out")); got != "first\nsecond\n" {
 		t.Errorf("the steps did not run here in order: out = %q\n%s", got, out)
 	}
@@ -294,10 +272,16 @@ func TestExecOfGraftLetsTheInnerGraftPlaceIt(t *testing.T) {
 	}
 	f, state := userRemoteRepo(t, "  vet:\n    run: [[go, vet, ./...]]\n  script:\n    run: [[sh, -c, 'echo here >> out']]\n")
 	loaded(t, state)
-	// Calm later, so that an exec that queued itself still ends.
-	stop := calmAfter(t, state, 3*time.Second)
-	out := f.mustGraft("exec", "--heavy", "--", "graft", "vet")
-	stop()
+	// The machine stays loaded until the exec ends: one that queued itself
+	// is calmed after 10s so that it ends, and says it waited.
+	g := startGraft(t, f, "exec", "--heavy", "--", "graft", "vet")
+	select {
+	case <-time.After(10 * time.Second):
+		setRunnable(t, filepath.Join(state, "proc"), 1)
+	case err := <-g.done:
+		g.done <- err
+	}
+	out := g.end(t)
 	if !strings.Contains(callsOf(t, state), "go vet ./...") || !strings.Contains(out, "graft: vet: heavy, on pc") {
 		t.Errorf("the inner vet, heavy by the exec, did not go to pc:\n%s\ncalls: %q", out, callsOf(t, state))
 	}

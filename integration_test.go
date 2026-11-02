@@ -418,33 +418,78 @@ func (f *fixture) start(dir string, args ...string) (*exec.Cmd, *syncBuffer) {
 	return cmd, out
 }
 
-// startWaitingForMachine runs graft with the test machine loaded and waits
-// for its first admission wait.
-func startWaitingForMachine(t *testing.T, f *fixture, args ...string) (*exec.Cmd, *syncBuffer) {
+// graftRunLimit bounds how long a test waits for a graft it started: a graft
+// still running past it is killed and the test fails with its output.
+const graftRunLimit = 60 * time.Second
+
+// runningGraft is a graft a test started in the background.
+type runningGraft struct {
+	args []string
+	out  *syncBuffer
+	cmd  *exec.Cmd
+	done chan error
+}
+
+// startGraft runs graft in the work tree in the background; a test that
+// fails before it ends kills it.
+func startGraft(t *testing.T, f *fixture, args ...string) *runningGraft {
 	t.Helper()
 	cmd, out := f.start(f.work, args...)
-	deadline := time.Now().Add(30 * time.Second)
-	for !strings.Contains(out.String(), ", waiting\n") {
-		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			t.Fatalf("graft %s did not start waiting for this machine within 30s:\n%s", strings.Join(args, " "), out.String())
+	g := &runningGraft{args: args, out: out, cmd: cmd, done: make(chan error, 1)}
+	go func() { g.done <- cmd.Wait() }()
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	return g
+}
+
+func (g *runningGraft) name() string { return "graft " + strings.Join(g.args, " ") }
+
+// end waits for the graft to end, at most graftRunLimit, and returns its
+// output; a graft that failed or still runs fails the test.
+func (g *runningGraft) end(t *testing.T) string {
+	t.Helper()
+	select {
+	case err := <-g.done:
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", g.name(), err, g.out.String())
 		}
-		time.Sleep(20 * time.Millisecond)
+	case <-time.After(graftRunLimit):
+		_ = g.cmd.Process.Kill()
+		<-g.done
+		t.Fatalf("%s still ran after %s:\n%s", g.name(), graftRunLimit, g.out.String())
 	}
-	return cmd, out
+	return g.out.String()
+}
+
+// startWaitingForMachine runs graft with the test machine loaded and waits
+// for its first admission wait; a graft that ends first, or does not wait
+// within 30s, fails the test.
+func startWaitingForMachine(t *testing.T, f *fixture, args ...string) *runningGraft {
+	t.Helper()
+	g := startGraft(t, f, args...)
+	deadline := time.After(30 * time.Second)
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	for !strings.Contains(g.out.String(), ", waiting\n") {
+		select {
+		case err := <-g.done:
+			t.Fatalf("%s ended (%v) without waiting for this machine:\n%s", g.name(), err, g.out.String())
+		case <-deadline:
+			_ = g.cmd.Process.Kill()
+			<-g.done
+			t.Fatalf("%s did not start waiting for this machine within 30s:\n%s", g.name(), g.out.String())
+		case <-tick.C:
+		}
+	}
+	return g
 }
 
 // runUntilMachineWait calms the test machine after graft starts waiting for
 // it, then returns graft's output.
 func runUntilMachineWait(t *testing.T, f *fixture, state string, args ...string) string {
 	t.Helper()
-	cmd, out := startWaitingForMachine(t, f, args...)
+	g := startWaitingForMachine(t, f, args...)
 	setRunnable(t, filepath.Join(state, "proc"), 1)
-	if err := cmd.Wait(); err != nil {
-		t.Fatalf("graft %s: %v\n%s", strings.Join(args, " "), err, out.String())
-	}
-	return out.String()
+	return g.end(t)
 }
 
 func (f *fixture) mustGraft(args ...string) string {
