@@ -107,6 +107,10 @@ const (
 	WhyInsideHeavy = "inside an admitted heavy task, which waits for the machine"
 	WhyNotBusy     = "this machine would not make it wait"
 	WhyGateSplit   = "in a gate split by step, each step placed for itself"
+	// A busy gate stays here whole when none of its steps may go to the host,
+	// or each that may is cheaper here.
+	WhyGateNoStepForHost = "no step of the gate may go to the host"
+	WhyGateCheaperHere   = "each step of the gate that may go to the host is cheaper here"
 )
 
 // wouldWait tells whether this machine's queue would make the heavy task wait

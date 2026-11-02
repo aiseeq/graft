@@ -876,6 +876,15 @@ func TestProjectRemoteHeavyBrokenPathRunsHere(t *testing.T) {
 	if lines := readBroken(t, state); len(lines) != 1 || lines[0].Host != "box" || !strings.Contains(lines[0].Reason, "queue of box is full") {
 		t.Errorf("remote-broken.jsonl: %+v", lines)
 	}
+	var sentHere []string
+	for _, l := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+		if l.Kind == "task" && l.Task == "sent" {
+			sentHere = append(sentHere, l.Host+"|"+l.Here)
+		}
+	}
+	if len(sentHere) != 1 || !strings.HasPrefix(sentHere[0], "|box path broken: ") {
+		t.Errorf("the task line of the task run here after the broken path: %q", sentHere)
+	}
 	if err := os.Remove(broken); err != nil {
 		t.Fatal(err)
 	}

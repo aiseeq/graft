@@ -1001,7 +1001,10 @@ graft's version, pid and command line. A
   ran on this machine, is why: the reason its `heavy, on this machine:`
   line gave, the broken path, or, where graft says nothing, `this machine
   would not make it wait` (`when: busy` on a calm machine) and `inside an
-  admitted heavy task, which waits for the machine`. Absent for a task the
+  admitted heavy task, which waits for the machine`. The line of a gate with
+  the user's host that ran here whole says the same, or `<host> did not
+  answer (…)`, `no step of the gate may go to the host`, `each step of the
+  gate that may go to the host is cheaper here`. Absent for a task the
   host ran and without a host. On a step line, it is set only for a step of
   a busy gate that could go to the host and stayed here, `cheaper here: …`.
 - `reserve_cores`, `reserve_s` and `reserve_end` record expected CPU use, how

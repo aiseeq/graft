@@ -5,10 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/aiseeq/graft/v2/internal/stats"
+	"github.com/aiseeq/graft/v2/internal/tasks"
 )
 
 type gateCostFixture struct {
@@ -322,10 +324,17 @@ func TestBusyGateHostDownKeepsNoStepHereForCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	saidDown := false
 	for _, rec := range records {
 		if strings.Contains(rec.Here, "cheaper here") {
 			t.Errorf("a record says cheaper here with the host down: %+v", rec)
 		}
+		if rec.Kind == "task" && strings.Contains(rec.Here, "did not answer") {
+			saidDown = true
+		}
+	}
+	if !saidDown {
+		t.Errorf("no task line says the host did not answer: %+v", records)
 	}
 }
 
@@ -364,4 +373,46 @@ func TestBusyGateAllHereWithASubmodule(t *testing.T) {
 	if !strings.Contains(out, "go vet ./...: cheaper here: 0.2s here, 40.0s on pc") {
 		t.Errorf("the root's vet does not say cheaper here:\n%s", out)
 	}
+}
+
+// TestBusyGateLineSaysWhyItStayedWhole: the task line of a gate with the
+// user's host that ran here whole says why: a calm machine, no step that may
+// go to the host, or each such step cheaper here.
+func TestBusyGateLineSaysWhyItStayedWhole(t *testing.T) {
+	gateHere := func(t *testing.T, g gateCostFixture) []string {
+		t.Helper()
+		records, _, err := stats.LoadTail(g.statsFile, 8<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, rec := range records {
+			if rec.Kind == "task" && rec.Task == stats.GateTask {
+				got = append(got, rec.Here)
+			}
+		}
+		return got
+	}
+	t.Run("calm and cheaper here", func(t *testing.T) {
+		g := newGateCostFixture(t, gateCostVetConfig)
+		if got, want := gateHere(t, g), []string{tasks.WhyNotBusy}; !slices.Equal(got, want) {
+			t.Errorf("calm gate lines here = %q, want %q", got, want)
+		}
+		// The history replaces the stats file.
+		g.writeHistory(t, gateCostRows([]float64{0.1, 0.2, 0.3}, "", 0), gateCostRows([]float64{40, 41}, "pc", 0))
+		runBusyCostGate(t, g, false)
+		if got, want := gateHere(t, g), []string{tasks.WhyGateCheaperHere}; !slices.Equal(got, want) {
+			t.Errorf("busy gate lines here = %q, want %q", got, want)
+		}
+	})
+	t.Run("no step for the host", func(t *testing.T) {
+		g := newGateCostFixture(t, gateCostVetConfig)
+		g.f.write(".graft.yaml", strings.Replace(gateCostVetConfig, "go_fix: {enabled: false}\n",
+			"go_fix: {enabled: false}\ngo_vet: {enabled: false, reason: none here}\n", 1))
+		runBusyCostGate(t, g, false)
+		got := gateHere(t, g)
+		if len(got) == 0 || got[len(got)-1] != tasks.WhyGateNoStepForHost {
+			t.Errorf("gate lines here = %q, want the last %q", got, tasks.WhyGateNoStepForHost)
+		}
+	})
 }

@@ -345,23 +345,25 @@ func (r *Runner) configSteps(steps []gateStep) []gateStep {
 
 // splitBusyGate enables per-step placement for a gate that would wait on this
 // machine and has at least one eligible process step, including nested tasks.
-func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, error) {
+// A gate with the user's host that stays here whole gets why, for its task
+// line.
+func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, string, error) {
 	if r.Config.RemoteHeavy != nil || r.heavy > 0 || os.Getenv(AdmittedEnv) != "" || os.Getenv(HeavyEnv) == "local" {
-		return false, nil
+		return false, "", nil
 	}
 	rh, err := userconfig.RemoteHeavySettings()
 	if err != nil {
-		return false, fmt.Errorf("reading user remote_heavy: %w", err)
+		return false, "", fmt.Errorf("reading user remote_heavy: %w", err)
 	}
 	if rh == nil || rh.When != "busy" {
-		return false, nil
+		return false, "", nil
 	}
 	busy, err := r.wouldWait(ctx, stats.GateTask)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if !busy {
-		return false, nil
+		return false, WhyNotBusy, nil
 	}
 	rhCopy := *rh
 	previousRemoteHeavy := r.remoteHeavy
@@ -369,26 +371,26 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, erro
 	candidate, err := r.gateHasEligible(gate)
 	if err != nil {
 		r.remoteHeavy = previousRemoteHeavy
-		return false, err
+		return false, "", err
 	}
 	if !candidate {
 		r.remoteHeavy = previousRemoteHeavy
-		return false, nil
+		return false, WhyGateNoStepForHost, nil
 	}
 	costs, err := r.loadGateStepCosts()
 	if err != nil {
 		r.remoteHeavy = previousRemoteHeavy
-		return false, fmt.Errorf("reading stats for busy gate placement: %w", err)
+		return false, "", fmt.Errorf("reading stats for busy gate placement: %w", err)
 	}
 	r.gateCosts = costs
 	eligible, err := r.gateHasEligible(gate)
 	if err != nil {
 		r.remoteHeavy = previousRemoteHeavy
-		return false, err
+		return false, "", err
 	}
 	if !eligible {
 		r.remoteHeavy = previousRemoteHeavy
-		return false, nil
+		return false, WhyGateCheaperHere, nil
 	}
 	if down := r.remoteUp(ctx); down != "" {
 		r.remoteHeavy = previousRemoteHeavy
@@ -396,11 +398,12 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, erro
 		// step here for cost.
 		r.gateCosts = nil
 		r.remoteAsked, r.remoteDown = true, down
-		fmt.Fprintf(r.Stderr, "graft: gate: busy here, waits for this machine whole: %s did not answer (%s)\n", rh.Host, down)
-		return false, nil
+		why := fmt.Sprintf("%s did not answer (%s)", rh.Host, down)
+		fmt.Fprintf(r.Stderr, "graft: gate: busy here, waits for this machine whole: %s\n", why)
+		return false, why, nil
 	}
 	r.userRemote, r.remoteAsked = true, true
-	return true, nil
+	return true, "", nil
 }
 
 const gateStatsTailBytes = 8 << 20
@@ -990,7 +993,8 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 	}
 	f := r.begin(stats.GateTask)
 	defer func() { r.end(f, err != nil) }()
-	splitGate, err := r.splitBusyGate(ctx, steps)
+	splitGate, why, err := r.splitBusyGate(ctx, steps)
+	f.here = why
 	if err != nil {
 		return err
 	}
@@ -1643,7 +1647,8 @@ func (r *Runner) fallbackBrokenRemote(ctx context.Context, name, memoryMax strin
 	if err := r.journalRemoteBroken(name, reason); err != nil {
 		return nil, true, err
 	}
-	r.frames[len(r.frames)-1].remote = false
+	top := r.frames[len(r.frames)-1]
+	top.remote, top.here = false, r.remoteHeavy.Host+" path broken: "+reason
 	leave, err := r.enterHeavy(ctx, name, memoryMax)
 	return leave, true, err
 }
