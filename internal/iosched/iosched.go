@@ -8,10 +8,12 @@ import (
 )
 
 // DefaultPercent is the memory ceiling of heavy work, in percent of RAM, when
-// the task asks for none; SlicePercent is the ceiling of all heavy work of a
-// shared slice together.
+// the task asks for none: at least twice the largest peak of a heavy task
+// that asks for none, and under the free memory a busy machine has 99% of the
+// time. SlicePercent is the ceiling of all heavy work of a shared slice
+// together.
 const (
-	DefaultPercent = 40
+	DefaultPercent = 34
 	SlicePercent   = 50
 )
 

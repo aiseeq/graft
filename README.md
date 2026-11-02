@@ -185,12 +185,14 @@ it and take the caller's handle away), and systems without a user systemd
 manager in place. The heavy scope is `PartOf` its source: stopping the source
 scope stops the work, while the caller exiting first leaves it running.
 
-The heavy scope has a memory ceiling: `MemoryMax` 40% of RAM (`MemTotal`)
+The heavy scope has a memory ceiling: `MemoryMax` 34% of RAM (`MemTotal`)
 by default, `MemorySwapMax=0`, and `OOMPolicy=continue`. A runaway test or
 build then dies alone at the ceiling instead of pushing the machine into swap,
 and graft, which systemd would otherwise stop with the whole scope, reports it.
-A task sets its own ceiling with `memory_max: 12G` (binary K, M, G) or
-`memory_max: 60%` beside `heavy: true`; `graft exec --heavy --memory-max 12G
+The default is at least twice the largest peak measured of a heavy task
+without a ceiling of its own, and under the memory a busy workstation has free
+99% of the time. A task sets its own ceiling with `memory_max: 12G` (binary
+K, M, G) or `memory_max: 45%` beside `heavy: true`; `graft exec --heavy --memory-max 12G
 -- …` does it for one command, and for the graft it starts (`graft exec
 --heavy --memory-max 16G -- graft all`: the larger of 16G and the task's
 own). A heavy scope's ceiling only goes up: a later heavy task of the same
@@ -210,7 +212,7 @@ A step during which the kernel killed processes of the heavy scope fails,
 even when it exited 0 (`graft exec` then exits 125), and the error says which
 limit it was:
 
-    heavy scope graft-heavy-123.scope hit its memory ceiling 12.2 GiB (40% of RAM, the default): the kernel killed 1 process(es) during this step; to give it more, set memory_max of task test in .graft.yaml above 12.2 GiB
+    heavy scope graft-heavy-123.scope hit its memory ceiling 10.5 GiB (34% of RAM, the default): the kernel killed 1 process(es) during this step; to give it more, set memory_max of task test in .graft.yaml above 10.5 GiB
 
 or, when the scope's own ceiling was not reached, a limit above it (the
 slice's) or the machine's lack of memory. The same text is the step's reason in
