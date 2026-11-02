@@ -584,16 +584,20 @@ func TestWaitWithSettleNamesWhoHeldTheSettleQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	awaitFiles(t, settlePath+".*.lholder", 1)
-	got := make(chan Admission, 1)
+	type result struct {
+		adm Admission
+		err error
+	}
+	got := make(chan result, 1)
 	// The follower names who it waits behind once its try of the settle
 	// lock fails; head is released only after the follower says it waits.
 	waiting := &signalWriter{text: "waiting for the write lock", seen: make(chan struct{})}
 	go func() {
 		adm, rel, err := WaitWithSettle(context.Background(), "follower", "projectA:follower", nil, testLoad, path, settlePath, time.Hour, 0, waiting)
 		if err == nil {
-			_ = rel()
+			err = rel()
 		}
-		got <- adm
+		got <- result{adm, err}
 	}()
 	select {
 	case <-waiting.seen:
@@ -604,7 +608,11 @@ func TestWaitWithSettleNamesWhoHeldTheSettleQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case adm := <-got:
+	case res := <-got:
+		if res.err != nil {
+			t.Fatalf("follower: %v", res.err)
+		}
+		adm := res.adm
 		if !strings.Contains(adm.WaitedBehind, "graft head") {
 			t.Fatalf("WaitedBehind = %q", adm.WaitedBehind)
 		}
