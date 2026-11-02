@@ -4,7 +4,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestBusyGateKeepsHereAStepItsTaskKeepsHere: a split gate sends built-in
@@ -29,8 +28,7 @@ func TestBusyGateKeepsHereAStepItsTaskKeepsHere(t *testing.T) {
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", strings.Replace(splitGateConfig, "  - task: script\n", gate+"  - task: script\n", 1)+tasks)
 	loaded(t, state)
-	calmAfter(t, state, 1500*time.Millisecond)
-	out := f.mustGraft("gate")
+	out := runUntilMachineWait(t, f, state, "gate")
 	calls := callsOf(t, state)
 	for name := range kinds {
 		if strings.Contains(calls, "Local"+name) {
@@ -55,8 +53,7 @@ func TestBusyGateWithoutRemoteTasksSendsBuiltinVet(t *testing.T) {
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", strings.Replace(splitGateConfig, "    remote: true\n", "", 1))
 	loaded(t, state)
-	calmAfter(t, state, 1500*time.Millisecond)
-	out := f.mustGraft("gate")
+	out := runUntilMachineWait(t, f, state, "gate")
 	calls := callsOf(t, state)
 	if !strings.Contains(calls, "go vet ./...") {
 		t.Errorf("the built-in go vet did not go to pc: %q\n%s", calls, out)
@@ -79,8 +76,7 @@ func TestBusyGateWithoutEligibleStepsWaitsWhole(t *testing.T) {
 	f.write(".graft.yaml", "schema: 1\nversion: {mode: none}\ngo_vet: {enabled: false, reason: checks disabled in this test}\n"+
 		"gate: [{task: script}]\ntasks:\n  script:\n    run: [[sh, -c, 'echo here >> out']]\n")
 	loaded(t, state)
-	calmAfter(t, state, 1500*time.Millisecond)
-	out := f.mustGraft("gate")
+	out := runUntilMachineWait(t, f, state, "gate")
 	if calls := callsOf(t, state); calls != "" {
 		t.Errorf("a gate without eligible steps went to pc: %q\n%s", calls, out)
 	}

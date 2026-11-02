@@ -113,8 +113,7 @@ func TestUserRemoteHeavyGlintInABusyGateSplit(t *testing.T) {
 	config := strings.Replace(splitGateConfig, "  unit:\n    heavy: true\n    remote: true\n    run: [[go, test, -count=1, ./...]]\n", "  unit:\n    heavy: true\n    remote: true\n    run: [[go, vet, ./...], [glint, check, ./...]]\n", 1)
 	f.write(".graft.yaml", config)
 	loaded(t, state)
-	calmAfter(t, state, 1500*time.Millisecond)
-	out := f.mustGraft("gate")
+	out := runUntilMachineWait(t, f, state, "gate")
 	calls := callsOf(t, state)
 	if !strings.Contains(calls, "go vet ./...") || !strings.Contains(calls, "glint check ./...") || !strings.Contains(out, "echo here") {
 		t.Errorf("gate split did not send both checks and keep other work here:\n%s\ncalls: %q", out, calls)

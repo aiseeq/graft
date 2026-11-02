@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aiseeq/graft/v2/internal/testinputs"
 	"github.com/aiseeq/graft/v2/internal/version"
@@ -415,6 +416,35 @@ func (f *fixture) start(dir string, args ...string) (*exec.Cmd, *syncBuffer) {
 		f.t.Fatal(err)
 	}
 	return cmd, out
+}
+
+// startWaitingForMachine runs graft with the test machine loaded and waits
+// for its first admission wait.
+func startWaitingForMachine(t *testing.T, f *fixture, args ...string) (*exec.Cmd, *syncBuffer) {
+	t.Helper()
+	cmd, out := f.start(f.work, args...)
+	deadline := time.Now().Add(30 * time.Second)
+	for !strings.Contains(out.String(), ", waiting\n") {
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			t.Fatalf("graft %s did not start waiting for this machine within 30s:\n%s", strings.Join(args, " "), out.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return cmd, out
+}
+
+// runUntilMachineWait calms the test machine after graft starts waiting for
+// it, then returns graft's output.
+func runUntilMachineWait(t *testing.T, f *fixture, state string, args ...string) string {
+	t.Helper()
+	cmd, out := startWaitingForMachine(t, f, args...)
+	setRunnable(t, filepath.Join(state, "proc"), 1)
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("graft %s: %v\n%s", strings.Join(args, " "), err, out.String())
+	}
+	return out.String()
 }
 
 func (f *fixture) mustGraft(args ...string) string {
