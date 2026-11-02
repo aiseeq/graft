@@ -224,7 +224,7 @@ func remoteWaitRepo(t *testing.T, notice string, limit string) (*fixture, string
 
 func TestRemoteHeavyHostAdmissionWaitIsInStepAndTaskStats(t *testing.T) {
 	f, statsFile, state := remoteWaitRepo(t,
-		"echo 'graft: sent: heavy, admitted after abc' >&2\necho 'graft: sent: heavy, admitted after 2.500s' >&2\necho 'graft: nested: heavy, admitted after 9.000s' >&2", "")
+		"sleep 1\necho 'graft: sent: heavy, admitted after abc' >&2\necho 'graft: sent: heavy, admitted after 0.500s' >&2\necho 'graft: nested: heavy, admitted after 0.900s' >&2", "")
 	loaded(t, state)
 	f.mustGraft("sent")
 	lines := readStats(t, statsFile)
@@ -235,8 +235,8 @@ func TestRemoteHeavyHostAdmissionWaitIsInStepAndTaskStats(t *testing.T) {
 		if line.Host != "pc" {
 			t.Errorf("%s host = %q, want pc", line.Kind, line.Host)
 		}
-		if line.WaitS < 2.5 || !near(line.WaitWhy["host"], 2.5) {
-			t.Errorf("%s wait = %v, why = %v; want at least 2.5s and host about 2.5s", line.Kind, line.WaitS, line.WaitWhy)
+		if line.WaitS < 0.5 || !near(line.WaitWhy["host"], 0.5) {
+			t.Errorf("%s wait = %v, why = %v; want at least 0.5s and host about 0.5s", line.Kind, line.WaitS, line.WaitWhy)
 		}
 	}
 }
@@ -253,7 +253,8 @@ func TestRemoteHeavyWithoutHostAdmissionNoticeHasNoHostWait(t *testing.T) {
 }
 
 func TestRemoteHeavyHostWaitIsExcludedFromTaskLimit(t *testing.T) {
-	f, _, state := remoteWaitRepo(t, "echo 'graft: sent: heavy, admitted after 2.500s' >&2", "100ms")
+	// The host makes the step wait past the limit, and says so.
+	f, _, state := remoteWaitRepo(t, "sleep 1.2\necho 'graft: sent: heavy, admitted after 1.200s' >&2", "500ms")
 	loaded(t, state)
 	if out := f.mustGraft("sent"); strings.Contains(out, "over the limit") {
 		t.Errorf("host queue time counted against the task limit:\n%s", out)
@@ -907,5 +908,18 @@ func TestProjectRemoteHeavyWithoutBrokenExitRunsNothingAgain(t *testing.T) {
 	}
 	if lines := readBroken(t, state); len(lines) != 0 {
 		t.Errorf("remote-broken.jsonl: %+v", lines)
+	}
+}
+
+// TestRemoteHeavyHostWaitIsNoLongerThanTheStep: a line claiming more wait
+// than the step's wall time counts the wall time, so own time stays >= 0.
+func TestRemoteHeavyHostWaitIsNoLongerThanTheStep(t *testing.T) {
+	f, statsFile, state := remoteWaitRepo(t, "echo 'graft: sent: heavy, admitted after 60.000s' >&2", "")
+	loaded(t, state)
+	f.mustGraft("sent")
+	for _, line := range readStats(t, statsFile) {
+		if (line.Kind == "step" || line.Kind == "task") && (line.WaitWhy["host"] <= 0 || line.WaitS > line.WallS) {
+			t.Errorf("%s wait %v, host %v, wall %v: want a host wait no longer than the wall", line.Kind, line.WaitS, line.WaitWhy["host"], line.WallS)
+		}
 	}
 }

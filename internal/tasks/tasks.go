@@ -1818,7 +1818,9 @@ func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, 
 	}
 	use := stats.FromProcess(cmd.ProcessState, time.Since(start))
 	if remoteStderr != nil {
-		if waited := remoteAdmissionWait(remoteStderr.String()); waited > 0 {
+		// The host's wait is part of the step's wall time: a line claiming
+		// more counts no more than that.
+		if waited := min(remoteAdmissionWait(remoteStderr.String()), use.Wall); waited > 0 {
 			use.Wait += waited
 			if use.WaitWhy == nil {
 				use.WaitWhy = map[string]time.Duration{}
