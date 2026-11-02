@@ -109,7 +109,7 @@ func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level versio
 	if clean && !merge {
 		return plan, errNothingToCommit
 	}
-	bump, err := planBump(repo, cfg, level, branch)
+	bump, err := planBump(repo, cfg, level, branch, true)
 	if err != nil {
 		return plan, err
 	}
@@ -488,7 +488,10 @@ type bumpPlan struct {
 	skipped string
 }
 
-func planBump(repo *gitx.Repo, cfg *config.Config, level version.Level, branch string) (bumpPlan, error) {
+// planBump works out the version a commit or graft version bump writes.
+// keepRaised (a commit) keeps a version raised above HEAD's before the
+// commit; graft version bump raises from the work tree's version every time.
+func planBump(repo *gitx.Repo, cfg *config.Config, level version.Level, branch string, keepRaised bool) (bumpPlan, error) {
 	plan := bumpPlan{cfg: cfg.Version}
 	if cfg.Version.Mode != config.ModeFile {
 		return plan, nil
@@ -514,9 +517,11 @@ func planBump(repo *gitx.Repo, cfg *config.Config, level version.Level, branch s
 	case current.Build > 0:
 		return plan, fmt.Errorf("%s is %s, a build_branches version, on %s: a merge took it from a hotfix or release branch; put back the version %s had before the merge", cfg.Version.File, current, branch, branch)
 	default:
-		raised, err := raisedBeforeCommit(repo, cfg, current)
-		if err != nil {
-			return plan, err
+		raised := false
+		if keepRaised {
+			if raised, err = raisedBeforeCommit(repo, cfg, current); err != nil {
+				return plan, err
+			}
 		}
 		if raised && level != version.Patch {
 			return plan, fmt.Errorf("--%s: %s is %s already, raised above HEAD's version before the commit; commit without --%s to keep it, or put the version back", level, cfg.Version.File, current, level)
@@ -590,11 +595,11 @@ func versionInRev(repo *gitx.Repo, cfg *config.Config, rev string) (version.Semv
 		return version.Semver{}, false, err
 	}
 	raw, err := version.Targets(cfg.Version)[0].Extract(content)
+	if errors.Is(err, version.ErrNoVersion) || err == nil && !version.IsFile(raw) {
+		return version.Semver{}, false, nil
+	}
 	if err != nil {
 		return version.Semver{}, false, fmt.Errorf("reading the version of %s: %w", rev, err)
-	}
-	if !version.IsFile(raw) {
-		return version.Semver{}, false, nil
 	}
 	v, err := version.ParseFile(raw)
 	if err != nil {

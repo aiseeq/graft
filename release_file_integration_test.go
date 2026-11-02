@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -202,6 +204,16 @@ func TestReleaseVersionOnlyNeedsNoTicket(t *testing.T) {
 	if out, code := f.graft("", "commit", "-m", "feat: ordinary work"); code == 0 || !strings.Contains(out, "ticket.required") {
 		t.Fatalf("ordinary commit without a ticket: exit %d\n%s", code, out)
 	}
+	if err := os.Remove(filepath.Join(f.work, "ordinary.txt")); err != nil {
+		t.Fatal(err)
+	}
+	// Only a release passes with the version files alone: an ordinary
+	// commit of them still names its work item.
+	f.write("VERSION", "0.9.0\n")
+	f.write("package.json", "{\"version\":\"0.9.0\"}\n")
+	if out, code := f.graft("", "commit", "-m", "chore: hand version"); code == 0 || !strings.Contains(out, "ticket.required") {
+		t.Fatalf("ordinary commit of the version files without a ticket: exit %d\n%s", code, out)
+	}
 }
 
 // TestRaisedVersionChecksSyncAndMerges: a version raised before the commit is
@@ -278,13 +290,25 @@ func TestReleaseFileEdges(t *testing.T) {
 			t.Fatalf("--minor on a raised version: exit %d\n%s", code, out)
 		}
 	})
-	t.Run("unreadable version in HEAD", func(t *testing.T) {
+	for name, broken := range map[string]string{"garbage": "garbage\n", "empty": ""} {
+		t.Run("unreadable version in HEAD: "+name, func(t *testing.T) {
+			f := fileReleaseRepo(t, false, "gate: []\n")
+			f.write("VERSION", broken)
+			f.mustPlainCommit("chore: break the version")
+			f.write("VERSION", "0.7.0\n")
+			if out := f.mustGraft("commit", "-m", "fix: repair the version"); !strings.Contains(out, "version 0.7.1") || strings.Contains(out, "raised before") {
+				t.Fatalf("repair of an unreadable version:\n%s", out)
+			}
+		})
+	}
+	t.Run("version bump raises every time", func(t *testing.T) {
 		f := fileReleaseRepo(t, false, "gate: []\n")
-		f.write("VERSION", "garbage\n")
-		f.mustPlainCommit("chore: break the version")
-		f.write("VERSION", "0.7.0\n")
-		if out := f.mustGraft("commit", "-m", "fix: repair the version"); !strings.Contains(out, "version 0.7.1") || strings.Contains(out, "raised before") {
-			t.Fatalf("repair of an unreadable version:\n%s", out)
+		f.mustGraft("version", "bump")
+		if out := f.mustGraft("version", "bump"); !strings.Contains(out, "0.7.1 -> 0.7.2") {
+			t.Fatalf("second version bump:\n%s", out)
+		}
+		if out := f.mustGraft("version", "bump", "--minor"); !strings.Contains(out, "0.7.2 -> 0.8.0") {
+			t.Fatalf("version bump --minor after a bump:\n%s", out)
 		}
 	})
 	t.Run("tag_on_commit makes one tag", func(t *testing.T) {
