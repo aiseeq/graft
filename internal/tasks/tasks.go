@@ -1597,7 +1597,16 @@ func (r *Runner) checkRunWords(report *testreport.GoTest, cmd *exec.Cmd, words [
 		fmt.Fprintf(r.Stderr, "graft: reading GOFLAGS for the -run check: %v; -run not checked\n", err)
 		return
 	}
-	line := append([]string{"go", "test"}, strings.Fields(string(out))...)
+	goflags := strings.Fields(string(out))
+	// go takes each GOFLAGS field as a flag of its own; a field without =
+	// (a switch, or text a wrapper of go printed) could take the next one
+	// as its value here, so the step is not checked.
+	for _, field := range goflags {
+		if !strings.HasPrefix(field, "-") || !strings.Contains(field, "=") {
+			return
+		}
+	}
+	line := append([]string{"go", "test"}, goflags...)
 	report.CheckRunWords(append(line, words[2:]...))
 }
 
@@ -1910,7 +1919,9 @@ func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
 func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string, directGoTest bool, remoteStderr *bytes.Buffer) error {
 	tree := r.treeID()
 	report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
-	if directGoTest && testreport.HasRun(words) {
+	// A step on the remote_heavy host reads the host's GOFLAGS, which go env
+	// here does not see: it is not checked.
+	if directGoTest && !r.frames[len(r.frames)-1].remote && testreport.HasRun(words) {
 		r.checkRunWords(report, cmd, words)
 	}
 	cmd.Stdout = report

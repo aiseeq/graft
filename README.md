@@ -856,8 +856,10 @@ dotenv_sets:                   # key lists several tasks and services share
   argument of the test binary) leave the step unchecked. The flags of
   `GOFLAGS` (as `go env GOFLAGS` gives them, `go env -w` included) count as
   words before the command's own, so `GOFLAGS=-skip=TestA` leaves it
-  unchecked too. Alternatives matching the empty string, such as `^$`, are
-  not checked either.
+  unchecked too, as does a field of it without `=`. A step on the
+  `remote_heavy` host is not checked: go there reads the host's `GOFLAGS`.
+  Alternatives matching the empty string, such as `^$`, are not checked
+  either.
 - `cache: tree` skips a task that already passed on the same inputs, its
   deps and inner tasks with it: `graft: lint: passed on this tree
   2026-10-16 10:12, skipped`. The key covers the work tree by content (every
