@@ -384,16 +384,16 @@ func summarize(project, label string, recs []Record) Row {
 			row.Failed++
 		}
 	}
-	row.WallMed = median(walls)
-	row.WaitMed = median(waits)
-	row.OwnMed = median(owns)
-	row.CPUMed = median(cpus)
+	row.WallMed = Median(walls)
+	row.WaitMed = Median(waits)
+	row.OwnMed = Median(owns)
+	row.CPUMed = Median(cpus)
 	if len(dbCPUs) > 0 {
-		m := median(dbCPUs)
+		m := Median(dbCPUs)
 		row.DBCPUMed = &m
 	}
 	if len(writes) > 0 {
-		m := median(writes)
+		m := Median(writes)
 		row.WriteMBMed = &m
 	}
 	return row
@@ -408,7 +408,9 @@ func larger(a, b *float64) *float64 {
 	return &v
 }
 
-func median(v []float64) float64 {
+// Median returns the median of v, sorting v in place. The caller must pass a
+// non-empty slice.
+func Median(v []float64) float64 {
 	slices.Sort(v)
 	n := len(v)
 	if n%2 == 1 {

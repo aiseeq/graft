@@ -103,7 +103,7 @@ func TestMedian(t *testing.T) {
 		in   []float64
 		want float64
 	}{{[]float64{3, 1, 2}, 2}, {[]float64{4, 1, 3, 2}, 2.5}, {[]float64{7}, 7}} {
-		if got := median(c.in); got != c.want {
+		if got := Median(c.in); got != c.want {
 			t.Errorf("median(%v) = %v, want %v", c.in, got, c.want)
 		}
 	}

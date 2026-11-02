@@ -310,6 +310,14 @@ ends, or `load.settle` expires. A gate without such a step waits here whole. A h
 whose path breaks is said and rerun here under that admission, and the
 gate's later go steps run here too. A gate whose host does not answer waits
 here whole and says why.
+For each eligible step, graft compares the median wall time of its last up to
+five successful local runs of the same profile and step with the minimum wall
+time of the last up to five successful host steps for this tree. When the
+local time is known and less than the host time, the step stays here and says
+`cheaper here`; otherwise it goes to the host. If no host time is known, the
+first eligible step is a probe, and later steps in the same gate use its
+measured wall time. If every eligible step stays here, the gate waits here
+whole instead of splitting.
 Each heavy task
 says where it runs, `graft: build: heavy, on pc`, or why it stays here and
 queues as before, `graft: build: heavy, on this machine: <why>`:
