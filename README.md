@@ -402,7 +402,7 @@ stats` (`wait_s`).
 | `graft locks` | who holds graft's locks |
 | `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |
 | `graft worktree add [--trunk <ref>] <branch> [<base>]` | a worktree under the user's cache, go.work's neighbours linked (see Worktrees) |
-| `graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h]` | remove the worktrees and branches whose work is in the trunk by content; list the rest |
+| `graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h] [--in <directory>]...` | remove the worktrees and branches whose work is in the trunk by content; list the rest |
 | `graft worktree sync [--trunk <ref>]` | move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted (see Worktrees) |
 | `graft tools [install]` | check the pinned tools; install the failing ones |
 | `graft gocache trim [--older 25h] [--apply] [--max-wait 30m]` | remove the Go build cache entries unused for longer than `--older` (see [Go build cache](#go-build-cache)) |
@@ -2261,6 +2261,17 @@ the trunk:
 - the rest is listed: `unmerged` with the lines or conflicts it adds, and
   `check` when its commit subjects are all in the trunk but its content is
   not: it looks merged, a look decides.
+- `--in <directory>` (repeatable) checks immediate subdirectories in
+  alphabetical order when each has `.graft.yaml` and a `.git` directory;
+  worktree directories and other entries are skipped. It cannot be combined
+  with `--trunk`, since each repository chooses its own trunk. Each repository
+  has a heading and the final line reports repositories, removed worktrees and
+  branches, items to check, and failures. A failed repository is listed and
+  does not stop the scan; the command exits 1 if any failed, otherwise 0.
+- An in-progress rebase, merge, cherry-pick, or revert leaves the worktree
+  listed as `in work`. A non-waiting lock in the common git directory prevents
+  two clean runs from changing one repository at once; a repository already
+  being cleaned is listed as `skipped` and does not fail the command.
 - with `--apply`, the golangci-lint caches (see Tasks) of work trees that
   are gone, in any repository, are removed too.
 
@@ -2300,6 +2311,27 @@ reports what remains for the next run. Without `--apply` it reports the
 would-be removals immediately. Run it daily from a timer, for instance a
 systemd user unit with `ExecStart=` the absolute path of graft and `gocache
 trim --apply`, and `OnCalendar=daily`: systemd does not look in `~/bin`.
+For all repositories directly under a directory, a systemd user service and
+timer can run clean daily:
+
+```ini
+# ~/.config/systemd/user/graft-worktree-clean.service
+[Service]
+Type=oneshot
+ExecStart=/absolute/path/graft worktree clean --apply --in %h/projects
+Nice=10
+IOSchedulingClass=idle
+```
+
+```ini
+# ~/.config/systemd/user/graft-worktree-clean.timer
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
 
 ## Development
 

@@ -59,6 +59,27 @@ func Acquire(ctx context.Context, path string, timeout time.Duration, holder str
 	return AcquireMode(ctx, path, Exclusive, timeout, holder, log)
 }
 
+// TryAcquire takes the exclusive lock without waiting. A nil lock and nil
+// error means another process holds it.
+func TryAcquire(path, holder string) (*Lock, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("creating the lock directory: %w", err)
+	}
+	fl := flock.New(path)
+	ok, err := fl.TryLock()
+	if err != nil {
+		return nil, fmt.Errorf("locking %s: %w", path, err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	noteLock, note, err := createLive(filepath.Dir(path), filepath.Base(path)+".*.lholder", fmt.Appendf(nil, "%s (write), pid %d, since %s", holder, os.Getpid(), time.Now().Format(time.RFC3339)))
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("writing lock holder note: %w", err), fl.Unlock())
+	}
+	return &Lock{fl: fl, noteLock: noteLock, note: note}, nil
+}
+
 // AcquireFIFOObserved also lets a waiter classify intervals while it is
 // behind the queue head. The callback returns true when the head's blocker
 // is quiet mode. Tickets are shared by processes through live files next to

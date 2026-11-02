@@ -537,7 +537,7 @@ func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
 }
 
 func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := fmt.Errorf("%w: graft worktree add [--trunk <ref>] <branch> [<base>] | clean [--apply] [--trunk <ref>] [--min-age 1h] | sync [--trunk <ref>]", errUsage)
+	usage := fmt.Errorf("%w: graft worktree add [--trunk <ref>] <branch> [<base>] | clean [--apply] [--trunk <ref>] [--min-age 1h] [--in <directory>]... | sync [--trunk <ref>]", errUsage)
 	switch {
 	case len(args) > 0 && args[0] == "sync":
 		fs := newFlags(a, "worktree sync")
@@ -575,6 +575,7 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 	fs.BoolVar(&o.Apply, "apply", false, "remove; without it only report")
 	fs.StringVar(&o.Trunk, "trunk", "", "the ref work must be in (default: the HEAD branch of the deploy remote or of the only remote)")
 	fs.DurationVar(&o.MinAge, "min-age", time.Hour, "leave alone a worktree or branch used more recently")
+	fs.Var((*stringListFlag)(&o.In), "in", "clean repositories in the immediate subdirectories (repeatable)")
 	pos, err := parseInterspersed(fs, args[1:])
 	if err != nil {
 		return err
@@ -584,6 +585,11 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 	}
 	return a.WorktreeClean(o)
 }
+
+type stringListFlag []string
+
+func (s *stringListFlag) String() string         { return strings.Join(*s, ",") }
+func (s *stringListFlag) Set(value string) error { *s = append(*s, value); return nil }
 
 // execSyntax is graft exec's usage, in its error and in graft help.
 const execSyntax = "graft exec [--heavy [--local] [--env <name>]... [--settle <duration>] [--cores <n>] [--memory-max <value>]] -- <command> [args]"
