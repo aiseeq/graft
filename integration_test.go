@@ -1191,15 +1191,16 @@ func TestFileModeReleaseAndTagOnCommit(t *testing.T) {
 	if got := f.gitIn(f.remote("origin"), "tag", "--list"); got != "v0.9.1" {
 		t.Errorf("tag_on_commit: remote tags %q", got)
 	}
-	if out, code := f.graft("", "release"); code == 0 || !strings.Contains(out, "already exists") {
+	if out, code := f.graft("", "release"); code == 0 || !strings.Contains(out, "HEAD is already released as v0.9.1") {
 		t.Errorf("release of a tagged version: exit %d\n%s", code, out)
 	}
-	f.mustGraft("release", "--minor")
-	if got := f.read("VERSION"); got != "0.10.0\n" {
-		t.Errorf("release --minor VERSION = %q", got)
+	// Every commit is released already under tag_on_commit: a step is
+	// taken by the commit of the change (graft commit --minor).
+	if out, code := f.graft("", "release", "--minor"); code == 0 || !strings.Contains(out, "HEAD is already released as v0.9.1") {
+		t.Errorf("release --minor of a tagged commit: exit %d\n%s", code, out)
 	}
-	if got := f.gitIn(f.remote("origin"), "tag", "--list"); got != "v0.10.0\nv0.9.1" {
-		t.Errorf("release --minor remote tags = %q", got)
+	if got := f.gitIn(f.remote("origin"), "tag", "--list"); got != "v0.9.1" {
+		t.Errorf("remote tags after the refusal = %q", got)
 	}
 }
 

@@ -518,6 +518,9 @@ func planBump(repo *gitx.Repo, cfg *config.Config, level version.Level, branch s
 		if err != nil {
 			return plan, err
 		}
+		if raised && level != version.Patch {
+			return plan, fmt.Errorf("--%s: %s is %s already, raised above HEAD's version before the commit; commit without --%s to keep it, or put the version back", level, cfg.Version.File, current, level)
+		}
 		if raised {
 			next, plan.raised = current, true
 		} else {
@@ -543,7 +546,11 @@ func planBump(repo *gitx.Repo, cfg *config.Config, level version.Level, branch s
 // of raising it again. In a merge, a version one of the merged commits already
 // has came with the merge and is bumped as usual.
 func raisedBeforeCommit(repo *gitx.Repo, cfg *config.Config, current version.Semver) (bool, error) {
-	head, found, err := fileVersionAtHeadIfPresent(repo, cfg)
+	hasHead, err := repo.HasHead()
+	if err != nil || !hasHead {
+		return false, err
+	}
+	head, found, err := versionInRev(repo, cfg, "HEAD")
 	if err != nil || !found || !head.Less(current) {
 		return false, err
 	}
@@ -556,33 +563,44 @@ func raisedBeforeCommit(repo *gitx.Repo, cfg *config.Config, current version.Sem
 		return false, fmt.Errorf("reading MERGE_HEAD: %w", err)
 	}
 	for sha := range strings.FieldsSeq(string(raw)) {
-		theirs, err := fileVersionAt(repo, cfg, sha)
+		theirs, found, err := versionInRev(repo, cfg, sha)
 		if err != nil {
-			// A merged commit without a readable version file did not bring
-			// the version.
-			continue
+			return false, err
 		}
-		if theirs == current {
+		if found && theirs == current {
 			return false, nil
 		}
 	}
 	return true, nil
 }
 
-func fileVersionAtHeadIfPresent(repo *gitx.Repo, cfg *config.Config) (version.Semver, bool, error) {
-	hasHead, err := repo.HasHead()
-	if err != nil || !hasHead {
-		return version.Semver{}, false, err
-	}
-	out, err := repo.Git("ls-tree", "-r", "--name-only", "HEAD", "--", cfg.Version.File)
+// versionInRev is the version the version file holds in rev. found is false
+// when rev has no version file or the file holds no version (broken in that
+// commit): such a commit has no version to raise from or to bring along.
+func versionInRev(repo *gitx.Repo, cfg *config.Config, rev string) (version.Semver, bool, error) {
+	out, err := repo.Git("ls-tree", "-r", "--name-only", rev, "--", cfg.Version.File)
 	if err != nil {
 		return version.Semver{}, false, err
 	}
 	if strings.TrimSpace(out) == "" {
 		return version.Semver{}, false, nil
 	}
-	v, err := fileVersionAt(repo, cfg, "HEAD")
-	return v, err == nil, err
+	content, err := repo.ShowFile(rev, cfg.Version.File)
+	if err != nil {
+		return version.Semver{}, false, err
+	}
+	raw, err := version.Targets(cfg.Version)[0].Extract(content)
+	if err != nil {
+		return version.Semver{}, false, fmt.Errorf("reading the version of %s: %w", rev, err)
+	}
+	if !version.IsFile(raw) {
+		return version.Semver{}, false, nil
+	}
+	v, err := version.ParseFile(raw)
+	if err != nil {
+		return version.Semver{}, false, fmt.Errorf("reading the version of %s: %w", rev, err)
+	}
+	return v, true, nil
 }
 
 // apply writes the new version; without a bump the backup is empty.

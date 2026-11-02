@@ -248,7 +248,14 @@ func (a *App) Release(ctx context.Context, opts ReleaseOptions) error {
 		}
 		if exists {
 			if cfg.Version.Mode == config.ModeFile {
-				return fmt.Errorf("tag %s already exists: use graft release --patch, --minor or --major for the next version", tag)
+				released, err := releasedAs(repo, cfg.Version.TagPrefix)
+				if err != nil {
+					return err
+				}
+				if released != "" {
+					return fmt.Errorf("HEAD is already released as %s: commit the change first", released)
+				}
+				return fmt.Errorf("tag %s already exists on an earlier commit: use graft release --patch, --minor or --major for the next version", tag)
 			}
 			return fmt.Errorf("tag %s already exists", tag)
 		}
@@ -475,6 +482,13 @@ func (a *App) releaseFileCommitLocked(ctx context.Context, repo *gitx.Repo, cfg 
 	if !clean {
 		return errors.New("the work tree is dirty; run graft commit first")
 	}
+	released, err := releasedAs(repo, cfg.Version.TagPrefix)
+	if err != nil {
+		return err
+	}
+	if released != "" {
+		return fmt.Errorf("HEAD is already released as %s: commit the change first; a new version of the same code ships nothing new", released)
+	}
 	plan, err := planBump(repo, cfg, opts.Level, branch)
 	if err != nil {
 		return err
@@ -495,10 +509,14 @@ func (a *App) releaseFileCommitLocked(ctx context.Context, repo *gitx.Repo, cfg 
 		return err
 	}
 	plan.tag = tag
-	commit := commitPlan{branch: branch, remotes: remotes, message: "chore(release): " + tag, bump: plan, bumpBeforeGate: true, release: true}
-	if err := a.raiseOwnModules(ctx, repo, cfg, branch); err != nil {
-		return err
+	msg := "chore(release): " + tag
+	if cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, branch) {
+		msg = commitmessage.WithKey(msg, commitmessage.BranchKey(branch, cfg.Ticket.Regexp))
 	}
+	// The release commit carries the version files only: it ships the code
+	// that was committed and gated, so its own modules are not raised here
+	// (the next graft commit raises them), and a refusal leaves nothing behind.
+	commit := commitPlan{branch: branch, remotes: remotes, message: msg, bump: plan, bumpBeforeGate: true, release: true}
 	return a.commit(ctx, repo, cfg, commit)
 }
 
@@ -506,16 +524,28 @@ func (a *App) releaseFileCommitLocked(ctx context.Context, repo *gitx.Repo, cfg 
 // version tag: release run again after a commit that failed would publish
 // the same code under a new version.
 func requireUnreleased(repo *gitx.Repo, prefix string) error {
-	out, err := repo.Git("tag", "--points-at", "HEAD", "--list", prefix+"*")
+	released, err := releasedAs(repo, prefix)
 	if err != nil {
 		return err
 	}
-	for tag := range strings.FieldsSeq(out) {
-		if version.IsPlain(strings.TrimPrefix(tag, prefix)) {
-			return fmt.Errorf("HEAD is already released as %s: commit the change first, or pass --version to tag the same commit again", tag)
-		}
+	if released != "" {
+		return fmt.Errorf("HEAD is already released as %s: commit the change first, or pass --version to tag the same commit again", released)
 	}
 	return nil
+}
+
+// releasedAs is the version tag HEAD carries already, "" for none.
+func releasedAs(repo *gitx.Repo, prefix string) (string, error) {
+	out, err := repo.Git("tag", "--points-at", "HEAD", "--list", prefix+"*")
+	if err != nil {
+		return "", err
+	}
+	for tag := range strings.FieldsSeq(out) {
+		if version.IsPlain(strings.TrimPrefix(tag, prefix)) {
+			return tag, nil
+		}
+	}
+	return "", nil
 }
 
 // latestTag finds the highest MAJOR.MINOR.PATCH tag reachable from HEAD.

@@ -85,6 +85,7 @@ func TestReleaseFileRefusalsAreAtomic(t *testing.T) {
 		{name: "build branch", branch: "build/one", flag: "--minor", want: "version.build_branches"},
 		{name: "existing next tag", flag: "--minor", setup: "next-tag", want: "tag v0.8.0 already exists"},
 		{name: "gate failure", flag: "--minor", setup: "gate-fail", want: "gate"},
+		{name: "released head", flag: "--minor", setup: "released", want: "HEAD is already released as v0.7.0"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,6 +104,11 @@ func TestReleaseFileRefusalsAreAtomic(t *testing.T) {
 			}
 			if tc.setup == "next-tag" {
 				f.git("tag", "v0.8.0")
+				f.write("later.txt", "later\n")
+				f.mustPlainCommit("feat: later")
+			}
+			if tc.setup == "released" {
+				f.git("tag", "v0.7.0")
 			}
 			beforeVersion, beforePackage := f.read("VERSION"), f.read("package.json")
 			beforeHead := f.git("rev-parse", "HEAD")
@@ -122,6 +128,11 @@ func TestReleaseFileRefusalsAreAtomic(t *testing.T) {
 func TestReleaseFileWithoutStepExplainsNextStep(t *testing.T) {
 	f := fileReleaseRepo(t, false, "gate: []\n")
 	f.git("tag", "v0.7.0")
+	if out, code := f.graft("", "release"); code == 0 || !strings.Contains(out, "HEAD is already released as v0.7.0") {
+		t.Fatalf("release of a released HEAD: exit %d\n%s", code, out)
+	}
+	ffFeature(t, f)
+	f.git("push", "-q", "origin", "main")
 	if out, code := f.graft("", "release"); code == 0 || !strings.Contains(out, "--minor") {
 		t.Fatalf("release existing HEAD version: exit %d\n%s", code, out)
 	}
@@ -240,4 +251,82 @@ func TestRaisedVersionChecksSyncAndMerges(t *testing.T) {
 			t.Fatalf("merge with a bump before the commit:\n%s\npackage.json %q", out, f.read("package.json"))
 		}
 	})
+}
+
+// TestReleaseFileEdges: a second release of the same code is refused, a step
+// on a version raised before the commit is refused, a version file HEAD
+// cannot read does not stop a commit, the release takes the branch's key and
+// keeps the module versions.
+func TestReleaseFileEdges(t *testing.T) {
+	t.Run("second release of the same code", func(t *testing.T) {
+		f := fileReleaseRepo(t, false, "gate: []\n")
+		ffFeature(t, f)
+		f.mustGraft("release", "--minor")
+		head := f.git("rev-parse", "HEAD")
+		if out, code := f.graft("", "release", "--minor"); code == 0 || !strings.Contains(out, "HEAD is already released as v0.8.0") {
+			t.Fatalf("second release: exit %d\n%s", code, out)
+		}
+		if f.git("rev-parse", "HEAD") != head || f.git("tag", "-l") != "v0.8.0" {
+			t.Fatalf("second release changed HEAD or tags: %s", f.git("tag", "-l"))
+		}
+	})
+	t.Run("step on a raised version", func(t *testing.T) {
+		f := fileReleaseRepo(t, false, "gate: []\n")
+		f.mustGraft("version", "bump")
+		f.write("a.txt", "a\n")
+		if out, code := f.graft("", "commit", "--minor", "-m", "feat: a"); code == 0 || !strings.Contains(out, "raised above HEAD's version") {
+			t.Fatalf("--minor on a raised version: exit %d\n%s", code, out)
+		}
+	})
+	t.Run("unreadable version in HEAD", func(t *testing.T) {
+		f := fileReleaseRepo(t, false, "gate: []\n")
+		f.write("VERSION", "garbage\n")
+		f.mustPlainCommit("chore: break the version")
+		f.write("VERSION", "0.7.0\n")
+		if out := f.mustGraft("commit", "-m", "fix: repair the version"); !strings.Contains(out, "version 0.7.1") || strings.Contains(out, "raised before") {
+			t.Fatalf("repair of an unreadable version:\n%s", out)
+		}
+	})
+	t.Run("tag_on_commit makes one tag", func(t *testing.T) {
+		f := fileReleaseRepo(t, true, "gate: []\n")
+		ffFeature(t, f)
+		f.mustGraft("release", "--minor")
+		if got := f.git("tag", "-l"); got != "v0.8.0" {
+			t.Fatalf("tags = %q", got)
+		}
+		if got := f.gitIn(f.remote("origin"), "tag", "-l"); got != "v0.8.0" {
+			t.Fatalf("origin tags = %q", got)
+		}
+	})
+	t.Run("branch key", func(t *testing.T) {
+		f := newRepo(t, map[string]string{
+			".graft.yaml": "schema: 1\nversion: {mode: file}\nticket: {pattern: 'PROJ-[0-9]+'}\ngate: []\n",
+			"VERSION":     "0.7.0\n",
+		}, "origin")
+		f.mustPlainCommit("chore: initial")
+		f.git("branch", "-M", "PROJ-12-trunk")
+		f.git("push", "-u", "origin", "PROJ-12-trunk")
+		f.mustGraft("release", "--minor")
+		if got := f.git("show", "-s", "--format=%B", "HEAD"); !strings.HasPrefix(got, "chore(release): v0.8.0\n") || !strings.Contains(got, "PROJ-12") {
+			t.Fatalf("release message = %q", got)
+		}
+	})
+}
+
+// TestReleaseFileKeepsModules: the release commit carries the version files
+// only; the next graft commit raises the project's own modules.
+func TestReleaseFileKeepsModules(t *testing.T) {
+	skipGoToolchainInShort(t)
+	f := modulesRepo(t, modulesProxy(t), latestConfig, "Old")
+	f.mustPlainCommit("chore: module sums")
+	out := f.mustGraft("release", "--minor")
+	if strings.Contains(out, " -> v0.2.0") {
+		t.Errorf("release raised modules:\n%s", out)
+	}
+	if line := requireLine(t, f.git("show", "HEAD:go.mod"), ownLib); !strings.HasSuffix(line, " v0.1.0") {
+		t.Errorf("released go.mod: %q", line)
+	}
+	if got := f.git("show", "--name-only", "--format=", "HEAD"); strings.Contains(got, "go.mod") {
+		t.Errorf("release commit files:\n%s", got)
+	}
 }

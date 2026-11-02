@@ -60,6 +60,9 @@ func ParseBuild(s string) (Semver, error) {
 
 var fileRe = regexp.MustCompile(`^((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))(?:\.([1-9][0-9]*))?$`)
 
+// IsFile reports whether s has the shape of what ParseFile accepts.
+func IsFile(s string) bool { return fileRe.MatchString(s) }
+
 // ParseFile accepts what a version file holds: MAJOR.MINOR.PATCH, or
 // MAJOR.MINOR.PATCH.BUILD with BUILD from 1 on a build branch.
 func ParseFile(s string) (Semver, error) {
