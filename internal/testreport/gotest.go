@@ -87,24 +87,37 @@ func NewGoTest(out io.Writer, verbose bool) *GoTest {
 // emitted a run event. Invalid expressions are left for go test to report.
 func (g *GoTest) CheckRunWords(words []string) {
 	value, ok := goTestRun(words)
-	if !ok {
+	if !ok || !simpleRunPattern(value) {
 		return
 	}
-	parts, valid := splitRunPattern(value, '/')
-	if !valid || len(parts) == 0 {
+	alternatives, valid := splitRunPatternAlternatives(value)
+	if !valid || len(alternatives) == 0 {
 		return
 	}
-	parts, valid = splitRunPatternAlternatives(parts[0])
-	if !valid {
-		return
-	}
-	for _, part := range parts {
+	for _, alternative := range alternatives {
+		parts, valid := splitRunPattern(alternative, '/')
+		if !valid || len(parts) == 0 {
+			return
+		}
+		part := parts[0]
 		re, valid := compileRunRegexp(part)
 		if !valid || re.MatchString("") {
 			continue
 		}
 		g.runAlts = append(g.runAlts, runAlternative{name: part, re: re})
 	}
+}
+
+func simpleRunPattern(pattern string) bool {
+	for i := 0; i < len(pattern); i++ {
+		c := pattern[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+			strings.ContainsRune("_-.^$*+?()|/{}", rune(c)) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func compileRunRegexp(pattern string) (*regexp.Regexp, bool) {
@@ -243,16 +256,15 @@ func (g *GoTest) Reason() string {
 			reasons = append(reasons, run.Package+": "+run.Reason)
 		}
 	}
-	missing := g.MissingRunNames()
-	if len(missing) > 0 {
-		reasons = append(reasons, "-run names "+strings.Join(missing, ", ")+", which no package ran")
-	}
 	return stats.LimitReason(strings.Join(reasons, "\n"))
 }
 
 // MissingRunNames returns the original spellings of alternatives without a
 // matching top-level run event.
 func (g *GoTest) MissingRunNames() []string {
+	if g.events == 0 {
+		return nil
+	}
 	for i := range g.runs {
 		run := &g.runs[i]
 		if run.Result == stats.ResultFail || run.Result == stats.ResultBuildFail {

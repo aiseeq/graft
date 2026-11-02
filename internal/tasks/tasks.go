@@ -1542,6 +1542,7 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	env = r.heavyEnv(env, t, threads)
 	var cmd *exec.Cmd
 	var words []string
+	directGoTest := false
 	if s.Shell != "" {
 		line, err := envs.ShellArgs(s.Shell, args, nil)
 		if err != nil {
@@ -1557,6 +1558,7 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		if argv, env, err = trimRun(ctx, r.taskDir(t), argv, env, r.frames[len(r.frames)-1].remote); err != nil {
 			return err
 		}
+		directGoTest = isDirectGoTest(argv)
 		cmd = exec.CommandContext(ctx, argv[0], argv[1:]...)
 		words = argv
 	}
@@ -1573,7 +1575,7 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	}
 	switch t.Tests {
 	case config.TestsGo:
-		return r.goTestStep(cmd, s.Source, t.Tests, words, &remoteStderr)
+		return r.goTestStep(cmd, s.Source, t.Tests, words, directGoTest, &remoteStderr)
 	case config.TestsJest, config.TestsPlaywright:
 		err := r.reportFileStep(cmd, s.Source, t.Tests, report, &remoteStderr)
 		r.noteBrokenRemote(cmd, err, remoteStderr.String())
@@ -1582,6 +1584,10 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	_, err = r.measureWithCapture(cmd, s.Source, true, &remoteStderr)
 	r.noteBrokenRemote(cmd, err, remoteStderr.String())
 	return err
+}
+
+func isDirectGoTest(argv []string) bool {
+	return len(argv) >= 2 && argv[0] == "go" && argv[1] == "test"
 }
 
 func (r *Runner) noteBrokenRemote(cmd *exec.Cmd, err error, stderr string) {
@@ -1886,10 +1892,12 @@ func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
 
 // goTestStep runs a step of a tests: go task: its stdout is go test -json,
 // parsed into the tests journal and the reason of its stats line.
-func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string, remoteStderr *bytes.Buffer) error {
+func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string, directGoTest bool, remoteStderr *bytes.Buffer) error {
 	tree := r.treeID()
 	report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
-	report.CheckRunWords(words)
+	if directGoTest {
+		report.CheckRunWords(words)
+	}
 	cmd.Stdout = report
 	// The stats line takes its reason from the parsed stream, so the report
 	// closes before it is written; a step that never got there (it did not
@@ -1897,11 +1905,24 @@ func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string
 	var runs []stats.PackageRun
 	var cerr error
 	closed := false
+	missingRunFailure := false
 	use, err := r.measureGoTest(cmd, source, remoteStderr, func() string {
 		closed = true
 		runs, cerr = report.Close()
-		return report.Reason()
-	}, func() bool { return len(report.MissingRunNames()) > 0 })
+		reason := report.Reason()
+		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0 {
+			if missing := report.MissingRunNames(); len(missing) > 0 {
+				if reason != "" {
+					reason += "\n"
+				}
+				reason += "-run names " + strings.Join(missing, ", ") + ", which no package ran"
+			}
+		}
+		return reason
+	}, func() bool {
+		missingRunFailure = len(report.MissingRunNames()) > 0
+		return missingRunFailure
+	})
 	if !closed {
 		runs, cerr = report.Close()
 	}
@@ -1912,7 +1933,8 @@ func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string
 	if report.Events() == 0 && strings.Contains(source, "go test") {
 		fmt.Fprintf(r.Stderr, "graft: %s: the task has tests: go, but go test printed no -json events; pass -json to it\n", r.frames[len(r.frames)-1].task)
 	}
-	if missing := report.MissingRunNames(); len(missing) > 0 {
+	if missingRunFailure {
+		missing := report.MissingRunNames()
 		fmt.Fprintf(r.Stderr, "graft: -run names %s, which no package ran\n", strings.Join(missing, ", "))
 	}
 	r.recordTests(runs, tree, runner, use)
@@ -1984,7 +2006,8 @@ func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, 
 		sourceReason = reasonSource()
 	}
 	reason := stepFailureReason(sourceReason, stderr, stdout, code)
-	code, err = failGoTestStepOnMissingRunNames(missingRunNames != nil && missingRunNames(), sourceReason, code, err)
+	missing := successfulGoTestHasMissingRunNames(code, err, missingRunNames)
+	code, err = failGoTestStepOnMissingRunNames(missing, sourceReason, code, err)
 	if memoryErr != nil {
 		reason = memoryErr.Error()
 		if code == 0 {
@@ -1993,6 +2016,13 @@ func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, 
 	}
 	r.recordStep(source, use, code, reason)
 	return use, err
+}
+
+func successfulGoTestHasMissingRunNames(code int, err error, missingRunNames func() bool) bool {
+	if code != 0 || err != nil || missingRunNames == nil {
+		return false
+	}
+	return missingRunNames()
 }
 
 // failGoTestStepOnMissingRunNames fails a successful go test step only when

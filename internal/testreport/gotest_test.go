@@ -123,6 +123,9 @@ func TestGoTestRunAlternatives(t *testing.T) {
 		{"skipped", []string{"-run", "TestReal"}, []string{"TestReal"}, nil},
 		{"multiple packages", []string{"-run", "TestA|TestB"}, []string{"TestA", "TestB"}, nil},
 		{"nested alternatives", []string{"-run", "Test(A|B)"}, []string{"TestA"}, nil},
+		{"class syntax is not checked", []string{"-run", "Test[[:alpha:]]|TestB"}, []string{"TestB"}, nil},
+		{"space is not checked", []string{"-run", "Test A"}, []string{"Test A"}, nil},
+		{"alternatives before subtests", []string{"-run", "TestA/sub|TestGone"}, []string{"TestA"}, []string{"TestGone"}},
 		{"latest flag", []string{"-run", "TestGone", "-test.run=TestReal"}, []string{"TestReal"}, nil},
 	}
 	for _, tc := range cases {
@@ -143,6 +146,9 @@ func TestGoTestRunAlternatives(t *testing.T) {
 				events = append(events, fmt.Sprintf(`{"Action":%q,"Package":%q,"Test":%q}`, action, pkg, name))
 				events = append(events, fmt.Sprintf(`{"Action":"pass","Package":%q}`, pkg))
 			}
+			if len(tc.runs) == 0 {
+				events = append(events, `{"Action":"pass","Package":"m/one"}`)
+			}
 			if _, err := g.Write([]byte(strings.Join(events, "\n") + "\n")); err != nil {
 				t.Fatal(err)
 			}
@@ -153,6 +159,14 @@ func TestGoTestRunAlternatives(t *testing.T) {
 				t.Errorf("missing names = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestGoTestRunAlternativesIgnoredWithoutEvents(t *testing.T) {
+	g := NewGoTest(&strings.Builder{}, false)
+	g.CheckRunWords([]string{"-run", "TestGone"})
+	if got := g.MissingRunNames(); len(got) != 0 {
+		t.Fatalf("missing names without events = %v, want none", got)
 	}
 }
 

@@ -925,6 +925,70 @@ func TestGoTestPackagesFromArgs(t *testing.T) {
 	}
 }
 
+func TestGoTestRunCheckOnlyUsesDirectArgv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake go is a shell script")
+	}
+	f := tasksRepo(t, "tasks:\n  test:\n    tests: go\n    run:\n      - sh: \"go test -json -run '^TestGone$' ./...\"\n      - sh: go test -json -run TestGone ./...\n      - [sh, script.sh, -run, TestGone, --, go, test, -json, ./...]\n", map[string]string{"script.sh": strings.Join([]string{
+		`echo '{"Action":"run","Package":"projectA/pkg","Test":"TestReal"}'`,
+		`echo '{"Action":"pass","Package":"projectA/pkg","Test":"TestReal"}'`,
+		`echo '{"Action":"pass","Package":"projectA/pkg"}'`,
+	}, "\n") + "\n"})
+	fakeBin := t.TempDir()
+	goScript := strings.Join([]string{
+		"#!/bin/sh",
+		`echo '{"Action":"run","Package":"projectA/pkg","Test":"TestReal"}'`,
+		`echo '{"Action":"pass","Package":"projectA/pkg","Test":"TestReal"}'`,
+		`echo '{"Action":"pass","Package":"projectA/pkg"}'`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(goScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cache := shortCache(t)
+	f.env = []string{"PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"), "XDG_CACHE_HOME=" + cache, "LOCALAPPDATA=" + cache}
+	if out, code := f.graft("", "test"); code != 0 || strings.Contains(out, "-run names") {
+		t.Fatalf("shell or wrapper step was checked (exit %d):\n%s", code, out)
+	}
+}
+
+func TestGoTestRunCheckNeedsEventsAndSuccessfulProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake go is a shell script")
+	}
+	for _, tc := range []struct {
+		name, extra string
+		wantWarning bool
+	}{
+		{"no events", "NoEvents", true},
+		{"process failed", "ExitOne", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := tasksRepo(t, "tasks:\n  test:\n    tests: go\n    run: ['go test -json {args} ./...']\n", nil)
+			fakeBin := t.TempDir()
+			goScript := strings.Join([]string{
+				"#!/bin/sh",
+				`case "$*" in *NoEvents*) exit 0 ;; esac`,
+				`echo '{"Action":"run","Package":"projectA/pkg","Test":"TestReal"}'`,
+				`echo '{"Action":"pass","Package":"projectA/pkg","Test":"TestReal"}'`,
+				`echo '{"Action":"pass","Package":"projectA/pkg"}'`,
+				`case "$*" in *ExitOne*) exit 1 ;; esac`,
+			}, "\n") + "\n"
+			if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(goScript), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cache := shortCache(t)
+			f.env = []string{"PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"), "XDG_CACHE_HOME=" + cache, "LOCALAPPDATA=" + cache}
+			out, code := f.graft("", "test", "--", "-run", "TestGone", tc.extra)
+			if tc.name == "no events" && code != 0 || tc.name == "process failed" && code == 0 {
+				t.Fatalf("unexpected exit %d:\n%s", code, out)
+			}
+			if strings.Contains(out, "-run names") || strings.Contains(out, "go test printed no -json events") != tc.wantWarning {
+				t.Fatalf("unexpected run check message:\n%s", out)
+			}
+		})
+	}
+}
+
 // TestGoBuildsTrimPaths: go build, install, run and test in steps and in
 // graft exec get -trimpath, so the worktrees of a repository share the build
 // cache; go vet and go fix do not, and neither does a command whose words or
