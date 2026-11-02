@@ -173,3 +173,54 @@ func TestCommitReplacingAFolderIsNoErrorOfTheTakeBackCheck(t *testing.T) {
 		t.Errorf("a folder a file replaced: exit %d\n%s", code, out)
 	}
 }
+
+// TestCommitReplacingRecentFilesSilentlyIsATakeBack: a folder of a recent
+// commit's files that a symbolic link .gitignore does not ignore replaced, and
+// a file that an ignored folder replaced, are take-backs: the files are gone
+// from the commit.
+func TestCommitReplacingRecentFilesSilentlyIsATakeBack(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic links need privileges on windows")
+	}
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.write("VERSION", "1.0.1\n")
+	f.mustPlainCommit("feat: base")
+	f.write("notes/a.md", "a\n")
+	f.write("docs/b.md", "b\n")
+	f.mustPlainCommit("feat: notes and docs")
+	x := f.git("rev-parse", "HEAD")
+
+	if err := os.CopyFS(filepath.Join(f.work, "store"), os.DirFS(filepath.Join(f.work, "notes"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(f.work, "notes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("store", filepath.Join(f.work, "notes")); err != nil {
+		t.Fatal(err)
+	}
+	f.write(".gitignore", "/store/\n")
+	if out, code := f.graft("", "commit", "-m", "chore: notes through a link"); code == 0 || !strings.Contains(out, "notes/a.md: takes back "+x[:12]) {
+		t.Errorf("a folder an unignored link replaced: exit %d\n%s", code, out)
+	}
+	f.git("reset", "-q")
+	if err := os.Remove(filepath.Join(f.work, "notes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(f.work, "store"), filepath.Join(f.work, "notes")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Remove(filepath.Join(f.work, "docs", "b.md")); err != nil {
+		t.Fatal(err)
+	}
+	f.write("docs/b.md/keep", "k\n")
+	f.write(".gitignore", "/docs/b.md/\n")
+	if out, code := f.graft("", "commit", "-m", "chore: docs kept apart"); code == 0 || !strings.Contains(out, "docs/b.md: takes back "+x[:12]) {
+		t.Errorf("a file an ignored folder replaced: exit %d\n%s", code, out)
+	}
+}

@@ -3,7 +3,9 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -802,5 +804,30 @@ func TestProjectRemoteHeavyBrokenPathRunsHere(t *testing.T) {
 	out, code := f.graft("", "failing")
 	if code == 0 || strings.Contains(out, "path broken") || strings.Count(readFile(t, own), "exit 3") != 1 {
 		t.Errorf("a task failing on the host: exit %d, calls %q\n%s", code, readFile(t, own), out)
+	}
+}
+
+// TestProjectRemoteHeavyWithoutBrokenExitRunsNothingAgain: a project's
+// remote_heavy that names no broken_exit has none: a run exiting 125, the
+// command's own status as much as a broken path, is the task's failure, not
+// run here again.
+func TestProjectRemoteHeavyWithoutBrokenExitRunsNothingAgain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, overflowTasks)
+	own := filepath.Join(state, "own-calls")
+	writeFile(t, filepath.Join(state, "own.sh"), `echo "$*" >> "`+own+`"`+"\nexit 125\n")
+	f.write(".graft.yaml", strings.Replace(f.read(".graft.yaml"), "tasks:\n",
+		"remote_heavy: {host: box, up: [sh, -c, 'true'], run: [sh, "+yamlQuote(filepath.Join(state, "own.sh"))+"], threads: 4}\ntasks:\n", 1))
+	out, code := f.graft("", "sent")
+	if code == 0 || strings.Contains(out, "path broken") || strings.Count(readFile(t, own), "echo there") != 1 {
+		t.Errorf("exit %d, calls %q\n%s", code, readFile(t, own), out)
+	}
+	if _, err := os.Stat(filepath.Join(f.work, "out")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the task ran here: %v", err)
+	}
+	if lines := readBroken(t, state); len(lines) != 0 {
+		t.Errorf("remote-broken.jsonl: %+v", lines)
 	}
 }

@@ -242,7 +242,7 @@ remote_heavy:
   run: [scripts/remote.sh, run]        # runs the appended argv on the host from the work tree root; with {root}, from the step's directory
   threads: 16                    # {threads} and GRAFT_THREADS there; 0 leaves GRAFT_THREADS unset and refuses {threads}
   when: always                   # project default; user config defaults to busy
-  broken_exit: 125               # run's transport failure status
+  broken_exit: 125               # run's transport failure status; a project's has none unless named
 ```
 
 The project's `run` carries the tree to the host and runs the command there;
@@ -322,12 +322,18 @@ queues as before, `graft: build: heavy, on this machine: <why>`:
   by git, and the host has none of them;
 - `up` failed or timed out; its first line of output is in the reason.
 
-A `run` exit of `broken_exit`, from the user's host or the project's, and for
-a user-configured host an `up` failure too, means the transport path broke
-(a host queue that did not admit the step in time counts: a `run` may give
-up waiting and exit with it), so graft writes the reason and runs the task
-here through the heavy queue; a project host whose `up` fails keeps the task
-here as before. The same fallback applies to `graft exec --heavy`.
+A `run` exit of `broken_exit`, and for a user-configured host an `up`
+failure too, means the transport path broke (a host queue that did not admit
+the step in time counts: a `run` may give up waiting and exit with it), so
+graft writes the reason and runs the task here through the heavy queue; a
+project host whose `up` fails keeps the task here as before. The user's
+`broken_exit` defaults to 125; a project's `run` has none unless
+`broken_exit` names one. graft tells a broken path only by that status: a
+command that exits with it on the host, 125 of `graft exec`, `docker run`,
+`timeout` or `env`, is taken for one, and the task runs here again from its
+first step, the steps that ran there included. A project whose heavy steps
+must not run twice keeps `broken_exit` off or gives its `run` a status its
+commands never exit with. The same fallback applies to `graft exec --heavy`.
 It appends one JSON line per occurrence to
 `<user cache dir>/graft/remote-broken.jsonl`, beside `stats.jsonl`, with the
 time, project, task, host, reason and process/session identifiers. A different
@@ -2104,8 +2110,10 @@ up to date and release again.
   Moves, the version files and `exceptions` do not count, nor does a file
   taken out of the index that stays on disk and that `.gitignore` ignores
   (`git rm --cached` and a rule, as the hint for a committed file says), or
-  whose folder an ignored symbolic link replaced that still reaches it; a
-  folder a plain file replaced is taken back. A partial take-back, part of a commit's diff of a file, is not seen.
+  whose folder an ignored symbolic link replaced that still reaches it. A
+  file whose folder a plain file or a symbolic link .gitignore does not
+  ignore replaced, or that a folder replaced, is taken back: the commit loses
+  it. A partial take-back, part of a commit's diff of a file, is not seen.
 - **Leaks**: with `leaks` in the user config, a commit to a repository that
   has a remote under `public_remotes` is checked for private names in the
   lines it adds and in its message; a line the commit removes elsewhere,
@@ -2127,10 +2135,11 @@ up to date and release again.
   diff shows as text are checked (graft does not pass `--text`): a binary
   file, and a text file that `.gitattributes` marks `-diff` or `binary`, is
   skipped. A picture's metadata (PNG text chunks, EXIF, PDF XMP) is not
-  read either, unless the user's git config gives the file a `textconv`
-  diff driver: the check of a commit graft makes reads the staged diff, with
-  that driver's text, while the pre-push hook and `graft leaks` read the
-  commits' raw diff without it. Binary files meet the large files check
+  read either, unless the file has a diff driver with `textconv` (a `diff=`
+  attribute in `.gitattributes` and the driver's command in any git config,
+  the repository's too): the check of a commit graft makes reads the staged
+  diff with that driver's text, of any file it opens, while the pre-push
+  hook and `graft leaks` read the commits' raw diff without it. Binary files meet the large files check
   instead, in the checks of a commit graft makes (`graft commit`, `--amend`,
   `graft check`, the pre-commit hook): the pre-push hook and `graft leaks`
   do not run it.

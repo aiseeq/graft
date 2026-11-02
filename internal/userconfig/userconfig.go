@@ -296,7 +296,7 @@ func Load() (*Config, string, error) {
 		return nil, path, err
 	}
 	if cfg.RemoteHeavy != nil {
-		if err := cfg.RemoteHeavy.Normalize("busy"); err != nil {
+		if err := cfg.RemoteHeavy.Normalize("busy", config.DefaultBrokenExit); err != nil {
 			return nil, path, err
 		}
 	}

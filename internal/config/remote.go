@@ -28,7 +28,9 @@ type RemoteHeavy struct {
 	// machine is busy. Project settings default to always.
 	When string `yaml:"when"`
 	// BrokenExit is the exit status run uses when it could not carry a
-	// command to the host.
+	// command to the host; graft then runs the task here. The user's
+	// settings default to DefaultBrokenExit; a project's run has none
+	// unless it names one, 0 standing for none.
 	BrokenExit int `yaml:"broken_exit"`
 }
 
@@ -41,13 +43,13 @@ const RootPlaceholder = "{root}"
 const DefaultBrokenExit = 125
 
 // Normalize fills an unset when with defaultWhen and an unset broken_exit
-// with DefaultBrokenExit, then validates r.
-func (r *RemoteHeavy) Normalize(defaultWhen string) error {
+// with defaultBroken, then validates r.
+func (r *RemoteHeavy) Normalize(defaultWhen string, defaultBroken int) error {
 	if r.When == "" {
 		r.When = defaultWhen
 	}
 	if r.BrokenExit == 0 {
-		r.BrokenExit = DefaultBrokenExit
+		r.BrokenExit = defaultBroken
 	}
 	return ValidateRemoteHeavy(r)
 }
@@ -80,5 +82,8 @@ func (c *Config) validateRemoteHeavy() error {
 	if r == nil {
 		return nil
 	}
-	return r.Normalize("always")
+	// A project's command may exit 125 of its own, as graft exec, docker run
+	// or timeout do: the fallback here, which runs the task again, is the
+	// project's to ask for.
+	return r.Normalize("always", 0)
 }

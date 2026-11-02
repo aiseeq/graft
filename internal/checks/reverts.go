@@ -47,6 +47,10 @@ func Reverts(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, message
 	if err != nil {
 		return nil, err
 	}
+	linked, err := behindLinks(repo, strings.TrimSpace(tree), staged)
+	if err != nil {
+		return nil, err
+	}
 	tmp, err := os.MkdirTemp("", "graft-reverts-")
 	if err != nil {
 		return nil, fmt.Errorf("a directory for the revert check: %w", err)
@@ -67,7 +71,7 @@ func Reverts(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, message
 			if !slices.Contains(staged, f) || strings.Contains(message, f) {
 				continue
 			}
-			back, err := takesBack(repo, c, f, now, before, base)
+			back, err := takesBack(repo, c, f, now, before, base, linked[f])
 			if err != nil {
 				return nil, err
 			}
@@ -178,6 +182,9 @@ func pathOnDisk(root, f string) (string, error) {
 			return "", fmt.Errorf("%s: %w", f, err)
 		}
 		if i == len(parts)-1 {
+			if info.IsDir() {
+				return "", nil // a folder where the file was: the file is gone
+			}
 			return f, nil
 		}
 		if info.Mode()&fs.ModeSymlink != 0 {
@@ -195,6 +202,53 @@ func pathOnDisk(root, f string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// behindLinks are the files whose folder, or a folder above it, is a
+// symbolic link in tree.
+func behindLinks(repo *gitx.Repo, tree string, files []string) (map[string]bool, error) {
+	var folders []string
+	seen := map[string]bool{}
+	for _, f := range files {
+		for i := strings.Index(f, "/"); i > 0; i = nextSlash(f, i) {
+			if d := f[:i]; !seen[d] {
+				seen[d] = true
+				folders = append(folders, d)
+			}
+		}
+	}
+	links := map[string]bool{}
+	for chunk := range slices.Chunk(folders, 500) {
+		out, err := repo.Git(append([]string{"ls-tree", "-z", tree, "--"}, chunk...)...)
+		if err != nil {
+			return nil, fmt.Errorf("the staged tree's folders of the removed files: %w", err)
+		}
+		for entry := range strings.SplitSeq(out, "\x00") {
+			meta, path, ok := strings.Cut(entry, "\t")
+			if ok && strings.HasPrefix(meta, "120000 ") {
+				links[path] = true
+			}
+		}
+	}
+	behind := map[string]bool{}
+	for _, f := range files {
+		for i := strings.Index(f, "/"); i > 0; i = nextSlash(f, i) {
+			if links[f[:i]] {
+				behind[f] = true
+				break
+			}
+		}
+	}
+	return behind, nil
+}
+
+// nextSlash is the index of the next "/" in f after i, -1 when there is none.
+func nextSlash(f string, i int) int {
+	j := strings.Index(f[i+1:], "/")
+	if j < 0 {
+		return -1
+	}
+	return i + 1 + j
 }
 
 // recentCommit is a commit of the base's first-parent line with the files
@@ -237,7 +291,7 @@ func recentCommits(repo *gitx.Repo, depth int, base string) ([]recentCommit, err
 // with no context after it is anchored at the end of the file, so appending
 // to a file whose end repeats what the commit appended after lets the
 // commit's patch apply again, with nothing taken back.
-func takesBack(repo *gitx.Repo, c recentCommit, file, now, before, base string) (bool, error) {
+func takesBack(repo *gitx.Repo, c recentCommit, file, now, before, base string, behindLink bool) (bool, error) {
 	diff, err := repo.Git("diff", "--no-renames", "--no-ext-diff", "--binary", c.parent, c.sha, "--", file)
 	if err != nil || diff == "" {
 		return false, err
@@ -259,8 +313,13 @@ func takesBack(repo *gitx.Repo, c recentCommit, file, now, before, base string) 
 		}
 		return false, err
 	}
-	if ok, err := fits(now); err != nil || !ok {
-		return false, err
+	// A file whose folder a symbolic link replaced in the staged tree is gone
+	// from it, whatever the commit did to it; git apply refuses a path beyond
+	// a link, which is no conflict with the staged change.
+	if !behindLink {
+		if ok, err := fits(now); err != nil || !ok {
+			return false, err
+		}
 	}
 	ok, err := fits(before)
 	return !ok, err
