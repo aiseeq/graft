@@ -57,7 +57,7 @@ var commands = []command{
 		"graft deploy versions",
 		"graft deploy cutoff <target>",
 		"graft deploy sweep <target> [--apply]",
-		"graft deploy handover <target>",
+		"graft deploy handover <target> [--glint-ticket KEY]",
 		"graft deploy check-head",
 		"graft deploy check-integrations [build]",
 	), summary: text("run the project's deploy script between graft's checks; status, logs, what a deploy would refuse, the versions the targets run, the release cutoff, the items git and the target contradict, the items held for their comment"),
@@ -86,7 +86,7 @@ var commands = []command{
 		details: "--failures lists failed runs newest first with time, project tree, task, step, exit code and the captured reason; filter it with --task, --since, --project or --all, and --in <task> with --task."},
 	{name: "status", syntax: fixed("graft status"), summary: text("show services, the test database and held locks")},
 	{name: "locks", syntax: fixed("graft locks"), summary: text("show who holds graft's locks")},
-	{name: "testdb", syntax: fixed("graft testdb (up|down|status|recreate)"), summary: text("manage the disposable test PostgreSQL in docker"),
+	{name: "testdb", syntax: fixed(app.TestDBUsage()), summary: text("manage the disposable test PostgreSQL in docker"),
 		applies: func(c *config.Config) bool { return c.TestDB != nil }},
 	{name: "tools", syntax: fixed("graft tools [install]"), summary: text("check the pinned tools; install installs the failing ones"),
 		applies: func(c *config.Config) bool { return len(c.Tools) > 0 }},
@@ -137,6 +137,26 @@ func sectionOf(name string) (command, bool) {
 		}
 	}
 	return command{}, false
+}
+
+// usageOf builds a usage error from the syntax printed by graft help. When a
+// section has several forms, prefix selects one form; without it all forms
+// are joined in their help order.
+func usageOf(section string, prefix ...string) error {
+	c, ok := sectionOf(section)
+	if !ok {
+		return fmt.Errorf("unknown help section %q", section)
+	}
+	lines := c.syntax(nil)
+	if len(prefix) > 0 {
+		for _, line := range lines {
+			if strings.HasPrefix(line, prefix[0]) {
+				return fmt.Errorf("%w: %s", errUsage, line)
+			}
+		}
+		return fmt.Errorf("help section %q has no syntax beginning with %q", section, prefix[0])
+	}
+	return fmt.Errorf("%w: %s", errUsage, strings.Join(lines, " | "))
 }
 
 // writeSection writes a command's section of graft help: its syntax, the

@@ -270,7 +270,7 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		return noArgs(a, cmd, rest, func() error { return a.Check(ctx) })
 	case "leaks":
 		if len(rest) == 0 {
-			return fmt.Errorf("%w: graft leaks <revision>…", errUsage)
+			return usageOf("leaks")
 		}
 		return a.Leaks(rest)
 	case "gate":
@@ -303,7 +303,7 @@ func projectCmd(ctx context.Context, a *app.App, cmd string, rest []string) erro
 	switch cmd {
 	case "run":
 		if len(rest) == 0 {
-			return fmt.Errorf("%w: graft run <task> [-- args]", errUsage)
+			return usageOf("run", "graft run")
 		}
 		return runTask(ctx, a, rest[0], rest[1:])
 	case "start", "stop", "restart":
@@ -474,7 +474,7 @@ func parseAge(s string) (time.Duration, error) {
 
 func serviceCmd(ctx context.Context, a *app.App, action app.ServiceAction, args []string) error {
 	if len(args) > 1 {
-		return fmt.Errorf("%w: graft %s [service]", errUsage, action)
+		return usageOf("start", "graft start|stop|restart")
 	}
 	name := ""
 	if len(args) == 1 {
@@ -492,25 +492,25 @@ func logsCmd(ctx context.Context, a *app.App, args []string) error {
 		return err
 	}
 	if len(pos) != 1 || *lines <= 0 {
-		return fmt.Errorf("%w: graft logs <service> [--lines N] [-f]", errUsage)
+		return usageOf("start", "graft logs")
 	}
 	return a.ServiceLogs(ctx, pos[0], *lines, *follow)
 }
 
 func testDBCmd(ctx context.Context, a *app.App, args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("%w: %s", errUsage, app.TestDBUsage())
+		return usageOf("testdb")
 	}
 	err := a.TestDB(ctx, args[0])
 	if errors.Is(err, app.ErrUnknownTestDBAction) {
-		return fmt.Errorf("%w: %s", errUsage, app.TestDBUsage())
+		return usageOf("testdb")
 	}
 	return err
 }
 
 // gocacheCmd is graft gocache trim [--older 25h] [--apply] [--max-wait 30m].
 func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := fmt.Errorf("%w: graft gocache trim [--older 25h] [--apply] [--max-wait 30m]", errUsage)
+	usage := usageOf("gocache")
 	if len(args) == 0 || args[0] != "trim" {
 		return usage
 	}
@@ -537,7 +537,7 @@ func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
 }
 
 func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := fmt.Errorf("%w: graft worktree add [--trunk <ref>] <branch> [<base>] | clean [--apply] [--trunk <ref>] [--min-age 1h] [--in <directory>]... | sync [--trunk <ref>]", errUsage)
+	usage := usageOf("worktree")
 	switch {
 	case len(args) > 0 && args[0] == "sync":
 		fs := newFlags(a, "worktree sync")
@@ -708,7 +708,7 @@ func toolsCmd(ctx context.Context, a *app.App, args []string) error {
 	case len(args) == 1 && args[0] == "install":
 		return a.Tools(ctx, true)
 	default:
-		return fmt.Errorf("%w: graft tools [install]", errUsage)
+		return usageOf("tools")
 	}
 }
 
@@ -899,7 +899,7 @@ func hookCmd(ctx context.Context, a *app.App, args []string) error {
 		return a.HookPostMerge(ctx)
 	case "pre-push":
 		if len(args) != 3 {
-			return fmt.Errorf("%w: hook pre-push <remote> <url>", errUsage)
+			return usageOf("hook", "graft hook pre-push")
 		}
 		return a.HookPrePush(ctx, args[1], args[2])
 	default:
@@ -1013,7 +1013,7 @@ type deployCommandArgs struct {
 
 func runDeployCommand(ctx context.Context, a *app.App, args deployCommandArgs) error {
 	pos, scriptArgs := args.pos, args.scriptArgs
-	usage := fmt.Errorf("%w: graft deploy [--redeploy] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] <target> [-- args] | freeze <target> [Jira version] | thaw <target> --reason REASON | status <target> [-- args] | logs <target> [--lines N] [--grep RE] [-- args] | check <target> | versions | cutoff <target> | sweep <target> [--apply] | handover <target> [--glint-ticket KEY] | check-head | check-integrations [build]", errUsage)
+	usage := usageOf("deploy")
 	if len(pos) == 0 {
 		return usage
 	}

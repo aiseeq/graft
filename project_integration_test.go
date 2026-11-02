@@ -153,6 +153,98 @@ func TestUsageErrorsAreOneLine(t *testing.T) {
 	_ = filepath.Join
 }
 
+func TestUsageErrorsMatchHelpSyntax(t *testing.T) {
+	f := tasksRepo(t, `services:
+  web:
+    run: [true]
+    pidfile: tmp/web.pid
+    log: tmp/web.log
+    build: build
+tasks:
+  build:
+    run: [true]
+test_db:
+  image: postgres:18-alpine
+  container: projectA-test-pg
+  port: 55432
+  database: sampledb
+  user: sampleuser
+  password: test
+  tmpfs: 2G
+tools:
+  sample:
+    manual: install sample
+    check: [true]
+    expect: ok
+envs:
+  local: {}
+deploy:
+  remote: origin
+  targets:
+    sample: {env: local, run: [true]}
+`, nil)
+	cases := []struct {
+		command string
+		args    []string
+		section string
+		prefix  string
+	}{
+		{command: "leaks", args: []string{"leaks"}, section: "leaks"},
+		{command: "run", args: []string{"run"}, section: "run", prefix: "graft run"},
+		{command: "start", args: []string{"start", "web", "extra"}, section: "start", prefix: "graft start|stop|restart"},
+		{command: "logs", args: []string{"logs", "web", "extra"}, section: "start", prefix: "graft logs"},
+		{command: "testdb", args: []string{"testdb", "unknown"}, section: "testdb"},
+		{command: "gocache", args: []string{"gocache"}, section: "gocache"},
+		{command: "worktree", args: []string{"worktree", "unknown"}, section: "worktree"},
+		{command: "tools", args: []string{"tools", "unknown"}, section: "tools"},
+		{command: "hook", args: []string{"hook", "pre-push"}, section: "hook", prefix: "graft hook pre-push"},
+		{command: "deploy", args: []string{"deploy"}, section: "deploy"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.command, func(t *testing.T) {
+			help, code := f.graft("", "help", tc.section)
+			if code != 0 {
+				t.Fatalf("graft help %s: exit %d\n%s", tc.section, code, help)
+			}
+			var syntax []string
+			for line := range strings.SplitSeq(help, "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "graft ") {
+					syntax = append(syntax, line)
+				}
+			}
+			if tc.prefix != "" {
+				for _, line := range syntax {
+					if strings.HasPrefix(line, tc.prefix) {
+						syntax = []string{line}
+						break
+					}
+				}
+			}
+			want := strings.Join(syntax, " | ")
+			out, code := f.graft("", tc.args...)
+			const marker = "graft: "
+			got := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(out), marker), " (see graft help)")
+			if code != 2 || got != want {
+				t.Errorf("graft %s: exit %d, usage %q, want %q\n%s", strings.Join(tc.args, " "), code, got, want, out)
+			}
+		})
+	}
+	t.Run("worktree with invalid config", func(t *testing.T) {
+		f.write(".graft.yaml", "schema: [\n")
+		section, ok := sectionOf("worktree")
+		if !ok {
+			t.Fatal("worktree help section is missing")
+		}
+		want := strings.Join(section.syntax(nil), " | ")
+		out, code := f.graft("", "worktree", "unknown")
+		got := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(out), "graft: "), " (see graft help)")
+		if code != 2 || got != want {
+			t.Errorf("graft worktree unknown with invalid config: exit %d, usage %q, want %q\n%s", code, got, want, out)
+		}
+	})
+}
+
 func TestEveryCommandAnswersHelpWithItsSection(t *testing.T) {
 	f := tasksRepo(t, "", nil)
 	names := []string{"stop", "restart", "logs", "-h"}
