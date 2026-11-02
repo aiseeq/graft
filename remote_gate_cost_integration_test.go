@@ -328,3 +328,40 @@ func TestBusyGateHostDownKeepsNoStepHereForCost(t *testing.T) {
 		}
 	}
 }
+
+// TestBusyGateAllHereWithASubmodule: a gate whose steps all stay here, one
+// of them the vet of a module below the root, does not split, and the step
+// lines name why each step stayed (the cost, or the subdirectory).
+func TestBusyGateAllHereWithASubmodule(t *testing.T) {
+	g := newGateCostFixture(t, gateCostVetConfig)
+	g.f.write("sub/go.mod", "module example.com/sub\n\ngo 1.22\n")
+	g.f.write("sub/b.go", "package b\n")
+	g.f.mustGraft("gate")
+	records, _, err := stats.LoadTail(g.statsFile, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := map[string]bool{}
+	for _, rec := range records {
+		if rec.Kind == stats.KindStep && strings.HasPrefix(rec.Step, "go vet") {
+			steps[rec.Step] = true
+		}
+	}
+	if len(steps) != 2 {
+		t.Fatalf("want the vet of the root and of sub, got %v", steps)
+	}
+	var locals []stats.Record
+	for step := range steps {
+		for range 2 {
+			locals = append(locals, stats.Record{Step: step, WallS: 0.2})
+		}
+	}
+	g.writeHistory(t, locals, gateCostRows([]float64{40}, "pc", 0))
+	out, calls := runBusyCostGate(t, g, false)
+	if calls != "" || strings.Contains(out, "gate: busy here:") || strings.Count(out, "starting after") != 1 {
+		t.Fatalf("expected a whole-gate wait with no host call; calls=%q\n%s", calls, out)
+	}
+	if !strings.Contains(out, "go vet ./...: cheaper here: 0.2s here, 40.0s on pc") {
+		t.Errorf("the root's vet does not say cheaper here:\n%s", out)
+	}
+}

@@ -179,6 +179,9 @@ type gateStepCosts struct {
 	fee    float64
 	hasFee bool
 	host   string
+	// remote is remote_heavy as the busy gate decided by: a gate that did
+	// not split has none of its own, and its step lines ask with this one.
+	remote *config.RemoteHeavy
 }
 
 // frame is a running task as the stats see it.
@@ -413,7 +416,7 @@ func (r *Runner) loadGateStepCosts() (*gateStepCosts, error) {
 	if err != nil {
 		return nil, err
 	}
-	costs := &gateStepCosts{local: map[string]gateStepCost{}, host: r.remoteHeavy.Host}
+	costs := &gateStepCosts{local: map[string]gateStepCost{}, host: r.remoteHeavy.Host, remote: r.remoteHeavy}
 	root := filepath.Clean(r.Root)
 	local := map[string][]float64{}
 	var remote []float64
@@ -1127,7 +1130,12 @@ func (r *Runner) gateStepLine(gs *gateStep, s config.Step, number, total int) (s
 	if r.gateSplit || !gs.builtin || r.gateCosts == nil {
 		return line, func() {}, nil
 	}
+	// The gate did not split, so remote_heavy is off for its steps: the
+	// placement is asked with the settings the gate decided by.
+	saved := r.remoteHeavy
+	r.remoteHeavy = r.gateCosts.remote
 	remote, reason, err := r.gateStepPlacement(s, gs.task, stats.GateTask, true)
+	r.remoteHeavy = saved
 	if err != nil {
 		return "", nil, err
 	}
