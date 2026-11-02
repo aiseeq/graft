@@ -465,6 +465,11 @@ func (a *App) releaseFileCommit(ctx context.Context, repo *gitx.Repo, cfg *confi
 }
 
 func (a *App) releaseFileCommitLocked(ctx context.Context, repo *gitx.Repo, cfg *config.Config, opts ReleaseOptions) error {
+	// A merge, cherry-pick or revert git left open would make the release
+	// commit finish it: its parents, author and changes are not a release's.
+	if err := requireNormalContext(repo); err != nil {
+		return err
+	}
 	branch, err := repo.Branch()
 	if err != nil {
 		return err

@@ -88,6 +88,8 @@ func TestReleaseFileRefusalsAreAtomic(t *testing.T) {
 		{name: "existing next tag", flag: "--minor", setup: "next-tag", want: "tag v0.8.0 already exists"},
 		{name: "gate failure", flag: "--minor", setup: "gate-fail", want: "gate"},
 		{name: "released head", flag: "--minor", setup: "released", want: "HEAD is already released as v0.7.0"},
+		{name: "open merge", flag: "--minor", setup: "merge", want: "merge is in progress"},
+		{name: "open cherry-pick", flag: "--minor", setup: "cherry-pick", want: "cherry-pick is in progress"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,6 +113,21 @@ func TestReleaseFileRefusalsAreAtomic(t *testing.T) {
 			}
 			if tc.setup == "released" {
 				f.git("tag", "v0.7.0")
+			}
+			if tc.setup == "merge" || tc.setup == "cherry-pick" {
+				f.git("checkout", "-q", "-b", "other")
+				f.write("same.txt", "same\n")
+				f.mustPlainCommit("feat: other")
+				f.git("checkout", "-q", "main")
+				if tc.setup == "merge" {
+					f.git("merge", "-q", "-s", "ours", "--no-commit", "other")
+				} else {
+					// The same change on main leaves the cherry-pick empty
+					// and open, with a clean tree.
+					f.write("same.txt", "same\n")
+					f.mustPlainCommit("feat: same on main")
+					f.exec(f.work, "", "git", "-c", "core.hooksPath=/dev/null", "cherry-pick", "other")
+				}
 			}
 			beforeVersion, beforePackage := f.read("VERSION"), f.read("package.json")
 			beforeHead := f.git("rev-parse", "HEAD")
@@ -290,7 +307,7 @@ func TestReleaseFileEdges(t *testing.T) {
 			t.Fatalf("--minor on a raised version: exit %d\n%s", code, out)
 		}
 	})
-	for name, broken := range map[string]string{"garbage": "garbage\n", "empty": ""} {
+	for name, broken := range map[string]string{"garbage": "garbage\n", "empty": "", "out of range": "99999999999999999999.0.0\n"} {
 		t.Run("unreadable version in HEAD: "+name, func(t *testing.T) {
 			f := fileReleaseRepo(t, false, "gate: []\n")
 			f.write("VERSION", broken)

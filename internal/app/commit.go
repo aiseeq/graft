@@ -595,13 +595,13 @@ func versionInRev(repo *gitx.Repo, cfg *config.Config, rev string) (version.Semv
 		return version.Semver{}, false, err
 	}
 	raw, err := version.Targets(cfg.Version)[0].Extract(content)
-	if errors.Is(err, version.ErrNoVersion) || err == nil && !version.IsFile(raw) {
+	var v version.Semver
+	if err == nil {
+		v, err = version.ParseFile(raw)
+	}
+	if errors.Is(err, version.ErrNoVersion) {
 		return version.Semver{}, false, nil
 	}
-	if err != nil {
-		return version.Semver{}, false, fmt.Errorf("reading the version of %s: %w", rev, err)
-	}
-	v, err := version.ParseFile(raw)
 	if err != nil {
 		return version.Semver{}, false, fmt.Errorf("reading the version of %s: %w", rev, err)
 	}
