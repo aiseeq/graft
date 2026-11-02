@@ -200,6 +200,9 @@ type frame struct {
 	// why one with a host runs on this machine.
 	remote bool
 	here   string
+	// stepHere is why the running step of a busy gate stays here though it
+	// could go to the host: cheaper here; only its step line records it.
+	stepHere string
 	// program is the program a graft exec runs, which tells its kind.
 	program          string
 	waitedBehind     string
@@ -386,6 +389,9 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, erro
 	}
 	if down := r.remoteUp(ctx); down != "" {
 		r.remoteHeavy = previousRemoteHeavy
+		// A gate that waits whole for a host that did not answer keeps no
+		// step here for cost.
+		r.gateCosts = nil
 		r.remoteAsked, r.remoteDown = true, down
 		fmt.Fprintf(r.Stderr, "graft: gate: busy here, waits for this machine whole: %s did not answer (%s)\n", rh.Host, down)
 		return false, nil
@@ -879,7 +885,7 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int, reason str
 		}
 	}
 	inner := r.frames[len(r.frames)-1]
-	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Profile: r.profile(inner), Step: stats.StepText(source), Exit: code, Reason: reason, Host: r.hostOf(inner), Here: inner.here}, use, r.frames[0].task)
+	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Profile: r.profile(inner), Step: stats.StepText(source), Exit: code, Reason: reason, Host: r.hostOf(inner), Here: inner.stepHere}, use, r.frames[0].task)
 }
 
 // profile is the kind of a run the admission of heavy tasks knows it by:
@@ -1129,8 +1135,8 @@ func (r *Runner) gateStepLine(gs *gateStep, s config.Step, number, total int) (s
 		return line, func() {}, nil
 	}
 	frame := r.frames[len(r.frames)-1]
-	frame.here = reason
-	return line + ": " + reason, func() { frame.here = "" }, nil
+	frame.stepHere = reason
+	return line + ": " + reason, func() { frame.stepHere = "" }, nil
 }
 
 func reportAdvisoryFailure(task string, err error, report func(string, error)) error {
@@ -1440,7 +1446,7 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 	remote = remote && r.remoteDown == ""
 	frame.remote = remote
 	if cheaperReason != "" && !remote {
-		frame.here = cheaperReason
+		frame.stepHere = cheaperReason
 		fmt.Fprintf(r.Stderr, "graft: gate: %s: %s\n", stats.StepText(s.Source), cheaperReason)
 	}
 	started := time.Now()
@@ -1478,7 +1484,7 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 			}
 		}
 		frame.remote = wasRemote
-		frame.here = ""
+		frame.stepHere = ""
 		return stepErr
 	}, nil
 }

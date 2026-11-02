@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/aiseeq/graft/v2/internal/stats"
 )
@@ -109,8 +108,7 @@ func runBusyCostGate(t *testing.T, g gateCostFixture, remoteDelay bool) (string,
 		writeFile(t, filepath.Join(g.state, "run.sh"), "echo \"$*\" >> \""+filepath.Join(g.state, "calls")+"\"\nsleep 1.2\nexit 0\n")
 	}
 	loaded(t, g.state)
-	calmAfter(t, g.state, 2*time.Second)
-	out := g.f.mustGraft("gate")
+	out := runUntilMachineWait(t, g.f, g.state, "gate")
 	return out, callsOf(t, g.state)
 }
 
@@ -191,8 +189,7 @@ func TestBusyGateColdProbeThenCheaperHere(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(g.state, "run.sh"), "echo \"$*\" >> \""+filepath.Join(g.state, "calls")+"\"\nsleep 1.2\nexit 0\n")
 	loaded(t, g.state)
-	calmAfter(t, g.state, 2*time.Second)
-	out := g.f.mustGraft("gate")
+	out := runUntilMachineWait(t, g.f, g.state, "gate")
 	calls := callsOf(t, g.state)
 	if got := strings.Count(calls, "go test -run Probe"); got != 1 {
 		t.Fatalf("cold start sent %d steps, want exactly one; calls=%q\n%s", got, calls, out)
@@ -256,5 +253,42 @@ func TestBusyGateUnknownLocalStepGoesToHost(t *testing.T) {
 	out, calls := runBusyCostGate(t, g, false)
 	if !strings.Contains(calls, "go vet ./...") || strings.Contains(out, "cheaper here") {
 		t.Fatalf("step with unknown local price did not use host; calls=%q\n%s", calls, out)
+	}
+}
+
+// TestBusyGateKeepsTheTaskHereReason: the cost rule leaves the here of a
+// split gate's heavy task as it was, and a step the host ran has none.
+func TestBusyGateKeepsTheTaskHereReason(t *testing.T) {
+	g := newGateCostFixture(t, splitGateConfig)
+	if err := os.Remove(g.f.path("out")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(g.statsFile); err != nil {
+		t.Fatal(err)
+	}
+	loaded(t, g.state)
+	out := runUntilMachineWait(t, g.f, g.state, "gate")
+	records, _, err := stats.LoadTail(g.statsFile, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var task, sent *stats.Record
+	for i := range records {
+		rec := &records[i]
+		switch {
+		case rec.Kind == stats.KindTask && rec.Task == "unit":
+			task = rec
+		case rec.Kind == stats.KindStep && rec.Host == "pc":
+			sent = rec
+		}
+	}
+	if task == nil || sent == nil {
+		t.Fatalf("want the unit task line and a step sent to pc:\n%s", out)
+	}
+	if want := "in a gate split by step, each step placed for itself"; task.Here != want {
+		t.Errorf("the unit task's here = %q, want %q", task.Here, want)
+	}
+	if sent.Here != "" {
+		t.Errorf("the step pc ran has here %q, want none", sent.Here)
 	}
 }

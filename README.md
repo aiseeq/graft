@@ -311,7 +311,8 @@ whose path breaks is said and rerun here under that admission, and the
 gate's later go steps run here too. A gate whose host does not answer waits
 here whole and says why.
 For each eligible step, graft compares the median wall time of its last up to
-five successful local runs of the same profile and step with the minimum wall
+five successful local runs of the same profile and step, from any tree of the
+project and at least two of them, with the minimum wall
 time of the last up to five successful host steps for this tree. When the
 local time is known and less than the host time, the step stays here and says
 `cheaper here`; otherwise it goes to the host. If no host time is known, the
@@ -963,7 +964,8 @@ deps and inner tasks included.
   line gave, the broken path, or, where graft says nothing, `this machine
   would not make it wait` (`when: busy` on a calm machine) and `inside an
   admitted heavy task, which waits for the machine`. Absent for a task the
-  host ran and without a host.
+  host ran and without a host. On a step line, it is set only for a step of
+  a busy gate that could go to the host and stayed here, `cheaper here: …`.
 - `reserve_cores`, `reserve_s` and `reserve_end` record expected CPU use, how
   long the reservation lived, and whether it ended by CPU use (`cpu`), the
   configured maximum (`cap`), task completion (`done`) or unreadable process
