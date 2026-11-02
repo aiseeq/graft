@@ -5,9 +5,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aiseeq/graft/v2/internal/stats"
+	"github.com/aiseeq/graft/v2/internal/tasks"
 )
 
 const splitGateConfig = "schema: 1\nversion: {mode: none}\n" +
@@ -56,6 +60,15 @@ func TestBusyGateSendsItsGoStepsToTheHost(t *testing.T) {
 	// The steps kept here waited for this machine.
 	if !strings.Contains(out, "starting after") {
 		t.Errorf("no step waited for this machine:\n%s", out)
+	}
+	var gateHere []string
+	for _, l := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+		if l.Kind == "task" && l.Task == stats.GateTask {
+			gateHere = append(gateHere, l.Here)
+		}
+	}
+	if want := []string{tasks.WhyNotBusy, tasks.WhyGateSplit}; !slices.Equal(gateHere, want) {
+		t.Errorf("gate lines here = %q, want %q", gateHere, want)
 	}
 }
 
@@ -123,6 +136,17 @@ func TestBusyGateBuiltinVetBackHereWhenThePathBreaks(t *testing.T) {
 	}
 	if got := readFile(t, log); !strings.Contains(got, "vet ./...") {
 		t.Errorf("go vet was not repeated here after the path broke: go calls = %q\n%s", got, out)
+	}
+	// go vet ran here after the path broke, go fix after it did not try pc.
+	var here []string
+	for _, l := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+		if l.Kind == "step" && l.Host == "" && (strings.HasPrefix(l.Step, "go vet") || strings.HasPrefix(l.Step, "go fix")) {
+			here = append(here, l.Step+": "+l.Here)
+		}
+	}
+	broken := "pc path broken: run exited 125: connection to pc lost"
+	if want := []string{"go vet ./...: " + broken, "go fix -diff ./...: " + broken}; !slices.Equal(here, want) {
+		t.Errorf("here of go steps run on this machine = %q, want %q", here, want)
 	}
 }
 

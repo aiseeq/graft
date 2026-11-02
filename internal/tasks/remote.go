@@ -111,6 +111,10 @@ const (
 	// or each that may is cheaper here.
 	WhyGateNoStepForHost = "no step of the gate may go to the host"
 	WhyGateCheaperHere   = "each step of the gate that may go to the host is cheaper here"
+	// A gate is split by step only for the user's remote_heavy with when:
+	// busy; otherwise its heavy tasks are placed one by one.
+	WhyGateProjectHost = "the project's remote_heavy places the gate's heavy tasks, not its steps"
+	WhyGateAlways      = "when: always places the gate's heavy tasks, not its steps"
 )
 
 // wouldWait tells whether this machine's queue would make the heavy task wait

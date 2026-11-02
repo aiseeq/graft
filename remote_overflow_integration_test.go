@@ -882,7 +882,7 @@ func TestProjectRemoteHeavyBrokenPathRunsHere(t *testing.T) {
 			sentHere = append(sentHere, l.Host+"|"+l.Here)
 		}
 	}
-	if len(sentHere) != 1 || !strings.HasPrefix(sentHere[0], "|box path broken: ") {
+	if len(sentHere) != 1 || sentHere[0] != "|box path broken: run exited 75: queue of box is full" {
 		t.Errorf("the task line of the task run here after the broken path: %q", sentHere)
 	}
 	if err := os.Remove(broken); err != nil {

@@ -204,7 +204,8 @@ type frame struct {
 	remote bool
 	here   string
 	// stepHere is why the running step of a busy gate stays here though it
-	// could go to the host: cheaper here; only its step line records it.
+	// could go to the host: cheaper here, or the path broke; only its step
+	// line records it.
 	stepHere string
 	// program is the program a graft exec runs, which tells its kind.
 	program          string
@@ -348,15 +349,22 @@ func (r *Runner) configSteps(steps []gateStep) []gateStep {
 // A gate with the user's host that stays here whole gets why, for its task
 // line.
 func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, string, error) {
-	if r.Config.RemoteHeavy != nil || r.heavy > 0 || os.Getenv(AdmittedEnv) != "" || os.Getenv(HeavyEnv) == "local" {
-		return false, "", nil
+	if r.Config.RemoteHeavy != nil {
+		return false, WhyGateProjectHost, nil
 	}
 	rh, err := userconfig.RemoteHeavySettings()
 	if err != nil {
 		return false, "", fmt.Errorf("reading user remote_heavy: %w", err)
 	}
-	if rh == nil || rh.When != "busy" {
+	switch {
+	case rh == nil:
 		return false, "", nil
+	case os.Getenv(HeavyEnv) == "local":
+		return false, HeavyEnv + "=local", nil
+	case r.heavy > 0 || os.Getenv(AdmittedEnv) != "":
+		return false, WhyInsideHeavy, nil
+	case rh.When != "busy":
+		return false, WhyGateAlways, nil
 	}
 	busy, err := r.wouldWait(ctx, stats.GateTask)
 	if err != nil {
@@ -403,7 +411,7 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, stri
 		return false, why, nil
 	}
 	r.userRemote, r.remoteAsked = true, true
-	return true, "", nil
+	return true, WhyGateSplit, nil
 }
 
 const gateStatsTailBytes = 8 << 20
@@ -1457,7 +1465,10 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 	if err != nil {
 		return nil, err
 	}
-	remote = remote && r.remoteDown == ""
+	if remote && r.remoteDown != "" {
+		// The path broke on an earlier step of this gate.
+		remote, frame.stepHere = false, r.remoteHeavy.Host+" path broken: "+r.remoteDown
+	}
 	frame.remote = remote
 	if cheaperReason != "" && !remote {
 		frame.stepHere = cheaperReason
@@ -1487,7 +1498,7 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 			if err := r.journalRemoteBroken(frame.task, reason); err != nil {
 				stepErr = errors.Join(stepErr, err)
 			} else {
-				frame.remote = false
+				frame.remote, frame.stepHere = false, r.remoteHeavy.Host+" path broken: "+reason
 				if err := r.enterSplit(ctx, frame.task, taskMemoryMax(t)); err != nil {
 					stepErr = err
 				} else {

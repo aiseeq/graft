@@ -1001,12 +1001,19 @@ graft's version, pid and command line. A
   ran on this machine, is why: the reason its `heavy, on this machine:`
   line gave, the broken path, or, where graft says nothing, `this machine
   would not make it wait` (`when: busy` on a calm machine) and `inside an
-  admitted heavy task, which waits for the machine`. The line of a gate with
-  the user's host that ran here whole says the same, or `<host> did not
-  answer (…)`, `no step of the gate may go to the host`, `each step of the
-  gate that may go to the host is cheaper here`. Absent for a task the
-  host ran and without a host. On a step line, it is set only for a step of
-  a busy gate that could go to the host and stayed here, `cheaper here: …`.
+  admitted heavy task, which waits for the machine`. A gate is placed by
+  step only for the user's `remote_heavy` with `when: busy`; the line of a
+  gate with a host says how it went: `in a gate split by step, each step
+  placed for itself` (also on the lines of its heavy tasks), or why it ran
+  here whole: `GRAFT_HEAVY=local`, `inside an admitted heavy task, …`,
+  `this machine would not make it wait`, `<host> did not answer (…)`, `no
+  step of the gate may go to the host`, `each step of the gate that may go
+  to the host is cheaper here`, `when: always places the gate's heavy tasks,
+  not its steps`, `the project's remote_heavy places the gate's heavy tasks,
+  not its steps`. Absent for a task the host ran and without a host. On a
+  step line, it is set only for a step of a split gate that could go to the
+  host and stayed here: `cheaper here: …`, or `<host> path broken: …` for
+  the step run here after the path broke and the gate's later steps.
 - `reserve_cores`, `reserve_s` and `reserve_end` record expected CPU use, how
   long the reservation lived, and whether it ended by CPU use (`cpu`), the
   configured maximum (`cap`), task completion (`done`) or unreadable process

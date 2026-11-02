@@ -329,7 +329,7 @@ func TestBusyGateHostDownKeepsNoStepHereForCost(t *testing.T) {
 		if strings.Contains(rec.Here, "cheaper here") {
 			t.Errorf("a record says cheaper here with the host down: %+v", rec)
 		}
-		if rec.Kind == "task" && strings.Contains(rec.Here, "did not answer") {
+		if rec.Kind == "task" && rec.Task == stats.GateTask && strings.HasPrefix(rec.Here, "pc did not answer (") {
 			saidDown = true
 		}
 	}
@@ -415,4 +415,50 @@ func TestBusyGateLineSaysWhyItStayedWhole(t *testing.T) {
 			t.Errorf("gate lines here = %q, want the last %q", got, tasks.WhyGateNoStepForHost)
 		}
 	})
+}
+
+// TestGateLineSaysWhyItWasNotSplit: a gate with a host that is not split by
+// step says why on its task line: GRAFT_HEAVY=local, inside an admitted heavy
+// task, when: always, or a project's own remote_heavy.
+func TestGateLineSaysWhyItWasNotSplit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	cases := []struct {
+		name string
+		set  func(f *fixture)
+		want string
+	}{
+		{"local", func(f *fixture) { f.env = append(f.env, tasks.HeavyEnv+"=local") }, tasks.HeavyEnv + "=local"},
+		{"admitted", func(f *fixture) { f.env = append(f.env, tasks.AdmittedEnv+"=1") }, tasks.WhyInsideHeavy},
+		{"always", func(f *fixture) {
+			for _, kv := range f.env {
+				if dir, ok := strings.CutPrefix(kv, "XDG_CONFIG_HOME="); ok {
+					// The fixture's user config, its load kept: only when changes.
+					file := filepath.Join(filepath.Join(dir, "graft"), "config.yaml")
+					writeFile(t, file, strings.Replace(readFile(t, file), "threads: 8}", "threads: 8, when: always}", 1))
+				}
+			}
+		}, tasks.WhyGateAlways},
+		{"project host", func(f *fixture) {
+			f.write(".graft.yaml", strings.Replace(gateCostVetConfig, "gate:", "remote_heavy: {host: box, up: [sh, -c, 'true'], run: [sh, -c, 'exec \"$@\"', run], threads: 4}\ngate:", 1))
+		}, tasks.WhyGateProjectHost},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f, state := userRemoteRepo(t, "")
+			f.write(".graft.yaml", gateCostVetConfig)
+			c.set(f)
+			f.mustGraft("gate")
+			var got []string
+			for _, l := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+				if l.Kind == "task" && l.Task == stats.GateTask {
+					got = append(got, l.Here)
+				}
+			}
+			if !slices.Equal(got, []string{c.want}) {
+				t.Errorf("gate lines here = %q, want %q", got, c.want)
+			}
+		})
+	}
 }
