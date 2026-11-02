@@ -2019,7 +2019,9 @@ func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, 
 }
 
 func successfulGoTestHasMissingRunNames(code int, err error, missingRunNames func() bool) bool {
-	if code != 0 || err != nil || missingRunNames == nil {
+	// The reason names the missing alternatives on exit 0 whatever err is,
+	// so the step fails on them on exit 0 too: its stats line agrees.
+	if code != 0 || missingRunNames == nil {
 		return false
 	}
 	return missingRunNames()

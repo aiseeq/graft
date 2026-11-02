@@ -127,6 +127,11 @@ func TestGoTestRunAlternatives(t *testing.T) {
 		{"space is not checked", []string{"-run", "Test A"}, []string{"Test A"}, nil},
 		{"alternatives before subtests", []string{"-run", "TestA/sub|TestGone"}, []string{"TestA"}, []string{"TestGone"}},
 		{"latest flag", []string{"-run", "TestGone", "-test.run=TestReal"}, []string{"TestReal"}, nil},
+		{"two dashes", []string{"--run", "TestReal|TestGone"}, []string{"TestReal"}, []string{"TestGone"}},
+		{"list", []string{"-list", "Test", "-run", "TestGone"}, nil, nil},
+		{"list with two dashes", []string{"--list=Test", "-run", "TestGone"}, nil, nil},
+		{"skip", []string{"-run", "TestGone", "-test.skip", "TestGone"}, nil, nil},
+		{"run after -args", []string{"-run", "TestReal", "./...", "-args", "-run", "TestGone"}, []string{"TestReal"}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

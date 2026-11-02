@@ -125,17 +125,27 @@ func compileRunRegexp(pattern string) (*regexp.Regexp, bool) {
 	return re, err == nil
 }
 
+// goTestRun is the -run value go test applies; false when there is none or
+// the run is not meant to run what -run selects: it lists tests, skips some,
+// benchmarks or fuzzes. Words after -args are the test binary's arguments.
 func goTestRun(words []string) (string, bool) {
 	var value string
 	found := false
 	for i := 0; i < len(words); i++ {
 		flag := words[i]
+		if strings.HasPrefix(flag, "--") && len(flag) > 2 {
+			flag = flag[1:] // go's flags take one dash or two
+		}
+		if flag == "-args" {
+			break
+		}
 		inline := ""
 		if before, after, has := strings.Cut(flag, "="); has {
 			flag, inline = before, after
 		}
 		if flag != "-run" && flag != "-test.run" {
-			if flag == "-bench" || flag == "-test.bench" || flag == "-fuzz" || flag == "-test.fuzz" {
+			switch strings.TrimPrefix(flag, "-test.") {
+			case "-bench", "bench", "-fuzz", "fuzz", "-list", "list", "-skip", "skip":
 				return "", false
 			}
 			continue

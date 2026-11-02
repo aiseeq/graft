@@ -841,12 +841,13 @@ dotenv_sets:                   # key lists several tasks and services share
   flags alone keep `./...`. For `-run`, each top-level regexp alternative in
   a direct argv `go test` step must match a test that emitted a `run` event;
   unmatched alternatives fail the step and name the tests no package ran, but
-  only when the process exited successfully, every package passed, and the
+  only when the process exited successfully, no package failed, and the
   stream had events. The check accepts simple regexp values using letters,
   digits, `_`, `-`, and regexp operators; shell steps, wrappers, values with
   character classes, escapes, spaces, or non-printable characters are not
   checked. Alternatives matching the empty string, such as `^$`, and runs
-  with `-bench` or `-fuzz` are not checked.
+  with `-bench`, `-fuzz`, `-list` or `-skip` are not checked, nor a `-run`
+  after `-args`, which goes to the test binary.
 - `cache: tree` skips a task that already passed on the same inputs, its
   deps and inner tasks with it: `graft: lint: passed on this tree
   2026-10-16 10:12, skipped`. The key covers the work tree by content (every
