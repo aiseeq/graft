@@ -838,7 +838,11 @@ dotenv_sets:                   # key lists several tasks and services share
   prints no events gets a warning: `-json` is missing. Packages after `--`
   replace the ones a `go test … {args} ./...` step names itself, with a line
   saying so: `graft test -- -run TestX ./cmd/x` tests `./cmd/x` alone, while
-  flags alone keep `./...`.
+  flags alone keep `./...`. For `-run`, each top-level regexp alternative
+  must match a test that emitted a `run` event; unmatched alternatives fail
+  the step and name the tests no package ran, but only when every package
+  passed. Alternatives matching the empty string, such as `^$`, and runs with
+  `-bench` or `-fuzz` are not checked.
 - `cache: tree` skips a task that already passed on the same inputs, its
   deps and inner tasks with it: `graft: lint: passed on this tree
   2026-10-16 10:12, skipped`. The key covers the work tree by content (every

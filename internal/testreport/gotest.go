@@ -32,9 +32,16 @@ type GoTest struct {
 	order   []string
 	runs    []stats.PackageRun
 	events  int
+	runAlts []runAlternative
 	// skipped and skippedPkgs count the skipped tests and their packages.
 	skipped, skippedPkgs int
 	err                  error
+}
+
+type runAlternative struct {
+	name  string
+	re    *regexp.Regexp
+	match bool
 }
 
 type goPackage struct {
@@ -74,6 +81,111 @@ type event struct {
 // -v does.
 func NewGoTest(out io.Writer, verbose bool) *GoTest {
 	return &GoTest{out: out, verbose: verbose, pkgs: map[string]*goPackage{}}
+}
+
+// CheckRunWords checks each top-level -run alternative against tests that
+// emitted a run event. Invalid expressions are left for go test to report.
+func (g *GoTest) CheckRunWords(words []string) {
+	value, ok := goTestRun(words)
+	if !ok {
+		return
+	}
+	parts, valid := splitRunPattern(value, '/')
+	if !valid || len(parts) == 0 {
+		return
+	}
+	parts, valid = splitRunPatternAlternatives(parts[0])
+	if !valid {
+		return
+	}
+	for _, part := range parts {
+		re, valid := compileRunRegexp(part)
+		if !valid || re.MatchString("") {
+			continue
+		}
+		g.runAlts = append(g.runAlts, runAlternative{name: part, re: re})
+	}
+}
+
+func compileRunRegexp(pattern string) (*regexp.Regexp, bool) {
+	re, err := regexp.Compile(pattern)
+	return re, err == nil
+}
+
+func goTestRun(words []string) (string, bool) {
+	var value string
+	found := false
+	for i := 0; i < len(words); i++ {
+		flag := words[i]
+		inline := ""
+		if before, after, has := strings.Cut(flag, "="); has {
+			flag, inline = before, after
+		}
+		if flag != "-run" && flag != "-test.run" {
+			if flag == "-bench" || flag == "-test.bench" || flag == "-fuzz" || flag == "-test.fuzz" {
+				return "", false
+			}
+			continue
+		}
+		found = true
+		if inline != "" || strings.Contains(words[i], "=") {
+			value = inline
+		} else if i+1 < len(words) {
+			i++
+			value = words[i]
+		} else {
+			found = false
+		}
+	}
+	return value, found
+}
+
+// splitRunPattern follows testing's split at separators outside regexp groups.
+func splitRunPattern(pattern string, separator byte) ([]string, bool) {
+	var parts []string
+	start, depth := 0, 0
+	inClass, escaped := false, false
+	for i := 0; i < len(pattern); i++ {
+		c := pattern[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
+		if inClass {
+			if c == ']' {
+				inClass = false
+			}
+			continue
+		}
+		switch c {
+		case '[':
+			inClass = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 0 {
+				return nil, false
+			}
+		default:
+			if c == separator && depth == 0 {
+				parts = append(parts, pattern[start:i])
+				start = i + 1
+			}
+		}
+	}
+	if escaped || inClass || depth != 0 {
+		return nil, false
+	}
+	return append(parts, pattern[start:]), true
+}
+
+func splitRunPatternAlternatives(pattern string) ([]string, bool) {
+	return splitRunPattern(pattern, '|')
 }
 
 // Write takes the stream in pieces of any size.
@@ -131,7 +243,29 @@ func (g *GoTest) Reason() string {
 			reasons = append(reasons, run.Package+": "+run.Reason)
 		}
 	}
+	missing := g.MissingRunNames()
+	if len(missing) > 0 {
+		reasons = append(reasons, "-run names "+strings.Join(missing, ", ")+", which no package ran")
+	}
 	return stats.LimitReason(strings.Join(reasons, "\n"))
+}
+
+// MissingRunNames returns the original spellings of alternatives without a
+// matching top-level run event.
+func (g *GoTest) MissingRunNames() []string {
+	for i := range g.runs {
+		run := &g.runs[i]
+		if run.Result == stats.ResultFail || run.Result == stats.ResultBuildFail {
+			return nil
+		}
+	}
+	var missing []string
+	for _, alt := range g.runAlts {
+		if !alt.match {
+			missing = append(missing, alt.name)
+		}
+	}
+	return missing
 }
 
 func (g *GoTest) print(s string) {
@@ -170,6 +304,13 @@ func (g *GoTest) line(raw []byte) {
 			g.finish(e.Package, e)
 		}
 		return
+	}
+	if e.Action == "run" && !strings.Contains(e.Test, "/") {
+		for i := range g.runAlts {
+			if g.runAlts[i].re.MatchString(e.Test) {
+				g.runAlts[i].match = true
+			}
+		}
 	}
 	t := pkg.test(e.Test)
 	switch e.Action {

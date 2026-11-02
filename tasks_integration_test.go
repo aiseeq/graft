@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aiseeq/graft/v2/internal/stats"
 )
 
 // helperStep is a YAML flow list that runs the helper with args.
@@ -619,6 +621,8 @@ func TestToolsManual(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.env = []string{"PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH")}
+	cache := filepath.Join(f.base, "cache")
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache, "LOCALAPPDATA="+cache)
 	out, code = f.graft("", "tools", "install")
 	if code != 1 || !strings.Contains(out, "install it yourself: sudo dnf install ShellCheck") ||
 		!strings.Contains(out, "tools not ready: shellcheck") {
@@ -886,17 +890,36 @@ func TestGoTestPackagesFromArgs(t *testing.T) {
     run: ['go test -p 2 -json {args} ./...']
 `, nil)
 	fakeBin := t.TempDir()
-	script := "#!/bin/sh\n[ \"$1\" = env ] && exit 0\necho \"$*\" >> " + f.path("go.txt") + "\n"
+	script := "#!/bin/sh\n[ \"$1\" = env ] && exit 0\necho \"$*\" >> " + f.path("go.txt") + "\ncase \"$*\" in *TestGone*) name=TestReal ;; *) name=TestFake ;; esac\nprintf '{\"Action\":\"run\",\"Package\":\"projectA/pkg\",\"Test\":\"%s\"}\\n' \"$name\"\nprintf '{\"Action\":\"pass\",\"Package\":\"projectA/pkg\",\"Test\":\"%s\"}\\n' \"$name\"\nprintf '{\"Action\":\"pass\",\"Package\":\"projectA/pkg\"}\\n'\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	f.env = []string{"PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH")}
+	cache := shortCache(t)
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache, "LOCALAPPDATA="+cache)
 	out := f.mustGraft("test", "--", "-run", "./x", "./cmd/worker/")
 	if !strings.Contains(out, "graft: the packages after -- replace ./... of the step") {
 		t.Errorf("no line on the replaced packages:\n%s", out)
 	}
 	f.mustGraft("test", "--", "-v", "-coverprofile", "c.out")
-	want := "test -trimpath -p 2 -json -run ./x ./cmd/worker/,test -trimpath -p 2 -json -v -coverprofile c.out ./..."
+	if out, code := f.graft("", "test", "--", "-run", "TestGone"); code == 0 || !strings.Contains(out, "-run names TestGone, which no package ran") {
+		t.Errorf("removed test passed or had no reason (exit %d):\n%s", code, out)
+	}
+	records, _, err := stats.LoadTail(filepath.Join(cache, "graft", "stats.jsonl"), 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var missingRunStep *stats.Record
+	for i := range records {
+		rec := &records[i]
+		if rec.Kind == stats.KindStep && strings.Contains(rec.Step, "go test -p 2 -json") && strings.Contains(rec.Reason, "-run names TestGone, which no package ran") {
+			missingRunStep = rec
+		}
+	}
+	if missingRunStep == nil || missingRunStep.Exit == 0 {
+		t.Fatalf("stats have no failed go test step for the missing name: %+v", missingRunStep)
+	}
+	want := "test -trimpath -p 2 -json -run ./x ./cmd/worker/,test -trimpath -p 2 -json -v -coverprofile c.out ./...,test -trimpath -p 2 -json -run TestGone ./..."
 	if got := strings.Join(f.lines("go.txt"), ","); got != want {
 		t.Errorf("go got\n%s\nwant\n%s", got, want)
 	}

@@ -103,6 +103,74 @@ func TestGoTestFailureReasonsAndPackageFailure(t *testing.T) {
 	}
 }
 
+func TestGoTestRunAlternatives(t *testing.T) {
+	cases := []struct {
+		name  string
+		words []string
+		runs  []string
+		want  []string
+	}{
+		{"missing alternative", []string{"-run", "TestReal|TestGone$"}, []string{"TestReal"}, []string{"TestGone$"}},
+		{"exact", []string{"-run=^TestReal$"}, []string{"TestReal"}, nil},
+		{"prefix", []string{"-test.run", "^TestPositionKey"}, []string{"TestPositionKeyA", "TestPositionKeyB"}, nil},
+		{"substring", []string{"-run", "MigrationVersion"}, []string{"TestMigrationVersionsUnique"}, nil},
+		{"regexp", []string{"-run", "TestRe.*"}, []string{"TestReal"}, nil},
+		{"regexp missing", []string{"-run", "TestNo.*"}, nil, []string{"TestNo.*"}},
+		{"empty match", []string{"-run", "^$"}, nil, nil},
+		{"benchmark only", []string{"-run", "TestNone", "-bench", "."}, nil, nil},
+		{"fuzz only", []string{"-run=TestNone", "-test.fuzz=FuzzInput"}, nil, nil},
+		{"subtest suffix", []string{"-run", "TestReal/sub"}, []string{"TestReal"}, nil},
+		{"skipped", []string{"-run", "TestReal"}, []string{"TestReal"}, nil},
+		{"multiple packages", []string{"-run", "TestA|TestB"}, []string{"TestA", "TestB"}, nil},
+		{"nested alternatives", []string{"-run", "Test(A|B)"}, []string{"TestA"}, nil},
+		{"latest flag", []string{"-run", "TestGone", "-test.run=TestReal"}, []string{"TestReal"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGoTest(&strings.Builder{}, false)
+			g.CheckRunWords(tc.words)
+			var events []string
+			for i, name := range tc.runs {
+				pkg := "m/one"
+				if i > 0 && tc.name == "multiple packages" {
+					pkg = "m/two"
+				}
+				action := "pass"
+				if tc.name == "skipped" {
+					action = "skip"
+				}
+				events = append(events, fmt.Sprintf(`{"Action":"run","Package":%q,"Test":%q}`, pkg, name))
+				events = append(events, fmt.Sprintf(`{"Action":%q,"Package":%q,"Test":%q}`, action, pkg, name))
+				events = append(events, fmt.Sprintf(`{"Action":"pass","Package":%q}`, pkg))
+			}
+			if _, err := g.Write([]byte(strings.Join(events, "\n") + "\n")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := g.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if got := g.MissingRunNames(); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("missing names = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGoTestRunAlternativesIgnoredWhenPackageFails(t *testing.T) {
+	g := NewGoTest(&strings.Builder{}, false)
+	g.CheckRunWords([]string{"-run", "TestA"})
+	stream := "{\"Action\":\"fail\",\"Package\":\"m/one\",\"FailedBuild\":\"m/one [build failed]\"}\n"
+	if _, err := g.Write([]byte(stream)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.MissingRunNames(); len(got) != 0 {
+		t.Fatalf("missing names after package build failure = %v, want none", got)
+	}
+}
+
 func TestGoTestVerbose(t *testing.T) {
 	stream, err := os.ReadFile("testdata/go-test.json")
 	if err != nil {

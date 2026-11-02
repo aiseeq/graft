@@ -1889,6 +1889,7 @@ func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
 func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string, remoteStderr *bytes.Buffer) error {
 	tree := r.treeID()
 	report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
+	report.CheckRunWords(words)
 	cmd.Stdout = report
 	// The stats line takes its reason from the parsed stream, so the report
 	// closes before it is written; a step that never got there (it did not
@@ -1900,7 +1901,7 @@ func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string
 		closed = true
 		runs, cerr = report.Close()
 		return report.Reason()
-	})
+	}, func() bool { return len(report.MissingRunNames()) > 0 })
 	if !closed {
 		runs, cerr = report.Close()
 	}
@@ -1911,14 +1912,17 @@ func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string
 	if report.Events() == 0 && strings.Contains(source, "go test") {
 		fmt.Fprintf(r.Stderr, "graft: %s: the task has tests: go, but go test printed no -json events; pass -json to it\n", r.frames[len(r.frames)-1].task)
 	}
+	if missing := report.MissingRunNames(); len(missing) > 0 {
+		fmt.Fprintf(r.Stderr, "graft: -run names %s, which no package ran\n", strings.Join(missing, ", "))
+	}
 	r.recordTests(runs, tree, runner, use)
 	return err
 }
 
 // measureGoTest is measure for a go test -json step: its stdout is the
 // stream, so only stderr is kept, and reason gives the parsed failures.
-func (r *Runner) measureGoTest(cmd *exec.Cmd, source string, remoteStderr *bytes.Buffer, reason func() string) (stats.Usage, error) {
-	return r.measureWithReason(cmd, source, true, false, remoteStderr, reason)
+func (r *Runner) measureGoTest(cmd *exec.Cmd, source string, remoteStderr *bytes.Buffer, reason func() string, missingRunNames func() bool) (stats.Usage, error) {
+	return r.measureWithReason(cmd, source, true, false, remoteStderr, reason, missingRunNames)
 }
 
 // backgroundPipeWait bounds how long an inherited output pipe can keep Wait
@@ -1928,12 +1932,12 @@ const backgroundPipeWait = 2 * time.Second
 // measureWithCapture is measure; with capture the step's output also goes to
 // a bounded tail, the reason of its stats line when it fails.
 func (r *Runner) measureWithCapture(cmd *exec.Cmd, source string, capture bool, remoteStderr *bytes.Buffer) (stats.Usage, error) {
-	return r.measureWithReason(cmd, source, capture, capture, remoteStderr, nil)
+	return r.measureWithReason(cmd, source, capture, capture, remoteStderr, nil, nil)
 }
 
 // measureWithReason runs and records cmd; the reason of a failed step is the
 // first useful cleaned reason from reasonSource, stderr, or stdout.
-func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, captureStdout bool, remoteStderr *bytes.Buffer, reasonSource func() string) (stats.Usage, error) {
+func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, captureStdout bool, remoteStderr *bytes.Buffer, reasonSource func() string, missingRunNames func() bool) (stats.Usage, error) {
 	stdout, stderr, piped := captureStepOutput(cmd, captureStderr, captureStdout)
 	autoWaitDelay := false
 	if piped {
@@ -1975,7 +1979,12 @@ func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, 
 		r.Stats.Warn(werr)
 	}
 	code := cmd.ProcessState.ExitCode()
-	reason := stepFailureReason(reasonSource, stderr, stdout, code)
+	sourceReason := ""
+	if reasonSource != nil {
+		sourceReason = reasonSource()
+	}
+	reason := stepFailureReason(sourceReason, stderr, stdout, code)
+	code, err = failGoTestStepOnMissingRunNames(missingRunNames != nil && missingRunNames(), sourceReason, code, err)
 	if memoryErr != nil {
 		reason = memoryErr.Error()
 		if code == 0 {
@@ -1984,6 +1993,18 @@ func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, 
 	}
 	r.recordStep(source, use, code, reason)
 	return use, err
+}
+
+// failGoTestStepOnMissingRunNames fails a successful go test step only when
+// its parsed -run alternatives were absent from every package that ran.
+func failGoTestStepOnMissingRunNames(missing bool, reason string, code int, err error) (int, error) {
+	if code != 0 || !missing {
+		return code, err
+	}
+	if err == nil {
+		err = errors.New(reason)
+	}
+	return 1, err
 }
 
 // memoryEventsBefore reads the memory events of the heavy scope graft holds
@@ -2048,11 +2069,7 @@ func currentTask(r *Runner) string {
 	return ExecTask
 }
 
-func stepFailureReason(source func() string, stderr, stdout *tailCapture, code int) string {
-	var sourceReason string
-	if source != nil {
-		sourceReason = source()
-	}
+func stepFailureReason(sourceReason string, stderr, stdout *tailCapture, code int) string {
 	var stderrReason, stdoutReason string
 	if stderr != nil {
 		stderrReason = stderr.reason()
