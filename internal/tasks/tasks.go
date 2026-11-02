@@ -1429,11 +1429,11 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	case config.TestsGo:
 		return r.goTestStep(cmd, s.Source, t.Tests, words, &remoteStderr)
 	case config.TestsJest, config.TestsPlaywright:
-		err := r.reportFileStep(cmd, s.Source, t.Tests, report)
+		err := r.reportFileStep(cmd, s.Source, t.Tests, report, &remoteStderr)
 		r.noteBrokenRemote(cmd, err, remoteStderr.String())
 		return err
 	}
-	_, err = r.measure(cmd, s.Source)
+	_, err = r.measureWithCapture(cmd, s.Source, true, &remoteStderr)
 	r.noteBrokenRemote(cmd, err, remoteStderr.String())
 	return err
 }
@@ -1488,9 +1488,9 @@ func reportFile(t *config.Task) bool {
 
 // reportFileStep runs a step whose test runner writes its JSON report to
 // path, the file in GRAFT_TEST_REPORT, then records the tests in it.
-func (r *Runner) reportFileStep(cmd *exec.Cmd, source, runner, path string) error {
+func (r *Runner) reportFileStep(cmd *exec.Cmd, source, runner, path string, remoteStderr *bytes.Buffer) error {
 	tree := r.treeID()
-	use, err := r.measure(cmd, source)
+	use, err := r.measureWithCapture(cmd, source, true, remoteStderr)
 	data, rerr := os.ReadFile(path)
 	switch {
 	case errors.Is(rerr, os.ErrNotExist):
@@ -1674,7 +1674,7 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 	if err != nil {
 		return err
 	}
-	_, err = r.measure(cmd, source)
+	_, err = r.measureWithCapture(cmd, source, true, &remoteStderr)
 	r.noteBrokenRemote(cmd, err, remoteStderr.String())
 	if leave, fallback, herr := r.fallbackBrokenRemote(ctx, ExecTask, r.ExecMemoryMax); fallback {
 		if herr != nil {
@@ -1728,14 +1728,14 @@ func (r *Runner) Unit(name string, fn func() error) (err error) {
 // Measure runs cmd as a step of the unit or task running, and records it
 // the way task steps are recorded.
 func (r *Runner) Measure(source string, cmd *exec.Cmd) error {
-	_, err := r.measureWithCapture(cmd, source, false)
+	_, err := r.measureWithCapture(cmd, source, false, nil)
 	return err
 }
 
 // measure runs cmd and records what it cost against every running task.
 // A command that never started records nothing: no process ran.
 func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
-	return r.measureWithCapture(cmd, source, true)
+	return r.measureWithCapture(cmd, source, true, nil)
 }
 
 // goTestStep runs a step of a tests: go task: its stdout is go test -json,
@@ -1750,7 +1750,7 @@ func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string
 	var runs []stats.PackageRun
 	var cerr error
 	closed := false
-	use, err := r.measureGoTest(cmd, source, func() string {
+	use, err := r.measureGoTest(cmd, source, remoteStderr, func() string {
 		closed = true
 		runs, cerr = report.Close()
 		return report.Reason()
@@ -1771,8 +1771,8 @@ func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string
 
 // measureGoTest is measure for a go test -json step: its stdout is the
 // stream, so only stderr is kept, and reason gives the parsed failures.
-func (r *Runner) measureGoTest(cmd *exec.Cmd, source string, reason func() string) (stats.Usage, error) {
-	return r.measureWithReason(cmd, source, true, false, reason)
+func (r *Runner) measureGoTest(cmd *exec.Cmd, source string, remoteStderr *bytes.Buffer, reason func() string) (stats.Usage, error) {
+	return r.measureWithReason(cmd, source, true, false, remoteStderr, reason)
 }
 
 // backgroundPipeWait bounds how long an inherited output pipe can keep Wait
@@ -1781,13 +1781,13 @@ const backgroundPipeWait = 2 * time.Second
 
 // measureWithCapture is measure; with capture the step's output also goes to
 // a bounded tail, the reason of its stats line when it fails.
-func (r *Runner) measureWithCapture(cmd *exec.Cmd, source string, capture bool) (stats.Usage, error) {
-	return r.measureWithReason(cmd, source, capture, capture, nil)
+func (r *Runner) measureWithCapture(cmd *exec.Cmd, source string, capture bool, remoteStderr *bytes.Buffer) (stats.Usage, error) {
+	return r.measureWithReason(cmd, source, capture, capture, remoteStderr, nil)
 }
 
 // measureWithReason runs and records cmd; the reason of a failed step is the
 // first useful cleaned reason from reasonSource, stderr, or stdout.
-func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, captureStdout bool, reasonSource func() string) (stats.Usage, error) {
+func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, captureStdout bool, remoteStderr *bytes.Buffer, reasonSource func() string) (stats.Usage, error) {
 	stdout, stderr, piped := captureStepOutput(cmd, captureStderr, captureStdout)
 	autoWaitDelay := false
 	if piped {
@@ -1814,6 +1814,15 @@ func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, 
 		return stats.Usage{}, err
 	}
 	use := stats.FromProcess(cmd.ProcessState, time.Since(start))
+	if remoteStderr != nil {
+		if waited := remoteAdmissionWait(remoteStderr.String()); waited > 0 {
+			use.Wait += waited
+			if use.WaitWhy == nil {
+				use.WaitWhy = map[string]time.Duration{}
+			}
+			use.WaitWhy[WhyHost] += waited
+		}
+	}
 	if werr := use.Watched(seen); werr != nil && r.Stats != nil {
 		r.Stats.Warn(werr)
 	}
@@ -2380,6 +2389,10 @@ func (r *Runner) enterHeavy(ctx context.Context, name, memoryMax string) (leave 
 		if err != nil {
 			return nil, err
 		}
+		if adm.Waited() {
+			waited := adm.Waits.Total()
+			fmt.Fprintf(r.Stderr, "graft: %s: heavy, admitted after %.3fs\n", name, waited.Seconds())
+		}
 		release = admitted
 		if n := len(r.frames); n > 0 && adm.ReserveCores > 0 {
 			f := r.frames[n-1]
@@ -2530,11 +2543,50 @@ func (r *Runner) heavyEnv(env []string, t *config.Task, threads string) []string
 // Why a task waited besides the machine, whose waits are loadgate's Why
 // constants.
 const (
+	// WhyHost is the admission wait reported by remote_heavy's host.
+	WhyHost = "host"
 	// WhyLock is the wait for a task lock another graft holds.
 	WhyLock = "lock"
 	// WhySudo is the wait for a deploy's sudo confirmation.
 	WhySudo = "sudo"
 )
+
+// remoteAdmissionWait finds the first admission notice written by graft on
+// the remote host. Other run scripts may use the same line format.
+func remoteAdmissionWait(stderr string) time.Duration {
+	const prefix, marker, suffix = "graft: ", ": heavy, admitted after ", "s"
+	for line := range strings.SplitSeq(stderr, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		_, rest, ok := strings.Cut(strings.TrimPrefix(line, prefix), marker)
+		if !ok || !strings.HasSuffix(rest, suffix) {
+			continue
+		}
+		value := strings.TrimSuffix(rest, suffix)
+		whole, fraction, ok := strings.Cut(value, ".")
+		if !ok || whole == "" || len(fraction) != 3 {
+			continue
+		}
+		digits := whole + fraction
+		valid := true
+		for _, c := range digits {
+			if c < '0' || c > '9' {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			continue
+		}
+		d, err := time.ParseDuration(value + "s")
+		if err == nil {
+			return d
+		}
+	}
+	return 0
+}
 
 // Waited adds a wait before steps (the load, a lock, a confirmation) to
 // every running task: the innermost's own and those it runs under, whose
