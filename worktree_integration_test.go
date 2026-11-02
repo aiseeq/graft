@@ -468,33 +468,33 @@ func TestWorktreeCleanTrunkByUpstream(t *testing.T) {
 		setup func(f *fixture)
 		want  string
 	}{
-		{"main tracks bucket", func(f *fixture) {
-			f.git("branch", "-q", "--set-upstream-to", "bucket/main", "main")
-		}, "removed   branch b/done: in bucket/main"},
+		{"main tracks the second remote", func(f *fixture) {
+			f.git("branch", "-q", "--set-upstream-to", "origin/main", "main")
+		}, "removed   branch b/done: in origin/main"},
 		{"no upstream", func(*fixture) {},
-			"remotes bucket, origin and no deploy.remote, and no local branch tracks a remote's HEAD branch (bucket/main, origin/main)"},
+			"remotes mirror, origin and no deploy.remote, and no local branch tracks a remote's HEAD branch (mirror/main, origin/main)"},
 		{"upstream not the remote's HEAD", func(f *fixture) {
-			f.git("push", "-q", "bucket", "main:dev")
-			f.git("fetch", "-q", "bucket")
-			f.git("branch", "-q", "--set-upstream-to", "bucket/dev", "main")
-		}, "no local branch tracks a remote's HEAD branch (bucket/main, origin/main)"},
+			f.git("push", "-q", "mirror", "main:dev")
+			f.git("fetch", "-q", "mirror")
+			f.git("branch", "-q", "--set-upstream-to", "mirror/dev", "main")
+		}, "no local branch tracks a remote's HEAD branch (mirror/main, origin/main)"},
 		{"two remotes' HEADs tracked", func(f *fixture) {
 			f.git("push", "-q", "origin", "main:dev")
 			f.git("fetch", "-q", "origin")
 			f.git("remote", "set-head", "origin", "dev")
-			f.git("branch", "-q", "--set-upstream-to", "bucket/main", "main")
+			f.git("branch", "-q", "--set-upstream-to", "mirror/main", "main")
 			f.git("branch", "-q", "--track", "dev", "origin/dev")
-		}, "local branches track the HEAD branches of several (bucket/main, origin/dev)"},
+		}, "local branches track the HEAD branches of several (mirror/main, origin/dev)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newRepo(t, map[string]string{
 				".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 				"VERSION":     "1.0.0\n",
-			}, "bucket", "origin")
+			}, "mirror", "origin")
 			f.git("checkout", "-q", "-b", "main")
 			f.write("VERSION", "1.0.1\n")
 			f.mustPlainCommit("feat: base")
-			for _, r := range []string{"bucket", "origin"} {
+			for _, r := range []string{"mirror", "origin"} {
 				f.git("push", "-q", r, "main")
 				f.git("fetch", "-q", r)
 				f.git("remote", "set-head", r, "main")
