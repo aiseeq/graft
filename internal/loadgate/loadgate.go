@@ -63,6 +63,20 @@ type Admission struct {
 	ReserveStoppedAt func() time.Time
 }
 
+// Waited reports whether admission waited for a busy machine or another
+// queued task, excluding the time spent checking an available queue.
+func (a Admission) Waited() bool {
+	if a.WaitedBehind != "" {
+		return true
+	}
+	for why, d := range a.Waits {
+		if why != WhyQueue && d > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 type reserveData struct {
 	Cores    float64 `json:"cores"`
 	Admitted string  `json:"admitted"`

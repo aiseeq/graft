@@ -130,7 +130,8 @@ type Record struct {
 	// heavy tasks, the tasks ready to run, the IO pressure, the swapping
 	// (queue, load, io, swap; lines before graft 2.42.14 also have settle, the
 	// hold after a wait, and load is the load average there), a task lock
-	// (lock) and a deploy's sudo confirmation (sudo). Absent when nothing
+	// (lock), a remote_heavy host's queue (host) and a deploy's sudo
+	// confirmation (sudo). Absent when nothing
 	// waited, and in lines written before graft 2.40.
 	WaitWhy      map[string]float64 `json:"wait_why,omitempty"`
 	ReserveCores float64            `json:"reserve_cores,omitempty"`
@@ -249,6 +250,13 @@ func FromProcess(ps *os.ProcessState, wall time.Duration) Usage {
 func (s *Usage) Add(u Usage) {
 	s.User += u.User
 	s.Sys += u.Sys
+	s.Wait += u.Wait
+	for why, d := range u.WaitWhy {
+		if s.WaitWhy == nil {
+			s.WaitWhy = map[string]time.Duration{}
+		}
+		s.WaitWhy[why] += d
+	}
 	if u.RSSKnown {
 		s.MaxRSS = max(s.MaxRSS, u.MaxRSS)
 		s.RSSKnown = true

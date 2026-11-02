@@ -199,6 +199,67 @@ func userRemoteRepoRun(t *testing.T, tasks, state, run string) *fixture {
 	return f
 }
 
+func remoteWaitRepo(t *testing.T, notice string, limit string) (*fixture, string, string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	state, cfgDir := t.TempDir(), t.TempDir()
+	run := filepath.Join(state, "run.sh")
+	writeFile(t, run, notice+"\nexec \"$@\"\n")
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none}\ntasks:\n  sent:\n    heavy: true\n    remote: true\n    run: [[sh, -c, 'sleep 0.01']]\n",
+		"go.mod":      "module example.com/a\n\ngo 1.22\n",
+		"a.go":        "package a\n",
+	})
+	remote := "remote_heavy: {host: pc, up: [sh, -c, 'true'], run: [sh, " + yamlQuote(run) + "], threads: 8}\n"
+	limits := ""
+	if limit != "" {
+		limits = "limits: {task: " + limit + "}\n"
+	}
+	writeUserConfig(t, cfgDir, remote+limits)
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, "XDG_CACHE_HOME="+filepath.Join(state, "cache"), fakeMachine(t, filepath.Join(state, "proc"), 0))
+	return f, filepath.Join(state, "cache", "graft", "stats.jsonl"), state
+}
+
+func TestRemoteHeavyHostAdmissionWaitIsInStepAndTaskStats(t *testing.T) {
+	f, statsFile, state := remoteWaitRepo(t,
+		"echo 'graft: sent: heavy, admitted after abc' >&2\necho 'graft: sent: heavy, admitted after 2.500s' >&2\necho 'graft: nested: heavy, admitted after 9.000s' >&2", "")
+	loaded(t, state)
+	f.mustGraft("sent")
+	lines := readStats(t, statsFile)
+	for _, line := range lines {
+		if line.Kind != "step" && line.Kind != "task" {
+			continue
+		}
+		if line.Host != "pc" {
+			t.Errorf("%s host = %q, want pc", line.Kind, line.Host)
+		}
+		if line.WaitS < 2.5 || !near(line.WaitWhy["host"], 2.5) {
+			t.Errorf("%s wait = %v, why = %v; want at least 2.5s and host about 2.5s", line.Kind, line.WaitS, line.WaitWhy)
+		}
+	}
+}
+
+func TestRemoteHeavyWithoutHostAdmissionNoticeHasNoHostWait(t *testing.T) {
+	f, statsFile, state := remoteWaitRepo(t, "", "")
+	loaded(t, state)
+	f.mustGraft("sent")
+	for _, line := range readStats(t, statsFile) {
+		if (line.Kind == "step" || line.Kind == "task") && (line.WaitS != 0 || line.WaitWhy["host"] != 0) {
+			t.Errorf("%s unexpectedly has host wait: %+v", line.Kind, line)
+		}
+	}
+}
+
+func TestRemoteHeavyHostWaitIsExcludedFromTaskLimit(t *testing.T) {
+	f, _, state := remoteWaitRepo(t, "echo 'graft: sent: heavy, admitted after 2.500s' >&2", "100ms")
+	loaded(t, state)
+	if out := f.mustGraft("sent"); strings.Contains(out, "over the limit") {
+		t.Errorf("host queue time counted against the task limit:\n%s", out)
+	}
+}
+
 func loaded(t *testing.T, state string) {
 	t.Helper()
 	setRunnable(t, filepath.Join(state, "proc"), 30)
@@ -284,6 +345,23 @@ func TestUserRemoteHeavyKeepsOtherStepsHere(t *testing.T) {
 	loaded(t, state)
 	if out := f.mustGraft("sent"); !strings.Contains(out, "graft: sent: heavy, on pc") || !strings.Contains(callsOf(t, state), "echo there") {
 		t.Errorf("remote: true kept the task here:\n%s\ncalls: %q", out, callsOf(t, state))
+	}
+}
+
+func TestHeavyAdmissionNoticeIsPrintedOnlyAfterWaiting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, overflowTasks)
+	if out := f.mustGraft("script"); strings.Contains(out, "admitted after") {
+		t.Errorf("calm admission printed a wait notice:\n%s", out)
+	}
+	loaded(t, state)
+	cmd, out := f.start(f.work, "script")
+	waitFor(t, func() bool { return strings.Contains(out.String(), "waiting") })
+	setRunnable(t, filepath.Join(state, "proc"), 0)
+	if err := cmd.Wait(); err != nil || !strings.Contains(out.String(), "graft: script: heavy, admitted after ") {
+		t.Errorf("waited admission notice missing: %v\n%s", err, out.String())
 	}
 }
 

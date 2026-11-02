@@ -284,6 +284,10 @@ the command starts read too), or keep the run here with `graft exec --heavy
 it: `graft: exec: heavy, on pc (the caller's variables, TMPDIR too, stay
 here: --env NAME passes one, --local runs here)`; a test that depends on the
 file system of `TMPDIR` belongs with `--local`.
+The command `run` may print `graft: <task>: heavy, admitted after <seconds>s`
+to stderr when its graft waited for the host's heavy queue; `<seconds>` has
+three decimal places. Graft reads the first such line from `run`'s stderr and
+adds that duration to the step and task's wait statistics under `wait_why.host`.
 A gate under the user config's `when: busy`, in a project without its own
 `remote_heavy`, that would wait here while the host answers and has a task
 with `remote: true` (the project vouches that its tests pass on the host:
@@ -931,7 +935,7 @@ deps and inner tasks included.
   the time between two readings goes to what the first found), `quiet` (the
   quiet mode of akit's busy), `reserve` (live expected CPU reservations), a
   measure graft does not know yet by its own name, `lock` (a task lock) and
-  `sudo` (a deploy's
+  `host` (the heavy queue on `remote_heavy`'s host), `sudo` (a deploy's
   confirmation). Absent when nothing waited.
 - `waited_behind`, on a task line that waited for a queue or lock, names the
   command and task ahead of it (for example `graft build (starting a heavy
