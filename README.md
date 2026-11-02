@@ -283,10 +283,12 @@ the command starts read too), or keep the run here with `graft exec --heavy
 it: `graft: exec: heavy, on pc (the caller's variables, TMPDIR too, stay
 here: --env NAME passes one, --local runs here)`; a test that depends on the
 file system of `TMPDIR` belongs with `--local`.
-The command `run` may print `graft: <task>: heavy, admitted after <seconds>s`
-to stderr when its graft waited for the host's heavy queue; `<seconds>` has
-three decimal places. Graft reads the first such line from `run`'s stderr and
-adds that duration to the step and task's wait statistics under `wait_why.host`.
+A graft admitted to the heavy queue after a wait prints `graft: <task>:
+heavy, admitted after <seconds>s` to stderr, `<seconds>` with three decimal
+places, here as on the host; a `run` of its own may print the same line.
+Graft reads the first such line from `run`'s stderr and adds that duration,
+up to the step's wall time, to the step and task's wait statistics under
+`wait_why.host`.
 A gate under the user config's `when: busy`, in a project without its own
 `remote_heavy`, that would wait here while the host answers and has a task
 with `remote: true` (the project vouches that its tests pass on the host:
@@ -929,7 +931,10 @@ deps and inner tasks included.
   no `parent`.
 - `wait_s`, on a task line, is the part of `wall_s` the task and the tasks
   it ran waited before their steps: for the load in the queue of heavy
-  tasks and for their locks. Absent when nothing waited.
+  tasks and for their locks. A step `remote_heavy`'s host ran has the
+  host's admission wait (`wait_why.host`, see remote_heavy) on its own
+  line too, and its tasks add it; it counts no more than the step's
+  `wall_s`. Absent when nothing waited.
 - `wait_why` splits `wait_s` by what was waited for, in seconds: `queue`
   (behind other heavy tasks), `load`, `io`, `writeback`, `swap` (each over its limit;
   the time between two readings goes to what the first found), `quiet` (the

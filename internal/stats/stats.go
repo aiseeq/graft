@@ -119,8 +119,10 @@ type Record struct {
 	DBMemMB *float64 `json:"db_mem_mb,omitempty"`
 	// WaitS is, on a task line, how long the task and the tasks it ran
 	// waited before their steps: in the queue of heavy tasks for the load
-	// (load gate) and for their locks. WallS includes it. Absent when
-	// nothing waited, and in lines written before graft 2.21.
+	// (load gate) and for their locks; on the line of a step remote_heavy's
+	// host ran, and on its tasks', also the host's admission wait (WhyHost).
+	// WallS includes it. Absent when nothing waited, and in lines written
+	// before graft 2.21.
 	WaitS float64 `json:"wait_s,omitempty"`
 	// WaitWhy splits WaitS by what was waited for, in seconds: the queue of
 	// heavy tasks, the tasks ready to run, the IO pressure, the swapping
