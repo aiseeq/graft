@@ -1453,6 +1453,7 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 	if !remote {
 		if err := r.enterSplit(ctx, frame.task, taskMemoryMax(t)); err != nil {
 			frame.remote = wasRemote
+			frame.stepHere = ""
 			return nil, err
 		}
 	}

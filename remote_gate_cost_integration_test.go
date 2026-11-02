@@ -115,6 +115,12 @@ func runBusyCostGate(t *testing.T, g gateCostFixture, remoteDelay bool) (string,
 const gateCostVetConfig = "schema: 1\nversion: {mode: none}\ngo_fix: {enabled: false}\n" +
 	"gate: [{task: script}]\ntasks:\n  script:\n    run: [[sh, -c, 'echo local >> out']]\n"
 
+// gateCostHostAskedConfig has a remote task whose step has no local price.
+const gateCostHostAskedConfig = "schema: 1\nversion: {mode: none}\ngo_fix: {enabled: false}\n" +
+	"gate:\n  - task: unit\n  - task: script\ntasks:\n" +
+	"  unit:\n    heavy: true\n    remote: true\n    run: [[go, test, -run, Nothing, ./...]]\n" +
+	"  script:\n    run: [[sh, -c, 'echo local >> out']]\n"
+
 func TestBusyGateCheaperHereHistory(t *testing.T) {
 	g := newGateCostFixture(t, gateCostVetConfig)
 	g.writeHistory(t, gateCostRows([]float64{0.1, 0.2, 0.3}, "", 0), gateCostRows([]float64{40, 41}, "pc", 0))
@@ -290,5 +296,35 @@ func TestBusyGateKeepsTheTaskHereReason(t *testing.T) {
 	}
 	if sent.Here != "" {
 		t.Errorf("the step pc ran has here %q, want none", sent.Here)
+	}
+}
+
+// TestBusyGateHostDownKeepsNoStepHereForCost: a gate whose host did not
+// answer waits here whole, and none of its steps says cheaper here: the
+// unit step has no local price, so the gate asks the host.
+func TestBusyGateHostDownKeepsNoStepHereForCost(t *testing.T) {
+	g := newGateCostFixture(t, gateCostHostAskedConfig)
+	if g.step != "go vet ./..." {
+		t.Fatalf("the sample step is %q, want the built-in vet", g.step)
+	}
+	g.writeHistory(t, gateCostRows([]float64{0.2, 0.2}, "", 0), gateCostRows([]float64{40}, "pc", 0))
+	if err := os.Remove(filepath.Join(g.state, "up")); err != nil {
+		t.Fatal(err)
+	}
+	out, calls := runBusyCostGate(t, g, false)
+	if !strings.Contains(out, "did not answer") || calls != "" {
+		t.Fatalf("want a host that did not answer and no host call; calls=%q\n%s", calls, out)
+	}
+	if strings.Contains(out, "cheaper here") {
+		t.Errorf("the console says cheaper here with the host down:\n%s", out)
+	}
+	records, _, err := stats.LoadTail(g.statsFile, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rec := range records {
+		if strings.Contains(rec.Here, "cheaper here") {
+			t.Errorf("a record says cheaper here with the host down: %+v", rec)
+		}
 	}
 }
