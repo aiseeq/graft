@@ -852,6 +852,7 @@ func releaseCmd(ctx context.Context, a *app.App, args []string) error {
 	fs := newFlags(a, "release")
 	exact := fs.String("version", "", "release exactly this X.Y.Z (git-tag mode)")
 	level := levelFlags(fs)
+	patch := fs.Bool("patch", false, "bump the patch version (file mode); no effect in git-tag mode")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -859,7 +860,13 @@ func releaseCmd(ctx context.Context, a *app.App, args []string) error {
 	if err != nil {
 		return err
 	}
-	return a.Release(ctx, app.ReleaseOptions{Level: lvl, Version: *exact})
+	if *patch && lvl != version.Patch {
+		return fmt.Errorf("%w: --patch excludes --minor and --major", errUsage)
+	}
+	if *patch && *exact != "" {
+		return fmt.Errorf("%w: --patch and --version exclude each other", errUsage)
+	}
+	return a.Release(ctx, app.ReleaseOptions{Level: lvl, Version: *exact, Patch: *patch})
 }
 
 func versionCmd(ctx context.Context, a *app.App, args []string) error {

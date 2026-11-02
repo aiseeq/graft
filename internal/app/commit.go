@@ -78,10 +78,14 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 // commitPlan is everything a commit needs, worked out before the gate runs so
 // a bad version file or an unknown remote fails fast.
 type commitPlan struct {
-	branch  string
-	remotes []string
-	message string
-	bump    bumpPlan
+	branch         string
+	remotes        []string
+	message        string
+	bump           bumpPlan
+	bumpBeforeGate bool
+	// release marks the commit graft release makes: it changes only the
+	// version files and needs no work item under ticket.required.
+	release bool
 }
 
 func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level version.Level) (commitPlan, error) {
@@ -119,6 +123,10 @@ func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level versio
 // item: a revert and a commit that changes only files that ship nothing pass.
 // The commit's files are the index against base, HEAD when it is "".
 func requireTicket(repo *gitx.Repo, cfg *config.Config, msg, base string) error {
+	return requireTicketWithVersion(repo, cfg, msg, base, false)
+}
+
+func requireTicketWithVersion(repo *gitx.Repo, cfg *config.Config, msg, base string, releaseVersion bool) error {
 	if !cfg.Ticket.Required || hasTicketKey(cfg, msg) {
 		return nil
 	}
@@ -129,7 +137,20 @@ func requireTicket(repo *gitx.Repo, cfg *config.Config, msg, base string) error 
 	if err != nil {
 		return err
 	}
-	if cfg.ShipsNothing(changed) {
+	versionFiles := make(map[string]bool)
+	if releaseVersion {
+		for _, target := range version.Targets(cfg.Version) {
+			versionFiles[target.Path] = true
+		}
+	}
+	versionOnly := releaseVersion && len(changed) > 0
+	for _, path := range changed {
+		if !versionFiles[path] {
+			versionOnly = false
+			break
+		}
+	}
+	if cfg.ShipsNothing(changed) || versionOnly {
 		return nil
 	}
 	return fmt.Errorf("the commit names no work item (ticket.required): put a key matching %s in the message or commit from a branch named for the item; only a revert and changes ignored by every approved_release target need none", cfg.Ticket.Pattern)
@@ -163,32 +184,9 @@ func uppercaseProjectPrefix(prefix string) bool {
 }
 
 func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, plan commitPlan) error {
-	index, start, err := stageCommitStart(repo, "")
+	backup, frozen, advisoryFailed, err := a.prepareCommitGate(ctx, repo, cfg, plan)
 	if err != nil {
 		return err
-	}
-	frozen, advisoryFailed, err := a.gateForMessage(ctx, repo, cfg, plan.branch, plan.message)
-	if err != nil {
-		return errors.Join(err, restoreIndex(index))
-	}
-	if err := a.stageGateChanges(repo, start, "commit"); err != nil {
-		return errors.Join(err, restoreIndex(index))
-	}
-	empty, err := gateLeftHead(repo)
-	if err != nil {
-		return errors.Join(err, restoreIndex(index))
-	}
-	if empty {
-		return errors.Join(errGateLeftHead, restoreIndex(index))
-	}
-	if cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, plan.branch) {
-		if err := requireTicket(repo, cfg, plan.message, ""); err != nil {
-			return errors.Join(err, restoreIndex(index))
-		}
-	}
-	backup, err := plan.bump.apply(repo)
-	if err != nil {
-		return errors.Join(err, restoreIndex(index))
 	}
 	undo := func(cause error) error { return errors.Join(cause, restoreVersion(repo, backup)) }
 
@@ -208,6 +206,62 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	if _, err := repo.GitInput(strings.NewReader(msg), markerEnv, "commit", "--cleanup=verbatim", "-F", "-"); err != nil {
 		return undo(err)
 	}
+	return a.finishCommit(repo, cfg, plan, frozen, advisoryFailed)
+}
+
+func (a *App) prepareCommitGate(ctx context.Context, repo *gitx.Repo, cfg *config.Config, plan commitPlan) (*version.Backup, *activeFreeze, []string, error) {
+	index, start, err := stageCommitStart(repo, "")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var backup *version.Backup
+	if plan.bumpBeforeGate {
+		backup, err = plan.bump.apply(repo)
+		if err != nil {
+			return nil, nil, nil, errors.Join(err, restoreIndex(index))
+		}
+		if paths := backup.Paths(); len(paths) > 0 {
+			if _, err := repo.Git(append([]string{"add", "--"}, paths...)...); err != nil {
+				return nil, nil, nil, errors.Join(err, restoreVersion(repo, backup), restoreIndex(index))
+			}
+			start, err = saveCommitStart(repo, "")
+			if err != nil {
+				return nil, nil, nil, errors.Join(err, restoreVersion(repo, backup), restoreIndex(index))
+			}
+		}
+	}
+	restoreBeforeGate := func(cause error) error {
+		return errors.Join(cause, restoreVersion(repo, backup), restoreIndex(index))
+	}
+	frozen, advisoryFailed, err := a.gateForMessage(ctx, repo, cfg, plan.branch, plan.message)
+	if err != nil {
+		return nil, nil, nil, restoreBeforeGate(err)
+	}
+	if err := a.stageGateChanges(repo, start, "commit"); err != nil {
+		return nil, nil, nil, restoreBeforeGate(err)
+	}
+	empty, err := gateLeftHead(repo)
+	if err != nil {
+		return nil, nil, nil, restoreBeforeGate(err)
+	}
+	if empty {
+		return nil, nil, nil, restoreBeforeGate(errGateLeftHead)
+	}
+	if cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, plan.branch) {
+		if err := requireTicketWithVersion(repo, cfg, plan.message, "", plan.release); err != nil {
+			return nil, nil, nil, restoreBeforeGate(err)
+		}
+	}
+	if backup == nil {
+		backup, err = plan.bump.apply(repo)
+		if err != nil {
+			return nil, nil, nil, errors.Join(err, restoreIndex(index))
+		}
+	}
+	return backup, frozen, advisoryFailed, nil
+}
+
+func (a *App) finishCommit(repo *gitx.Repo, cfg *config.Config, plan commitPlan, frozen *activeFreeze, advisoryFailed []string) error {
 	refs := []string{"HEAD"}
 	var postCommitErrs []error
 	if plan.bump.tag != "" {
@@ -426,9 +480,10 @@ func (a *App) stageGateChanges(repo *gitx.Repo, start commitStart, command strin
 
 // bumpPlan is the version change a commit will make.
 type bumpPlan struct {
-	cfg  config.Version
-	next *version.Semver
-	tag  string
+	cfg    config.Version
+	next   *version.Semver
+	tag    string
+	raised bool
 	// skipped is the branch whose commits leave the version alone.
 	skipped string
 }
@@ -440,7 +495,7 @@ func planBump(repo *gitx.Repo, cfg *config.Config, level version.Level, branch s
 	}
 	if config.BranchMatches(cfg.Version.Skip, branch) {
 		if level != version.Patch {
-			return plan, fmt.Errorf("--%s on %s: version.skip_branches leaves the version alone there; bump on the branch the work is merged into", level, branch)
+			return plan, fmt.Errorf("--%s on %s: version.skip_branches leaves the version alone there; use graft release --minor on the branch the work is merged into", level, branch)
 		}
 		plan.skipped = branch
 		return plan, nil
@@ -459,7 +514,15 @@ func planBump(repo *gitx.Repo, cfg *config.Config, level version.Level, branch s
 	case current.Build > 0:
 		return plan, fmt.Errorf("%s is %s, a build_branches version, on %s: a merge took it from a hotfix or release branch; put back the version %s had before the merge", cfg.Version.File, current, branch, branch)
 	default:
-		next = current.Bump(level)
+		raised, err := raisedBeforeCommit(repo, cfg, current)
+		if err != nil {
+			return plan, err
+		}
+		if raised {
+			next, plan.raised = current, true
+		} else {
+			next = current.Bump(level)
+		}
 	}
 	plan.next = &next
 	if cfg.Version.TagOnCommit {
@@ -475,11 +538,60 @@ func planBump(repo *gitx.Repo, cfg *config.Config, level version.Level, branch s
 	return plan, nil
 }
 
+// raisedBeforeCommit tells whether the work tree's version was raised above
+// HEAD's before this commit (graft version bump): the commit keeps it instead
+// of raising it again. In a merge, a version one of the merged commits already
+// has came with the merge and is bumped as usual.
+func raisedBeforeCommit(repo *gitx.Repo, cfg *config.Config, current version.Semver) (bool, error) {
+	head, found, err := fileVersionAtHeadIfPresent(repo, cfg)
+	if err != nil || !found || !head.Less(current) {
+		return false, err
+	}
+	merge, err := mergeOrNormalContext(repo)
+	if err != nil || !merge {
+		return err == nil, err
+	}
+	raw, err := os.ReadFile(filepath.Join(repo.GitDir, "MERGE_HEAD"))
+	if err != nil {
+		return false, fmt.Errorf("reading MERGE_HEAD: %w", err)
+	}
+	for sha := range strings.FieldsSeq(string(raw)) {
+		theirs, err := fileVersionAt(repo, cfg, sha)
+		if err != nil {
+			// A merged commit without a readable version file did not bring
+			// the version.
+			continue
+		}
+		if theirs == current {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func fileVersionAtHeadIfPresent(repo *gitx.Repo, cfg *config.Config) (version.Semver, bool, error) {
+	hasHead, err := repo.HasHead()
+	if err != nil || !hasHead {
+		return version.Semver{}, false, err
+	}
+	out, err := repo.Git("ls-tree", "-r", "--name-only", "HEAD", "--", cfg.Version.File)
+	if err != nil {
+		return version.Semver{}, false, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return version.Semver{}, false, nil
+	}
+	v, err := fileVersionAt(repo, cfg, "HEAD")
+	return v, err == nil, err
+}
+
 // apply writes the new version; without a bump the backup is empty.
 func (p bumpPlan) apply(repo *gitx.Repo) (*version.Backup, error) {
 	if p.next == nil {
 		return &version.Backup{}, nil
 	}
+	// A version raised before the commit is written again as it is: Write
+	// refuses synced files that do not agree with the version file.
 	return version.Write(repo.Root, p.cfg, *p.next)
 }
 
@@ -490,6 +602,9 @@ func (p bumpPlan) describe() string {
 	if p.next == nil {
 		return ""
 	}
+	if p.raised {
+		return ", version " + p.next.String() + " (raised before the commit)"
+	}
 	return ", version " + p.next.String()
 }
 
@@ -497,6 +612,9 @@ func (p bumpPlan) describe() string {
 // that way, so a failed commit leaves no bump behind for the next one to stack
 // on.
 func restoreVersion(repo *gitx.Repo, backup *version.Backup) error {
+	if backup == nil {
+		return nil
+	}
 	paths := backup.Paths()
 	if len(paths) == 0 {
 		return nil

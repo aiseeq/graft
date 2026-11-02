@@ -395,9 +395,10 @@ stats` (`wait_s`).
 | `graft commit -F msg.txt` / `-F -` | message from a file / from stdin, byte for byte |
 | `graft amend` | lock, stage work before the gate, gate, stage paths changed since the amended commit's parent (including the amended commit's files), `ticket.required` on the whole amended commit, checks, `git commit --amend --no-edit`, no push; restores the original index if the gate or a later step fails or the gate leaves the amended commit as its parent has it, and refuses a commit that is already on a remote unless only on branches in `push.force_with_lease` |
 | `graft release` | refuse a HEAD no remote has yet; push the current branch to the remotes whose branch lacks HEAD (one fast-forwarded to pushed work), tag HEAD with the version, push the tag to every remote |
-| `graft release --minor` / `--major` / `--version X.Y.Z` | choose the next tag (version mode `git-tag` only) |
+| `graft release --patch` / `--minor` / `--major` | in version mode `file`, bump, commit and tag that version in one step; in `git-tag` mode `--patch` is the default |
+| `graft release --version X.Y.Z` | choose the exact next tag (version mode `git-tag` only) |
 | `graft version` | print the project version |
-| `graft version bump [--minor\|--major]` | raise the version in the version file and its synced files without committing, for a script that folds the bump into its own commit (merging a work branch whose commits skipped it) |
+| `graft version bump [--minor\|--major]` | raise the version in the version file and its synced files without committing, for a script that folds the bump into its own commit; a following `graft commit` uses that version without raising it again |
 | `graft version --describe` | the build identity for stamping binaries: `v1.4.0-3-gabc1234[-dirty]`, `1.4.0[-dirty]` in mode `file`, `v0.0.0-<commits>-g<hash>` without a tag |
 | `graft init` | install the hooks and set `core.hooksPath`, create the `.env` file from `dotenv_template` when it is missing, install pinned tools that fail their check; safe to repeat |
 | `graft check` | run the content checks on the index |
@@ -473,7 +474,8 @@ refused with the form that works: `graft -C <directory> <command> …`.
    the gate ran stay out of the commit so another writer's work is not committed
    before it was gated.
 5. Bump the version file and every file synced with it, except on a branch
-   in `version.skip_branches` (`--minor` and `--major` are refused there).
+   in `version.skip_branches` (`--minor` and `--major` are refused there; use
+   `graft release --minor` on the branch the work is merged into).
    On a branch in `version.build_branches` the bump counts builds in a fourth
    part instead: 1.2.3 -> 1.2.3.1 -> 1.2.3.2, a number the trunk never takes
    (`--minor` and `--major` are refused there too). A fourth part anywhere
@@ -623,7 +625,7 @@ version:
                                 # too, until graft release tags the first (v0.1.0)
   tag_on_commit: false          # file mode: tag every commit v<version> and push the tag
   skip_branches: ['w/*']        # file mode: commits on these branches leave the version alone;
-                                # the branch they are merged into bumps (graft version bump)
+                                # after merging, use graft release --minor (or another step)
   build_branches: ['hotfix/*', 'release/*']  # file mode: commits here bump a fourth part, 1.2.3.1
   sync:                         # file mode: files that repeat the version
     - path: web/package.json
@@ -680,6 +682,10 @@ lock:
   scope: repository             # repository (default) | worktree: one commit lock per worktree;
                                 # not with version.tag_on_commit
 ```
+
+With `version.mode: file`, merge a work branch by fast-forward and release the
+combined work in one step: the work branch skips version changes, then the
+trunk runs `graft release --minor`.
 
 Unknown keys are errors, so a typo cannot silently switch a check off. All
 paths are relative to the repository root and use forward slashes.

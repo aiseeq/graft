@@ -1194,8 +1194,12 @@ func TestFileModeReleaseAndTagOnCommit(t *testing.T) {
 	if out, code := f.graft("", "release"); code == 0 || !strings.Contains(out, "already exists") {
 		t.Errorf("release of a tagged version: exit %d\n%s", code, out)
 	}
-	if out, code := f.graft("", "release", "--minor"); code == 0 {
-		t.Errorf("--minor in file mode accepted:\n%s", out)
+	f.mustGraft("release", "--minor")
+	if got := f.read("VERSION"); got != "0.10.0\n" {
+		t.Errorf("release --minor VERSION = %q", got)
+	}
+	if got := f.gitIn(f.remote("origin"), "tag", "--list"); got != "v0.10.0\nv0.9.1" {
+		t.Errorf("release --minor remote tags = %q", got)
 	}
 }
 

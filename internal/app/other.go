@@ -210,6 +210,7 @@ func checkAmendable(repo *gitx.Repo, cfg *config.Config) error {
 // ReleaseOptions are the arguments of graft release.
 type ReleaseOptions struct {
 	Level version.Level
+	Patch bool
 	// Version, when set, is the exact version to release (git-tag mode).
 	Version string
 }
@@ -230,6 +231,12 @@ func (a *App) Release(ctx context.Context, opts ReleaseOptions) error {
 		return err
 	}
 	return a.withLock(ctx, repoLock(repo), cfg, "graft release", func() error {
+		if cfg.Version.Mode == config.ModeFile && opts.Version != "" {
+			return errors.New("in version.mode file release takes no --version")
+		}
+		if cfg.Version.Mode == config.ModeFile && (opts.Level != version.Patch || opts.Patch) {
+			return a.releaseFileCommit(ctx, repo, cfg, opts)
+		}
 		next, err := releaseVersion(repo, cfg, opts)
 		if err != nil {
 			return err
@@ -240,6 +247,9 @@ func (a *App) Release(ctx context.Context, opts ReleaseOptions) error {
 			return err
 		}
 		if exists {
+			if cfg.Version.Mode == config.ModeFile {
+				return fmt.Errorf("tag %s already exists: use graft release --patch, --minor or --major for the next version", tag)
+			}
 			return fmt.Errorf("tag %s already exists", tag)
 		}
 		remotes, err := pushRemotes(repo, cfg)
@@ -395,10 +405,17 @@ func versionAt(repo *gitx.Repo, cfg *config.Config, rev string) (string, error) 
 func releaseVersion(repo *gitx.Repo, cfg *config.Config, opts ReleaseOptions) (version.Semver, error) {
 	switch cfg.Version.Mode {
 	case config.ModeFile:
-		if opts.Level != version.Patch || opts.Version != "" {
-			return version.Semver{}, errors.New("in version.mode file the version is bumped by graft commit; release takes no --minor, --major or --version")
+		if opts.Version != "" {
+			return version.Semver{}, errors.New("in version.mode file release takes no --version")
 		}
-		return fileVersionAt(repo, cfg, "HEAD")
+		if opts.Level != version.Patch || opts.Patch {
+			return version.Semver{}, errors.New("in version.mode file a release step needs a commit")
+		}
+		next, err := fileVersionAt(repo, cfg, "HEAD")
+		if err != nil {
+			return version.Semver{}, err
+		}
+		return next, nil
 	case config.ModeGitTag:
 		latest, found, err := latestTag(repo, cfg.Version.TagPrefix)
 		if err != nil {
@@ -427,6 +444,62 @@ func releaseVersion(repo *gitx.Repo, cfg *config.Config, opts ReleaseOptions) (v
 	default:
 		return version.Semver{}, fmt.Errorf("version.mode %s has no releases", cfg.Version.Mode)
 	}
+}
+
+// releaseFileCommit makes the version bump and release tag part of one commit
+// transaction. The repository lock stays held through the commit and push.
+func (a *App) releaseFileCommit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, opts ReleaseOptions) error {
+	if commitLock(repo, cfg) == repoLock(repo) {
+		return a.releaseFileCommitLocked(ctx, repo, cfg, opts)
+	}
+	return a.withLock(ctx, commitLock(repo, cfg), cfg, "graft release commit", func() error {
+		return a.releaseFileCommitLocked(ctx, repo, cfg, opts)
+	})
+}
+
+func (a *App) releaseFileCommitLocked(ctx context.Context, repo *gitx.Repo, cfg *config.Config, opts ReleaseOptions) error {
+	branch, err := repo.Branch()
+	if err != nil {
+		return err
+	}
+	if config.BranchMatches(cfg.Version.Skip, branch) {
+		return fmt.Errorf("cannot release on %s: version.skip_branches leaves the version alone there; release on the branch the work is merged into", branch)
+	}
+	if config.BranchMatches(cfg.Version.Build, branch) {
+		return fmt.Errorf("cannot release on %s: version.build_branches count builds in the fourth part there; release on the trunk", branch)
+	}
+	clean, err := repo.IsClean()
+	if err != nil {
+		return err
+	}
+	if !clean {
+		return errors.New("the work tree is dirty; run graft commit first")
+	}
+	plan, err := planBump(repo, cfg, opts.Level, branch)
+	if err != nil {
+		return err
+	}
+	if plan.next == nil {
+		return errors.New("release needs a version bump")
+	}
+	tag := cfg.Version.TagPrefix + plan.next.String()
+	exists, err := tagExists(repo, tag)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("tag %s already exists", tag)
+	}
+	remotes, err := pushRemotes(repo, cfg)
+	if err != nil {
+		return err
+	}
+	plan.tag = tag
+	commit := commitPlan{branch: branch, remotes: remotes, message: "chore(release): " + tag, bump: plan, bumpBeforeGate: true, release: true}
+	if err := a.raiseOwnModules(ctx, repo, cfg, branch); err != nil {
+		return err
+	}
+	return a.commit(ctx, repo, cfg, commit)
 }
 
 // requireUnreleased refuses a release of a commit that already carries a
@@ -498,7 +571,7 @@ func (a *App) BumpVersion(ctx context.Context, level version.Level) error {
 			return err
 		}
 		if plan.skipped != "" {
-			return fmt.Errorf("%s is in version.skip_branches: its commits leave the version alone", branch)
+			return fmt.Errorf("%s is in version.skip_branches: its commits leave the version alone; bump on the branch the work is merged into with graft release --minor", branch)
 		}
 		current, err := version.Current(repo.Root, cfg.Version)
 		if err != nil {
