@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -421,6 +422,20 @@ func wait(ctx context.Context, name string, p *Priority, l userconfig.MachineLoa
 	return adm.Waits, release, err
 }
 
+// signalWriter closes seen once a write contains text.
+type signalWriter struct {
+	text string
+	seen chan struct{}
+	once sync.Once
+}
+
+func (w *signalWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), w.text) {
+		w.once.Do(func() { close(w.seen) })
+	}
+	return len(p), nil
+}
+
 func awaitFiles(t *testing.T, pattern string, count int) {
 	t.Helper()
 	deadline := time.NewTimer(3 * time.Second)
@@ -570,14 +585,21 @@ func TestWaitWithSettleNamesWhoHeldTheSettleQueue(t *testing.T) {
 	}
 	awaitFiles(t, settlePath+".*.lholder", 1)
 	got := make(chan Admission, 1)
+	// The follower names who it waits behind once its try of the settle
+	// lock fails; head is released only after the follower says it waits.
+	waiting := &signalWriter{text: "waiting for the write lock", seen: make(chan struct{})}
 	go func() {
-		adm, rel, err := WaitWithSettle(context.Background(), "follower", "projectA:follower", nil, testLoad, path, settlePath, time.Hour, 0, io.Discard)
+		adm, rel, err := WaitWithSettle(context.Background(), "follower", "projectA:follower", nil, testLoad, path, settlePath, time.Hour, 0, waiting)
 		if err == nil {
 			_ = rel()
 		}
 		got <- adm
 	}()
-	awaitFiles(t, settlePath+".queue.*.lticket", 1)
+	select {
+	case <-waiting.seen:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the follower did not wait for the settle lock")
+	}
 	if err := release(); err != nil {
 		t.Fatal(err)
 	}
