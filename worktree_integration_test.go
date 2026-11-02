@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aiseeq/graft/v2/internal/lock"
 )
 
 // TestWorktreeClean: a worktree goes, with its branch, only when no process
@@ -450,5 +452,155 @@ func TestWorktreeCleanNoRemote(t *testing.T) {
 				t.Errorf("exit %d:\n%s\nwant %q", code, out, tc.want)
 			}
 		})
+	}
+}
+
+func TestWorktreeCleanInA(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	parent := t.TempDir()
+	makeRepo := func(name string, remotes ...string) *fixture {
+		t.Helper()
+		f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: file}\n", "VERSION": "1.0.0\n"}, remotes...)
+		dest := filepath.Join(parent, name)
+		if err := os.Rename(f.work, dest); err != nil {
+			t.Fatal(err)
+		}
+		f.work = dest
+		return f
+	}
+	bad := makeRepo("projectA", "first", "second")
+	bad.git("checkout", "-q", "-b", "main")
+	bad.mustPlainCommit("feat: base")
+	good := makeRepo("projectB", "origin")
+	good.git("checkout", "-q", "-b", "main")
+	good.mustPlainCommit("feat: base")
+	good.git("push", "-q", "-u", "origin", "main")
+	good.git("remote", "set-head", "origin", "main")
+	good.write("landed.txt", "landed\n")
+	good.mustPlainCommit("feat: landed")
+	good.git("push", "-q", "origin", "main")
+	good.git("worktree", "add", "-q", "-b", "b/merged", filepath.Join(good.base, "merged"), "main")
+	out, code := good.graft("", "worktree", "clean", "--in", parent, "--min-age", "0s")
+	if code != 1 || !strings.Contains(out, "repositories 2, would remove 1, in work 0, unmerged 0, to check 0, failed 1") {
+		t.Fatalf("dry run exit %d:\n%s", code, out)
+	}
+	for run := range 3 {
+		out, code := good.graft("", "worktree", "clean", "--in", parent, "--apply", "--min-age", "0s")
+		if code != 1 ||
+			!strings.Contains(out, "failed    "+bad.work+": remotes first, second and no deploy.remote") ||
+			!strings.Contains(out, "repositories 2,") ||
+			!strings.Contains(out, "failed 1") {
+			t.Fatalf("run %d: exit %d:\n%s", run+1, code, out)
+		}
+		if run == 0 && !strings.Contains(out, "removed   "+filepath.Join(good.base, "merged")) {
+			t.Fatalf("run %d did not clean the neighboring repository:\n%s", run+1, out)
+		}
+	}
+}
+
+func TestWorktreeCleanInE(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "ordinary"), "file")
+	writeFile(t, filepath.Join(root, "plain", "nested"), "no config")
+	writeFile(t, filepath.Join(root, "worktree", ".graft.yaml"), "schema: 1\nversion: {mode: file}\n")
+	writeFile(t, filepath.Join(root, "worktree", ".git"), "gitdir: elsewhere\n")
+	if out, code := (&fixture{t: t, work: root}).graft("", "worktree", "clean", "--in", root); code == 0 || !strings.Contains(out, "no repositories found") {
+		t.Fatalf("empty scan exit %d:\n%s", code, out)
+	}
+	if out, code := (&fixture{t: t, work: root}).graft("", "worktree", "clean", "--in", root, "--trunk", "main"); code == 0 || !strings.Contains(out, "cannot be used with --in") {
+		t.Fatalf("trunk with in exit %d:\n%s", code, out)
+	}
+}
+
+func TestWorktreeCleanInC(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: file}\n", "VERSION": "1.0.0\n"})
+	f.git("checkout", "-q", "-b", "main")
+	f.mustPlainCommit("feat: base")
+	f.git("worktree", "add", "-q", "-b", "b/merge", filepath.Join(f.base, "merge"), "main")
+	gitDir := strings.TrimSpace(f.git("-C", filepath.Join(f.base, "merge"), "rev-parse", "--path-format=absolute", "--git-dir"))
+	writeFile(t, filepath.Join(gitDir, "MERGE_HEAD"), strings.TrimSpace(f.git("rev-parse", "HEAD"))+"\n")
+	f.git("worktree", "add", "-q", "-b", "b/rebase", filepath.Join(f.base, "rebase"), "main")
+	writeFile(t, filepath.Join(f.base, "rebase", "conflict.txt"), "work\n")
+	f.git("-C", filepath.Join(f.base, "rebase"), "add", "conflict.txt")
+	f.git("-C", filepath.Join(f.base, "rebase"), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "-m", "feat: work")
+	f.write("conflict.txt", "trunk\n")
+	f.mustPlainCommit("feat: trunk conflict")
+	// Rebase a commit that conflicts with the trunk and leave it stopped.
+	if _, code := f.exec(filepath.Join(f.base, "rebase"), "", "git", "rebase", "main"); code == 0 {
+		t.Fatal("rebase unexpectedly completed")
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	for _, dir := range []string{gitDir, strings.TrimSpace(f.git("-C", filepath.Join(f.base, "rebase"), "rev-parse", "--path-format=absolute", "--git-dir"))} {
+		for _, name := range []string{"HEAD", filepath.Join("logs", "HEAD")} {
+			if err := os.Chtimes(filepath.Join(dir, name), old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	out := f.mustGraft("worktree", "clean", "--min-age", "1h")
+	if !strings.Contains(out, "in work   "+filepath.Join(f.base, "merge")+" (b/merge): a merge in progress") {
+		t.Fatalf("an interrupted merge was not kept:\n%s", out)
+	}
+	if !strings.Contains(out, "in work   "+filepath.Join(f.base, "rebase")+" (detached): a rebase in progress") {
+		t.Fatalf("an interrupted rebase was not kept:\n%s", out)
+	}
+}
+
+func TestWorktreeCleanInB(t *testing.T) {
+	parent := t.TempDir()
+	makeRepo := func(name string) *fixture {
+		t.Helper()
+		f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: file}\n", "VERSION": "1.0.0\n"})
+		dest := filepath.Join(parent, name)
+		if err := os.Rename(f.work, dest); err != nil {
+			t.Fatal(err)
+		}
+		f.work = dest
+		f.git("checkout", "-q", "-b", "main")
+		f.mustPlainCommit("feat: base")
+		return f
+	}
+	broken := makeRepo("projectA")
+	broken.git("remote", "add", "broken", filepath.Join(parent, "missing-remote.git"))
+	good := makeRepo("projectB")
+	good.git("branch", "b/done", "main")
+	if out, code := good.graft("", "worktree", "clean", "--in", parent, "--min-age", "0s", "--apply"); code != 1 ||
+		!strings.Contains(out, "failed    "+broken.work+": git fetch broken failed") ||
+		!strings.Contains(out, "removed   branch b/done") ||
+		!strings.Contains(out, "repositories 2, removed 1, in work 0, unmerged 0, to check 0, failed 1") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+}
+
+func TestWorktreeCleanInD(t *testing.T) {
+	parent := t.TempDir()
+	makeRepo := func(name string) *fixture {
+		t.Helper()
+		f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: file}\n", "VERSION": "1.0.0\n"})
+		dest := filepath.Join(parent, name)
+		if err := os.Rename(f.work, dest); err != nil {
+			t.Fatal(err)
+		}
+		f.work = dest
+		f.git("checkout", "-q", "-b", "main")
+		f.mustPlainCommit("feat: base")
+		return f
+	}
+	locked := makeRepo("projectA")
+	other := makeRepo("projectB")
+	lk, err := lock.TryAcquire(filepath.Join(locked.work, ".git", "graft-worktree-clean.lock"), "test")
+	if err != nil || lk == nil {
+		t.Fatalf("lock: %v", err)
+	}
+	defer lk.Release()
+	if out, code := other.graft("", "worktree", "clean", "--in", parent, "--min-age", "0s"); code != 0 ||
+		!strings.Contains(out, "skipped   "+locked.work+": another graft worktree clean runs in it") ||
+		!strings.Contains(out, "repositories 2, would remove 0, in work 0, unmerged 0, to check 0, failed 0") {
+		t.Fatalf("exit %d:\n%s", code, out)
 	}
 }
