@@ -179,7 +179,10 @@ type Row struct {
 	// did.
 	DBCPUMed *float64
 	DBMemMB  *float64
-	Failed   int
+	// ReadMBMax, WriteMBMed and WriteMBMax summarize runs that recorded
+	// storage use; nil when none did.
+	ReadMBMax, WriteMBMed, WriteMBMax *float64
+	Failed                            int
 	// Hits are the runs the cache skipped; SavedS is the wall time they
 	// saved.
 	Hits   int
@@ -349,6 +352,7 @@ func summarize(project, label string, recs []Record) Row {
 	owns := make([]float64, 0, len(recs))
 	cpus := make([]float64, 0, len(recs))
 	var dbCPUs []float64
+	var writes []float64
 	for i := range recs {
 		r := &recs[i]
 		walls = append(walls, r.WallS)
@@ -366,6 +370,13 @@ func summarize(project, label string, recs []Record) Row {
 		row.MaxRSSMB = larger(row.MaxRSSMB, r.MaxRSSMB)
 		row.TreeMemMB = larger(row.TreeMemMB, r.TreeMemMB)
 		row.DBMemMB = larger(row.DBMemMB, r.DBMemMB)
+		if r.ReadMB != nil {
+			row.ReadMBMax = larger(row.ReadMBMax, r.ReadMB)
+		}
+		if r.WriteMB != nil {
+			row.WriteMBMax = larger(row.WriteMBMax, r.WriteMB)
+			writes = append(writes, *r.WriteMB)
+		}
 		if r.DBCPUS != nil {
 			dbCPUs = append(dbCPUs, *r.DBCPUS)
 		}
@@ -380,6 +391,10 @@ func summarize(project, label string, recs []Record) Row {
 	if len(dbCPUs) > 0 {
 		m := median(dbCPUs)
 		row.DBCPUMed = &m
+	}
+	if len(writes) > 0 {
+		m := median(writes)
+		row.WriteMBMed = &m
 	}
 	return row
 }
@@ -503,10 +518,12 @@ func FormatSaved(s Saved) string {
 // wall time and the test database's columns come last, when a row has them.
 func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	var withDB, withWait bool
+	var withDB, withWait, withRead, withWrite bool
 	for i := range rows {
 		withDB = withDB || rows[i].DBCPUMed != nil
 		withWait = withWait || rows[i].WaitMax > 0
+		withRead = withRead || rows[i].ReadMBMax != nil
+		withWrite = withWrite || rows[i].WriteMBMed != nil
 	}
 	header := labelHeader + "\tRUNS\tWALL MED\tWALL MAX"
 	if withWait {
@@ -518,6 +535,12 @@ func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error
 	}
 	if withDB {
 		header += "\tDB CPU\tDB MEM"
+	}
+	if withRead {
+		header += "\tREAD MAX"
+	}
+	if withWrite {
+		header += "\tWRITE MED\tWRITE MAX"
 	}
 	fmt.Fprintln(tw, header)
 	for i := range rows {
@@ -541,6 +564,12 @@ func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error
 				dbCPU = formatSeconds(*r.DBCPUMed)
 			}
 			fmt.Fprintf(tw, "\t%s\t%s", dbCPU, formatMB(r.DBMemMB))
+		}
+		if withRead {
+			fmt.Fprintf(tw, "\t%s", formatMB(r.ReadMBMax))
+		}
+		if withWrite {
+			fmt.Fprintf(tw, "\t%s\t%s", formatMB(r.WriteMBMed), formatMB(r.WriteMBMax))
 		}
 		fmt.Fprintln(tw)
 	}

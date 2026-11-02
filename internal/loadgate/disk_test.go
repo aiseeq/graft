@@ -106,7 +106,7 @@ func (d *diskSource) answer(t *testing.T, conn net.Conn) {
 }
 
 // TestDiskSourceKnowsTheKind: the admission asks the disk state source for
-// the task's kind and carries the profile it gave back.
+// the task's kind.
 func TestDiskSourceKnowsTheKind(t *testing.T) {
 	fakeMachine(t)
 	d := fakeDisk(t)
@@ -121,14 +121,14 @@ func TestDiskSourceKnowsTheKind(t *testing.T) {
 	if kinds := d.asked(); len(kinds) != 1 || kinds[0] != "projectA:build" {
 		t.Errorf("the source was asked for %q", kinds)
 	}
-	if string(adm.DiskProfile) != `{"kind":"projectA:build"}` {
-		t.Errorf("disk profile %s", adm.DiskProfile)
+	if adm.Waits == nil {
+		t.Errorf("admission has no waits map")
 	}
 }
 
 // TestNoDiskSourceUsesPSI: without the disk state source, or with one that
 // fails, the admission says so once and measures the disk by the IO
-// pressure's total; the profile is then unknown.
+// pressure's total.
 func TestNoDiskSourceUsesPSI(t *testing.T) {
 	for _, c := range []struct {
 		name, want string
@@ -155,7 +155,7 @@ func TestNoDiskSourceUsesPSI(t *testing.T) {
 				setRunnable(1)
 			}()
 			var log strings.Builder
-			adm, release, err := Wait(context.Background(), "build", "projectA:build", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log)
+			_, release, err := Wait(context.Background(), "build", "projectA:build", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -165,9 +165,6 @@ func TestNoDiskSourceUsesPSI(t *testing.T) {
 			// Told once over the readings of a wait.
 			if got := strings.Count(log.String(), c.want); got != 1 {
 				t.Errorf("log, want %q once:\n%s", c.want, log.String())
-			}
-			if adm.DiskProfile != nil {
-				t.Errorf("a profile without the source: %s", adm.DiskProfile)
 			}
 		})
 	}

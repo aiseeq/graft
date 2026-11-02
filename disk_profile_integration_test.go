@@ -12,10 +12,9 @@ import (
 	"time"
 )
 
-// TestHeavyTaskKeepsItsDiskProfile: the admission of a heavy task asks the
-// disk state source for the task's profile, and the task's stats line keeps
-// what the source gave back.
-func TestHeavyTaskKeepsItsDiskProfile(t *testing.T) {
+// TestHeavyTaskStatsOmitDiskProfile: admission still asks the disk state
+// source for the task's kind, but the task's stats line omits its response.
+func TestHeavyTaskStatsOmitDiskProfile(t *testing.T) {
 	f, statsFile := statsRepo(t, "tasks:\n  build:\n    heavy: true\n    run: ["+helperStep("ok")+"]\n")
 	// A socket's path is short: the test's temporary directory may not fit.
 	run, err := os.MkdirTemp("", "disk")
@@ -74,20 +73,15 @@ func TestHeavyTaskKeepsItsDiskProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var task struct {
-		Kind        string          `json:"kind"`
-		DiskProfile json.RawMessage `json:"disk_profile"`
-	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	var task map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &task); err != nil {
 		t.Fatal(err)
 	}
-	if task.Kind != "task" || string(task.DiskProfile) != `{"seen":"`+want+`"}` {
+	if string(task["kind"]) != `"task"` {
 		t.Errorf("task line %s", lines[len(lines)-1])
 	}
-	for _, l := range lines[:len(lines)-1] {
-		if strings.Contains(l, "disk_profile") {
-			t.Errorf("a step line with the task's disk profile: %s", l)
-		}
+	if _, ok := task["disk_profile"]; ok {
+		t.Errorf("task line kept the disk profile: %s", lines[len(lines)-1])
 	}
 }

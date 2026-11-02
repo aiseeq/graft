@@ -63,10 +63,6 @@ type Record struct {
 	// Here, on the line of a heavy task with a remote_heavy host that ran on
 	// this machine, is why it did not go to the host.
 	Here string `json:"here,omitempty"`
-	// DiskProfile, on the line of a heavy task this machine admitted, is
-	// the profile the disk state source gave its kind (Profile) at the last
-	// reading of the admission; absent without the source.
-	DiskProfile json.RawMessage `json:"disk_profile,omitempty"`
 	// Profile is the kind of the run the admission of heavy tasks knows it
 	// by: <repository>:<task>, the repository named by its main work tree's
 	// folder for every worktree, and a graft exec <repository>:exec:<the

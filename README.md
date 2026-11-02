@@ -117,11 +117,10 @@ going on (dirty and writeback memory of `/proc/meminfo` below
 memory pressure above `max_mem_some` while the machine swaps more than
 `max_swap_kbs`: swap in use is no harm, and swapping without memory pressure
 neither. The disk is read from the disk state source on
-`$XDG_RUNTIME_DIR/io-state.sock`, asked for the task's kind (its `profile`
-in the stats) and giving back a profile of it, which the task's stats line
-keeps as `disk_profile`; without the source, or when it fails, graft says so
-once per look at the machine (a task with `remote_heavy` under `when: busy`
-looks twice: before it chooses the host, and when it waits here) and
+`$XDG_RUNTIME_DIR/io-state.sock`, asked for the task's kind; without the
+source, or when it fails, graft says so once per look at the machine (a task
+with `remote_heavy` under `when: busy` looks twice: before it chooses the
+host, and when it waits here) and
 measures the IO pressure by the `full` total of `/proc/pressure/io` over
 `swap_window` (between readings while it waits); a system without that file
 either leaves the disk unchecked, and says so. The quiet mode of `busy --quiet-until TIME`
@@ -948,9 +947,6 @@ deps and inner tasks included.
   would not make it wait` (`when: busy` on a calm machine) and `inside an
   admitted heavy task, which waits for the machine`. Absent for a task the
   host ran and without a host.
-- `disk_profile`, on the line of a heavy task this machine admitted, is the
-  profile the disk state source gave its `profile` at the admission's last
-  reading, as the source wrote it; absent without the source.
 - `reserve_cores`, `reserve_s` and `reserve_end` record expected CPU use, how
   long the reservation lived, and whether it ended by CPU use (`cpu`), the
   configured maximum (`cap`), task completion (`done`) or unreadable process
@@ -1090,7 +1086,11 @@ when some run waited the median and maximum wait within it (`WAIT MED`,
 runs, and the wall time the cache saved (`SAVED`, with the number of
 skips); a last line sums the skips, wall and CPU time. When tasks recorded
 their test database, `DB CPU` and `DB MEM` follow: its median CPU time and
-largest memory. `--since` takes days (`30d`) or a duration (`12h`), `--project` another
+largest memory. When disk IO fields were recorded, `READ MAX` is the largest
+read amount, while `WRITE MED` and `WRITE MAX` are the median and largest
+write amounts. They show `-` when a field was not recorded, including on
+non-Linux systems and in older stats lines. `--since` takes days (`30d`) or
+a duration (`12h`), `--project` another
 project's root, `--all` every project; `--task <name>` breaks one task down
 into its steps, the tasks it ran and the grafts it started: a dep or a
 task step is a row `task <name>`, and a step or deploy script that runs
