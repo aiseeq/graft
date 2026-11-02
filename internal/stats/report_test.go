@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -36,6 +37,54 @@ func TestReportShowsTheDatabase(t *testing.T) {
 	}
 	if got := render(recs[3:]); strings.Contains(got, "DB CPU") {
 		t.Errorf("database columns without a database:\n%s", got)
+	}
+}
+
+func TestReportShowsDiskUse(t *testing.T) {
+	value := func(v float64) *float64 { return &v }
+	base := func(read, write *float64) Record {
+		return Record{Kind: KindTask, Task: "build", WallS: 1, ReadMB: read, WriteMB: write}
+	}
+	render := func(recs []Record) string {
+		t.Helper()
+		var log strings.Builder
+		for _, rec := range recs {
+			line, err := json.Marshal(rec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			log.Write(line)
+			log.WriteByte('\n')
+		}
+		loaded, malformed, err := decodeRecords(strings.NewReader(log.String()))
+		if err != nil || malformed != 0 {
+			t.Fatalf("decode stats lines: %v, %d malformed", err, malformed)
+		}
+		rows, _ := Summarize(loaded, Filter{})
+		var b strings.Builder
+		if err := Render(&b, rows, "TASK", false); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+	recs := []Record{
+		base(value(5), value(10)),
+		base(value(7), value(30)),
+		base(value(9), value(50)),
+	}
+	got := render(recs)
+	if !strings.Contains(got, "READ MAX") || !strings.Contains(got, "WRITE MED") || !strings.Contains(got, "WRITE MAX") {
+		t.Fatalf("no disk use columns:\n%s", got)
+	}
+	if row := line(got, "build"); !strings.HasSuffix(row, "9 MB      30 MB      50 MB") {
+		t.Errorf("disk use row = %q", row)
+	}
+	if got := render([]Record{base(nil, nil)}); strings.Contains(got, "READ MAX") || strings.Contains(got, "WRITE MED") || strings.Contains(got, "WRITE MAX") {
+		t.Errorf("disk use columns without measurements:\n%s", got)
+	}
+	got = render([]Record{base(nil, value(10)), base(value(7), nil), base(nil, value(50))})
+	if row := line(got, "build"); !strings.HasSuffix(row, "7 MB      30 MB      50 MB") {
+		t.Errorf("mixed disk use row = %q", row)
 	}
 }
 

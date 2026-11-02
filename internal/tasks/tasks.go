@@ -188,10 +188,7 @@ type frame struct {
 	remote bool
 	here   string
 	// program is the program a graft exec runs, which tells its kind.
-	program string
-	// diskProfile is what the disk state source gave the task's kind when
-	// the machine admitted it.
-	diskProfile      json.RawMessage
+	program          string
 	waitedBehind     string
 	reserveCores     float64
 	reserveSince     time.Time
@@ -2007,7 +2004,7 @@ func (r *Runner) begin(task string) *frame {
 // what it cost; the task's error itself goes back to its caller.
 func (r *Runner) end(f *frame, failed bool) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
-	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, DiskProfile: f.diskProfile, WaitedBehind: f.waitedBehind}
+	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, WaitedBehind: f.waitedBehind}
 	if f.reserveRelease != nil {
 		if err := f.reserveRelease(); err != nil {
 			fmt.Fprintf(r.Stderr, "graft: %s: releasing reserve: %v\n", f.task, err)
@@ -2560,9 +2557,6 @@ func (r *Runner) Waited(why string, d time.Duration) {
 func (r *Runner) waitedFor(a loadgate.Admission) {
 	for why, d := range a.Waits {
 		r.Waited(why, d)
-	}
-	if n := len(r.frames); n > 0 && a.DiskProfile != nil {
-		r.frames[n-1].diskProfile = a.DiskProfile
 	}
 	if n := len(r.frames); n > 0 && a.WaitedBehind != "" {
 		r.frames[n-1].waitedBehind = a.WaitedBehind

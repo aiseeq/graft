@@ -55,6 +55,18 @@ func TestLoadReadsTheCopiesOldestFirst(t *testing.T) {
 	}
 }
 
+func TestLoadIgnoresLegacyDiskProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.jsonl")
+	line := `{"kind":"task","task":"build","disk_profile":{"kind":"projectA:build"}}` + "\n"
+	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recs, malformed, err := Load(path, time.Time{})
+	if err != nil || malformed != 0 || len(recs) != 1 || recs[0].Task != "build" {
+		t.Fatalf("Load = %v, %d malformed, %v", recs, malformed, err)
+	}
+}
+
 // TestAppendWritesWhenAnOldCopyStays: an expired copy that cannot be
 // removed is reported, and the line is written all the same.
 func TestAppendWritesWhenAnOldCopyStays(t *testing.T) {

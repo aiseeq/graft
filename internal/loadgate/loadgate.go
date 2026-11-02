@@ -51,11 +51,9 @@ const (
 type Waits map[string]time.Duration
 
 // Admission is what a heavy task's admission saw: how long it waited, by
-// why, and the profile the disk state source gave its kind at the last
-// reading, nil without the source.
+// why.
 type Admission struct {
 	Waits            Waits
-	DiskProfile      json.RawMessage
 	WaitedBehind     string
 	ReserveCores     float64
 	ReserveSince     time.Time
@@ -606,9 +604,6 @@ type machine struct {
 	log        io.Writer
 	name, kind string
 	meter      *pressure.Meter
-	// disk is the disk state source's profile of the kind at the last
-	// reading.
-	disk json.RawMessage
 	// runnable is the last count of the tasks ready to run.
 	runnable      float64
 	runnableLimit float64
@@ -627,7 +622,7 @@ func newMachine(l userconfig.MachineLoad, log io.Writer, name, kind string) *mac
 	return &machine{l: l, limits: limits, limitsErr: limitsErr, log: log, name: name, kind: kind, meter: pressure.NewMeter(proc), waits: Waits{}}
 }
 
-func (m *machine) admission() Admission { return Admission{Waits: m.waits, DiskProfile: m.disk} }
+func (m *machine) admission() Admission { return Admission{Waits: m.waits} }
 
 // behind is the admission of a task that waited in a queue behind holder.
 func (m *machine) behind(holder string) Admission {
@@ -724,10 +719,6 @@ func (m *machine) busy(ctx context.Context, fresh bool) (busyness, error) {
 	}
 	if v.Measure == pressure.CPU {
 		m.runnableLimit = v.Limit
-	}
-	m.disk = nil
-	if v.Load.Disk != nil {
-		m.disk = v.Load.Disk.Profile
 	}
 	var b busyness
 	if v.Busy() {
