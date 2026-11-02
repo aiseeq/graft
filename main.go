@@ -583,6 +583,9 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 	if len(pos) != 0 {
 		return usage
 	}
+	if len(o.In) != 0 && o.Trunk != "" {
+		return fmt.Errorf("%w: --trunk cannot be used with --in: each repository has its own trunk", errUsage)
+	}
 	return a.WorktreeClean(o)
 }
 

@@ -509,7 +509,7 @@ func TestWorktreeCleanInE(t *testing.T) {
 	if out, code := (&fixture{t: t, work: root}).graft("", "worktree", "clean", "--in", root); code == 0 || !strings.Contains(out, "no repositories found") {
 		t.Fatalf("empty scan exit %d:\n%s", code, out)
 	}
-	if out, code := (&fixture{t: t, work: root}).graft("", "worktree", "clean", "--in", root, "--trunk", "main"); code == 0 || !strings.Contains(out, "cannot be used with --in") {
+	if out, code := (&fixture{t: t, work: root}).graft("", "worktree", "clean", "--in", root, "--trunk", "main"); code != 2 || !strings.Contains(out, "cannot be used with --in") {
 		t.Fatalf("trunk with in exit %d:\n%s", code, out)
 	}
 }
@@ -602,5 +602,53 @@ func TestWorktreeCleanInD(t *testing.T) {
 		!strings.Contains(out, "skipped   "+locked.work+": another graft worktree clean runs in it") ||
 		!strings.Contains(out, "repositories 2, would remove 0, in work 0, unmerged 0, to check 0, failed 0") {
 		t.Fatalf("exit %d:\n%s", code, out)
+	}
+}
+
+// TestWorktreeCleanKeepsTheBranchOfARebase: a worktree stopped in a rebase
+// has a detached HEAD, yet its branch is its own: with the work already in the
+// trunk by a squash, --apply deletes the branch neither here nor on the
+// remote, and the clean does not fail.
+func TestWorktreeCleanKeepsTheBranchOfARebase(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: file}\n", "VERSION": "1.0.0\n"}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "origin", "main")
+	tree := filepath.Join(f.base, "reb")
+	f.git("worktree", "add", "-q", "-b", "b/reb", tree, "main")
+	for _, v := range []string{"1", "2"} {
+		writeFile(t, filepath.Join(tree, "a.txt"), v+"\n")
+		f.git("-C", tree, "add", "a.txt")
+		f.git("-C", tree, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "-m", "feat: a "+v)
+	}
+	f.git("push", "-q", "origin", "b/reb")
+	f.write("a.txt", "2\n")
+	f.mustPlainCommit("feat: a, squashed")
+	f.git("push", "-q", "origin", "main")
+	f.git("fetch", "-q", "origin")
+	f.git("remote", "set-head", "origin", "main")
+	if _, code := f.exec(tree, "", "git", "rebase", "main"); code == 0 {
+		t.Fatal("rebase unexpectedly completed")
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	common := strings.TrimSpace(f.git("rev-parse", "--path-format=absolute", "--git-common-dir"))
+	gitDir := strings.TrimSpace(f.git("-C", tree, "rev-parse", "--path-format=absolute", "--git-dir"))
+	for _, p := range []string{filepath.Join(gitDir, "HEAD"), filepath.Join(gitDir, "logs", "HEAD"), filepath.Join(common, "logs", "refs", "heads", "b", "reb")} {
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, code := f.graft("", "worktree", "clean", "--min-age", "1h", "--apply")
+	if code != 0 || !strings.Contains(out, "in work   "+tree+" (detached): a rebase in progress") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if _, code := f.tryGit("rev-parse", "--verify", "-q", "refs/heads/b/reb"); code != 0 {
+		t.Errorf("the rebase's branch is gone here:\n%s", out)
+	}
+	if remote := f.git("ls-remote", "origin", "refs/heads/b/reb"); strings.TrimSpace(remote) == "" {
+		t.Errorf("the rebase's branch is gone from the remote:\n%s", out)
 	}
 }
