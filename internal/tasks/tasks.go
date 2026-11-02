@@ -156,6 +156,7 @@ type Runner struct {
 	remoteHeavy        *config.RemoteHeavy
 	userRemote         bool
 	remoteBrokenReason string
+	gateCosts          *gateStepCosts
 	glintMu            sync.Mutex
 	glintCopies        map[string]glintCopyCheck
 
@@ -166,6 +167,18 @@ type Runner struct {
 	// fails; nested failed frames share that snapshot.
 	failureHistory       []stats.Record
 	failureHistoryLoaded bool
+}
+
+type gateStepCost struct {
+	here float64
+	ok   bool
+}
+
+type gateStepCosts struct {
+	local  map[string]gateStepCost
+	fee    float64
+	hasFee bool
+	host   string
 }
 
 // frame is a running task as the stats see it.
@@ -347,6 +360,21 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, erro
 	rhCopy := *rh
 	previousRemoteHeavy := r.remoteHeavy
 	r.remoteHeavy = &rhCopy
+	candidate, err := r.gateHasEligible(gate)
+	if err != nil {
+		r.remoteHeavy = previousRemoteHeavy
+		return false, err
+	}
+	if !candidate {
+		r.remoteHeavy = previousRemoteHeavy
+		return false, nil
+	}
+	costs, err := r.loadGateStepCosts()
+	if err != nil {
+		r.remoteHeavy = previousRemoteHeavy
+		return false, fmt.Errorf("reading stats for busy gate placement: %w", err)
+	}
+	r.gateCosts = costs
 	eligible, err := r.gateHasEligible(gate)
 	if err != nil {
 		r.remoteHeavy = previousRemoteHeavy
@@ -366,17 +394,91 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, erro
 	return true, nil
 }
 
+const gateStatsTailBytes = 8 << 20
+
+func gateCostKey(profile, step string) string { return profile + "\x00" + step }
+
+func (r *Runner) loadGateStepCosts() (*gateStepCosts, error) {
+	path, err := stats.Path()
+	if err != nil {
+		return nil, err
+	}
+	records, _, err := stats.LoadTail(path, gateStatsTailBytes)
+	if err != nil {
+		return nil, err
+	}
+	costs := &gateStepCosts{local: map[string]gateStepCost{}, host: r.remoteHeavy.Host}
+	root := filepath.Clean(r.Root)
+	local := map[string][]float64{}
+	var remote []float64
+	for i := range records {
+		rec := &records[i]
+		if rec.Kind != stats.KindStep || rec.Exit != 0 || rec.WallS <= 0 {
+			continue
+		}
+		if rec.Host == r.remoteHeavy.Host {
+			if rec.Project == root {
+				remote = append(remote, rec.WallS)
+			}
+			continue
+		}
+		if rec.Host == "" && rec.Profile != "" && rec.Step != "" {
+			key := gateCostKey(rec.Profile, rec.Step)
+			local[key] = append(local[key], rec.WallS)
+		}
+	}
+	for key, values := range local {
+		values = lastFloats(values, 5)
+		if len(values) < 2 {
+			continue
+		}
+		costs.local[key] = gateStepCost{here: stats.Median(values), ok: true}
+	}
+	remote = lastFloats(remote, 5)
+	if len(remote) > 0 {
+		costs.fee, costs.hasFee = slices.Min(remote), true
+	}
+	return costs, nil
+}
+
+func lastFloats(values []float64, n int) []float64 {
+	if len(values) > n {
+		values = values[len(values)-n:]
+	}
+	return values
+}
+
+func (r *Runner) gateStepPlacement(s config.Step, t *config.Task, taskName string, builtin bool) (bool, string, error) {
+	if s.Shell != "" || !(builtin && builtinGateGoCheck(s) || remoteVouched(t) && (goCheckNoOutput(s.Argv, nil) || r.glintEligible(s.Argv, nil))) {
+		return false, "", nil
+	}
+	why, err := r.stayHere(t, r.taskDir(t))
+	if err != nil || why != "" {
+		return false, "", err
+	}
+	if r.gateCosts == nil || !r.gateCosts.hasFee {
+		return true, "", nil
+	}
+	profile := r.profile(&frame{task: taskName})
+	local := r.gateCosts.local[gateCostKey(profile, stats.StepText(s.Source))]
+	if !local.ok || local.here >= r.gateCosts.fee {
+		return true, "", nil
+	}
+	reason := fmt.Sprintf("cheaper here: %.1fs here, %.1fs on %s", local.here, r.gateCosts.fee, r.gateCosts.host)
+	return false, reason, nil
+}
+
 // gateHasEligible finds a built-in Go check or a go check of a task with
 // remote: true in the gate's tasks or their deps.
 func (r *Runner) gateHasEligible(gate []gateStep) (bool, error) {
 	for i := range gate {
 		gs := &gate[i]
-		if gs.builtin && builtinGateGoCheck(gs.step) {
-			why, err := r.stayHere(gs.task, r.taskDir(gs.task))
+		if gs.builtin {
+			remote, _, err := r.gateStepPlacement(gs.step, gs.task, stats.GateTask, true)
 			if err != nil {
 				return false, err
 			}
-			if why == "" {
+			if remote {
 				return true, nil
 			}
 		}
@@ -390,15 +492,15 @@ func (r *Runner) gateHasEligible(gate []gateStep) (bool, error) {
 // splits and what its line names.
 func (r *Runner) remoteGateTaskKinds(gate []gateStep) (goSteps, glintSteps bool, err error) {
 	seen := map[string]bool{}
-	var visit func(*config.Task) error
-	visit = func(t *config.Task) error {
+	var visit func(string, *config.Task) error
+	visit = func(name string, t *config.Task) error {
 		if t == nil {
 			return nil
 		}
 		for _, dep := range t.Deps {
 			if !seen[dep] {
 				seen[dep] = true
-				if err := visit(r.Config.Tasks[dep]); err != nil {
+				if err := visit(dep, r.Config.Tasks[dep]); err != nil {
 					return err
 				}
 			}
@@ -407,13 +509,13 @@ func (r *Runner) remoteGateTaskKinds(gate []gateStep) (goSteps, glintSteps bool,
 			if s.Task != "" {
 				if !seen[s.Task] {
 					seen[s.Task] = true
-					if err := visit(r.Config.Tasks[s.Task]); err != nil {
+					if err := visit(s.Task, r.Config.Tasks[s.Task]); err != nil {
 						return err
 					}
 				}
 				continue
 			}
-			goCheck, glintCheck, err := r.remoteGateTaskKind(t, s)
+			goCheck, glintCheck, err := r.remoteGateTaskKind(name, t, s)
 			if err != nil {
 				return err
 			}
@@ -429,7 +531,7 @@ func (r *Runner) remoteGateTaskKinds(gate []gateStep) (goSteps, glintSteps bool,
 		name := gate[i].step.Task
 		if !seen[name] {
 			seen[name] = true
-			if err := visit(r.Config.Tasks[name]); err != nil {
+			if err := visit(name, r.Config.Tasks[name]); err != nil {
 				return false, false, err
 			}
 		}
@@ -437,7 +539,7 @@ func (r *Runner) remoteGateTaskKinds(gate []gateStep) (goSteps, glintSteps bool,
 	return goSteps, glintSteps, nil
 }
 
-func (r *Runner) remoteGateTaskKind(t *config.Task, s config.Step) (goCheck, glintCheck bool, err error) {
+func (r *Runner) remoteGateTaskKind(name string, t *config.Task, s config.Step) (goCheck, glintCheck bool, err error) {
 	if !remoteVouched(t) || s.Shell != "" {
 		return false, false, nil
 	}
@@ -446,11 +548,8 @@ func (r *Runner) remoteGateTaskKind(t *config.Task, s config.Step) (goCheck, gli
 	if !goCheck && !glintCheck {
 		return false, false, nil
 	}
-	why, err := r.stayHere(t, r.taskDir(t))
-	if err != nil || why != "" {
-		return false, false, err
-	}
-	return goCheck, glintCheck, nil
+	remote, _, err := r.gateStepPlacement(s, t, name, false)
+	return goCheck && remote, glintCheck && remote, err
 }
 
 // remoteVouched reports whether the project set remote: true in the task:
@@ -780,7 +879,7 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int, reason str
 		}
 	}
 	inner := r.frames[len(r.frames)-1]
-	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Profile: r.profile(inner), Step: stats.StepText(source), Exit: code, Reason: reason, Host: r.hostOf(inner)}, use, r.frames[0].task)
+	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Profile: r.profile(inner), Step: stats.StepText(source), Exit: code, Reason: reason, Host: r.hostOf(inner), Here: inner.here}, use, r.frames[0].task)
 }
 
 // profile is the kind of a run the admission of heavy tasks knows it by:
@@ -886,6 +985,7 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 	if err != nil {
 		return err
 	}
+	defer func() { r.gateCosts = nil }()
 	if splitGate {
 		r.gateSplit = true
 		defer func() {
@@ -922,14 +1022,14 @@ func (r *Runner) splitGateDescription(gate []gateStep) (string, error) {
 	vet, fix := false, false
 	for i := range gate {
 		gs := &gate[i]
-		if !gs.builtin || !builtinGateGoCheck(gs.step) {
+		if !gs.builtin {
 			continue
 		}
-		why, err := r.stayHere(gs.task, r.taskDir(gs.task))
+		remote, _, err := r.gateStepPlacement(gs.step, gs.task, stats.GateTask, true)
 		if err != nil {
 			return "", err
 		}
-		if why != "" {
+		if !remote {
 			continue
 		}
 		if isBuiltinGoVet(gs.step) {
@@ -981,7 +1081,12 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 	if err != nil {
 		return fmt.Errorf("gate: %w", err)
 	}
-	fmt.Fprintf(r.Stdout, "graft: gate %d/%d: %s\n", number, total, s.Source)
+	line, clearHere, err := r.gateStepLine(gs, s, number, total)
+	if err != nil {
+		return fmt.Errorf("gate: %w", err)
+	}
+	defer clearHere()
+	fmt.Fprintln(r.Stdout, line)
 	if advisory != nil && gs.step.Task != "" && advisory(gs.step.Task) {
 		if err := r.preflight([]config.Step{gs.step}, &config.Task{}, "gate"); err != nil {
 			return reportAdvisoryFailure(gs.step.Task, err, onAdvisory)
@@ -1009,6 +1114,23 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 		return fmt.Errorf("gate failed at %q (see graft stats --failures): %w\n%s", s.Source, stepErr, gs.hint)
 	}
 	return fmt.Errorf("gate failed at %q (see graft stats --failures): %w", s.Source, stepErr)
+}
+
+func (r *Runner) gateStepLine(gs *gateStep, s config.Step, number, total int) (string, func(), error) {
+	line := fmt.Sprintf("graft: gate %d/%d: %s", number, total, s.Source)
+	if r.gateSplit || !gs.builtin || r.gateCosts == nil {
+		return line, func() {}, nil
+	}
+	remote, reason, err := r.gateStepPlacement(s, gs.task, stats.GateTask, true)
+	if err != nil {
+		return "", nil, err
+	}
+	if remote || reason == "" || len(r.frames) == 0 {
+		return line, func() {}, nil
+	}
+	frame := r.frames[len(r.frames)-1]
+	frame.here = reason
+	return line + ": " + reason, func() { frame.here = "" }, nil
 }
 
 func reportAdvisoryFailure(task string, err error, report func(string, error)) error {
@@ -1311,17 +1433,17 @@ func (r *Runner) enterSplit(ctx context.Context, name, memoryMax string) error {
 func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.Task, args []string, threads string, builtin bool) (func(error) error, error) {
 	frame := r.frames[len(r.frames)-1]
 	wasRemote := frame.remote
-	remote := s.Shell == "" && r.remoteDown == "" && (builtin && builtinGateGoCheck(s) || remoteVouched(t) && (goCheckNoOutput(s.Argv, args) || r.glintEligible(s.Argv, args)))
-	if remote {
-		// A step goes to the host only as its task could: not with the test
-		// database, .env keys or a directory the host lacks.
-		why, err := r.stayHere(t, r.taskDir(t))
-		if err != nil {
-			return nil, err
-		}
-		remote = why == ""
+	remote, cheaperReason, err := r.gateStepPlacement(s, t, frame.task, builtin)
+	if err != nil {
+		return nil, err
 	}
+	remote = remote && r.remoteDown == ""
 	frame.remote = remote
+	if cheaperReason != "" && !remote {
+		frame.here = cheaperReason
+		fmt.Fprintf(r.Stderr, "graft: gate: %s: %s\n", stats.StepText(s.Source), cheaperReason)
+	}
+	started := time.Now()
 	if !remote {
 		if err := r.enterSplit(ctx, frame.task, taskMemoryMax(t)); err != nil {
 			frame.remote = wasRemote
@@ -1329,6 +1451,12 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 		}
 	}
 	return func(stepErr error) error {
+		if remote && stepErr == nil && r.gateCosts != nil {
+			elapsed := time.Since(started).Seconds()
+			if elapsed > 0 && (!r.gateCosts.hasFee || elapsed < r.gateCosts.fee) {
+				r.gateCosts.fee, r.gateCosts.hasFee = elapsed, true
+			}
+		}
 		if remote && r.remoteBrokenReason != "" {
 			reason := r.remoteBrokenReason
 			r.remoteBrokenReason = ""
@@ -1350,6 +1478,7 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 			}
 		}
 		frame.remote = wasRemote
+		frame.here = ""
 		return stepErr
 	}, nil
 }

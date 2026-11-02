@@ -62,7 +62,7 @@ func Value(recs []Record, f ValueFilter) (float64, int, error) {
 		return 0, 0, nil
 	}
 	if f.Stat == ValueWallP50 {
-		return median(values), len(values), nil
+		return Median(values), len(values), nil
 	}
 	return Percentile(values, .95), len(values), nil
 }
