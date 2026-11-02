@@ -11,10 +11,8 @@ import (
 	"time"
 )
 
-// calmAfter makes the loaded machine of state calm after d, while a graft
-// waits for it. The returned stop, for once that graft is over, drops a calm
-// still to come: a graft that waited for none ends the test without the
-// rest of d.
+// calmAfter makes the loaded machine of state calm after d. The returned
+// stop drops a calm still to come once a graft that need not wait is over.
 func calmAfter(t *testing.T, state string, d time.Duration) (stop func()) {
 	t.Helper()
 	done := make(chan struct{})
@@ -58,8 +56,7 @@ func TestBusyGateSendsItsGoStepsToTheHost(t *testing.T) {
 	}
 
 	loaded(t, state)
-	calmAfter(t, state, 1500*time.Millisecond)
-	out := f.mustGraft("gate")
+	out := runUntilMachineWait(t, f, state, "gate")
 	calls := callsOf(t, state)
 	if !strings.Contains(calls, "go test -count=1 ./...") {
 		t.Errorf("run got %q, want the remote: true task's go test:\n%s", calls, out)
@@ -94,8 +91,7 @@ func TestBusyGateSendsBuiltinVetToTheHost(t *testing.T) {
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", builtinSplitGateConfig)
 	loaded(t, state)
-	calmAfter(t, state, 1500*time.Millisecond)
-	out := f.mustGraft("gate")
+	out := runUntilMachineWait(t, f, state, "gate")
 	calls := callsOf(t, state)
 	for _, want := range []string{"go vet ./...", "go fix -diff ./..."} {
 		if !strings.Contains(calls, want) {
@@ -140,8 +136,7 @@ func TestBusyGateBuiltinVetBackHereWhenThePathBreaks(t *testing.T) {
 	f.env = append(f.env, "PATH="+shim+string(os.PathListSeparator)+os.Getenv("PATH"))
 	writeFile(t, filepath.Join(state, "broken"), "")
 	loaded(t, state)
-	calmAfter(t, state, time.Second)
-	out := f.mustGraft("gate")
+	out := runUntilMachineWait(t, f, state, "gate")
 	if !strings.Contains(out, "pc path broken") || !strings.Contains(out, "running here") {
 		t.Errorf("the broken built-in vet path is not said:\n%s", out)
 	}
@@ -167,8 +162,7 @@ func TestBusyGateDescriptionOmitsBuiltinKeptInSubdirectory(t *testing.T) {
 	path, sum := fakeGlint(t, f)
 	writeHostGlint(t, state, "pc", path, sum)
 	loaded(t, state)
-	calmAfter(t, state, 1500*time.Millisecond)
-	out := f.mustGraft("gate")
+	out := runUntilMachineWait(t, f, state, "gate")
 	if !strings.Contains(out, "glint check steps of remote: true tasks") || strings.Contains(out, "built-in go vet") {
 		t.Errorf("the description named a built-in check kept in the subdirectory:\n%s", out)
 	}
@@ -188,8 +182,7 @@ func TestBusyGateDescriptionNamesRemoteGlint(t *testing.T) {
 	path, sum := fakeGlint(t, f)
 	writeHostGlint(t, state, "pc", path, sum)
 	loaded(t, state)
-	calmAfter(t, state, 1500*time.Millisecond)
-	out := f.mustGraft("gate")
+	out := runUntilMachineWait(t, f, state, "gate")
 	if !strings.Contains(out, "glint check steps of remote: true tasks") {
 		t.Errorf("the description omitted the eligible glint step:\n%s", out)
 	}
@@ -210,8 +203,7 @@ func TestBusyGateBuiltinVetStaysWithProjectRemoteHeavy(t *testing.T) {
 		"remote_heavy: {host: pchost, up: [sh, -c, 'true'], run: [sh, -c, 'true'], threads: 8}\n"+
 		"gate: [{task: script}]\ntasks:\n  script:\n    run: [[sh, -c, 'echo here >> out']]\n")
 	loaded(t, state)
-	calmAfter(t, state, 1500*time.Millisecond)
-	out := f.mustGraft("gate")
+	out := runUntilMachineWait(t, f, state, "gate")
 	if calls := callsOf(t, state); calls != "" {
 		t.Errorf("built-in checks went to the user's host: %q\n%s", calls, out)
 	}
@@ -241,7 +233,8 @@ func TestBusyGateWaitsForThisMachineOnce(t *testing.T) {
 		"  first:\n    run: [[sh, "+yamlQuote(filepath.Join(state, "first.sh"))+"]]\n"+
 		"  second:\n    run: [[sh, -c, 'echo second >> out']]\n")
 	loaded(t, state)
-	calmAfter(t, state, time.Second)
+	cmd, outBuf := startWaitingForMachine(t, f, "gate")
+	setRunnable(t, proc, 1)
 	// A gate that waits again for the second step finds the machine calm a
 	// second after the first step loaded it, so that it still ends.
 	done := make(chan struct{})
@@ -260,7 +253,10 @@ func TestBusyGateWaitsForThisMachineOnce(t *testing.T) {
 		setRunnable(t, proc, 1)
 	}()
 	t.Cleanup(func() { <-done })
-	out := f.mustGraft("gate")
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("graft gate: %v\n%s", err, outBuf.String())
+	}
+	out := outBuf.String()
 	if got := readFile(t, f.path("out")); got != "first\nsecond\n" {
 		t.Errorf("the steps did not run here in order: out = %q\n%s", got, out)
 	}
@@ -282,8 +278,7 @@ func TestBusyGateBrokenPathRunsTheStepHere(t *testing.T) {
 	f.write(".graft.yaml", splitGateConfig)
 	writeFile(t, filepath.Join(state, "broken"), "")
 	loaded(t, state)
-	calmAfter(t, state, time.Second)
-	out := f.mustGraft("gate")
+	out := runUntilMachineWait(t, f, state, "gate")
 	if !strings.Contains(out, "pc path broken") || !strings.Contains(out, "running here") {
 		t.Errorf("the broken path is not said:\n%s", out)
 	}
@@ -311,8 +306,7 @@ func TestExecOfGraftLetsTheInnerGraftPlaceIt(t *testing.T) {
 	}
 
 	loaded(t, state)
-	calmAfter(t, state, time.Second)
-	out = f.mustGraft("exec", "--heavy", "--", "graft", "script")
+	out = runUntilMachineWait(t, f, state, "exec", "--heavy", "--", "graft", "script")
 	if n := strings.Count(out, "starting after"); n != 1 || !strings.Contains(out, "graft: script: runnable") {
 		t.Errorf("want the inner script alone to wait for this machine, %d waits:\n%s", n, out)
 	}
