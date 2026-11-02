@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -69,6 +70,43 @@ func TestPanicTextReachesCrashLog(t *testing.T) {
 	}
 	if !strings.Contains(out, "panic: crash log test") {
 		t.Errorf("stderr lost the panic:\n%s", out)
+	}
+}
+
+// TestGoroutinePanicReachesCrashLog: a panic of another goroutine, which
+// Note does not see, still reaches crash.log.
+func TestGoroutinePanicReachesCrashLog(t *testing.T) {
+	if os.Getenv(crashTestEnv) == "goroutine" {
+		defer Note(crashChildSetup(), "v0.0.0-test", []string{"gate"})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			panic("goroutine crash log test")
+		}()
+		<-done
+		return
+	}
+	out, log, err := crashChild(t, "TestGoroutinePanicReachesCrashLog", "goroutine")
+	if err == nil {
+		t.Fatalf("the child did not crash:\n%s", out)
+	}
+	if !strings.Contains(log, "panic: goroutine crash log test") {
+		t.Errorf("crash.log lacks the goroutine's panic:\n%s", log)
+	}
+}
+
+// TestUnreachableCacheKeepsNoCrashLog: a cache directory that cannot be
+// made leaves Keep without a file, and the caller runs on.
+func TestUnreachableCacheKeepsNoCrashLog(t *testing.T) {
+	notDir := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(notDir, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"XDG_CACHE_HOME", "LOCALAPPDATA", "HOME"} {
+		t.Setenv(name, notDir)
+	}
+	if f := Keep(); f != nil {
+		t.Fatalf("Keep opened %s under a file", f.Name())
 	}
 }
 

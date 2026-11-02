@@ -918,8 +918,9 @@ A task gets a line of its own when it ends, covering everything it ran,
 deps and inner tasks included.
 
 A panic of graft itself goes to `crash.log` in the same directory as well as
-to stderr, after a line with the time, graft's version, pid and command line:
-a caller that keeps only the tail of graft's output still has its text. A
+to stderr, so a caller that keeps only the tail of graft's output still has
+its text; a panic of graft's main goroutine comes after a line with the time,
+graft's version, pid and command line. A
 `crash.log` that cannot be opened is said on stderr and graft runs on.
 
 ```json
