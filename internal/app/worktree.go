@@ -65,9 +65,6 @@ type worktreeCleanResult struct {
 // by content, and lists the others: in work, unmerged, or to check.
 func (a *App) WorktreeClean(o WorktreeCleanOptions) error {
 	if len(o.In) != 0 {
-		if o.Trunk != "" {
-			return fmt.Errorf("--trunk cannot be used with --in")
-		}
 		return a.worktreeCleanIn(o)
 	}
 	_, err := a.worktreeCleanSingle(o)
@@ -128,6 +125,16 @@ func (a *App) worktreeCleanLocked(repo *gitx.Repo, cfg *config.Config, o Worktre
 	for i, w := range trees {
 		if w.branch != "" {
 			held = append(held, w.branch)
+		}
+		// A rebase detaches HEAD: its branch is still the worktree's.
+		if !w.prunable {
+			rebasing, err := rebaseBranch(repo, w.path)
+			if err != nil {
+				return result, err
+			}
+			if rebasing != "" {
+				held = append(held, rebasing)
+			}
 		}
 		if i == 0 {
 			continue
@@ -191,7 +198,7 @@ func (a *App) worktreeCleanIn(o WorktreeCleanOptions) error {
 		a.printf("failed    %s", item)
 	}
 	if len(failed) > 0 {
-		return &ExitCodeError{Code: 1, Err: fmt.Errorf("%d repositories failed", len(failed))}
+		return &ExitCodeError{Code: 1, Err: fmt.Errorf("%s failed", pluralRepositories(len(failed)))}
 	}
 	return nil
 }
@@ -542,12 +549,51 @@ func (c *cleaner) worktree(w worktree) error {
 	return c.removeWorktree(w, what, "clean, in "+c.trunk)
 }
 
-func gitOperation(repo *gitx.Repo, dir string) (string, error) {
+// worktreeGitDir is the git dir of the worktree at dir.
+func worktreeGitDir(repo *gitx.Repo, dir string) (string, error) {
 	out, err := repo.Git("-C", dir, "rev-parse", "--path-format=absolute", "--git-dir")
 	if err != nil {
 		return "", err
 	}
-	gitDir := strings.TrimSpace(out)
+	return strings.TrimSpace(out), nil
+}
+
+// rebaseBranch is the branch a rebase in the worktree at dir works on, ""
+// without a rebase or when it started on a detached HEAD.
+func rebaseBranch(repo *gitx.Repo, dir string) (string, error) {
+	gitDir, err := worktreeGitDir(repo, dir)
+	if err != nil {
+		return "", err
+	}
+	for _, state := range []string{"rebase-merge", "rebase-apply"} {
+		data, err := os.ReadFile(filepath.Join(gitDir, state, "head-name"))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		branch, _ := strings.CutPrefix(strings.TrimSpace(string(data)), "refs/heads/")
+		if branch == "detached HEAD" {
+			return "", nil
+		}
+		return branch, nil
+	}
+	return "", nil
+}
+
+func pluralRepositories(n int) string {
+	if n == 1 {
+		return "1 repository"
+	}
+	return fmt.Sprintf("%d repositories", n)
+}
+
+func gitOperation(repo *gitx.Repo, dir string) (string, error) {
+	gitDir, err := worktreeGitDir(repo, dir)
+	if err != nil {
+		return "", err
+	}
 	for _, item := range []struct{ marker, name string }{
 		{"rebase-merge", "rebase"}, {"rebase-apply", "rebase"},
 		{"MERGE_HEAD", "merge"}, {"CHERRY_PICK_HEAD", "cherry-pick"}, {"REVERT_HEAD", "revert"},

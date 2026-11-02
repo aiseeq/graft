@@ -2265,15 +2265,41 @@ the trunk:
   alphabetical order when each has `.graft.yaml` and a `.git` directory;
   worktree directories and other entries are skipped. It cannot be combined
   with `--trunk`, since each repository chooses its own trunk. Each repository
-  has a heading and the final line reports repositories, removed worktrees and
-  branches, items to check, and failures. A failed repository is listed and
-  does not stop the scan; the command exits 1 if any failed, otherwise 0.
+  has a heading; the summary line then counts repositories, removed (without
+  `--apply`, would remove) worktrees and branches, in work, unmerged, to check
+  and failed, and each failed repository follows on a line with its reason. A
+  failed repository does not stop the scan; the command exits 1 if any failed,
+  otherwise 0.
 - An in-progress rebase, merge, cherry-pick, or revert leaves the worktree
   listed as `in work`. A non-waiting lock in the common git directory prevents
   two clean runs from changing one repository at once; a repository already
   being cleaned is listed as `skipped` and does not fail the command.
 - with `--apply`, the golangci-lint caches (see Tasks) of work trees that
   are gone, in any repository, are removed too.
+
+For all repositories directly under a directory, a systemd user service and
+timer can run clean daily (systemd does not look in `~/bin`, hence the absolute
+path; a failed repository marks the unit failed, `journalctl --user -u
+graft-worktree-clean` shows which):
+
+```ini
+# ~/.config/systemd/user/graft-worktree-clean.service
+[Service]
+Type=oneshot
+ExecStart=/absolute/path/graft worktree clean --apply --in %h/projects
+Nice=10
+IOSchedulingClass=idle
+```
+
+```ini
+# ~/.config/systemd/user/graft-worktree-clean.timer
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
 
 `graft worktree sync [--trunk <ref>]`, run in a worktree, moves its work onto
 the fresh trunk: it fetches every remote, rebases the branch's own commits
@@ -2311,27 +2337,6 @@ reports what remains for the next run. Without `--apply` it reports the
 would-be removals immediately. Run it daily from a timer, for instance a
 systemd user unit with `ExecStart=` the absolute path of graft and `gocache
 trim --apply`, and `OnCalendar=daily`: systemd does not look in `~/bin`.
-For all repositories directly under a directory, a systemd user service and
-timer can run clean daily:
-
-```ini
-# ~/.config/systemd/user/graft-worktree-clean.service
-[Service]
-Type=oneshot
-ExecStart=/absolute/path/graft worktree clean --apply --in %h/projects
-Nice=10
-IOSchedulingClass=idle
-```
-
-```ini
-# ~/.config/systemd/user/graft-worktree-clean.timer
-[Timer]
-OnCalendar=daily
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-```
 
 ## Development
 
