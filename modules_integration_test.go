@@ -295,3 +295,32 @@ func TestToolsInstallTakesOwnToolsAtLatest(t *testing.T) {
 		t.Errorf("installed build (exit %d):\n%s", code, out)
 	}
 }
+
+// TestReleaseBranchKeepsItsModules: a commit and a gate on a
+// version.build_branches branch leave the own modules where they are: the
+// branch carries an approved candidate, and a raise would ship a change
+// outside the approval. The code still builds only at the old release.
+func TestReleaseBranchKeepsItsModules(t *testing.T) {
+	skipGoToolchainInShort(t)
+	f := modulesRepo(t, modulesProxy(t), latestConfig, "Old")
+	f.write(".graft.yaml", strings.Replace(f.read(".graft.yaml"), "  mode: file\n", "  mode: file\n  build_branches: ['release/*']\n", 1))
+	f.git("checkout", "-q", "-b", "release/1.2")
+	out := f.mustGraft("commit", "-m", "fix: x")
+	if !strings.Contains(out, "graft: modules.latest: release/1.2 keeps its module versions (version.build_branches); the trunk raises them") {
+		t.Errorf("no line on the held modules:\n%s", out)
+	}
+	if strings.Contains(out, " -> v0.2.0") {
+		t.Errorf("raised on a release branch:\n%s", out)
+	}
+	for _, name := range []string{"go.mod", "tool/go.mod"} {
+		if line := requireLine(t, f.git("show", "HEAD:"+name), ownLib); !strings.HasSuffix(line, " v0.1.0") {
+			t.Errorf("committed %s: %q", name, line)
+		}
+	}
+	if out, code := f.graft("", "gate"); code != 0 || strings.Contains(out, " -> v0.2.0") {
+		t.Errorf("gate on a release branch: exit %d\n%s", code, out)
+	}
+	if line := requireLine(t, f.read("go.mod"), ownLib); !strings.HasSuffix(line, " v0.1.0") {
+		t.Errorf("go.mod after the gate: %q", line)
+	}
+}

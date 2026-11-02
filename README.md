@@ -100,6 +100,11 @@ A public proxy answers `@latest` from a cache that lags a push by up to half
 an hour, so list your own prefixes in `GONOPROXY` (`go env -w
 GONOPROXY=example.com/you/*`): their latest version then comes from the
 repository itself.
+A hotfix or release branch (`deploy.hotfix.branches`, `version.build_branches`)
+keeps its module versions, and graft says so: it carries a candidate someone
+approved, and a raise there would ship a change outside the approval
+(`approved_release` counts a changed `go.mod` as shipped); the trunk takes
+the raise.
 Offline or otherwise unknown latest versions produce a warning and leave that
 module file alone. If a raised version makes the gate fail, the commit stops
 and the raised files stay in the work tree for repair. Without this setting,

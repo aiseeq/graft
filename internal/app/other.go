@@ -725,7 +725,13 @@ func (a *App) Gate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := a.raiseOwnModules(ctx, repo); err != nil {
+	// A detached HEAD names no branch to hold the modules on: they are raised
+	// as on any work branch.
+	branch, err := repo.Branch()
+	if err != nil && !errors.Is(err, gitx.ErrDetachedHead) {
+		return err
+	}
+	if err := a.raiseOwnModules(ctx, repo, cfg, branch); err != nil {
 		return err
 	}
 	if err := a.gate(ctx, repo, cfg); err != nil {
@@ -737,10 +743,31 @@ func (a *App) Gate(ctx context.Context) error {
 
 // raiseOwnModules raises the modules of the user's modules.latest to their
 // latest versions in the work tree, before a commit or a gate checks it.
-func (a *App) raiseOwnModules(ctx context.Context, repo *gitx.Repo) error {
+// A hotfix or release branch keeps the modules it has: it carries a candidate
+// someone approved, and a raise there would ship a change outside the
+// approval; the trunk takes the raise.
+func (a *App) raiseOwnModules(ctx context.Context, repo *gitx.Repo, cfg *config.Config, branch string) error {
 	settings, err := userconfig.ModulesSettings()
 	if err != nil || len(settings.Latest) == 0 {
 		return err
 	}
+	if held := modulesHeldBy(cfg, branch); held != "" {
+		a.printf("modules.latest: %s keeps its module versions (%s); the trunk raises them", branch, held)
+		return nil
+	}
 	return gomods.Raise(ctx, repo, settings.IsLatest, a.Stderr, a.warn)
+}
+
+// modulesHeldBy names the setting that makes branch a hotfix or release
+// branch, or is empty.
+func modulesHeldBy(cfg *config.Config, branch string) string {
+	switch {
+	case branch == "":
+		return ""
+	case cfg.Deploy != nil && cfg.Deploy.IsHotfix(branch):
+		return "deploy.hotfix.branches"
+	case config.BranchMatches(cfg.Version.Build, branch):
+		return "version.build_branches"
+	}
+	return ""
 }
