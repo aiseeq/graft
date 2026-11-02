@@ -917,6 +917,11 @@ deploy script) is recorded when it ends: one JSON line in
 A task gets a line of its own when it ends, covering everything it ran,
 deps and inner tasks included.
 
+A panic of graft itself goes to `crash.log` in the same directory as well as
+to stderr, after a line with the time, graft's version, pid and command line:
+a caller that keeps only the tail of graft's output still has its text. A
+`crash.log` that cannot be opened is said on stderr and graft runs on.
+
 ```json
 {"time":"2026-01-05T10:00:03.1+01:00","kind":"step","project":"/home/me/work/projectA","profile":"projectA:lint","task":"lint","top":"commit","step":"shellcheck scripts/*.sh","wall_s":41.2,"user_s":38.9,"sys_s":2.4,"max_rss_mb":9123.4,"tree_mem_mb":11840.2,"read_mb":12.5,"write_mb":310.2,"peak_write_mbs":96.4,"load_start":4.12,"load_max":9.8,"exit":0}
 {"time":"2026-01-05T10:00:03.1+01:00","kind":"task","project":"/home/me/work/projectA","profile":"projectA:lint","task":"lint","top":"commit","steps":2,"wall_s":44,"user_s":40.1,"sys_s":2.6,"max_rss_mb":9123.4,"tree_mem_mb":11840.2,"read_mb":12.6,"write_mb":310.4,"peak_write_mbs":96.4,"load_start":3.9,"load_max":9.8,"exit":0}

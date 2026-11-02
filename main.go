@@ -29,6 +29,7 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/app"
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/crashlog"
 	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/gocache"
 	"github.com/aiseeq/graft/v2/internal/hooks"
@@ -71,6 +72,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "graft:", err)
 		os.Exit(failed)
 	}
+	// Runs only on a panic: every other way out of main is os.Exit.
+	defer crashlog.Note(crashlog.Keep(), toolVersion(), os.Args[1:])
 	a := &app.App{Dir: wd, ToolVersion: toolVersion(), Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}
 	// Ctrl-C stops a lock wait or a gate command instead of leaving them
 	// running behind the user's back.
