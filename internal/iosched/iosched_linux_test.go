@@ -83,11 +83,17 @@ func TestDecideSession(t *testing.T) {
 	if got, ok := decideSession(cg, map[string]string{"memory.max": "1G"}, 42, 7, uid); ok || got.limited != "memory.max" {
 		t.Errorf("limited session scope = %+v, %v", got, ok)
 	}
-	if got := noUserManager(uid, false, "34% of RAM, the default"); !strings.Contains(got.Message, "no user manager runs") || !strings.Contains(got.Message, "uid "+strconv.Itoa(uid)) || strings.Contains(got.Message, "not applied") {
+	if got := noUserManager(uid, false, false, "34% of RAM, the default"); !strings.Contains(got.Message, "no memory ceiling: no user manager runs") || !strings.Contains(got.Message, "uid "+strconv.Itoa(uid)) || strings.Contains(got.Message, "not applied") {
 		t.Errorf("missing manager message = %q", got.Message)
 	}
-	if got := noUserManager(uid, true, "--memory-max 1G"); !strings.Contains(got.Message, "--memory-max 1G not applied") {
+	if got := noUserManager(uid, false, true, "--memory-max 1G"); !strings.Contains(got.Message, "--memory-max 1G not applied") {
 		t.Errorf("an asked ceiling is not named as not applied: %q", got.Message)
+	}
+	if got := noUserManager(uid, true, false, "34% of RAM, the default"); got.Message != "" {
+		t.Errorf("a parent's memory.max holds the work, yet: %q", got.Message)
+	}
+	if got := noUserManager(uid, true, true, "--memory-max 1G"); strings.Contains(got.Message, "no memory ceiling") || !strings.Contains(got.Message, "--memory-max 1G not applied") {
+		t.Errorf("a parent's memory.max with an asked ceiling: %q", got.Message)
 	}
 	root := t.TempDir()
 	if running, err := hasUserManager(root, uid); err != nil || running {

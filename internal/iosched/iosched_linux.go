@@ -250,7 +250,11 @@ func configure(ctx context.Context, pid int, procRoot string, req Request) (Plac
 			return Placement{}, err
 		}
 		if !running {
-			return noUserManager(os.Getuid(), req.explicit(), source), nil
+			held, err := memoryLimited(procRoot, cg)
+			if err != nil {
+				return Placement{}, err
+			}
+			return noUserManager(os.Getuid(), held, req.explicit(), source), nil
 		}
 		return place(ctx, self, move, session, pid, total, source)
 	}
@@ -299,14 +303,20 @@ func hasUserManager(procRoot string, uid int) (bool, error) {
 }
 
 // noUserManager is the placement of work from a login session when no user
-// manager runs to take it; explicit says the ceiling source names was asked
-// for, and so is said not applied.
-func noUserManager(uid int, explicit bool, source string) Placement {
-	skip := ""
-	if explicit {
-		skip = fmt.Sprintf("; %s not applied", source)
+// manager runs to take it: held says memory.max of the session or a parent
+// holds it anyway, and then only an asked ceiling is worth a line; explicit
+// says the ceiling source names was asked for, and so is said not applied.
+func noUserManager(uid int, held, explicit bool, source string) Placement {
+	reason := fmt.Sprintf("no user manager runs for uid %d to take work from its login session (enable linger: loginctl enable-linger)", uid)
+	switch {
+	case held && !explicit:
+		return Placement{}
+	case held:
+		return Placement{Message: fmt.Sprintf("memory ceiling %s not applied: %s, and memory.max of a parent holds it", source, reason)}
+	case explicit:
+		return Placement{Message: fmt.Sprintf("no memory ceiling: %s; %s not applied", reason, source)}
 	}
-	return Placement{Message: fmt.Sprintf("no memory ceiling: no user manager runs for uid %d to take work from its login session (enable linger: loginctl enable-linger)%s", uid, skip)}
+	return Placement{Message: "no memory ceiling: " + reason}
 }
 
 // holdSole gives the scope graft is alone in the ceiling and says, when its

@@ -186,7 +186,8 @@ scope, which belongs to logind rather than the user manager. With
 so work continues as it would without the move. With `KillUserProcesses=yes`,
 stopping the session no longer stops work already moved to the user manager.
 If no user manager is running (neither linger nor an active login), graft says
-`no memory ceiling` with the missing manager reason. Graft leaves services,
+`no memory ceiling` with the missing manager reason, unless `memory.max` of a
+parent holds the work. Graft leaves services,
 scopes with memory or CPU limits, a scope graft is alone in
 (`systemd-run --scope graft …`: the move would empty it and take the caller's
 handle away), and systems without a user systemd manager in place. For other
