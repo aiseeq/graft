@@ -710,7 +710,7 @@ func (m *machine) busy(ctx context.Context, fresh bool) (busyness, error) {
 	}
 	// A look that the wait's end cut short is no measure: its disk source
 	// failed for the deadline, not for the machine.
-	if err := ctx.Err(); err != nil {
+	if err := ended(ctx); err != nil {
 		return busyness{}, err
 	}
 	noPSI := slices.Contains(v.Skipped, pressure.ErrNoIOPressure)
@@ -837,4 +837,17 @@ func sleep(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
+}
+
+// ended is the context's error, or DeadlineExceeded once its deadline has
+// passed: a dial cut by that deadline returns before the context's own timer
+// sets its error.
+func ended(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }

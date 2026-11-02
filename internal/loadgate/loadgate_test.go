@@ -3,6 +3,7 @@ package loadgate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -848,5 +849,26 @@ func TestLoadAverageHoldsACalmMoment(t *testing.T) {
 	busy, err := BusyNow(context.Background(), "build", "projectA:build", testLoad, "", io.Discard)
 	if err != nil || !busy {
 		t.Fatalf("BusyNow = %v, %v with load average 30 over runnable 22; want busy", busy, err)
+	}
+}
+
+// lateTimer is a context whose deadline has passed while its own timer has
+// not set its error yet, as when a dial cut by that deadline returns first.
+type lateTimer struct{ context.Context }
+
+func (lateTimer) Deadline() (time.Time, bool) { return time.Now().Add(-time.Millisecond), true }
+func (lateTimer) Err() error                  { return nil }
+
+// TestLookPastTheDeadlineIsNoMeasure: a look that ended after the wait's
+// deadline, its disk source cut by it, does not find the machine calm: the
+// wait ends instead of starting the task.
+func TestLookPastTheDeadlineIsNoMeasure(t *testing.T) {
+	fakeMachine(t)
+	m := newMachine(testLoad, io.Discard, "build", "projectA:build")
+	if _, err := m.busy(lateTimer{context.Background()}, true); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("busy past the deadline: %v, want %v", err, context.DeadlineExceeded)
+	}
+	if _, err := m.busy(context.Background(), true); err != nil {
+		t.Fatalf("busy without a deadline: %v", err)
 	}
 }
