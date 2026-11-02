@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -33,6 +34,7 @@ type plan struct {
 	source, slice, scope string
 	limited              string
 	ceiling              int64
+	linkSource           bool
 }
 
 // userScope says whether cgroup is a scope of a user's systemd manager, and
@@ -73,7 +75,36 @@ func decide(cgroup string, limits map[string]string, sole bool, pid int, ceiling
 		return plan{limited: key}, false
 	}
 	newSlice := strings.TrimSuffix(parent, ".slice") + "-graft.slice"
-	return plan{source: unit, slice: newSlice, scope: fmt.Sprintf("graft-heavy-%d.scope", pid), ceiling: ceiling}, true
+	return plan{source: unit, slice: newSlice, scope: fmt.Sprintf("graft-heavy-%d.scope", pid), ceiling: ceiling, linkSource: true}, true
+}
+
+// sessionScope recognizes a logind session scope belonging to uid.
+func sessionScope(cgroup string, uid int) (string, bool) {
+	p := path.Clean("/" + strings.TrimSpace(cgroup))
+	parts := strings.Split(strings.Trim(p, "/"), "/")
+	if len(parts) != 3 || parts[0] != "user.slice" || parts[1] != fmt.Sprintf("user-%d.slice", uid) {
+		return "", false
+	}
+	unit := parts[2]
+	if !strings.HasPrefix(unit, "session-") || !strings.HasSuffix(unit, ".scope") || len(strings.TrimSuffix(strings.TrimPrefix(unit, "session-"), ".scope")) == 0 {
+		return "", false
+	}
+	return unit, true
+}
+
+// decideSession plans the move of work from a login session scope of uid.
+// Being alone in it does not stop the move, as it does in a user scope: no
+// caller holds the work by the session scope, which logind owns, and the user
+// manager could not set a ceiling on it in place.
+func decideSession(cgroup string, limits map[string]string, pid int, ceiling int64, uid int) (plan, bool) {
+	unit, ok := sessionScope(cgroup, uid)
+	if !ok {
+		return plan{}, false
+	}
+	if key := limitedBy(limits); key != "" {
+		return plan{limited: key}, false
+	}
+	return plan{source: unit, slice: "app-graft.slice", scope: fmt.Sprintf("graft-heavy-%d.scope", pid), ceiling: ceiling}, true
 }
 
 // limitedBy is the first limit file that limits, "" for none.
@@ -118,9 +149,17 @@ func holds(cgroup string, limits map[string]string, sole bool, owned ...string) 
 // stop it then too. Without OOMPolicy=continue, systemd would stop the whole
 // scope, graft with it, when the kernel kills a process at the ceiling.
 func scopeProperties(p plan, pid int) []string {
-	return append([]string{"8", "PIDs", "au", "1", strconv.Itoa(pid), "Slice", "s", p.slice,
-		"PartOf", "as", "1", p.source, "After", "as", "1", p.source,
-		"CollectMode", "s", "inactive-or-failed"}, append(memoryProperties(p.ceiling), "0")...)
+	// busctl takes the number of properties first: 3 of the memory, PIDs,
+	// Slice, CollectMode, and PartOf and After when the source is linked.
+	count := 6
+	properties := []string{"PIDs", "au", "1", strconv.Itoa(pid), "Slice", "s", p.slice}
+	if p.linkSource {
+		count += 2
+		properties = append(properties, "PartOf", "as", "1", p.source, "After", "as", "1", p.source)
+	}
+	properties = append(properties, "CollectMode", "s", "inactive-or-failed")
+	properties = append(properties, memoryProperties(p.ceiling)...)
+	return append(append([]string{strconv.Itoa(count)}, properties...), "0")
 }
 
 // memoryProperties hold the work under ceiling without swap: swapping out a
@@ -201,6 +240,20 @@ func configure(ctx context.Context, pid int, procRoot string, req Request) (Plac
 		return Placement{}, fmt.Errorf("read the processes of the scope: %w", err)
 	}
 	sole := soleProcess(string(procs), pid)
+	if session, ok := sessionScope(cg, os.Getuid()); ok {
+		move, ok := decideSession(cg, limits, pid, ceiling, os.Getuid())
+		if !ok {
+			return unplaced(procRoot, cg, move.limited, req.explicit(), source)
+		}
+		running, err := hasUserManager(procRoot, os.Getuid())
+		if err != nil {
+			return Placement{}, err
+		}
+		if !running {
+			return noUserManager(os.Getuid(), req.explicit(), source), nil
+		}
+		return place(ctx, self, move, session, pid, total, source)
+	}
 	switch holds(cg, limits, sole, ownScope, req.Held) {
 	case heavyHeld:
 		return raise(ctx, cg, limits, ceiling, source, total, req.explicit())
@@ -211,6 +264,10 @@ func configure(ctx context.Context, pid int, procRoot string, req Request) (Plac
 	if !ok {
 		return unplaced(procRoot, cg, move.limited, req.explicit(), source)
 	}
+	return place(ctx, self, move, move.source, pid, total, source)
+}
+
+func place(ctx context.Context, self string, move plan, from string, pid int, total int64, source string) (Placement, error) {
 	sliceMax := sliceCeiling(total)
 	if err := ensureSlice(ctx, move.slice, sliceMax); err != nil {
 		return Placement{}, err
@@ -222,9 +279,34 @@ func configure(ctx context.Context, pid int, procRoot string, req Request) (Plac
 		return Placement{}, err
 	}
 	return Placement{
-		Message: fmt.Sprintf("moved from %s to %s in %s (IOWeight=%d, memory ceiling %s: %s)", move.source, move.scope, move.slice, ioWeight, Bytes(ceiling), source),
-		Ceiling: ceiling, Source: source, Scope: move.scope, Slice: move.slice, SliceMax: sliceMax,
+		Message: fmt.Sprintf("moved from %s to %s in %s (IOWeight=%d, memory ceiling %s: %s)", from, move.scope, move.slice, ioWeight, Bytes(move.ceiling), source),
+		Ceiling: move.ceiling, Source: source, Scope: move.scope, Slice: move.slice, SliceMax: sliceMax,
 	}, nil
+}
+
+// hasUserManager says whether the user systemd manager of uid runs: its
+// cgroup user@uid.service exists.
+func hasUserManager(procRoot string, uid int) (bool, error) {
+	managerPath := cgroupBase(procRoot, path.Join("/user.slice", fmt.Sprintf("user-%d.slice", uid), fmt.Sprintf("user@%d.service", uid)))
+	info, err := os.Stat(managerPath)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("look for the user manager of uid %d: %w", uid, err)
+	}
+	return info.IsDir(), nil
+}
+
+// noUserManager is the placement of work from a login session when no user
+// manager runs to take it; explicit says the ceiling source names was asked
+// for, and so is said not applied.
+func noUserManager(uid int, explicit bool, source string) Placement {
+	skip := ""
+	if explicit {
+		skip = fmt.Sprintf("; %s not applied", source)
+	}
+	return Placement{Message: fmt.Sprintf("no memory ceiling: no user manager runs for uid %d to take work from its login session (enable linger: loginctl enable-linger)%s", uid, skip)}
 }
 
 // holdSole gives the scope graft is alone in the ceiling and says, when its

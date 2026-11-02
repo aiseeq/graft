@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -62,6 +63,43 @@ func TestDecide(t *testing.T) {
 		t.Errorf("slice ceiling = %d, want 50%% of RAM", got)
 	}
 
+}
+
+func TestDecideSession(t *testing.T) {
+	uid := os.Getuid()
+	cg := "/user.slice/user-" + strconv.Itoa(uid) + ".slice/session-7.scope"
+	move, ok := decideSession(cg, map[string]string{}, 42, 7, uid)
+	if !ok || move.slice != "app-graft.slice" || move.source != "session-7.scope" || move.scope != "graft-heavy-42.scope" || move.linkSource {
+		t.Fatalf("session plan = %+v, move %v", move, ok)
+	}
+	want := []string{"6", "PIDs", "au", "1", "42", "Slice", "s", "app-graft.slice", "CollectMode", "s", "inactive-or-failed",
+		"MemoryMax", "t", "7", "MemorySwapMax", "t", "0", "OOMPolicy", "s", "continue", "0"}
+	if got := scopeProperties(move, 42); !reflect.DeepEqual(got, want) {
+		t.Fatalf("session scope properties = %q, want %q", got, want)
+	}
+	if got, ok := decideSession(cg, map[string]string{}, 42, 7, uid+1); ok || got.scope != "" {
+		t.Errorf("foreign session scope planned: %+v, %v", got, ok)
+	}
+	if got, ok := decideSession(cg, map[string]string{"memory.max": "1G"}, 42, 7, uid); ok || got.limited != "memory.max" {
+		t.Errorf("limited session scope = %+v, %v", got, ok)
+	}
+	if got := noUserManager(uid, false, "34% of RAM, the default"); !strings.Contains(got.Message, "no user manager runs") || !strings.Contains(got.Message, "uid "+strconv.Itoa(uid)) || strings.Contains(got.Message, "not applied") {
+		t.Errorf("missing manager message = %q", got.Message)
+	}
+	if got := noUserManager(uid, true, "--memory-max 1G"); !strings.Contains(got.Message, "--memory-max 1G not applied") {
+		t.Errorf("an asked ceiling is not named as not applied: %q", got.Message)
+	}
+	root := t.TempDir()
+	if running, err := hasUserManager(root, uid); err != nil || running {
+		t.Fatalf("missing user manager cgroup detected: %v, %v", running, err)
+	}
+	manager := path.Join(root, "cgroup", "user.slice", "user-"+strconv.Itoa(uid)+".slice", "user@"+strconv.Itoa(uid)+".service")
+	if err := os.MkdirAll(manager, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if running, err := hasUserManager(root, uid); err != nil || !running {
+		t.Fatalf("existing user manager cgroup not detected: %v, %v", running, err)
+	}
 }
 
 func TestEnterSystemd(t *testing.T) {
@@ -228,6 +266,26 @@ func TestSoleProcess(t *testing.T) {
 	}{{"42\n", true}, {"", true}, {"7\n42\n", false}, {"42\n43\n", false}} {
 		if got := soleProcess(c.procs, 42); got != c.want {
 			t.Errorf("soleProcess(%q) = %v, want %v", c.procs, got, c.want)
+		}
+	}
+}
+
+// TestScopePropertiesCount: the count busctl reads first is the number of
+// properties that follow, with and without the link to the source scope; a
+// wrong count fails StartTransientUnit with too few parameters.
+func TestScopePropertiesCount(t *testing.T) {
+	names := map[string]bool{"PIDs": true, "Slice": true, "PartOf": true, "After": true, "CollectMode": true, "MemoryMax": true, "MemorySwapMax": true, "OOMPolicy": true}
+	for _, linked := range []bool{true, false} {
+		p := plan{source: "app-x.scope", slice: "app-graft.slice", scope: "graft-heavy-42.scope", ceiling: 7, linkSource: linked}
+		properties := scopeProperties(p, 42)
+		found := 0
+		for _, word := range properties[1:] {
+			if names[word] {
+				found++
+			}
+		}
+		if properties[0] != strconv.Itoa(found) {
+			t.Errorf("linked %v: count %s, %d properties follow: %q", linked, properties[0], found, properties)
 		}
 	}
 }

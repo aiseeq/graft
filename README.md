@@ -179,11 +179,19 @@ starts an agent elsewhere; it is released the same way.
 
 After admission, Linux graft moves heavy work from an unlimited user scope
 into a shared `*-graft.slice` with `IOWeight=10`: all heavy work of that slice
-shares the one weight. It leaves services, scopes with memory or CPU limits,
-a scope graft is alone in (`systemd-run --scope graft …`: the move would empty
-it and take the caller's handle away), and systems without a user systemd
-manager in place. The heavy scope is `PartOf` its source: stopping the source
-scope stops the work, while the caller exiting first leaves it running.
+shares the one weight. Work from a login session, including SSH, moves into
+`app-graft.slice`. That move has no `PartOf` or `After` link to the session
+scope, which belongs to logind rather than the user manager. With
+`KillUserProcesses=no`, logind leaves processes running when SSH disconnects,
+so work continues as it would without the move. With `KillUserProcesses=yes`,
+stopping the session no longer stops work already moved to the user manager.
+If no user manager is running (neither linger nor an active login), graft says
+`no memory ceiling` with the missing manager reason. Graft leaves services,
+scopes with memory or CPU limits, a scope graft is alone in
+(`systemd-run --scope graft …`: the move would empty it and take the caller's
+handle away), and systems without a user systemd manager in place. For other
+user scopes, the heavy scope is `PartOf` its source: stopping the source scope
+stops the work, while the caller exiting first leaves it running.
 
 The heavy scope has a memory ceiling: `MemoryMax` 34% of RAM (`MemTotal`)
 by default, `MemorySwapMax=0`, and `OOMPolicy=continue`. A runaway test or
