@@ -175,7 +175,7 @@ func pathOnDisk(root, f string) (string, error) {
 			return "", nil
 		}
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("%s: %w", f, err)
 		}
 		if i == len(parts)-1 {
 			return f, nil
@@ -186,7 +186,7 @@ func pathOnDisk(root, f string) (string, error) {
 				return "", nil
 			}
 			if err != nil {
-				return "", err
+				return "", fmt.Errorf("%s through the symbolic link %s: %w", f, strings.Join(parts[:i+1], "/"), err)
 			}
 			return strings.Join(parts[:i+1], "/"), nil
 		}

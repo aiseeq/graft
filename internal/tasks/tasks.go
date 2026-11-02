@@ -1442,7 +1442,7 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 }
 
 func (r *Runner) noteBrokenRemote(cmd *exec.Cmd, err error, stderr string) {
-	if err == nil || cmd.ProcessState == nil || r.remoteHeavy == nil || !r.userRemote || len(r.frames) == 0 || !r.frames[len(r.frames)-1].remote {
+	if err == nil || cmd.ProcessState == nil || r.remoteHeavy == nil || len(r.frames) == 0 || !r.frames[len(r.frames)-1].remote {
 		return
 	}
 	code := cmd.ProcessState.ExitCode()
@@ -1457,7 +1457,7 @@ func (r *Runner) noteBrokenRemote(cmd *exec.Cmd, err error, stderr string) {
 }
 
 // fallbackBrokenRemote, after the running task or exec was sent to the
-// user's host and run told the path broke, says so, journals it and takes
+// host, the user's or the project's, and run told the path broke, says so, journals it and takes
 // the heavy queue here; fallback is false when nothing broke.
 func (r *Runner) fallbackBrokenRemote(ctx context.Context, name, memoryMax string) (func() error, bool, error) {
 	if len(r.frames) == 0 || !r.frames[len(r.frames)-1].remote || r.remoteBrokenReason == "" {

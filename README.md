@@ -322,9 +322,12 @@ queues as before, `graft: build: heavy, on this machine: <why>`:
   by git, and the host has none of them;
 - `up` failed or timed out; its first line of output is in the reason.
 
-For a user-configured host, an `up` failure or a `run` exit of `broken_exit`
-means the transport path broke, so graft writes the reason and runs the task
-here through the heavy queue. The same fallback applies to `graft exec --heavy`.
+A `run` exit of `broken_exit`, from the user's host or the project's, and for
+a user-configured host an `up` failure too, means the transport path broke
+(a host queue that did not admit the step in time counts: a `run` may give
+up waiting and exit with it), so graft writes the reason and runs the task
+here through the heavy queue; a project host whose `up` fails keeps the task
+here as before. The same fallback applies to `graft exec --heavy`.
 It appends one JSON line per occurrence to
 `<user cache dir>/graft/remote-broken.jsonl`, beside `stats.jsonl`, with the
 time, project, task, host, reason and process/session identifiers. A different

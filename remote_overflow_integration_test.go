@@ -773,3 +773,34 @@ func TestHeavyTaskLineSaysWhyItStayedHere(t *testing.T) {
 		t.Errorf("task lines:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
+
+// TestProjectRemoteHeavyBrokenPathRunsHere: a project's own remote_heavy
+// whose run exits its broken_exit runs the task here, says so and journals
+// it, as the user's does; another exit is the task's failure, not retried.
+func TestProjectRemoteHeavyBrokenPathRunsHere(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, overflowTasks)
+	own := filepath.Join(state, "own-calls")
+	broken := filepath.Join(state, "own-broken")
+	writeFile(t, filepath.Join(state, "own.sh"), `[ -e "`+broken+`" ] && { echo queue of box is full >&2; exit 75; }`+"\n"+
+		`echo "$*" >> "`+own+`"`+"\nexec \"$@\"\n")
+	f.write(".graft.yaml", strings.Replace(f.read(".graft.yaml"), "tasks:\n",
+		"remote_heavy: {host: box, up: [sh, -c, 'true'], run: [sh, "+yamlQuote(filepath.Join(state, "own.sh"))+"], threads: 4, broken_exit: 75}\ntasks:\n", 1))
+	writeFile(t, broken, "")
+	out := f.mustGraft("sent")
+	if !strings.Contains(out, "graft: sent: box path broken: run exited 75: queue of box is full, running here") || f.read("out") != "there\n" {
+		t.Errorf("the task did not run here after the broken path:\n%s", out)
+	}
+	if lines := readBroken(t, state); len(lines) != 1 || lines[0].Host != "box" || !strings.Contains(lines[0].Reason, "queue of box is full") {
+		t.Errorf("remote-broken.jsonl: %+v", lines)
+	}
+	if err := os.Remove(broken); err != nil {
+		t.Fatal(err)
+	}
+	out, code := f.graft("", "failing")
+	if code == 0 || strings.Contains(out, "path broken") || strings.Count(readFile(t, own), "exit 3") != 1 {
+		t.Errorf("a task failing on the host: exit %d, calls %q\n%s", code, readFile(t, own), out)
+	}
+}
