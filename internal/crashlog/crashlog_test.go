@@ -106,7 +106,11 @@ func TestUnreachableCacheKeepsNoCrashLog(t *testing.T) {
 		t.Setenv(name, notDir)
 	}
 	if f := Keep(); f != nil {
-		t.Fatalf("Keep opened %s under a file", f.Name())
+		name := f.Name()
+		if err := f.Close(); err != nil {
+			t.Error(err)
+		}
+		t.Fatalf("Keep opened %s under a file", name)
 	}
 }
 
