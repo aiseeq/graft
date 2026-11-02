@@ -571,7 +571,7 @@ func rebaseBranch(repo *gitx.Repo, dir string) (string, error) {
 			continue
 		}
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("reading the rebase state of %s: %w", dir, err)
 		}
 		branch, _ := strings.CutPrefix(strings.TrimSpace(string(data)), "refs/heads/")
 		if branch == "detached HEAD" {
