@@ -32,25 +32,12 @@ func Targets(v config.Version) []Target {
 
 type span struct{ start, end int }
 
-// ErrNoVersion marks content that holds no version where the target looks:
-// an empty file, a pattern or key that is not there, broken JSON.
-var ErrNoVersion = errors.New("no version in the file")
-
-// noVersionError keeps the cause's message and answers errors.Is for
-// ErrNoVersion.
-type noVersionError struct{ err error }
-
-func (e noVersionError) Error() string        { return e.err.Error() }
-func (e noVersionError) Unwrap() error        { return e.err }
-func (e noVersionError) Is(target error) bool { return target == ErrNoVersion }
-
 // Extract returns the version recorded in content. Every occurrence the target
-// describes must carry the same value. Content without the version gives an
-// error that matches ErrNoVersion.
+// describes must carry the same value.
 func (t Target) Extract(content []byte) (string, error) {
 	spans, err := t.locate(content)
 	if err != nil {
-		return "", noVersionError{err}
+		return "", err
 	}
 	value := string(content[spans[0].start:spans[0].end])
 	for _, s := range spans[1:] {

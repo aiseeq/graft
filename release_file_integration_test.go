@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,32 +180,6 @@ func TestReleasePatchFlagInGitTagMode(t *testing.T) {
 	}
 }
 
-func TestVersionBumpThenCommitUsesRaisedVersion(t *testing.T) {
-	for _, tagOnCommit := range []bool{false, true} {
-		t.Run(fmt.Sprintf("tag_on_commit=%v", tagOnCommit), func(t *testing.T) {
-			f := fileReleaseRepo(t, tagOnCommit, "gate: []\n")
-			f.mustGraft("version", "bump", "--minor")
-			out := f.mustGraft("commit", "-m", "chore: release prep")
-			if !strings.Contains(out, "version 0.8.0 (raised before the commit)") {
-				t.Fatalf("pre-raised version was not reported:\n%s", out)
-			}
-			if got := f.read("VERSION"); got != "0.8.0\n" {
-				t.Fatalf("VERSION = %q", got)
-			}
-			if got := f.git("show", "-s", "--format=%s", "HEAD"); got != "chore: release prep" {
-				t.Fatalf("subject = %q", got)
-			}
-			if tagOnCommit && f.git("rev-parse", "v0.8.0^{commit}") != f.git("rev-parse", "HEAD") {
-				t.Fatal("tag_on_commit did not tag the raised version")
-			}
-			f.write("next.txt", "next\n")
-			if out := f.mustGraft("commit", "-m", "fix: next change"); !strings.Contains(out, "version 0.8.1") {
-				t.Fatalf("ordinary commit did not bump patch:\n%s", out)
-			}
-		})
-	}
-}
-
 func TestReleaseVersionOnlyNeedsNoTicket(t *testing.T) {
 	f := newRepo(t, map[string]string{
 		".graft.yaml":  "schema: 1\nversion: {mode: file, sync: [{path: package.json, format: json, key: [version]}]}\nticket: {pattern: 'PROJ-[0-9]+', required: true}\ngate: []\n",
@@ -233,59 +206,9 @@ func TestReleaseVersionOnlyNeedsNoTicket(t *testing.T) {
 	}
 }
 
-// TestRaisedVersionChecksSyncAndMerges: a version raised before the commit is
-// kept only when the synced files agree with it, and in a merge only when the
-// merged branch did not bring it.
-func TestRaisedVersionChecksSyncAndMerges(t *testing.T) {
-	t.Run("sync mismatch", func(t *testing.T) {
-		f := fileReleaseRepo(t, false, "gate: []\n")
-		head := f.git("rev-parse", "HEAD")
-		f.write("VERSION", "0.8.0\n")
-		f.write("a.txt", "a\n")
-		if out, code := f.graft("", "commit", "-m", "feat: hand raise"); code == 0 || !strings.Contains(out, "make them agree") {
-			t.Fatalf("hand-raised VERSION without package.json: exit %d\n%s", code, out)
-		}
-		if f.git("rev-parse", "HEAD") != head {
-			t.Fatal("a commit was made")
-		}
-	})
-	t.Run("merge brings the version", func(t *testing.T) {
-		f := fileReleaseRepo(t, false, "gate: []\n")
-		f.git("checkout", "-q", "-b", "dev")
-		f.write("VERSION", "0.9.0\n")
-		f.write("package.json", "{\"version\":\"0.9.0\"}\n")
-		f.write("d.txt", "d\n")
-		f.mustPlainCommit("feat: dev release")
-		f.git("checkout", "-q", "main")
-		f.write("m.txt", "m\n")
-		f.mustPlainCommit("feat: on main")
-		f.git("merge", "-q", "--no-ff", "--no-commit", "dev")
-		out := f.mustGraft("commit", "-m", "chore: merge dev")
-		if !strings.Contains(out, "version 0.9.1") || strings.Contains(out, "raised before") {
-			t.Fatalf("merge that brought 0.9.0:\n%s", out)
-		}
-	})
-	t.Run("merge then bump", func(t *testing.T) {
-		f := fileReleaseRepo(t, false, "gate: []\n")
-		f.git("checkout", "-q", "-b", "feature/y")
-		f.write("y.txt", "y\n")
-		f.mustPlainCommit("feat: y")
-		f.git("checkout", "-q", "main")
-		f.write("m.txt", "m\n")
-		f.mustPlainCommit("feat: on main")
-		f.git("merge", "-q", "--no-ff", "--no-commit", "feature/y")
-		f.mustGraft("version", "bump", "--minor")
-		out := f.mustGraft("commit", "-m", "chore: merge y")
-		if !strings.Contains(out, "version 0.8.0 (raised before the commit)") || f.read("package.json") != "{\"version\":\"0.8.0\"}\n" {
-			t.Fatalf("merge with a bump before the commit:\n%s\npackage.json %q", out, f.read("package.json"))
-		}
-	})
-}
-
-// TestReleaseFileEdges: a second release of the same code is refused, a step
-// on a version raised before the commit is refused, a version file HEAD
-// cannot read does not stop a commit, the release takes the branch's key and
-// keeps the module versions.
+// TestReleaseFileEdges: a second release of the same code is refused, a
+// commit still bumps over a version file HEAD cannot read, graft version bump
+// raises every time, the release takes the branch's key and makes one tag.
 func TestReleaseFileEdges(t *testing.T) {
 	t.Run("second release of the same code", func(t *testing.T) {
 		f := fileReleaseRepo(t, false, "gate: []\n")
@@ -297,14 +220,6 @@ func TestReleaseFileEdges(t *testing.T) {
 		}
 		if f.git("rev-parse", "HEAD") != head || f.git("tag", "-l") != "v0.8.0" {
 			t.Fatalf("second release changed HEAD or tags: %s", f.git("tag", "-l"))
-		}
-	})
-	t.Run("step on a raised version", func(t *testing.T) {
-		f := fileReleaseRepo(t, false, "gate: []\n")
-		f.mustGraft("version", "bump")
-		f.write("a.txt", "a\n")
-		if out, code := f.graft("", "commit", "--minor", "-m", "feat: a"); code == 0 || !strings.Contains(out, "raised above HEAD's version") {
-			t.Fatalf("--minor on a raised version: exit %d\n%s", code, out)
 		}
 	})
 	for name, broken := range map[string]string{"garbage": "garbage\n", "empty": "", "out of range": "99999999999999999999.0.0\n"} {

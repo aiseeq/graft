@@ -494,7 +494,7 @@ func (a *App) releaseFileCommitLocked(ctx context.Context, repo *gitx.Repo, cfg 
 	if released != "" {
 		return fmt.Errorf("HEAD is already released as %s: commit the change first; a new version of the same code ships nothing new", released)
 	}
-	plan, err := planBump(repo, cfg, opts.Level, branch, true)
+	plan, err := planBump(repo, cfg, opts.Level, branch)
 	if err != nil {
 		return err
 	}
@@ -601,7 +601,7 @@ func (a *App) BumpVersion(ctx context.Context, level version.Level) error {
 		return err
 	}
 	return a.withLock(ctx, commitLock(repo, cfg), cfg, "graft version bump", func() error {
-		plan, err := planBump(repo, cfg, level, branch, false)
+		plan, err := planBump(repo, cfg, level, branch)
 		if err != nil {
 			return err
 		}

@@ -109,7 +109,7 @@ func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level versio
 	if clean && !merge {
 		return plan, errNothingToCommit
 	}
-	bump, err := planBump(repo, cfg, level, branch, true)
+	bump, err := planBump(repo, cfg, level, branch)
 	if err != nil {
 		return plan, err
 	}
@@ -480,25 +480,21 @@ func (a *App) stageGateChanges(repo *gitx.Repo, start commitStart, command strin
 
 // bumpPlan is the version change a commit will make.
 type bumpPlan struct {
-	cfg    config.Version
-	next   *version.Semver
-	tag    string
-	raised bool
+	cfg  config.Version
+	next *version.Semver
+	tag  string
 	// skipped is the branch whose commits leave the version alone.
 	skipped string
 }
 
-// planBump works out the version a commit or graft version bump writes.
-// keepRaised (a commit) keeps a version raised above HEAD's before the
-// commit; graft version bump raises from the work tree's version every time.
-func planBump(repo *gitx.Repo, cfg *config.Config, level version.Level, branch string, keepRaised bool) (bumpPlan, error) {
+func planBump(repo *gitx.Repo, cfg *config.Config, level version.Level, branch string) (bumpPlan, error) {
 	plan := bumpPlan{cfg: cfg.Version}
 	if cfg.Version.Mode != config.ModeFile {
 		return plan, nil
 	}
 	if config.BranchMatches(cfg.Version.Skip, branch) {
 		if level != version.Patch {
-			return plan, fmt.Errorf("--%s on %s: version.skip_branches leaves the version alone there; use graft release --minor on the branch the work is merged into", level, branch)
+			return plan, fmt.Errorf("--%s on %s: version.skip_branches leaves the version alone there; use graft release --%s on the branch the work is merged into", level, branch, level)
 		}
 		plan.skipped = branch
 		return plan, nil
@@ -517,20 +513,7 @@ func planBump(repo *gitx.Repo, cfg *config.Config, level version.Level, branch s
 	case current.Build > 0:
 		return plan, fmt.Errorf("%s is %s, a build_branches version, on %s: a merge took it from a hotfix or release branch; put back the version %s had before the merge", cfg.Version.File, current, branch, branch)
 	default:
-		raised := false
-		if keepRaised {
-			if raised, err = raisedBeforeCommit(repo, cfg, current); err != nil {
-				return plan, err
-			}
-		}
-		if raised && level != version.Patch {
-			return plan, fmt.Errorf("--%s: %s is %s already, raised above HEAD's version before the commit; commit without --%s to keep it, or put the version back", level, cfg.Version.File, current, level)
-		}
-		if raised {
-			next, plan.raised = current, true
-		} else {
-			next = current.Bump(level)
-		}
+		next = current.Bump(level)
 	}
 	plan.next = &next
 	if cfg.Version.TagOnCommit {
@@ -546,75 +529,11 @@ func planBump(repo *gitx.Repo, cfg *config.Config, level version.Level, branch s
 	return plan, nil
 }
 
-// raisedBeforeCommit tells whether the work tree's version was raised above
-// HEAD's before this commit (graft version bump): the commit keeps it instead
-// of raising it again. In a merge, a version one of the merged commits already
-// has came with the merge and is bumped as usual.
-func raisedBeforeCommit(repo *gitx.Repo, cfg *config.Config, current version.Semver) (bool, error) {
-	hasHead, err := repo.HasHead()
-	if err != nil || !hasHead {
-		return false, err
-	}
-	head, found, err := versionInRev(repo, cfg, "HEAD")
-	if err != nil || !found || !head.Less(current) {
-		return false, err
-	}
-	merge, err := mergeOrNormalContext(repo)
-	if err != nil || !merge {
-		return err == nil, err
-	}
-	raw, err := os.ReadFile(filepath.Join(repo.GitDir, "MERGE_HEAD"))
-	if err != nil {
-		return false, fmt.Errorf("reading MERGE_HEAD: %w", err)
-	}
-	for sha := range strings.FieldsSeq(string(raw)) {
-		theirs, found, err := versionInRev(repo, cfg, sha)
-		if err != nil {
-			return false, err
-		}
-		if found && theirs == current {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
-// versionInRev is the version the version file holds in rev. found is false
-// when rev has no version file or the file holds no version (broken in that
-// commit): such a commit has no version to raise from or to bring along.
-func versionInRev(repo *gitx.Repo, cfg *config.Config, rev string) (version.Semver, bool, error) {
-	out, err := repo.Git("ls-tree", "-r", "--name-only", rev, "--", cfg.Version.File)
-	if err != nil {
-		return version.Semver{}, false, err
-	}
-	if strings.TrimSpace(out) == "" {
-		return version.Semver{}, false, nil
-	}
-	content, err := repo.ShowFile(rev, cfg.Version.File)
-	if err != nil {
-		return version.Semver{}, false, err
-	}
-	raw, err := version.Targets(cfg.Version)[0].Extract(content)
-	var v version.Semver
-	if err == nil {
-		v, err = version.ParseFile(raw)
-	}
-	if errors.Is(err, version.ErrNoVersion) {
-		return version.Semver{}, false, nil
-	}
-	if err != nil {
-		return version.Semver{}, false, fmt.Errorf("reading the version of %s: %w", rev, err)
-	}
-	return v, true, nil
-}
-
 // apply writes the new version; without a bump the backup is empty.
 func (p bumpPlan) apply(repo *gitx.Repo) (*version.Backup, error) {
 	if p.next == nil {
 		return &version.Backup{}, nil
 	}
-	// A version raised before the commit is written again as it is: Write
-	// refuses synced files that do not agree with the version file.
 	return version.Write(repo.Root, p.cfg, *p.next)
 }
 
@@ -624,9 +543,6 @@ func (p bumpPlan) describe() string {
 	}
 	if p.next == nil {
 		return ""
-	}
-	if p.raised {
-		return ", version " + p.next.String() + " (raised before the commit)"
 	}
 	return ", version " + p.next.String()
 }

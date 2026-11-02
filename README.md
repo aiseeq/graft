@@ -398,7 +398,7 @@ stats` (`wait_s`).
 | `graft release --patch` / `--minor` / `--major` | in version mode `file`, bump, commit and tag that version in one step: on a clean tree whose HEAD carries no version tag yet, the commit holds only the version files (no module raise) and needs no work item; in `git-tag` mode `--patch` is the default |
 | `graft release --version X.Y.Z` | choose the exact next tag (version mode `git-tag` only) |
 | `graft version` | print the project version |
-| `graft version bump [--minor\|--major]` | raise the version in the version file and its synced files without committing, for a script that folds the bump into its own commit; a following `graft commit` uses that version without raising it again |
+| `graft version bump [--minor\|--major]` | raise the version in the version file and its synced files without committing, for a script that folds the bump into its own commit or `graft amend`; `graft commit` raises it again, so a merged work branch is released with `graft release --minor` |
 | `graft version --describe` | the build identity for stamping binaries: `v1.4.0-3-gabc1234[-dirty]`, `1.4.0[-dirty]` in mode `file`, `v0.0.0-<commits>-g<hash>` without a tag |
 | `graft init` | install the hooks and set `core.hooksPath`, create the `.env` file from `dotenv_template` when it is missing, install pinned tools that fail their check; safe to repeat |
 | `graft check` | run the content checks on the index |
