@@ -1011,9 +1011,11 @@ graft's version, pid and command line. A
   to the host is cheaper here`, `when: always places the gate's heavy tasks,
   not its steps`, `the project's remote_heavy places the gate's heavy tasks,
   not its steps`. Absent for a task the host ran and without a host. On a
-  step line, it is set only for a step of a split gate that could go to the
-  host and stayed here: `cheaper here: …`, or `<host> path broken: …` for
-  the step run here after the path broke and the gate's later steps.
+  step line, it is set only for a step of a busy gate that could go to the
+  host and stayed here: `cheaper here: …` when its cost keeps it here (it
+  would stay with the host up, so this wins over a broken path), else
+  `<host> path broken: …` for the step run here after the path broke and
+  the gate's later steps that would have gone.
 - `reserve_cores`, `reserve_s` and `reserve_end` record expected CPU use, how
   long the reservation lived, and whether it ended by CPU use (`cpu`), the
   configured maximum (`cap`), task completion (`done`) or unreadable process
