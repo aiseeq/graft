@@ -29,8 +29,8 @@ type RemoteHeavy struct {
 	When string `yaml:"when"`
 	// BrokenExit is the exit status run uses when it could not carry a
 	// command to the host; graft then runs the task here. The user's
-	// settings default to DefaultBrokenExit; a project's run has none
-	// unless it names one, 0 standing for none.
+	// settings default to DefaultBrokenExit, 0 included; a project's run
+	// has none unless it names one, 0 standing for none there.
 	BrokenExit int `yaml:"broken_exit"`
 }
 

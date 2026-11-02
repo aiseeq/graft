@@ -327,13 +327,14 @@ failure too, means the transport path broke (a host queue that did not admit
 the step in time counts: a `run` may give up waiting and exit with it), so
 graft writes the reason and runs the task here through the heavy queue; a
 project host whose `up` fails keeps the task here as before. The user's
-`broken_exit` defaults to 125; a project's `run` has none unless
-`broken_exit` names one. graft tells a broken path only by that status: a
+`broken_exit` defaults to 125, and 0 there means that default too; a
+project's `run` has none unless `broken_exit` names one, and 0 there means
+none. graft tells a broken path only by that status: a
 command that exits with it on the host, 125 of `graft exec`, `docker run`,
 `timeout` or `env`, is taken for one, and the task runs here again from its
 first step, the steps that ran there included. A project whose heavy steps
-must not run twice keeps `broken_exit` off or gives its `run` a status its
-commands never exit with. The same fallback applies to `graft exec --heavy`.
+must not run twice leaves `broken_exit` out or gives its `run` a status its
+commands never exit with; the user's host always has one. The same fallback applies to `graft exec --heavy`.
 It appends one JSON line per occurrence to
 `<user cache dir>/graft/remote-broken.jsonl`, beside `stats.jsonl`, with the
 time, project, task, host, reason and process/session identifiers. A different
