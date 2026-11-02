@@ -2218,7 +2218,10 @@ branch no worktree holds; with `--apply` it removes the ones whose work is in
 the trunk:
 
 - the trunk is `--trunk`, or the HEAD branch (`refs/remotes/<remote>/HEAD`) of
-  `deploy.remote`, or of the only remote; every remote is fetched first;
+  `deploy.remote`, or of the only remote, or with several remotes the HEAD
+  branch `<remote>/<b>` of the one the local branch `b` tracks (none or two
+  such remotes is ambiguous, and asks for `deploy.remote` or `--trunk`);
+  every remote is fetched first;
   without a remote it is the local `main` or `master` when only one of them
   is there, else the branch of the main worktree, and `--trunk` is needed
   only when both are there and the main worktree is on neither (the same

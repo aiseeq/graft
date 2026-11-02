@@ -452,3 +452,57 @@ func TestWorktreeCleanNoRemote(t *testing.T) {
 		})
 	}
 }
+
+// TestWorktreeCleanTrunkByUpstream: with several remotes and no
+// deploy.remote, the trunk is the HEAD branch of the remote the local branch
+// of that name tracks; none tracked, a branch tracking another branch of the
+// remote, or branches tracking the HEADs of two remotes is ambiguous.
+func TestWorktreeCleanTrunkByUpstream(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	for _, tc := range []struct {
+		name  string
+		setup func(f *fixture)
+		want  string
+	}{
+		{"main tracks bucket", func(f *fixture) {
+			f.git("branch", "-q", "--set-upstream-to", "bucket/main", "main")
+		}, "removed   branch b/done: in bucket/main"},
+		{"no upstream", func(*fixture) {},
+			"remotes bucket, origin and no deploy.remote, and no local branch tracks a remote's HEAD branch (bucket/main, origin/main)"},
+		{"upstream not the remote's HEAD", func(f *fixture) {
+			f.git("push", "-q", "bucket", "main:dev")
+			f.git("fetch", "-q", "bucket")
+			f.git("branch", "-q", "--set-upstream-to", "bucket/dev", "main")
+		}, "no local branch tracks a remote's HEAD branch (bucket/main, origin/main)"},
+		{"two remotes' HEADs tracked", func(f *fixture) {
+			f.git("push", "-q", "origin", "main:dev")
+			f.git("fetch", "-q", "origin")
+			f.git("remote", "set-head", "origin", "dev")
+			f.git("branch", "-q", "--set-upstream-to", "bucket/main", "main")
+			f.git("branch", "-q", "--track", "dev", "origin/dev")
+		}, "local branches track the HEAD branches of several (bucket/main, origin/dev)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRepo(t, map[string]string{
+				".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+				"VERSION":     "1.0.0\n",
+			}, "bucket", "origin")
+			f.git("checkout", "-q", "-b", "main")
+			f.write("VERSION", "1.0.1\n")
+			f.mustPlainCommit("feat: base")
+			for _, r := range []string{"bucket", "origin"} {
+				f.git("push", "-q", r, "main")
+				f.git("fetch", "-q", r)
+				f.git("remote", "set-head", r, "main")
+			}
+			f.git("branch", "b/done")
+			tc.setup(f)
+			out, code := f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("exit %d:\n%s\nwant %q", code, out, tc.want)
+			}
+		})
+	}
+}

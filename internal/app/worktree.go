@@ -135,13 +135,56 @@ func trunkRef(repo *gitx.Repo, cfg *config.Config, flag string, remotes []string
 	case len(remotes) == 0:
 		return localTrunk(repo)
 	default:
-		return "", fmt.Errorf("remotes %s and no deploy.remote: pass --trunk <remote>/<branch>", strings.Join(remotes, ", "))
+		return upstreamTrunk(repo, remotes)
 	}
 	out, err := repo.Git("symbolic-ref", "--quiet", "--short", "refs/remotes/"+remote+"/HEAD")
 	if err != nil {
 		return "", fmt.Errorf("%s/HEAD is not set, the trunk is unknown: git remote set-head %s --auto, or pass --trunk: %w", remote, remote, err)
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// upstreamTrunk is the trunk of a repository with several remotes and no
+// deploy.remote: the HEAD branch <remote>/<b> of the remote that the local
+// branch b tracks. No such remote, or two of them, is ambiguous.
+func upstreamTrunk(repo *gitx.Repo, remotes []string) (string, error) {
+	var heads, tracked []string
+	for _, remote := range remotes {
+		head, err := repo.Git("for-each-ref", "--format=%(symref:short)", "refs/remotes/"+remote+"/HEAD")
+		if err != nil {
+			return "", err
+		}
+		head = strings.TrimSpace(head)
+		branch, ok := strings.CutPrefix(head, remote+"/")
+		if !ok {
+			continue
+		}
+		heads = append(heads, head)
+		upstream, err := repo.Git("for-each-ref", "--format=%(upstream:short)", "refs/heads/"+branch)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(upstream) == head {
+			tracked = append(tracked, head)
+		}
+	}
+	switch len(tracked) {
+	case 1:
+		return tracked[0], nil
+	case 0:
+		return "", fmt.Errorf("remotes %s and no deploy.remote, and no local branch tracks a remote's HEAD branch (%s): set deploy.remote, the branch's upstream, or pass --trunk <remote>/<branch>",
+			strings.Join(remotes, ", "), orNone(heads))
+	default:
+		return "", fmt.Errorf("remotes %s and no deploy.remote, and local branches track the HEAD branches of several (%s): set deploy.remote or pass --trunk <remote>/<branch>",
+			strings.Join(remotes, ", "), strings.Join(tracked, ", "))
+	}
+}
+
+func orNone(list []string) string {
+	if len(list) == 0 {
+		return "none set"
+	}
+	return strings.Join(list, ", ")
 }
 
 // localTrunk is the trunk of a repository without a remote: main or master
