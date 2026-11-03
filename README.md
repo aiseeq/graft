@@ -428,7 +428,7 @@ stats` (`wait_s`).
 | `graft locks` | who holds graft's locks |
 | `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |
 | `graft worktree add [--trunk <ref>] <branch> [<base>]` | a worktree under the user's cache, go.work's neighbours linked (see Worktrees) |
-| `graft worktree check [--trunk <ref>] [--json] <path>` | whether removing one linked worktree would lose ignored or submodule data, by the rules of `clean`; removes nothing (see Worktrees) |
+| `graft worktree check [--trunk <ref>] [--json] <path>` | whether removing one linked worktree would lose data `git status` does not show; removes nothing (see Worktrees) |
 | `graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h] [--in <directory>]...` | remove the worktrees and branches whose work is in the trunk by content; list the rest |
 | `graft worktree sync [--trunk <ref>]` | move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted (see Worktrees) |
 | `graft tools [install]` | check the pinned tools; install the failing ones |
@@ -2381,16 +2381,25 @@ the trunk:
   are gone, in any repository, are removed too.
 
 `graft worktree check <path>` answers for one linked worktree, for a tool about
-to remove it: exit 0 when nothing would be lost, 3 when ignored or submodule
-data would go with it, anything else when it could not tell, a folder that is
-not the top of a linked worktree or one it could not read included. It decides
-by the same rules as `clean`, from the trunk as last fetched: it does not reach
-a remote and removes nothing. It takes no age: `newest` is there for the caller
-to weigh. Tracked and untracked changes are not its question: `git status`
-shows them. `--json` prints one object: `path`, `clear`, `submodules`, `roots`
-(`name`, `directory`, `files`, `bytes`, `partial`), `more_roots`, `files`,
-`bytes`, `limited`, `newest`. The walk stops at 1000 files: then `limited` is
-true and the totals are lower bounds.
+to remove it: exit 0 when nothing would be lost, 3 when something would go with
+it that `git status --porcelain` does not show, anything else when it could not
+tell: a folder that is not the top of a linked worktree, a `.git` leading to
+another tree, a folder it could not read, a config blob a partial clone lacks.
+What it counts as lost: ignored and submodule data by the rules of `clean`, a
+rebase, merge, cherry-pick or revert under way, commits only a detached HEAD
+reaches, and files marked assume-unchanged or skip-worktree that are on disk. It
+reads the rules from the trunk as last fetched, found by the main worktree's
+config: fetch first for the latest. It answers for `<path>` whatever `GIT_DIR` it
+is called with, does not reach a remote and removes nothing. It takes no age:
+`newest` is there for the caller to weigh. A lock or a process working in the
+tree is not data, and tracked and untracked changes are `git status`'s to show.
+`--json` prints one object: `path`, `clear`, `operation`, `detached_commits`,
+`hidden_changes`, `submodules`, `roots` (`name`, `directory`, `files`, `bytes`,
+`partial`), `more_roots`, `files`, `bytes`, `limited`, `newest`. Decide by the
+exit status or `clear`: names are for a person, with a name that is not UTF-8
+blurred, and `submodules` holds descriptions as well as names. The walk stops at
+1000 files: then `limited` is true, the totals are lower bounds and `newest` is
+left out, for the age of the rest is unknown.
 
 For all repositories directly under a directory, a systemd user service and
 timer can run clean daily (systemd does not look in `~/bin`, hence the absolute

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,25 +43,44 @@ type worktreeCheckRoot struct {
 // caller decides on; the age of the data is the caller's to weigh, through
 // Newest.
 type worktreeCheckResult struct {
-	Path       string              `json:"path"`
-	Clear      bool                `json:"clear"`
-	Submodules []string            `json:"submodules"`
-	Roots      []worktreeCheckRoot `json:"roots"`
+	Path  string `json:"path"`
+	Clear bool   `json:"clear"`
+	// Operation is the rebase, merge, cherry-pick or revert under way, whose
+	// state is in the tree's git dir.
+	Operation string `json:"operation"`
+	// DetachedCommits counts the commits only the tree's HEAD reaches.
+	DetachedCommits int `json:"detached_commits"`
+	// HiddenChanges names the tracked files git status does not look at.
+	HiddenChanges []string            `json:"hidden_changes"`
+	Submodules    []string            `json:"submodules"`
+	Roots         []worktreeCheckRoot `json:"roots"`
 	// MoreRoots counts the roots past the limit, not listed in Roots.
 	MoreRoots int   `json:"more_roots"`
 	Files     int   `json:"files"`
 	Bytes     int64 `json:"bytes"`
-	// Limited: the walk stopped at its limit, so the totals are lower bounds.
+	// Limited: the walk stopped at its limit, so the totals are lower bounds
+	// and the age of what it did not reach is unknown: Newest is left out.
 	Limited bool       `json:"limited"`
 	Newest  *time.Time `json:"newest,omitempty"`
 }
 
-// WorktreeCheck says whether removing one linked worktree would lose ignored
-// data or submodule data, by the rules of graft worktree clean. It removes
+// worktreeHolds is what removing a tree would lose.
+type worktreeHolds struct {
+	operation       string
+	detachedCommits int
+	hidden          []string
+	submodules      []string
+	ignored         ignoredSummary
+}
+
+// WorktreeCheck says whether removing one linked worktree would lose data git
+// status does not show, by the rules of graft worktree clean. It removes
 // nothing and does not reach a remote: the rules are those of the trunk as
-// last fetched. It says nothing of tracked or untracked changes, which git
-// status shows.
+// last fetched, found by the main worktree's config.
 func (a *App) WorktreeCheck(o WorktreeCheckOptions) error {
+	if err := bindGitToPath(); err != nil {
+		return err
+	}
 	path := o.Path
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(a.Dir, path)
@@ -68,11 +89,8 @@ func (a *App) WorktreeCheck(o WorktreeCheckOptions) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := config.Load(repo.Root)
-	switch {
-	case errors.Is(err, config.ErrNotFound):
-		cfg = &config.Config{}
-	case err != nil:
+	cfg, err := mainWorktreeConfig(repo)
+	if err != nil {
 		return err
 	}
 	if err := a.requireGraft(cfg); err != nil {
@@ -88,16 +106,12 @@ func (a *App) WorktreeCheck(o WorktreeCheckOptions) error {
 	if c.cfg, err = c.readTrunkConfig(); err != nil {
 		return err
 	}
-	submodules, err := c.heldSubmodules(repo.Root)
+	holds, err := c.worktreeHolds(repo)
 	if err != nil {
-		return fmt.Errorf("submodules of %s not read: %w", repo.Root, err)
+		return err
 	}
-	ignored, err := c.ignoredData(repo.Root)
-	if err != nil {
-		return fmt.Errorf("ignored files of %s not read: %w", repo.Root, err)
-	}
-	result := newWorktreeCheckResult(repo.Root, submodules, ignored)
-	if err := a.printWorktreeCheck(result, ignored, o.JSON); err != nil {
+	result := newWorktreeCheckResult(repo.Root, holds)
+	if err := a.printWorktreeCheck(result, holds, o.JSON); err != nil {
 		return err
 	}
 	if result.Clear {
@@ -106,8 +120,28 @@ func (a *App) WorktreeCheck(o WorktreeCheckOptions) error {
 	return &ExitCodeError{Code: ExitWorktreeHolds, Err: fmt.Errorf("%s holds data its removal would lose", repo.Root)}
 }
 
+// bindGitToPath frees the git this command runs from where it was called: a
+// hook's GIT_DIR would answer for another tree. No lazy fetch: in a partial
+// clone, reading a blob it lacks would reach the remote.
+func bindGitToPath() error {
+	drop, err := gitx.LocalEnvVars()
+	if err != nil {
+		return fmt.Errorf("listing git environment variables: %w", err)
+	}
+	for _, name := range drop {
+		if err := os.Unsetenv(name); err != nil {
+			return fmt.Errorf("unsetting %s: %w", name, err)
+		}
+	}
+	if err := os.Setenv("GIT_NO_LAZY_FETCH", "1"); err != nil {
+		return fmt.Errorf("setting GIT_NO_LAZY_FETCH: %w", err)
+	}
+	return nil
+}
+
 // linkedWorktreeAt opens the linked worktree whose top is path: a directory
-// inside one, or the main worktree, has no business being removed as a tree.
+// inside one, or the main worktree, has no business being removed as a tree,
+// and one whose .git leads to another tree's git dir would answer for that one.
 func linkedWorktreeAt(path string) (*gitx.Repo, error) {
 	repo, err := gitx.Open(path)
 	if err != nil {
@@ -127,14 +161,83 @@ func linkedWorktreeAt(path string) (*gitx.Repo, error) {
 	if filepath.Clean(repo.GitDir) == filepath.Clean(repo.CommonDir) {
 		return nil, fmt.Errorf("%s is the main worktree of its repository", path)
 	}
+	data, err := os.ReadFile(filepath.Join(repo.GitDir, "gitdir"))
+	if err != nil {
+		return nil, fmt.Errorf("%s: its git dir does not say whose it is: %w", path, err)
+	}
+	link := filepath.FromSlash(strings.TrimSpace(string(data)))
+	if !filepath.IsAbs(link) {
+		link = filepath.Join(repo.GitDir, link)
+	}
+	if back, err := filepath.EvalSymlinks(filepath.Dir(link)); err != nil || back != top {
+		return nil, fmt.Errorf("%s: its .git leads to the git dir of %s", path, filepath.Dir(link))
+	}
 	return repo, nil
 }
 
-func newWorktreeCheckResult(root string, submodules []string, ignored ignoredSummary) worktreeCheckResult {
+// mainWorktreeConfig is the config that finds the trunk: a branch's own config
+// would choose whose rules judge it.
+func mainWorktreeConfig(repo *gitx.Repo) (*config.Config, error) {
+	trees, err := listWorktrees(repo)
+	if err != nil {
+		return nil, err
+	}
+	if len(trees) == 0 {
+		return nil, fmt.Errorf("%s: git lists no worktrees", repo.Root)
+	}
+	cfg, err := config.Load(trees[0].path)
+	if errors.Is(err, config.ErrNotFound) {
+		return &config.Config{}, nil
+	}
+	return cfg, err
+}
+
+func (c *cleaner) worktreeHolds(repo *gitx.Repo) (worktreeHolds, error) {
+	var holds worktreeHolds
+	var err error
+	if holds.operation, err = gitOperation(repo, repo.Root); err != nil {
+		return holds, fmt.Errorf("the state of %s not read: %w", repo.Root, err)
+	}
+	if holds.detachedCommits, err = detachedCommits(repo); err != nil {
+		return holds, fmt.Errorf("the commits of %s not read: %w", repo.Root, err)
+	}
+	if holds.hidden, err = hiddenChanges(repo.Root); err != nil {
+		return holds, fmt.Errorf("the marked files of %s not read: %w", repo.Root, err)
+	}
+	if holds.submodules, err = c.heldSubmodules(repo.Root); err != nil {
+		return holds, fmt.Errorf("submodules of %s not read: %w", repo.Root, err)
+	}
+	if holds.ignored, err = c.ignoredData(repo.Root); err != nil {
+		return holds, fmt.Errorf("ignored files of %s not read: %w", repo.Root, err)
+	}
+	return holds, nil
+}
+
+// detachedCommits counts the commits only HEAD reaches: on a branch none, for
+// the branch outlives the tree.
+func detachedCommits(repo *gitx.Repo) (int, error) {
+	hasHead, err := repo.HasHead()
+	if err != nil || !hasHead {
+		return 0, err
+	}
+	out, err := repo.Git("rev-list", "--count", "HEAD", "--not", "--branches", "--tags", "--remotes")
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(out))
+}
+
+func newWorktreeCheckResult(root string, holds worktreeHolds) worktreeCheckResult {
+	ignored := holds.ignored
 	result := worktreeCheckResult{
-		Path: root, Submodules: submodules, Roots: []worktreeCheckRoot{},
+		Path: root, Operation: holds.operation, DetachedCommits: holds.detachedCommits,
+		HiddenChanges: holds.hidden, Submodules: holds.submodules, Roots: []worktreeCheckRoot{},
 		MoreRoots: ignored.more, Files: ignored.count,
-		Clear: len(submodules) == 0 && ignored.count == 0,
+		Clear: holds.operation == "" && holds.detachedCommits == 0 && len(holds.hidden) == 0 &&
+			len(holds.submodules) == 0 && ignored.count == 0,
+	}
+	if result.HiddenChanges == nil {
+		result.HiddenChanges = []string{}
 	}
 	if result.Submodules == nil {
 		result.Submodules = []string{}
@@ -145,14 +248,14 @@ func newWorktreeCheckResult(root string, submodules []string, ignored ignoredSum
 		result.Bytes += r.size
 		result.Limited = result.Limited || partial
 	}
-	if ignored.count > 0 {
+	if ignored.count > 0 && !result.Limited {
 		newest := ignored.newest
 		result.Newest = &newest
 	}
 	return result
 }
 
-func (a *App) printWorktreeCheck(result worktreeCheckResult, ignored ignoredSummary, asJSON bool) error {
+func (a *App) printWorktreeCheck(result worktreeCheckResult, holds worktreeHolds, asJSON bool) error {
 	if asJSON {
 		data, err := json.Marshal(result)
 		if err != nil {
@@ -166,11 +269,20 @@ func (a *App) printWorktreeCheck(result worktreeCheckResult, ignored ignoredSumm
 		return nil
 	}
 	var parts []string
+	if result.Operation != "" {
+		parts = append(parts, "a "+result.Operation+" in progress")
+	}
+	if result.DetachedCommits > 0 {
+		parts = append(parts, plural(result.DetachedCommits, "commit")+" only its HEAD reaches")
+	}
+	if len(result.HiddenChanges) > 0 {
+		parts = append(parts, "files git status does not look at: "+strings.Join(result.HiddenChanges, ", "))
+	}
 	if len(result.Submodules) > 0 {
 		parts = append(parts, "submodule "+strings.Join(result.Submodules, ", "))
 	}
-	if ignored.count > 0 {
-		parts = append(parts, ignored.describe())
+	if holds.ignored.count > 0 {
+		parts = append(parts, holds.ignored.describe())
 	}
 	a.printf("holds     %s: %s", result.Path, strings.Join(parts, ", "))
 	return nil

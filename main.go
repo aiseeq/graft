@@ -598,7 +598,7 @@ func worktreeCheckCmd(a *app.App, args []string, usage error) error {
 	if err != nil {
 		return err
 	}
-	if len(pos) != 1 {
+	if len(pos) != 1 || pos[0] == "" {
 		return usage
 	}
 	o.Path = pos[0]

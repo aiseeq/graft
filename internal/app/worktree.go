@@ -292,8 +292,12 @@ func (a *App) cleanInRepository(root string, o WorktreeCleanOptions) (worktreeCl
 // remote, or without a remote a local branch (localTrunk).
 func trunkRef(repo *gitx.Repo, cfg *config.Config, flag string, remotes []string) (string, error) {
 	if flag != "" {
-		if ok, err := repo.RevExists(flag); err != nil || !ok {
-			return "", fmt.Errorf("--trunk %s: no such commit: %w", flag, err)
+		ok, err := repo.RevExists(flag)
+		if err != nil {
+			return "", fmt.Errorf("--trunk %s: %w", flag, err)
+		}
+		if !ok {
+			return "", fmt.Errorf("--trunk %s: no such commit", flag)
 		}
 		return flag, nil
 	}
@@ -572,6 +576,14 @@ func (c *cleaner) worktree(w worktree) error {
 	if err != nil {
 		return err
 	}
+	hidden, err := hiddenChanges(w.path)
+	if err != nil {
+		return err
+	}
+	if len(hidden) > 0 {
+		c.line("check", what, "git status does not look at "+strings.Join(hidden, ", ")+": git update-index --no-assume-unchanged --no-skip-worktree to see a change")
+		return nil
+	}
 	changed, err := tree.ChangedFiles()
 	if err != nil {
 		return err
@@ -800,6 +812,32 @@ func (c *cleaner) checkIgnoredData(w worktree, why string) ignoredDecision {
 	return ignoredDecision{}
 }
 
+// hiddenChanges names the tracked files git status does not look at, marked
+// assume-unchanged or skip-worktree, that are on disk: what a sparse checkout
+// leaves out is marked too, and is not.
+func hiddenChanges(root string) ([]string, error) {
+	out, err := gitx.InOther(root, nil, "ls-files", "-v", "-z")
+	if err != nil {
+		return nil, err
+	}
+	var found []string
+	for item := range strings.SplitSeq(out, "\x00") {
+		if len(item) < 3 || (item[0] != 'S' && (item[0] < 'a' || item[0] > 'z')) {
+			continue
+		}
+		name := item[2:]
+		_, statErr := os.Lstat(filepath.Join(root, filepath.FromSlash(name)))
+		if errors.Is(statErr, os.ErrNotExist) {
+			continue
+		}
+		if statErr != nil {
+			return nil, fmt.Errorf("stat %s: %w", displayName(name), statErr)
+		}
+		found = append(found, displayName(name))
+	}
+	return found, nil
+}
+
 // heldSubmodules names the submodules whose folder holds anything: git status
 // and ls-files do not look inside one, initialized or not.
 func (c *cleaner) heldSubmodules(root string) ([]string, error) {
@@ -883,7 +921,7 @@ var disposableDirectories = map[string]bool{
 }
 
 func (c *cleaner) ignoredData(root string) (ignoredSummary, error) {
-	out, err := gitx.InOther(root, nil, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
+	out, err := gitx.InOtherStrict(root, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
 	if err != nil {
 		return ignoredSummary{}, err
 	}

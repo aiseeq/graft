@@ -103,6 +103,23 @@ func InOther(dir string, input io.Reader, args ...string) (string, error) {
 	return runEnviron(dir, Without(os.Environ(), drop), input, args...)
 }
 
+// InOtherStrict is InOther for a command that warns and exits 0 when it could
+// not read all it was asked to, as git ls-files does: a warning is an error.
+func InOtherStrict(dir string, args ...string) (string, error) {
+	drop, err := LocalEnvVars()
+	if err != nil {
+		return "", fmt.Errorf("listing git environment variables: %w", err)
+	}
+	stdout, stderr, err := runCaptured(dir, Without(os.Environ(), drop), nil, args...)
+	if err != nil {
+		return stdout, err
+	}
+	if strings.TrimSpace(stderr) != "" {
+		return stdout, &Error{Args: args, Stderr: stderr, Err: errors.New("it could not read everything")}
+	}
+	return stdout, nil
+}
+
 func run(dir string, env []string, input io.Reader, args ...string) (string, error) {
 	var environ []string
 	if len(env) > 0 {
@@ -114,6 +131,11 @@ func run(dir string, env []string, input io.Reader, args ...string) (string, err
 // runEnviron runs git with the environment environ, nil inheriting this
 // process's.
 func runEnviron(dir string, environ []string, input io.Reader, args ...string) (string, error) {
+	stdout, _, err := runCaptured(dir, environ, input, args...)
+	return stdout, err
+}
+
+func runCaptured(dir string, environ []string, input io.Reader, args ...string) (string, string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	cmd.Env = environ
@@ -122,9 +144,9 @@ func runEnviron(dir string, environ []string, input io.Reader, args ...string) (
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return stdout.String(), &Error{Args: args, Stderr: stderr.String(), Err: err}
+		return stdout.String(), stderr.String(), &Error{Args: args, Stderr: stderr.String(), Err: err}
 	}
-	return stdout.String(), nil
+	return stdout.String(), stderr.String(), nil
 }
 
 // ExitCode reports the exit status of a failed git call, or -1 when the

@@ -1291,10 +1291,14 @@ func TestWorktreeCleanKeepsTheBranchOfARebase(t *testing.T) {
 
 // worktreeCheckAnswer is the JSON of graft worktree check.
 type worktreeCheckAnswer struct {
-	Path       string   `json:"path"`
-	Clear      bool     `json:"clear"`
-	Submodules []string `json:"submodules"`
-	Roots      []struct {
+	Path            string   `json:"path"`
+	Clear           bool     `json:"clear"`
+	Operation       string   `json:"operation"`
+	DetachedCommits int      `json:"detached_commits"`
+	HiddenChanges   []string `json:"hidden_changes"`
+	Submodules      []string `json:"submodules"`
+	MoreRoots       int      `json:"more_roots"`
+	Roots           []struct {
 		Name      string `json:"name"`
 		Directory bool   `json:"directory"`
 		Files     int    `json:"files"`
