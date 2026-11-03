@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -149,11 +150,7 @@ func (a *App) freezeJournal(repo *gitx.Repo, cfg *config.Config, f *activeFreeze
 	if len(tags) == 0 {
 		return "", nil
 	}
-	names := make([]string, 0, len(tags))
-	for tag := range tags {
-		names = append(names, tag)
-	}
-	slices.Sort(names)
+	names := slices.Sorted(maps.Keys(tags))
 	contents, err := readRemoteTags(repo, tags)
 	if err != nil {
 		return "", err

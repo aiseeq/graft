@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,11 +73,7 @@ func LoadCorpus(cacheDir string, exclude []string, log io.Writer) (*Corpus, erro
 	for _, w := range words {
 		found[w] = true
 	}
-	merged := make([]string, 0, len(found))
-	for w := range found {
-		merged = append(merged, w)
-	}
-	slices.Sort(merged)
+	merged := slices.Sorted(maps.Keys(found))
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating the leak index directory: %w", err)
 	}

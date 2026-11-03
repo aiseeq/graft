@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -46,12 +47,7 @@ func (m *Manager) Names(name string) ([]string, error) {
 		return nil, errors.New("no services in .graft.yaml")
 	}
 	if name == "" {
-		names := make([]string, 0, len(m.Config.Services))
-		for n := range m.Config.Services {
-			names = append(names, n)
-		}
-		slices.Sort(names)
-		return names, nil
+		return slices.Sorted(maps.Keys(m.Config.Services)), nil
 	}
 	if _, ok := m.Config.Services[name]; !ok {
 		return nil, fmt.Errorf("unknown service %q", name)
@@ -488,11 +484,7 @@ func (m *Manager) env(s *config.Service) ([]string, error) {
 		return nil, err
 	}
 	env = append(env, values...)
-	names := make([]string, 0, len(s.Env))
-	for k := range s.Env {
-		names = append(names, k)
-	}
-	slices.Sort(names)
+	names := slices.Sorted(maps.Keys(s.Env))
 	for _, k := range names {
 		v, err := dotenv.Expand(s.Env[k], m.lookup)
 		if err != nil {

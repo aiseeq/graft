@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 
@@ -196,11 +197,7 @@ func targetObjects(repo *gitx.Repo, targetURL string, fromInput []string) ([]str
 			objects[fields[0]] = true
 		}
 	}
-	shas := make([]string, 0, len(objects))
-	for sha := range objects {
-		shas = append(shas, sha)
-	}
-	slices.Sort(shas)
+	shas := slices.Sorted(maps.Keys(objects))
 	if len(shas) == 0 {
 		return nil, nil
 	}
