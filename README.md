@@ -2278,7 +2278,15 @@ worktree:
     - key: [frontend/package-lock.json] # matching files identify shared dependencies
       paths: [frontend/node_modules, frontend/admin-app/node_modules]
       setup: frontend-deps    # run when a key differs or a directory is missing
+  disposable: ["*.stamp", frontend/dist] # ignored paths that can be regenerated
 ```
+
+`graft worktree clean` takes `copy`, `link[].paths` and `disposable` from the
+trunk's `.graft.yaml`, so the template applies to cleaning when it is in the
+trunk. If that file is absent from the trunk, only the built-in list applies.
+For `worktree.disposable`, a pattern without `/` matches that
+component at any depth; a pattern with `/` is rooted at the worktree root and
+also matches paths below the named folder.
 
 For each `link` group, `add` links its untracked directories to the main
 worktree when all key files match and all directories exist there. Otherwise,
@@ -2337,6 +2345,21 @@ the trunk:
   only while it is still at the commit checked (`--force-with-lease`):
   commits pushed there after the fetch keep it, listed as `kept`; one
   deleted there after the fetch is listed as `already gone`, no error;
+- ignored files keep a worktree for a look and name the data that would go
+  with it. Move the data or list regenerable paths in `worktree.disposable`;
+  `node_modules` and the other build and tool caches are skipped, so a file
+  inside `node_modules` does not count as data. A broad pattern can hide data:
+  choosing what the project can regenerate is the project's decision;
+- a submodule whose folder holds anything keeps its worktree for a manual look
+  inside it, as git status does not look there, and so does a deinitialized
+  one, whose commits stay in the worktree's git dir. An empty folder of a
+  submodule never initialized in that worktree does not keep it;
+- ignored data changed within `--min-age` is listed as `in work`;
+- one worktree failing does not stop the run or change the exit code: it is
+  listed as `check` with the reason, `not removed` while git still lists it,
+  `not fully removed` when git let it go with files left on disk: the next run
+  does not mention that folder, and `removed, its branch stays` when only the
+  branch could not go;
 - the rest is listed: `unmerged` with the lines or conflicts it adds, and
   `check` when its commit subjects are all in the trunk but its content is
   not: it looks merged, a look decides.

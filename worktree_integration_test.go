@@ -1,10 +1,13 @@
 package main
 
 import (
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -160,6 +163,582 @@ func TestWorktreeClean(t *testing.T) {
 			t.Errorf("%s is gone: %v", kept, err)
 		}
 	}
+}
+
+func TestWorktreeCleanIgnoredData(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\nworktree:\n  disposable: [rebuild]\n",
+		".gitignore":  "out/\nrebuild/\nnode_modules/\nlink-data\n",
+		"VERSION":     "1.0.0\n",
+		"tracked.txt": "before trunk\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustVersionedCommit(f.work, "feat: base", false)
+	f.git("remote", "set-head", "origin", "main")
+	add := func(name string) string {
+		t.Helper()
+		path := filepath.Join(f.base, "wt-"+name)
+		f.git("worktree", "add", "-q", "-b", "w/"+name, path, "main")
+		return path
+	}
+	data := add("data")
+	writeFile(t, filepath.Join(data, "out", "notes.txt"), "keep\n")
+	writeFile(t, filepath.Join(data, "rebuild", "cache.bin"), "rebuild\n")
+	writeFile(t, filepath.Join(data, "node_modules", "package", "file.js"), "cache\n")
+	if err := os.Symlink("out/notes.txt", filepath.Join(data, "link-data")); err != nil {
+		t.Fatal(err)
+	}
+	rebuild := add("rebuild")
+	writeFile(t, filepath.Join(rebuild, "rebuild", "cache.bin"), "rebuild\n")
+	writeFile(t, filepath.Join(rebuild, "node_modules", "package", "file.js"), "cache\n")
+	landed := add("landed")
+	commit := func(file, body, message string) {
+		t.Helper()
+		writeFile(t, filepath.Join(f.work, file), body)
+		f.mustVersionedCommit(f.work, message, false)
+	}
+	commit("tracked.txt", "in trunk\n", "feat: tracked change")
+	writeFile(t, filepath.Join(landed, "tracked.txt"), "in trunk\n")
+	writeFile(t, filepath.Join(landed, "out", "notes.txt"), "landed data\n")
+	if ignored := f.git("-C", landed, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"); !strings.Contains(ignored, "out/") {
+		t.Fatalf("landed ignored paths = %q", ignored)
+	}
+	out := f.mustGraft("worktree", "clean", "--min-age", "0s")
+	for _, want := range []string{
+		"check     " + data + " (w/data): clean, in origin/main, but ignored data would go with it: out/ (1 file, 5 B); move it, or name it in worktree.disposable",
+		"would remove " + rebuild + " (w/rebuild): clean, in origin/main",
+		"check     " + landed + " (w/landed): 1 uncommitted change, all in origin/main, but ignored data would go with it: out/ (1 file, 12 B); move it, or name it in worktree.disposable",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dry run: no %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "link-data") {
+		t.Errorf("symlink counted as ignored file data:\n%s", out)
+	}
+	out = f.mustGraft("worktree", "clean", "--min-age", "0s", "--apply")
+	for _, kept := range []string{data, landed} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Errorf("protected worktree %s is gone: %v", kept, err)
+		}
+	}
+	if _, err := os.Stat(rebuild); !os.IsNotExist(err) {
+		t.Errorf("rebuildable worktree remains: %v\n%s", err, out)
+	}
+}
+
+func newWorktreeCleanFixture(t *testing.T, files map[string]string) (*fixture, func(string) string) {
+	t.Helper()
+	f := newRepo(t, files, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustVersionedCommit(f.work, "feat: base", false)
+	f.git("remote", "set-head", "origin", "main")
+	add := func(name string) string {
+		t.Helper()
+		path := filepath.Join(f.base, "wt-"+name)
+		f.git("worktree", "add", "-q", "-b", "w/"+name, path, "main")
+		return path
+	}
+	return f, add
+}
+
+func TestWorktreeCleanNoConfigInTrunk(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		".gitignore":  "out/\n",
+		"VERSION":     "1.0.0\n",
+	})
+	f.git("rm", "-q", ".graft.yaml")
+	f.mustVersionedCommit(f.work, "chore: remove config", false)
+	writeFile(t, filepath.Join(f.work, ".graft.yaml"), "schema: 1\nversion: {mode: file}\nworktree: {disposable: [out]}\n")
+	path := add("no-config")
+	writeFile(t, filepath.Join(path, "out", "keep.txt"), "data\n")
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s")
+	if code != 0 || !strings.Contains(out, "check     "+path) || !strings.Contains(out, "out/") || !strings.Contains(out, "to check 1") {
+		t.Fatalf("exit %d; trunk without config must ignore branch rules:\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(path, "out", "keep.txt")); err != nil {
+		t.Fatalf("ignored data is gone: %v", err)
+	}
+}
+
+func TestWorktreeCleanSubmodule(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	sub := filepath.Join(f.base, "sub-source")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.run(sub, "git", "init", "-q")
+	f.run(sub, "git", "config", "user.name", "Test")
+	f.run(sub, "git", "config", "user.email", "test@example.invalid")
+	writeFile(t, filepath.Join(sub, "base.txt"), "base\n")
+	f.run(sub, "git", "add", "base.txt")
+	f.run(sub, "git", "commit", "-q", "-m", "base")
+	f.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "sm")
+	f.mustVersionedCommit(f.work, "feat: submodule", false)
+	f.git("remote", "set-head", "origin", "main")
+	initialized := filepath.Join(f.base, "wt-initialized")
+	f.git("worktree", "add", "-q", "-b", "w/initialized", initialized, "main")
+	f.run(initialized, "git", "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "sm")
+	writeFile(t, filepath.Join(initialized, "sm", "inside.dat"), "precious\n")
+	writeFile(t, filepath.Join(initialized, "sm", "new.txt"), "also precious\n")
+	uninitialized := filepath.Join(f.base, "wt-uninitialized")
+	f.git("worktree", "add", "-q", "-b", "w/uninitialized", uninitialized, "main")
+	stray := filepath.Join(f.base, "wt-stray")
+	f.git("worktree", "add", "-q", "-b", "w/stray", stray, "main")
+	writeFile(t, filepath.Join(stray, "sm", "stray.txt"), "precious\n")
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
+	if !strings.Contains(outputLineForPath(out, stray), "holds submodule sm") {
+		t.Errorf("a file in an uninitialized submodule's folder should hold the tree:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(stray, "sm", "stray.txt")); err != nil {
+		t.Errorf("a file in an uninitialized submodule's folder is gone: %v", err)
+	}
+	want := "holds submodule sm: look inside and remove it by hand"
+	if code != 0 || !strings.Contains(out, "check     "+initialized) || !strings.Contains(out, want) {
+		t.Fatalf("exit %d; initialized submodule should hold the tree:\n%s", code, out)
+	}
+	for _, file := range []string{"inside.dat", "new.txt"} {
+		if _, err := os.Stat(filepath.Join(initialized, "sm", file)); err != nil {
+			t.Errorf("submodule data %s is gone: %v", file, err)
+		}
+	}
+	if !strings.Contains(out, "removed   "+uninitialized) {
+		t.Errorf("uninitialized submodule should not hold its tree:\n%s", out)
+	}
+}
+
+func TestWorktreeCleanRulesFromTrunk(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\nworktree: {disposable: [out]}\n",
+		".gitignore":  "out/\n", "VERSION": "1.0.0\n",
+	})
+	path := add("trunk-rule")
+	writeFile(t, filepath.Join(path, "out", "cache"), "data\n")
+	writeFile(t, filepath.Join(f.work, ".graft.yaml"), "schema: 1\nversion: {mode: file}\nworktree: {disposable: []}\n")
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
+	if code != 0 || !strings.Contains(out, "removed   "+path) {
+		t.Fatalf("trunk disposable rule should apply despite local edit; exit %d:\n%s", code, out)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("worktree remains: %v", err)
+	}
+}
+
+func TestWorktreeCleanDisposableUnignored(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\nworktree: {disposable: [out]}\n",
+		".gitignore":  "", "VERSION": "1.0.0\n",
+	})
+	path := add("unignored")
+	writeFile(t, filepath.Join(path, "out", "work.txt"), "work\n")
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
+	if code != 0 || !strings.Contains(out, "in work") || strings.Contains(out, "removed   "+path) {
+		t.Fatalf("unignored work must keep its tree; exit %d:\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(path, "out", "work.txt")); err != nil {
+		t.Fatalf("unignored file is gone: %v", err)
+	}
+}
+
+func TestWorktreeCleanIgnoredLimit(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		".gitignore":  "aaa/\nbbb/\nccc-data/\nzzz.txt\nzzzz/\nzzzzz/\n", "VERSION": "1.0.0\n",
+	})
+	path := add("limit")
+	for i := range 10 {
+		writeFile(t, filepath.Join(path, "aaa", fmt.Sprintf("%02d", i)), "x")
+	}
+	for i := range 1500 {
+		writeFile(t, filepath.Join(path, "bbb", fmt.Sprintf("%04d", i)), "x\n")
+	}
+	writeFile(t, filepath.Join(path, "ccc-data", "x"), "x")
+	writeFile(t, filepath.Join(path, "zzz.txt"), "x")
+	writeFile(t, filepath.Join(path, "zzzz", "x"), "x")
+	writeFile(t, filepath.Join(path, "zzzzz", "x"), "x")
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s")
+	line := outputLineForPath(out, path)
+	for _, want := range []string{"bbb/ (990+ files, 1.9+ KiB)", "ccc-data/", "zzz.txt", "and 1 more"} {
+		if code != 0 || !strings.Contains(line, want) {
+			t.Errorf("missing %q; exit %d:\n%s", want, code, out)
+		}
+	}
+}
+
+func TestWorktreeCleanNestedRoots(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		".gitignore":  "front/deps2\nfront/other\n", "VERSION": "1.0.0\n",
+	})
+	path := add("nested")
+	writeFile(t, filepath.Join(path, "front", "deps2"), "a")
+	writeFile(t, filepath.Join(path, "front", "other"), "b")
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s")
+	line := outputLineForPath(out, path)
+	if code != 0 || !strings.Contains(line, "front/ (2 files") || strings.Contains(line, "deps2") || strings.Contains(line, "other") {
+		t.Fatalf("nested ignored roots were counted twice:\n%s", out)
+	}
+}
+
+func TestWorktreeCleanSpecialFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("named pipes and Unix sockets are unavailable")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		".gitignore":  "run/\n", "VERSION": "1.0.0\n",
+	})
+	path := add("special")
+	// git does not list a FIFO or a socket of its own: only an ignored folder
+	// holding them reaches the walk.
+	if err := os.Mkdir(filepath.Join(path, "run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("mkfifo", filepath.Join(path, "run", "pipe")).Run(); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	// A relative address: the absolute path of a test directory can pass the 108
+	// bytes a socket address holds. The subtest takes the working directory back,
+	// or this process would count as working in the tree.
+	var sock net.Listener
+	t.Run("listen", func(t *testing.T) {
+		t.Chdir(filepath.Join(path, "run"))
+		var err error
+		if sock, err = net.Listen("unix", "socket"); err != nil {
+			t.Fatalf("unix socket: %v", err)
+		}
+	})
+	if sock == nil {
+		t.FailNow()
+	}
+	defer sock.Close()
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s")
+	if code != 0 || !strings.Contains(out, "would remove "+path) {
+		t.Fatalf("special files held the tree; exit %d:\n%s", code, out)
+	}
+}
+
+func TestWorktreeCleanControlCharacters(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the process check and control-name fixture require Unix")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "*.bad\n", "VERSION": "1.0.0\n",
+	})
+	path := add("control")
+	name := "line\nremoved   fake-tree (fake): clean.bad"
+	writeFile(t, filepath.Join(path, name), "x")
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s")
+	if code != 0 || !strings.Contains(out, strconv.Quote(name)) || strings.Contains(out, "\nremoved   fake-tree") {
+		t.Fatalf("control character was not safely quoted; exit %d:\n%s", code, out)
+	}
+}
+
+func TestWorktreeCleanInWorkData(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "data/\n", "VERSION": "1.0.0\n",
+	})
+	path := add("fresh")
+	writeFile(t, filepath.Join(path, "data", "fresh.txt"), "fresh\n")
+	out, code := f.graft("", "worktree", "clean", "--min-age", "1h")
+	if code != 0 || !strings.Contains(outputLineForPath(out, path), "in work") {
+		t.Fatalf("fresh ignored data did not keep worktree; exit %d:\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(path, "data", "fresh.txt")); err != nil {
+		t.Fatalf("fresh file is gone: %v", err)
+	}
+}
+
+func TestWorktreeCleanSymlinkData(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink fixture requires Unix permissions")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "link\n", "VERSION": "1.0.0\n",
+	})
+	path := add("symlink")
+	if err := os.Symlink("missing-target", filepath.Join(path, "link")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
+	if code != 0 || !strings.Contains(out, "removed   "+path) {
+		t.Fatalf("symlink held the tree; exit %d:\n%s", code, out)
+	}
+}
+
+func TestWorktreeCleanCopyAndLinkPaths(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	config := "schema: 1\nversion: {mode: file}\nworktree:\n  copy: [.env]\n  link:\n    - key: [deps.lock]\n      paths: [deps, frontend/deps]\n      setup: install\ntasks:\n  install:\n    run: [[sh, -c, true]]\n"
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": config, ".gitignore": ".env\ndeps/\nfrontend/deps/\n", "VERSION": "1.0.0\n", "deps.lock": "v1\n",
+	})
+	path := add("paths")
+	writeFile(t, filepath.Join(path, ".env"), "local\n")
+	writeFile(t, filepath.Join(path, "deps", "module"), "cache\n")
+	writeFile(t, filepath.Join(path, "frontend", "deps", "module"), "cache\n")
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
+	if code != 0 || !strings.Contains(out, "removed   "+path) {
+		t.Fatalf("copy/link paths held the tree; exit %d:\n%s", code, out)
+	}
+}
+
+func TestWorktreeCleanUnreadableData(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod permissions are unavailable")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "private/\n", "VERSION": "1.0.0\n",
+	})
+	path := add("unreadable")
+	dir := filepath.Join(path, "private")
+	writeFile(t, filepath.Join(dir, "file"), "data\n")
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if _, err := os.ReadDir(dir); err == nil {
+		t.Skip("effective user can read mode-000 directories")
+	}
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s")
+	if code != 0 || !strings.Contains(outputLineForPath(out, path), "check") {
+		t.Fatalf("unreadable data did not produce check; exit %d:\n%s", code, out)
+	}
+}
+
+func TestWorktreeCleanOneTreeFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod permissions are unavailable")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "node_modules/\n", "VERSION": "1.0.0\n",
+	})
+	refused := add("refused")
+	protected := filepath.Join(refused, "node_modules", "p")
+	writeFile(t, filepath.Join(protected, "file"), "cache\n")
+	if err := os.Chmod(protected, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(protected, 0o700) })
+	denied := add("denied")
+	probe := filepath.Join(denied, "no-write")
+	if err := os.Chmod(denied, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(probe, []byte("x"), 0o600); err == nil {
+		_ = os.Remove(probe)
+		_ = os.Chmod(denied, 0o755)
+		t.Skip("effective user can write mode-555 directories")
+	}
+	t.Cleanup(func() { _ = os.Chmod(denied, 0o755) })
+	next := add("after")
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
+	if code != 0 || !strings.Contains(outputLineForPath(out, refused), "not fully removed, and git no longer lists it:") ||
+		!strings.Contains(outputLineForPath(out, denied), "not fully removed, and git no longer lists it:") ||
+		!strings.Contains(out, "removed   "+next) || !strings.Contains(out, "to check 2") {
+		t.Fatalf("one failed removal stopped the scan; exit %d:\n%s", code, out)
+	}
+	if _, err := os.Stat(denied); err != nil {
+		t.Errorf("failed tree was removed: %v", err)
+	}
+	if _, code := f.tryGit("rev-parse", "--verify", "refs/heads/w/denied"); code != 0 {
+		t.Error("failed tree's branch was deleted")
+	}
+	if _, code := f.tryGit("rev-parse", "--verify", "refs/heads/w/refused"); code != 0 {
+		t.Error("refused tree's branch was deleted")
+	}
+	if _, err := os.Stat(next); !os.IsNotExist(err) {
+		t.Errorf("following tree was not removed: %v", err)
+	}
+}
+
+func TestWorktreeCleanRebaseStateUnreadable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod permissions are unavailable")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "", "VERSION": "1.0.0\n",
+	})
+	blocked := add("rebase-state")
+	gitDir := strings.TrimSpace(f.git("-C", blocked, "rev-parse", "--path-format=absolute", "--git-dir"))
+	state := filepath.Join(gitDir, "rebase-apply")
+	if err := os.Mkdir(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	headName := filepath.Join(state, "head-name")
+	writeFile(t, headName, "refs/heads/w/rebase-state\n")
+	if err := os.Chmod(headName, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(headName, 0o600) })
+	if _, err := os.ReadFile(headName); err == nil {
+		t.Skip("effective user can read mode-000 files")
+	}
+	next := add("after-rebase-state")
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
+	if code != 0 || !strings.Contains(outputLineForPath(out, blocked), "check") || !strings.Contains(out, "removed   "+next) {
+		t.Fatalf("unreadable rebase state stopped the scan; exit %d:\n%s", code, out)
+	}
+	if _, err := os.Stat(blocked); err != nil {
+		t.Errorf("unreadable tree was removed: %v", err)
+	}
+}
+
+func TestWorktreeCleanDeinitializedSubmodule(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	sub := filepath.Join(f.base, "sub-source")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.run(sub, "git", "init", "-q")
+	f.run(sub, "git", "config", "user.name", "Test")
+	f.run(sub, "git", "config", "user.email", "test@example.invalid")
+	writeFile(t, filepath.Join(sub, "base.txt"), "base\n")
+	f.run(sub, "git", "add", "base.txt")
+	f.run(sub, "git", "commit", "-q", "-m", "base")
+	f.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "sm")
+	f.mustVersionedCommit(f.work, "feat: submodule", false)
+	f.git("remote", "set-head", "origin", "main")
+	tree := filepath.Join(f.base, "wt-deinit")
+	f.git("worktree", "add", "-q", "-b", "w/deinit", tree, "main")
+	inner := filepath.Join(tree, "sm")
+	f.run(tree, "git", "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "sm")
+	f.run(inner, "git", "config", "user.name", "Test")
+	f.run(inner, "git", "config", "user.email", "test@example.invalid")
+	writeFile(t, filepath.Join(inner, "local.txt"), "local\n")
+	f.run(inner, "git", "add", "local.txt")
+	f.run(inner, "git", "commit", "-q", "-m", "local only")
+	local := strings.TrimSpace(f.run(inner, "git", "rev-parse", "HEAD"))
+	f.run(tree, "git", "submodule", "deinit", "-q", "-f", "sm")
+	// Uncommitted but in the trunk: the removal this tree gets is --force.
+	writeFile(t, filepath.Join(f.work, "shared.txt"), "same\n")
+	f.mustVersionedCommit(f.work, "feat: shared", false)
+	writeFile(t, filepath.Join(tree, "shared.txt"), "same\n")
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
+	if code != 0 || !strings.Contains(outputLineForPath(out, tree), "holds submodule data in") {
+		t.Fatalf("a deinitialized submodule's commits should hold the tree; exit %d:\n%s", code, out)
+	}
+	gitDir := strings.TrimSpace(f.run(tree, "git", "rev-parse", "--absolute-git-dir"))
+	if _, code := f.tryGit("--git-dir", filepath.Join(gitDir, "modules", "sm"), "cat-file", "-e", local); code != 0 {
+		t.Errorf("the submodule's local commit is gone:\n%s", out)
+	}
+}
+
+func TestWorktreeCleanCheckoutConfigReleasesNothing(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		".gitignore":  "out/\n", "VERSION": "1.0.0\n",
+	})
+	ignored := add("ignored")
+	writeFile(t, filepath.Join(ignored, "out", "cases"), "data\n")
+	committed := add("committed")
+	writeFile(t, filepath.Join(committed, "data.csv"), "data\n")
+	f.run(committed, "git", "add", "data.csv")
+	f.run(committed, "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "data")
+	writeFile(t, filepath.Join(f.work, ".graft.yaml"),
+		"schema: 1\nversion: {mode: file, file: data.csv}\nworktree: {disposable: [out]}\n")
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	for _, file := range []string{filepath.Join(ignored, "out", "cases"), filepath.Join(committed, "data.csv")} {
+		if _, err := os.Stat(file); err != nil {
+			t.Errorf("an edit of the running tree's config released %s: %v\n%s", file, err, out)
+		}
+	}
+}
+
+func TestWorktreeCleanBranchFailureAfterRemoval(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n", "VERSION": "1.0.0\n",
+	})
+	path := add("gone")
+	f.git("push", "-q", "origin", "w/gone")
+	hook := filepath.Join(f.base, "origin.git", "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
+	line := outputLineForPath(out, path)
+	if code != 0 || !strings.Contains(line, "removed, its branch stays") || strings.Contains(line, "not removed") {
+		t.Fatalf("the line should say the tree went and the branch stayed; exit %d:\n%s", code, out)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the tree should be gone: %v", err)
+	}
+}
+
+func TestWorktreeCleanErrorTextStaysOneLine(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod permissions and the control-name fixture require Unix")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "*.bad\n", "VERSION": "1.0.0\n",
+	})
+	path := add("error-text")
+	dir := filepath.Join(path, "out\nremoved   fake-tree (fake): clean.bad")
+	sealed := filepath.Join(dir, "sub")
+	writeFile(t, filepath.Join(sealed, "file"), "x")
+	if err := os.Chmod(sealed, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sealed, 0o700) })
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s")
+	if code != 0 || strings.Contains(out, "\nremoved   fake-tree") || strings.Contains(out, "\ngraft: removed   fake-tree") {
+		t.Fatalf("an error text forged a report line; exit %d:\n%s", code, out)
+	}
+}
+
+func outputLineForPath(output, path string) string {
+	for line := range strings.SplitSeq(output, "\n") {
+		if strings.Contains(line, path+" ") {
+			return line
+		}
+	}
+	return ""
 }
 
 // TestWorktreeCleanRemoteRace: a merged branch goes from the remote only

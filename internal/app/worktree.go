@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
@@ -41,6 +43,7 @@ type worktree struct {
 type cleaner struct {
 	app   *App
 	repo  *gitx.Repo
+	cfg   *config.Config
 	opts  WorktreeCleanOptions
 	trunk string
 	// exclude are the pathspecs of the version files: every graft commit
@@ -93,7 +96,7 @@ func (a *App) worktreeCleanSingle(o WorktreeCleanOptions) (result worktreeCleanR
 }
 
 func (a *App) worktreeCleanLocked(repo *gitx.Repo, cfg *config.Config, o WorktreeCleanOptions) (worktreeCleanResult, error) {
-	c := &cleaner{app: a, repo: repo, opts: o, now: time.Now(), counts: map[string]int{}}
+	c := &cleaner{app: a, repo: repo, cfg: cfg, opts: o, now: time.Now(), counts: map[string]int{}}
 	result := worktreeCleanResult{counts: c.counts}
 	var err error
 	if c.remotes, err = repo.Remotes(); err != nil {
@@ -107,7 +110,10 @@ func (a *App) worktreeCleanLocked(repo *gitx.Repo, cfg *config.Config, o Worktre
 	if c.trunk, err = trunkRef(repo, cfg, o.Trunk, c.remotes); err != nil {
 		return result, err
 	}
-	for _, f := range cfg.VersionFiles() {
+	if c.cfg, err = c.readTrunkConfig(); err != nil {
+		return result, err
+	}
+	for _, f := range c.cfg.VersionFiles() {
 		c.exclude = append(c.exclude, ":(exclude)"+f)
 	}
 	if c.cwds, err = processPaths(); err != nil {
@@ -120,34 +126,14 @@ func (a *App) worktreeCleanLocked(repo *gitx.Repo, cfg *config.Config, o Worktre
 	if err != nil {
 		return result, err
 	}
-	held := []string{c.trunkBranch()}
-	// The first entry is the main worktree: never removed.
-	for i, w := range trees {
-		if w.branch != "" {
-			held = append(held, w.branch)
-		}
-		// A rebase detaches HEAD: its branch is still the worktree's.
-		if !w.prunable {
-			rebasing, err := rebaseBranch(repo, w.path)
-			if err != nil {
-				return result, err
-			}
-			if rebasing != "" {
-				held = append(held, rebasing)
-			}
-		}
-		if i == 0 {
-			continue
-		}
-		if err := c.worktree(w); err != nil {
-			return result, err
-		}
+	held, err := c.cleanWorktrees(trees)
+	if err != nil {
+		return result, err
 	}
 	if err := c.branches(held); err != nil {
 		return result, err
 	}
 	if o.Apply {
-		// The lint caches of work trees gone, here or removed otherwise.
 		gone, err := lintcache.Prune()
 		for _, root := range gone {
 			a.printf("%-9s the lint cache of %s: its work tree is gone", "removed", root)
@@ -158,6 +144,68 @@ func (a *App) worktreeCleanLocked(repo *gitx.Repo, cfg *config.Config, o Worktre
 	}
 	c.summary()
 	return result, nil
+}
+
+func (c *cleaner) cleanWorktrees(trees []worktree) ([]string, error) {
+	held := []string{c.trunkBranch()}
+	for i, w := range trees {
+		if w.branch != "" {
+			held = append(held, w.branch)
+		}
+		// A rebase detaches HEAD: its branch is still the worktree's.
+		if !w.prunable {
+			rebasing, err := rebaseBranch(c.repo, w.path)
+			if err != nil {
+				c.line("check", worktreeWhat(w), "not removed: "+strings.Join(strings.Fields(err.Error()), " "))
+				continue
+			}
+			if rebasing != "" {
+				held = append(held, rebasing)
+			}
+		}
+		if i == 0 {
+			continue
+		}
+		if err := c.worktree(w); err != nil {
+			reason := strings.Join(strings.Fields(err.Error()), " ")
+			if strings.HasPrefix(reason, "git add -A:") {
+				reason = "worktree snapshot failed: " + strings.TrimPrefix(reason, "git add -A: ")
+			} else if !strings.HasPrefix(reason, "not ") {
+				reason = "not removed: " + reason
+			}
+			c.line("check", worktreeWhat(w), reason)
+		}
+	}
+	return held, nil
+}
+
+func worktreeWhat(w worktree) string {
+	if w.branch == "" {
+		return w.path + " (detached)"
+	}
+	return w.path + " (" + w.branch + ")"
+}
+
+// readTrunkConfig is the config of the trunk's commit: what decides the fate of
+// other worktrees' data is not an edit or a branch of the tree running this.
+// A trunk without the file has no rules.
+func (c *cleaner) readTrunkConfig() (*config.Config, error) {
+	entries, err := c.repo.Git("ls-tree", c.trunk, "--", config.FileName)
+	if err != nil {
+		return nil, fmt.Errorf("checking %s in %s: %w", config.FileName, c.trunk, err)
+	}
+	if strings.TrimSpace(entries) == "" {
+		return &config.Config{}, nil
+	}
+	data, err := c.repo.ShowFile(c.trunk, config.FileName)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s in %s: %w", config.FileName, c.trunk, err)
+	}
+	trunkCfg, err := config.Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s in %s: %w", config.FileName, c.trunk, err)
+	}
+	return trunkCfg, nil
 }
 
 func (a *App) worktreeCleanIn(o WorktreeCleanOptions) error {
@@ -478,14 +526,11 @@ func (c *cleaner) busy(dir string) []string {
 
 func (c *cleaner) line(kind, what, why string) {
 	c.counts[kind]++
-	c.app.printf("%-9s %s: %s", kind, what, why)
+	c.app.printf("%-9s %s: %s", kind, escapeUnprintable(what), escapeUnprintable(why))
 }
 
 func (c *cleaner) worktree(w worktree) error {
-	what := w.path + " (" + w.branch + ")"
-	if w.branch == "" {
-		what = w.path + " (detached)"
-	}
+	what := worktreeWhat(w)
 	switch {
 	case w.prunable:
 		if c.opts.Apply {
@@ -649,6 +694,10 @@ func (c *cleaner) dirtyWorktree(w worktree, what string, tree *gitx.Repo, change
 	}
 	why := n + ", all in " + c.trunk
 	if !c.opts.Apply {
+		if decision := c.checkIgnoredData(w, why); decision.kind != "" {
+			c.line(decision.kind, what, decision.why)
+			return nil
+		}
 		c.line("would remove", what, why)
 		return nil
 	}
@@ -695,21 +744,337 @@ func listSome(names []string, max int) string {
 // removeWorktree removes a worktree whose work is in the trunk, and its
 // branch.
 func (c *cleaner) removeWorktree(w worktree, what, why string, flags ...string) error {
+	if decision := c.checkIgnoredData(w, why); decision.kind != "" {
+		c.line(decision.kind, what, decision.why)
+		return nil
+	}
 	if !c.opts.Apply {
 		c.line("would remove", what, why)
 		return nil
 	}
 	args := append(append([]string{"worktree", "remove"}, flags...), w.path)
 	if _, err := c.repo.Git(args...); err != nil {
+		if _, statErr := os.Stat(w.path); statErr == nil {
+			if trees, listErr := listWorktrees(c.repo); listErr == nil {
+				registered := slices.ContainsFunc(trees, func(tree worktree) bool { return filepath.Clean(tree.path) == filepath.Clean(w.path) })
+				if !registered {
+					return fmt.Errorf("not fully removed, and git no longer lists it: %s: %w", w.path, err)
+				}
+			}
+		}
 		return err
 	}
 	if w.branch != "" {
 		if err := c.deleteBranch(w.branch); err != nil {
-			return err
+			c.line("check", what, "removed, its branch stays: "+strings.Join(strings.Fields(err.Error()), " "))
+			return nil
 		}
 	}
 	c.line("removed", what, why)
 	return nil
+}
+
+type ignoredDecision struct {
+	kind string
+	why  string
+}
+
+func (c *cleaner) checkIgnoredData(w worktree, why string) ignoredDecision {
+	submodules, err := c.heldSubmodules(w.path)
+	if err != nil {
+		return ignoredDecision{kind: "check", why: "submodules not read: " + err.Error()}
+	}
+	if len(submodules) > 0 {
+		return ignoredDecision{kind: "check", why: "holds submodule " + strings.Join(submodules, ", ") + ": look inside and remove it by hand"}
+	}
+	ignored, err := c.ignoredData(w.path)
+	if err != nil {
+		return ignoredDecision{kind: "check", why: "ignored files not read: " + err.Error()}
+	}
+	if ignored.count > 0 {
+		if c.now.Sub(ignored.newest) < c.opts.MinAge {
+			return ignoredDecision{kind: "in work", why: "ignored data changed less than " + c.opts.MinAge.String() + " ago"}
+		}
+		return ignoredDecision{kind: "check", why: why + ", but ignored data would go with it: " + ignored.describe() + "; move it, or name it in worktree.disposable"}
+	}
+	return ignoredDecision{}
+}
+
+// heldSubmodules names the submodules whose folder holds anything: git status
+// and ls-files do not look inside one, initialized or not.
+func (c *cleaner) heldSubmodules(root string) ([]string, error) {
+	out, err := gitx.InOther(root, nil, "ls-files", "-s", "-z")
+	if err != nil {
+		return nil, err
+	}
+	var found []string
+	for item := range strings.SplitSeq(out, "\x00") {
+		meta, name, ok := strings.Cut(item, "\t")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(meta)
+		if len(fields) == 0 || fields[0] != "160000" {
+			continue
+		}
+		dir := filepath.Join(root, filepath.FromSlash(name))
+		st, statErr := os.Lstat(dir)
+		if errors.Is(statErr, os.ErrNotExist) || (statErr == nil && !st.IsDir()) {
+			continue
+		}
+		if statErr != nil {
+			return nil, statErr
+		}
+		entries, readErr := os.ReadDir(dir)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if len(entries) > 0 {
+			found = append(found, displayName(name))
+		}
+	}
+	slices.Sort(found)
+	if len(found) > 0 {
+		return found, nil
+	}
+	// A deinitialized submodule leaves an empty folder, and its commits in the
+	// worktree's git dir: git worktree remove --force takes them along.
+	gitDir, err := worktreeGitDir(c.repo, root)
+	if err != nil {
+		return nil, err
+	}
+	modules := filepath.Join(gitDir, "modules")
+	entries, err := os.ReadDir(modules)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if len(entries) > 0 {
+		found = append(found, "data in "+displayName(modules))
+	}
+	return found, nil
+}
+
+type ignoredRoot struct {
+	name      string
+	count     int
+	size      int64
+	directory bool
+	// cut is true when the walk stopped at the limit inside this root.
+	cut     bool
+	omitted bool
+}
+
+// namedIgnoredRoots is how many roots a line names; the rest are only counted.
+const namedIgnoredRoots = 5
+
+type ignoredSummary struct {
+	roots []ignoredRoot
+	// more counts the roots after the limit that are not kept in roots.
+	more   int
+	count  int
+	newest time.Time
+}
+
+var disposableDirectories = map[string]bool{
+	"node_modules": true, "__pycache__": true, ".pytest_cache": true,
+	".mypy_cache": true, ".ruff_cache": true, ".next": true,
+	".nuxt": true, ".turbo": true, ".parcel-cache": true,
+	".svelte-kit": true, ".gradle": true,
+}
+
+func (c *cleaner) ignoredData(root string) (ignoredSummary, error) {
+	out, err := gitx.InOther(root, nil, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
+	if err != nil {
+		return ignoredSummary{}, err
+	}
+	var summary ignoredSummary
+	limited := false
+	// The last root counted: git lists what is inside a folder right after it.
+	last := ""
+	copyPaths := append([]string(nil), c.cfg.Worktree.Copy...)
+	for _, group := range c.cfg.Worktree.Link {
+		copyPaths = append(copyPaths, group.Paths...)
+	}
+	for listed := range strings.SplitSeq(out, "\x00") {
+		isDirectory := strings.HasSuffix(listed, "/")
+		listed = strings.TrimSuffix(listed, "/")
+		if listed == "" {
+			continue
+		}
+		if last != "" && strings.HasPrefix(listed, last+"/") {
+			continue
+		}
+		if limited {
+			disposable, dispErr := c.cfg.Worktree.DisposablePath(listed)
+			if dispErr != nil {
+				return ignoredSummary{}, dispErr
+			}
+			if disposable || disposableDirectoryPath(listed) || coveredByWorktreePath(listed, copyPaths) {
+				continue
+			}
+			last = listed
+			if len(summary.roots) < namedIgnoredRoots {
+				summary.roots = append(summary.roots, ignoredRoot{name: listed, directory: isDirectory, omitted: true})
+			} else {
+				summary.more++
+			}
+			continue
+		}
+		rootItem, err := c.walkIgnoredRoot(root, listed, isDirectory, copyPaths, &summary)
+		if errors.Is(err, errIgnoredLimit) {
+			rootItem.cut = true
+			summary.roots = append(summary.roots, rootItem)
+			limited = true
+			last = listed
+			continue
+		}
+		if err != nil {
+			return ignoredSummary{}, err
+		}
+		if rootItem.count > 0 {
+			summary.roots = append(summary.roots, rootItem)
+			last = listed
+		}
+	}
+	return summary, nil
+}
+
+func (c *cleaner) walkIgnoredRoot(root, listed string, directory bool, copyPaths []string, summary *ignoredSummary) (ignoredRoot, error) {
+	rootItem := ignoredRoot{name: listed, directory: directory}
+	rootPath := filepath.Join(root, filepath.FromSlash(listed))
+	err := filepath.WalkDir(rootPath, func(name string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(root, name)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		disposable, err := c.cfg.Worktree.DisposablePath(rel)
+		if err != nil {
+			return err
+		}
+		if disposableDirectoryPath(rel) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if disposable || coveredByWorktreePath(rel, copyPaths) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		st, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		rootItem.count++
+		rootItem.size += st.Size()
+		summary.count++
+		if st.ModTime().After(summary.newest) {
+			summary.newest = st.ModTime()
+		}
+		if summary.count >= 1000 {
+			return errIgnoredLimit
+		}
+		return nil
+	})
+	return rootItem, err
+}
+
+var errIgnoredLimit = errors.New("ignored data limit reached")
+
+func disposableDirectoryPath(name string) bool {
+	for component := range strings.SplitSeq(name, "/") {
+		if disposableDirectories[component] {
+			return true
+		}
+	}
+	return false
+}
+
+func coveredByWorktreePath(name string, paths []string) bool {
+	for _, p := range paths {
+		p = strings.TrimSuffix(p, "/")
+		if name == p || strings.HasPrefix(name, p+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func (s ignoredSummary) describe() string {
+	parts := make([]string, 0, min(len(s.roots), namedIgnoredRoots)+1)
+	for _, root := range s.roots[:min(len(s.roots), namedIgnoredRoots)] {
+		name := root.name
+		if root.directory {
+			name += "/"
+		}
+		if root.omitted {
+			parts = append(parts, displayName(name))
+			continue
+		}
+		size := humanBytes(root.size)
+		if root.cut {
+			size = strings.Replace(size, " ", "+ ", 1)
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s, %s)", displayName(name), root.countText(), size))
+	}
+	if rest := s.more + max(len(s.roots)-namedIgnoredRoots, 0); rest > 0 {
+		parts = append(parts, fmt.Sprintf("and %d more", rest))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// unprintable tells a string that must not reach a report line as it is: a
+// line feed forges a line, a bidi mark reorders it, and so on.
+func unprintable(s string) bool {
+	return !utf8.ValidString(s) || strings.ContainsFunc(s, func(r rune) bool { return !unicode.IsPrint(r) })
+}
+
+func displayName(name string) string {
+	if unprintable(name) {
+		return strconv.Quote(name)
+	}
+	return name
+}
+
+// escapeUnprintable keeps a report line one line, whatever an error text holds.
+func escapeUnprintable(s string) string {
+	if !unprintable(s) {
+		return s
+	}
+	quoted := strconv.Quote(s)
+	return quoted[1 : len(quoted)-1]
+}
+
+func (r ignoredRoot) countText() string {
+	if r.cut {
+		return fmt.Sprintf("%d+ files", r.count)
+	}
+	return plural(r.count, "file")
+}
+
+func humanBytes(size int64) string {
+	if size >= 1<<20 {
+		return fmt.Sprintf("%.1f MiB", float64(size)/(1<<20))
+	}
+	if size >= 1<<10 {
+		return fmt.Sprintf("%.1f KiB", float64(size)/(1<<10))
+	}
+	return fmt.Sprintf("%d B", size)
 }
 
 // lastUse is when the worktree's HEAD last moved: its reflog, or HEAD itself

@@ -396,6 +396,10 @@ deploy:
 		"worktree copy outside": base + "worktree: {copy: [../x]}\n",
 		"worktree copy git":     base + "worktree: {copy: [.git/config]}\n",
 		"worktree setup task":   base + "worktree: {setup: [nothing]}\n",
+		"disposable parent":     base + "worktree: {disposable: ['../x']}\n",
+		"disposable absolute":   base + "worktree: {disposable: ['/tmp/x']}\n",
+		"disposable empty":      base + "worktree: {disposable: ['']}\n",
+		"disposable bad glob":   base + "worktree: {disposable: ['bad[']}\n",
 		"reserved target name":  strings.Replace(base, "    prod:", "    status:", 1),
 		"no run":                strings.Replace(base, "run: [sh, deploy.sh], requires", "requires", 1),
 		"requires without ver":  strings.Replace(base, "mode: file", "mode: none", 1),
@@ -408,6 +412,22 @@ deploy:
 	for name, data := range cases {
 		if _, err := Parse([]byte(data)); err == nil {
 			t.Errorf("%s: want an error", name)
+		}
+	}
+}
+
+func TestWorktreeDisposablePath(t *testing.T) {
+	w := Worktree{Disposable: []string{"*.stamp", "logs", "frontend/dist/"}}
+	for _, name := range []string{"build.stamp", "frontend/build.stamp", "logs/a.txt", "frontend/dist", "frontend/dist/app.js"} {
+		got, err := w.DisposablePath(name)
+		if err != nil || !got {
+			t.Errorf("DisposablePath(%q) = false", name)
+		}
+	}
+	for _, name := range []string{"frontend/src/app.js", "dist/app.js", "frontendX/dist/app.js"} {
+		got, err := w.DisposablePath(name)
+		if err != nil || got {
+			t.Errorf("DisposablePath(%q) = true", name)
 		}
 	}
 }
