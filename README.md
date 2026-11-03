@@ -461,8 +461,9 @@ refused with the form that works: `graft -C <directory> <command> …`.
    by every step below, once `git add` has marked its conflicts resolved;
    files still in conflict are refused by name. With `ticket.required`, refuse
    a commit that names no work item, in the message or by the branch: only a
-   revert and a commit whose files all match every target's
-   `approved_release.ignore_paths` need none, and so does every commit on a
+   revert and a commit whose files all match the
+   `approved_release.ignore_paths` of every target that has one need none (with
+   at least one such target), and so does every commit on a
    branch in `ticket.skip_branches`. The ticket check uses the staged result
    after the gate, including files the gate writes.
 4. Stage the work tree with `git add -A`, then run the gate. This makes new

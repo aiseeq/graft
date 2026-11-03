@@ -287,3 +287,36 @@ func TestTicketRequiredAmendChecksWholeCommit(t *testing.T) {
 		t.Errorf("the refused amend left staged changes: %s", f.git("diff", "--cached", "--name-only"))
 	}
 }
+
+// A target without approved_release takes every commit with no work item to
+// tie it to, so it does not stop a change to ignore_paths needing none; the
+// exception still needs one target that has the list.
+func TestTicketRequiredIgnorePathsWithATargetWithoutApprovedRelease(t *testing.T) {
+	const deploy = `deploy:
+  remote: origin
+  targets:
+    test: {env: local, run: [sh, d.sh]}
+    prod: {env: local, run: [sh, d.sh], deployed_sha: {path: /x/prod}, approved_release: {statuses: [Done], ignore_paths: ["docs/**"]}}
+release_notes: {jira: {project_keys: [PROJ]}}
+`
+	f := ticketRepo(t, ticketReqProj, "", deploy, "[]", map[string]string{"docs/a.md": "a\n"})
+	f.write("docs/a.md", "b\n")
+	if out, code := f.graft("", "commit", "-m", "docs: reword"); code != 0 {
+		t.Errorf("a docs commit is refused for the target without approved_release:\n%s", out)
+	}
+	f.write("code.txt", "code\n")
+	if out, code := f.graft("", "commit", "-m", "feat: code"); code == 0 {
+		t.Errorf("a commit outside ignore_paths passed without a work item:\n%s", out)
+	}
+
+	const noList = `deploy:
+  remote: origin
+  targets:
+    test: {env: local, run: [sh, d.sh]}
+`
+	g := ticketRepo(t, ticketReqProj, "", noList, "[]", map[string]string{"docs/a.md": "a\n"})
+	g.write("docs/a.md", "b\n")
+	if out, code := g.graft("", "commit", "-m", "docs: reword"); code == 0 {
+		t.Errorf("no target has approved_release, yet the commit passed without a work item:\n%s", out)
+	}
+}

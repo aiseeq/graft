@@ -310,7 +310,9 @@ func (r *ApprovedRelease) Ignored(files []string) bool {
 	return true
 }
 
-// ShipsNothing tells whether every target ignores every file; no files is not.
+// ShipsNothing tells whether every target with an approved_release ignores
+// every file, and there is one; no files is not. A target without it takes
+// every commit, with no work item to tie it to.
 func (c *Config) ShipsNothing(files []string) bool {
 	if c.Deploy == nil {
 		return false
@@ -318,13 +320,18 @@ func (c *Config) ShipsNothing(files []string) bool {
 	if len(files) == 0 || len(c.Deploy.Targets) == 0 {
 		return false
 	}
+	gated := false
 	for _, n := range slices.Sorted(maps.Keys(c.Deploy.Targets)) {
 		r := c.Deploy.Targets[n].ApprovedRelease
-		if r == nil || !r.Ignored(files) {
+		if r == nil {
+			continue
+		}
+		if !r.Ignored(files) {
 			return false
 		}
+		gated = true
 	}
-	return true
+	return gated
 }
 
 // ReleaseNotes configures the Jira release notes.
