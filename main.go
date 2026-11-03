@@ -541,59 +541,78 @@ func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
 
 func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 	usage := usageOf("worktree")
-	switch {
-	case len(args) > 0 && args[0] == "sync":
-		fs := newFlags(a, "worktree sync")
-		o := app.WorktreeSyncOptions{}
-		fs.StringVar(&o.Trunk, "trunk", "", "the ref to sync onto (default: the HEAD branch of the deploy remote or of the only remote)")
-		pos, err := parseInterspersed(fs, args[1:])
-		if err != nil {
-			return err
-		}
-		if len(pos) != 0 {
-			return usage
-		}
-		return a.WorktreeSync(o)
-	case len(args) > 0 && args[0] == "add":
-		fs := newFlags(a, "worktree add")
-		o := app.WorktreeAddOptions{}
-		fs.StringVar(&o.Trunk, "trunk", "", "the ref to create the branch from")
-		pos, err := parseInterspersed(fs, args[1:])
-		if err != nil {
-			return err
-		}
-		if len(pos) < 1 || len(pos) > 2 || (o.Trunk != "" && len(pos) == 2) {
-			return usage
-		}
-		o.Branch = pos[0]
-		if len(pos) == 2 {
-			o.Base = pos[1]
-		}
-		return a.WorktreeAdd(ctx, o)
-	case len(args) > 0 && args[0] == "check":
-		fs := newFlags(a, "worktree check")
-		o := app.WorktreeCheckOptions{}
-		fs.StringVar(&o.Trunk, "trunk", "", "the ref whose rules apply (default: the HEAD branch of the deploy remote or of the only remote)")
-		fs.BoolVar(&o.JSON, "json", false, "print the answer as one JSON object")
-		pos, err := parseInterspersed(fs, args[1:])
-		if err != nil {
-			return err
-		}
-		if len(pos) != 1 {
-			return usage
-		}
-		o.Path = pos[0]
-		return a.WorktreeCheck(o)
-	case len(args) == 0 || args[0] != "clean":
+	if len(args) == 0 {
 		return usage
 	}
+	switch args[0] {
+	case "sync":
+		return worktreeSyncCmd(a, args[1:], usage)
+	case "add":
+		return worktreeAddCmd(ctx, a, args[1:], usage)
+	case "check":
+		return worktreeCheckCmd(a, args[1:], usage)
+	case "clean":
+		return worktreeCleanCmd(a, args[1:], usage)
+	}
+	return usage
+}
+
+func worktreeSyncCmd(a *app.App, args []string, usage error) error {
+	fs := newFlags(a, "worktree sync")
+	o := app.WorktreeSyncOptions{}
+	fs.StringVar(&o.Trunk, "trunk", "", "the ref to sync onto (default: the HEAD branch of the deploy remote or of the only remote)")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 0 {
+		return usage
+	}
+	return a.WorktreeSync(o)
+}
+
+func worktreeAddCmd(ctx context.Context, a *app.App, args []string, usage error) error {
+	fs := newFlags(a, "worktree add")
+	o := app.WorktreeAddOptions{}
+	fs.StringVar(&o.Trunk, "trunk", "", "the ref to create the branch from")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) < 1 || len(pos) > 2 || (o.Trunk != "" && len(pos) == 2) {
+		return usage
+	}
+	o.Branch = pos[0]
+	if len(pos) == 2 {
+		o.Base = pos[1]
+	}
+	return a.WorktreeAdd(ctx, o)
+}
+
+func worktreeCheckCmd(a *app.App, args []string, usage error) error {
+	fs := newFlags(a, "worktree check")
+	o := app.WorktreeCheckOptions{}
+	fs.StringVar(&o.Trunk, "trunk", "", "the ref whose rules apply (default: the HEAD branch of the deploy remote or of the only remote)")
+	fs.BoolVar(&o.JSON, "json", false, "print the answer as one JSON object")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return usage
+	}
+	o.Path = pos[0]
+	return a.WorktreeCheck(o)
+}
+
+func worktreeCleanCmd(a *app.App, args []string, usage error) error {
 	fs := newFlags(a, "worktree clean")
 	o := app.WorktreeCleanOptions{}
 	fs.BoolVar(&o.Apply, "apply", false, "remove; without it only report")
 	fs.StringVar(&o.Trunk, "trunk", "", "the ref work must be in (default: the HEAD branch of the deploy remote or of the only remote)")
 	fs.DurationVar(&o.MinAge, "min-age", time.Hour, "leave alone a worktree or branch used more recently")
 	fs.Var((*stringListFlag)(&o.In), "in", "clean repositories in the immediate subdirectories (repeatable)")
-	pos, err := parseInterspersed(fs, args[1:])
+	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
 	}
