@@ -279,11 +279,15 @@ func place(ctx context.Context, self string, move plan, from string, pid int, to
 	if err := transient(ctx, move.scope, "fail", scopeProperties(move, pid)...); err != nil {
 		return Placement{}, fmt.Errorf("create heavy scope %s: %w", move.scope, err)
 	}
-	if err := waitMoved(ctx, self, move.scope); err != nil {
-		return Placement{}, err
+	waited, err := waitMoved(ctx, self, move.scope, enterWait)
+	if err != nil {
+		if ctx.Err() != nil {
+			return Placement{}, err
+		}
+		return Placement{}, fmt.Errorf("%w; %s", err, unitState(ctx, move.scope))
 	}
 	return Placement{
-		Message: fmt.Sprintf("moved from %s to %s in %s (IOWeight=%d, memory ceiling %s: %s)", from, move.scope, move.slice, ioWeight, Bytes(move.ceiling), source),
+		Message: fmt.Sprintf("moved from %s to %s in %s (IOWeight=%d, memory ceiling %s: %s)%s", from, move.scope, move.slice, ioWeight, Bytes(move.ceiling), source, lateNote(waited)),
 		Ceiling: move.ceiling, Source: source, Scope: move.scope, Slice: move.slice, SliceMax: sliceMax,
 	}, nil
 }
@@ -446,24 +450,61 @@ func readLimits(base string) (map[string]string, error) {
 	return limits, nil
 }
 
-// waitMoved waits up to 5 seconds for the process's cgroup file self to name
-// the new scope: systemd moves it when the start job runs.
-func waitMoved(ctx context.Context, self, scope string) error {
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+const (
+	// enterWait bounds the wait for systemd to move the process into its new
+	// scope. StartTransientUnit answers once the start job is queued, and on a
+	// loaded machine the manager was seen to run such jobs 6.6s late and to
+	// stay silent for up to 35s; a shorter wait fails a gate over nothing.
+	enterWait = 60 * time.Second
+	// slowEnter is the wait the placement line reports, as the only measure of
+	// these delays taken when they happen.
+	slowEnter = 5 * time.Second
+	// stateWait bounds the look at a unit the process did not enter: the
+	// manager that kept the job waiting may keep this call too, and the heavy
+	// work's cores stay reserved until graft reports the failure.
+	stateWait = 5 * time.Second
+)
+
+// lateNote is the end of the placement line for a scope systemd started late,
+// "" for one it started in time.
+func lateNote(waited time.Duration) string {
+	if waited < slowEnter {
+		return ""
+	}
+	return fmt.Sprintf("; systemd took %s to start the scope", waited.Round(time.Millisecond))
+}
+
+// waitMoved waits up to limit for the process's cgroup file self to name the
+// new scope: systemd moves it when the start job runs. It returns how long
+// that took.
+func waitMoved(ctx context.Context, self, scope string, limit time.Duration) (time.Duration, error) {
+	start := time.Now()
+	for time.Since(start) < limit {
 		current, err := os.ReadFile(self)
 		if err == nil && strings.Contains(string(current), "/"+scope) {
-			return nil
+			return time.Since(start), nil
 		}
 		timer := time.NewTimer(50 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return ctx.Err()
+			return 0, ctx.Err()
 		case <-timer.C:
 		}
 	}
-	return fmt.Errorf("process did not enter heavy scope %s within 5s", scope)
+	return 0, fmt.Errorf("process did not enter heavy scope %s within %s", scope, limit)
+}
+
+// unitState says what systemd holds of a unit the process did not enter: a
+// job still queued, a unit that failed, or a state it could not read.
+func unitState(ctx context.Context, unit string) string {
+	ctx, cancel := context.WithTimeout(ctx, stateWait)
+	defer cancel()
+	out, err := userCommand(ctx, "systemctl", "--user", "show", "--property=LoadState,ActiveState,SubState,Result,Job", unit).Output()
+	if err != nil {
+		return fmt.Sprintf("state of the unit not read: %v", err)
+	}
+	return "unit " + strings.Join(strings.Fields(string(out)), " ")
 }
 
 // ensureSlice creates the shared slice with its weight and ceiling, or, when

@@ -4,12 +4,15 @@ package iosched
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDecide(t *testing.T) {
@@ -161,6 +164,93 @@ func TestEnterSystemd(t *testing.T) {
 	}
 	if got, err := os.ReadFile(path.Join(moved, "memory.max")); err != nil || strings.TrimSpace(string(got)) != "2147483648" {
 		t.Errorf("memory.max after the raise = %q, %v", got, err)
+	}
+}
+
+// TestWaitMovedLateStart: systemd runs the start job well after answering the
+// call, and the process that waits for it goes on, with how long it took.
+func TestWaitMovedLateStart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits past the seconds a loaded manager takes")
+	}
+	self := filepath.Join(t.TempDir(), "cgroup")
+	if err := os.WriteFile(self, []byte("0::/old.scope\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	late := slowEnter + 500*time.Millisecond
+	timer := time.AfterFunc(late, func() {
+		if err := os.WriteFile(self, []byte("0::/s/late.scope\n"), 0o600); err != nil {
+			t.Error(err)
+		}
+	})
+	defer timer.Stop()
+	waited, err := waitMoved(context.Background(), self, "late.scope", enterWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waited < late {
+		t.Fatalf("waited = %s, want at least %s", waited, late)
+	}
+}
+
+func TestWaitMovedNotEntered(t *testing.T) {
+	self := filepath.Join(t.TempDir(), "cgroup")
+	if err := os.WriteFile(self, []byte("0::/old.scope\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := waitMoved(context.Background(), self, "never.scope", 100*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "never.scope within 100ms") {
+		t.Fatalf("err = %v, want the scope and the limit", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := waitMoved(ctx, self, "never.scope", enterWait); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+// TestUnitState: a wait that ends without the process in its scope says what
+// the manager holds of the unit, here one it does not know.
+func TestUnitState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("talks to the user systemd manager")
+	}
+	got := unitState(context.Background(), "graft-no-such-unit.scope")
+	if strings.Contains(got, "not read") {
+		t.Skip(got)
+	}
+	if !strings.Contains(got, "LoadState=not-found") {
+		t.Fatalf("unitState = %q, want LoadState=not-found", got)
+	}
+}
+
+// TestUnitStateBounded: a manager that does not answer does not hold the
+// failure report past the bound.
+func TestUnitStateBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out the bound of a look at a unit")
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte("#!/bin/sh\nexec sleep 60\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	start := time.Now()
+	got := unitState(context.Background(), "any.scope")
+	if took := time.Since(start); took > 2*stateWait {
+		t.Fatalf("unitState took %s, bound %s", took, stateWait)
+	}
+	if !strings.Contains(got, "not read") {
+		t.Fatalf("unitState = %q, want a state not read", got)
+	}
+}
+
+func TestLateNote(t *testing.T) {
+	if got := lateNote(slowEnter - time.Millisecond); got != "" {
+		t.Errorf("in time: %q, want none", got)
+	}
+	if got := lateNote(6600 * time.Millisecond); !strings.Contains(got, "took 6.6s") {
+		t.Errorf("late: %q, want the wait", got)
 	}
 }
 
