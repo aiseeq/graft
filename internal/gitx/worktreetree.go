@@ -13,6 +13,17 @@ import (
 // of the index, whose stat data spares hashing the unchanged files, and
 // leaves the index and the work tree as they are.
 func (r *Repo) WorkTreeTree() (string, error) {
+	return r.workTreeTree("add", "-A")
+}
+
+// WorkTreeTreeAll is WorkTreeTree with what status shows outside the sparse
+// definition: a file on disk there is status's M while add -A leaves it out, so
+// to the question of what a tree holds it would look merged. Git 2.34 or newer.
+func (r *Repo) WorkTreeTreeAll() (string, error) {
+	return r.workTreeTree("add", "-A", "--sparse")
+}
+
+func (r *Repo) workTreeTree(add ...string) (string, error) {
 	out, err := r.Git("rev-parse", "--path-format=absolute", "--git-path", "index")
 	if err != nil {
 		return "", err
@@ -35,9 +46,7 @@ func (r *Repo) WorkTreeTree() (string, error) {
 		}
 	}
 	env := []string{"GIT_INDEX_FILE=" + index}
-	// --sparse: a file outside the sparse definition that is on disk is
-	// status's M; without the flag add -A leaves it out, so it looks merged.
-	if _, err := r.GitEnv(env, "add", "-A", "--sparse"); err != nil {
+	if _, err := r.GitEnv(env, add...); err != nil {
 		return "", err
 	}
 	tree, err := r.GitEnv(env, "write-tree")

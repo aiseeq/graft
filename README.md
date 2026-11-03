@@ -30,7 +30,8 @@ was. Without a pilot it refuses; `go run . install -- --no-pilot` skips it,
 for a first install or a machine with no project yet. Put `~/bin` on
 `PATH`. `go install github.com/aiseeq/graft/v2@latest` works too, but puts a
 second graft in GOBIN (`~/go/bin`): the hooks run whichever comes first on
-`PATH`, so keep one. Requires git 2.31 or newer. A project can require a graft version with
+`PATH`, so keep one. Requires git 2.31 or newer, `graft worktree clean` and
+`check` 2.34. A project can require a graft version with
 `graft: ">=X.Y.Z"` in `.graft.yaml`: an older graft refuses to work on it.
 The install hints install the latest: graft versions are not pinned.
 
@@ -2392,14 +2393,18 @@ the trunk:
 to remove it: exit 0 when nothing would be lost, 3 when something would go with
 it, anything else when it could not tell: a folder that is not the top of a
 linked worktree, a `.git` leading to another tree, a folder it could not read, a
-HEAD at no commit, a config blob a partial clone lacks. What it counts as lost:
+HEAD or reflog naming a missing object, a config blob a partial clone lacks. What it counts as lost:
 what `git status` shows, however it is set; ignored and submodule data by the
 rules of `clean`; a rebase, `am`, merge, cherry-pick, revert or bisect under way;
 commits only its HEAD or its own refs reach, a deleted branch's by the reflog;
 files marked assume-unchanged or skip-worktree that are on disk; and a worktree
 inside it. It reads the rules from the trunk as last fetched, found by the main
 worktree's config: fetch first for the latest. It answers for `<path>` whatever
-`GIT_DIR` it is called with, does not reach a remote and removes nothing. It
+`GIT_DIR` it is called with, does not reach a remote and removes nothing. Like
+`clean`, it drops what `git rev-parse --local-env-vars` lists, so a hook's
+`GIT_DIR` does not answer for another tree: a setting only in `git -c` or
+`GIT_CONFIG_COUNT`, and objects only in `GIT_ALTERNATE_OBJECT_DIRECTORIES`, do
+not reach it. It
 takes no age: `newest` is there for the caller to weigh. A lock or a process
 working in the tree is not data. `--json` prints one object: `path`, `clear`,
 `operation`, `detached_commits`, `changes`, `hidden_changes`, `nested_worktrees`,

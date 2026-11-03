@@ -308,7 +308,7 @@ func (a *App) printWorktreeCheck(result worktreeCheckResult, holds worktreeHolds
 	}
 	var parts []string
 	if result.Operation != "" {
-		parts = append(parts, "a "+result.Operation+" in progress")
+		parts = append(parts, operationInProgress(result.Operation))
 	}
 	if result.DetachedCommits > 0 {
 		parts = append(parts, plural(result.DetachedCommits, "commit")+" only its HEAD reaches")

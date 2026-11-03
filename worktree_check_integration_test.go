@@ -401,7 +401,7 @@ func TestWorktreeCheckOperations(t *testing.T) {
 			t.Errorf("%s is not named %q; exit %d:\n%s", op.marker, op.name, code, out)
 		}
 		out, code = f.graft("", "worktree", "clean", "--min-age", "0s")
-		if code != 0 || !strings.Contains(outputLineForPath(out, path), "a "+op.name+" in progress") {
+		if code != 0 || !strings.Contains(outputLineForPath(out, path), op.name+" in progress") {
 			t.Errorf("%s: clean does not keep it; exit %d:\n%s", op.marker, code, out)
 		}
 	}
@@ -438,7 +438,7 @@ func TestWorktreeCheckHeadStates(t *testing.T) {
 		t.Errorf("the commit of a deleted branch is not counted; exit %d:\n%s", code, out)
 	}
 	out, code := f.graft("", "worktree", "clean", "--min-age", "0s")
-	if code != 0 || !strings.Contains(outputLineForPath(out, deleted), "no commit yet") {
+	if code != 0 || !strings.Contains(outputLineForPath(out, deleted), "HEAD at no commit") {
 		t.Errorf("clean does not say what it holds; exit %d:\n%s", code, out)
 	}
 
@@ -472,6 +472,15 @@ func TestWorktreeOwnRefs(t *testing.T) {
 	answer, code, out := worktreeCheckJSON(t, f, f.work, path)
 	if code != app.ExitWorktreeHolds || answer.DetachedCommits != 1 {
 		t.Errorf("a commit under refs/worktree is not counted; exit %d:\n%s", code, out)
+	}
+	for _, ref := range []string{"refs/bisect/kept", "refs/rewritten/kept"} {
+		other := add(strings.ReplaceAll(ref, "/", "-"))
+		treeCommit(f, other, "chore: under "+ref)
+		f.gitIn(other, "update-ref", ref, "HEAD")
+		f.gitIn(other, "reset", "-q", "--hard", "HEAD~1")
+		if answer, code, text := worktreeCheckJSON(t, f, f.work, other); code != app.ExitWorktreeHolds || answer.DetachedCommits != 1 {
+			t.Errorf("a commit under %s is not counted; exit %d:\n%s", ref, code, text)
+		}
 	}
 	out, code = f.graft("", "worktree", "clean", "--min-age", "0s")
 	if code != 0 || !strings.Contains(outputLineForPath(out, path), "refs/worktree") {
@@ -515,6 +524,9 @@ func TestWorktreeNested(t *testing.T) {
 	answer, code, out := worktreeCheckJSON(t, f, f.work, outer)
 	if code != app.ExitWorktreeHolds || len(answer.NestedWorktrees) != 1 {
 		t.Errorf("the tree inside is not named; exit %d:\n%s", code, out)
+	}
+	if answer, code, out := worktreeCheckJSON(t, f, f.work, inner); code != 0 || len(answer.NestedWorktrees) != 0 {
+		t.Errorf("the tree around it counts as nested in it; exit %d:\n%s", code, out)
 	}
 	out, code = f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
 	if code != 0 || !strings.Contains(outputLineForPath(out, outer), "holds the worktree") {
@@ -599,6 +611,93 @@ func TestWorktreeCleanUnreadableTreeNotPruned(t *testing.T) {
 	}
 	if !strings.Contains(f.git("worktree", "list"), locked) {
 		t.Fatalf("git forgot the tree:\n%s", out)
+	}
+	out, code = f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
+	if code != 0 || !strings.Contains(out, "pruned") || strings.Contains(f.git("worktree", "list"), gone) {
+		t.Fatalf("a tree whose folder is gone stays once none is held back; exit %d:\n%s", code, out)
+	}
+}
+
+// What stands at a tree's path counts as there however it looks: git would
+// prune each of these, and the record is all that finds the data again.
+func TestWorktreeCleanNotPrunedWhatStandsThere(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Geteuid() == 0 {
+		t.Skip("needs a folder this user cannot read, and clean's process check reads /proc")
+	}
+	// One run each: one tree held back spares every other record.
+	t.Run("locked parent", func(t *testing.T) {
+		f, _ := newWorktreeCleanFixture(t, worktreeCheckFiles())
+		parent := filepath.Join(f.base, "locked-parent")
+		under := filepath.Join(parent, "tree")
+		f.git("worktree", "add", "-q", "-b", "w/under", under, "main")
+		if err := os.Chmod(parent, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+		out, code := f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
+		if code != 0 || strings.Contains(out, "pruned") {
+			t.Errorf("clean pruned a tree it could not look at; exit %d:\n%s", code, out)
+		}
+		if err := os.Chmod(parent, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if list := f.git("worktree", "list"); !strings.Contains(list, under) {
+			t.Errorf("git forgot the tree:\n%s\n%s", list, out)
+		}
+	})
+	t.Run("dangling link", func(t *testing.T) {
+		f, add := newWorktreeCleanFixture(t, worktreeCheckFiles())
+		link := add("link")
+		if err := os.RemoveAll(link); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(f.base, "nowhere"), link); err != nil {
+			t.Fatal(err)
+		}
+		out, code := f.graft("", "worktree", "clean", "--min-age", "0s", "--apply")
+		if code != 0 || strings.Contains(out, "pruned") {
+			t.Errorf("clean pruned a tree whose path holds a link; exit %d:\n%s", code, out)
+		}
+		if list := f.git("worktree", "list"); !strings.Contains(list, link) {
+			t.Errorf("git forgot the tree:\n%s\n%s", list, out)
+		}
+	})
+}
+
+// A file broken in the main worktree does not stop a run told its trunk, and a
+// run that needs the file says which it is.
+func TestWorktreeCleanBrokenMainConfig(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("clean's process check reads /proc")
+	}
+	f, add := newWorktreeCleanFixture(t, worktreeCheckFiles())
+	path := add("linked")
+	writeFile(t, filepath.Join(f.work, ".graft.yaml"), "schema: 1\nversion: [\n")
+	if out, code := f.exec(path, "", graftBin, "worktree", "clean", "--min-age", "0s", "--trunk", "origin/main"); code != 0 {
+		t.Errorf("--trunk needs the main worktree's config; exit %d:\n%s", code, out)
+	}
+	if out, code := f.exec(path, "", graftBin, "worktree", "clean", "--min-age", "0s"); code == 0 || !strings.Contains(out, "--trunk") {
+		t.Errorf("the failure does not say what to do; exit %d:\n%s", code, out)
+	}
+}
+
+// A file outside the sparse definition is neither committed nor called a change
+// the gate saw: add -A leaves it out on both sides.
+func TestCommitSparseChangeNotCalledLeftOut(t *testing.T) {
+	files := worktreeCheckFiles()
+	files["keep/k.txt"] = "k\n"
+	files["other/o.txt"] = "o\n"
+	f, add := newWorktreeCleanFixture(t, files)
+	path := add("sparse-commit")
+	f.gitIn(path, "sparse-checkout", "set", "--cone", "keep")
+	writeFile(t, filepath.Join(path, "other", "o.txt"), "outside\n")
+	writeFile(t, filepath.Join(path, "keep", "k.txt"), "changed\n")
+	out, code := f.exec(path, "", graftBin, "commit", "-m", "fix: inside the definition")
+	if code != 0 || strings.Contains(out, "left out") {
+		t.Errorf("a line about what no one changed during the gate; exit %d:\n%s", code, out)
+	}
+	if got := f.gitIn(path, "show", "--name-only", "--format=", "HEAD"); strings.Contains(got, "other/o.txt") || !strings.Contains(got, "keep/k.txt") {
+		t.Errorf("the commit holds:\n%s", got)
 	}
 }
 

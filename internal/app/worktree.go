@@ -116,9 +116,13 @@ func (a *App) worktreeCleanLocked(repo *gitx.Repo, cfg *config.Config, o Worktre
 			return result, fmt.Errorf("git fetch %s failed, what the trunk has is unknown: %w", r, err)
 		}
 	}
-	mainCfg, err := mainWorktreeConfig(repo)
-	if err != nil {
-		return result, err
+	// The main worktree's config only finds the trunk: --trunk names it without,
+	// so a file broken there does not stop the run.
+	mainCfg := &config.Config{}
+	if o.Trunk == "" {
+		if mainCfg, err = mainWorktreeConfig(repo); err != nil {
+			return result, fmt.Errorf("the main worktree's config, which finds the trunk (--trunk names it without): %w", err)
+		}
 	}
 	if c.trunk, err = trunkRef(repo, mainCfg, o.Trunk, c.remotes); err != nil {
 		return result, err
@@ -618,7 +622,7 @@ func (c *cleaner) worktree(w worktree) error {
 	if operation, err := gitOperation(c.repo, w.path); err != nil {
 		return err
 	} else if operation != "" {
-		c.line("in work", what, "a "+operation+" in progress")
+		c.line("in work", what, operationInProgress(operation))
 		return nil
 	}
 	if procs := c.busy(w.path); len(procs) > 0 {
@@ -645,8 +649,11 @@ func (c *cleaner) worktree(w worktree) error {
 		return err
 	}
 	switch {
+	case w.head == "" && len(changed) > 0:
+		c.line("in work", what, plural(len(changed), "uncommitted change")+", HEAD at no commit")
+		return nil
 	case w.head == "":
-		c.line("in work", what, plural(len(changed), "uncommitted change")+", no commit yet")
+		c.line("in work", what, "HEAD at no commit")
 		return nil
 	case len(changed) > 0:
 		return c.dirtyWorktree(w, what, tree, changed)
@@ -743,7 +750,7 @@ func (c *cleaner) dirtyWorktree(w worktree, what string, tree *gitx.Repo, change
 			return nil
 		}
 	}
-	snap, err := tree.WorkTreeTree()
+	snap, err := tree.WorkTreeTreeAll()
 	if err != nil {
 		return err
 	}
@@ -773,7 +780,7 @@ func (c *cleaner) dirtyWorktree(w worktree, what string, tree *gitx.Repo, change
 		return nil
 	}
 	// The work tree as it was checked, or another look.
-	again, err := tree.WorkTreeTree()
+	again, err := tree.WorkTreeTreeAll()
 	if err != nil {
 		return err
 	}
@@ -869,6 +876,14 @@ func (c *cleaner) checkIgnoredData(w worktree, why string) ignoredDecision {
 		return ignoredDecision{kind: "check", why: why + ", but ignored data would go with it: " + ignored.describe() + "; move it, or name it in worktree.disposable"}
 	}
 	return ignoredDecision{}
+}
+
+// operationInProgress is the words for what gitOperation names.
+func operationInProgress(operation string) string {
+	if operation == "am" {
+		return "an am in progress"
+	}
+	return "a " + operation + " in progress"
 }
 
 // unbindGitFromCaller frees the git this command runs from where it was called:
