@@ -47,7 +47,7 @@ func (a *App) Amend(ctx context.Context) error {
 		if err != nil {
 			return errors.Join(err, restoreIndex(index))
 		}
-		if err := a.stageGateChanges(repo, start, "amend"); err != nil {
+		if err := a.stageGateChanges(repo, start, "amend", index.head, amendAgain); err != nil {
 			return errors.Join(err, restoreIndex(index))
 		}
 		if empty, err := stagedIs(repo, base); err != nil || empty {
@@ -68,10 +68,19 @@ func (a *App) Amend(ctx context.Context) error {
 		if err != nil {
 			return errors.Join(err, restoreIndex(index))
 		}
-		if err := runChecks(ctx, repo, cfg, message, parent, a.Stderr); err != nil {
+		// HEAD first: a move while they ran makes the checks say the merged
+		// files are taken back.
+		checksErr := runChecks(ctx, repo, cfg, message, parent, a.Stderr)
+		if err := checkHeadStayed(repo, index.head, amendAgain); err != nil {
 			return errors.Join(err, restoreIndex(index))
 		}
+		if checksErr != nil {
+			return errors.Join(checksErr, restoreIndex(index))
+		}
 		if message, err = a.withWorkers(repo, cfg, message); err != nil {
+			return errors.Join(err, restoreIndex(index))
+		}
+		if err := checkHeadStayed(repo, index.head, amendAgain); err != nil {
 			return errors.Join(err, restoreIndex(index))
 		}
 		previousHead, err := repo.Git("rev-parse", "HEAD")

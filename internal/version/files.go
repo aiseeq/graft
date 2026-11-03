@@ -313,6 +313,42 @@ func (b *Backup) Paths() []string {
 	return paths
 }
 
+// Rebase carries the backup to another base. A file saved as the old base has
+// it, as asBase says, takes what next gives. Where the new base has no such
+// file, one gone from the work tree leaves the backup, there being nothing to
+// put back, and one still there stays as saved, for it holds the bump. Any
+// other file stays as saved. On an error the backup stays as it was.
+func (b *Backup) Rebase(asBase func(path string, saved []byte) (bool, error), next func(path string) ([]byte, bool, error)) error {
+	kept := make([]savedFile, 0, len(b.files))
+	for _, f := range b.files {
+		same, err := asBase(f.path, f.content)
+		if err != nil {
+			return err
+		}
+		if same {
+			content, ok, err := next(f.path)
+			if err != nil {
+				return err
+			}
+			switch {
+			case ok:
+				f.content = content
+			default:
+				_, err := os.Lstat(filepath.Join(b.root, filepath.FromSlash(f.path)))
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				if err != nil {
+					return fmt.Errorf("looking at a version target the new HEAD has not: %w", err)
+				}
+			}
+		}
+		kept = append(kept, f)
+	}
+	b.files = kept
+	return nil
+}
+
 // Restore writes the original content back.
 func (b *Backup) Restore() error {
 	var errs []error

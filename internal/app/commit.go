@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -83,6 +84,9 @@ type commitPlan struct {
 	message        string
 	bump           bumpPlan
 	bumpBeforeGate bool
+	// head is HEAD when the commit starts: what the gate is about to check the
+	// work on.
+	head headState
 	// release marks the commit graft release makes: it changes only the
 	// version files and needs no work item under ticket.required.
 	release bool
@@ -184,11 +188,22 @@ func uppercaseProjectPrefix(prefix string) bool {
 }
 
 func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, plan commitPlan) error {
+	var err error
+	if plan.head, err = currentHead(repo); err != nil {
+		return err
+	}
 	backup, frozen, advisoryFailed, err := a.prepareCommitGate(ctx, repo, cfg, plan)
 	if err != nil {
 		return err
 	}
-	undo := func(cause error) error { return errors.Join(cause, restoreVersion(repo, backup)) }
+	undo := func(cause error) error { return errors.Join(cause, restoreVersion(repo, backup, plan.head)) }
+	headMoved := func() error {
+		err := checkHeadStayed(repo, plan.head, commitAgain)
+		if err == nil {
+			return nil
+		}
+		return errors.Join(undo(err), restageOverHead(repo))
+	}
 
 	// The rest of the tree is staged already: only the bump is new.
 	if paths := backup.Paths(); len(paths) > 0 {
@@ -196,12 +211,21 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 			return undo(err)
 		}
 	}
-	if err := runChecks(ctx, repo, cfg, plan.message, "HEAD", a.Stderr); err != nil {
-		return undo(err)
+	// HEAD first: a move while they ran makes the checks say the merged files
+	// are taken back.
+	checksErr := runChecks(ctx, repo, cfg, plan.message, "HEAD", a.Stderr)
+	if err := headMoved(); err != nil {
+		return err
+	}
+	if checksErr != nil {
+		return undo(checksErr)
 	}
 	msg, err := a.withWorkers(repo, cfg, plan.message)
 	if err != nil {
 		return undo(err)
+	}
+	if err := headMoved(); err != nil {
+		return err
 	}
 	if _, err := repo.GitInput(strings.NewReader(msg), markerEnv, "commit", "--cleanup=verbatim", "-F", "-"); err != nil {
 		return undo(err)
@@ -222,22 +246,22 @@ func (a *App) prepareCommitGate(ctx context.Context, repo *gitx.Repo, cfg *confi
 		}
 		if paths := backup.Paths(); len(paths) > 0 {
 			if _, err := repo.Git(append([]string{"add", "--"}, paths...)...); err != nil {
-				return nil, nil, nil, errors.Join(err, restoreVersion(repo, backup), restoreIndex(index))
+				return nil, nil, nil, errors.Join(err, restoreVersion(repo, backup, plan.head), restoreIndex(index))
 			}
 			start, err = saveCommitStart(repo, "")
 			if err != nil {
-				return nil, nil, nil, errors.Join(err, restoreVersion(repo, backup), restoreIndex(index))
+				return nil, nil, nil, errors.Join(err, restoreVersion(repo, backup, plan.head), restoreIndex(index))
 			}
 		}
 	}
 	restoreBeforeGate := func(cause error) error {
-		return errors.Join(cause, restoreVersion(repo, backup), restoreIndex(index))
+		return errors.Join(cause, restoreVersion(repo, backup, plan.head), restoreIndex(index))
 	}
 	frozen, advisoryFailed, err := a.gateForMessage(ctx, repo, cfg, plan.branch, plan.message)
 	if err != nil {
 		return nil, nil, nil, restoreBeforeGate(err)
 	}
-	if err := a.stageGateChanges(repo, start, "commit"); err != nil {
+	if err := a.stageGateChanges(repo, start, "commit", plan.head, commitAgain); err != nil {
 		return nil, nil, nil, restoreBeforeGate(err)
 	}
 	empty, err := gateLeftHead(repo)
@@ -340,13 +364,19 @@ func stagedIs(repo *gitx.Repo, tree string) (bool, error) {
 }
 
 type savedIndex struct {
+	repo   *gitx.Repo
 	path   string
 	data   []byte
 	exists bool
+	head   headState
 }
 
 func saveIndex(repo *gitx.Repo) (savedIndex, error) {
-	s := savedIndex{path: filepath.Join(repo.GitDir, "index")}
+	s := savedIndex{repo: repo, path: filepath.Join(repo.GitDir, "index")}
+	var err error
+	if s.head, err = currentHead(repo); err != nil {
+		return s, err
+	}
 	data, err := os.ReadFile(s.path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return s, fmt.Errorf("saving the git index: %w", err)
@@ -357,9 +387,19 @@ func saveIndex(repo *gitx.Repo) (savedIndex, error) {
 	return s, nil
 }
 
+// restoreIndex puts the index back as it was saved. Over a HEAD that moved
+// since, as a merge beside graft moves it, the saved index would stage the
+// undoing of what came in: the work is staged on the new HEAD instead.
 func restoreIndex(s savedIndex) error {
 	if s.path == "" {
 		return nil
+	}
+	head, err := currentHead(s.repo)
+	if err != nil {
+		return fmt.Errorf("restoring the git index: %w", err)
+	}
+	if head != s.head {
+		return restageOverHead(s.repo)
 	}
 	if !s.exists {
 		if err := fsx.Remove(s.path); err != nil {
@@ -369,6 +409,87 @@ func restoreIndex(s savedIndex) error {
 	}
 	if err := os.WriteFile(s.path, s.data, 0o644); err != nil {
 		return fmt.Errorf("restoring the git index: %w", err)
+	}
+	return nil
+}
+
+// headState is where HEAD is: its branch, "" when detached, and its commit,
+// "" on an unborn branch.
+type headState struct {
+	branch string
+	sha    string
+}
+
+func (h headState) String() string {
+	sha := "no commit"
+	if h.sha != "" {
+		sha = gitx.Short(h.sha)
+	}
+	if h.branch == "" {
+		return sha
+	}
+	return sha + " on " + h.branch
+}
+
+func currentHead(repo *gitx.Repo) (headState, error) {
+	var h headState
+	branch, err := repo.Branch()
+	if err != nil && !errors.Is(err, gitx.ErrDetachedHead) {
+		return h, fmt.Errorf("reading the branch of HEAD: %w", err)
+	}
+	h.branch = branch
+	has, err := repo.HasHead()
+	if err != nil {
+		return h, fmt.Errorf("checking HEAD: %w", err)
+	}
+	if !has {
+		return h, nil
+	}
+	sha, err := repo.Git("rev-parse", "HEAD")
+	if err != nil {
+		return h, fmt.Errorf("reading HEAD: %w", err)
+	}
+	h.sha = strings.TrimSpace(sha)
+	return h, nil
+}
+
+// What to do after a HEAD that moved. An amend run again would take the commit
+// that came in for its own, so it does not say to run it again.
+const (
+	commitAgain = "this command committed nothing, and what the work tree still holds is staged on HEAD; look at HEAD and the tree, and run the command again if the work belongs there"
+	amendAgain  = "this command amended nothing, and the last commit is no longer the one it was for; what the work tree still holds is staged on HEAD; look at HEAD and the tree, and make that a commit of its own with graft commit unless the last commit is yours to amend"
+)
+
+// checkHeadStayed refuses a commit whose HEAD is no longer the one its gate
+// ran on: the commit would be built from the old HEAD's tree, and the merged
+// or committed work would go back with it.
+func checkHeadStayed(repo *gitx.Repo, start headState, next string) error {
+	now, err := currentHead(repo)
+	if err != nil {
+		return err
+	}
+	if now == start {
+		return nil
+	}
+	return fmt.Errorf("HEAD moved from %s to %s while the gate ran, by something beside graft: %s", start, now, next)
+}
+
+// restageOverHead makes the index the new HEAD with the work tree staged on
+// it, which holds the work the moved HEAD did not take.
+func restageOverHead(repo *gitx.Repo) error {
+	head, err := currentHead(repo)
+	if err != nil {
+		return fmt.Errorf("restaging over the moved HEAD: %w", err)
+	}
+	args := []string{"read-tree", "HEAD"}
+	if head.sha == "" {
+		args = []string{"read-tree", "--empty"}
+	}
+	if _, err := repo.Git(args...); err != nil {
+		return fmt.Errorf("restaging over the moved HEAD: %w", err)
+	}
+	if _, err := repo.Git("add", "-A"); err != nil {
+		return fmt.Errorf("restaging over the moved HEAD: %w", err)
 	}
 	return nil
 }
@@ -429,7 +550,9 @@ func saveCommitStart(repo *gitx.Repo, base string) (commitStart, error) {
 }
 
 // stageGateChanges stages only paths already changed when the gate began.
-func (a *App) stageGateChanges(repo *gitx.Repo, start commitStart, command string) error {
+// A HEAD that moved by then stops it, again checked after the listing: from
+// there on a merge adds nothing to what the listing calls left out.
+func (a *App) stageGateChanges(repo *gitx.Repo, start commitStart, command string, head headState, again string) error {
 	after, err := repo.WorkTreeTree()
 	if err != nil {
 		return fmt.Errorf("writing the work tree tree after the gate: %w", err)
@@ -437,6 +560,9 @@ func (a *App) stageGateChanges(repo *gitx.Repo, start commitStart, command strin
 	out, err := repo.Git("diff-tree", "-r", "--name-only", "--no-renames", "-z", start.tree, after)
 	if err != nil {
 		return fmt.Errorf("listing paths changed by the gate: %w", err)
+	}
+	if err := checkHeadStayed(repo, head, again); err != nil {
+		return err
 	}
 	var kept []string
 	for path := range strings.SplitSeq(out, "\x00") {
@@ -568,22 +694,71 @@ func (p bumpPlan) describe() string {
 
 // restoreVersion puts the version files back as they were and stages them
 // that way, so a failed commit leaves no bump behind for the next one to stack
-// on.
-func restoreVersion(repo *gitx.Repo, backup *version.Backup) error {
+// on. Over a HEAD that moved since start, a file that was as start had it
+// comes back as the new HEAD has it: the old content would take the move back.
+func restoreVersion(repo *gitx.Repo, backup *version.Backup, start headState) error {
 	if backup == nil {
 		return nil
 	}
-	paths := backup.Paths()
-	if len(paths) == 0 {
+	if len(backup.Paths()) == 0 {
 		return nil
 	}
-	if err := backup.Restore(); err != nil {
+	now, err := currentHead(repo)
+	if err != nil {
 		return fmt.Errorf("restoring version files: %w", err)
 	}
-	if _, err := repo.Git(append([]string{"add", "--"}, paths...)...); err != nil {
-		return fmt.Errorf("re-staging restored version files: %w", err)
+	// A failed rebase leaves the backup as saved: the bump goes back all the same.
+	var rebaseErr error
+	if now.sha != start.sha && now.sha != "" && start.sha != "" {
+		if err := rebaseVersionFiles(repo, backup, start.sha, now.sha); err != nil {
+			rebaseErr = fmt.Errorf("following the moved HEAD with the version files: %w", err)
+		}
 	}
-	return nil
+	paths := backup.Paths()
+	if len(paths) == 0 {
+		return rebaseErr
+	}
+	if err := backup.Restore(); err != nil {
+		return errors.Join(rebaseErr, fmt.Errorf("restoring version files: %w", err))
+	}
+	if _, err := repo.Git(append([]string{"add", "--"}, paths...)...); err != nil {
+		return errors.Join(rebaseErr, fmt.Errorf("re-staging restored version files: %w", err))
+	}
+	return rebaseErr
+}
+
+// rebaseVersionFiles carries the backup from one commit to another. Commits
+// and work tree are compared through git's own filters: under core.autocrlf a
+// file the commit has unchanged differs from it in its bytes.
+func rebaseVersionFiles(repo *gitx.Repo, backup *version.Backup, from, to string) error {
+	blob := func(rev, path string) (string, error) {
+		id, err := repo.Git("rev-parse", "--verify", "-q", rev+":"+filepath.ToSlash(path))
+		if gitx.ExitCode(err) == 1 {
+			return "", nil
+		}
+		return strings.TrimSpace(id), err
+	}
+	return backup.Rebase(func(path string, saved []byte) (bool, error) {
+		old, err := blob(from, path)
+		if err != nil || old == "" {
+			return false, err
+		}
+		id, err := repo.GitInput(bytes.NewReader(saved), nil, "hash-object", "--stdin", "--path="+filepath.ToSlash(path))
+		if err != nil {
+			return false, err
+		}
+		return strings.TrimSpace(id) == old, nil
+	}, func(path string) ([]byte, bool, error) {
+		next, err := blob(to, path)
+		if err != nil || next == "" {
+			return nil, false, err
+		}
+		content, err := repo.Git("cat-file", "--filters", to+":"+filepath.ToSlash(path))
+		if err != nil {
+			return nil, false, err
+		}
+		return []byte(content), true, nil
+	})
 }
 
 func tagExists(repo *gitx.Repo, tag string) (bool, error) {

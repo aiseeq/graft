@@ -473,7 +473,13 @@ refused with the form that works: `graft -C <directory> <command> …`.
    as the gate left them. For an amend, this includes every path changed by
    the amended commit, measured against its parent. Paths first changed while
    the gate ran stay out of the commit so another writer's work is not committed
-   before it was gated.
+   before it was gated. A HEAD that moved while the gate ran, as a merge beside
+   graft moves it, stops the command with both named: the gate checked the old
+   HEAD. What the work tree still holds is then staged on it (a commit made
+   beside graft takes what was staged, a reset can drop it), the version files
+   follow it, and a commit or a release can run again where the work belongs.
+   An amend run again would take the commit that came in for its own: make a
+   commit of its own instead.
 5. Bump the version file and every file synced with it, except on a branch
    in `version.skip_branches` (`--minor` and `--major` are refused there; use
    `graft release --minor` on the branch the work is merged into).
