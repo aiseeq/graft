@@ -823,11 +823,11 @@ func (c *cleaner) heldSubmodules(root string) ([]string, error) {
 			continue
 		}
 		if statErr != nil {
-			return nil, statErr
+			return nil, fmt.Errorf("stat submodule folder: %w", statErr)
 		}
 		entries, readErr := os.ReadDir(dir)
 		if readErr != nil {
-			return nil, readErr
+			return nil, fmt.Errorf("read submodule folder: %w", readErr)
 		}
 		if len(entries) > 0 {
 			found = append(found, displayName(name))
