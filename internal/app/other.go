@@ -513,6 +513,9 @@ func (a *App) releaseFileCommitLocked(ctx context.Context, repo *gitx.Repo, cfg 
 	if err != nil {
 		return err
 	}
+	if err := requireBranchCurrent(repo, remotes, branch); err != nil {
+		return err
+	}
 	plan.tag = tag
 	msg := "chore(release): " + tag
 	if cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, branch) {
@@ -523,6 +526,39 @@ func (a *App) releaseFileCommitLocked(ctx context.Context, repo *gitx.Repo, cfg 
 	// (the next graft commit raises them), and a refusal leaves nothing behind.
 	commit := commitPlan{branch: branch, remotes: remotes, message: msg, bump: plan, bumpBeforeGate: true, release: true}
 	return a.commit(ctx, repo, cfg, commit)
+}
+
+// requireBranchCurrent refuses a release over a branch some remote has moved
+// past: the release commit would not reach it, and its tag would name a
+// commit no remote branch holds. The remotes are asked now, not this clone's
+// copies of their branches.
+func requireBranchCurrent(repo *gitx.Repo, remotes []string, branch string) error {
+	for _, r := range remotes {
+		out, err := repo.Git("ls-remote", r, "refs/heads/"+branch)
+		if err != nil {
+			return fmt.Errorf("look up branch %s on %s: %w", branch, r, err)
+		}
+		fields := strings.Fields(out)
+		if len(fields) == 0 {
+			continue
+		}
+		tip := fields[0]
+		known, err := repo.RefExists(tip + "^{commit}")
+		if err != nil {
+			return err
+		}
+		if known {
+			has, err := repo.IsAncestor(tip, "HEAD")
+			if err != nil {
+				return err
+			}
+			if has {
+				continue
+			}
+		}
+		return fmt.Errorf("%s on %s is at %.7s, which HEAD does not contain: bring the branch up to date (git pull), then release", branch, r, tip)
+	}
+	return nil
 }
 
 // requireUnreleased refuses a release of a commit that already carries a

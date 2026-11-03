@@ -286,3 +286,68 @@ func TestReleaseFileKeepsModules(t *testing.T) {
 		t.Errorf("release commit files:\n%s", got)
 	}
 }
+
+// TestReleaseFileRemoteBranch: a release over a branch the remote moved past
+// is refused before any change, and a branch push the remote rejects leaves
+// no tag on the remote and none here.
+func TestReleaseFileRemoteBranch(t *testing.T) {
+	t.Run("remote ahead", func(t *testing.T) {
+		f := fileReleaseRepo(t, false, "gate: []\n")
+		other := filepath.Join(t.TempDir(), "other")
+		if out, code := f.exec(f.work, "", "git", "clone", "-q", f.remote("origin"), other); code != 0 {
+			t.Fatalf("clone: %s", out)
+		}
+		if err := os.WriteFile(filepath.Join(other, "n.txt"), []byte("n\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{{"add", "-A"}, {"-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "feat: neighbour"}, {"push", "-q", "origin", "main"}} {
+			if out, code := f.exec(other, "", "git", args...); code != 0 {
+				t.Fatalf("git %v: %s", args, out)
+			}
+		}
+		ffFeature(t, f)
+		head, version := f.git("rev-parse", "HEAD"), f.read("VERSION")
+		if out, code := f.graft("", "release", "--minor"); code == 0 || !strings.Contains(out, "which HEAD does not contain") {
+			t.Fatalf("release over a moved remote branch: exit %d\n%s", code, out)
+		}
+		if f.git("rev-parse", "HEAD") != head || f.read("VERSION") != version || f.git("tag", "-l") != "" || f.gitIn(f.remote("origin"), "tag", "-l") != "" {
+			t.Fatal("the refusal changed the repository or the remote")
+		}
+	})
+	t.Run("branch push rejected", func(t *testing.T) {
+		f := fileReleaseRepo(t, false, "gate: []\n")
+		ffFeature(t, f)
+		hook := filepath.Join(f.remote("origin"), "hooks", "pre-receive")
+		if err := os.WriteFile(hook, []byte("#!/bin/sh\nwhile read old new ref; do case $ref in refs/heads/*) echo rejected >&2; exit 1;; esac; done\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		out, code := f.graft("", "release", "--minor")
+		if code == 0 || !strings.Contains(out, "tag v0.8.0 is not") {
+			t.Fatalf("release with a rejected branch push: exit %d\n%s", code, out)
+		}
+		if got := f.gitIn(f.remote("origin"), "tag", "-l"); got != "" {
+			t.Fatalf("remote tags = %q", got)
+		}
+		if got := f.git("tag", "-l"); got != "" {
+			t.Fatalf("local tags = %q", got)
+		}
+		if f.read("VERSION") != "0.8.0\n" {
+			t.Fatalf("the release commit is gone: VERSION %q", f.read("VERSION"))
+		}
+		if err := os.Remove(hook); err != nil {
+			t.Fatal(err)
+		}
+		f.git("push", "-q", "origin", "main")
+		f.mustGraft("release")
+		if got := f.gitIn(f.remote("origin"), "tag", "-l"); got != "v0.8.0" {
+			t.Fatalf("release after the push: remote tags %q", got)
+		}
+	})
+	t.Run("patch on a build branch", func(t *testing.T) {
+		f := fileReleaseRepo(t, false, "gate: []\n")
+		f.git("checkout", "-q", "-b", "build/one")
+		if out, code := f.graft("", "release", "--patch"); code == 0 || !strings.Contains(out, "version.build_branches") {
+			t.Fatalf("--patch on a build branch: exit %d\n%s", code, out)
+		}
+	})
+}

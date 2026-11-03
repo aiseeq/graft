@@ -277,13 +277,32 @@ func (a *App) finishCommit(repo *gitx.Repo, cfg *config.Config, plan commitPlan,
 	} else {
 		a.printf("committed %s on %s%s", strings.TrimSpace(head), plan.branch, plan.bump.describe())
 	}
-	if err := a.push(repo, plan.remotes, refs, config.BranchMatches(cfg.Push.Lease, plan.branch), hasConfiguredFreeze(cfg)); err != nil {
+	if err := a.pushCommit(repo, cfg, plan, refs); err != nil {
 		postCommitErrs = append(postCommitErrs, err)
 	}
 	if err := a.recordCommitAdvisoryAfterPush(repo, cfg, frozen, advisoryFailed); err != nil {
 		postCommitErrs = append(postCommitErrs, err)
 	}
 	return errors.Join(postCommitErrs...)
+}
+
+// pushCommit pushes the commit and its tag. A release pushes the branch
+// first and its tag only once every remote took the branch: a tag must not
+// name a commit no remote branch has. When the branch push fails, the local
+// tag goes too, and the version file of the release commit stays for a
+// graft release without a step once the branch is up to date.
+func (a *App) pushCommit(repo *gitx.Repo, cfg *config.Config, plan commitPlan, refs []string) error {
+	lease, noFollow := config.BranchMatches(cfg.Push.Lease, plan.branch), hasConfiguredFreeze(cfg)
+	if !plan.release || len(refs) < 2 {
+		return a.push(repo, plan.remotes, refs, lease, noFollow)
+	}
+	if err := a.push(repo, plan.remotes, refs[:1], lease, noFollow); err != nil {
+		if _, delErr := repo.Git("tag", "-d", plan.bump.tag); delErr != nil {
+			return errors.Join(err, fmt.Errorf("removing the local tag %s: %w", plan.bump.tag, delErr))
+		}
+		return fmt.Errorf("%w\nthe release commit is made here, tag %s is not: bring %s up to date with its remote, push it, then run graft release to tag the committed version", err, plan.bump.tag, plan.branch)
+	}
+	return a.push(repo, plan.remotes, refs[1:], false, noFollow)
 }
 
 func (a *App) recordCommitAdvisoryAfterPush(repo *gitx.Repo, cfg *config.Config, frozen *activeFreeze, failed []string) error {
