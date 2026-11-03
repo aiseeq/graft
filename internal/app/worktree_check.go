@@ -178,14 +178,11 @@ func linkedWorktreeAt(path string) (*gitx.Repo, error) {
 // mainWorktreeConfig is the config that finds the trunk: a branch's own config
 // would choose whose rules judge it.
 func mainWorktreeConfig(repo *gitx.Repo) (*config.Config, error) {
-	trees, err := listWorktrees(repo)
+	main, err := mainWorktreePath(repo)
 	if err != nil {
 		return nil, err
 	}
-	if len(trees) == 0 {
-		return nil, fmt.Errorf("%s: git lists no worktrees", repo.Root)
-	}
-	cfg, err := config.Load(trees[0].path)
+	cfg, err := config.Load(main)
 	if errors.Is(err, config.ErrNotFound) {
 		return &config.Config{}, nil
 	}

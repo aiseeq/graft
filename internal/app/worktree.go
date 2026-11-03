@@ -1,8 +1,10 @@
 package app
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -46,6 +48,8 @@ type cleaner struct {
 	cfg   *config.Config
 	opts  WorktreeCleanOptions
 	trunk string
+	// mainPath is the main worktree, once a copy has been compared with it.
+	mainPath string
 	// exclude are the pathspecs of the version files: every graft commit
 	// bumps them, so they differ in work that is merged.
 	exclude []string
@@ -929,10 +933,11 @@ func (c *cleaner) ignoredData(root string) (ignoredSummary, error) {
 	limited := false
 	// The last root counted: git lists what is inside a folder right after it.
 	last := ""
-	copyPaths := append([]string(nil), c.cfg.Worktree.Copy...)
+	var linkPaths []string
 	for _, group := range c.cfg.Worktree.Link {
-		copyPaths = append(copyPaths, group.Paths...)
+		linkPaths = append(linkPaths, group.Paths...)
 	}
+	templated := slices.Concat(c.cfg.Worktree.Copy, linkPaths)
 	for listed := range strings.SplitSeq(out, "\x00") {
 		isDirectory := strings.HasSuffix(listed, "/")
 		listed = strings.TrimSuffix(listed, "/")
@@ -947,7 +952,7 @@ func (c *cleaner) ignoredData(root string) (ignoredSummary, error) {
 			if dispErr != nil {
 				return ignoredSummary{}, dispErr
 			}
-			if disposable || disposableDirectoryPath(listed) || coveredByWorktreePath(listed, copyPaths) {
+			if disposable || disposableDirectoryPath(listed) || coveredByWorktreePath(listed, templated) {
 				continue
 			}
 			last = listed
@@ -958,7 +963,7 @@ func (c *cleaner) ignoredData(root string) (ignoredSummary, error) {
 			}
 			continue
 		}
-		rootItem, err := c.walkIgnoredRoot(root, listed, isDirectory, copyPaths, &summary)
+		rootItem, err := c.walkIgnoredRoot(root, listed, isDirectory, linkPaths, &summary)
 		if errors.Is(err, errIgnoredLimit) {
 			rootItem.cut = true
 			summary.roots = append(summary.roots, rootItem)
@@ -977,7 +982,7 @@ func (c *cleaner) ignoredData(root string) (ignoredSummary, error) {
 	return summary, nil
 }
 
-func (c *cleaner) walkIgnoredRoot(root, listed string, directory bool, copyPaths []string, summary *ignoredSummary) (ignoredRoot, error) {
+func (c *cleaner) walkIgnoredRoot(root, listed string, directory bool, linkPaths []string, summary *ignoredSummary) (ignoredRoot, error) {
 	rootItem := ignoredRoot{name: listed, directory: directory}
 	rootPath := filepath.Join(root, filepath.FromSlash(listed))
 	err := filepath.WalkDir(rootPath, func(name string, entry os.DirEntry, walkErr error) error {
@@ -1002,7 +1007,7 @@ func (c *cleaner) walkIgnoredRoot(root, listed string, directory bool, copyPaths
 			}
 			return nil
 		}
-		if disposable || coveredByWorktreePath(rel, copyPaths) {
+		if disposable || coveredByWorktreePath(rel, linkPaths) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -1013,6 +1018,15 @@ func (c *cleaner) walkIgnoredRoot(root, listed string, directory bool, copyPaths
 		}
 		if !entry.Type().IsRegular() {
 			return nil
+		}
+		if coveredByWorktreePath(rel, c.cfg.Worktree.Copy) {
+			same, err := c.sameAsCopySource(name, rel)
+			if err != nil {
+				return err
+			}
+			if same {
+				return nil
+			}
 		}
 		st, err := entry.Info()
 		if err != nil {
@@ -1033,6 +1047,80 @@ func (c *cleaner) walkIgnoredRoot(root, listed string, directory bool, copyPaths
 }
 
 var errIgnoredLimit = errors.New("ignored data limit reached")
+
+// sameAsCopySource says whether a file under worktree.copy still is what the
+// main worktree holds at that path: what a copy has since gained is the tree's
+// own data, and a file the source lacks is the only copy.
+func (c *cleaner) sameAsCopySource(file, rel string) (bool, error) {
+	if c.mainPath == "" {
+		main, err := mainWorktreePath(c.repo)
+		if err != nil {
+			return false, err
+		}
+		c.mainPath = main
+	}
+	source := filepath.Join(c.mainPath, filepath.FromSlash(rel))
+	st, err := os.Stat(source)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat the source of %s: %w", displayName(rel), err)
+	}
+	if !st.Mode().IsRegular() {
+		return false, nil
+	}
+	same, err := sameContent(file, source)
+	if err != nil {
+		return false, fmt.Errorf("comparing %s with its source: %w", displayName(rel), err)
+	}
+	return same, nil
+}
+
+// sameContent compares two regular files without holding them in memory.
+func sameContent(a, b string) (same bool, err error) {
+	fa, err := os.Open(a)
+	if err != nil {
+		return false, fmt.Errorf("opening the copy: %w", err)
+	}
+	defer func() { err = errors.Join(err, fa.Close()) }()
+	fb, err := os.Open(b)
+	if err != nil {
+		return false, fmt.Errorf("opening the source: %w", err)
+	}
+	defer func() { err = errors.Join(err, fb.Close()) }()
+	bufA, bufB := make([]byte, 64*1024), make([]byte, 64*1024)
+	for {
+		na, errA := io.ReadFull(fa, bufA)
+		nb, errB := io.ReadFull(fb, bufB)
+		if !bytes.Equal(bufA[:na], bufB[:nb]) {
+			return false, nil
+		}
+		endA := errors.Is(errA, io.EOF) || errors.Is(errA, io.ErrUnexpectedEOF)
+		endB := errors.Is(errB, io.EOF) || errors.Is(errB, io.ErrUnexpectedEOF)
+		switch {
+		case errA != nil && !endA:
+			return false, errA
+		case errB != nil && !endB:
+			return false, errB
+		case endA || endB:
+			return endA && endB, nil
+		}
+	}
+}
+
+// mainWorktreePath is the main worktree of repo's repository: git lists it
+// first, a bare repository's folder included.
+func mainWorktreePath(repo *gitx.Repo) (string, error) {
+	trees, err := listWorktrees(repo)
+	if err != nil {
+		return "", err
+	}
+	if len(trees) == 0 {
+		return "", fmt.Errorf("%s: git lists no worktrees", repo.Root)
+	}
+	return trees[0].path, nil
+}
 
 func disposableDirectoryPath(name string) bool {
 	for component := range strings.SplitSeq(name, "/") {

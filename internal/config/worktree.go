@@ -62,6 +62,7 @@ func (c *Config) validateWorktree() error {
 }
 
 func validateDisposablePattern(pattern string) error {
+	pattern = strings.TrimPrefix(pattern, "/")
 	if pattern == "" || strings.Contains(pattern, `\`) || path.IsAbs(pattern) || path.Clean(pattern) != strings.TrimSuffix(pattern, "/") {
 		return fmt.Errorf("invalid path")
 	}
@@ -89,6 +90,7 @@ func (w Worktree) DisposablePath(name string) (bool, error) {
 	for _, pattern := range w.Disposable {
 		pattern = strings.TrimSuffix(pattern, "/")
 		if strings.Contains(pattern, "/") {
+			pattern = strings.TrimPrefix(pattern, "/")
 			// The pattern may name a directory above name, which git lists on
 			// its own when only some of that directory is ignored.
 			for prefix := name; prefix != "."; prefix = path.Dir(prefix) {

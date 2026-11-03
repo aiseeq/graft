@@ -2287,7 +2287,11 @@ trunk's `.graft.yaml`, so the template applies to cleaning when it is in the
 trunk. If that file is absent from the trunk, only the built-in list applies.
 For `worktree.disposable`, a pattern without `/` matches that
 component at any depth; a pattern with `/` is rooted at the worktree root and
-also matches paths below the named folder.
+also matches paths below the named folder, so a leading `/` roots a name:
+`/config.yaml` is that file at the root only. A file under `worktree.copy` goes
+with the tree only while it matches the main worktree's: one changed since, or
+one the main worktree lacks, is the tree's own data, and a tree whose setup
+rewrites a copy names it in `disposable` too. `disposable` comes first.
 
 For each `link` group, `add` links its untracked directories to the main
 worktree when all key files match and all directories exist there. Otherwise,

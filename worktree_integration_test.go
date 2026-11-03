@@ -507,6 +507,7 @@ func TestWorktreeCleanCopyAndLinkPaths(t *testing.T) {
 		".graft.yaml": config, ".gitignore": ".env\ndeps/\nfrontend/deps/\n", "VERSION": "1.0.0\n", "deps.lock": "v1\n",
 	})
 	path := add("paths")
+	writeFile(t, filepath.Join(f.work, ".env"), "local\n")
 	writeFile(t, filepath.Join(path, ".env"), "local\n")
 	writeFile(t, filepath.Join(path, "deps", "module"), "cache\n")
 	writeFile(t, filepath.Join(path, "frontend", "deps", "module"), "cache\n")
