@@ -111,3 +111,45 @@ func TestWorktreeDisposableRootedName(t *testing.T) {
 		t.Fatalf("a file of that name in a folder went with the rooted pattern; exit %d:\n%s", code, out)
 	}
 }
+
+// The comparison reads past its first block; a source that is a folder or leads
+// back to the file itself is no copy.
+func TestWorktreeCopySourceEdgeCases(t *testing.T) {
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\nworktree:\n  copy: [big.bin, data, own.env]\n",
+		".gitignore":  "big.bin\ndata\nown.env\n", "VERSION": "1.0.0\n",
+	})
+	holds := func(what, path string) {
+		t.Helper()
+		if answer, code, out := worktreeCheckJSON(t, f, f.work, path); code != app.ExitWorktreeHolds || answer.Clear {
+			t.Errorf("%s: check let it go; exit %d:\n%s", what, code, out)
+		}
+	}
+	big := strings.Repeat("x", 3*64*1024+5)
+	writeFile(t, filepath.Join(f.work, "big.bin"), big)
+	same := add("big-same")
+	writeFile(t, filepath.Join(same, "big.bin"), big)
+	if answer, code, out := worktreeCheckJSON(t, f, f.work, same); code != 0 || !answer.Clear {
+		t.Errorf("an equal big copy holds nothing; exit %d:\n%s", code, out)
+	}
+	atEnd := add("big-end")
+	writeFile(t, filepath.Join(atEnd, "big.bin"), big[:len(big)-1]+"y")
+	holds("a big copy differing at its end", atEnd)
+	shorter := add("big-short")
+	writeFile(t, filepath.Join(shorter, "big.bin"), big[:64*1024])
+	holds("a copy cut at a block's end", shorter)
+
+	if err := os.Mkdir(filepath.Join(f.work, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	folderSource := add("folder-source")
+	writeFile(t, filepath.Join(folderSource, "data"), "x")
+	holds("a source that is a folder", folderSource)
+
+	loop := add("loop")
+	writeFile(t, filepath.Join(loop, "own.env"), "x")
+	if err := os.Symlink(filepath.Join(loop, "own.env"), filepath.Join(f.work, "own.env")); err != nil {
+		t.Fatal(err)
+	}
+	holds("a source leading back to the file", loop)
+}

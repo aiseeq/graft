@@ -50,6 +50,8 @@ type cleaner struct {
 	trunk string
 	// mainPath is the main worktree, once a copy has been compared with it.
 	mainPath string
+	// trees is what git worktree list said, the main worktree first.
+	trees []worktree
 	// exclude are the pathspecs of the version files: every graft commit
 	// bumps them, so they differ in work that is merged.
 	exclude []string
@@ -71,6 +73,9 @@ type worktreeCleanResult struct {
 // WorktreeClean removes the worktrees and branches whose work is in the trunk
 // by content, and lists the others: in work, unmerged, or to check.
 func (a *App) WorktreeClean(o WorktreeCleanOptions) error {
+	if err := unbindGitFromCaller(); err != nil {
+		return err
+	}
 	if len(o.In) != 0 {
 		return a.worktreeCleanIn(o)
 	}
@@ -111,7 +116,11 @@ func (a *App) worktreeCleanLocked(repo *gitx.Repo, cfg *config.Config, o Worktre
 			return result, fmt.Errorf("git fetch %s failed, what the trunk has is unknown: %w", r, err)
 		}
 	}
-	if c.trunk, err = trunkRef(repo, cfg, o.Trunk, c.remotes); err != nil {
+	mainCfg, err := mainWorktreeConfig(repo)
+	if err != nil {
+		return result, err
+	}
+	if c.trunk, err = trunkRef(repo, mainCfg, o.Trunk, c.remotes); err != nil {
 		return result, err
 	}
 	if c.cfg, err = c.readTrunkConfig(); err != nil {
@@ -130,6 +139,7 @@ func (a *App) worktreeCleanLocked(repo *gitx.Repo, cfg *config.Config, o Worktre
 	if err != nil {
 		return result, err
 	}
+	c.trees = trees
 	held, err := c.cleanWorktrees(trees)
 	if err != nil {
 		return result, err
@@ -172,8 +182,8 @@ func (c *cleaner) cleanWorktrees(trees []worktree) ([]string, error) {
 		}
 		if err := c.worktree(w); err != nil {
 			reason := strings.Join(strings.Fields(err.Error()), " ")
-			if strings.HasPrefix(reason, "git add -A:") {
-				reason = "worktree snapshot failed: " + strings.TrimPrefix(reason, "git add -A: ")
+			if strings.HasPrefix(reason, "git add -A --sparse:") {
+				reason = "worktree snapshot failed: " + strings.TrimPrefix(reason, "git add -A --sparse: ")
 			} else if !strings.HasPrefix(reason, "not ") {
 				reason = "not removed: " + reason
 			}
@@ -442,7 +452,10 @@ func listWorktrees(repo *gitx.Repo) ([]worktree, error) {
 			trees = append(trees, worktree{path: filepath.FromSlash(value)})
 			w = &trees[len(trees)-1]
 		case "HEAD":
-			w.head = value
+			// An unborn branch is all zeros here.
+			if strings.Trim(value, "0") != "" {
+				w.head = value
+			}
 		case "branch":
 			w.branch = strings.TrimPrefix(value, "refs/heads/")
 		case "locked":
@@ -537,19 +550,63 @@ func (c *cleaner) line(kind, what, why string) {
 	c.app.printf("%-9s %s: %s", kind, escapeUnprintable(what), escapeUnprintable(why))
 }
 
+// prunableWorktree prunes what is gone; git worktree prune has no way to spare a
+// tree it would drop whose folder is there, so one such tree stops it.
+func (c *cleaner) prunableWorktree(w worktree, what string) error {
+	if present := presentPrunable(c.trees); len(present) > 0 {
+		if slices.Contains(present, w.path) {
+			c.line("check", what, "git would prune it, but its folder is there: it may not read the folder, or the folder's .git is gone")
+		} else {
+			c.line("check", what, "its directory is gone, but git worktree prune would also drop "+strings.Join(present, ", "))
+		}
+		return nil
+	}
+	if c.opts.Apply {
+		if _, err := c.repo.Git("worktree", "prune"); err != nil {
+			return err
+		}
+		c.line("pruned", what, "its directory is gone")
+		return nil
+	}
+	c.line("would prune", what, "its directory is gone")
+	return nil
+}
+
+// keptByWhatStatusHides keeps a tree for what would go with it unseen by git
+// status, and says what.
+func (c *cleaner) keptByWhatStatusHides(w worktree, what string, tree *gitx.Repo) (bool, error) {
+	hidden, err := hiddenChanges(w.path)
+	if err != nil {
+		return false, err
+	}
+	if len(hidden) > 0 {
+		c.line("check", what, "git status does not look at "+strings.Join(hidden, ", ")+": git update-index --no-assume-unchanged --no-skip-worktree to see a change")
+		return true, nil
+	}
+	nested, err := nestedWorktrees(c.trees, w.path)
+	if err != nil {
+		return false, err
+	}
+	if len(nested) > 0 {
+		c.line("check", what, "holds the worktree "+strings.Join(nested, ", "))
+		return true, nil
+	}
+	refCommits, err := worktreeRefCommits(tree)
+	if err != nil {
+		return false, err
+	}
+	if refCommits > 0 {
+		c.line("check", what, plural(refCommits, "commit")+" only its refs/worktree reach")
+		return true, nil
+	}
+	return false, nil
+}
+
 func (c *cleaner) worktree(w worktree) error {
 	what := worktreeWhat(w)
 	switch {
 	case w.prunable:
-		if c.opts.Apply {
-			if _, err := c.repo.Git("worktree", "prune"); err != nil {
-				return err
-			}
-			c.line("pruned", what, "its directory is gone")
-			return nil
-		}
-		c.line("would prune", what, "its directory is gone")
-		return nil
+		return c.prunableWorktree(w, what)
 	case w.locked:
 		why := "locked"
 		if w.lockReason != "" {
@@ -580,20 +637,15 @@ func (c *cleaner) worktree(w worktree) error {
 	if err != nil {
 		return err
 	}
-	hidden, err := hiddenChanges(w.path)
-	if err != nil {
+	if kept, err := c.keptByWhatStatusHides(w, what, tree); kept || err != nil {
 		return err
-	}
-	if len(hidden) > 0 {
-		c.line("check", what, "git status does not look at "+strings.Join(hidden, ", ")+": git update-index --no-assume-unchanged --no-skip-worktree to see a change")
-		return nil
 	}
 	changed, err := tree.ChangedFiles()
 	if err != nil {
 		return err
 	}
 	switch {
-	case len(changed) > 0 && w.head == "":
+	case w.head == "":
 		c.line("in work", what, plural(len(changed), "uncommitted change")+", no commit yet")
 		return nil
 	case len(changed) > 0:
@@ -656,8 +708,11 @@ func gitOperation(repo *gitx.Repo, dir string) (string, error) {
 		return "", err
 	}
 	for _, item := range []struct{ marker, name string }{
-		{"rebase-merge", "rebase"}, {"rebase-apply", "rebase"},
+		{"rebase-merge", "rebase"}, {filepath.Join("rebase-apply", "applying"), "am"}, {"rebase-apply", "rebase"},
 		{"MERGE_HEAD", "merge"}, {"CHERRY_PICK_HEAD", "cherry-pick"}, {"REVERT_HEAD", "revert"},
+		// A series of them keeps its remaining steps here between its commits.
+		{"sequencer", "cherry-pick or revert series"},
+		{"BISECT_LOG", "bisect"},
 	} {
 		if _, err := os.Stat(filepath.Join(gitDir, item.marker)); err == nil {
 			return item.name, nil
@@ -816,6 +871,85 @@ func (c *cleaner) checkIgnoredData(w worktree, why string) ignoredDecision {
 	return ignoredDecision{}
 }
 
+// unbindGitFromCaller frees the git this command runs from where it was called:
+// a hook's GIT_DIR would answer for another tree.
+func unbindGitFromCaller() error {
+	drop, err := gitx.LocalEnvVars()
+	if err != nil {
+		return fmt.Errorf("listing git environment variables: %w", err)
+	}
+	for _, name := range drop {
+		if err := os.Unsetenv(name); err != nil {
+			return fmt.Errorf("unsetting %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// presentPrunable names the worktrees git would prune whose folder is there:
+// git worktree prune has no way to spare one.
+func presentPrunable(trees []worktree) []string {
+	var present []string
+	for _, w := range trees {
+		if !w.prunable {
+			continue
+		}
+		if _, err := os.Lstat(w.path); !errors.Is(err, os.ErrNotExist) {
+			present = append(present, w.path)
+		}
+	}
+	return present
+}
+
+// nestedWorktrees names the worktrees inside root: removing root takes them too.
+func nestedWorktrees(trees []worktree, root string) ([]string, error) {
+	var nested []string
+	for _, w := range trees {
+		rel, err := filepath.Rel(root, w.path)
+		if err != nil {
+			return nil, fmt.Errorf("comparing %s with %s: %w", w.path, root, err)
+		}
+		if rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			nested = append(nested, displayName(w.path))
+		}
+	}
+	return nested, nil
+}
+
+// perWorktreeTips are the commits of refs only this tree has.
+func perWorktreeTips(tree *gitx.Repo) ([]string, error) {
+	out, err := tree.Git("for-each-ref", "--format=%(objectname)", "refs/worktree/", "refs/bisect/", "refs/rewritten/")
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(out), nil
+}
+
+// commitsOnlyFrom counts the commits of tips no branch, tag or remote reaches.
+func commitsOnlyFrom(tree *gitx.Repo, tips []string) (int, error) {
+	if len(tips) == 0 {
+		return 0, nil
+	}
+	args := append([]string{"rev-list", "--count"}, tips...)
+	out, err := tree.Git(append(args, "--not", "--branches", "--tags", "--remotes")...)
+	if err != nil {
+		return 0, err
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("git rev-list --count said %q: %w", out, err)
+	}
+	return count, nil
+}
+
+func worktreeRefCommits(tree *gitx.Repo) (int, error) {
+	tips, err := perWorktreeTips(tree)
+	if err != nil {
+		return 0, err
+	}
+	return commitsOnlyFrom(tree, tips)
+}
+
 // hiddenChanges names the tracked files git status does not look at, marked
 // assume-unchanged or skip-worktree, that are on disk: what a sparse checkout
 // leaves out is marked too, and is not.
@@ -876,6 +1010,7 @@ func (c *cleaner) heldSubmodules(root string) ([]string, error) {
 		}
 	}
 	slices.Sort(found)
+	found = slices.Compact(found)
 	if len(found) > 0 {
 		return found, nil
 	}
@@ -948,7 +1083,7 @@ func (c *cleaner) ignoredData(root string) (ignoredSummary, error) {
 			continue
 		}
 		if limited {
-			disposable, dispErr := c.cfg.Worktree.DisposablePath(listed)
+			disposable, dispErr := c.cfg.Worktree.DisposablePath(listed, isDirectory)
 			if dispErr != nil {
 				return ignoredSummary{}, dispErr
 			}
@@ -997,7 +1132,7 @@ func (c *cleaner) walkIgnoredRoot(root, listed string, directory bool, linkPaths
 		if entry.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
-		disposable, err := c.cfg.Worktree.DisposablePath(rel)
+		disposable, err := c.cfg.Worktree.DisposablePath(rel, entry.IsDir())
 		if err != nil {
 			return err
 		}
@@ -1068,6 +1203,14 @@ func (c *cleaner) sameAsCopySource(file, rel string) (bool, error) {
 		return false, fmt.Errorf("stat the source of %s: %w", displayName(rel), err)
 	}
 	if !st.Mode().IsRegular() {
+		return false, nil
+	}
+	// A source that leads back to the file is no other copy.
+	own, err := os.Stat(file)
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", displayName(rel), err)
+	}
+	if os.SameFile(st, own) {
 		return false, nil
 	}
 	same, err := sameContent(file, source)

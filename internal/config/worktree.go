@@ -86,32 +86,39 @@ func validateDisposablePattern(pattern string) error {
 }
 
 // DisposablePath reports whether path is covered by one of the configured patterns.
-func (w Worktree) DisposablePath(name string) (bool, error) {
+// directory says what name itself is: a pattern ending in / names a folder, not
+// a file of that name; what stands above name is a folder either way.
+func (w Worktree) DisposablePath(name string, directory bool) (bool, error) {
 	for _, pattern := range w.Disposable {
-		pattern = strings.TrimSuffix(pattern, "/")
-		if strings.Contains(pattern, "/") {
-			pattern = strings.TrimPrefix(pattern, "/")
-			// The pattern may name a directory above name, which git lists on
-			// its own when only some of that directory is ignored.
-			for prefix := name; prefix != "."; prefix = path.Dir(prefix) {
-				ok, err := path.Match(pattern, prefix)
-				if err != nil {
-					return false, fmt.Errorf("pattern %q: %w", pattern, err)
-				}
-				if ok {
-					return true, nil
-				}
-			}
+		ok, err := disposableMatch(pattern, name, directory)
+		if err != nil {
+			return false, fmt.Errorf("pattern %q: %w", pattern, err)
+		}
+		if ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func disposableMatch(pattern, name string, directory bool) (bool, error) {
+	folderOnly := strings.HasSuffix(pattern, "/")
+	pattern = strings.TrimSuffix(pattern, "/")
+	rooted := strings.Contains(pattern, "/")
+	pattern = strings.TrimPrefix(pattern, "/")
+	// The pattern may name a directory above name, which git lists on its own
+	// when only some of that directory is ignored.
+	for at := name; at != "."; at = path.Dir(at) {
+		if at == name && folderOnly && !directory {
 			continue
 		}
-		for component := range strings.SplitSeq(name, "/") {
-			ok, err := path.Match(pattern, component)
-			if err != nil {
-				return false, fmt.Errorf("pattern %q: %w", pattern, err)
-			}
-			if ok {
-				return true, nil
-			}
+		candidate := at
+		if !rooted {
+			candidate = path.Base(at)
+		}
+		ok, err := path.Match(pattern, candidate)
+		if err != nil || ok {
+			return ok, err
 		}
 	}
 	return false, nil

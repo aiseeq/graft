@@ -399,6 +399,7 @@ deploy:
 		"disposable parent":     base + "worktree: {disposable: ['../x']}\n",
 		"disposable only root":  base + "worktree: {disposable: ['/']}\n",
 		"disposable two roots":  base + "worktree: {disposable: ['//x']}\n",
+		"disposable git":        base + "worktree: {disposable: [.git/x]}\n",
 		"disposable empty":      base + "worktree: {disposable: ['']}\n",
 		"disposable bad glob":   base + "worktree: {disposable: ['bad[']}\n",
 		"reserved target name":  strings.Replace(base, "    prod:", "    status:", 1),
@@ -418,15 +419,24 @@ deploy:
 }
 
 func TestWorktreeDisposablePath(t *testing.T) {
-	w := Worktree{Disposable: []string{"*.stamp", "logs", "frontend/dist/"}}
-	for _, name := range []string{"build.stamp", "frontend/build.stamp", "logs/a.txt", "frontend/dist", "frontend/dist/app.js"} {
-		got, err := w.DisposablePath(name)
+	w := Worktree{Disposable: []string{"*.stamp", "logs", "frontend/dist/", "/config.yaml", "/root-only/", "any/"}}
+	for _, name := range []string{"build.stamp", "frontend/build.stamp", "logs/a.txt", "frontend/dist/app.js", "config.yaml", "root-only/a", "any/a", "sub/any/a"} {
+		got, err := w.DisposablePath(name, false)
 		if err != nil || !got {
 			t.Errorf("DisposablePath(%q) = false", name)
 		}
 	}
-	for _, name := range []string{"frontend/src/app.js", "dist/app.js", "frontendX/dist/app.js"} {
-		got, err := w.DisposablePath(name)
+	for _, name := range []string{"frontend/dist", "root-only", "any", "sub/any"} {
+		got, err := w.DisposablePath(name, true)
+		if err != nil || !got {
+			t.Errorf("DisposablePath(%q, directory) = false", name)
+		}
+		if got, err := w.DisposablePath(name, false); err != nil || got {
+			t.Errorf("DisposablePath(%q, file) = true: the pattern names a folder", name)
+		}
+	}
+	for _, name := range []string{"frontend/src/app.js", "dist/app.js", "frontendX/dist/app.js", "deeper/config.yaml", "sub/root-only/a"} {
+		got, err := w.DisposablePath(name, false)
 		if err != nil || got {
 			t.Errorf("DisposablePath(%q) = true", name)
 		}

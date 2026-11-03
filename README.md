@@ -2286,9 +2286,11 @@ worktree:
 trunk's `.graft.yaml`, so the template applies to cleaning when it is in the
 trunk. If that file is absent from the trunk, only the built-in list applies.
 For `worktree.disposable`, a pattern without `/` matches that
-component at any depth; a pattern with `/` is rooted at the worktree root and
-also matches paths below the named folder, so a leading `/` roots a name:
-`/config.yaml` is that file at the root only. A file under `worktree.copy` goes
+component at any depth; a pattern with `/` before its end is rooted at the
+worktree root and also matches paths below the named folder, so a leading `/`
+roots a name: `/config.yaml` is that file at the root only. A pattern ending in
+`/` names a folder and not a file of that name: `out/` is any folder `out`,
+`/out/` that folder at the root. A file under `worktree.copy` goes
 with the tree only while it matches the main worktree's: one changed since, or
 one the main worktree lacks, is the tree's own data, and a tree whose setup
 rewrites a copy names it in `disposable` too. `disposable` comes first.
@@ -2386,24 +2388,26 @@ the trunk:
 
 `graft worktree check <path>` answers for one linked worktree, for a tool about
 to remove it: exit 0 when nothing would be lost, 3 when something would go with
-it that `git status --porcelain` does not show, anything else when it could not
-tell: a folder that is not the top of a linked worktree, a `.git` leading to
-another tree, a folder it could not read, a config blob a partial clone lacks.
-What it counts as lost: ignored and submodule data by the rules of `clean`, a
-rebase, merge, cherry-pick or revert under way, commits only a detached HEAD
-reaches, and files marked assume-unchanged or skip-worktree that are on disk. It
-reads the rules from the trunk as last fetched, found by the main worktree's
-config: fetch first for the latest. It answers for `<path>` whatever `GIT_DIR` it
-is called with, does not reach a remote and removes nothing. It takes no age:
-`newest` is there for the caller to weigh. A lock or a process working in the
-tree is not data, and tracked and untracked changes are `git status`'s to show.
-`--json` prints one object: `path`, `clear`, `operation`, `detached_commits`,
-`hidden_changes`, `submodules`, `roots` (`name`, `directory`, `files`, `bytes`,
-`partial`), `more_roots`, `files`, `bytes`, `limited`, `newest`. Decide by the
-exit status or `clear`: names are for a person, with a name that is not UTF-8
-blurred, and `submodules` holds descriptions as well as names. The walk stops at
-1000 files: then `limited` is true, the totals are lower bounds and `newest` is
-left out, for the age of the rest is unknown.
+it, anything else when it could not tell: a folder that is not the top of a
+linked worktree, a `.git` leading to another tree, a folder it could not read, a
+HEAD at no commit, a config blob a partial clone lacks. What it counts as lost:
+what `git status` shows, however it is set; ignored and submodule data by the
+rules of `clean`; a rebase, `am`, merge, cherry-pick, revert or bisect under way;
+commits only its HEAD or its own refs reach, a deleted branch's by the reflog;
+files marked assume-unchanged or skip-worktree that are on disk; and a worktree
+inside it. It reads the rules from the trunk as last fetched, found by the main
+worktree's config: fetch first for the latest. It answers for `<path>` whatever
+`GIT_DIR` it is called with, does not reach a remote and removes nothing. It
+takes no age: `newest` is there for the caller to weigh. A lock or a process
+working in the tree is not data. `--json` prints one object: `path`, `clear`,
+`operation`, `detached_commits`, `changes`, `hidden_changes`, `nested_worktrees`,
+`submodules`, `roots` (`name`, `directory`, `files`, `bytes`, `partial`),
+`more_roots`, `files`, `bytes`, `limited`, `newest`. Decide by the exit status or
+`clear`: names are for a person, with a name that is not UTF-8 blurred, and
+`submodules` holds descriptions as well as names. The walk stops at 1000 files:
+then `limited` is true and the totals are lower bounds. `newest` is left out when
+no ignored data was found and when the walk stopped, for the age of the rest is
+unknown.
 
 For all repositories directly under a directory, a systemd user service and
 timer can run clean daily (systemd does not look in `~/bin`, hence the absolute

@@ -1296,7 +1296,9 @@ type worktreeCheckAnswer struct {
 	Clear           bool     `json:"clear"`
 	Operation       string   `json:"operation"`
 	DetachedCommits int      `json:"detached_commits"`
+	Changes         []string `json:"changes"`
 	HiddenChanges   []string `json:"hidden_changes"`
+	NestedWorktrees []string `json:"nested_worktrees"`
 	Submodules      []string `json:"submodules"`
 	MoreRoots       int      `json:"more_roots"`
 	Roots           []struct {
@@ -1386,12 +1388,14 @@ func TestWorktreeCheckRulesFromTrunk(t *testing.T) {
 	path := add("rules")
 	writeFile(t, filepath.Join(path, "out", "trace.bin"), "x")
 	writeFile(t, filepath.Join(path, ".graft.yaml"), "schema: 1\nversion: {mode: file}\nworktree:\n  disposable: [out/]\n")
+	treeCommit(f, path, "chore: release out")
 	if answer, code, out := worktreeCheckJSON(t, f, f.work, path); code != app.ExitWorktreeHolds || answer.Clear {
 		t.Fatalf("the tree's own config released its data; exit %d:\n%s", code, out)
 	}
 	if err := os.Remove(filepath.Join(path, ".graft.yaml")); err != nil {
 		t.Fatal(err)
 	}
+	treeCommit(f, path, "chore: no config")
 	if answer, code, out := worktreeCheckJSON(t, f, f.work, path); code != app.ExitWorktreeHolds || answer.Clear {
 		t.Fatalf("a tree without a config got no answer; exit %d:\n%s", code, out)
 	}

@@ -35,7 +35,9 @@ func (r *Repo) WorkTreeTree() (string, error) {
 		}
 	}
 	env := []string{"GIT_INDEX_FILE=" + index}
-	if _, err := r.GitEnv(env, "add", "-A"); err != nil {
+	// --sparse: a file outside the sparse definition that is on disk is
+	// status's M; without the flag add -A leaves it out, so it looks merged.
+	if _, err := r.GitEnv(env, "add", "-A", "--sparse"); err != nil {
 		return "", err
 	}
 	tree, err := r.GitEnv(env, "write-tree")
