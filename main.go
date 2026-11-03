@@ -570,6 +570,20 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 			o.Base = pos[1]
 		}
 		return a.WorktreeAdd(ctx, o)
+	case len(args) > 0 && args[0] == "check":
+		fs := newFlags(a, "worktree check")
+		o := app.WorktreeCheckOptions{}
+		fs.StringVar(&o.Trunk, "trunk", "", "the ref whose rules apply (default: the HEAD branch of the deploy remote or of the only remote)")
+		fs.BoolVar(&o.JSON, "json", false, "print the answer as one JSON object")
+		pos, err := parseInterspersed(fs, args[1:])
+		if err != nil {
+			return err
+		}
+		if len(pos) != 1 {
+			return usage
+		}
+		o.Path = pos[0]
+		return a.WorktreeCheck(o)
 	case len(args) == 0 || args[0] != "clean":
 		return usage
 	}

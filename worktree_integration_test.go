@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aiseeq/graft/v2/internal/app"
+	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/lock"
 )
 
@@ -1283,5 +1286,164 @@ func TestWorktreeCleanKeepsTheBranchOfARebase(t *testing.T) {
 	}
 	if remote := f.git("ls-remote", "origin", "refs/heads/b/reb"); strings.TrimSpace(remote) == "" {
 		t.Errorf("the rebase's branch is gone from the remote:\n%s", out)
+	}
+}
+
+// worktreeCheckAnswer is the JSON of graft worktree check.
+type worktreeCheckAnswer struct {
+	Path       string   `json:"path"`
+	Clear      bool     `json:"clear"`
+	Submodules []string `json:"submodules"`
+	Roots      []struct {
+		Name      string `json:"name"`
+		Directory bool   `json:"directory"`
+		Files     int    `json:"files"`
+		Bytes     int64  `json:"bytes"`
+		Partial   bool   `json:"partial"`
+	} `json:"roots"`
+	Files   int    `json:"files"`
+	Bytes   int64  `json:"bytes"`
+	Limited bool   `json:"limited"`
+	Newest  string `json:"newest"`
+}
+
+func worktreeCheckJSON(t *testing.T, f *fixture, dir, path string) (worktreeCheckAnswer, int, string) {
+	t.Helper()
+	out, code := f.exec(dir, "", graftBin, "worktree", "check", "--json", path)
+	var answer worktreeCheckAnswer
+	if err := json.NewDecoder(strings.NewReader(out)).Decode(&answer); err != nil {
+		t.Fatalf("no JSON answer: %v; exit %d:\n%s", err, code, out)
+	}
+	return answer, code, out
+}
+
+func TestWorktreeCheck(t *testing.T) {
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\nworktree:\n  disposable: [bin/]\n",
+		".gitignore":  "out/\nbin/\nnode_modules/\n", "VERSION": "1.0.0\n",
+	})
+	path := add("check")
+	elsewhere := t.TempDir()
+
+	answer, code, out := worktreeCheckJSON(t, f, elsewhere, path)
+	if code != 0 || !answer.Clear || answer.Files != 0 || answer.Newest != "" {
+		t.Fatalf("an empty tree is not clear; exit %d:\n%s", code, out)
+	}
+
+	writeFile(t, filepath.Join(path, "bin", "tool"), "x")
+	writeFile(t, filepath.Join(path, "node_modules", "dep", "index.js"), "x")
+	if answer, code, out = worktreeCheckJSON(t, f, elsewhere, path); code != 0 || !answer.Clear {
+		t.Fatalf("regenerable files are not clear; exit %d:\n%s", code, out)
+	}
+
+	writeFile(t, filepath.Join(path, "out", "trace.bin"), "0123456789")
+	answer, code, out = worktreeCheckJSON(t, f, elsewhere, path)
+	if code != app.ExitWorktreeHolds || answer.Clear || len(answer.Roots) != 1 || answer.Roots[0].Name != "out" ||
+		!answer.Roots[0].Directory || answer.Roots[0].Files != 1 || answer.Roots[0].Bytes != 10 ||
+		answer.Files != 1 || answer.Bytes != 10 || answer.Limited || answer.Newest == "" {
+		t.Fatalf("data is not named; exit %d:\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(path, "out", "trace.bin")); err != nil {
+		t.Fatalf("the check touched the data: %v", err)
+	}
+	text, code := f.exec(elsewhere, "", graftBin, "worktree", "check", path)
+	if code != app.ExitWorktreeHolds || !strings.Contains(text, "holds") || !strings.Contains(text, "out/ (1 file, 10 B)") {
+		t.Fatalf("the plain answer does not name the data; exit %d:\n%s", code, text)
+	}
+}
+
+func TestWorktreeCheckRefuses(t *testing.T) {
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "out/\n", "VERSION": "1.0.0\n",
+		"sub/keep": "x\n",
+	})
+	path := add("refuse")
+	for name, target := range map[string]string{
+		"the main worktree": f.work,
+		"a folder inside":   filepath.Join(path, "sub"),
+		"no repository":     t.TempDir(),
+		"no such folder":    filepath.Join(path, "gone"),
+	} {
+		out, code := f.exec(t.TempDir(), "", graftBin, "worktree", "check", "--json", target)
+		if code == 0 || code == app.ExitWorktreeHolds {
+			t.Errorf("%s: exit %d, a caller could read that as an answer:\n%s", name, code, out)
+		}
+	}
+	if out, code := f.graft("", "worktree", "check"); code == 0 || code == app.ExitWorktreeHolds {
+		t.Errorf("no path: exit %d:\n%s", code, out)
+	}
+}
+
+func TestWorktreeCheckRulesFromTrunk(t *testing.T) {
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "out/\n", "VERSION": "1.0.0\n",
+	})
+	path := add("rules")
+	writeFile(t, filepath.Join(path, "out", "trace.bin"), "x")
+	writeFile(t, filepath.Join(path, ".graft.yaml"), "schema: 1\nversion: {mode: file}\nworktree:\n  disposable: [out/]\n")
+	if answer, code, out := worktreeCheckJSON(t, f, f.work, path); code != app.ExitWorktreeHolds || answer.Clear {
+		t.Fatalf("the tree's own config released its data; exit %d:\n%s", code, out)
+	}
+	if err := os.Remove(filepath.Join(path, ".graft.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if answer, code, out := worktreeCheckJSON(t, f, f.work, path); code != app.ExitWorktreeHolds || answer.Clear {
+		t.Fatalf("a tree without a config got no answer; exit %d:\n%s", code, out)
+	}
+}
+
+func TestWorktreeCheckOffline(t *testing.T) {
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "out/\n", "VERSION": "1.0.0\n",
+	})
+	path := add("offline")
+	f.git("remote", "set-url", "origin", filepath.Join(f.base, "no-such-remote"))
+	if answer, code, out := worktreeCheckJSON(t, f, f.work, path); code != 0 || !answer.Clear {
+		t.Fatalf("the check needed the remote; exit %d:\n%s", code, out)
+	}
+}
+
+func TestWorktreeCheckSubmoduleAndLimit(t *testing.T) {
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "out/\n", "VERSION": "1.0.0\n",
+	})
+	sub := add("submodule")
+	head := strings.TrimSpace(f.git("rev-parse", "HEAD"))
+	if out, err := gitx.InOther(sub, nil, "update-index", "--add", "--cacheinfo", "160000,"+head+",mod"); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	writeFile(t, filepath.Join(sub, "mod", "file"), "x")
+	answer, code, out := worktreeCheckJSON(t, f, f.work, sub)
+	if code != app.ExitWorktreeHolds || answer.Clear || len(answer.Submodules) != 1 || answer.Submodules[0] != "mod" {
+		t.Fatalf("the submodule is not named; exit %d:\n%s", code, out)
+	}
+
+	many := add("limit")
+	for i := range 1001 {
+		writeFile(t, filepath.Join(many, "out", strconv.Itoa(i)), "x")
+	}
+	answer, code, out = worktreeCheckJSON(t, f, f.work, many)
+	if code != app.ExitWorktreeHolds || !answer.Limited || answer.Files != 1000 || len(answer.Roots) != 1 || !answer.Roots[0].Partial {
+		t.Fatalf("the limit is not said; exit %d:\n%s", code, out)
+	}
+}
+
+func TestWorktreeCheckUnreadable(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a folder this user cannot read")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "out/\n", "VERSION": "1.0.0\n",
+	})
+	path := add("unreadable")
+	locked := filepath.Join(path, "out", "locked")
+	writeFile(t, filepath.Join(locked, "file"), "x")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	out, code := f.exec(f.work, "", graftBin, "worktree", "check", "--json", path)
+	if code == 0 || code == app.ExitWorktreeHolds || !strings.Contains(out, "not read") {
+		t.Fatalf("an unread folder must be neither clear nor an answer; exit %d:\n%s", code, out)
 	}
 }

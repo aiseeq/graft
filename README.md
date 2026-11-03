@@ -428,6 +428,7 @@ stats` (`wait_s`).
 | `graft locks` | who holds graft's locks |
 | `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |
 | `graft worktree add [--trunk <ref>] <branch> [<base>]` | a worktree under the user's cache, go.work's neighbours linked (see Worktrees) |
+| `graft worktree check [--trunk <ref>] [--json] <path>` | whether removing one linked worktree would lose ignored or submodule data, by the rules of `clean`; removes nothing (see Worktrees) |
 | `graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h] [--in <directory>]...` | remove the worktrees and branches whose work is in the trunk by content; list the rest |
 | `graft worktree sync [--trunk <ref>]` | move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted (see Worktrees) |
 | `graft tools [install]` | check the pinned tools; install the failing ones |
@@ -2378,6 +2379,18 @@ the trunk:
   being cleaned is listed as `skipped` and does not fail the command.
 - with `--apply`, the golangci-lint caches (see Tasks) of work trees that
   are gone, in any repository, are removed too.
+
+`graft worktree check <path>` answers for one linked worktree, for a tool about
+to remove it: exit 0 when nothing would be lost, 3 when ignored or submodule
+data would go with it, anything else when it could not tell, a folder that is
+not the top of a linked worktree or one it could not read included. It decides
+by the same rules as `clean`, from the trunk as last fetched: it does not reach
+a remote and removes nothing. It takes no age: `newest` is there for the caller
+to weigh. Tracked and untracked changes are not its question: `git status`
+shows them. `--json` prints one object: `path`, `clear`, `submodules`, `roots`
+(`name`, `directory`, `files`, `bytes`, `partial`), `more_roots`, `files`,
+`bytes`, `limited`, `newest`. The walk stops at 1000 files: then `limited` is
+true and the totals are lower bounds.
 
 For all repositories directly under a directory, a systemd user service and
 timer can run clean daily (systemd does not look in `~/bin`, hence the absolute
