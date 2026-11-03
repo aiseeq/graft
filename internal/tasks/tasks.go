@@ -1679,11 +1679,23 @@ func reportFile(t *config.Task) bool {
 }
 
 // reportFileStep runs a step whose test runner writes its JSON report to
-// path, the file in GRAFT_TEST_REPORT, then records the tests in it.
+// path, the file in GRAFT_TEST_REPORT, then records the tests in it; the
+// failed tests in it are the step's reason, the runner's closing lines say
+// less.
 func (r *Runner) reportFileStep(cmd *exec.Cmd, source, runner, path string, remoteStderr *bytes.Buffer) error {
 	tree := r.treeID()
-	use, err := r.measureWithCapture(cmd, source, true, remoteStderr)
-	data, rerr := os.ReadFile(path)
+	var (
+		runs []stats.PackageRun
+		rerr error
+		once sync.Once
+	)
+	read := func() { runs, rerr = readTestReport(path, runner, cmd.Dir) }
+	reason := func() string {
+		once.Do(read)
+		return testreport.FailureReason(runs)
+	}
+	use, err := r.measureWithReason(cmd, source, true, true, remoteStderr, reason, nil)
+	once.Do(read)
 	switch {
 	case errors.Is(rerr, os.ErrNotExist):
 		if strings.Contains(source, runner) {
@@ -1691,21 +1703,29 @@ func (r *Runner) reportFileStep(cmd *exec.Cmd, source, runner, path string, remo
 		}
 		return err
 	case rerr != nil:
-		fmt.Fprintf(r.Stderr, "graft: reading the %s report: %v\n", runner, rerr)
-		return err
-	}
-	var runs []stats.PackageRun
-	if runner == config.TestsJest {
-		runs, rerr = testreport.ParseJest(data, cmd.Dir)
-	} else {
-		runs, rerr = testreport.ParsePlaywright(data)
-	}
-	if rerr != nil {
-		fmt.Fprintf(r.Stderr, "graft: the %s report is not recorded: %v\n", runner, rerr)
+		fmt.Fprintf(r.Stderr, "graft: %v\n", rerr)
 		return err
 	}
 	r.recordTests(runs, tree, runner, use)
 	return err
+}
+
+// readTestReport reads the JSON report a jest or playwright step wrote to path.
+func readTestReport(path, runner, dir string) ([]stats.PackageRun, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading the %s report: %w", runner, err)
+	}
+	var runs []stats.PackageRun
+	if runner == config.TestsJest {
+		runs, err = testreport.ParseJest(data, dir)
+	} else {
+		runs, err = testreport.ParsePlaywright(data)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("the %s report is not recorded: %w", runner, err)
+	}
+	return runs, nil
 }
 
 // verboseGoTest tells whether the command asks go test for -v: the report

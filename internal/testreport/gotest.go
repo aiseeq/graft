@@ -308,10 +308,14 @@ func (g *GoTest) Close() ([]stats.PackageRun, error) {
 }
 
 // Reason returns the failed packages and tests in the order their events ended.
-func (g *GoTest) Reason() string {
+func (g *GoTest) Reason() string { return FailureReason(g.runs) }
+
+// FailureReason is the reason of a step from its runs: each failed test, or
+// the run's own reason when none of its tests has one, in the runs' order.
+func FailureReason(runs []stats.PackageRun) string {
 	var reasons []string
-	for i := range g.runs {
-		run := &g.runs[i]
+	for i := range runs {
+		run := &runs[i]
 		failedTest := false
 		for _, test := range run.Tests {
 			if test.Result == stats.ResultFail && test.Reason != "" {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -179,6 +180,61 @@ func TestFailReasonsOfAGoTestStepAreParsed(t *testing.T) {
 		}
 		if strings.Contains(reason, `"Action"`) {
 			t.Errorf("%s reason is the raw go test -json stream: %q", kind, reason)
+		}
+	}
+}
+
+// TestReportFileStepReasonFromReport: a tests: jest or playwright step that
+// fails keeps the failed tests of its report as its reason, not the runner's
+// closing lines; with no report, an unreadable one or none failed in it, the
+// tail of its output stays.
+func TestReportFileStepReasonFromReport(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	fixture := func(name string) string {
+		path, err := filepath.Abs(filepath.Join("internal", "testreport", "testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	playwright := filepath.Join(t.TempDir(), "playwright.json")
+	if err := os.WriteFile(playwright, []byte(`{"suites":[{"file":"smoke/home.spec.ts","specs":[{"title":"loads","tests":[{"status":"unexpected","results":[{"error":{"message":"selector not found"}}]}]}]}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	closing := `echo Force exiting Jest >&2; echo npm error Lifecycle script >&2; exit 1`
+	f, statsFile := statsRepo(t, "tasks:\n"+
+		"  jest:\n    tests: jest\n    run:\n      - sh: 'cp "+fixture("jest.json")+" \"$GRAFT_TEST_REPORT\"; "+closing+"'\n"+
+		"  e2e:\n    tests: playwright\n    run:\n      - sh: 'cp "+playwright+" \"$GRAFT_TEST_REPORT\"; "+closing+"'\n"+
+		"  none:\n    tests: jest\n    run:\n      - sh: '"+closing+"'\n"+
+		"  garbled:\n    tests: jest\n    run:\n      - sh: 'echo not json > \"$GRAFT_TEST_REPORT\"; "+closing+"'\n"+
+		"  allpass:\n    tests: jest\n    run:\n      - sh: 'echo {\\\"testResults\\\":[]} > \"$GRAFT_TEST_REPORT\"; "+closing+"'\n")
+	for _, task := range []string{"jest", "e2e", "none", "garbled", "allpass"} {
+		if out, code := f.graft("", task); code == 0 {
+			t.Fatalf("%s passed:\n%s", task, out)
+		}
+	}
+	reasons := map[string]string{}
+	for _, l := range readStatsRaw(t, statsFile) {
+		if l.Kind == "step" {
+			reasons[l.Task] = l.Reason
+		}
+	}
+	for _, want := range []string{"cart.test.tsx Cart totals sums prices: expected 3, got 4", "broken.test.tsx: SyntaxError: Unexpected token"} {
+		if !strings.Contains(reasons["jest"], want) {
+			t.Errorf("jest reason %q lacks %q", reasons["jest"], want)
+		}
+	}
+	if strings.Contains(reasons["jest"], "Force exiting") {
+		t.Errorf("jest reason %q keeps the runner's closing lines", reasons["jest"])
+	}
+	if !strings.Contains(reasons["e2e"], "smoke/home.spec.ts loads: selector not found") || strings.Contains(reasons["e2e"], "Force exiting") {
+		t.Errorf("playwright reason %q, want its failed test", reasons["e2e"])
+	}
+	for _, task := range []string{"none", "garbled", "allpass"} {
+		if !strings.Contains(reasons[task], "Force exiting Jest") {
+			t.Errorf("%s reason %q, want the output's tail", task, reasons[task])
 		}
 	}
 }

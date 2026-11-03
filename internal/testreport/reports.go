@@ -18,6 +18,7 @@ type jestReport struct {
 		StartTime        int64
 		EndTime          int64
 		FailureMessage   string
+		Message          string
 		AssertionResults []struct {
 			FullName        string
 			Status          string
@@ -75,6 +76,11 @@ func ParseJest(data []byte, dir string) ([]stats.PackageRun, error) {
 				}
 			}
 			run.Tests = append(run.Tests, res)
+		}
+		// A file that failed before its tests, a syntax error say, has no
+		// assertions: jest --json says why only in message.
+		if run.Result == stats.ResultFail && run.Reason == "" {
+			run.Reason = stats.LimitReason(file.Message)
 		}
 		runs = append(runs, run)
 	}
