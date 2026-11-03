@@ -433,7 +433,7 @@ stats` (`wait_s`).
 | `graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h] [--in <directory>]...` | remove the worktrees and branches whose work is in the trunk by content; list the rest |
 | `graft worktree sync [--trunk <ref>]` | move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted (see Worktrees) |
 | `graft tools [install]` | check the pinned tools; install the failing ones |
-| `graft gocache trim [--older 25h] [--apply] [--max-wait 30m]` | remove the Go build cache entries unused for longer than `--older` (see [Go build cache](#go-build-cache)) |
+| `graft gocache trim [--older 25h] [--apply] [--max-wait 2h]` | remove the Go build cache entries unused for longer than `--older` (see [Go build cache](#go-build-cache)) |
 | `graft help` | the commands the project's `.graft.yaml` uses, its tasks (those with `desc`, with their arguments) and services |
 | `graft help <command>`, `graft <command> -h` | one command's part of `graft help`, with details such as the exit codes of `exec`; a command with flags lists them after it |
 | `graft --version` | print graft's own version |
@@ -2469,9 +2469,10 @@ project in use stays warm. With `--apply`, graft removes entries in batches
 of up to 1000 entries or 256 MiB (an entry bigger than that is a batch
 of its own), syncing the cache filesystem after each batch. Before a batch it waits until `Dirty` plus `Writeback` in
 `/proc/meminfo` is below 64 MiB (where the system reports it: Linux) and
-the machine is calm by the heavy-task busy check (runnable threads, IO
-pressure, memory pressure while swapping, `busy --quiet`).
-`--max-wait` (30m by default) bounds the total wait; when it expires, graft
+the machine is calm by the busy check for disk pressure, writeback,
+memory pressure while swapping, and `busy --quiet`; CPU is not a constraint
+because trimming is already-running work whose added load is on the disk.
+`--max-wait` (2h by default) bounds the total wait; when it expires, graft
 reports what remains for the next run. Without `--apply` it reports the
 would-be removals immediately. Run it daily from a timer, for instance a
 systemd user unit with `ExecStart=` the absolute path of graft and `gocache

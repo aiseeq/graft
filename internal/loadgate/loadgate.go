@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -676,15 +677,19 @@ func BusyNowWithReserves(ctx context.Context, name, kind string, l userconfig.Ma
 // measure since the previous reading without waiting for another swap window.
 type BusyChecker struct{ machine *machine }
 
-// NewBusyChecker makes an immediate machine-load checker for a task kind.
-func NewBusyChecker(name, kind string, l userconfig.MachineLoad, log io.Writer) *BusyChecker {
-	return &BusyChecker{machine: newMachine(l, log, name, kind)}
+// NewDiskBusyChecker checks disk, writeback, swap and quiet mode before the
+// next batch of an already-running process. The batch mainly adds disk load,
+// so CPU runnable and load-average limits do not apply to it.
+func NewDiskBusyChecker(name, kind string, l userconfig.MachineLoad, log io.Writer) *BusyChecker {
+	checker := &BusyChecker{machine: newMachine(l, log, name, kind)}
+	checker.machine.limits.Runnable = math.Inf(1)
+	return checker
 }
 
-// Busy reports whether the machine currently fails the load rule.
-func (c *BusyChecker) Busy(ctx context.Context) (bool, error) {
+// Why reports the current load rule that prevents work, or an empty string.
+func (c *BusyChecker) Why(ctx context.Context) (string, error) {
 	b, err := c.machine.busy(ctx, false)
-	return b.why != "", err
+	return b.why, err
 }
 
 // busyness is why the machine cannot take a heavy task, one of the Why

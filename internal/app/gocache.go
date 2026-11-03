@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -42,7 +43,7 @@ func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, 
 	if dir == "off" || !filepath.IsAbs(dir) {
 		return fmt.Errorf("go env GOCACHE is %q: no build cache to trim", dir)
 	}
-	var waited time.Duration
+	waits := loadgate.Waits{}
 	remainingWait := maxWait
 	var options gocache.Options
 	options.Apply = apply
@@ -51,13 +52,15 @@ func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, 
 		if err != nil {
 			return fmt.Errorf("load machine pressure settings: %w", err)
 		}
-		checker := loadgate.NewBusyChecker("gocache trim", trimKind, load, a.Stderr)
+		checker := loadgate.NewDiskBusyChecker("gocache trim", trimKind, load, a.Stderr)
 		options.BeforeBatch = func() (bool, error) {
-			ok, d, err := waitForTrimBatch(ctx, remainingWait, load.Poll,
+			ok, batchWaits, err := waitForTrimBatch(ctx, remainingWait, load.Poll,
 				trimMemoryCalm,
-				checker.Busy)
-			waited += d
-			remainingWait = max(0, remainingWait-d)
+				checker.Why)
+			for why, d := range batchWaits {
+				waits[why] += d
+			}
+			remainingWait = max(0, remainingWait-waitTotal(batchWaits))
 			return ok, err
 		}
 	}
@@ -70,9 +73,10 @@ func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, 
 		verb = "dry run: graft gocache trim --apply removes"
 	}
 	if apply {
-		a.printf("%s %d entries, %s, unused for %s in %s; %d entries, %s remain; %d entries, %s kept; waited %s",
+		waited := waitTotal(waits)
+		a.printf("%s %d entries, %s, unused for %s in %s; %d entries, %s remain; %d entries, %s kept; waited %s%s",
 			verb, r.Removed, checks.FormatSize(r.RemovedBytes), older, dir, r.Remaining, checks.FormatSize(r.RemainingBytes),
-			r.Kept, checks.FormatSize(r.KeptBytes), waited.Round(time.Second))
+			r.Kept, checks.FormatSize(r.KeptBytes), waited.Round(time.Second), formatTrimWaits(waits))
 	} else {
 		a.printf("%s %d entries, %s, unused for %s in %s; %d entries, %s kept",
 			verb, r.Removed, checks.FormatSize(r.RemovedBytes), older, dir, r.Kept, checks.FormatSize(r.KeptBytes))
@@ -91,36 +95,84 @@ func trimMemoryCalm() (bool, error) {
 	return dirtyWriteback < maxDirtyWritebackKB, nil
 }
 
-func waitForTrimBatch(ctx context.Context, maxWait, poll time.Duration, dirty func() (bool, error), busy func(context.Context) (bool, error)) (bool, time.Duration, error) {
-	start := time.Now()
-	deadline := start.Add(maxWait)
+func waitForTrimBatch(ctx context.Context, maxWait, poll time.Duration, dirty func() (bool, error), why func(context.Context) (string, error)) (bool, loadgate.Waits, error) {
+	waits := loadgate.Waits{}
+	deadline := time.Now().Add(maxWait)
 	for {
 		if err := ctx.Err(); err != nil {
-			return false, time.Since(start), err
+			return false, waits, err
 		}
 		calm, err := dirty()
 		if err != nil {
-			return false, time.Since(start), err
+			return false, waits, err
 		}
+		blockedBy := loadgate.WhyWriteback
 		if calm {
-			var isBusy bool
-			isBusy, err = busy(ctx)
+			blockedBy, err = why(ctx)
 			if err != nil {
-				return false, time.Since(start), err
+				return false, waits, err
 			}
-			if !isBusy {
-				return true, time.Since(start), nil
+			if blockedBy == "" {
+				return true, waits, nil
 			}
 		}
 		if !time.Now().Before(deadline) {
-			return false, time.Since(start), nil
+			return false, waits, nil
 		}
 		timer := time.NewTimer(min(poll, time.Until(deadline)))
+		slept := time.Now()
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return false, time.Since(start), ctx.Err()
+			waits[blockedBy] += time.Since(slept)
+			return false, waits, ctx.Err()
 		case <-timer.C:
+			waits[blockedBy] += time.Since(slept)
 		}
 	}
+}
+
+func waitTotal(waits loadgate.Waits) time.Duration {
+	var total time.Duration
+	for _, d := range waits {
+		total += d
+	}
+	return total
+}
+
+func formatTrimWaits(waits loadgate.Waits) string {
+	order := []string{loadgate.WhyIO, loadgate.WhyWriteback, loadgate.WhySwap, loadgate.WhyQuiet}
+	names := map[string]string{
+		loadgate.WhyIO: "disk", loadgate.WhyWriteback: "write-out",
+		loadgate.WhySwap: "memory", loadgate.WhyQuiet: "quiet",
+	}
+	known := map[string]bool{}
+	parts := make([]string, 0, len(waits))
+	appendWait := func(why string) {
+		if d := waits[why].Round(time.Second); d > 0 {
+			name := names[why]
+			if name == "" {
+				name = why
+			}
+			parts = append(parts, fmt.Sprintf("%s %s", name, d))
+		}
+	}
+	for _, why := range order {
+		known[why] = true
+		appendWait(why)
+	}
+	var other []string
+	for why := range waits {
+		if !known[why] {
+			other = append(other, why)
+		}
+	}
+	sort.Strings(other)
+	for _, why := range other {
+		appendWait(why)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
 }

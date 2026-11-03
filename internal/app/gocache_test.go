@@ -53,10 +53,10 @@ func TestTrimWaitsForDirty(t *testing.T) {
 		time.Sleep(30 * time.Millisecond)
 		_ = os.Rename(next, filepath.Join(root, "meminfo"))
 	}()
-	proceed, waited, err := waitForTrimBatch(context.Background(), time.Second, 5*time.Millisecond,
-		trimMemoryCalm, func(context.Context) (bool, error) { calls++; return false, nil })
-	if err != nil || !proceed || waited < 20*time.Millisecond || calls != 1 {
-		t.Fatalf("proceed %v, waited %s, disk checks %d, error %v", proceed, waited, calls, err)
+	proceed, waits, err := waitForTrimBatch(context.Background(), time.Second, 5*time.Millisecond,
+		trimMemoryCalm, func(context.Context) (string, error) { calls++; return "", nil })
+	if err != nil || !proceed || waits[loadgate.WhyWriteback] < 20*time.Millisecond || calls != 1 {
+		t.Fatalf("proceed %v, waits %v, disk checks %d, error %v", proceed, waits, calls, err)
 	}
 }
 
@@ -73,11 +73,70 @@ func TestTrimWaitsForBusyDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 	load := userconfig.MachineLoad{Poll: 5 * time.Millisecond}
-	checker := loadgate.NewBusyChecker("gocache trim", trimKind, load, io.Discard)
-	proceed, waited, err := waitForTrimBatch(context.Background(), 35*time.Millisecond, load.Poll,
-		trimMemoryCalm, checker.Busy)
-	if err != nil || proceed || waited < 30*time.Millisecond {
-		t.Fatalf("proceed %v, waited %s, error %v", proceed, waited, err)
+	checker := loadgate.NewDiskBusyChecker("gocache trim", trimKind, load, io.Discard)
+	proceed, waits, err := waitForTrimBatch(context.Background(), 35*time.Millisecond, load.Poll,
+		trimMemoryCalm, checker.Why)
+	if err != nil || proceed || waits[loadgate.WhyIO] < 30*time.Millisecond {
+		t.Fatalf("proceed %v, waits %v, error %v", proceed, waits, err)
+	}
+}
+
+func TestTrimIgnoresCPUAndLoadAverage(t *testing.T) {
+	root := trimProc(t, 1, 1)
+	if err := os.WriteFile(filepath.Join(root, "stat"), []byte("cpu 1 1 1 1\ncpu0 1 1 1 1\nprocs_running 100\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "loadavg"), []byte("100.00 100.00 100.00 100/100 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	serveTrimDisk(t, 0)
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	limits := filepath.Join(configHome, "akit", "pressure.yaml")
+	if err := os.MkdirAll(filepath.Dir(limits), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(limits, []byte("runnable: 1\nmax_io_full: 10\nmax_swap_kbs: 1024\nswap_window: 1ms\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	load := userconfig.MachineLoad{Poll: 5 * time.Millisecond}
+	checker := loadgate.NewDiskBusyChecker("gocache trim", trimKind, load, io.Discard)
+	proceed, waits, err := waitForTrimBatch(context.Background(), 100*time.Millisecond, load.Poll,
+		trimMemoryCalm, checker.Why)
+	if err != nil || !proceed || waitTotal(waits) > 20*time.Millisecond {
+		t.Fatalf("proceed %v, waits %v, error %v", proceed, waits, err)
+	}
+}
+
+func TestTrimWaitTracksQuietAndWritebackSeparately(t *testing.T) {
+	proceed, waits, err := waitForTrimBatch(context.Background(), 20*time.Millisecond, 3*time.Millisecond,
+		func() (bool, error) { return false, nil },
+		func(context.Context) (string, error) { t.Fatal("busy check ran during writeback"); return "", nil })
+	if err != nil || proceed || waits[loadgate.WhyWriteback] == 0 || waits[loadgate.WhyQuiet] != 0 {
+		t.Fatalf("writeback: proceed %v, waits %v, error %v", proceed, waits, err)
+	}
+	checks := 0
+	proceed, waits, err = waitForTrimBatch(context.Background(), 20*time.Millisecond, 3*time.Millisecond,
+		func() (bool, error) { return true, nil },
+		func(context.Context) (string, error) {
+			checks++
+			if checks > 2 {
+				return "", nil
+			}
+			return loadgate.WhyQuiet, nil
+		})
+	if err != nil || !proceed || waits[loadgate.WhyQuiet] == 0 || waits[loadgate.WhyWriteback] != 0 {
+		t.Fatalf("quiet: proceed %v, waits %v, error %v", proceed, waits, err)
+	}
+}
+
+func TestFormatTrimWaits(t *testing.T) {
+	if got := formatTrimWaits(nil); got != "" {
+		t.Fatalf("zero wait formatting = %q", got)
+	}
+	got := formatTrimWaits(loadgate.Waits{loadgate.WhyQuiet: time.Second, loadgate.WhyWriteback: 2 * time.Second, "custom": 3 * time.Second})
+	if got != " (write-out 2s, quiet 1s, custom 3s)" {
+		t.Fatalf("wait breakdown = %q", got)
 	}
 }
 
@@ -103,7 +162,7 @@ func TestTrimStopsAtMaxWait(t *testing.T) {
 	started := time.Now()
 	result, err := gocache.TrimWithOptions(dir, 25*time.Hour, time.Now(), gocache.Options{Apply: true, BeforeBatch: func() (bool, error) {
 		ok, _, err := waitForTrimBatch(context.Background(), 20*time.Millisecond, 5*time.Millisecond,
-			trimMemoryCalm, func(context.Context) (bool, error) { return true, nil })
+			trimMemoryCalm, func(context.Context) (string, error) { return loadgate.WhyIO, nil })
 		return ok, err
 	}})
 	if err != nil {
