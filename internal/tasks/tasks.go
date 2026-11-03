@@ -1605,14 +1605,12 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 // the flags of GOFLAGS (the environment's, or go env -w's) before its own
 // words, which override them.
 func (r *Runner) checkRunWords(report *testreport.GoTest, cmd *exec.Cmd, words []string) {
-	goenv := exec.Command("go", "env", "GOFLAGS")
-	goenv.Env, goenv.Dir = cmd.Env, cmd.Dir
-	out, err := goenv.Output()
+	value, err := r.stepGoflags(cmd, words)
 	if err != nil {
 		fmt.Fprintf(r.Stderr, "graft: reading GOFLAGS for the -run check: %v; -run not checked\n", err)
 		return
 	}
-	goflags := strings.Fields(string(out))
+	goflags := strings.Fields(value)
 	// go takes each GOFLAGS field as a flag of its own; a field without =
 	// (a switch, or text a wrapper of go printed) could take the next one
 	// as its value here, so the step is not checked.
@@ -1623,6 +1621,26 @@ func (r *Runner) checkRunWords(report *testreport.GoTest, cmd *exec.Cmd, words [
 	}
 	line := append([]string{"go", "test"}, goflags...)
 	report.CheckRunWords(append(line, words[2:]...))
+}
+
+// stepGoflags is the GOFLAGS go reads for the step. On the remote_heavy host it
+// is what the step is sent with: asking the host would cost a second trip
+// through its run, and a value of the host's own that changes what runs is not
+// a setup a host for these steps has.
+func (r *Runner) stepGoflags(cmd *exec.Cmd, words []string) (string, error) {
+	if r.frames[len(r.frames)-1].remote {
+		sent := cmd.Args[:max(len(cmd.Args)-len(words), 0)]
+		for _, word := range slices.Backward(sent) {
+			if value, ok := strings.CutPrefix(word, "GOFLAGS="); ok {
+				return value, nil
+			}
+		}
+		return "", nil
+	}
+	goenv := exec.Command("go", "env", "GOFLAGS")
+	goenv.Env, goenv.Dir = cmd.Env, cmd.Dir
+	out, err := goenv.Output()
+	return string(out), err
 }
 
 func isDirectGoTest(argv []string) bool {
@@ -1955,9 +1973,7 @@ func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
 func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string, directGoTest bool, remoteStderr *bytes.Buffer) error {
 	tree := r.treeID()
 	report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
-	// A step on the remote_heavy host reads the host's GOFLAGS, which go env
-	// here does not see: it is not checked.
-	if directGoTest && !r.frames[len(r.frames)-1].remote && testreport.HasRun(words) {
+	if directGoTest && testreport.HasRun(words) {
 		r.checkRunWords(report, cmd, words)
 	}
 	cmd.Stdout = report
@@ -1973,11 +1989,11 @@ func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string
 		runs, cerr = report.Close()
 		reason := report.Reason()
 		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0 {
-			if missing := report.MissingRunNames(); len(missing) > 0 {
+			if message := report.MissingRunMessage(); message != "" {
 				if reason != "" {
 					reason += "\n"
 				}
-				reason += "-run names " + strings.Join(missing, ", ") + ", which no package ran"
+				reason += message
 			}
 		}
 		return reason
@@ -1996,8 +2012,7 @@ func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string
 		fmt.Fprintf(r.Stderr, "graft: %s: the task has tests: go, but go test printed no -json events; pass -json to it\n", r.frames[len(r.frames)-1].task)
 	}
 	if missingRunFailure {
-		missing := report.MissingRunNames()
-		fmt.Fprintf(r.Stderr, "graft: -run names %s, which no package ran\n", strings.Join(missing, ", "))
+		fmt.Fprintf(r.Stderr, "graft: %s\n", report.MissingRunMessage())
 	}
 	r.recordTests(runs, tree, runner, use)
 	return err

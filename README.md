@@ -877,17 +877,19 @@ dotenv_sets:                   # key lists several tasks and services share
   character classes, escapes, spaces, or non-printable characters are not
   checked. Nor is a command line with a word the check does not know: every
   word after `go test` must be a package path (`.`, `./…`, `../…`, or one
-  with a slash) or one of `-run -count -p -timeout -tags -parallel -cpu
+  with a slash) or one of `-run -skip -count -p -timeout -tags -parallel -cpu
   -shuffle -coverprofile -covermode -coverpkg -vet -mod -ldflags -gcflags`
   with its value, or the switches `-json -short -race -v -failfast -trimpath
   -cover` (on), the package paths one run of words and `-count` at least 1;
-  so `-args`, `--`, `-v=false`, `-count=0`, `-n`, `-list`, `-skip`,
+  so `-args`, `--`, `-v=false`, `-count=0`, `-n`, `-list`,
   `-bench`, `-fuzz` and a path after flags that follow the packages (an
   argument of the test binary) leave the step unchecked. The flags of
   `GOFLAGS` (as `go env GOFLAGS` gives them, `go env -w` included) count as
-  words before the command's own, so `GOFLAGS=-skip=TestA` leaves it
-  unchecked too, as does a field of it without `=`. A step on the
-  `remote_heavy` host is not checked: go there reads the host's `GOFLAGS`.
+  words before the command's own, so `GOFLAGS=-bench=.` leaves it
+  unchecked too, as does a field of it without `=`. A test `-skip` takes emits
+  no run event, so a name only it matches fails the step like a mistyped one,
+  and the line names the step's `-skip`. On the `remote_heavy` host the check
+  reads the `GOFLAGS` the step is sent with, not the host's own.
   Alternatives matching the empty string, such as `^$`, are not checked
   either.
 - `cache: tree` skips a task that already passed on the same inputs, its

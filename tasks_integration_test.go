@@ -924,8 +924,36 @@ func TestGoTestPackagesFromArgs(t *testing.T) {
 		t.Errorf("go got\n%s\nwant\n%s", got, want)
 	}
 	f.env = append(f.env, "GOFLAGS=-skip=TestOther")
+	if out, code := f.graft("", "test", "--", "-run", "TestGone"); code == 0 || !strings.Contains(out, "-run names TestGone, which no package ran (the step has -skip TestOther)") {
+		t.Errorf("a -skip of GOFLAGS passed a missing name or went unnamed (exit %d):\n%s", code, out)
+	}
+	f.env = append(f.env[:len(f.env)-1], "GOFLAGS=-bench=.")
 	if out, code := f.graft("", "test", "--", "-run", "TestGone"); code != 0 {
-		t.Errorf("a -skip of GOFLAGS left the -run check on (exit %d):\n%s", code, out)
+		t.Errorf("a -bench of GOFLAGS left the -run check on (exit %d):\n%s", code, out)
+	}
+}
+
+// With the real go: a test -skip takes emits no run event, so asking for it by
+// name is no more green than a mistyped name, and the tests left still pass.
+func TestGoTestRunCheckWithSkipInStep(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs go test")
+	}
+	f := tasksRepo(t, "tasks:\n  test:\n    tests: go\n    run:\n      - go test -json -skip ^TestLocal {args} ./...\n", map[string]string{
+		"go.mod":    "module projecta\n\ngo 1.22\n",
+		"a_test.go": "package projecta\n\nimport \"testing\"\n\nfunc TestLocalData(t *testing.T) {}\nfunc TestReal(t *testing.T) {}\n",
+	})
+	f.env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "GOFLAGS=", "GOCACHE=" + t.TempDir(), "XDG_CACHE_HOME=" + shortCache(t)}
+	for name, words := range map[string][]string{
+		"mistyped":      {"-run", "TestNoSuch"},
+		"taken by skip": {"-run", "TestLocalData"},
+	} {
+		if out, code := f.graft("", append([]string{"test", "--"}, words...)...); code == 0 || !strings.Contains(out, "(the step has -skip ^TestLocal)") {
+			t.Errorf("%s: went green or did not name the -skip (exit %d):\n%s", name, code, out)
+		}
+	}
+	if out, code := f.graft("", "test", "--", "-run", "TestReal"); code != 0 {
+		t.Errorf("a test the -skip leaves failed the check (exit %d):\n%s", code, out)
 	}
 }
 

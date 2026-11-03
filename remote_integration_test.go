@@ -33,6 +33,47 @@ func remoteRepo(t *testing.T, threads int, tasks string) (f *fixture, state stri
 	return f, state
 }
 
+// A go test step on the host answers for its -run like one here, with the
+// GOFLAGS it is sent with; this machine's go env says nothing about it.
+func TestGoTestRunCheckOnRemoteHost(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake go is a shell script")
+	}
+	f, _ := remoteRepo(t, 8, `  test:
+    heavy: true
+    tests: go
+    run: ['go test -json -skip ^TestLocal {args} ./...']
+  benched:
+    heavy: true
+    tests: go
+    env: {GOFLAGS: -bench=.}
+    run: ['go test -json {args} ./...']
+`)
+	fakeBin := t.TempDir()
+	script := "#!/bin/sh\n[ \"$1\" = env ] && { echo -list=x; exit 0; }\n" +
+		`echo '{"Action":"run","Package":"projectA/pkg","Test":"TestReal"}'` + "\n" +
+		`echo '{"Action":"pass","Package":"projectA/pkg","Test":"TestReal"}'` + "\n" +
+		`echo '{"Action":"pass","Package":"projectA/pkg"}'` + "\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env, "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if out, code := f.graft("", "test", "--", "-run", "TestGone"); code == 0 || !strings.Contains(out, "heavy, on pc") ||
+		!strings.Contains(out, "-run names TestGone, which no package ran (the step has -skip ^TestLocal)") {
+		t.Errorf("a missing name passed on the host (exit %d):\n%s", code, out)
+	}
+	if out, code := f.graft("", "test", "--", "-run", "TestReal"); code != 0 {
+		t.Errorf("a test that ran failed the check on the host (exit %d):\n%s", code, out)
+	}
+	if out, code := f.graft("", "benched", "--", "-run", "TestGone"); code != 0 {
+		t.Errorf("the GOFLAGS the step is sent with left the check on (exit %d):\n%s", code, out)
+	}
+	f.env = append(f.env, "GOFLAGS=-bench=.")
+	if out, code := f.graft("", "test", "--", "-run", "TestGone"); code != 0 {
+		t.Errorf("the caller's GOFLAGS sent to the host left the check on (exit %d):\n%s", code, out)
+	}
+}
+
 func calm(t *testing.T, state string) {
 	t.Helper()
 	setRunnable(t, filepath.Join(state, "proc"), 0)
@@ -185,35 +226,5 @@ func TestGateTaskReadingMessageStaysHere(t *testing.T) {
 	}
 	if got := readFile(t, out); !strings.HasPrefix(got, "feat: a") {
 		t.Errorf("the gate read %q", got)
-	}
-}
-
-// TestRemoteGoTestRunNotChecked: a go test step on the remote_heavy host
-// reads the host's GOFLAGS (its go env -w among them), which go env here does
-// not see, so a -run naming no test that ran leaves the step as go left it.
-func TestRemoteGoTestRunNotChecked(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake go is a shell script")
-	}
-	f, state := remoteRepo(t, 8, `  test:
-    heavy: true
-    tests: go
-    run: [[go, test, -json, -run, TestGone, ./...]]
-`)
-	fakeBin := t.TempDir()
-	writeFile(t, filepath.Join(fakeBin, "go"), "#!/bin/sh\n[ \"$1\" = env ] && exit 0\n"+
-		"printf '{\"Action\":\"run\",\"Package\":\"projectA/pkg\",\"Test\":\"TestReal\"}\\n'\n"+
-		"printf '{\"Action\":\"pass\",\"Package\":\"projectA/pkg\",\"Test\":\"TestReal\"}\\n'\n"+
-		"printf '{\"Action\":\"pass\",\"Package\":\"projectA/pkg\"}\\n'\n")
-	if err := os.Chmod(filepath.Join(fakeBin, "go"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	f.env = append(f.env, "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	out, code := f.graft("", "test")
-	if code != 0 || strings.Contains(out, "-run names") {
-		t.Errorf("the step on the host was checked against go env here (exit %d):\n%s", code, out)
-	}
-	if calls := readFile(t, filepath.Join(state, "calls")); !strings.Contains(calls, "go test -json -run TestGone") {
-		t.Errorf("the step did not go to the host: %q", calls)
 	}
 }

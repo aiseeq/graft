@@ -33,6 +33,8 @@ type GoTest struct {
 	runs    []stats.PackageRun
 	events  int
 	runAlts []runAlternative
+	// runSkip is the -skip of the command line the -run check read.
+	runSkip string
 	// skipped and skippedPkgs count the skipped tests and their packages.
 	skipped, skippedPkgs int
 	err                  error
@@ -98,10 +100,11 @@ func HasRun(words []string) bool {
 // CheckRunWords checks each top-level -run alternative against tests that
 // emitted a run event. Invalid expressions are left for go test to report.
 func (g *GoTest) CheckRunWords(words []string) {
-	value, ok := goTestRun(words)
+	value, skip, ok := goTestRun(words)
 	if !ok || !simpleRunPattern(value) {
 		return
 	}
+	g.runSkip = skip
 	alternatives, valid := splitRunPatternAlternatives(value)
 	if !valid || len(alternatives) == 0 {
 		return
@@ -140,10 +143,11 @@ func compileRunRegexp(pattern string) (*regexp.Regexp, bool) {
 // goTestFlags are the go test flags whose meaning the -run check knows: true
 // takes a value, false is a switch. A word that is neither one of them nor a
 // package path leaves the run unchecked: -args, --, -v=false (no run events),
-// -n, -list, -skip, -bench, -fuzz and any flag that changes what runs or what
-// the stream shows.
+// -n, -list, -bench, -fuzz and any flag that changes what runs or what the
+// stream shows. -skip is known: a test it removes emits no run event, so a name
+// it took is reported like a mistyped one, with the -skip in the message.
 var goTestFlags = map[string]bool{
-	"run": true, "count": true, "p": true, "timeout": true, "tags": true,
+	"run": true, "skip": true, "count": true, "p": true, "timeout": true, "tags": true,
 	"parallel": true, "cpu": true, "shuffle": true, "coverprofile": true,
 	"covermode": true, "coverpkg": true, "vet": true, "mod": true,
 	"ldflags": true, "gcflags": true,
@@ -151,15 +155,13 @@ var goTestFlags = map[string]bool{
 	"trimpath": false, "cover": false,
 }
 
-// goTestRun is the -run value a go test command line applies, false when it
-// has none or holds a word the check does not know (see goTestFlags).
-// words may start with go test.
-func goTestRun(words []string) (string, bool) {
+// goTestRun is the -run and -skip values a go test command line applies, false
+// when it has no -run or holds a word the check does not know (see
+// goTestFlags). words may start with go test.
+func goTestRun(words []string) (value, skip string, found bool) {
 	if len(words) >= 2 && words[0] == "go" && words[1] == "test" {
 		words = words[2:]
 	}
-	var value string
-	found := false
 	// The packages are one run of words: a path after flags that follow
 	// them is an argument of the test binary, and so is every word after it.
 	packages, afterPackages := false, false
@@ -167,7 +169,7 @@ func goTestRun(words []string) (string, bool) {
 		word := words[i]
 		if !strings.HasPrefix(word, "-") {
 			if !goPackagePath(word) || afterPackages {
-				return "", false
+				return "", "", false
 			}
 			packages = true
 			continue
@@ -179,16 +181,16 @@ func goTestRun(words []string) (string, bool) {
 		takesValue, known := goTestFlags[name]
 		switch {
 		case !known:
-			return "", false
+			return "", "", false
 		case !takesValue:
 			// A switch is on, or the check does not know the run.
 			if hasValue && inline != "true" {
-				return "", false
+				return "", "", false
 			}
 			continue
 		case !hasValue:
 			if i+1 >= len(words) {
-				return "", false
+				return "", "", false
 			}
 			i++
 			inline = words[i]
@@ -196,15 +198,17 @@ func goTestRun(words []string) (string, bool) {
 		switch name {
 		case "run":
 			value, found = inline, true
+		case "skip":
+			skip = inline
 		case "count":
 			// -count=0 runs nothing; a count that is not a number fails
 			// go test itself, which then names it.
 			if !atLeastOne(inline) {
-				return "", false
+				return "", "", false
 			}
 		}
 	}
-	return value, found
+	return value, skip, found
 }
 
 // atLeastOne says whether value is decimal digits of a number of at least 1;
@@ -349,6 +353,20 @@ func (g *GoTest) MissingRunNames() []string {
 		}
 	}
 	return missing
+}
+
+// MissingRunMessage says which -run alternatives no package ran, naming the
+// step's -skip, which may be what took them; empty when none is missing.
+func (g *GoTest) MissingRunMessage() string {
+	missing := g.MissingRunNames()
+	if len(missing) == 0 {
+		return ""
+	}
+	message := "-run names " + strings.Join(missing, ", ") + ", which no package ran"
+	if g.runSkip != "" {
+		message += " (the step has -skip " + g.runSkip + ")"
+	}
+	return message
 }
 
 func (g *GoTest) print(s string) {
