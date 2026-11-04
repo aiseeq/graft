@@ -76,7 +76,19 @@ func TestTrimWaitsForBusyDisk(t *testing.T) {
 	checker := loadgate.NewDiskBusyChecker("gocache trim", trimKind, load, io.Discard)
 	proceed, waits, err := waitForTrimBatch(context.Background(), 35*time.Millisecond, load.Poll,
 		trimMemoryCalm, checker.Why)
-	if err != nil || proceed || waits[loadgate.WhyIO] < 30*time.Millisecond {
+	if err != nil || proceed || waits[loadgate.WhyIO] < 35*time.Millisecond {
+		t.Fatalf("proceed %v, waits %v, error %v", proceed, waits, err)
+	}
+}
+
+func TestTrimWaitCountsTheTimeOfItsChecks(t *testing.T) {
+	proceed, waits, err := waitForTrimBatch(context.Background(), 50*time.Millisecond, time.Millisecond,
+		func() (bool, error) { return true, nil },
+		func(context.Context) (string, error) {
+			time.Sleep(20 * time.Millisecond)
+			return loadgate.WhyIO, nil
+		})
+	if err != nil || proceed || waits[loadgate.WhyIO] < 50*time.Millisecond {
 		t.Fatalf("proceed %v, waits %v, error %v", proceed, waits, err)
 	}
 }

@@ -97,7 +97,15 @@ func trimMemoryCalm() (bool, error) {
 
 func waitForTrimBatch(ctx context.Context, maxWait, poll time.Duration, dirty func() (bool, error), why func(context.Context) (string, error)) (bool, loadgate.Waits, error) {
 	waits := loadgate.Waits{}
-	deadline := time.Now().Add(maxWait)
+	// The budget runs on the clock, so a wait is the whole time since the
+	// last one ended, the checks with it, not only the sleep between them.
+	started := time.Now()
+	deadline := started.Add(maxWait)
+	charge := func(why string) {
+		now := time.Now()
+		waits[why] += now.Sub(started)
+		started = now
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return false, waits, err
@@ -117,17 +125,17 @@ func waitForTrimBatch(ctx context.Context, maxWait, poll time.Duration, dirty fu
 			}
 		}
 		if !time.Now().Before(deadline) {
+			charge(blockedBy)
 			return false, waits, nil
 		}
 		timer := time.NewTimer(min(poll, time.Until(deadline)))
-		slept := time.Now()
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			waits[blockedBy] += time.Since(slept)
+			charge(blockedBy)
 			return false, waits, ctx.Err()
 		case <-timer.C:
-			waits[blockedBy] += time.Since(slept)
+			charge(blockedBy)
 		}
 	}
 }
