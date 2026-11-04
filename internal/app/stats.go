@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"os"
@@ -34,6 +35,8 @@ type StatsOptions struct {
 	Value    string
 	MinRuns  int
 	Failures bool
+	// Refused reports the raw git commits the hook refused instead of the tasks.
+	Refused bool
 }
 
 // overLimitsShown is how many tasks over their limits a report names, the
@@ -55,6 +58,9 @@ func (a *App) Stats(o StatsOptions) error {
 	if err != nil {
 		return err
 	}
+	if o.Refused {
+		return a.statsRefused(f.Project, where, since)
+	}
 	if o.Tests {
 		return a.statsTests(path, stats.TestFilter{Since: since, Project: f.Project, Task: o.Task, MaxLoad: o.MaxLoad}, where+calmNote(o.MaxLoad))
 	}
@@ -72,6 +78,31 @@ func (a *App) Stats(o StatsOptions) error {
 		return a.statsValue(recs, f, o)
 	}
 	return a.statsTasks(recs, path, f, o, where, since)
+}
+
+func (a *App) statsRefused(project, where string, since time.Time) error {
+	refused, malformed, err := stats.LoadRefusedCommits(since, project)
+	if err != nil {
+		return err
+	}
+	if malformed > 0 {
+		fmt.Fprintf(a.Stderr, "graft: the refused commits: %d malformed line(s) left out\n", malformed)
+	}
+	start := since.Local().Format("2006-01-02 15:04")
+	if len(refused) == 0 {
+		a.printf("no raw git commits refused in %s since %s", where, start)
+		return nil
+	}
+	a.printf("%s refused in %s since %s", plural(len(refused), "raw git commit"), where, start)
+	tw := tabwriter.NewWriter(a.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "TIME\tPROJECT/TREE\tBRANCH\tSESSION")
+	for _, r := range refused {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.Time.Local().Format("2006-01-02 15:04:05"), r.Project, cmp.Or(r.Branch, "-"), cmp.Or(r.Session, "-"))
+	}
+	if err := tw.Flush(); err != nil {
+		return fmt.Errorf("formatting the refused commits: %w", err)
+	}
+	return nil
 }
 
 func (a *App) statsFilter(o StatsOptions, since time.Time) (stats.Filter, string, error) {

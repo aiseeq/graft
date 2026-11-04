@@ -423,7 +423,7 @@ stats` (`wait_s`).
 | `graft tasks` | every task, building blocks and deps included |
 | `graft start` / `stop` / `restart [service]` | background services, all of them without a name |
 | `graft logs <service> [--lines N] [-f]` | the end of a service's log, or its journal; `-f` follows until Ctrl-C |
-| `graft stats [--failures] [--since 7d] [--project <root>\|--all] [--task <name>]` | recorded resource use and recent failure reasons (see [Resource stats](#resource-stats)) |
+| `graft stats [--failures|--refused] [--since 7d] [--project <root>\|--all] [--task <name>]` | recorded resource use and recent failure reasons (see [Resource stats](#resource-stats)) |
 | `graft exec [--heavy [--local] [--env <name>]... [--settle <duration>] [--cores <n>]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local`; the host gets no variable of the caller's but the go command's own unless `--env <name>` names it; `--settle` holds a separate FIFO lock for this long, waited on only by another `exec --settle`; `--cores` sets the live reservation instead of using history |
 | `graft status` | services, the test database, held locks |
 | `graft locks` | who holds graft's locks |
@@ -1147,6 +1147,12 @@ test reasons (of jest and playwright, from the step's report), falling back to
 the tail when there are none. A task line uses the first failing step's reason.
 Output sent directly to a terminal is not captured, so its failing step has
 no `reason`; this keeps the child connected to the terminal.
+
+`graft stats --refused` lists the raw `git commit`s the pre-commit hook refused,
+newest first: time, work tree, branch and the Claude Code session
+(`CLAUDE_CODE_SESSION_ID`, `-` outside one). Lines are in
+`refused-commits.jsonl` next to `stats.jsonl`, one JSON object each, kept like
+it. `--since`, `--project` and `--all` work as below.
 
 `graft stats --failures` lists recent failed steps and task failures that
 happened before a step ran, newest first. Each row shows the time, project

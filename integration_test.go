@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1377,4 +1378,79 @@ func TestCommitConventional(t *testing.T) {
 		t.Errorf("a refused message committed %s", got)
 	}
 	f.mustGraft("commit", "-m", "feat: add a")
+}
+
+// TestRefusedCommitIsRecorded: a raw git commit the hook refuses leaves a line
+// naming the session, the tree and the branch, graft stats --refused shows it,
+// and the refusal itself stays as it was. graft's own commit leaves no line.
+func TestRefusedCommitIsRecorded(t *testing.T) {
+	f := hookRepo(t, gateStep("ok"))
+	cache := t.TempDir()
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache, "CLAUDE_CODE_SESSION_ID=session-of-the-test")
+	if out := f.mustGraft("stats", "--refused"); !strings.Contains(out, "no raw git commits refused") {
+		t.Errorf("before any refusal:\n%s", out)
+	}
+	f.write("shared.txt", "changed\n")
+	f.git("add", "-A")
+	if out, code := f.tryGit("commit", "-m", "raw"); code == 0 || !strings.Contains(out, "graft commit -m") {
+		t.Fatalf("the refusal changed: exit %d\n%s", code, out)
+	}
+
+	branch := f.git("branch", "--show-current")
+	root := f.git("rev-parse", "--show-toplevel")
+	out := f.mustGraft("stats", "--refused")
+	for _, want := range []string{"1 raw git commit", "session-of-the-test", root, branch} {
+		if !strings.Contains(out, want) {
+			t.Errorf("graft stats --refused lacks %q:\n%s", want, out)
+		}
+	}
+	line, err := os.ReadFile(filepath.Join(cache, "graft", "refused-commits.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec struct{ Session, Project, Branch string }
+	if err := json.Unmarshal(line, &rec); err != nil || rec.Session != "session-of-the-test" || rec.Project != root || rec.Branch != branch {
+		t.Errorf("the line = %s (%v)", line, err)
+	}
+
+	// Another project's report leaves it out; --all shows it.
+	other := t.TempDir()
+	if out := f.mustGraft("stats", "--refused", "--project", other); !strings.Contains(out, "no raw git commits refused") {
+		t.Errorf("another project shows the refusal:\n%s", out)
+	}
+	if out := f.mustGraft("stats", "--refused", "--all"); !strings.Contains(out, "session-of-the-test") {
+		t.Errorf("--all lacks the refusal:\n%s", out)
+	}
+	if out, code := f.graft("", "stats", "--refused", "--failures"); code == 0 {
+		t.Errorf("--refused with --failures went through:\n%s", out)
+	}
+
+	f.mustGraft("commit", "-m", "fix: through graft")
+	lines, err := os.ReadFile(filepath.Join(cache, "graft", "refused-commits.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(lines), "\n"); n != 1 {
+		t.Errorf("graft's own commit left a refusal, %d lines:\n%s", n, lines)
+	}
+}
+
+// TestRefusedCommitUnrecordedStillRefuses: a log that cannot be written warns;
+// the commit is refused with the same hint.
+func TestRefusedCommitUnrecordedStillRefuses(t *testing.T) {
+	f := hookRepo(t, gateStep("ok"))
+	blocked := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocked, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env, "XDG_CACHE_HOME="+blocked)
+	f.write("shared.txt", "changed\n")
+	f.git("add", "-A")
+	out, code := f.tryGit("commit", "-m", "raw")
+	if code == 0 || !strings.Contains(out, "graft commit -m") {
+		t.Fatalf("the refusal changed: exit %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "warning") {
+		t.Errorf("an unwritten refusal is not said:\n%s", out)
+	}
 }

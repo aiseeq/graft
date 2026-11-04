@@ -373,6 +373,7 @@ func statsCmd(a *app.App, args []string) error {
 	value := fs.String("value", "", "print one timing: wall-p50, wall-p95 or wait-p95")
 	minRuns := fs.Int("min-runs", 3, "minimum runs for --value (default 3)")
 	failures := fs.Bool("failures", false, "show recent failed tasks and steps with their captured reason")
+	refused := fs.Bool("refused", false, "show the raw git commits the hook refused: when, where, which session")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -412,7 +413,10 @@ func statsCmd(a *app.App, args []string) error {
 	if *failures && (*tests || *value != "" || *maxLoad != 0) {
 		return fmt.Errorf("%w: --failures cannot be used with --tests, --value or --max-load", errUsage)
 	}
-	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task, In: *in, Tests: *tests, MaxLoad: *maxLoad, Value: *value, MinRuns: *minRuns, Failures: *failures})
+	if *refused && (*failures || *tests || *value != "" || *maxLoad != 0 || *task != "" || inSet) {
+		return fmt.Errorf("%w: --refused cannot be used with --failures, --tests, --value, --max-load, --task or --in", errUsage)
+	}
+	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task, In: *in, Tests: *tests, MaxLoad: *maxLoad, Value: *value, MinRuns: *minRuns, Failures: *failures, Refused: *refused})
 }
 
 func validateStatsValue(value, task, in string, inSet, tests bool, minRuns int, minRunsSet bool) error {

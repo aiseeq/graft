@@ -7,10 +7,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/hooks"
+	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/tasks"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 	"github.com/aiseeq/graft/v2/internal/workers"
@@ -26,6 +28,9 @@ import (
 // commit.local_branches it passes through the checks alone: such a branch is
 // no work to ship but a batch for its project to look at and merge, which
 // brings the gate.
+// agentSessionEnv names the Claude Code session a command runs in.
+const agentSessionEnv = "CLAUDE_CODE_SESSION_ID"
+
 func (a *App) HookPreCommit(ctx context.Context) error {
 	if own, err := graftsOwn(); err != nil || own {
 		return err
@@ -44,6 +49,7 @@ func (a *App) HookPreCommit(ctx context.Context) error {
 			return err
 		}
 		if local == "" {
+			a.recordRefusedCommit(repo)
 			return errors.New(commitHowTo(cfg))
 		}
 		a.printf("commit on %s, a local branch (commit.local_branches of the user config): the checks only, no gate, version or push", local)
@@ -59,6 +65,32 @@ func (a *App) HookPreCommit(ctx context.Context) error {
 	return nil
 }
 
+// recordRefusedCommit logs a refused raw git commit for graft stats --refused.
+// A failure is said and changes nothing: the commit is refused either way.
+func (a *App) recordRefusedCommit(repo *gitx.Repo) {
+	rec := stats.RefusedCommit{Time: time.Now(), Session: os.Getenv(agentSessionEnv), Project: repo.Root}
+	branch, err := headBranch(repo)
+	if err != nil {
+		a.warn("the refused commit's branch is not recorded: %v", err)
+	}
+	rec.Branch = branch
+	if err := stats.AppendRefusedCommit(rec); err != nil {
+		a.warn("the refused commit is not recorded: %v", err)
+	}
+}
+
+// headBranch is the branch HEAD is on, "" when detached.
+func headBranch(repo *gitx.Repo) (string, error) {
+	out, err := repo.Git("symbolic-ref", "--short", "-q", "HEAD")
+	if gitx.ExitCode(err) == 1 {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // localBranch is the branch HEAD is on when it is one of the user's
 // commit.local_branches, else "".
 func localBranch(repo *gitx.Repo) (string, error) {
@@ -66,15 +98,10 @@ func localBranch(repo *gitx.Repo) (string, error) {
 	if err != nil || len(uc.LocalBranches) == 0 {
 		return "", err
 	}
-	out, err := repo.Git("symbolic-ref", "--short", "-q", "HEAD")
-	if gitx.ExitCode(err) == 1 {
-		// Detached: no branch.
-		return "", nil
-	}
-	if err != nil {
+	branch, err := headBranch(repo)
+	if err != nil || branch == "" {
 		return "", err
 	}
-	branch := strings.TrimSpace(out)
 	for i, g := range uc.LocalBranches {
 		re, err := config.CompileGlob(g)
 		if err != nil {
