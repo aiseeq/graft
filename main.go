@@ -410,13 +410,22 @@ func statsCmd(a *app.App, args []string) error {
 	if maxLoadSet && (*maxLoad <= 0 || math.IsNaN(*maxLoad) || math.IsInf(*maxLoad, 0)) {
 		return fmt.Errorf("%w: --max-load: want a positive load, got %v", errUsage, *maxLoad)
 	}
-	if *failures && (*tests || *value != "" || *maxLoad != 0) {
-		return fmt.Errorf("%w: --failures cannot be used with --tests, --value or --max-load", errUsage)
-	}
-	if *refused && (*failures || *tests || *value != "" || *maxLoad != 0 || *task != "" || inSet) {
-		return fmt.Errorf("%w: --refused cannot be used with --failures, --tests, --value, --max-load, --task or --in", errUsage)
+	if err := validateStatsModes(*failures, *refused, *tests, *value != "" || *maxLoad != 0, *task != "" || inSet); err != nil {
+		return err
 	}
 	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task, In: *in, Tests: *tests, MaxLoad: *maxLoad, Value: *value, MinRuns: *minRuns, Failures: *failures, Refused: *refused})
+}
+
+// validateStatsModes refuses the reports that exclude each other: timing says
+// --value or --max-load is set, tasks that --task or --in is.
+func validateStatsModes(failures, refused, tests, timing, tasks bool) error {
+	if failures && (tests || timing) {
+		return fmt.Errorf("%w: --failures cannot be used with --tests, --value or --max-load", errUsage)
+	}
+	if refused && (failures || tests || timing || tasks) {
+		return fmt.Errorf("%w: --refused cannot be used with --failures, --tests, --value, --max-load, --task or --in", errUsage)
+	}
+	return nil
 }
 
 func validateStatsValue(value, task, in string, inSet, tests bool, minRuns int, minRunsSet bool) error {
