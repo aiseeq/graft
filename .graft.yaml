@@ -81,14 +81,17 @@ tasks:
     env: {GRAFT_TEST_DOCKER: '1'}
     run: ['go test -json -p {threads} -race -count=1 ./...']
   test-gate:
-    desc: the gate's tests, all but the ones that create docker containers, run the go command against modules or wait on purpose (test-race in all runs those); the PostgreSQL ones skip here and run in test-gate-db
+    desc: the gate's tests, all but the ones that create docker containers, run the go command against modules, wait on purpose or play the release, freeze, deploy, worktree and remote host scenarios (test-race in all runs those); the PostgreSQL ones skip here and run in test-gate-db
     # They pass on the user's remote_heavy host too (01.11: go test -short on
     # it green but one test of this machine's SELinux, fixed): a busy gate
     # may send them there.
+    # -skip: the scenarios a commit does not use cost 84 of the root package's
+    # 132 s (04.11, limit 60 s); all runs them before release and install. The
+    # names match in internal/ too, there the same subject and little time.
     remote: true
     heavy: true
     tests: go
-    run: ['go test -json -p {threads} -short ./...']
+    run: ['go test -json -p {threads} -short -skip "^Test(Freeze|Frozen|Release|Deploy|Worktree|Remote|BusyGate|Round|Withheld|Advisory)" ./...']
   test-gate-db:
     desc: the gate's tests on the test database, the packages that read GRAFT_TEST_PG_DSN
     test_db: true
