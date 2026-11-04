@@ -10,7 +10,7 @@ import (
 	"github.com/aiseeq/akit/pressure"
 )
 
-func TestRemoteIsPublic(t *testing.T) {
+func TestUserconfigRemoteIsPublic(t *testing.T) {
 	l := &Leaks{PublicRemotes: []string{"github.com/someone/"}}
 	for url, want := range map[string]bool{
 		"git@github.com:someone/tool.git":           true,
@@ -48,7 +48,7 @@ func TestModulesIsLatest(t *testing.T) {
 }
 
 // A narrower private prefix wins over the public prefix it lies under.
-func TestRemoteIsPublicPrivateOverrides(t *testing.T) {
+func TestUserconfigRemoteIsPublicPrivateOverrides(t *testing.T) {
 	l := &Leaks{PublicRemotes: []string{"github.com/someone/"}, PrivateRemotes: []string{"github.com/someone/secret-tool"}}
 	for url, want := range map[string]bool{
 		"git@github.com:someone/secret-tool.git":       false,

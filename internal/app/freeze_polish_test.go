@@ -14,7 +14,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/gitx"
 )
 
-func TestFreezePolishOldJournalWarning(t *testing.T) {
+func TestAppFreezePolishOldJournalWarning(t *testing.T) {
 	repo, cfg, head, remote := freezePolishFixture(t, true)
 	tag := "freeze-log/projectA/1.2.3/20261030T100000-abcdef1-advisory"
 	freezePolishGit(t, repo.Root, "tag", "-a", tag, head, "-m", "target: commit")
@@ -32,7 +32,7 @@ func TestFreezePolishOldJournalWarning(t *testing.T) {
 	}
 }
 
-func TestFreezePolishClockSkewAllowance(t *testing.T) {
+func TestAppFreezePolishClockSkewAllowance(t *testing.T) {
 	freezeTime := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
 	if !freezeLogIsCurrent(freezeTime.Add(-2*time.Minute), freezeTime) {
 		t.Fatal("record at the two-minute allowance boundary was considered old")
@@ -42,7 +42,7 @@ func TestFreezePolishClockSkewAllowance(t *testing.T) {
 	}
 }
 
-func TestFreezePolishAmendKeepsLocalRecordWhenRemoteCheckFails(t *testing.T) {
+func TestAppFreezePolishAmendKeepsLocalRecordWhenRemoteCheckFails(t *testing.T) {
 	repo, cfg, _, _ := freezePolishFixture(t, false)
 	f := &activeFreeze{target: "projectA", version: "1.2.3"}
 	var output bytes.Buffer
@@ -62,7 +62,7 @@ func TestFreezePolishAmendKeepsLocalRecordWhenRemoteCheckFails(t *testing.T) {
 	}
 }
 
-func TestFreezePolishThawReasonSurvives(t *testing.T) {
+func TestAppFreezePolishThawReasonSurvives(t *testing.T) {
 	repo, cfg, _, remote := freezePolishFixture(t, true)
 	f := &activeFreeze{target: "projectA", name: "Product 1.2.3", version: "1.2.3"}
 	tag, err := writeFreezeThawRecord(repo, cfg, f, "approval received")
@@ -75,7 +75,7 @@ func TestFreezePolishThawReasonSurvives(t *testing.T) {
 	}
 }
 
-func TestFreezePolishAmendRemovesPreviousAdvisoryRecord(t *testing.T) {
+func TestAppFreezePolishAmendRemovesPreviousAdvisoryRecord(t *testing.T) {
 	repo, cfg, head, remote := freezePolishFixture(t, true)
 	f := &activeFreeze{target: "projectA", version: "1.2.3"}
 	tag := "freeze-log/projectA/1.2.3/20261030T100000-abcdef1-advisory"
@@ -134,7 +134,7 @@ func freezePolishGit(t *testing.T, dir string, args ...string) string {
 // its remote unreachable makes the amended commit's advisory record here,
 // takes the replaced commit's local record away, and says the remote part
 // failed; before, the failed listing of the remote left no record at all.
-func TestFreezePolishAmendWithoutRemotesRecordsHere(t *testing.T) {
+func TestAppFreezePolishAmendWithoutRemotesRecordsHere(t *testing.T) {
 	repo, cfg, oldHead, _ := freezePolishFixture(t, false)
 	f := &activeFreeze{target: "projectA", version: "1.2.3"}
 	old := "freeze-log/projectA/1.2.3/20261030T100000-abcdef1-advisory"
@@ -162,7 +162,7 @@ func TestFreezePolishAmendWithoutRemotesRecordsHere(t *testing.T) {
 // their records cannot be read (the same tag differs between two remotes): the
 // replaced commit's record here goes all the same, the remotes' tags stay, and
 // the error says the remote part failed.
-func TestFreezePolishUnreadRemoteRecordsKeepNoLocalOne(t *testing.T) {
+func TestAppFreezePolishUnreadRemoteRecordsKeepNoLocalOne(t *testing.T) {
 	repo, cfg, head, remote := freezePolishFixture(t, true)
 	backup := filepath.Join(filepath.Dir(remote), "backup.git")
 	freezePolishGit(t, repo.Root, "init", "--bare", "-q", backup)

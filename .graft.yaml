@@ -38,7 +38,7 @@ tasks:
   install:
     desc: install bin/graft into tools.bin_dir (a running graft keeps its file) once the gate of the pilot passes with the new binary
     usage: '[--no-pilot]'
-    deps: [build, glint]
+    deps: [build, glint, test-scenarios]
     # The pilot is a project of the user's whose gate the new binary runs
     # before it replaces the one every project's hooks run: GRAFT_PILOT in
     # .env, a path outside this repository. Run from HEAD in a disposable
@@ -85,13 +85,23 @@ tasks:
     # They pass on the user's remote_heavy host too (01.11: go test -short on
     # it green but one test of this machine's SELinux, fixed): a busy gate
     # may send them there.
-    # -skip: the scenarios a commit does not use cost 84 of the root package's
-    # 132 s (04.11, limit 60 s); all runs them before release and install. The
-    # names match in internal/ too, there the same subject and little time.
+    # GATE_SCENARIOS: the root package's scenarios a commit does not use, most
+    # of its time (04.11, limit 60 s). test-scenarios runs them for install,
+    # test-race for all. The gate's own tests, TestBusyGate, stay here.
+    env: &gate-scenarios {GATE_SCENARIOS: '^Test(Freeze|Frozen|Release|Deploy|Worktree|Remote|UserRemoteHeavy|Round|Withheld|Advisory)'}
     remote: true
     heavy: true
     tests: go
-    run: ['go test -json -p {threads} -short -skip "^Test(Freeze|Frozen|Release|Deploy|Worktree|Remote|BusyGate|Round|Withheld|Advisory)" ./...']
+    run:
+      - [go, test, -json, -p, '{threads}', -short, -skip, '${GATE_SCENARIOS}', ./...]
+  test-scenarios:
+    desc: the root package's scenarios test-gate leaves out, so install does not take a commit whose scenarios nobody ran
+    env: *gate-scenarios
+    remote: true
+    heavy: true
+    tests: go
+    run:
+      - [go, test, -json, -p, '{threads}', -short, -run, '${GATE_SCENARIOS}', .]
   test-gate-db:
     desc: the gate's tests on the test database, the packages that read GRAFT_TEST_PG_DSN
     test_db: true

@@ -418,7 +418,7 @@ deploy:
 	}
 }
 
-func TestWorktreeDisposablePath(t *testing.T) {
+func TestConfigWorktreeDisposablePath(t *testing.T) {
 	w := Worktree{Disposable: []string{"*.stamp", "logs", "frontend/dist/", "/config.yaml", "/root-only/", "any/"}}
 	for _, name := range []string{"build.stamp", "frontend/build.stamp", "logs/a.txt", "frontend/dist/app.js", "config.yaml", "root-only/a", "any/a", "sub/any/a"} {
 		got, err := w.DisposablePath(name, false)
@@ -474,7 +474,7 @@ deploy:
 	}
 }
 
-func TestRemoteArgvRefusesKeys(t *testing.T) {
+func TestConfigRemoteArgvRefusesKeys(t *testing.T) {
 	base := `schema: 1
 version: {mode: file}
 envs:

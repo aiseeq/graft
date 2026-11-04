@@ -12,6 +12,7 @@ import (
 )
 
 func TestExecCoresReservesGivenCores(t *testing.T) {
+	skipWaitInShort(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("uses sh")
 	}

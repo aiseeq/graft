@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestFreezeLogTimeIsUTC(t *testing.T) {
+func TestAppFreezeLogTimeIsUTC(t *testing.T) {
 	frozen, err := time.Parse(time.RFC3339Nano, "2026-10-20T16:00:00.5+02:00")
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +34,7 @@ func TestFreezeLogTimeIsUTC(t *testing.T) {
 	}
 }
 
-func TestFreezeJournalLineNamesUTC(t *testing.T) {
+func TestAppFreezeJournalLineNamesUTC(t *testing.T) {
 	line, err := freezeJournalLine("freeze-log/acc/v1-2-10/20261020T140000-abc1234-bypass", "object x\n\ntarget: acc\ncommit: abc1234def\nreason: urgent\n")
 	if err != nil {
 		t.Fatal(err)

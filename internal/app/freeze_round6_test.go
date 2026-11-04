@@ -12,7 +12,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/jira"
 )
 
-func TestFreezeUsesTheIssueVersionID(t *testing.T) {
+func TestAppFreezeUsesTheIssueVersionID(t *testing.T) {
 	issue := jira.Issue{FixVersions: []jira.Version{
 		{ID: "other-project-id", Name: "Product v1.2.10"},
 	}}
@@ -41,7 +41,7 @@ func TestReplaceFreezeJournalWithinBuildSection(t *testing.T) {
 	}
 }
 
-func TestFreezeJournalLineOmitsTagHeadersAndSignature(t *testing.T) {
+func TestAppFreezeJournalLineOmitsTagHeadersAndSignature(t *testing.T) {
 	dir := t.TempDir()
 	gitTest := func(args ...string) string {
 		t.Helper()
@@ -81,7 +81,7 @@ func TestFreezeJournalLineOmitsTagHeadersAndSignature(t *testing.T) {
 	}
 }
 
-func TestFreezeJournalListsRetriedCommitAdvisory(t *testing.T) {
+func TestAppFreezeJournalListsRetriedCommitAdvisory(t *testing.T) {
 	root := t.TempDir()
 	work := filepath.Join(root, "work")
 	remote := filepath.Join(root, "remote.git")
