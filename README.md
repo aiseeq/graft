@@ -2079,6 +2079,9 @@ freeze: {branch: release/{version}, types: [Bug], advisory: [lint]}
 
 Run `graft deploy freeze <target> <Jira version>` from the trunk to cut and
 push `release/{version}` and the annotated `freeze/<target>/<version>` tag.
+The Jira version can be renamed while frozen; the project list is fixed when
+it is frozen, so thaw and freeze again to include a new project or replace an
+older tag made without version ids.
 The version prefix is removed from `{version}`. While the tag is on a remote,
 the required target accepts only that branch and commits naming an item in the
 frozen version. Items added to the version after the freeze pass only when

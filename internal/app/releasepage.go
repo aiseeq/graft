@@ -262,6 +262,19 @@ func findProjectVersion(ctx context.Context, client *jira.Client, projects []str
 	return "", jira.Version{}, false, nil
 }
 
+func findProjectVersionIDs(ctx context.Context, client *jira.Client, projects, ids []string) (string, bool, error) {
+	for _, project := range projects {
+		versions, err := client.ProjectVersions(ctx, project)
+		if err != nil {
+			return "", false, err
+		}
+		if i := slices.IndexFunc(versions, func(v jira.Version) bool { return slices.Contains(ids, v.ID) }); i >= 0 {
+			return versions[i].Name, true, nil
+		}
+	}
+	return "", false, nil
+}
+
 // buildHeading names the build a section is about.
 func buildHeading(p *config.ReleasePage, r *deployRun) string {
 	text := strings.NewReplacer("{version}", r.version, "{short}", gitx.Short(r.head)).Replace(p.Label("build"))

@@ -19,6 +19,7 @@ import (
 
 type activeFreeze struct {
 	target, name, version, branch, tag string
+	versionIDs                         []string
 	time                               time.Time
 	config                             *config.DeployTarget
 }
@@ -157,6 +158,12 @@ func setFreezeField(f *activeFreeze, key, value string) error {
 	switch key {
 	case "version":
 		f.name = value
+	case "version-id":
+		for id := range strings.SplitSeq(value, ",") {
+			if id = strings.TrimSpace(id); id != "" {
+				f.versionIDs = append(f.versionIDs, id)
+			}
+		}
 	case "branch":
 		f.branch = value
 	case "time":
@@ -216,12 +223,16 @@ func (a *App) DeployFreeze(ctx context.Context, target, versionName string) erro
 }
 
 func (a *App) cutFreeze(ctx context.Context, r *deployRun, target, versionName string) (retErr error) {
-	version, err := findFreezeVersion(ctx, r.cfg, versionName)
+	versions, err := findFreezeVersions(ctx, r.cfg, versionName)
 	if err != nil {
 		return err
 	}
-	if version.ID == "" {
+	if len(versions) == 0 {
 		return fmt.Errorf("Jira has no version %q", versionName)
+	}
+	versionIDs := make([]string, len(versions))
+	for i, version := range versions {
+		versionIDs[i] = version.ID
 	}
 	short := strings.TrimPrefix(versionName, r.target.ApprovedRelease.Prefix)
 	branch := strings.ReplaceAll(r.target.Freeze.Branch, "{version}", short)
@@ -263,7 +274,7 @@ func (a *App) cutFreeze(ctx context.Context, r *deployRun, target, versionName s
 		return err
 	}
 	tag := "freeze/" + target + "/" + freezeSlug(short)
-	msg := fmt.Sprintf("version: %s\nbranch: %s\ntime: %s\nwho: %s\n", versionName, branch, now.Format(time.RFC3339Nano), strings.TrimSpace(who))
+	msg := fmt.Sprintf("version: %s\nversion-id: %s\nbranch: %s\ntime: %s\nwho: %s\n", versionName, strings.Join(versionIDs, ","), branch, now.Format(time.RFC3339Nano), strings.TrimSpace(who))
 	if _, err := r.repo.Git("tag", "-d", tag); err != nil && gitx.ExitCode(err) != 1 {
 		return err
 	}
@@ -281,13 +292,22 @@ func (a *App) cutFreeze(ctx context.Context, r *deployRun, target, versionName s
 	return nil
 }
 
-func findFreezeVersion(ctx context.Context, cfg *config.Config, name string) (jira.Version, error) {
+func findFreezeVersions(ctx context.Context, cfg *config.Config, name string) ([]jira.Version, error) {
 	client, err := jiraClient()
 	if err != nil {
-		return jira.Version{}, err
+		return nil, err
 	}
-	_, version, _, err := findProjectVersion(ctx, client, cfg.ReleaseNotes.Jira.ProjectKeys, name)
-	return version, err
+	var versions []jira.Version
+	for _, project := range cfg.ReleaseNotes.Jira.ProjectKeys {
+		projectVersions, err := client.ProjectVersions(ctx, project)
+		if err != nil {
+			return nil, err
+		}
+		if i := slices.IndexFunc(projectVersions, func(v jira.Version) bool { return v.Name == name }); i >= 0 {
+			versions = append(versions, projectVersions[i])
+		}
+	}
+	return versions, nil
 }
 
 func checkoutFreezeBranch(repo *gitx.Repo, remote, branch string) (bool, error) {
@@ -834,6 +854,21 @@ func (a *App) recordCommitAdvisory(repo *gitx.Repo, cfg *config.Config, f *activ
 }
 
 func (a *App) freezeIssueCheck(ctx context.Context, r *deployRun, f *activeFreeze) error {
+	if len(f.versionIDs) == 0 {
+		return fmt.Errorf("freeze tag %s has no version id; thaw it with `graft deploy thaw %s --reason ...` and freeze again", f.tag, f.target)
+	}
+	client, err := jiraClient()
+	if err != nil {
+		return err
+	}
+	versionName, found, err := findProjectVersionIDs(ctx, client, r.cfg.ReleaseNotes.Jira.ProjectKeys, f.versionIDs)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("frozen Jira version ids %s (%s) no longer exist", strings.Join(f.versionIDs, ","), f.name)
+	}
+	f.name = versionName
 	if f.config.ApprovedRelease == nil {
 		return errors.New("freeze requires approved_release.prefix to identify Jira versions")
 	}
@@ -1060,32 +1095,40 @@ func checkFreezeIssue(ctx context.Context, gate *approvalGate, f *activeFreeze, 
 	if err != nil {
 		return err
 	}
-	if !issue.HasFixVersion(f.name) && issue.Parent != "" {
+	versionIDs := issue.FixVersionIDs(f.versionIDs)
+	if len(versionIDs) == 0 && issue.Parent != "" {
 		issue, err = gate.issue(ctx, issue.Parent)
 		if err != nil {
 			return err
 		}
 		key = issue.Key
+		versionIDs = issue.FixVersionIDs(f.versionIDs)
 	}
-	if !issue.HasFixVersion(f.name) {
+	if len(versionIDs) == 0 {
 		return nil
 	}
 	*matched = append(*matched, key)
-	versionID := issue.FixVersionID(f.name)
-	if versionID == "" {
-		return fmt.Errorf("%s: Jira did not return the id of fix version %q", key, f.name)
+	addedAny := false
+	missingCreated := false
+	for _, versionID := range versionIDs {
+		added, hasAddition, err := gate.fixVersionHistoryAfter(ctx, key, versionID, f.time)
+		if err != nil {
+			return err
+		}
+		if !hasAddition && issue.Created.After(f.time) {
+			added = true
+		}
+		if !hasAddition && issue.Created.IsZero() {
+			missingCreated = true
+		}
+		if added && !slices.Contains(f.config.Freeze.Types, issue.Type) {
+			addedAny = true
+		}
 	}
-	added, hasAddition, err := gate.fixVersionHistoryAfter(ctx, key, versionID, f.time)
-	if err != nil {
-		return err
-	}
-	if !hasAddition && issue.Created.After(f.time) {
-		added = true
-	}
-	if !hasAddition && issue.Created.IsZero() {
+	if missingCreated {
 		return fmt.Errorf("%s: created time is missing; cannot check when it joined %s", key, f.name)
 	}
-	if added && !slices.Contains(f.config.Freeze.Types, issue.Type) {
+	if addedAny {
 		return freezeRefusalError{fmt.Errorf("%s joined %s after the freeze", key, f.name)}
 	}
 	return nil

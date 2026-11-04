@@ -35,6 +35,7 @@ type fakeJira struct {
 	failAll         bool
 	requests        int
 	versions        []map[string]any
+	otherVersions   []map[string]any // of project OTHER
 	versionRequests int
 	fixVersions     map[string][]string
 	edits           []string
@@ -106,6 +107,10 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/project/PROJ/versions" {
 		j.versionRequests++
 		_ = json.NewEncoder(w).Encode(j.versions)
+		return
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/project/OTHER/versions" {
+		_ = json.NewEncoder(w).Encode(j.otherVersions)
 		return
 	}
 	if j.versionsAPI(w, r) || j.confluenceAPI(w, r) {
@@ -431,7 +436,7 @@ func (j *fakeJira) versionNamed(name string) map[string]any {
 }
 
 func (j *fakeJira) versionName(id string) string {
-	for _, v := range j.versions {
+	for _, v := range slices.Concat(j.versions, j.otherVersions) {
 		if v["id"] == id {
 			return v["name"].(string)
 		}

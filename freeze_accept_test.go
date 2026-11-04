@@ -51,8 +51,10 @@ release_notes:
 // commit, with Product v1.2.10 (10010) approved: PROJ-1 joined it before the
 // freeze on 2026-10-20 10:00, PROJ-3 (a Task) and PROJ-8 (a Bug) after it;
 // PROJ-6 is in another version.
-func freezeRepo(t *testing.T) *deployFixture {
-	d := newDeployFixture(t, freezeConfig)
+func freezeRepo(t *testing.T) *deployFixture { return freezeRepoWith(t, freezeConfig) }
+
+func freezeRepoWith(t *testing.T, config func(state string, q func(string) string) string) *deployFixture {
+	d := newDeployFixture(t, config)
 	d.git("remote", "set-head", "origin", d.git("branch", "--show-current"))
 	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-1": {"10010"}, "PROJ-3": {"10010"}, "PROJ-8": {"10010"}, "PROJ-6": {"10001"}})
 	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "APPROVED"}})

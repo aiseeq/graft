@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -16,8 +17,8 @@ func TestAppFreezeUsesTheIssueVersionID(t *testing.T) {
 	issue := jira.Issue{FixVersions: []jira.Version{
 		{ID: "other-project-id", Name: "Product v1.2.10"},
 	}}
-	if got := issue.FixVersionID("Product v1.2.10"); got != "other-project-id" {
-		t.Fatalf("freeze issue version id = %q, want item's own id", got)
+	if got := issue.FixVersionIDs([]string{"first-project-id", "other-project-id"}); !slices.Equal(got, []string{"other-project-id"}) {
+		t.Fatalf("matching freeze issue version IDs = %v, want the issue's own ID", got)
 	}
 }
 

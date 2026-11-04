@@ -116,24 +116,15 @@ type Issue struct {
 	Labels   []string
 }
 
-// HasFixVersion reports whether this issue belongs to the named release.
-func (i Issue) HasFixVersion(name string) bool {
+// FixVersionIDs returns the IDs this issue shares with the given versions.
+func (i Issue) FixVersionIDs(ids []string) []string {
+	var matching []string
 	for _, version := range i.FixVersions {
-		if version.Name == name {
-			return true
+		if slices.Contains(ids, version.ID) {
+			matching = append(matching, version.ID)
 		}
 	}
-	return false
-}
-
-// FixVersionID returns the ID of this issue's fix version with the given name.
-func (i Issue) FixVersionID(name string) string {
-	for _, version := range i.FixVersions {
-		if version.Name == name {
-			return version.ID
-		}
-	}
-	return ""
+	return matching
 }
 
 // Transition is a move available from the item's current status.
