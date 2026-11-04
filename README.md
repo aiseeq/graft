@@ -1148,7 +1148,9 @@ the tail when there are none. A task line uses the first failing step's reason.
 Output sent directly to a terminal is not captured, so its failing step has
 no `reason`; this keeps the child connected to the terminal.
 
-`graft stats --refused` lists the raw `git commit`s the pre-commit hook refused,
+`graft stats --refused` lists the raw `git commit`s the pre-commit hook refused
+for going past `graft commit` (a branch of `commit.local_branches` is not refused
+that way, nor is it listed when its checks fail),
 newest first: time, work tree, branch and the Claude Code session
 (`CLAUDE_CODE_SESSION_ID`, `-` outside one). Lines are in
 `refused-commits.jsonl` next to `stats.jsonl`, one JSON object each, kept like
