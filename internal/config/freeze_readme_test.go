@@ -63,7 +63,7 @@ func TestReadmeFreezeExampleParses(t *testing.T) {
 	}
 }
 
-func TestFreezeAdvisoryNestedSaysWhatToDo(t *testing.T) {
+func TestNestedFreezeAdvisorySaysWhatToDo(t *testing.T) {
 	_, err := Parse(freezeTestConfig(`freeze: {types: [Bug], advisory: [nested]}`))
 	if err == nil {
 		t.Fatal("an advisory task nested in a gate step was accepted")
