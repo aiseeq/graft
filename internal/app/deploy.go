@@ -769,63 +769,11 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 	}
 	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name, glint: r.glint, subtasksStay: r.cfg.ByWork(), standing: notes.SkipKeys}
 	sub := &subtaskRun{mover: mover, notes: notes, me: me, reached: map[string]string{}}
-	// unsure are the keys this deploy could not read or post to: one held
-	// before stays held, moved when it may be.
-	var unsure []string
+	items := &noteItems{app: a, run: r, client: client, me: me, text: text, fix: fix, mover: mover, sub: sub}
 	for _, key := range keys {
-		if r.moveOut != nil && slices.Contains(r.moveOut.keys, key) {
-			a.printf("release note for %s not posted: this deploy reverts its work from the candidate", key)
-			continue
-		}
-		if slices.Contains(notes.SkipKeys, key) {
-			a.printf("release note for %s not posted, %s left alone: release_notes.jira.skip_keys", key, key)
-			continue
-		}
-		issue, err := client.Issue(ctx, key)
-		if err != nil {
-			a.warn("release note for %s not posted: %v", key, err)
-			fix.failed(key, err)
-			unsure = append(unsure, key)
-			continue
-		}
-
-		// A done item only learns what shipped: its status and versions stay,
-		// and its subtasks go by their own commits. Without work_keys they
-		// follow it.
-		learns := issue.Done && notes.WorkKeys
-		if !learns {
-			sub.delivered = append(sub.delivered, issue)
-			sub.reached[issue.Key] = issue.Status
-		}
-		yours, err := a.noteable(ctx, client, notes, me, issue)
-		if err != nil {
-			a.warn("release note for %s not posted: %v", key, err)
-			if !learns {
-				fix.failed(key, err)
-			}
-			unsure = append(unsure, key)
-			continue
-		}
-		if !yours {
-			continue
-		}
-		posted := true
-		if err := client.Comment(ctx, key, text); err != nil {
-			a.warn("release note for %s not posted: %v", key, err)
-			posted = false
-			unsure = append(unsure, key)
-		} else {
-			a.printf("release note posted to %s", key)
-		}
-		if learns {
-			continue
-		}
-		fix.add(ctx, issue)
-		if posted {
-			sub.reached[issue.Key] = mover.delivered(ctx, issue)
-		}
+		items.post(ctx, key)
 	}
-	judged := slices.DeleteFunc(slices.Clone(keys), func(k string) bool { return slices.Contains(unsure, k) })
+	judged := slices.DeleteFunc(slices.Clone(keys), func(k string) bool { return slices.Contains(items.unsure, k) })
 	unread := a.retryHeld(ctx, sub, held, judged)
 	if r.target.ReleaseNotes.Subtasks {
 		sub.follow(ctx)
@@ -834,6 +782,76 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 		a.warn("%v", err)
 	}
 	return notesUnset{fixVersion: fix.unset, assignee: mover.unset.assignee}
+}
+
+// noteItems posts the release note to the delivered items and moves them on.
+type noteItems struct {
+	app    *App
+	run    *deployRun
+	client *jira.Client
+	// me is the owner of the Jira token; text, the note.
+	me, text string
+	fix      *fixVersionRun
+	mover    *noteMover
+	sub      *subtaskRun
+	// unsure are the keys this deploy could not read or post to: one held
+	// before stays held, moved when it may be.
+	unsure []string
+}
+
+// post gives one delivered item its note, its fix version and its move.
+func (n *noteItems) post(ctx context.Context, key string) {
+	a, notes := n.app, n.run.cfg.ReleaseNotes.Jira
+	if out := n.run.moveOut; out != nil && slices.Contains(out.keys, key) {
+		a.printf("release note for %s not posted: this deploy reverts its work from the candidate", key)
+		return
+	}
+	if slices.Contains(notes.SkipKeys, key) {
+		a.printf("release note for %s not posted, %s left alone: release_notes.jira.skip_keys", key, key)
+		return
+	}
+	issue, err := n.client.Issue(ctx, key)
+	if err != nil {
+		a.warn("release note for %s not posted: %v", key, err)
+		n.fix.failed(key, err)
+		n.unsure = append(n.unsure, key)
+		return
+	}
+	// A done item only learns what shipped: its status and versions stay,
+	// and its subtasks go by their own commits. Without work_keys they
+	// follow it.
+	learns := issue.Done && notes.WorkKeys
+	if !learns {
+		n.sub.delivered = append(n.sub.delivered, issue)
+		n.sub.reached[issue.Key] = issue.Status
+	}
+	yours, err := a.noteable(ctx, n.client, notes, n.me, issue)
+	if err != nil {
+		a.warn("release note for %s not posted: %v", key, err)
+		if !learns {
+			n.fix.failed(key, err)
+		}
+		n.unsure = append(n.unsure, key)
+		return
+	}
+	if !yours {
+		return
+	}
+	posted := true
+	if err := n.client.Comment(ctx, key, n.text); err != nil {
+		a.warn("release note for %s not posted: %v", key, err)
+		posted = false
+		n.unsure = append(n.unsure, key)
+	} else {
+		a.printf("release note posted to %s", key)
+	}
+	if learns {
+		return
+	}
+	n.fix.add(ctx, issue)
+	if posted {
+		n.sub.reached[issue.Key] = n.mover.delivered(ctx, issue)
+	}
 }
 
 // noteMover moves items by the target's transitions and hands them over to

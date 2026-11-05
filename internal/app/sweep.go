@@ -686,6 +686,27 @@ func (s *sweepRun) item(ctx context.Context, issue jira.Issue, commits []sweptCo
 // commits name the subtasks, so no deploy moves the parent. A parent in a
 // status outside the flow, or not started, is listed instead.
 func (s *sweepRun) parents(ctx context.Context, keys []string, items map[string][]sweptCommit) {
+	parents := s.parentKeys(keys)
+	s.read(ctx, parents)
+	allOn := func(key string) bool {
+		return !slices.ContainsFunc(items[key], func(c sweptCommit) bool { return !c.onTarget })
+	}
+	for _, key := range parents {
+		parent, ok := s.issues[key]
+		if !ok || slices.Contains(s.notes.SkipKeys, key) {
+			continue
+		}
+		if s.r.cfg.ByWork() {
+			s.acceptedSubtasks(ctx, parent, allOn)
+		}
+		if !parent.Done && len(parent.Subtasks) > 0 && allOn(key) {
+			s.finishParent(ctx, parent, allOn)
+		}
+	}
+}
+
+// parentKeys are the parents among the items and of them, sorted.
+func (s *sweepRun) parentKeys(keys []string) []string {
 	var parents []string
 	for _, key := range keys {
 		if issue, ok := s.issues[key]; ok {
@@ -696,36 +717,26 @@ func (s *sweepRun) parents(ctx context.Context, keys []string, items map[string]
 			}
 		}
 	}
-	parents = uniqueSorted(parents)
-	s.read(ctx, parents)
-	allOn := func(key string) bool {
-		return !slices.ContainsFunc(items[key], func(c sweptCommit) bool { return !c.onTarget })
-	}
-	for _, key := range parents {
-		parent, ok := s.issues[key]
-		if ok && s.r.cfg.ByWork() && !slices.Contains(s.notes.SkipKeys, key) {
-			s.acceptedSubtasks(ctx, parent, allOn)
-		}
-		if !ok || parent.Done || len(parent.Subtasks) == 0 || slices.Contains(s.notes.SkipKeys, key) || !allOn(key) {
-			continue
-		}
-		s.read(ctx, parent.Subtasks)
-		done := true
-		for _, st := range parent.Subtasks {
-			issue, ok := s.issues[st]
-			done = done && ok && issue.Done && allOn(st)
-		}
-		why := fmt.Sprintf("its subtasks are all done (%d) and their work is on %s", len(parent.Subtasks), s.r.name)
-		switch {
-		case !done:
-		case parent.NotStarted || !s.inFlow(parent.Status):
-			// A parent put aside by hand, Paused say, stays there.
-			s.judged[key] = true
-			s.list(ctx, parent, "%s is %s, but %s", key, parent.Status, why)
-		default:
-			s.move(ctx, parent, why, false)
+	return uniqueSorted(parents)
+}
+
+// finishParent moves the parent when its subtasks are all done and on the
+// target.
+func (s *sweepRun) finishParent(ctx context.Context, parent jira.Issue, allOn func(string) bool) {
+	s.read(ctx, parent.Subtasks)
+	for _, st := range parent.Subtasks {
+		if issue, ok := s.issues[st]; !ok || !issue.Done || !allOn(st) {
+			return
 		}
 	}
+	why := fmt.Sprintf("its subtasks are all done (%d) and their work is on %s", len(parent.Subtasks), s.r.name)
+	if parent.NotStarted || !s.inFlow(parent.Status) {
+		// A parent put aside by hand, Paused say, stays there.
+		s.judged[parent.Key] = true
+		s.list(ctx, parent, "%s is %s, but %s", parent.Key, parent.Status, why)
+		return
+	}
+	s.move(ctx, parent, why, false)
 }
 
 // acceptedSubtasks moves to the done status the subtasks accepted along with

@@ -699,11 +699,12 @@ func (t *DeployTarget) ReadyStatuses() []string {
 // transitions that hand an item over.
 func (c *Config) ReviewStatuses() []string {
 	var review []string
-	for _, t := range c.Deploy.Targets {
-		if t.ReleaseNotes == nil {
+	for _, name := range slices.Sorted(maps.Keys(c.Deploy.Targets)) {
+		notes := c.Deploy.Targets[name].ReleaseNotes
+		if notes == nil {
 			continue
 		}
-		for _, tr := range t.ReleaseNotes.Transitions {
+		for _, tr := range notes.Transitions {
 			if tr.Assign != "" {
 				review = append(review, tr.To)
 			}
@@ -758,10 +759,8 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 	if err := c.validateProjectName(where+".release_notes", n.Comment); err != nil {
 		return err
 	}
-	for i, tr := range n.Transitions {
-		if tr.RequireComment != "" && tr.Instructs(c.NoteComment(t)) {
-			return fmt.Errorf("%s.release_notes.transitions[%d].require_comment: the release note itself contains %q, so it would pass for the comment", where, i, tr.RequireComment)
-		}
+	if err := c.validateRequireComments(where, t); err != nil {
+		return err
 	}
 	if err := validateSweep(where+".release_notes.sweep", n); err != nil {
 		return err
@@ -772,9 +771,26 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 	if err := validateGlint(where+".release_notes.glint", n); err != nil {
 		return err
 	}
-	switch {
-	case n.Subtasks && len(n.Transitions) == 0:
+	if n.Subtasks && len(n.Transitions) == 0 {
 		return fmt.Errorf("%s.release_notes.subtasks: needs transitions to move them by", where)
+	}
+	return validateNoteFixVersion(where, n)
+}
+
+// validateRequireComments refuses a require_comment the note itself satisfies.
+func (c *Config) validateRequireComments(where string, t *DeployTarget) error {
+	for i, tr := range t.ReleaseNotes.Transitions {
+		if tr.RequireComment != "" && tr.Instructs(c.NoteComment(t)) {
+			return fmt.Errorf("%s.release_notes.transitions[%d].require_comment: the release note itself contains %q, so it would pass for the comment", where, i, tr.RequireComment)
+		}
+	}
+	return nil
+}
+
+// validateNoteFixVersion checks the fix version of a target's release notes
+// and parses its name.
+func validateNoteFixVersion(where string, n *TargetNotes) error {
+	switch {
 	case n.FixVersion == nil:
 		return nil
 	case (strings.TrimSpace(n.FixVersion.Prefix) == "") == (n.FixVersion.Name == ""):
