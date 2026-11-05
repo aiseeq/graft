@@ -244,3 +244,103 @@ func TestFreezeWorkKeysAllItemsInTheRelease(t *testing.T) {
 		t.Errorf("exit %d\n%s", code, out)
 	}
 }
+
+// A sentence of its own is work: its key goes through the gate.
+func TestDeployWorkKeysSentence(t *testing.T) {
+	d := workKeysRepo(t)
+	d.statuses(map[string]string{"PROJ-8": "Ready for release"}, nil)
+	d.mustGraft("deploy", "--unapproved", "gate")
+	d.commits("fix: PROJ-8 one part. PROJ-5 the other part")
+	out, code := d.graft("", "deploy", "gate")
+	if code == 0 {
+		t.Fatalf("exit 0:\n%s", out)
+	}
+	wantLines(t, out, []string{"PROJ-5 is Testing"}, nil)
+}
+
+// Skipping the done status would take the note from a done item whose work
+// ships, which work_keys is there to give it: a config error, not a silence.
+func TestDeployWorkKeysSkipStatusesNamesDone(t *testing.T) {
+	d := workKeysRepo(t)
+	d.write(".graft.yaml", strings.NewReplacer(
+		"skip_statuses: [Blocked]", `skip_statuses: [Done, "Won't do"]`,
+		"subtasks: true}", "subtasks: true, sweep: {}}",
+	).Replace(d.read(".graft.yaml")))
+	out, code := d.graft("", "deploy", "check", "sub")
+	if code == 0 || !strings.Contains(out, "skip_statuses names Done") {
+		t.Errorf("exit %d\n%s", code, out)
+	}
+	d.write(".graft.yaml", strings.Replace(d.read(".graft.yaml"), "    work_keys: true\n", "", 1))
+	if out, code := d.graft("", "deploy", "check", "sub"); strings.Contains(out, "skip_statuses names Done") {
+		t.Errorf("without work_keys, exit %d\n%s", code, out)
+	}
+}
+
+// A done parent only learns what shipped: its subtasks have their own commits
+// to go by. Without work_keys they follow it, as they did.
+func TestDeployDoneParentSubtasks(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		repo func(*testing.T) *deployFixture
+		want string
+	}{
+		{"work_keys", workKeysRepo, "Ready for release"},
+		{"without", deployRepo, "Done"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := tc.repo(t)
+			d.statuses(map[string]string{"PROJ-70": "Ready for release"}, map[string]string{"PROJ-70": "PROJ-2"})
+			d.mustGraft("deploy", "--unapproved", "sub")
+			d.commits("fix: PROJ-2 the work of a done parent")
+			d.mustGraft("deploy", "sub")
+			d.jira.mu.Lock()
+			defer d.jira.mu.Unlock()
+			if got := d.jira.statuses["PROJ-70"]; got != tc.want {
+				t.Errorf("the subtask is %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// A target that goes by the version alone takes nothing from a done parent, so
+// a done parent keeps nothing out either.
+func TestDeployWorkKeysDoneParentOnVersionTarget(t *testing.T) {
+	d := workKeysRepo(t)
+	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-44": {"10010"}})
+	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED"}})
+	d.statuses(map[string]string{"PROJ-43": "Done", "PROJ-44": "In Progress"}, map[string]string{"PROJ-44": "PROJ-43"})
+	d.mustGraft("deploy", "--unapproved", "live")
+	d.commits("feat: PROJ-44 in the approved version")
+	d.mustGraft("deploy", "live")
+}
+
+// The refusal of an open parent says what gets the commit out.
+func TestDeployWorkKeysOpenParentWords(t *testing.T) {
+	d := workKeysRepo(t)
+	d.statuses(map[string]string{"PROJ-8": "Ready for release", "PROJ-9": "In Progress"}, map[string]string{"PROJ-9": "PROJ-8"})
+	d.mustGraft("deploy", "--unapproved", "gate")
+	d.commits("feat: PROJ-8 the parent")
+	out, code := d.graft("", "deploy", "gate")
+	if code == 0 {
+		t.Fatalf("exit 0:\n%s", out)
+	}
+	wantLines(t, out, []string{"finish them or name PROJ-8 in release_notes.jira.skip_keys", "finish any subtasks called open"}, []string{"take PROJ-8 out of"})
+}
+
+// A subtask in the release by its parent is not named as outside it.
+func TestFreezeWorkKeysNamesTheItemOutside(t *testing.T) {
+	d := freezeRepoWith(t, func(state string, q func(string) string) string {
+		return strings.Replace(freezeConfig(state, q), "project_keys: [PROJ]\n", "project_keys: [PROJ]\n    work_keys: true\n", 1)
+	})
+	d.jira.mu.Lock()
+	d.jira.parents = map[string]string{"PROJ-31": "PROJ-1"}
+	d.jira.mu.Unlock()
+	d.commitFile("one.txt", "feat: PROJ-1 accepted work")
+	d.freeze()
+	d.commitFile("two.txt", "fix: PROJ-30 PROJ-31 a neighbour and a subtask")
+	out, code := d.graft("", "deploy", "acc")
+	if code == 0 {
+		t.Fatalf("exit 0:\n%s", out)
+	}
+	wantLines(t, out, []string{"PROJ-30 not in Product v1.2.10"}, []string{"PROJ-31 not in"})
+}

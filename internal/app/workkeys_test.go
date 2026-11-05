@@ -26,6 +26,9 @@ func TestWorkKeys(t *testing.T) {
 		{name: "a mention in the subject", subject: "chore(deploy): PROJ-1 the standing PROJ-2 in skip_keys", want: []string{"PROJ-1"}},
 		{name: "a clause of its own", subject: "fix(rates): PROJ-1 the rate; PROJ-2 the name", want: []string{"PROJ-1", "PROJ-2"}},
 		{name: "a run after a clause, then a mention", subject: "fix: PROJ-1 a; PROJ-2 PROJ-3 b after PROJ-4", want: []string{"PROJ-1", "PROJ-2", "PROJ-3"}},
+		{name: "a sentence of its own", subject: "fix: PROJ-1 a. PROJ-2 b. PROJ-3 PROJ-4 c after PROJ-5", want: []string{"PROJ-1", "PROJ-2", "PROJ-3", "PROJ-4"}},
+		{name: "a dot in a word", subject: "fix: PROJ-1 v1.PROJ-2", want: []string{"PROJ-1"}},
+		{name: "a comma before prose stays a mention", subject: "fix: PROJ-1 a, as PROJ-2 b", want: []string{"PROJ-1"}},
 		{name: "a semicolon not right before the key", subject: "fix: PROJ-1 a; after PROJ-2 b", want: []string{"PROJ-1"}},
 		{name: "a key line of the body", subject: "fix: no key", body: "Why.\n\nPROJ-1\n", want: []string{"PROJ-1"}},
 		{name: "key lines of the body", subject: "fix: no key", body: "PROJ-1\nPROJ-2\nPROJ-1\n", want: []string{"PROJ-1", "PROJ-2"}},
@@ -38,6 +41,37 @@ func TestWorkKeys(t *testing.T) {
 			got := workKeys(re, tc.conf, deliveredCommit{sha: tc.sha, subject: tc.subject, body: tc.body})
 			if !slices.Equal(got, tc.want) {
 				t.Errorf("workKeys = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Without work_keys the sweep goes by one item, as it did: the attribution of
+// the commit itself or the first key; one quoted as reverted does not count.
+func TestSweepKeys(t *testing.T) {
+	re := regexp.MustCompile(`\bPROJ-[0-9]+\b`)
+	conf := &config.ApprovedRelease{Attributed: map[string]config.Attribution{"abc1234": {Item: "PROJ-9"}}}
+	byWork := &config.Config{ReleaseNotes: &config.ReleaseNotes{Jira: &config.JiraNotes{WorkKeys: true}}}
+	for _, tc := range []struct {
+		name string
+		cfg  *config.Config
+		sha  string
+		subj string
+		body string
+		want []string
+	}{
+		{name: "the first key", cfg: &config.Config{}, subj: "fix: PROJ-1 PROJ-2 x", want: []string{"PROJ-1"}},
+		{name: "attributed", cfg: &config.Config{}, sha: "abc1234", subj: "fix: PROJ-1 x", want: []string{"PROJ-9"}},
+		{name: "quotes an attributed commit", cfg: &config.Config{}, subj: "fix: PROJ-1 undo", body: "This reverts commit abc1234.\n", want: []string{"PROJ-1"}},
+		{name: "a key line", cfg: &config.Config{}, subj: "fix: x", body: "PROJ-1\nPROJ-2\n", want: []string{"PROJ-1"}},
+		{name: "no key", cfg: &config.Config{}, subj: "fix: x", want: nil},
+		{name: "by work", cfg: byWork, subj: "fix: PROJ-1 PROJ-2 x", want: []string{"PROJ-1", "PROJ-2"}},
+		{name: "by work, quotes an attributed commit", cfg: byWork, subj: "fix: PROJ-1 undo", body: "This reverts commit abc1234.\n", want: []string{"PROJ-9"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &deployRun{cfg: tc.cfg, target: &config.DeployTarget{ApprovedRelease: conf}}
+			if got := sweepKeys(r, re, deliveredCommit{sha: tc.sha, subject: tc.subj, body: tc.body}); !slices.Equal(got, tc.want) {
+				t.Errorf("sweepKeys = %v, want %v", got, tc.want)
 			}
 		})
 	}

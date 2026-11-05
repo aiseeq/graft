@@ -1090,6 +1090,7 @@ func checkFreezeCommit(ctx context.Context, r *deployRun, f *activeFreeze, gate 
 }
 
 func checkFreezeIssue(ctx context.Context, gate *approvalGate, f *activeFreeze, key string, matched *[]string) error {
+	named := key
 	issue, err := gate.issue(ctx, key)
 	if err != nil {
 		return err
@@ -1106,7 +1107,7 @@ func checkFreezeIssue(ctx context.Context, gate *approvalGate, f *activeFreeze, 
 	if len(versionIDs) == 0 {
 		return nil
 	}
-	*matched = append(*matched, key)
+	*matched = append(*matched, named)
 	addedAny := false
 	missingCreated := false
 	for _, versionID := range versionIDs {

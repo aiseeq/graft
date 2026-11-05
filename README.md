@@ -1905,10 +1905,11 @@ deploy to it, once a day after a `graft commit`, and on `graft deploy sweep
 With `release_notes.jira.work_keys: true` everything that asks which items a
 commit is for asks what it is the work of, not what it mentions: the first key
 of its subject, the keys right after that one (separated by spaces, commas,
-`и`, `and`, `+`, `/` or `&` alone), a key right after a `;` with the keys right
-after that, or else the lines of its body that are a key alone, or its
-`approved_release.attribute`. The rest are mentions. So `fix: PROJ-1 x; PROJ-2
-y` is the work of both and `fix: PROJ-1 after PROJ-2` of PROJ-1 alone, and a
+`и`, `and`, `+`, `/` or `&` alone), a key right after a `;` or opening a
+sentence with the keys right after that, or else the lines of its body that are
+a key alone, or its `approved_release.attribute`. The rest are mentions. So
+`fix: PROJ-1 x; PROJ-2 y` and `fix: PROJ-1 x. PROJ-2 y` are the work of both and
+`fix: PROJ-1 after PROJ-2` of PROJ-1 alone, and a
 commit with only a mention names no item. This covers the gate, the release
 notes, the release page, the items taken out of a window version, the hotfix
 label, the freeze and the trunk merge check. With the key on:
@@ -1916,11 +1917,12 @@ label, the freeze and the trunk merge check. With the key on:
 - a commit passes `approved_release`, the hotfix label and the freeze only when
   all the items of its work do, not one of them;
 - an item in a done-category status whose work the deploy delivers gets the
-  note, unless `skip_statuses` names its status, and keeps its status and fix
-  versions: another product's deploy may have closed it;
+  note and keeps its status and fix versions, and its subtasks go by their own
+  commits: another product's deploy may have closed it. `skip_statuses` naming
+  the sweep's `done` is a config error, for it would take that note away;
 - `approved_release` refuses an item that is ready (in `statuses`, or in the
   `from` of a transition to the sweep's `done`) with subtasks open, and a
-  subtask that is not ready under a parent that is ready or done. A subtask is
+  subtask that is not ready under a parent that is ready. A subtask is
   open unless it is done or ready itself, since done comes only after the
   release. A parent or subtask in `skip_keys` does not count, and a subtask
   ready itself passes whatever its parent's state;

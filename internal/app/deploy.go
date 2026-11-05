@@ -789,8 +789,14 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 			continue
 		}
 
-		sub.delivered = append(sub.delivered, issue)
-		sub.reached[issue.Key] = issue.Status
+		// A done item only learns what shipped: its status and versions stay,
+		// and its subtasks go by their own commits. Without work_keys they
+		// follow it.
+		learns := issue.Done && notes.WorkKeys
+		if !learns {
+			sub.delivered = append(sub.delivered, issue)
+			sub.reached[issue.Key] = issue.Status
+		}
 		yours, err := a.noteable(ctx, client, notes, me, issue)
 		if err != nil {
 			a.warn("release note for %s not posted: %v", key, err)
@@ -809,8 +815,7 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 		} else {
 			a.printf("release note posted to %s", key)
 		}
-		// A done item only learns what shipped: its status and versions stay.
-		if issue.Done {
+		if learns {
 			continue
 		}
 		fix.add(ctx, issue)
@@ -1010,9 +1015,9 @@ func (s *subtaskRun) move(ctx context.Context, key, parent string, t *config.Not
 
 // noteable tells whether an item gets a note, warning when it does not. A key
 // can reach a commit by hand, as a reference to an item that is closed or
-// somebody else's; with work_keys such a reference delivers nothing, so a done
-// item here has its work in this deploy, closed by another product's deploy
-// say, and gets the note. An item handed over for review stays yours: its
+// somebody else's; with work_keys only a subject that opens with such a
+// reference still counts, so a done item here has its work in this deploy,
+// closed by another product's deploy say, and gets the note. An item handed over for review stays yours: its
 // history shows it assigned to you.
 func (a *App) noteable(ctx context.Context, client *jira.Client, notes *config.JiraNotes, me string, issue jira.Issue) (bool, error) {
 	key := issue.Key
@@ -1683,7 +1688,7 @@ func (g *approvalGate) openParent(ctx context.Context, issue jira.Issue) (string
 		if err != nil {
 			return "", err
 		}
-		if !parent.Done && !slices.Contains(g.ready, parent.Status) {
+		if !slices.Contains(g.ready, parent.Status) {
 			return "", nil
 		}
 		holder = parent
@@ -1704,7 +1709,7 @@ func (g *approvalGate) openParent(ctx context.Context, issue jira.Issue) (string
 	if len(open) == 0 {
 		return "", nil
 	}
-	return fmt.Sprintf("%s is %s with open subtasks %s: finish them or take %s out of %s", holder.Key, holder.Status, strings.Join(open, ", "), holder.Key, holder.Status), nil
+	return fmt.Sprintf("%s is %s with open subtasks %s: finish them or name %s in release_notes.jira.skip_keys", holder.Key, holder.Status, strings.Join(open, ", "), holder.Key), nil
 }
 
 // item checks one item against the statuses and the approved version.
@@ -1877,6 +1882,9 @@ func (g *approvalGate) remedy() string {
 	}
 	if g.conf.Prefix != "" {
 		ways = append(ways, "put their items into the approved version")
+	}
+	if g.byWork {
+		ways = append(ways, "finish any subtasks called open")
 	}
 	return strings.Join(ways, " and ")
 }

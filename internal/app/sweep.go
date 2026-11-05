@@ -380,12 +380,9 @@ func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.
 		if isRevert(c.subject) || reverted[c.sha] {
 			continue
 		}
-		keys := workKeys(keyRe, r.target.ApprovedRelease, c.deliveredCommit)
+		keys := sweepKeys(r, keyRe, c.deliveredCommit)
 		if len(keys) == 0 {
 			continue
-		}
-		if !r.cfg.ByWork() {
-			keys = keys[:1]
 		}
 		sc := sweptCommit{sha: c.sha, when: c.when, onTarget: onTarget[c.sha] && !slices.Contains(withheld, c.sha) || picks.onTarget[c.sha], inTrunk: inTrunk[c.sha]}
 		// A pick is in the trunk when what it took is.
@@ -400,6 +397,23 @@ func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.
 		}
 	}
 	return items, nil
+}
+
+// sweepKeys are the items the sweep counts a commit for: with work_keys all of
+// its work; without it one item, its attribution or the first key, a commit
+// quoted as reverted aside.
+func sweepKeys(r *deployRun, keyRe *regexp.Regexp, c deliveredCommit) []string {
+	conf := r.target.ApprovedRelease
+	if r.cfg.ByWork() {
+		return workKeys(keyRe, conf, c)
+	}
+	if conf != nil {
+		if at, ok := conf.Attributed[c.sha]; ok {
+			return []string{at.Item}
+		}
+	}
+	keys := messageWorkKeys(keyRe, c)
+	return keys[:min(1, len(keys))]
 }
 
 // pickedRe is the line git cherry-pick -x adds; a commit that takes another
@@ -548,11 +562,11 @@ func revSet(repo *gitx.Repo, rev string, since time.Time) (map[string]bool, erro
 }
 
 // Between the keys of one commit's subject: a key right after a work key by
-// these alone, or right after a semicolon, is work too; a key anywhere else
-// refers to another item ("PROJ-1 fix after PROJ-2").
+// these alone, or opening a clause or a sentence, is work too; a key anywhere
+// else refers to another item ("PROJ-1 fix after PROJ-2").
 var (
 	workKeysGapRe   = regexp.MustCompile(`^[\s,+/&]*(?:(?:и|and)[\s,+/&]*)?$`)
-	workClauseGapRe = regexp.MustCompile(`;\s*$`)
+	workClauseGapRe = regexp.MustCompile(`;\s*$|\.\s+$`)
 )
 
 // workKeys are the items a commit is the work of, in the order it names them:
@@ -565,6 +579,12 @@ func workKeys(keyRe *regexp.Regexp, conf *config.ApprovedRelease, c deliveredCom
 	if items := attributedItems(conf, c); len(items) > 0 {
 		return items
 	}
+	return messageWorkKeys(keyRe, c)
+}
+
+// messageWorkKeys are the items the message itself says a commit is the work
+// of, as workKeys tells them.
+func messageWorkKeys(keyRe *regexp.Regexp, c deliveredCommit) []string {
 	var keys []string
 	prevEnd, afterWork := 0, false
 	for i, at := range keyRe.FindAllStringIndex(c.subject, -1) {

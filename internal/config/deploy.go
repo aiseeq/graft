@@ -749,6 +749,9 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 	if err := validateSweep(where+".release_notes.sweep", n); err != nil {
 		return err
 	}
+	if j := c.ReleaseNotes.Jira; j.WorkKeys && n.Sweep != nil && slices.Contains(j.SkipStatuses, n.Sweep.Done) {
+		return fmt.Errorf("release_notes.jira.skip_statuses names %s, the done status of %s: with work_keys a done item whose work ships gets the note, take %s out", n.Sweep.Done, where, n.Sweep.Done)
+	}
 	if err := validateGlint(where+".release_notes.glint", n); err != nil {
 		return err
 	}
