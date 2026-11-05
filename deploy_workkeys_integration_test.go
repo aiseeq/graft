@@ -505,6 +505,96 @@ func TestDeploySweepSubtaskAcceptedWithParent(t *testing.T) {
 	}
 }
 
+// sweepRepo is a repo with the sweep target, with work_keys or without.
+func sweepRepo(t *testing.T, work bool) *deployFixture {
+	t.Helper()
+	d := newDeployFixture(t, func(state string, q func(string) string) string {
+		c := sweepConfig(state, q)
+		if work {
+			c = strings.Replace(c, "    skip_keys: [PROJ-40]\n", "    skip_keys: [PROJ-40]\n    work_keys: true\n", 1)
+		}
+		return c
+	})
+	d.git("remote", "set-head", "origin", d.git("branch", "--show-current"))
+	return d
+}
+
+// pushCommits commits one file per message and pushes the branch.
+func (d *deployFixture) pushCommits(msgs ...string) {
+	d.t.Helper()
+	for _, msg := range msgs {
+		d.write("c"+d.git("rev-list", "--count", "HEAD")+".txt", "x\n")
+		d.mustPlainCommit(msg)
+	}
+	d.git("push", "-q", "origin", d.git("branch", "--show-current"))
+}
+
+// A parent stays open while the work of a done subtask is off the target.
+func TestDeploySweepParentWaitsForSubtaskWork(t *testing.T) {
+	for _, work := range []bool{false, true} {
+		t.Run("work_keys="+strconv.FormatBool(work), func(t *testing.T) {
+			d := sweepRepo(t, work)
+			d.statuses(map[string]string{"PROJ-20": "In Progress", "PROJ-21": "Done", "PROJ-22": "Done"},
+				map[string]string{"PROJ-21": "PROJ-20", "PROJ-22": "PROJ-20"})
+			d.pushCommits("feat: PROJ-21 a")
+			d.mustGraft("deploy", "swept")
+			d.git("checkout", "-q", "-b", "side")
+			d.pushCommits("feat: PROJ-22 on a branch")
+			d.git("checkout", "-q", "-")
+
+			out := d.mustGraft("deploy", "sweep", "swept", "--apply")
+			d.jira.mu.Lock()
+			defer d.jira.mu.Unlock()
+			if got := d.jira.statuses["PROJ-20"]; got != "In Progress" {
+				t.Errorf("PROJ-20 is %s with the work of PROJ-22 off the target\n%s", got, out)
+			}
+		})
+	}
+}
+
+// A done parent still takes along a subtask that waited for the reviewer when
+// it was accepted.
+func TestDeploySweepDoneParentTakesAcceptedSubtask(t *testing.T) {
+	d := sweepRepo(t, true)
+	d.statuses(map[string]string{"PROJ-80": "Done", "PROJ-81": "Testing"}, map[string]string{"PROJ-81": "PROJ-80"})
+	d.jira.mu.Lock()
+	d.jira.statusMoves = map[string][]fakeStatusMove{"PROJ-80": into("Done", 2), "PROJ-81": into("Testing", 5)}
+	d.jira.mu.Unlock()
+	d.pushCommits("feat: PROJ-81 a")
+	d.mustGraft("deploy", "swept")
+
+	out := d.mustGraft("deploy", "sweep", "swept", "--apply")
+	d.jira.mu.Lock()
+	defer d.jira.mu.Unlock()
+	if got := d.jira.statuses["PROJ-81"]; got != "Done" {
+		t.Errorf("PROJ-81 is %s\n%s", got, out)
+	}
+}
+
+// A parent put aside or not started that has a commit of its own is told about
+// once: judged by its subtasks, it is not judged again by the commit.
+func TestDeploySweepParentAsideListedOnce(t *testing.T) {
+	for _, status := range []string{"Paused", "To Do"} {
+		t.Run(status, func(t *testing.T) {
+			d := sweepRepo(t, false)
+			d.statuses(map[string]string{"PROJ-60": status, "PROJ-61": "Done"}, map[string]string{"PROJ-61": "PROJ-60"})
+			d.pushCommits("feat: PROJ-61 k", "feat: PROJ-60 own")
+			d.mustGraft("deploy", "swept")
+
+			out := d.mustGraft("deploy", "sweep", "swept", "--apply")
+			wantLines(t, out, []string{"PROJ-60 is " + status + ", but its subtasks are all done (1)"}, nil)
+			if n := strings.Count(out, "PROJ-60 is "); n != 1 {
+				t.Errorf("PROJ-60 told about %d times\n%s", n, out)
+			}
+			d.jira.mu.Lock()
+			defer d.jira.mu.Unlock()
+			if got := d.jira.statuses["PROJ-60"]; got != status {
+				t.Errorf("PROJ-60 moved to %s\n%s", got, out)
+			}
+		})
+	}
+}
+
 // A done item gets no version, so failing to tell whose it is leaves none
 // unset: the note is what is lost.
 func TestDeployWorkKeysDoneItemUnreadHistory(t *testing.T) {
