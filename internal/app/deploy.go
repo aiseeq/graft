@@ -767,7 +767,7 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 	if err != nil {
 		return skipAll("release notes skipped: whose items are whose is unknown: %v", err)
 	}
-	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name, glint: r.glint, subtasksStay: r.cfg.ByWork()}
+	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name, glint: r.glint, subtasksStay: r.cfg.ByWork(), standing: notes.SkipKeys}
 	sub := &subtaskRun{mover: mover, notes: notes, me: me, reached: map[string]string{}}
 	// unsure are the keys this deploy could not read or post to: one held
 	// before stays held, moved when it may be.
@@ -853,8 +853,11 @@ type noteMover struct {
 	glint *glintCheck
 	// subtasksStay keeps a subtask with its assignee on a handover: the
 	// reviewer checks the item, not each subtask. It comes with work_keys
-	// while that key is a pilot.
+	// while that key is a pilot. standing are the items
+	// release_notes.jira.skip_keys names: no reviewer gets those, so their
+	// subtasks are handed over.
 	subtasksStay bool
+	standing     []string
 }
 
 // errHeld is a move withheld for want of the comment require_comment asks
@@ -936,7 +939,7 @@ func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTr
 // or its parent's: the subtasks of an internal parent are internal. It is ""
 // for nothing.
 func (m *noteMover) keptBy(ctx context.Context, issue jira.Issue, t *config.NoteTransition) (string, error) {
-	if m.subtasksStay && issue.Parent != "" {
+	if m.subtasksStay && issue.Parent != "" && !slices.Contains(m.standing, issue.Parent) {
 		return "a subtask of " + issue.Parent, nil
 	}
 	kept := func(labels []string) string {

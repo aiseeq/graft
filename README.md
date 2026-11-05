@@ -1933,7 +1933,8 @@ label, the freeze and the trunk merge check. With the key on:
 - the sweep counts such a commit for every item of its work;
 - a subtask moved by a transition with `assign` stays with its assignee, named
   in a commit or following its parent, and so needs no `require_comment`: the
-  reviewer checks the item. Accepted along with its parent, as above, it goes
+  reviewer checks the item. A subtask of an item in `skip_keys` is handed over
+  as before, for nobody reviews a standing item. Accepted along with its parent, as above, it goes
   through the `from` of the transition to the sweep's `done` and on to `done`
   once the target runs its work, by the sweep.
 

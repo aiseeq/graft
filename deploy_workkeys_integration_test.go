@@ -519,3 +519,40 @@ func TestDeployWorkKeysDoneItemUnreadHistory(t *testing.T) {
 	out, _ := d.graft("", "deploy", "uat")
 	wantLines(t, out, []string{"release note for PROJ-2 not posted"}, []string{"PROJ-2: fix version NOT SET"})
 }
+
+// Nobody reviews a standing item, so its subtask still goes to the reviewer.
+func TestDeploySubtaskOfStandingItemHandedOver(t *testing.T) {
+	d := workKeysRepo(t)
+	d.jira.mu.Lock()
+	maps.Copy(d.jira.statuses, map[string]string{"PROJ-40": "In Progress", "PROJ-41": "In Progress"})
+	d.jira.parents = map[string]string{"PROJ-41": "PROJ-40"}
+	d.jira.mu.Unlock()
+	d.mustGraft("deploy", "--unapproved", "sub")
+	d.commits("feat: PROJ-41 a subtask of the standing item")
+	out := d.mustGraft("deploy", "sub")
+	d.jira.mu.Lock()
+	defer d.jira.mu.Unlock()
+	if !slices.Equal(d.jira.assigned, []string{"PROJ-41 to qa"}) {
+		t.Errorf("assigned = %v\n%s", d.jira.assigned, out)
+	}
+}
+
+// Without work_keys the sweep takes a subtask straight to done, whatever
+// status a transition with assign leads to.
+func TestDeploySweepWithoutWorkKeysTakesNoStep(t *testing.T) {
+	d := newDeployFixture(t, func(state string, q func(string) string) string {
+		return strings.Replace(sweepConfig(state, q), "to: Testing, assign: qa", "to: Ready for release, assign: qa", 1)
+	})
+	trunk := d.git("branch", "--show-current")
+	d.git("remote", "set-head", "origin", trunk)
+	d.statuses(map[string]string{"PROJ-90": "In Progress", "PROJ-91": "Ready for release"}, map[string]string{"PROJ-91": "PROJ-90"})
+	d.write("s.txt", "x\n")
+	d.mustPlainCommit("feat: PROJ-91 a")
+	d.git("push", "-q", "origin", trunk)
+	d.mustGraft("deploy", "swept")
+	out := d.mustGraft("deploy", "sweep", "swept", "--apply")
+	_, moved := d.jira.snapshot()
+	if steps := slices.DeleteFunc(slices.Clone(moved), func(k string) bool { return k != "PROJ-91" }); len(steps) != 1 {
+		t.Errorf("PROJ-91 moved %d times: %v\n%s", len(steps), moved, out)
+	}
+}

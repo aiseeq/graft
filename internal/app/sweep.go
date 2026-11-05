@@ -243,7 +243,7 @@ type sweepRun struct {
 	now    time.Time
 	apply  bool
 	issues map[string]jira.Issue
-	// review are the statuses work waits in for a reviewer.
+	// review are the statuses work waits in for a reviewer, with work_keys.
 	review []string
 	// lines are the items to look at by hand; judged are the items moved,
 	// or that would be, and the parents listed: their own commits say no
@@ -306,8 +306,11 @@ func (a *App) sweep(ctx context.Context, r *deployRun, head string, withheld []s
 	if err != nil {
 		return fmt.Errorf("whose items are whose is unknown: %w", err)
 	}
-	s := &sweepRun{app: a, r: r, conf: conf, notes: r.cfg.ReleaseNotes.Jira, client: client, me: me, trunk: trunk, now: now, apply: apply, review: r.cfg.ReviewStatuses(),
+	s := &sweepRun{app: a, r: r, conf: conf, notes: r.cfg.ReleaseNotes.Jira, client: client, me: me, trunk: trunk, now: now, apply: apply,
 		issues: map[string]jira.Issue{}, judged: map[string]bool{}, glint: r.glint}
+	if r.cfg.ByWork() {
+		s.review = r.cfg.ReviewStatuses()
+	}
 	if s.glint == nil {
 		if s.glint, err = newGlintCheck(r, "", func(context.Context) (string, error) { return head, nil }); err != nil {
 			return err
@@ -570,7 +573,7 @@ var (
 	workKeysGapRe   = regexp.MustCompile(`^[\s,+/&]*(?:(?:и|and)[\s,+/&]*)?$`)
 	workClauseGapRe = regexp.MustCompile(`;\s*$|\.\s+$`)
 	// A dot after a short form or in an ellipsis opens no sentence.
-	workShortGapRe = regexp.MustCompile(`(?i)(?:^|[\s(])(?:см|ср|напр|e\.g|i\.e|incl|cf|vs|see)\.\s+$|\.\.\s+$`)
+	workShortGapRe = regexp.MustCompile(`(?i)(?:^|[\s(])(?:см|ср|напр|e\.g|i\.e|incl|cf|vs)\.\s+$|\.\.\s+$`)
 )
 
 // workKeys are the items a commit is the work of, in the order it names them:
@@ -745,7 +748,7 @@ func (s *sweepRun) acceptedSubtasks(ctx context.Context, parent jira.Issue, allO
 			continue
 		}
 		if with {
-			s.move(ctx, st, fmt.Sprintf("it was accepted with %s and its work is on %s", parent.Key, s.r.name), true)
+			s.move(ctx, st, fmt.Sprintf("it was accepted with %s and no commit of its last %d days is off %s", parent.Key, s.conf.Days, s.r.name), true)
 		}
 	}
 }
@@ -811,18 +814,21 @@ func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, check
 	s.markDone(issue)
 }
 
-// markDone lets the rest of the pass see the item done: its parent may close.
+// markDone lets the rest of the pass see the item done, with work_keys: its
+// parent may close.
 func (s *sweepRun) markDone(issue jira.Issue) {
-	issue.Done, issue.Status = true, s.conf.Done
-	s.issues[issue.Key] = issue
+	if s.r.cfg.ByWork() {
+		issue.Done, issue.Status = true, s.conf.Done
+		s.issues[issue.Key] = issue
+	}
 }
 
 // transitionDone takes the item to the done status; a subtask in a status of
 // the reviewer's goes through the from of the transition there, the way a
-// reviewer would take it. Stopped between the two, it stays where the next
-// pass finishes it.
+// reviewer would take it. Stopped between the two, it stays in that from: a
+// pass finishes it by its commits, one without any is listed by nobody.
 func (s *sweepRun) transitionDone(ctx context.Context, issue jira.Issue) error {
-	if t := s.r.target.ReleaseNotes.Leading(s.conf.Done); t != nil && len(t.From) > 0 && issue.Parent != "" && slices.Contains(s.review, issue.Status) {
+	if t := s.r.target.ReleaseNotes.Leading(s.conf.Done); t != nil && len(t.From) > 0 && !slices.Contains(t.From, issue.Status) && issue.Parent != "" && slices.Contains(s.review, issue.Status) {
 		if err := s.client.Transition(ctx, issue, t.From[0]); err != nil {
 			return err
 		}

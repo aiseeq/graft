@@ -31,6 +31,7 @@ func TestWorkKeys(t *testing.T) {
 		{name: "after a short form", subject: "fix: PROJ-1 x, см. PROJ-2", want: []string{"PROJ-1"}},
 		{name: "after a short form in Latin", subject: "fix: PROJ-1 x (e.g. PROJ-2, incl. PROJ-3, cf. PROJ-4)", want: []string{"PROJ-1"}},
 		{name: "after an ellipsis", subject: "fix: PROJ-1 x... PROJ-2", want: []string{"PROJ-1"}},
+		{name: "a word that ends the sentence", subject: "fix: PROJ-1 as you see. PROJ-2 b", want: []string{"PROJ-1", "PROJ-2"}},
 		{name: "a comma before prose stays a mention", subject: "fix: PROJ-1 a, as PROJ-2 b", want: []string{"PROJ-1"}},
 		{name: "a semicolon not right before the key", subject: "fix: PROJ-1 a; after PROJ-2 b", want: []string{"PROJ-1"}},
 		{name: "a key line of the body", subject: "fix: no key", body: "Why.\n\nPROJ-1\n", want: []string{"PROJ-1"}},
