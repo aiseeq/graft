@@ -2492,7 +2492,11 @@ because trimming is already-running work whose added load is on the disk.
 reports what remains for the next run. Without `--apply` it reports the
 would-be removals immediately. Run it daily from a timer, for instance a
 systemd user unit with `ExecStart=` the absolute path of graft and `gocache
-trim --apply`, and `OnCalendar=daily`: systemd does not look in `~/bin`.
+trim --apply`, and `OnCalendar=daily`: systemd does not look in `~/bin`. Set
+`TimeoutStartSec=12h` as well: a timer does not start a unit that is still
+active, so a hung run would hold off every later one. A run stopped this way
+fails the unit and exits at the end of its batch, without the summary line, and
+the next run removes the rest.
 
 ## Development
 
