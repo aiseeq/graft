@@ -21,7 +21,6 @@ func TestParseRemoteHeavy(t *testing.T) {
 }
 
 func TestParseRemoteHeavyErrors(t *testing.T) {
-	const ok = "{host: pc, up: [pc, up], run: [pc, run]}"
 	cases := map[string]struct{ data, want string }{
 		"no host":          {"remote_heavy: {up: [a], run: [b]}\n", "remote_heavy.host"},
 		"no up":            {"remote_heavy: {host: pc, run: [b]}\n", "remote_heavy.up"},
