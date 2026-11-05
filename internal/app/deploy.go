@@ -701,6 +701,9 @@ func (a *App) noteKeys(r *deployRun) []string {
 // noteText is the release note of the target filled in.
 func noteText(r *deployRun) (string, error) {
 	values := map[string]string{"target": r.name, "version": r.version, "short": gitx.Short(r.head), "sha": r.head}
+	if project := r.cfg.ReleaseNotes.Jira.Project; project != "" {
+		values["project"] = project
+	}
 	comment := r.cfg.NoteComment(r.target)
 	if strings.Contains(comment, "{release}") {
 		names, _, err := pageRelease(r)
@@ -805,6 +808,10 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 			unsure = append(unsure, key)
 		} else {
 			a.printf("release note posted to %s", key)
+		}
+		// A done item only learns what shipped: its status and versions stay.
+		if issue.Done {
+			continue
 		}
 		fix.add(ctx, issue)
 		if posted {
@@ -1003,11 +1010,13 @@ func (s *subtaskRun) move(ctx context.Context, key, parent string, t *config.Not
 
 // noteable tells whether an item gets a note, warning when it does not. A key
 // can reach a commit by hand, as a reference to an item that is closed or
-// somebody else's. An item handed over for review stays yours: its history
-// shows it assigned to you.
+// somebody else's; with work_keys such a reference delivers nothing, so a done
+// item here has its work in this deploy, closed by another product's deploy
+// say, and gets the note. An item handed over for review stays yours: its
+// history shows it assigned to you.
 func (a *App) noteable(ctx context.Context, client *jira.Client, notes *config.JiraNotes, me string, issue jira.Issue) (bool, error) {
 	key := issue.Key
-	if issue.Done || issue.NotStarted || slices.Contains(notes.SkipStatuses, issue.Status) {
+	if issue.Done && !notes.WorkKeys || issue.NotStarted || slices.Contains(notes.SkipStatuses, issue.Status) {
 		a.warn("release note for %s not posted, %s left alone: it is %s", key, key, issue.Status)
 		return false, nil
 	}
@@ -1161,7 +1170,7 @@ func (a *App) approvalRun(ctx context.Context, r *deployRun) (gateOutcome, *gate
 	if err != nil {
 		return gateOutcome{}, nil, err
 	}
-	g, err := newGateRun(a, r.repo, r.cfg, r.target.ApprovedRelease)
+	g, err := newGateRun(a, r.repo, r.cfg, r.target)
 	if err != nil {
 		return gateOutcome{}, nil, err
 	}
@@ -1268,14 +1277,14 @@ type gateRun struct {
 	keyRe *regexp.Regexp
 }
 
-func newGateRun(a *App, repo *gitx.Repo, cfg *config.Config, conf *config.ApprovedRelease) (*gateRun, error) {
+func newGateRun(a *App, repo *gitx.Repo, cfg *config.Config, target *config.DeployTarget) (*gateRun, error) {
 	client, err := jiraClient()
 	if err != nil {
 		return nil, err
 	}
 	return &gateRun{
-		app: a, repo: repo, cfg: cfg, conf: conf,
-		gate:  &approvalGate{client: client, conf: conf, issues: map[string]jira.Issue{}, versions: map[string]bool{}},
+		app: a, repo: repo, cfg: cfg, conf: target.ApprovedRelease,
+		gate:  newApprovalGate(client, cfg, target, map[string]jira.Issue{}),
 		keyRe: projectKeyRe(cfg),
 	}, nil
 }
@@ -1405,25 +1414,27 @@ func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out
 	fail := gateFailure{commit: c, why: "names no item"}
 	if at, ok := g.conf.Attributed[c.sha]; ok {
 		instead := ""
-		if named := slices.DeleteFunc(commitKeys(g.keyRe, nil, c), func(k string) bool { return k == at.Item }); len(named) > 0 {
+		if named := slices.DeleteFunc(itemKeys(g.cfg, g.keyRe, nil, c), func(k string) bool { return k == at.Item }); len(named) > 0 {
 			instead = " instead of " + strings.Join(named, ", ")
 		}
 		g.app.printf("approved release: %s: attributed to %s%s: %s", line, at.Item, instead, at.Reason)
 	}
-	if fail.keys = commitKeys(g.keyRe, g.conf, c); len(fail.keys) > 0 {
+	if fail.keys = itemKeys(g.cfg, g.keyRe, g.conf, c); len(fail.keys) > 0 {
 		pass, err := g.gate.commit(ctx, fail.keys)
 		if err != nil {
 			return nil, err
 		}
 		if pass.ok {
 			out.passed = append(out.passed, fail.keys...)
-			out.approved[pass.label] = true
-			if pass.done != "" {
-				g.app.printf("approved release: %s: %s is %s, passes", line, pass.done, g.gate.issues[pass.done].Status)
+			for _, label := range pass.labels {
+				out.approved[label] = true
+			}
+			for _, done := range pass.done {
+				g.app.printf("approved release: %s: %s is %s, passes", line, done, g.gate.issues[done].Status)
 			}
 			return nil, nil
 		}
-		fail.why = pass.why
+		fail.why, fail.keys = pass.why, pass.failed
 	}
 	ignored, err := shipsNothing(g.repo, g.cfg, g.conf, c.sha)
 	if err != nil {
@@ -1448,27 +1459,43 @@ func oneCommit(repo *gitx.Repo, sha string) (deliveredCommit, error) {
 	return commits[0], nil
 }
 
+// itemKeys are the items a commit counts for, sorted: its work with
+// release_notes.jira.work_keys, otherwise every key it names.
+func itemKeys(cfg *config.Config, keyRe *regexp.Regexp, conf *config.ApprovedRelease, c deliveredCommit) []string {
+	if cfg.ByWork() {
+		return uniqueSorted(workKeys(keyRe, conf, c))
+	}
+	return commitKeys(keyRe, conf, c)
+}
+
 // commitKeys are the project's item keys a commit names in its subject and
-// body, or the item approved_release.attribute ties it to, a revert of such
-// a commit included: its message quotes the one it reverts; conf may be nil.
+// body, or the item approved_release.attribute ties it to; conf may be nil.
 func commitKeys(keyRe *regexp.Regexp, conf *config.ApprovedRelease, c deliveredCommit) []string {
-	if conf != nil {
-		if at, ok := conf.Attributed[c.sha]; ok {
-			return []string{at.Item}
-		}
-		var items []string
-		for _, m := range revertsRe.FindAllStringSubmatch(c.body, -1) {
-			for _, sha := range slices.Sorted(maps.Keys(conf.Attributed)) {
-				if strings.HasPrefix(sha, m[1]) {
-					items = append(items, conf.Attributed[sha].Item)
-				}
-			}
-		}
-		if len(items) > 0 {
-			return uniqueSorted(items)
-		}
+	if items := attributedItems(conf, c); len(items) > 0 {
+		return items
 	}
 	return uniqueSorted(keyRe.FindAllString(c.subject+"\n"+c.body, -1))
+}
+
+// attributedItems is the item approved_release.attribute ties a commit to, a
+// revert of such a commit included: its message quotes the one it reverts;
+// conf may be nil.
+func attributedItems(conf *config.ApprovedRelease, c deliveredCommit) []string {
+	if conf == nil {
+		return nil
+	}
+	if at, ok := conf.Attributed[c.sha]; ok {
+		return []string{at.Item}
+	}
+	var items []string
+	for _, m := range revertsRe.FindAllStringSubmatch(c.body, -1) {
+		for _, sha := range slices.Sorted(maps.Keys(conf.Attributed)) {
+			if strings.HasPrefix(sha, m[1]) {
+				items = append(items, conf.Attributed[sha].Item)
+			}
+		}
+	}
+	return uniqueSorted(items)
 }
 
 // attributionProblems lists the attributions the repository contradicts: a
@@ -1516,7 +1543,7 @@ func attributionProblems(repo *gitx.Repo, cfg *config.Config) ([]string, error) 
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", where, err)
 			}
-			if keys := commitKeys(keyRe, nil, c); slices.Equal(keys, []string{at.Item}) {
+			if keys := itemKeys(cfg, keyRe, nil, c); slices.Equal(keys, []string{at.Item}) {
 				problems = append(problems, fmt.Sprintf("%s: commit %s %q names %s already: the attribution changes nothing", where, gitx.Short(c.sha), c.subject, at.Item))
 			}
 		}
@@ -1557,6 +1584,19 @@ type approvalGate struct {
 	history map[string]fixVersionHistoryResult
 	// versions maps a version id to whether every approver approved it.
 	versions map[string]bool
+	// byWork is release_notes.jira.work_keys: every item of a commit must
+	// pass, and a parent ready with open subtasks keeps its work in.
+	byWork bool
+	// ready are the statuses of finished work waiting for the release;
+	// skipKeys, the standing items release_notes.jira.skip_keys names.
+	ready, skipKeys []string
+}
+
+func newApprovalGate(client *jira.Client, cfg *config.Config, target *config.DeployTarget, issues map[string]jira.Issue) *approvalGate {
+	return &approvalGate{
+		client: client, conf: target.ApprovedRelease, issues: issues, versions: map[string]bool{},
+		byWork: cfg.ByWork(), ready: target.ReadyStatuses(), skipKeys: cfg.ReleaseNotes.Jira.SkipKeys,
+	}
 }
 
 type fixVersionHistoryResult struct {
@@ -1577,7 +1617,7 @@ func (g *approvalGate) fixVersionHistoryAfter(ctx context.Context, key, versionI
 	return added, hasAddition, err
 }
 
-// gatePass is the verdict on one commit.
+// gatePass is the verdict on one item.
 type gatePass struct {
 	ok bool
 	// label names what let the commit out: a version or a status.
@@ -1589,17 +1629,82 @@ type gatePass struct {
 	why string
 }
 
-// commit lets a commit out when one of the items it names passes.
-func (g *approvalGate) commit(ctx context.Context, keys []string) (gatePass, error) {
+// commitPass is the verdict on one commit.
+type commitPass struct {
+	ok bool
+	// labels name what let the items out; done, the done items among them.
+	labels, done []string
+	// failed are the items that keep the commit outside, why says why.
+	failed []string
+	why    string
+}
+
+// commit lets a commit out when all the items that are its work pass, with
+// byWork; otherwise when one of the items it names does.
+func (g *approvalGate) commit(ctx context.Context, keys []string) (commitPass, error) {
+	var out commitPass
 	var whys []string
 	for _, key := range keys {
 		pass, err := g.item(ctx, key)
-		if err != nil || pass.ok {
-			return pass, err
+		if err != nil {
+			return commitPass{}, err
 		}
-		whys = append(whys, pass.why)
+		if !pass.ok {
+			out.failed = append(out.failed, key)
+			whys = append(whys, pass.why)
+			continue
+		}
+		out.labels = append(out.labels, pass.label)
+		if pass.done != "" {
+			out.done = append(out.done, pass.done)
+		}
+		if !g.byWork {
+			return commitPass{ok: true, labels: out.labels, done: out.done}, nil
+		}
 	}
-	return gatePass{why: strings.Join(whys, "; ")}, nil
+	out.ok, out.why = len(out.failed) == 0, strings.Join(whys, "; ")
+	return out, nil
+}
+
+// openParent says why a parent keeps the item in: the item is ready with
+// subtasks still open, or it is not ready and its parent, ready or done, would
+// let it through. A subtask that is ready itself is not open: done comes only
+// after the release. It is "" when nothing keeps the item in.
+func (g *approvalGate) openParent(ctx context.Context, issue jira.Issue) (string, error) {
+	holder := issue
+	switch {
+	case issue.Done:
+		return "", nil
+	case slices.Contains(g.ready, issue.Status):
+	case issue.Parent == "":
+		return "", nil
+	default:
+		parent, err := g.issue(ctx, issue.Parent)
+		if err != nil {
+			return "", err
+		}
+		if !parent.Done && !slices.Contains(g.ready, parent.Status) {
+			return "", nil
+		}
+		holder = parent
+	}
+	if slices.Contains(g.skipKeys, holder.Key) {
+		return "", nil
+	}
+	var open []string
+	for _, key := range holder.Subtasks {
+		st, err := g.issue(ctx, key)
+		if err != nil {
+			return "", err
+		}
+		if !st.Done && !slices.Contains(g.ready, st.Status) && !slices.Contains(g.skipKeys, key) {
+			open = append(open, key+" ("+st.Status+")")
+		}
+	}
+	if len(open) == 0 {
+		return "", nil
+	}
+	return fmt.Sprintf("%s is %s with open subtasks %s: finish them or take %s out of %s", holder.Key, holder.Status, strings.Join(open, ", "), holder.Key, holder.Status), nil
 }
 
 // item checks one item against the statuses and the approved version.
@@ -1607,6 +1712,15 @@ func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 	issue, err := g.issue(ctx, key)
 	if err != nil {
 		return gatePass{}, err
+	}
+	if g.byWork {
+		why, err := g.openParent(ctx, issue)
+		if err != nil {
+			return gatePass{}, err
+		}
+		if why != "" {
+			return gatePass{why: why}, nil
+		}
 	}
 	var pass gatePass
 	if len(g.conf.Statuses) > 0 {
@@ -1834,8 +1948,7 @@ func uniqueSorted(in []string) []string {
 }
 
 // deliveredKeys lists the project's work item keys the delivered commits
-// name (subjects and bodies, merges too) or are attributed to, once each,
-// sorted: the commits of prev..head and those withheld from an earlier
+// count for (itemKeys, merges too) or are attributed to, once each, sorted: the commits of prev..head and those withheld from an earlier
 // release that go out now. Withheld commits and the reverts that withheld
 // them delivered nothing, nor did a revert or a commit a revert among them
 // takes out: reverted are the keys only those name.
@@ -1858,7 +1971,7 @@ func deliveredKeys(r *deployRun) (keys, reverted, quiet []string, err error) {
 		if slices.Contains(r.withheld, c.sha) || withholds(c.body, r.withheld) {
 			continue
 		}
-		named := commitKeys(keyRe, r.target.ApprovedRelease, c)
+		named := itemKeys(r.cfg, keyRe, r.target.ApprovedRelease, c)
 		switch {
 		case isUndone(c):
 			reverted = append(reverted, named...)

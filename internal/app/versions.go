@@ -44,7 +44,7 @@ func planVersionMove(r *deployRun, window string, occ deploy.Occurrence, candida
 			if err != nil {
 				return fmt.Errorf("%s reverts %s: %w", gitx.Short(c.sha), m[1], err)
 			}
-			keys = append(keys, commitKeys(keyRe, r.cfg.Deploy.Targets[window].ApprovedRelease, reverted)...)
+			keys = append(keys, itemKeys(r.cfg, keyRe, r.cfg.Deploy.Targets[window].ApprovedRelease, reverted)...)
 		}
 	}
 	if len(keys) > 0 {

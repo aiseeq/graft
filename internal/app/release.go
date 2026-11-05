@@ -153,14 +153,16 @@ func unlabelled(ctx context.Context, r *deployRun, commits []deliveredCommit) (o
 		if isRevert(c.subject) {
 			continue
 		}
-		keys := commitKeys(keyRe, conf, c)
-		labelled, err := labelledItem(ctx, client, keys, h.Label)
+		keys := itemKeys(r.cfg, keyRe, conf, c)
+		labelled, err := labelledItems(ctx, client, keys, h.Label, r.cfg.ByWork())
 		if err != nil {
 			return nil, nil, err
 		}
-		if labelled != "" {
-			if !slices.Contains(items, labelled) {
-				items = append(items, labelled)
+		if len(labelled) > 0 {
+			for _, key := range labelled {
+				if !slices.Contains(items, key) {
+					items = append(items, key)
+				}
 			}
 			continue
 		}
@@ -182,18 +184,25 @@ func unlabelled(ctx context.Context, r *deployRun, commits []deliveredCommit) (o
 	return outside, items, nil
 }
 
-// labelledItem names the first of the items with the label, "" for none.
-func labelledItem(ctx context.Context, client *jira.Client, keys []string, label string) (string, error) {
+// labelledItems names the first of the items with the label, or with all
+// every item when each has it; none otherwise.
+func labelledItems(ctx context.Context, client *jira.Client, keys []string, label string, all bool) ([]string, error) {
+	var labelled []string
 	for _, key := range keys {
 		issue, err := client.Issue(ctx, key)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		if slices.Contains(issue.Labels, label) {
-			return key, nil
+		switch has := slices.Contains(issue.Labels, label); {
+		case has && !all:
+			return []string{key}, nil
+		case has:
+			labelled = append(labelled, key)
+		case all:
+			return nil, nil
 		}
 	}
-	return "", nil
+	return labelled, nil
 }
 
 // checkHold keeps a release candidate on a target from a window's cutoff
@@ -446,7 +455,7 @@ func (a *App) DeployCutoff(ctx context.Context, target string) error {
 	if err != nil {
 		return err
 	}
-	g, err := newGateRun(a, r.repo, r.cfg, r.target.ApprovedRelease)
+	g, err := newGateRun(a, r.repo, r.cfg, r.target)
 	if err != nil {
 		return err
 	}

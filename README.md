@@ -1673,7 +1673,9 @@ deploy:
 release_notes:
   jira:
     project_keys: [PROJ]        # required: SHA-256 is shaped like a key too
-    comment: "Deployed to {target}, version {version}, commit {short}"   # default
+    comment: "Deployed to {target}, version {version}, commit {short}"   # default; {sha} and, with project, {project} too
+    project: Product            # optional: the product's name for {project}; a comment with {project} requires it
+    work_keys: true             # optional: count a commit for the items it is the work of, see below
     skip_statuses: [On Hold]    # leave these items alone: no note, no move
     skip_keys: [PROJ-100]       # these too, and no subtask follows them; a subtask named by its own key goes as any item
 ```
@@ -1899,6 +1901,35 @@ deploy to it, once a day after a `graft commit`, and on `graft deploy sweep
         transitions: [{from: [Ready for release], to: Done}]
         sweep: {apply: true}   # days: 30, stale_days: 3, done: Done by default
 ```
+
+With `release_notes.jira.work_keys: true` everything that asks which items a
+commit is for asks what it is the work of, not what it mentions: the first key
+of its subject, the keys right after that one (separated by spaces, commas,
+`и`, `and`, `+`, `/` or `&` alone), a key right after a `;` with the keys right
+after that, or else the lines of its body that are a key alone, or its
+`approved_release.attribute`. The rest are mentions. So `fix: PROJ-1 x; PROJ-2
+y` is the work of both and `fix: PROJ-1 after PROJ-2` of PROJ-1 alone, and a
+commit with only a mention names no item. This covers the gate, the release
+notes, the release page, the items taken out of a window version, the hotfix
+label, the freeze and the trunk merge check. With the key on:
+
+- a commit passes `approved_release`, the hotfix label and the freeze only when
+  all the items of its work do, not one of them;
+- an item in a done-category status whose work the deploy delivers gets the
+  note, unless `skip_statuses` names its status, and keeps its status and fix
+  versions: another product's deploy may have closed it;
+- `approved_release` refuses an item that is ready (in `statuses`, or in the
+  `from` of a transition to the sweep's `done`) with subtasks open, and a
+  subtask that is not ready under a parent that is ready or done. A subtask is
+  open unless it is done or ready itself, since done comes only after the
+  release. A parent or subtask in `skip_keys` does not count, and a subtask
+  ready itself passes whatever its parent's state;
+- the sweep counts such a commit for every item of its work.
+
+Without the key every key a commit names counts, and the sweep takes the first
+item of its work alone. graft cannot tell a key that opens the subject as a
+mention from work: give such a commit the key of its own item first, or an
+attribute.
 
 The sweep takes the commits of the last `days` on any remote branch or on
 the target, merges left out, and groups them by the item each is the work

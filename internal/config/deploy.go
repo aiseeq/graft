@@ -343,6 +343,13 @@ type ReleaseNotes struct {
 type JiraNotes struct {
 	ProjectKeys []string `yaml:"project_keys"`
 	Comment     string   `yaml:"comment"`
+	// Project is the product's name, for {project} in a comment.
+	Project string `yaml:"project"`
+	// WorkKeys counts a commit for the items it is the work of, all of which
+	// must pass the gate, not for every key it mentions; a done item whose
+	// work ships gets the note, and a parent ready with open subtasks keeps
+	// its work in.
+	WorkKeys bool `yaml:"work_keys"`
 	// SkipStatuses leaves items in these statuses alone: no note, no move.
 	SkipStatuses []string `yaml:"skip_statuses"`
 	// SkipKeys leaves these items alone, a standing item that collects small
@@ -352,7 +359,7 @@ type JiraNotes struct {
 }
 
 // DefaultNoteComment is the release note text; {target}, {version}, {short}
-// and {sha} are filled in.
+// and {sha} are filled in, {project} from release_notes.jira.project.
 const DefaultNoteComment = "Deployed to {target}, version {version}, commit {short}"
 
 var projectKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9]+$`)
@@ -665,6 +672,29 @@ func (c *Config) validateRequires(where, name string, t *DeployTarget) error {
 	return nil
 }
 
+// ByWork tells whether release_notes.jira.work_keys is on.
+func (c *Config) ByWork() bool {
+	return c.ReleaseNotes != nil && c.ReleaseNotes.Jira != nil && c.ReleaseNotes.Jira.WorkKeys
+}
+
+// ReadyStatuses are the statuses of finished work waiting for the release:
+// those approved_release passes and those a transition takes to the sweep's
+// done status.
+func (t *DeployTarget) ReadyStatuses() []string {
+	var ready []string
+	if t.ApprovedRelease != nil {
+		ready = append(ready, t.ApprovedRelease.Statuses...)
+	}
+	if n := t.ReleaseNotes; n != nil && n.Sweep != nil {
+		for _, tr := range n.Transitions {
+			if tr.To == n.Sweep.Done {
+				ready = append(ready, tr.From...)
+			}
+		}
+	}
+	return ready
+}
+
 // NoteComment is the release note text of the target.
 func (c *Config) NoteComment(t *DeployTarget) string {
 	if t.ReleaseNotes != nil && t.ReleaseNotes.Comment != "" {
@@ -706,6 +736,9 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 		return err
 	}
 	if err := c.validateReleaseName(where, t); err != nil {
+		return err
+	}
+	if err := c.validateProjectName(where+".release_notes", n.Comment); err != nil {
 		return err
 	}
 	for i, tr := range n.Transitions {
@@ -828,6 +861,14 @@ func (c *Config) validateReleaseNotes() error {
 	}
 	if n.Jira.Comment == "" {
 		n.Jira.Comment = DefaultNoteComment
+	}
+	return c.validateProjectName("release_notes.jira", n.Jira.Comment)
+}
+
+// validateProjectName lets {project} into a note only with the name to fill.
+func (c *Config) validateProjectName(where, comment string) error {
+	if strings.Contains(comment, "{project}") && c.ReleaseNotes.Jira.Project == "" {
+		return fmt.Errorf("%s.comment: {project} needs release_notes.jira.project, the name of the product", where)
 	}
 	return nil
 }

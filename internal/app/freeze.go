@@ -894,7 +894,7 @@ func (a *App) freezeIssueCheck(ctx context.Context, r *deployRun, f *activeFreez
 	if err != nil {
 		return err
 	}
-	g, err := newGateRun(a, r.repo, r.cfg, f.config.ApprovedRelease)
+	g, err := newGateRun(a, r.repo, r.cfg, f.config)
 	if err != nil {
 		return err
 	}
@@ -1052,7 +1052,7 @@ func checkFreezeCommit(ctx context.Context, r *deployRun, f *activeFreeze, gate 
 	if isRevert(commit.subject) || reverted != "" {
 		return nil
 	}
-	keys := commitKeys(keyRe, f.config.ApprovedRelease, commit)
+	keys := itemKeys(r.cfg, keyRe, f.config.ApprovedRelease, commit)
 	if len(keys) == 0 {
 		ignored, err := shipsNothing(r.repo, r.cfg, f.config.ApprovedRelease, commit.sha)
 		if err != nil || ignored {
@@ -1071,7 +1071,9 @@ func checkFreezeCommit(ctx context.Context, r *deployRun, f *activeFreeze, gate 
 			refusal = errors.Join(refusal, err)
 		}
 	}
-	if refusal == nil && len(matched) > 0 {
+	// With work_keys every item of the commit is in the release, not one.
+	outside := len(matched) == 0 || r.cfg.ByWork() && len(matched) < len(keys)
+	if refusal == nil && !outside {
 		return nil
 	}
 	ignored, err := shipsNothing(r.repo, r.cfg, f.config.ApprovedRelease, commit.sha)
@@ -1084,10 +1086,7 @@ func checkFreezeCommit(ctx context.Context, r *deployRun, f *activeFreeze, gate 
 	if refusal != nil {
 		return freezeRefusalError{refusal}
 	}
-	if len(matched) == 0 {
-		return freezeRefusalError{fmt.Errorf("%s not in %s", strings.Join(keys, ", "), f.name)}
-	}
-	return nil
+	return freezeRefusalError{fmt.Errorf("%s not in %s", strings.Join(slices.DeleteFunc(keys, func(k string) bool { return slices.Contains(matched, k) }), ", "), f.name)}
 }
 
 func checkFreezeIssue(ctx context.Context, gate *approvalGate, f *activeFreeze, key string, matched *[]string) error {

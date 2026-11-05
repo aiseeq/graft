@@ -189,7 +189,7 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		category := "indeterminate"
 		switch j.statuses[key] {
-		case "Done":
+		case "Done", "Won't do":
 			category = "done"
 		case "To Do":
 			category = "new"

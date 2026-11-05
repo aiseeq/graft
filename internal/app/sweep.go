@@ -312,7 +312,7 @@ func (a *App) sweep(ctx context.Context, r *deployRun, head string, withheld []s
 		}
 	}
 	if ar := r.target.ApprovedRelease; ar != nil {
-		s.gate = &approvalGate{client: client, conf: ar, issues: s.issues, versions: map[string]bool{}}
+		s.gate = newApprovalGate(client, r.cfg, r.target, s.issues)
 	}
 	s.judge(ctx, items)
 	return nil
@@ -380,9 +380,12 @@ func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.
 		if isRevert(c.subject) || reverted[c.sha] {
 			continue
 		}
-		key := workKey(keyRe, r.target.ApprovedRelease, c.deliveredCommit)
-		if key == "" {
+		keys := workKeys(keyRe, r.target.ApprovedRelease, c.deliveredCommit)
+		if len(keys) == 0 {
 			continue
+		}
+		if !r.cfg.ByWork() {
+			keys = keys[:1]
 		}
 		sc := sweptCommit{sha: c.sha, when: c.when, onTarget: onTarget[c.sha] && !slices.Contains(withheld, c.sha) || picks.onTarget[c.sha], inTrunk: inTrunk[c.sha]}
 		// A pick is in the trunk when what it took is.
@@ -392,7 +395,9 @@ func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.
 		if err := sc.byContent(r, head, trunk, c.parent); err != nil {
 			return nil, err
 		}
-		items[key] = append(items[key], sc)
+		for _, key := range keys {
+			items[key] = append(items[key], sc)
+		}
 	}
 	return items, nil
 }
@@ -542,26 +547,47 @@ func revSet(repo *gitx.Repo, rev string, since time.Time) (map[string]bool, erro
 	return set, nil
 }
 
-// workKey is the item a commit is the work of: an attribution of the
-// target's approved_release, or the first key of the subject, or else a line
-// of the body that is a key alone, as graft commit adds the key of the
+// Between the keys of one commit's subject: a key right after a work key by
+// these alone, or right after a semicolon, is work too; a key anywhere else
+// refers to another item ("PROJ-1 fix after PROJ-2").
+var (
+	workKeysGapRe   = regexp.MustCompile(`^[\s,+/&]*(?:(?:и|and)[\s,+/&]*)?$`)
+	workClauseGapRe = regexp.MustCompile(`;\s*$`)
+)
+
+// workKeys are the items a commit is the work of, in the order it names them:
+// an attribution of the target's approved_release, or the first key of the
+// subject with the keys workKeysGapRe and workClauseGapRe let in, or else the
+// lines of the body that are a key alone, as graft commit adds the key of the
 // branch. A key the body only mentions ("after PROJ-12") refers to another
-// item; "" is a commit of no item.
-func workKey(keyRe *regexp.Regexp, conf *config.ApprovedRelease, c deliveredCommit) string {
-	if conf != nil {
-		if at, ok := conf.Attributed[c.sha]; ok {
-			return at.Item
+// item; none is a commit of no item.
+func workKeys(keyRe *regexp.Regexp, conf *config.ApprovedRelease, c deliveredCommit) []string {
+	if items := attributedItems(conf, c); len(items) > 0 {
+		return items
+	}
+	var keys []string
+	prevEnd, afterWork := 0, false
+	for i, at := range keyRe.FindAllStringIndex(c.subject, -1) {
+		gap := c.subject[prevEnd:at[0]]
+		afterWork = i == 0 || afterWork && workKeysGapRe.MatchString(gap) || workClauseGapRe.MatchString(gap)
+		if afterWork {
+			keys = append(keys, c.subject[at[0]:at[1]])
+		}
+		prevEnd = at[1]
+	}
+	if len(keys) == 0 {
+		for line := range strings.Lines(c.body) {
+			if line = strings.TrimSpace(line); line != "" && keyRe.FindString(line) == line {
+				keys = append(keys, line)
+			}
 		}
 	}
-	if key := keyRe.FindString(c.subject); key != "" {
-		return key
-	}
-	for line := range strings.Lines(c.body) {
-		if line = strings.TrimSpace(line); line != "" && keyRe.FindString(line) == line {
-			return line
-		}
-	}
-	return ""
+	seen := map[string]bool{}
+	return slices.DeleteFunc(keys, func(k string) bool {
+		dup := seen[k]
+		seen[k] = true
+		return dup
+	})
 }
 
 // read reads the items from Jira a few at a time; an item that fails is
