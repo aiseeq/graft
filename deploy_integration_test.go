@@ -61,11 +61,21 @@ type fakeJira struct {
 	// Progress.
 	written map[string][]fakeComment
 	entered map[string]time.Time
+	// changelogDown fails every read of a history.
+	changelogDown bool
+	// statusMoves are the status changes a key's history shows.
+	statusMoves map[string][]fakeStatusMove
 	// fixChanges are the changes of a key's fix versions its history shows;
 	// created maps a key to when it was created, with the fix versions it
 	// has, if its history shows no change of them.
 	fixChanges map[string][]fakeFixChange
 	created    map[string]time.Time
+}
+
+// fakeStatusMove is one status change in an item's history.
+type fakeStatusMove struct {
+	at       time.Time
+	from, to string
 }
 
 // fakeFixChange is one change of an item's fix versions in its history.
@@ -160,12 +170,19 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		j.comments[key] = append(j.comments[key], doc.Body.Content[0].Content[0].Text)
 		w.WriteHeader(http.StatusCreated)
 	case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "changelog":
+		if j.changelogDown {
+			http.Error(w, "down", http.StatusInternalServerError)
+			return
+		}
 		var values []any
 		if slices.Contains(j.handedOver, key) {
 			values = append(values, map[string]any{"items": []any{map[string]any{"fieldId": "assignee", "from": "me", "to": j.assignees[key]}}})
 		}
 		if when, ok := j.entered[key]; ok {
 			values = append(values, map[string]any{"created": when.Format(fakeTimeLayout), "items": []any{map[string]any{"fieldId": "status", "fromString": "Testing", "toString": "In Progress"}}})
+		}
+		for _, m := range j.statusMoves[key] {
+			values = append(values, map[string]any{"created": m.at.Format(fakeTimeLayout), "items": []any{map[string]any{"fieldId": "status", "fromString": m.from, "toString": m.to}}})
 		}
 		for _, c := range j.fixChanges[key] {
 			item := map[string]any{"field": "Fix Version", "fieldId": "fixVersions"}

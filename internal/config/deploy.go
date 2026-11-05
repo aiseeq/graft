@@ -695,6 +695,23 @@ func (t *DeployTarget) ReadyStatuses() []string {
 	return ready
 }
 
+// ReviewStatuses are the statuses work waits in for a reviewer: the to of the
+// transitions that hand an item over.
+func (c *Config) ReviewStatuses() []string {
+	var review []string
+	for _, t := range c.Deploy.Targets {
+		if t.ReleaseNotes == nil {
+			continue
+		}
+		for _, tr := range t.ReleaseNotes.Transitions {
+			if tr.Assign != "" {
+				review = append(review, tr.To)
+			}
+		}
+	}
+	return review
+}
+
 // NoteComment is the release note text of the target.
 func (c *Config) NoteComment(t *DeployTarget) string {
 	if t.ReleaseNotes != nil && t.ReleaseNotes.Comment != "" {

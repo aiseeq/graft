@@ -125,7 +125,7 @@ func (a *App) DeployHandover(ctx context.Context, target, ticket string) error {
 	if err != nil {
 		return err
 	}
-	mover := &noteMover{app: a, client: client, conf: n, me: me, target: r.name, glint: r.glint}
+	mover := &noteMover{app: a, client: client, conf: n, me: me, target: r.name, glint: r.glint, subtasksStay: r.cfg.ByWork()}
 	sub := &subtaskRun{mover: mover, notes: r.cfg.ReleaseNotes.Jira, me: me, reached: map[string]string{}}
 	unread := a.retryHeld(ctx, sub, held, nil)
 	if r.target.ReleaseNotes.Subtasks {

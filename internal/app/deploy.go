@@ -767,7 +767,7 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 	if err != nil {
 		return skipAll("release notes skipped: whose items are whose is unknown: %v", err)
 	}
-	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name, glint: r.glint}
+	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name, glint: r.glint, subtasksStay: r.cfg.ByWork()}
 	sub := &subtaskRun{mover: mover, notes: notes, me: me, reached: map[string]string{}}
 	// unsure are the keys this deploy could not read or post to: one held
 	// before stays held, moved when it may be.
@@ -800,7 +800,9 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 		yours, err := a.noteable(ctx, client, notes, me, issue)
 		if err != nil {
 			a.warn("release note for %s not posted: %v", key, err)
-			fix.failed(key, err)
+			if !learns {
+				fix.failed(key, err)
+			}
 			unsure = append(unsure, key)
 			continue
 		}
@@ -849,6 +851,10 @@ type noteMover struct {
 	held []heldItem
 	// glint is the check of release_notes.glint.
 	glint *glintCheck
+	// subtasksStay keeps a subtask with its assignee on a handover: the
+	// reviewer checks the item, not each subtask. It comes with work_keys
+	// while that key is a pilot.
+	subtasksStay bool
 }
 
 // errHeld is a move withheld for want of the comment require_comment asks
@@ -914,7 +920,7 @@ func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTr
 		return nil
 	}
 	if label != "" {
-		m.app.printf("%s stays with its assignee: %s (keep_assignee_labels)", issue.Key, label)
+		m.app.printf("%s stays with its assignee: %s", issue.Key, label)
 		return nil
 	}
 	if err := m.client.Assign(ctx, issue.Key, t.Assign); err != nil {
@@ -925,10 +931,14 @@ func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTr
 	return nil
 }
 
-// keptBy names the label of the transition's keep_assignee_labels that keeps
-// the item with its assignee, its own or its parent's: the subtasks of an
-// internal parent are internal. It is "" for none.
+// keptBy says what keeps the item with its assignee: being a subtask, with
+// subtasksStay, or a label of the transition's keep_assignee_labels, its own
+// or its parent's: the subtasks of an internal parent are internal. It is ""
+// for nothing.
 func (m *noteMover) keptBy(ctx context.Context, issue jira.Issue, t *config.NoteTransition) (string, error) {
+	if m.subtasksStay && issue.Parent != "" {
+		return "a subtask of " + issue.Parent, nil
+	}
 	kept := func(labels []string) string {
 		if i := slices.IndexFunc(labels, func(l string) bool { return slices.Contains(t.KeepAssigneeLabels, l) }); i >= 0 {
 			return labels[i]
@@ -936,7 +946,7 @@ func (m *noteMover) keptBy(ctx context.Context, issue jira.Issue, t *config.Note
 		return ""
 	}
 	if label := kept(issue.Labels); label != "" {
-		return "label " + label, nil
+		return "label " + label + " (keep_assignee_labels)", nil
 	}
 	if len(t.KeepAssigneeLabels) == 0 || issue.Parent == "" {
 		return "", nil
@@ -946,7 +956,7 @@ func (m *noteMover) keptBy(ctx context.Context, issue jira.Issue, t *config.Note
 		return "", err
 	}
 	if label := kept(parent.Labels); label != "" {
-		return "label " + label + " of its parent " + issue.Parent, nil
+		return "label " + label + " of its parent " + issue.Parent + " (keep_assignee_labels)", nil
 	}
 	return "", nil
 }
@@ -1593,14 +1603,15 @@ type approvalGate struct {
 	// pass, and a parent ready with open subtasks keeps its work in.
 	byWork bool
 	// ready are the statuses of finished work waiting for the release;
-	// skipKeys, the standing items release_notes.jira.skip_keys names.
-	ready, skipKeys []string
+	// review, those work waits in for a reviewer; skipKeys, the standing
+	// items release_notes.jira.skip_keys names.
+	ready, review, skipKeys []string
 }
 
 func newApprovalGate(client *jira.Client, cfg *config.Config, target *config.DeployTarget, issues map[string]jira.Issue) *approvalGate {
 	return &approvalGate{
 		client: client, conf: target.ApprovedRelease, issues: issues, versions: map[string]bool{},
-		byWork: cfg.ByWork(), ready: target.ReadyStatuses(), skipKeys: cfg.ReleaseNotes.Jira.SkipKeys,
+		byWork: cfg.ByWork(), ready: target.ReadyStatuses(), review: cfg.ReviewStatuses(), skipKeys: cfg.ReleaseNotes.Jira.SkipKeys,
 	}
 }
 
@@ -1689,7 +1700,15 @@ func (g *approvalGate) openParent(ctx context.Context, issue jira.Issue) (string
 			return "", err
 		}
 		if !slices.Contains(g.ready, parent.Status) {
-			return "", nil
+			// A done parent keeps a subtask in only where its version would
+			// let the subtask out.
+			if !parent.Done || g.conf.Prefix == "" {
+				return "", nil
+			}
+			own, err := g.ownApprovedVersion(ctx, issue)
+			if err != nil || own != "" {
+				return "", err
+			}
 		}
 		holder = parent
 	}
@@ -1702,14 +1721,40 @@ func (g *approvalGate) openParent(ctx context.Context, issue jira.Issue) (string
 		if err != nil {
 			return "", err
 		}
-		if !st.Done && !slices.Contains(g.ready, st.Status) && !slices.Contains(g.skipKeys, key) {
+		switch {
+		case st.Done || slices.Contains(g.ready, st.Status) || slices.Contains(g.skipKeys, key):
+		case !slices.Contains(g.review, st.Status):
 			open = append(open, key+" ("+st.Status+")")
+		default:
+			accepted, err := acceptedWith(ctx, g.client, st, holder, g.ready)
+			if err != nil {
+				return "", err
+			}
+			if !accepted {
+				open = append(open, key+" ("+st.Status+", not accepted with "+holder.Key+")")
+			}
 		}
 	}
 	if len(open) == 0 {
 		return "", nil
 	}
 	return fmt.Sprintf("%s is %s with open subtasks %s: finish them or name %s in release_notes.jira.skip_keys", holder.Key, holder.Status, strings.Join(open, ", "), holder.Key), nil
+}
+
+// acceptedWith tells whether a subtask in a status of the reviewer's came there
+// before its parent came into the accepted statuses. The reviewer checks the
+// item, so accepting it takes such a subtask along; one that came later nobody
+// has seen, and neither has one whose history does not tell.
+func acceptedWith(ctx context.Context, client *jira.Client, st, parent jira.Issue, accepted []string) (bool, error) {
+	came, err := client.CameInto(ctx, st.Key, []string{st.Status})
+	if err != nil {
+		return false, err
+	}
+	took, err := client.CameInto(ctx, parent.Key, accepted)
+	if err != nil {
+		return false, err
+	}
+	return !came.IsZero() && !took.IsZero() && came.Before(took), nil
 }
 
 // item checks one item against the statuses and the approved version.

@@ -1922,11 +1922,20 @@ label, the freeze and the trunk merge check. With the key on:
   the sweep's `done` is a config error, for it would take that note away;
 - `approved_release` refuses an item that is ready (in `statuses`, or in the
   `from` of a transition to the sweep's `done`) with subtasks open, and a
-  subtask that is not ready under a parent that is ready. A subtask is
+  subtask that is not ready under a parent that is ready, or under a done
+  parent whose version alone would let it out. A subtask is
   open unless it is done or ready itself, since done comes only after the
-  release. A parent or subtask in `skip_keys` does not count, and a subtask
+  release, or it waits in the `to` of a transition with `assign` and came there
+  before its parent came into the ready statuses: the reviewer checks the item,
+  so accepting it takes such a subtask along, and one that came later nobody
+  has seen. A parent or subtask in `skip_keys` does not count, and a subtask
   ready itself passes whatever its parent's state;
-- the sweep counts such a commit for every item of its work.
+- the sweep counts such a commit for every item of its work;
+- a subtask moved by a transition with `assign` stays with its assignee, named
+  in a commit or following its parent, and so needs no `require_comment`: the
+  reviewer checks the item. Accepted along with its parent, as above, it goes
+  through the `from` of the transition to the sweep's `done` and on to `done`
+  once the target runs its work, by the sweep.
 
 Without the key every key a commit names counts, and the sweep takes the first
 item of its work alone. graft cannot tell a key that opens the subject as a
