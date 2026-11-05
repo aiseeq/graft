@@ -510,7 +510,7 @@ func (c *Config) validateFreezeAdvisory(where, name string, t, acceptance *Deplo
 		}
 		for _, root := range roots {
 			if root != task && c.taskDependsOn(root, task, map[string]bool{}) {
-				return fmt.Errorf("%s.freeze.advisory[%d]: task %q cannot be a dependency of %q", where, i, task, root)
+				return fmt.Errorf("%s.freeze.advisory[%d]: task %q cannot be a dependency of %q: take it out of %q, then list it as a gate step or a direct dep of the target", where, i, task, root, root)
 			}
 		}
 	}

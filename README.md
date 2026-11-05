@@ -2066,7 +2066,9 @@ acceptance target while the customer reviews a Jira version. Freeze requires
 `release_notes.jira.project_keys`. `freeze.types` allows items of those Jira
 types that joined the version after the freeze. `freeze.advisory` names tasks
 that must be direct deps of the frozen target, its required target, or a
-top-level gate step. They run in configured order and failures warn and are
+top-level gate step, and must not be nested in any other task those deps or
+gate steps run: a task that a gate step depends on has to come out of that step
+and become a gate step of its own. They run in configured order and failures warn and are
 recorded during deploys to either target and the `graft commit` gate on the
 frozen branch. Without this setting, deploy behavior is unchanged.
 
@@ -2075,8 +2077,11 @@ targets with `deployed_sha`, set `approved_release.prefix: "Product "` on the
 frozen target, and list `lint` among that target's or its required target's
 deps (or as a top-level gate step):
 
+Quote `branch` when it holds `{version}` in a one-line mapping, or YAML reads
+the braces as another mapping:
+
 ```yaml
-freeze: {branch: release/{version}, types: [Bug], advisory: [lint]}
+freeze: {branch: "release/{version}", types: [Bug], advisory: [lint]}
 ```
 
 Run `graft deploy freeze <target> <Jira version>` from the trunk to cut and
