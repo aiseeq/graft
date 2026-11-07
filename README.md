@@ -150,7 +150,9 @@ cores t after its start: until the admitted task ends, the next admission adds
 the part it does not show yet, c·e^(−t/60s), to the load average it measures,
 so a queue that stood while the load average was over the threshold lets in,
 when it dips below, what the dip has room for and not every waiting task
-(without `/proc/loadavg` there is no such part to add). A heavy task inside
+(without `/proc/loadavg` there is no such part to add; without `/proc/stat`
+and `runnable` in `pressure.yaml` there is no threshold for the reservations
+or that part to reach). A heavy task inside
 a heavy task or the gate was admitted with it, and so is a graft that the
 steps of an admitted task start (they carry `GRAFT_ADMITTED`). Priority tasks
 from `graft deploy` bypass the queue and may start ahead of queued tasks.

@@ -275,3 +275,29 @@ func TestPrioritySettleCountsTheForecast(t *testing.T) {
 		t.Errorf("deploy task with settle at load average 21 beside a task of 4 cores just admitted: %+v, %v", adm, err)
 	}
 }
+
+// TestNoStatAdmits: without /proc/stat (Windows, macOS) the machine's threads
+// are not known, nor, unless pressure.yaml sets runnable, a runnable limit:
+// the reserves and the forecast have nothing to reach, and the queue still
+// admits.
+func TestNoStatAdmits(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(1)
+	if err := os.Remove(filepath.Join(os.Getenv(ProcEnv), "stat")); err != nil {
+		t.Fatal(err)
+	}
+	limits := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "akit", "pressure.yaml")
+	if err := os.WriteFile(limits, []byte("max_io_full: 10\nmax_swap_kbs: 1024\nswap_window: 20ms\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "load.lock")
+	for _, name := range []string{"first", "next"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		adm, release, err := WaitWithSettle(ctx, name, "projectA:"+name, nil, testLoad, path, "", 0, 4, io.Discard)
+		cancel()
+		if err != nil {
+			t.Fatalf("%s task of 4 cores, no /proc/stat: %+v, %v", name, adm, err)
+		}
+		defer release()
+	}
+}

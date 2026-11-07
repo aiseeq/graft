@@ -304,7 +304,10 @@ func waitQueued(ctx context.Context, m *machine, p *Priority, kind string, l use
 }
 
 // waitPriority admits a task with a priority that took the settle lock as
-// reservePriority does, and holds the lock for its settling period.
+// reservePriority does: beside the machine it waits for the live reserves and
+// the admitted tasks the load average does not show yet, spending its budget
+// on them too, and leaves its own reserve. It holds the lock for its settling
+// period.
 func waitPriority(ctx context.Context, m *machine, p *Priority, kind string, l userconfig.MachineLoad, lockPath string, cores float64, settleLock *lock.Lock, settleDuration time.Duration, behind string, log io.Writer) (Admission, func() error, error) {
 	adm, release, err := reservePriority(ctx, m, m.name, kind, p, l, lockPath, cores, log)
 	adm.WaitedBehind = behind
@@ -398,8 +401,13 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 
 // reservesBusy is why the machine m measured last has no room for one more
 // heavy task beside the live reserves and the admitted tasks its load average
-// does not show yet, empty when it has.
+// does not show yet, empty when it has. Without a runnable limit (no
+// /proc/stat to count the threads from, as on Windows, and no runnable in
+// pressure.yaml, a measure busy skips and tells) there is nothing to reach.
 func (m *machine) reservesBusy(lockPath string) (busyness, error) {
+	if m.runnableLimit <= 0 {
+		return busyness{}, nil
+	}
 	sum, err := liveReserveCores(lockPath)
 	if err != nil {
 		return busyness{}, err
@@ -739,13 +747,15 @@ func (m *machine) behind(holder string) Admission {
 // task holds the queue's lock at lockPath (starting, or settling after its
 // start), or the machine measures Wait uses, read once, say busy. A missing
 // measure is skipped and reported as it is in Wait. An empty lockPath leaves
-// the queue out, for a task with a priority, which Wait does not queue.
+// out the queue and its reserves: the machine alone is checked.
 func BusyNow(ctx context.Context, name, kind string, l userconfig.MachineLoad, lockPath string, log io.Writer) (bool, error) {
 	return BusyNowWithReserves(ctx, name, kind, l, lockPath, lockPath != "", log)
 }
 
 // BusyNowWithReserves checks the machine, its live reservations and the
-// admitted tasks its load average does not show yet without queueing. queue controls whether a current queue holder also counts.
+// admitted tasks its load average does not show yet without queueing. queue
+// controls whether a current queue holder also counts; a task with a
+// priority, which Wait does not queue, leaves it out.
 func BusyNowWithReserves(ctx context.Context, name, kind string, l userconfig.MachineLoad, lockPath string, queue bool, log io.Writer) (bool, error) {
 	if queue {
 		holders, err := lock.Holders(lockPath)
@@ -755,7 +765,7 @@ func BusyNowWithReserves(ctx context.Context, name, kind string, l userconfig.Ma
 	}
 	m := newMachine(l, log, name, kind)
 	b, err := m.busy(ctx, true)
-	if err != nil || b.why != "" {
+	if err != nil || b.why != "" || lockPath == "" {
 		return b.why != "", err
 	}
 	b, err = m.reservesBusy(lockPath)
