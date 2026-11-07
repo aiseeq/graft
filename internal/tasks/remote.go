@@ -422,20 +422,26 @@ const remoteStopGrace = 30 * time.Second
 // graft the step starts there from sending its heavy work on again. A
 // cancelled step is asked to stop first: killed, run could not clear the
 // host.
-func (r *Runner) remoteCmd(ctx context.Context, cmd *exec.Cmd, vars map[string]string, threads string) *exec.Cmd {
+func (r *Runner) remoteCmd(ctx context.Context, cmd *exec.Cmd, t *config.Task, vars map[string]string, threads string) *exec.Cmd {
 	words := make([]string, 0, len(r.remoteHeavy.Run)+len(vars)+len(cmd.Args)+4)
 	for _, w := range r.remoteHeavy.Run {
 		words = append(words, strings.ReplaceAll(w, config.RootPlaceholder, r.Root))
 	}
 	words = append(words, "env", HeavyEnv+"=local")
 	// A heavy step's -p is the host's threads after the caller's GOFLAGS or
-	// the task's, unless the task's names one: the caller's is the default
-	// of a command run without graft's admission.
+	// the task's, unless the task names one (ownsP): the caller's is the
+	// default of a command run without graft's admission, left out when the
+	// host's threads are not known.
 	flags, ownFlags := vars[goFlagsEnv]
-	if !ownFlags {
+	if !ownFlags || strings.TrimSpace(flags) == "" {
 		flags = os.Getenv(goFlagsEnv)
 	}
-	setP := threads != "" && (!ownFlags || !namesP(flags))
+	setP := !ownsP(t, nil)
+	if setP && threads != "" {
+		flags = withP(flags, threads)
+	} else if setP {
+		flags = withoutP(flags)
+	}
 	for _, k := range passedEnv() {
 		if v, set := os.LookupEnv(k); set {
 			if _, own := vars[k]; !own && (k != goFlagsEnv || !setP) {
@@ -448,8 +454,8 @@ func (r *Runner) remoteCmd(ctx context.Context, cmd *exec.Cmd, vars map[string]s
 			words = append(words, k+"="+vars[k])
 		}
 	}
-	if setP {
-		words = append(words, goFlagsEnv+"="+withP(flags, threads))
+	if setP && flags != "" {
+		words = append(words, goFlagsEnv+"="+flags)
 	}
 	if threads != "" {
 		words = append(words, ThreadsEnv+"="+threads)

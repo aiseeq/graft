@@ -118,6 +118,33 @@ func TestHeavyTaskRunsOnRemoteHost(t *testing.T) {
 	}
 }
 
+// TestHeavyTaskOnHostThreads: on the host a task's ${GOFLAGS} brings the
+// caller's -p, which the host's threads follow; without the host's threads
+// the caller's -p, the default of a command run without admission, stays
+// here, and the task's own -p goes as it is.
+func TestHeavyTaskOnHostThreads(t *testing.T) {
+	for _, c := range []struct {
+		threads int
+		env     string
+		want    string
+	}{
+		{8, "    env: {GOFLAGS: '${GOFLAGS} -race'}\n", "GOFLAGS=-p=1 -race -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 sh"},
+		{0, "", "env GRAFT_HEAVY=local GOFLAGS=-tags=x sh"},
+		{0, "    env: {GOFLAGS: -p=3}\n", "env GRAFT_HEAVY=local GOFLAGS=-p=3 sh"},
+	} {
+		f, state := remoteRepo(t, c.threads, "  build:\n    heavy: true\n"+c.env+"    run: [[sh, -c, 'echo ok']]\n")
+		flags := "-p=1"
+		if c.threads == 0 {
+			flags = "-p=1 -tags=x"
+		}
+		f.env = append(f.env, "GOMAXPROCS=1", "GOFLAGS="+flags)
+		f.mustGraft("build")
+		if calls := readFile(t, filepath.Join(state, "calls")); !strings.Contains(calls, c.want) {
+			t.Errorf("threads %d, %q: run got %q, want %q", c.threads, c.env, calls, c.want)
+		}
+	}
+}
+
 // TestHeavyTaskStaysHere: GRAFT_HEAVY=local, remote: false and a host that
 // does not answer keep the heavy task on this machine, in its queue, said in
 // a line; anything else in GRAFT_HEAVY is an error.

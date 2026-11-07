@@ -158,15 +158,19 @@ Ctrl-C, SIGTERM, or an unignored SIGHUP stops the wait and command. If both
 caller output pipes close, graft stops them too; deploy keeps its existing
 signal behavior.
 
-The steps of a heavy task and of the gate get `GOMAXPROCS` set to `threads`
+The steps of a heavy task, of the gate (each where it runs when the gate
+splits) and of `graft exec --heavy`, a graft such a step starts included, get
+`GOMAXPROCS` set to `threads`
 and `-p=threads` after the user's `GOFLAGS` (the environment's, else the go env
 file's), over what the environment sets: one Go program does not take every
 thread of the machine, the go command running a compile per package at once,
 each with as many threads as `GOMAXPROCS`. The environment's `GOMAXPROCS` and
 `-p` are the default of a command run without admission, which may keep a
 bare `go test` to one thread; an admitted task gets its threads. The task's
-own `env` wins: its `GOMAXPROCS`, and a `-p` in its `GOFLAGS`, are left as
-they are. A step with `{threads}` that is not heavy gets `GOMAXPROCS` only
+own `env` and `.env` keys win: their `GOMAXPROCS`, and a `-p` in their
+`GOFLAGS` as written, are left as they are; `${GOFLAGS}` there brings the
+user's flags, and `-p=threads` still follows them. An empty `GOFLAGS` of the
+task is none, as go has it: the user's flags hold. A step with `{threads}` that is not heavy gets `GOMAXPROCS` only
 when the environment leaves it unset. `GOFLAGS` in a task's `env` comes after
 the user's, which it would otherwise replace; a later flag wins, so the
 task's still override them.
@@ -174,7 +178,8 @@ task's still override them.
 A heavy command that is no task of the project (a one-off `go test`, a
 build, an e2e run) takes the same queue with `graft exec --heavy -- <command>
 [args]`: it runs in the current directory once the machine admits it, `{threads}`
-in its arguments and `GRAFT_THREADS` set to `threads`, and graft exits with
+in its arguments, `GRAFT_THREADS`, `GOMAXPROCS` and `-p` set to `threads`
+as for a heavy task, and graft exits with
 its exit status, 128 and the signal for one a signal ended. SIGTERM, an
 unignored SIGHUP, or both closed caller output pipes stop the command. Its own
 failures exit as `env`'s do, with a `graft: …` line, so a caller tells them from the
@@ -268,7 +273,7 @@ remote_heavy:
   host: pc                       # the machine, in graft's lines and in stats
   up: [scripts/remote.sh, up]          # exits 0 when the host takes commands, within 30s
   run: [scripts/remote.sh, run]        # runs the appended argv on the host from the work tree root; with {root}, from the step's directory
-  threads: 16                    # {threads} and GRAFT_THREADS there; 0 leaves GRAFT_THREADS unset and refuses {threads}
+  threads: 16                    # {threads}, GRAFT_THREADS, GOMAXPROCS and -p there; 0 leaves them unset, the caller's -p too, and refuses {threads}
   when: always                   # project default; user config defaults to busy
   broken_exit: 125               # run's transport failure status; a project's has none unless named
 ```
@@ -302,7 +307,8 @@ of an admitted heavy task starts, a heavy task inside another) does not
 overflow under `when: busy`. Project configuration keeps its existing rule: every
 heavy task can go to its host except tasks that need local files or data.
 The host's command gets the task's `env`, `GRAFT_HEAVY=local`, the threads
-(as `-p` after `GOFLAGS` too, unless the task's `GOFLAGS` names one)
+(as `-p` after `GOFLAGS` too, unless the task's `GOFLAGS` names one; a
+`GOFLAGS` sent replaces the host's go env file's)
 and the caller's `GOOS`, `GOARCH`, `GOFLAGS`, `CGO_ENABLED` and
 `GOEXPERIMENT` (the task's own value wins), not the rest of the caller's
 environment: `FLAG=1 graft exec --heavy -- go test ./...` does not see

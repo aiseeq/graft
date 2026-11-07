@@ -1122,6 +1122,9 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 			}
 		}
 		stepErr = r.measureFunc(s.Source, run)
+	} else if r.gateSplit {
+		// Where the step runs is decided in step, and its threads with it.
+		stepErr = r.step(ctx, gs.step, gs.task, nil, "", gs.builtin)
 	} else {
 		stepErr = r.step(ctx, s, gs.task, nil, threads, gs.builtin)
 	}
@@ -1456,9 +1459,24 @@ func (r *Runner) enterSplit(ctx context.Context, name, memoryMax string) error {
 	return nil
 }
 
+// placeGateStep places the gate's step s as prepareGateStep does and fills
+// its {threads} where it runs: here admitted, or on remote_heavy's host with
+// the host's threads.
+func (r *Runner) placeGateStep(ctx context.Context, s config.Step, t *config.Task, args []string, builtin bool) (config.Step, string, func(error) error, error) {
+	finish, err := r.prepareGateStep(ctx, s, t, args, builtin)
+	if err != nil {
+		return s, "", nil, err
+	}
+	filled, threads, err := r.threads(s, t)
+	if err != nil {
+		return s, "", nil, finish(err)
+	}
+	return filled, threads, finish, nil
+}
+
 // prepareGateStep places one process step of a split gate, admitted here
 // with the gate's other steps here or sent to the host.
-func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.Task, args []string, threads string, builtin bool) (func(error) error, error) {
+func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.Task, args []string, builtin bool) (func(error) error, error) {
 	frame := r.frames[len(r.frames)-1]
 	wasRemote := frame.remote
 	remote, cheaperReason, err := r.gateStepPlacement(s, t, frame.task, builtin)
@@ -1504,7 +1522,7 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 				} else {
 					split := r.gateSplit
 					r.gateSplit = false
-					stepErr = r.step(ctx, s, t, args, threads, builtin)
+					stepErr = r.stepHere(ctx, s, t, args, builtin)
 					r.gateSplit = split
 				}
 			}
@@ -1515,16 +1533,26 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 	}, nil
 }
 
-// step runs s, its {threads} already filled; threads is the thread count a
+// stepHere runs the gate's step s on this machine, its {threads} filled
+// with this machine's threads, after its host's path broke.
+func (r *Runner) stepHere(ctx context.Context, s config.Step, t *config.Task, args []string, builtin bool) error {
+	s, threads, err := r.threads(s, t)
+	if err != nil {
+		return err
+	}
+	return r.step(ctx, s, t, args, threads, builtin)
+}
+
+// step runs s, its {threads} already filled unless the gate splits; threads is the thread count a
 // heavy task passes as GRAFT_THREADS.
 func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args []string, threads string, builtin bool) (err error) {
 	if s.Task != "" {
 		return r.run(ctx, s.Task, nil)
 	}
 	if r.gateSplit {
-		finish, prepareErr := r.prepareGateStep(ctx, s, t, args, threads, builtin)
-		if prepareErr != nil {
-			return prepareErr
+		var finish func(error) error
+		if s, threads, finish, err = r.placeGateStep(ctx, s, t, args, builtin); err != nil {
+			return err
 		}
 		defer func() { err = finish(err) }()
 	}
@@ -1550,11 +1578,11 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	if err != nil {
 		return err
 	}
-	env, err := r.env(t, vars)
+	env, own, err := r.env(t, vars)
 	if err != nil {
 		return err
 	}
-	if env, err = r.heavyEnv(env, t, vars, threads); err != nil {
+	if env, err = r.heavyEnv(env, own, t, threads); err != nil {
 		return err
 	}
 	var cmd *exec.Cmd
@@ -1583,7 +1611,7 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	cmd.Env = env
 	r.stopLocalCommand(cmd, !r.frames[len(r.frames)-1].remote)
 	if r.frames[len(r.frames)-1].remote {
-		cmd = r.remoteCmd(ctx, cmd, vars, threads)
+		cmd = r.remoteCmd(ctx, cmd, t, vars, threads)
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
 	var remoteStderr bytes.Buffer
@@ -1833,11 +1861,11 @@ func (r *Runner) execCommand(ctx context.Context, dir string, argv []string, t *
 	if err != nil {
 		return nil, err
 	}
-	env, err := r.env(t, nil)
+	env, own, err := r.env(t, nil)
 	if err != nil {
 		return nil, err
 	}
-	if env, err = r.heavyEnv(env, t, nil, threads); err != nil {
+	if env, err = r.heavyEnv(env, own, t, threads); err != nil {
 		return nil, err
 	}
 	if innerGraft {
@@ -1854,7 +1882,7 @@ func (r *Runner) execCommand(ctx context.Context, dir string, argv []string, t *
 	cmd.Dir, cmd.Env = dir, env
 	r.stopLocalCommand(cmd, !remote)
 	if remote {
-		cmd = r.remoteCmd(ctx, cmd, nil, threads)
+		cmd = r.remoteCmd(ctx, cmd, t, nil, threads)
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
 	if remote {
@@ -2459,37 +2487,38 @@ func (r *Runner) watchDB() {
 
 // env is the base environment (without graft's marker and git's hook
 // variables) plus the task's .env keys and vars, and the work tree's own
-// golangci-lint cache unless one is set (lintcache).
-func (r *Runner) env(t *config.Task, vars map[string]string) ([]string, error) {
+// golangci-lint cache unless one is set (lintcache). own is what the task
+// sets itself: its .env keys and vars, GOFLAGS after the user's flags.
+func (r *Runner) env(t *config.Task, vars map[string]string) (env, own []string, err error) {
 	if r.base == nil {
 		base, err := BaseEnv()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		r.base = base
 	}
-	env := slices.Clone(r.base)
-	keys, err := KeyValues(r.lookup, t.Keys)
+	env = slices.Clone(r.base)
+	own, err = KeyValues(r.lookup, t.Keys)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	env = append(env, keys...)
 	for _, k := range slices.Sorted(maps.Keys(vars)) {
 		v := vars[k]
 		if k == goFlagsEnv && t.Env[k] != "" {
 			if v, err = r.goFlags(v); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
-		env = append(env, k+"="+v)
+		own = append(own, k+"="+v)
 	}
+	env = append(env, own...)
 	if v, set := lookupEnv(env, lintcache.Env); set {
 		owned, err := lintcache.Owned(v)
 		if err != nil {
-			return nil, fmt.Errorf("%s=%s: %w", lintcache.Env, v, err)
+			return nil, nil, fmt.Errorf("%s=%s: %w", lintcache.Env, v, err)
 		}
 		if !owned {
-			return env, nil
+			return env, own, nil
 		}
 	}
 	env = gitx.Without(env, []string{lintcache.Env})
@@ -2501,9 +2530,9 @@ func (r *Runner) env(t *config.Task, vars map[string]string) ([]string, error) {
 		}
 	}
 	if r.lintCacheErr != nil {
-		return env, nil
+		return env, own, nil
 	}
-	return append(env, lintcache.Env+"="+r.lintCache), nil
+	return append(env, lintcache.Env+"="+r.lintCache), own, nil
 }
 
 const goFlagsEnv = "GOFLAGS"
@@ -2800,15 +2829,13 @@ func LoadSettleLock() (string, error) {
 // Go program not taking every thread of the machine (the go command runs as
 // many compiles at once, each as many threads), over what the environment
 // sets: its GOMAXPROCS and -p are the default for a command run without
-// graft's admission, which keeps to few threads. The task's own env, its .env
-// keys and vars, wins over both. A step that is not heavy only fills
-// GOMAXPROCS the environment leaves unset. AdmittedEnv is set when the task
-// runs on this machine. env is r.env's: r.base, then the task's own; vars
-// are the task's vars, its own GOFLAGS before the user's flags are added.
-func (r *Runner) heavyEnv(env []string, t *config.Task, vars map[string]string, threads string) ([]string, error) {
+// graft's admission, which keeps to few threads. What the task sets itself,
+// own of r.env, wins: its GOMAXPROCS, and a -p its GOFLAGS names (ownsP). A
+// step that is not heavy only fills GOMAXPROCS the environment leaves unset.
+// AdmittedEnv is set when the task runs on this machine.
+func (r *Runner) heavyEnv(env, own []string, t *config.Task, threads string) ([]string, error) {
 	if threads != "" {
 		heavy := t.Heavy || r.heavy > 0
-		own := env[len(r.base):]
 		_, ownProcs := lookupEnv(own, "GOMAXPROCS")
 		_, procs := lookupEnv(env, "GOMAXPROCS")
 		if heavy {
@@ -2817,17 +2844,16 @@ func (r *Runner) heavyEnv(env []string, t *config.Task, vars map[string]string, 
 		if !ownProcs && (heavy || !procs) {
 			env = append(env, "GOMAXPROCS="+threads)
 		}
-		if heavy {
-			flags, ownFlags := lookupEnv(own, goFlagsEnv)
-			if !ownFlags {
+		if heavy && !ownsP(t, own) {
+			// An empty GOFLAGS, as go has it, is none: the user's hold.
+			flags, _ := lookupEnv(own, goFlagsEnv)
+			if strings.TrimSpace(flags) == "" {
 				var err error
 				if flags, err = r.goFlags(""); err != nil {
 					return nil, err
 				}
 			}
-			if !namesP(vars[goFlagsEnv]) {
-				env = append(env, goFlagsEnv+"="+withP(flags, threads))
-			}
+			env = append(env, goFlagsEnv+"="+withP(flags, threads))
 		}
 	}
 	if r.heavy > 0 && !r.frames[len(r.frames)-1].remote {
@@ -2839,11 +2865,26 @@ func (r *Runner) heavyEnv(env []string, t *config.Task, vars map[string]string, 
 	return env, nil
 }
 
+// ownsP says whether the task names the go command's -p itself: in GOFLAGS
+// of its env as written, where ${GOFLAGS} brings the user's flags, not its
+// own, else in a GOFLAGS of its .env keys among own.
+func ownsP(t *config.Task, own []string) bool {
+	if raw, ok := t.Env[goFlagsEnv]; ok {
+		return namesP(raw)
+	}
+	flags, _ := lookupEnv(own, goFlagsEnv)
+	return namesP(flags)
+}
+
 // namesP says whether GOFLAGS sets the go command's -p.
 func namesP(flags string) bool {
-	return slices.ContainsFunc(strings.Fields(flags), func(f string) bool {
-		return strings.HasPrefix(f, "-p=") || strings.HasPrefix(f, "--p=")
-	})
+	return slices.ContainsFunc(strings.Fields(flags), isP)
+}
+
+// isP says whether a GOFLAGS field sets -p; go takes each field as a flag
+// of its own, -p=n or --p=n.
+func isP(field string) bool {
+	return strings.HasPrefix(field, "-p=") || strings.HasPrefix(field, "--p=")
 }
 
 // withP is GOFLAGS flags with -p of threads after them: a later flag wins.
@@ -2855,6 +2896,12 @@ func withP(flags, threads string) string {
 		return flags
 	}
 	return strings.TrimSpace(flags + " " + p)
+}
+
+// withoutP is GOFLAGS flags without their -p.
+func withoutP(flags string) string {
+	fields := slices.DeleteFunc(strings.Fields(flags), isP)
+	return strings.Join(fields, " ")
 }
 
 // Why a task waited besides the machine, whose waits are loadgate's Why
@@ -2941,11 +2988,12 @@ const ThreadsEnv = "GRAFT_THREADS"
 func (r *Runner) threads(s config.Step, t *config.Task) (config.Step, string, error) {
 	uses := strings.Contains(s.Shell, config.ThreadsPlaceholder) ||
 		slices.ContainsFunc(s.Argv, func(w string) bool { return strings.Contains(w, config.ThreadsPlaceholder) })
-	if !uses && !t.Heavy && r.heavy == 0 {
+	remote := len(r.frames) > 0 && r.frames[len(r.frames)-1].remote
+	if !uses && !t.Heavy && r.heavy == 0 && !remote {
 		return s, "", nil
 	}
 	var n string
-	if len(r.frames) > 0 && r.frames[len(r.frames)-1].remote {
+	if remote {
 		rh := r.remoteHeavy
 		if rh.Threads == 0 {
 			if uses {

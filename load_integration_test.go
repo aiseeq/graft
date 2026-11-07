@@ -116,15 +116,18 @@ tasks:
 }
 
 // TestHeavyTaskThreadsOverInherited: GOMAXPROCS and -p of the environment are
-// the default of a command run without admission; an admitted heavy task
-// gets its threads over them, the task's own env still wins, and a task that
-// is not heavy keeps the default.
+// the default of a command run without admission; an admitted heavy task, a
+// heavy exec and the gate get their threads over them, in a graft a step
+// starts too; the task's own env still wins, ${GOFLAGS} bringing the user's
+// -p, not its own; and a task that is not heavy keeps the default.
 func TestHeavyTaskThreadsOverInherited(t *testing.T) {
 	state := t.TempDir()
 	out := filepath.Join(state, "out")
-	step := func(name string) string {
-		return `[[sh, -c, 'echo ` + name + ` procs=$GOMAXPROCS flags=$GOFLAGS >> ` + out + `']]`
+	echo := func(name string) string {
+		return `[sh, -c, 'echo ` + name + ` procs=$GOMAXPROCS flags=$GOFLAGS >> ` + out + `']`
 	}
+	step := func(name string) string { return "[" + echo(name) + "]" }
+	inner := func(task string) string { return "[[" + yamlQuote(graftBin) + ", " + task + "]]" }
 	f := newRepo(t, map[string]string{
 		".graft.yaml": `schema: 1
 version: {mode: none}
@@ -140,8 +143,23 @@ tasks:
     heavy: true
     env: {GOFLAGS: -race}
     run: ` + step("ownflags") + `
+  dollar:
+    heavy: true
+    env: {GOFLAGS: '${GOFLAGS} -race'}
+    run: ` + step("dollar") + `
+  empty:
+    heavy: true
+    env: {GOFLAGS: ''}
+    run: ` + step("empty") + `
   light:
     run: ` + step("light") + `
+  underlight:
+    run: ` + inner("ownflags") + `
+  underheavy:
+    heavy: true
+    run: ` + inner("ownflags") + `
+gate:
+  - ` + echo("gate") + `
 `,
 	})
 	cfgDir := t.TempDir()
@@ -149,9 +167,10 @@ tasks:
 	writeTestPressure(t, cfgDir)
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, filepath.Join(state, "proc"), 0), "XDG_CACHE_HOME="+t.TempDir(),
 		"GOMAXPROCS=1", "GOFLAGS=-p=1")
-	for _, task := range []string{"build", "own", "ownflags", "light"} {
+	for _, task := range []string{"build", "own", "ownflags", "dollar", "empty", "light", "underlight", "underheavy", "gate"} {
 		f.mustGraft(task)
 	}
+	f.mustGraft("exec", "--heavy", "--", "sh", "-c", "echo exec procs=$GOMAXPROCS flags=$GOFLAGS >> "+out)
 	data, err := os.ReadFile(out)
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +178,13 @@ tasks:
 	want := "build procs=6 flags=-p=1 -p=6\n" +
 		"own procs=2 flags=-p=1 -p=3\n" +
 		"ownflags procs=6 flags=-p=1 -race -p=6\n" +
-		"light procs=1 flags=-p=1\n"
+		"dollar procs=6 flags=-p=1 -p=1 -race -p=6\n" +
+		"empty procs=6 flags=-p=1 -p=6\n" +
+		"light procs=1 flags=-p=1\n" +
+		"ownflags procs=6 flags=-p=1 -race -p=6\n" +
+		"ownflags procs=6 flags=-p=1 -p=6 -race -p=6\n" +
+		"gate procs=6 flags=-p=1 -p=6\n" +
+		"exec procs=6 flags=-p=1 -p=6\n"
 	if got := string(data); got != want {
 		t.Errorf("steps saw:\n%s\nwant:\n%s", got, want)
 	}

@@ -84,3 +84,30 @@ func TestBusyGateWithoutEligibleStepsWaitsWhole(t *testing.T) {
 		t.Errorf("the gate did not wait here as a whole:\n%s", out)
 	}
 }
+
+// TestBusyGateStepsGetTheirThreads: a gate that splits places each step
+// first, so a step here gets this machine's threads over the environment's
+// GOMAXPROCS and -p, and one on the host the host's.
+func TestBusyGateStepsGetTheirThreads(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, "")
+	f.write(".graft.yaml", strings.Replace(splitGateConfig, "gate:\n",
+		"go_fmt: {enabled: false, reason: the test has no go files to format}\ngate:\n  - [sh, -c, 'echo first procs=$GOMAXPROCS flags=$GOFLAGS threads=$GRAFT_THREADS >> out']\n", 1))
+	f.env = append(f.env, "GOMAXPROCS=1", "GOFLAGS=-p=1")
+	loaded(t, state)
+	out := runUntilMachineWait(t, f, state, "gate")
+	calls := callsOf(t, state)
+	for _, want := range []string{
+		"env GRAFT_HEAVY=local GOFLAGS=-p=1 -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 go vet ./...",
+		"env GRAFT_HEAVY=local GOFLAGS=-p=1 -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 go test -count=1 ./...",
+	} {
+		if !strings.Contains(calls, want) {
+			t.Errorf("run got %q, want %q\n%s", calls, want, out)
+		}
+	}
+	if got := f.read("out"); !strings.Contains(got, "first procs=6 flags=-p=1 -p=6 threads=6\n") {
+		t.Errorf("the step here saw %q\n%s", got, out)
+	}
+}
