@@ -221,3 +221,57 @@ func (l *lockedLog) String() string {
 	defer l.mu.Unlock()
 	return string(l.b)
 }
+
+// TestBusyNowCountsTheForecast: the check that places a heavy task elsewhere
+// when this machine would make it wait counts the admitted tasks the load
+// average does not show yet, as the wait does.
+func TestBusyNowCountsTheForecast(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(1)
+	setLoadavg(t, 21)
+	path := filepath.Join(t.TempDir(), "load.lock")
+	release := admitOne(t, path, 4)
+	defer release()
+	for _, queue := range []bool{true, false} {
+		busy, err := BusyNowWithReserves(context.Background(), "next", "projectA:next", testLoad, path, queue, io.Discard)
+		if err != nil || !busy {
+			t.Errorf("queue %v: busy %v, %v at load average 21 beside a task of 4 cores just admitted", queue, busy, err)
+		}
+	}
+}
+
+// TestPrioritySettleCountsTheForecast: a deploy's task with a settling period
+// checks the forecast too, and its admission counts for the tasks after it.
+func TestPrioritySettleCountsTheForecast(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(1)
+	setLoadavg(t, 20)
+	dir := t.TempDir()
+	path, settlePath := filepath.Join(dir, "load.lock"), filepath.Join(dir, "load.settle.lock")
+	p := &Priority{For: "deploy", Budget: filepath.Join(dir, "budget"), Fail: true}
+	if err := os.WriteFile(p.Budget, []byte("100000000"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, release, err := WaitWithSettle(context.Background(), "deploy", "projectA:deploy", p, testLoad, path, settlePath, time.Hour, 8, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adm, err := waitBriefly(path, nil); err == nil || adm.Waits[WhyReserve] == 0 {
+		t.Errorf("next beside a deploy task of 8 cores with settle at load average 20: %+v, %v", adm, err)
+	}
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	release = admitOne(t, path, 4)
+	defer release()
+	setLoadavg(t, 21)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	adm, rel, err := WaitWithSettle(ctx, "deploy", "projectA:deploy", p, testLoad, path, settlePath, time.Hour, 1, io.Discard)
+	if err == nil {
+		_ = rel()
+	}
+	if err == nil || adm.Waits[WhyReserve] == 0 {
+		t.Errorf("deploy task with settle at load average 21 beside a task of 4 cores just admitted: %+v, %v", adm, err)
+	}
+}

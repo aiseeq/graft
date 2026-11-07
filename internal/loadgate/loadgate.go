@@ -242,7 +242,7 @@ func acquireSettle(ctx context.Context, m *machine, settleLockPath string, settl
 
 func waitQueued(ctx context.Context, m *machine, p *Priority, kind string, l userconfig.MachineLoad, lockPath string, cores float64, settleLock *lock.Lock, settleDuration time.Duration, start time.Time, behind string, log io.Writer) (Admission, func() error, error) {
 	if p != nil {
-		return waitPriority(ctx, m, p, settleLock, settleDuration, behind)
+		return waitPriority(ctx, m, p, kind, l, lockPath, cores, settleLock, settleDuration, behind, log)
 	}
 	quiet, err := quietMode()
 	if err != nil {
@@ -280,7 +280,7 @@ func waitQueued(ctx context.Context, m *machine, p *Priority, kind string, l use
 		}
 		return m.behind(behind), released, errors.Join(err, lk.Release())
 	}
-	release, since, end, stoppedAt, err := startReserve(lockPath, m.name, cores, l.Settle, log)
+	release, since, end, stoppedAt, err := startAdmission(lockPath, m.name, cores, l.Settle, log)
 	if err != nil {
 		if settleLock != nil {
 			err = errors.Join(err, settleLock.Release())
@@ -303,17 +303,27 @@ func waitQueued(ctx context.Context, m *machine, p *Priority, kind string, l use
 	return adm, release, nil
 }
 
-func waitPriority(ctx context.Context, m *machine, p *Priority, settleLock *lock.Lock, settleDuration time.Duration, behind string) (Admission, func() error, error) {
-	if err := m.admit(ctx, p); err != nil {
+// waitPriority admits a task with a priority that took the settle lock as
+// reservePriority does, and holds the lock for its settling period.
+func waitPriority(ctx context.Context, m *machine, p *Priority, kind string, l userconfig.MachineLoad, lockPath string, cores float64, settleLock *lock.Lock, settleDuration time.Duration, behind string, log io.Writer) (Admission, func() error, error) {
+	adm, release, err := reservePriority(ctx, m, m.name, kind, p, l, lockPath, cores, log)
+	adm.WaitedBehind = behind
+	if err != nil {
 		var releaseErr error
 		if settleLock != nil {
 			releaseErr = settleLock.Release()
 		}
-		return m.behind(behind), released, errors.Join(err, releaseErr)
+		return adm, released, errors.Join(err, releaseErr)
 	}
-	return m.behind(behind), settle(settleLock, settleDuration), nil
+	settleRelease := settle(settleLock, settleDuration)
+	return adm, func() error { return errors.Join(release(), settleRelease()) }, nil
 }
 
+// admitWithReserves waits for the machine to be calm and to have room beside
+// the reserves at lockPath and the admitted tasks the load average does not
+// show yet; a priority task waits no longer than its budget allows, spending
+// it as it waits. The time between two readings goes to what the first of
+// them found busy, the first reading's own to what it found.
 func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath string) error {
 	start, mark := time.Now(), time.Now()
 	spent := start
@@ -334,20 +344,10 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 			return err
 		}
 		if b.why == "" {
-			sum, err := liveReserveCores(lockPath)
-			if err != nil {
+			if b, err = m.reservesBusy(lockPath); err != nil {
 				return err
 			}
-			unseen, err := unseenAdmittedCores(lockPath, time.Now())
-			if err != nil {
-				return err
-			}
-			switch {
-			case float64(m.runnable)+sum >= m.runnableLimit:
-				b = busyness{why: WhyReserve, text: fmt.Sprintf("runnable %.0f plus reserves %.1f reaches %.0f", m.runnable, sum, m.runnableLimit)}
-			case m.avg1Known && m.avg1+unseen >= m.runnableLimit:
-				b = busyness{why: WhyReserve, text: fmt.Sprintf("load average 1m %.2f plus %.1f of the admitted tasks it does not show yet reaches %.0f", m.avg1, unseen, m.runnableLimit)}
-			default:
+			if b.why == "" {
 				if waited {
 					fmt.Fprintf(m.log, "graft: %s: runnable %.0f, starting after %s\n", m.name, m.runnable, time.Since(start).Round(time.Second))
 				}
@@ -394,6 +394,27 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 			return err
 		}
 	}
+}
+
+// reservesBusy is why the machine m measured last has no room for one more
+// heavy task beside the live reserves and the admitted tasks its load average
+// does not show yet, empty when it has.
+func (m *machine) reservesBusy(lockPath string) (busyness, error) {
+	sum, err := liveReserveCores(lockPath)
+	if err != nil {
+		return busyness{}, err
+	}
+	unseen, err := unseenAdmittedCores(lockPath, time.Now())
+	if err != nil {
+		return busyness{}, err
+	}
+	switch {
+	case float64(m.runnable)+sum >= m.runnableLimit:
+		return busyness{why: WhyReserve, text: fmt.Sprintf("runnable %.0f plus reserves %.1f reaches %.0f", m.runnable, sum, m.runnableLimit)}, nil
+	case m.avg1Known && m.avg1+unseen >= m.runnableLimit:
+		return busyness{why: WhyReserve, text: fmt.Sprintf("load average 1m %.2f plus %.1f of the admitted tasks it does not show yet reaches %.0f", m.avg1, unseen, m.runnableLimit)}, nil
+	}
+	return busyness{}, nil
 }
 
 // loadAvgTau is the time constant of the kernel's 1-minute load average: a
@@ -453,7 +474,7 @@ func reservePriority(ctx context.Context, m *machine, name, kind string, p *Prio
 	if err != nil {
 		return m.admission(), released, err
 	}
-	rel, since, end, stoppedAt, err := startReserve(lockPath, name, cores, l.Settle, log)
+	rel, since, end, stoppedAt, err := startAdmission(lockPath, name, cores, l.Settle, log)
 	if err != nil {
 		return m.admission(), released, err
 	}
@@ -469,6 +490,30 @@ func expectedReserveCores(kind string, cores float64) (float64, error) {
 	return stats.ExpectedCores(kind)
 }
 
+// startAdmission writes the live record of an admitted task, which the
+// forecast counts until the task's release, and starts its reserve.
+func startAdmission(lockPath, name string, cores float64, cap time.Duration, log io.Writer) (func() error, time.Time, func() string, func() time.Time, error) {
+	raw, err := json.Marshal(reserveData{Cores: cores, Admitted: time.Now().Format(time.RFC3339Nano), Task: name})
+	if err != nil {
+		return released, time.Now(), nil, nil, fmt.Errorf("encoding admitted task: %w", err)
+	}
+	admittedRel, err := lock.Reserve(filepath.Dir(lockPath), admittedPattern(lockPath), raw)
+	if err != nil {
+		return released, time.Now(), nil, nil, err
+	}
+	release, since, end, stoppedAt, err := startReserve(lockPath, name, cores, cap, log)
+	if err != nil {
+		return released, since, nil, nil, errors.Join(err, admittedRel())
+	}
+	var once sync.Once
+	var admittedErr error
+	return func() error {
+		err := release()
+		once.Do(func() { admittedErr = admittedRel() })
+		return errors.Join(err, admittedErr)
+	}, since, end, stoppedAt, nil
+}
+
 func startReserve(lockPath, name string, cores float64, cap time.Duration, log io.Writer) (func() error, time.Time, func() string, func() time.Time, error) {
 	now := time.Now()
 	since := now
@@ -476,13 +521,9 @@ func startReserve(lockPath, name string, cores float64, cap time.Duration, log i
 	if err != nil {
 		return released, since, nil, nil, fmt.Errorf("encoding reserve: %w", err)
 	}
-	admittedRel, err := lock.Reserve(filepath.Dir(lockPath), admittedPattern(lockPath), raw)
-	if err != nil {
-		return released, since, nil, nil, err
-	}
 	rel, err := lock.Reserve(filepath.Dir(lockPath), filepath.Base(lockPath)+".*.reserve", raw)
 	if err != nil {
-		return released, since, nil, nil, errors.Join(err, admittedRel())
+		return released, since, nil, nil, err
 	}
 	var mu sync.Mutex
 	end := ""
@@ -567,13 +608,10 @@ func startReserve(lockPath, name string, cores float64, cap time.Duration, log i
 			}
 		}
 	}()
-	var admittedOnce sync.Once
-	var admittedErr error
 	return func() error {
 		once.Do(func() { setEnd("done"); close(done) })
 		drop()
-		admittedOnce.Do(func() { admittedErr = admittedRel() })
-		return errors.Join(dropErr, admittedErr)
+		return dropErr
 	}, since, func() string { mu.Lock(); defer mu.Unlock(); return end }, func() time.Time { mu.Lock(); defer mu.Unlock(); return stoppedAt }, nil
 }
 
@@ -706,8 +744,8 @@ func BusyNow(ctx context.Context, name, kind string, l userconfig.MachineLoad, l
 	return BusyNowWithReserves(ctx, name, kind, l, lockPath, lockPath != "", log)
 }
 
-// BusyNowWithReserves checks the machine and its live reservations without
-// queueing. queue controls whether a current queue holder also counts.
+// BusyNowWithReserves checks the machine, its live reservations and the
+// admitted tasks its load average does not show yet without queueing. queue controls whether a current queue holder also counts.
 func BusyNowWithReserves(ctx context.Context, name, kind string, l userconfig.MachineLoad, lockPath string, queue bool, log io.Writer) (bool, error) {
 	if queue {
 		holders, err := lock.Holders(lockPath)
@@ -720,8 +758,8 @@ func BusyNowWithReserves(ctx context.Context, name, kind string, l userconfig.Ma
 	if err != nil || b.why != "" {
 		return b.why != "", err
 	}
-	sum, err := liveReserveCores(lockPath)
-	return float64(m.runnable)+sum >= m.runnableLimit, err
+	b, err = m.reservesBusy(lockPath)
+	return b.why != "", err
 }
 
 // BusyChecker keeps the pressure meter across readings, so repeated checks
@@ -825,68 +863,6 @@ func (m *machine) skip(none, fault error, noPSI bool) {
 		fmt.Fprintf(m.log, "graft: %s: %v, %s\n", m.name, fault, fallback)
 	default:
 		fmt.Fprintf(m.log, "graft: %s: %v, not checked\n", m.name, none)
-	}
-}
-
-// admit waits for the machine to be calm; a priority task waits no longer
-// than its budget allows, spending it as it waits. The time between two
-// readings goes to what the first of them found busy, the first reading's
-// own to what it found.
-func (m *machine) admit(ctx context.Context, p *Priority) error {
-	start := time.Now()
-	spent, mark := start, start
-	var said time.Time
-	waited := false
-	why := ""
-	for {
-		b, err := m.busy(ctx, said.IsZero() && !waited)
-		now := time.Now()
-		if why == "" {
-			why = b.why
-		}
-		if why != "" {
-			m.waits[why] += now.Sub(mark)
-		}
-		mark, why = now, b.why
-		if err != nil {
-			return err
-		}
-		if b.why == "" {
-			if waited {
-				fmt.Fprintf(m.log, "graft: %s: runnable %.0f, starting after %s\n", m.name, m.runnable, time.Since(start).Round(time.Second))
-			}
-			return nil
-		}
-		if p != nil && !waited {
-			fmt.Fprintf(m.log, "graft: %s: %s, not queueing behind other heavy tasks: it runs for %s\n", m.name, b.text, p.For)
-		}
-		waited = true
-		var left time.Duration
-		if p != nil {
-			now := time.Now()
-			if left, err = p.spend(now.Sub(spent)); err != nil {
-				return err
-			}
-			spent = now
-		}
-		if p != nil && left <= 0 {
-			if p.Fail {
-				return fmt.Errorf("%s: %s after %s, past the wait %s allows (deploy.load_wait)", m.name, b.text, time.Since(start).Round(time.Second), p.For)
-			}
-			fmt.Fprintf(m.log, "graft: %s: %s, starting after %s, all the wait %s allows (deploy.load_wait)\n", m.name, b.text, time.Since(start).Round(time.Second), p.For)
-			return nil
-		}
-		if time.Since(said) >= time.Minute {
-			fmt.Fprintf(m.log, "graft: %s: %s, waiting\n", m.name, b.text)
-			said = time.Now()
-		}
-		pause := m.l.Poll
-		if p != nil {
-			pause = min(pause, left)
-		}
-		if err := sleep(ctx, pause); err != nil {
-			return err
-		}
 	}
 }
 
