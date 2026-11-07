@@ -53,7 +53,7 @@ leaks:                           # keep private names out of public repositories
   allow:
     - {term: SomeName, reason: why this name is fine everywhere}
 load:                            # heavy tasks on a shared machine (heavy: true in a task)
-  threads: 4                     # default 4: {threads} in steps, GRAFT_THREADS and GOMAXPROCS in heavy tasks
+  threads: 4                     # default 4: {threads} in steps, GRAFT_THREADS, GOMAXPROCS and -p in heavy tasks
   settle: 30s                    # default 30s: maximum lifetime of an expected CPU reservation
   poll: 5s                       # default 5s; 0 anywhere here means the default
 limits:                          # graft stats marks the tasks over them, by median without the waits; a run over says so when it ends
@@ -158,12 +158,18 @@ Ctrl-C, SIGTERM, or an unignored SIGHUP stops the wait and command. If both
 caller output pipes close, graft stops them too; deploy keeps its existing
 signal behavior.
 
-The steps of a heavy task and of the gate, and a step with `{threads}`, get `GOMAXPROCS` set to `threads`
-unless the task's `env` or the environment sets it: one Go program does not take every thread of
-the machine, the go command running a compile per package at once, each with
-as many threads as `GOMAXPROCS`. `GOFLAGS` in a task's `env` comes after the
-user's (the environment's, else the go env file's), which it would otherwise
-replace; a later flag wins, so the task's still override them.
+The steps of a heavy task and of the gate get `GOMAXPROCS` set to `threads`
+and `-p=threads` after the user's `GOFLAGS` (the environment's, else the go env
+file's), over what the environment sets: one Go program does not take every
+thread of the machine, the go command running a compile per package at once,
+each with as many threads as `GOMAXPROCS`. The environment's `GOMAXPROCS` and
+`-p` are the default of a command run without admission, which may keep a
+bare `go test` to one thread; an admitted task gets its threads. The task's
+own `env` wins: its `GOMAXPROCS`, and a `-p` in its `GOFLAGS`, are left as
+they are. A step with `{threads}` that is not heavy gets `GOMAXPROCS` only
+when the environment leaves it unset. `GOFLAGS` in a task's `env` comes after
+the user's, which it would otherwise replace; a later flag wins, so the
+task's still override them.
 
 A heavy command that is no task of the project (a one-off `go test`, a
 build, an e2e run) takes the same queue with `graft exec --heavy -- <command>
@@ -296,6 +302,7 @@ of an admitted heavy task starts, a heavy task inside another) does not
 overflow under `when: busy`. Project configuration keeps its existing rule: every
 heavy task can go to its host except tasks that need local files or data.
 The host's command gets the task's `env`, `GRAFT_HEAVY=local`, the threads
+(as `-p` after `GOFLAGS` too, unless the task's `GOFLAGS` names one)
 and the caller's `GOOS`, `GOARCH`, `GOFLAGS`, `CGO_ENABLED` and
 `GOEXPERIMENT` (the task's own value wins), not the rest of the caller's
 environment: `FLAG=1 graft exec --heavy -- go test ./...` does not see

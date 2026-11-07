@@ -428,15 +428,28 @@ func (r *Runner) remoteCmd(ctx context.Context, cmd *exec.Cmd, vars map[string]s
 		words = append(words, strings.ReplaceAll(w, config.RootPlaceholder, r.Root))
 	}
 	words = append(words, "env", HeavyEnv+"=local")
+	// A heavy step's -p is the host's threads after the caller's GOFLAGS or
+	// the task's, unless the task's names one: the caller's is the default
+	// of a command run without graft's admission.
+	flags, ownFlags := vars[goFlagsEnv]
+	if !ownFlags {
+		flags = os.Getenv(goFlagsEnv)
+	}
+	setP := threads != "" && (!ownFlags || !namesP(flags))
 	for _, k := range passedEnv() {
 		if v, set := os.LookupEnv(k); set {
-			if _, own := vars[k]; !own {
+			if _, own := vars[k]; !own && (k != goFlagsEnv || !setP) {
 				words = append(words, k+"="+v)
 			}
 		}
 	}
 	for _, k := range slices.Sorted(maps.Keys(vars)) {
-		words = append(words, k+"="+vars[k])
+		if k != goFlagsEnv || !setP {
+			words = append(words, k+"="+vars[k])
+		}
+	}
+	if setP {
+		words = append(words, goFlagsEnv+"="+withP(flags, threads))
 	}
 	if threads != "" {
 		words = append(words, ThreadsEnv+"="+threads)

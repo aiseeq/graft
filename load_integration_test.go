@@ -115,6 +115,56 @@ tasks:
 	}
 }
 
+// TestHeavyTaskThreadsOverInherited: GOMAXPROCS and -p of the environment are
+// the default of a command run without admission; an admitted heavy task
+// gets its threads over them, the task's own env still wins, and a task that
+// is not heavy keeps the default.
+func TestHeavyTaskThreadsOverInherited(t *testing.T) {
+	state := t.TempDir()
+	out := filepath.Join(state, "out")
+	step := func(name string) string {
+		return `[[sh, -c, 'echo ` + name + ` procs=$GOMAXPROCS flags=$GOFLAGS >> ` + out + `']]`
+	}
+	f := newRepo(t, map[string]string{
+		".graft.yaml": `schema: 1
+version: {mode: none}
+tasks:
+  build:
+    heavy: true
+    run: ` + step("build") + `
+  own:
+    heavy: true
+    env: {GOMAXPROCS: "2", GOFLAGS: -p=3}
+    run: ` + step("own") + `
+  ownflags:
+    heavy: true
+    env: {GOFLAGS: -race}
+    run: ` + step("ownflags") + `
+  light:
+    run: ` + step("light") + `
+`,
+	})
+	cfgDir := t.TempDir()
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms}\n")
+	writeTestPressure(t, cfgDir)
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, filepath.Join(state, "proc"), 0), "XDG_CACHE_HOME="+t.TempDir(),
+		"GOMAXPROCS=1", "GOFLAGS=-p=1")
+	for _, task := range []string{"build", "own", "ownflags", "light"} {
+		f.mustGraft(task)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "build procs=6 flags=-p=1 -p=6\n" +
+		"own procs=2 flags=-p=1 -p=3\n" +
+		"ownflags procs=6 flags=-p=1 -race -p=6\n" +
+		"light procs=1 flags=-p=1\n"
+	if got := string(data); got != want {
+		t.Errorf("steps saw:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 // TestHeavyTaskWaitIsRecorded: the wait for the load is on the task's stats
 // line and in the report's wait columns, the outer task holding its inner
 // task's wait.

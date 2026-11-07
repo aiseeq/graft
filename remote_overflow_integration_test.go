@@ -703,8 +703,8 @@ func TestUserRemoteHeavyTestFindsTheStandardLibrary(t *testing.T) {
 }
 
 // TestUserRemoteHeavyPassesTheVariablesNamed: the host gets no variable of
-// the caller's but the go command's own (GOFLAGS here) and the ones graft
-// exec --env names: FOO=1 graft exec --heavy -- go test does not see FOO
+// the caller's but the go command's own (GOFLAGS here, the host's threads
+// as -p after it) and the ones graft exec --env names: FOO=1 graft exec --heavy -- go test does not see FOO
 // there, with --env FOO it does.
 func TestUserRemoteHeavyPassesTheVariablesNamed(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -722,8 +722,8 @@ func TestUserRemoteHeavyPassesTheVariablesNamed(t *testing.T) {
 		flags []string
 		want  string
 	}{
-		{nil, "FOO=unset GOFLAGS=-p=2"},
-		{[]string{"--env", "FOO"}, "FOO=1 GOFLAGS=-p=2"},
+		{nil, "FOO=unset GOFLAGS=-p=2 -p=8"},
+		{[]string{"--env", "FOO"}, "FOO=1 GOFLAGS=-p=2 -p=8"},
 	} {
 		loaded(t, state)
 		args := append(append([]string{"exec", "--heavy"}, c.flags...), "--", "go", "test", "-count=1", "./...")

@@ -1554,7 +1554,9 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	if err != nil {
 		return err
 	}
-	env = r.heavyEnv(env, t, threads)
+	if env, err = r.heavyEnv(env, t, vars, threads); err != nil {
+		return err
+	}
 	var cmd *exec.Cmd
 	var words []string
 	directGoTest := false
@@ -1835,7 +1837,9 @@ func (r *Runner) execCommand(ctx context.Context, dir string, argv []string, t *
 	if err != nil {
 		return nil, err
 	}
-	env = r.heavyEnv(env, t, threads)
+	if env, err = r.heavyEnv(env, t, nil, threads); err != nil {
+		return nil, err
+	}
 	if innerGraft {
 		env = append(env, ExecHeavyEnv+"=1")
 		if r.ExecMemoryMax != "" {
@@ -2792,17 +2796,38 @@ func LoadSettleLock() (string, error) {
 }
 
 // heavyEnv adds to the environment of a step what an admitted heavy task
-// gives: GRAFT_THREADS and GOMAXPROCS of threads, one Go program not taking
-// every thread of the machine (the go command runs as many compiles at once,
-// each as many threads), unless the task's env or the environment sets
-// GOMAXPROCS; and AdmittedEnv when the task runs on this machine.
-func (r *Runner) heavyEnv(env []string, t *config.Task, threads string) []string {
+// gives: GRAFT_THREADS, and GOMAXPROCS and the go command's -p of threads, one
+// Go program not taking every thread of the machine (the go command runs as
+// many compiles at once, each as many threads), over what the environment
+// sets: its GOMAXPROCS and -p are the default for a command run without
+// graft's admission, which keeps to few threads. The task's own env, its .env
+// keys and vars, wins over both. A step that is not heavy only fills
+// GOMAXPROCS the environment leaves unset. AdmittedEnv is set when the task
+// runs on this machine. env is r.env's: r.base, then the task's own; vars
+// are the task's vars, its own GOFLAGS before the user's flags are added.
+func (r *Runner) heavyEnv(env []string, t *config.Task, vars map[string]string, threads string) ([]string, error) {
 	if threads != "" {
-		if t.Heavy || r.heavy > 0 {
+		heavy := t.Heavy || r.heavy > 0
+		own := env[len(r.base):]
+		_, ownProcs := lookupEnv(own, "GOMAXPROCS")
+		_, procs := lookupEnv(env, "GOMAXPROCS")
+		if heavy {
 			env = append(env, ThreadsEnv+"="+threads)
 		}
-		if _, set := lookupEnv(env, "GOMAXPROCS"); !set {
+		if !ownProcs && (heavy || !procs) {
 			env = append(env, "GOMAXPROCS="+threads)
+		}
+		if heavy {
+			flags, ownFlags := lookupEnv(own, goFlagsEnv)
+			if !ownFlags {
+				var err error
+				if flags, err = r.goFlags(""); err != nil {
+					return nil, err
+				}
+			}
+			if !namesP(vars[goFlagsEnv]) {
+				env = append(env, goFlagsEnv+"="+withP(flags, threads))
+			}
 		}
 	}
 	if r.heavy > 0 && !r.frames[len(r.frames)-1].remote {
@@ -2811,7 +2836,25 @@ func (r *Runner) heavyEnv(env []string, t *config.Task, threads string) []string
 			env = append(env, HeldScopeEnv+"="+r.heavyPlace.Scope)
 		}
 	}
-	return env
+	return env, nil
+}
+
+// namesP says whether GOFLAGS sets the go command's -p.
+func namesP(flags string) bool {
+	return slices.ContainsFunc(strings.Fields(flags), func(f string) bool {
+		return strings.HasPrefix(f, "-p=") || strings.HasPrefix(f, "--p=")
+	})
+}
+
+// withP is GOFLAGS flags with -p of threads after them: a later flag wins.
+// Flags that end with it already, as a graft a heavy step starts inherits
+// them, stay as they are.
+func withP(flags, threads string) string {
+	p := "-p=" + threads
+	if fields := strings.Fields(flags); len(fields) > 0 && fields[len(fields)-1] == p {
+		return flags
+	}
+	return strings.TrimSpace(flags + " " + p)
 }
 
 // Why a task waited besides the machine, whose waits are loadgate's Why
