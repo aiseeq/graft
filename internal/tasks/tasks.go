@@ -2503,11 +2503,11 @@ func (r *Runner) env(t *config.Task, vars map[string]string) (env, own []string,
 	if err != nil {
 		return nil, nil, err
 	}
-	// A key the environment sets takes its value from there: it is the
-	// environment's, not the task's.
+	// A key the environment sets takes its value from there, as the lookup
+	// reads it: it is the environment's, not the task's.
 	for _, kv := range keys {
 		name, _, _ := strings.Cut(kv, "=")
-		if _, inherited := lookupEnv(r.base, name); !inherited {
+		if _, inherited := os.LookupEnv(name); !inherited {
 			own = append(own, kv)
 		}
 	}

@@ -198,6 +198,41 @@ gate:
 	}
 }
 
+// TestHeavyTaskKeepsItsDotenvThreads: GOMAXPROCS of a .env key the
+// environment does not set is the task's, over an admitted task's threads; a
+// variable of the environment that differs in case only is not it.
+func TestHeavyTaskKeepsItsDotenvThreads(t *testing.T) {
+	state := t.TempDir()
+	out := filepath.Join(state, "out")
+	f := newRepo(t, map[string]string{
+		".graft.yaml": `schema: 1
+version: {mode: none}
+tasks:
+  keys:
+    heavy: true
+    dotenv: [GOMAXPROCS]
+    run: [[sh, -c, 'echo procs=$GOMAXPROCS >> ` + out + `']]
+`,
+		".env": "GOMAXPROCS=2\n",
+	})
+	cfgDir := t.TempDir()
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms}\n")
+	writeTestPressure(t, cfgDir)
+	// The tests' environment has no GOMAXPROCS of its own.
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, filepath.Join(state, "proc"), 0), "XDG_CACHE_HOME="+t.TempDir())
+	f.mustGraft("keys")
+	want := "procs=2\n"
+	if runtime.GOOS != "windows" {
+		// Names are case-sensitive here, as the .env lookup reads them.
+		f.env = append(f.env, "gomaxprocs=1")
+		f.mustGraft("keys")
+		want += want
+	}
+	if got := readFile(t, out); got != want {
+		t.Errorf("the step saw %q, want the .env key's procs=2", got)
+	}
+}
+
 // TestHeavyTaskWaitIsRecorded: the wait for the load is on the task's stats
 // line and in the report's wait columns, the outer task holding its inner
 // task's wait.
