@@ -107,7 +107,9 @@ type Record struct {
 	PeakWriteMBs *float64 `json:"peak_write_mbs,omitempty"`
 	// LoadStart and LoadMax are the 1-minute load average when the step or
 	// task started and the highest seen while it ran: a run on a loaded
-	// machine is slower for that alone. Absent where it is not read.
+	// machine is slower for that alone. A task's cover the waits before its
+	// steps too (admission, lock), as its wall time does: the load it was
+	// admitted at is its first step's LoadStart. Absent where it is not read.
 	LoadStart *float64 `json:"load_start,omitempty"`
 	LoadMax   *float64 `json:"load_max,omitempty"`
 	// DBCPUS and DBMemMB are, on the line of a task with test_db, what the

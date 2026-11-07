@@ -1083,9 +1083,11 @@ graft's version, pid and command line. A
   are not read. A task line has its largest step's. Linux only.
 - `load_start` and `load_max` are the machine's 1-minute load average when
   the step or task started and the highest seen while it ran, read with
-  `tree_mem_mb`. Wall time on a machine at load 30 does not compare with
-  wall time at load 5: they tell such runs apart. Absent where there is no
-  `/proc/loadavg`.
+  `tree_mem_mb`. A task starts when it is called, so on its line they cover
+  the waits before its steps too (admission, lock): the load a waiting task
+  was admitted at is its first step's `load_start`. Wall time on a machine
+  at load 30 does not compare with wall time at load 5: they tell such runs
+  apart. Absent where there is no `/proc/loadavg`.
 - `db_cpu_s` and `db_mem_mb`, on the line of a task with `test_db: true`,
   are what PostgreSQL in the test database's container cost, which the
   task's own processes do not show: the CPU time of the container's cgroup
