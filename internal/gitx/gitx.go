@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -367,13 +368,22 @@ func LocalEnvVars() ([]string, error) {
 	return splitLines(out), nil
 }
 
-// Without is environ but the variables named in drop, case aside: Windows
-// treats names so.
+// SameEnvName reports whether a and b name one environment variable: case
+// aside on Windows, which treats names so, exactly elsewhere, where gomaxprocs
+// is not GOMAXPROCS.
+func SameEnvName(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+// Without is environ but the variables named in drop (SameEnvName).
 func Without(environ, drop []string) []string {
 	var kept []string
 	for _, kv := range environ {
 		name, _, _ := strings.Cut(kv, "=")
-		if !slices.ContainsFunc(drop, func(d string) bool { return strings.EqualFold(d, name) }) {
+		if !slices.ContainsFunc(drop, func(d string) bool { return SameEnvName(d, name) }) {
 			kept = append(kept, kv)
 		}
 	}

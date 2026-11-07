@@ -2504,10 +2504,12 @@ func (r *Runner) env(t *config.Task, vars map[string]string) (env, own []string,
 		return nil, nil, err
 	}
 	// A key the environment sets takes its value from there, as the lookup
-	// reads it: it is the environment's, not the task's.
+	// reads it: it is the environment's, not the task's, when the base keeps
+	// it; one the base drops (a local git variable, a marker) the step gets
+	// only as the task's.
 	for _, kv := range keys {
 		name, _, _ := strings.Cut(kv, "=")
-		if _, inherited := os.LookupEnv(name); !inherited {
+		if _, inherited := lookupEnv(r.base, name); !inherited {
 			own = append(own, kv)
 		}
 	}
@@ -2580,7 +2582,7 @@ func (r *Runner) goFlags(v string) (string, error) {
 func lookupEnv(env []string, name string) (string, bool) {
 	for i := len(env) - 1; i >= 0; i-- {
 		k, v, _ := strings.Cut(env[i], "=")
-		if strings.EqualFold(k, name) {
+		if gitx.SameEnvName(k, name) {
 			return v, true
 		}
 	}

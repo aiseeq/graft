@@ -244,7 +244,7 @@ func envWith(env []string, key, value string) []string {
 	out := make([]string, 0, len(env)+1)
 	for _, entry := range env {
 		name, _, _ := strings.Cut(entry, "=")
-		if !strings.EqualFold(name, key) {
+		if !gitx.SameEnvName(name, key) {
 			out = append(out, entry)
 		}
 	}

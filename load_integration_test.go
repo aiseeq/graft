@@ -233,6 +233,42 @@ tasks:
 	}
 }
 
+// TestTaskKeysTheBaseDrops: a .env key of a task the environment sets but the
+// steps' base environment drops (a local git variable) reaches the step as
+// the task's; a lowercase gomaxprocs of a heavy task is not its GOMAXPROCS
+// where names are case-sensitive.
+func TestTaskKeysTheBaseDrops(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("names differing in case are one variable on Windows")
+	}
+	state := t.TempDir()
+	out := filepath.Join(state, "out")
+	f := newRepo(t, map[string]string{
+		".graft.yaml": `schema: 1
+version: {mode: none}
+tasks:
+  keys:
+    dotenv: [GIT_PREFIX]
+    run: [[sh, -c, 'echo prefix=$GIT_PREFIX >> ` + out + `']]
+  lower:
+    heavy: true
+    env: {gomaxprocs: '2'}
+    run: [[sh, -c, 'echo procs=$GOMAXPROCS >> ` + out + `']]
+`,
+		".env": "OTHER=1\n",
+	})
+	cfgDir := t.TempDir()
+	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms}\n")
+	writeTestPressure(t, cfgDir)
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, filepath.Join(state, "proc"), 0), "XDG_CACHE_HOME="+t.TempDir())
+	f.env = append(f.env, "GIT_PREFIX=sub/")
+	f.mustGraft("keys")
+	f.mustGraft("lower")
+	if got, want := readFile(t, out), "prefix=sub/\nprocs=6\n"; got != want {
+		t.Errorf("the steps saw %q, want %q", got, want)
+	}
+}
+
 // TestHeavyTaskWaitIsRecorded: the wait for the load is on the task's stats
 // line and in the report's wait columns, the outer task holding its inner
 // task's wait.
