@@ -86,10 +86,19 @@ func setup(m *testing.M) (int, error) {
 	// Every gate and heavy task queues for the machine: the tests' graft
 	// finds a calm one unless a test fakes another, and does not wait out the
 	// load of the machine the tests run on.
+	// Calm means room for the tasks a test runs at once: a single thread
+	// would hold a second heavy task until the first ends, as the load
+	// average has yet to show the first.
 	machine := filepath.Join(dir, "machine")
+	var stat strings.Builder
+	stat.WriteString("cpu  1 1 1 1\n")
+	for i := range 22 {
+		fmt.Fprintf(&stat, "cpu%d 1 1 1 1\n", i)
+	}
+	stat.WriteString("procs_running 1\n")
 	for name, content := range map[string]string{
 		"meminfo":         "Dirty: 0 kB\nWriteback: 0 kB\n",
-		"stat":            "cpu  1 1 1 1\ncpu0 1 1 1 1\nprocs_running 1\n",
+		"stat":            stat.String(),
 		"loadavg":         "0.00 0.00 0.00 1/100 1\n",
 		"pressure/io":     "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n",
 		"pressure/memory": "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n",

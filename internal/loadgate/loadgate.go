@@ -41,7 +41,8 @@ const (
 	WhyIO        = "io"
 	WhyWriteback = "writeback"
 	WhySwap      = "swap"
-	// WhyReserve is waiting for live expected-core reservations.
+	// WhyReserve is waiting for live expected-core reservations, and for the
+	// admitted tasks the load average does not show yet.
 	WhyReserve = "reserve"
 	// WhyQuiet is the wait for the quiet mode akit's busy --quiet-until
 	// sets to end.
@@ -337,13 +338,21 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 			if err != nil {
 				return err
 			}
-			if float64(m.runnable)+sum < m.runnableLimit {
+			unseen, err := unseenAdmittedCores(lockPath, time.Now())
+			if err != nil {
+				return err
+			}
+			switch {
+			case float64(m.runnable)+sum >= m.runnableLimit:
+				b = busyness{why: WhyReserve, text: fmt.Sprintf("runnable %.0f plus reserves %.1f reaches %.0f", m.runnable, sum, m.runnableLimit)}
+			case m.avg1Known && m.avg1+unseen >= m.runnableLimit:
+				b = busyness{why: WhyReserve, text: fmt.Sprintf("load average 1m %.2f plus %.1f of the admitted tasks it does not show yet reaches %.0f", m.avg1, unseen, m.runnableLimit)}
+			default:
 				if waited {
 					fmt.Fprintf(m.log, "graft: %s: runnable %.0f, starting after %s\n", m.name, m.runnable, time.Since(start).Round(time.Second))
 				}
 				return nil
 			}
-			b = busyness{why: WhyReserve, text: fmt.Sprintf("runnable %.0f plus reserves %.1f reaches %.0f", m.runnable, sum, m.runnableLimit)}
 		}
 		if p != nil && !waited {
 			fmt.Fprintf(m.log, "graft: %s: %s, not queueing behind other heavy tasks: it runs for %s\n", m.name, b.text, p.For)
@@ -385,6 +394,38 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 			return err
 		}
 	}
+}
+
+// loadAvgTau is the time constant of the kernel's 1-minute load average: a
+// load of c that starts now shows in it as c·(1 − e^(−t/τ)).
+const loadAvgTau = time.Minute
+
+// admittedPattern names the live record of an admitted task that lives as
+// long as the task, past its reserve.
+func admittedPattern(lockPath string) string { return filepath.Base(lockPath) + ".*.admitted" }
+
+// unseenAdmittedCores is how much of the expected cores of the running
+// admitted tasks the 1-minute load average does not show yet at now: c·e^(−t/τ)
+// each, t since its admission. The load average of a queue's dip is that of
+// the machine before the tasks it let in: the next counts them so.
+func unseenAdmittedCores(lockPath string, now time.Time) (float64, error) {
+	files, err := lock.LiveData(filepath.Dir(lockPath), admittedPattern(lockPath))
+	if err != nil {
+		return 0, err
+	}
+	var sum float64
+	for _, file := range files {
+		var d reserveData
+		if err := json.Unmarshal(file.Data, &d); err != nil {
+			return 0, fmt.Errorf("decoding admitted task %s: %w", file.Path, err)
+		}
+		at, err := time.Parse(time.RFC3339Nano, d.Admitted)
+		if err != nil {
+			return 0, fmt.Errorf("admitted task %s: %w", file.Path, err)
+		}
+		sum += d.Cores * math.Exp(-max(now.Sub(at), 0).Seconds()/loadAvgTau.Seconds())
+	}
+	return sum, nil
 }
 
 func liveReserveCores(lockPath string) (float64, error) {
@@ -435,9 +476,13 @@ func startReserve(lockPath, name string, cores float64, cap time.Duration, log i
 	if err != nil {
 		return released, since, nil, nil, fmt.Errorf("encoding reserve: %w", err)
 	}
-	rel, err := lock.Reserve(filepath.Dir(lockPath), filepath.Base(lockPath)+".*.reserve", raw)
+	admittedRel, err := lock.Reserve(filepath.Dir(lockPath), admittedPattern(lockPath), raw)
 	if err != nil {
 		return released, since, nil, nil, err
+	}
+	rel, err := lock.Reserve(filepath.Dir(lockPath), filepath.Base(lockPath)+".*.reserve", raw)
+	if err != nil {
+		return released, since, nil, nil, errors.Join(err, admittedRel())
 	}
 	var mu sync.Mutex
 	end := ""
@@ -522,10 +567,13 @@ func startReserve(lockPath, name string, cores float64, cap time.Duration, log i
 			}
 		}
 	}()
+	var admittedOnce sync.Once
+	var admittedErr error
 	return func() error {
 		once.Do(func() { setEnd("done"); close(done) })
 		drop()
-		return dropErr
+		admittedOnce.Do(func() { admittedErr = admittedRel() })
+		return errors.Join(dropErr, admittedErr)
 	}, since, func() string { mu.Lock(); defer mu.Unlock(); return end }, func() time.Time { mu.Lock(); defer mu.Unlock(); return stoppedAt }, nil
 }
 
@@ -622,6 +670,9 @@ type machine struct {
 	// runnable is the last count of the tasks ready to run.
 	runnable      float64
 	runnableLimit float64
+	// avg1 is the last 1-minute load average, when avg1Known.
+	avg1      float64
+	avg1Known bool
 	// unchecked holds the measures the system does not have, told once.
 	unchecked map[error]bool
 	// waits is how long admit waited, by why.
@@ -732,6 +783,7 @@ func (m *machine) busy(ctx context.Context, fresh bool) (busyness, error) {
 		m.skip(none, v.Load.DiskFault, noPSI)
 	}
 	m.runnable = float64(v.Load.Runnable)
+	m.avg1, m.avg1Known = v.Load.Avg1, !slices.Contains(v.Skipped, pressure.ErrNoLoadAvg)
 	m.runnableLimit = float64(v.Load.Threads)
 	if m.limits.Runnable > 0 {
 		m.runnableLimit = m.limits.Runnable

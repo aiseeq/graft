@@ -144,7 +144,13 @@ lock immediately. Later admissions include those reservations in the
 runnable threshold until the task reaches half its expected CPU rate over
 two seconds, ends, or `load.settle` expires (30 seconds by default). The last
 20 whole-task CPU measurements estimate expected use; a new profile reserves
-four cores. The load average, IO, and swap checks still apply. A heavy task inside
+four cores. The load average, IO, and swap checks still apply. The 1-minute load
+average shows a task's load only as it grows into it, c·(1 − e^(−t/60s)) for c
+cores t after its start: until the admitted task ends, the next admission adds
+the part it does not show yet, c·e^(−t/60s), to the load average it measures,
+so a queue that stood while the load average was over the threshold lets in,
+when it dips below, what the dip has room for and not every waiting task
+(without `/proc/loadavg` there is no such part to add). A heavy task inside
 a heavy task or the gate was admitted with it, and so is a graft that the
 steps of an admitted task start (they carry `GRAFT_ADMITTED`). Priority tasks
 from `graft deploy` bypass the queue and may start ahead of queued tasks.
@@ -1007,7 +1013,8 @@ graft's version, pid and command line. A
 - `wait_why` splits `wait_s` by what was waited for, in seconds: `queue`
   (behind other heavy tasks), `load`, `io`, `writeback`, `swap` (each over its limit;
   the time between two readings goes to what the first found), `quiet` (the
-  quiet mode of akit's busy), `reserve` (live expected CPU reservations), a
+  quiet mode of akit's busy), `reserve` (live expected CPU reservations, and the admitted
+  tasks the load average does not show yet), a
   measure graft does not know yet by its own name, `lock` (a task lock) and
   `host` (the heavy queue on `remote_heavy`'s host), `sudo` (a deploy's
   confirmation). Absent when nothing waited.
