@@ -2488,7 +2488,8 @@ func (r *Runner) watchDB() {
 // env is the base environment (without graft's marker and git's hook
 // variables) plus the task's .env keys and vars, and the work tree's own
 // golangci-lint cache unless one is set (lintcache). own is what the task
-// sets itself: its .env keys and vars, GOFLAGS after the user's flags.
+// sets itself: its .env keys the environment does not set, and its vars,
+// GOFLAGS after the user's flags.
 func (r *Runner) env(t *config.Task, vars map[string]string) (env, own []string, err error) {
 	if r.base == nil {
 		base, err := BaseEnv()
@@ -2498,9 +2499,17 @@ func (r *Runner) env(t *config.Task, vars map[string]string) (env, own []string,
 		r.base = base
 	}
 	env = slices.Clone(r.base)
-	own, err = KeyValues(r.lookup, t.Keys)
+	keys, err := KeyValues(r.lookup, t.Keys)
 	if err != nil {
 		return nil, nil, err
+	}
+	// A key the environment sets takes its value from there: it is the
+	// environment's, not the task's.
+	for _, kv := range keys {
+		name, _, _ := strings.Cut(kv, "=")
+		if _, inherited := lookupEnv(r.base, name); !inherited {
+			own = append(own, kv)
+		}
 	}
 	for _, k := range slices.Sorted(maps.Keys(vars)) {
 		v := vars[k]

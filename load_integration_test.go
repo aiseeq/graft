@@ -119,7 +119,8 @@ tasks:
 // the default of a command run without admission; an admitted heavy task, a
 // heavy exec and the gate get their threads over them, in a graft a step
 // starts too; the task's own env still wins, ${GOFLAGS} bringing the user's
-// -p, not its own; and a task that is not heavy keeps the default.
+// -p, not its own, and a .env key the environment sets being the
+// environment's; and a task that is not heavy keeps the default.
 func TestHeavyTaskThreadsOverInherited(t *testing.T) {
 	state := t.TempDir()
 	out := filepath.Join(state, "out")
@@ -151,6 +152,10 @@ tasks:
     heavy: true
     env: {GOFLAGS: ''}
     run: ` + step("empty") + `
+  keys:
+    heavy: true
+    dotenv: [GOFLAGS, GOMAXPROCS]
+    run: ` + step("keys") + `
   light:
     run: ` + step("light") + `
   underlight:
@@ -161,13 +166,15 @@ tasks:
 gate:
   - ` + echo("gate") + `
 `,
+		// The environment's values win over the file's: they are not the task's.
+		".env": "GOFLAGS=-p=2\nGOMAXPROCS=2\n",
 	})
 	cfgDir := t.TempDir()
 	writeFile(t, filepath.Join(cfgDir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms}\n")
 	writeTestPressure(t, cfgDir)
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, filepath.Join(state, "proc"), 0), "XDG_CACHE_HOME="+t.TempDir(),
 		"GOMAXPROCS=1", "GOFLAGS=-p=1")
-	for _, task := range []string{"build", "own", "ownflags", "dollar", "empty", "light", "underlight", "underheavy", "gate"} {
+	for _, task := range []string{"build", "own", "ownflags", "dollar", "empty", "keys", "light", "underlight", "underheavy", "gate"} {
 		f.mustGraft(task)
 	}
 	f.mustGraft("exec", "--heavy", "--", "sh", "-c", "echo exec procs=$GOMAXPROCS flags=$GOFLAGS >> "+out)
@@ -180,6 +187,7 @@ gate:
 		"ownflags procs=6 flags=-p=1 -race -p=6\n" +
 		"dollar procs=6 flags=-p=1 -p=1 -race -p=6\n" +
 		"empty procs=6 flags=-p=1 -p=6\n" +
+		"keys procs=6 flags=-p=1 -p=6\n" +
 		"light procs=1 flags=-p=1\n" +
 		"ownflags procs=6 flags=-p=1 -race -p=6\n" +
 		"ownflags procs=6 flags=-p=1 -p=6 -race -p=6\n" +

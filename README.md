@@ -169,7 +169,8 @@ thread of the machine, the go command running a compile per package at once,
 each with as many threads as `GOMAXPROCS`. The environment's `GOMAXPROCS` and
 `-p` are the default of a command run without admission, which may keep a
 bare `go test` to one thread; an admitted task gets its threads. The task's
-own `env` and `.env` keys win: their `GOMAXPROCS`, and a `-p` in their
+own `env` and `.env` keys win (a key the environment sets takes its value
+from there, so it is the environment's): their `GOMAXPROCS`, and a `-p` in their
 `GOFLAGS` as written, are left as they are; `${GOFLAGS}` there brings the
 user's flags, and `-p=threads` still follows them. An empty `GOFLAGS` of the
 task is none, as go has it: the user's flags hold. A step with `{threads}` that is not heavy gets `GOMAXPROCS` only
