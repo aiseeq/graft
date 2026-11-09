@@ -23,10 +23,19 @@ const (
 // LightGateRuns only as a bar: one over the limits, or whose memory was not
 // read, keeps the gate in the queue.
 func LightGate(recs []Record, project string, since time.Time) bool {
+	parents := make(map[string]string)
+	for i := range recs {
+		if recs[i].Run != "" && recs[i].Parent != "" {
+			parents[recs[i].Run] = recs[i].Parent
+		}
+	}
 	cached := make(map[string]bool)
 	for i := range recs {
-		if recs[i].Run != "" && (recs[i].Kind == KindCacheHit || recs[i].Host != "") {
-			cached[recs[i].Run] = true
+		if recs[i].Kind == KindCacheHit || recs[i].Host != "" {
+			// A graft a gate step started has a run of its own.
+			for run, hops := recs[i].Run, 0; run != "" && hops < len(recs); run, hops = parents[run], hops+1 {
+				cached[run] = true
+			}
 		}
 	}
 	var runs []*Record
