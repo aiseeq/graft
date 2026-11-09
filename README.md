@@ -1794,9 +1794,13 @@ release_notes:
    is given (Ctrl-C stops). Without a terminal it passes only on cached sudo
    credentials or a PAM method that types nothing (a fingerprint reader): while
    the reader refuses (no finger in time, an unknown finger) graft prints the
-   attempt and asks again, for at most 10 minutes (Ctrl-C stops). Any other
-   refusal ends the deploy, since nobody can type a password there. The reader
-   is recognized by the messages of pam_fprintd, so sudo runs with `LC_ALL=C`.
+   attempt and asks again, for at most 10 minutes (Ctrl-C stops). When sudo
+   says it needs a terminal and `fprintd-list` shows a finger enrolled for the
+   current user, another sudo is taken to hold the reader: graft asks again
+   every 3 seconds, for at most 2 minutes in a row (a host whose sudo does not
+   use the reader at all spends these 2 minutes too). Any other refusal ends
+   the deploy, since nobody can type a password there. The reader is recognized
+   by the messages of pam_fprintd, so sudo runs with `LC_ALL=C`.
    On a host with `pam_faillock`, every refused attempt counts as a failed
    login.
 6. Run `run` plus `args` in the foreground, with `GRAFT_DEPLOY_TARGET`,

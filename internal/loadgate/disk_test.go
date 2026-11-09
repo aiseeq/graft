@@ -94,7 +94,7 @@ func (d *diskSource) answer(t *testing.T, conn net.Conn) {
 	d.mu.Lock()
 	d.kinds = append(d.kinds, req.Kind)
 	answer := map[string]any{"v": 1, "at": time.Now().Format(time.RFC3339Nano),
-		"5s": map[string]any{"io_full_ms": d.ioMS}, "open": map[string]any{"open": false, "ms": 0},
+		"5s": map[string]any{"io_full_ms": d.ioMS, "capped": map[string]any{"capped": false}}, "open": map[string]any{"open": false, "ms": 0},
 		"profile": map[string]any{"kind": req.Kind}}
 	if d.fail != "" {
 		answer = map[string]any{"v": 1, "error": d.fail}

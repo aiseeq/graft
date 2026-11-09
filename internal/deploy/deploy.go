@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"strings"
 	"time"
 
@@ -313,6 +314,21 @@ func CheckHead(repo *gitx.Repo, d *config.Deploy, want string) error {
 // finger on the reader.
 const fingerprintWait = 10 * time.Minute
 
+// While another sudo holds the reader, sudo without a terminal does not get to
+// ask it. fingerprintBusyWait bounds that run of attempts: pam_fprintd holds
+// the reader for at most three tries of 30 seconds. fingerprintListWait bounds
+// the question whether this user has a finger enrolled at all.
+const (
+	fingerprintBusyWait  = 2 * time.Minute
+	fingerprintBusyPause = 3 * time.Second
+	fingerprintListWait  = 5 * time.Second
+)
+
+// fingerprintNotAsked is what sudo prints, in the C locale, when PAM got past
+// the reader to the password prompt. A reader another sudo holds and no reader
+// at all print the same, so fingerprintEnrolled tells them apart.
+const fingerprintNotAsked = "a terminal is required to read the password"
+
 // fingerprintRefusals are what pam_fprintd prints, in the C locale, when it
 // asked the reader and got no finger in time or one it does not know.
 var fingerprintRefusals = []string{"Verification timed out", "Failed to match fingerprint"}
@@ -329,7 +345,8 @@ func ConfirmSudo(ctx context.Context, target string, log io.Writer) error {
 		return confirmInTerminal(ctx, prompt, log)
 	}
 	fmt.Fprintf(log, "graft: no terminal, touch the fingerprint reader to confirm the deploy to %s (waiting up to %s, Ctrl-C to stop)\n", target, fingerprintWait)
-	return confirmByFingerprint(ctx, target, fingerprintWait, log, func(ctx context.Context) (bool, []byte, error) {
+	limits := fingerprintLimits{wait: fingerprintWait, busyWait: fingerprintBusyWait, busyPause: fingerprintBusyPause, now: time.Now}
+	return confirmByFingerprint(ctx, target, limits, log, fingerprintEnrolled, func(ctx context.Context) (bool, []byte, error) {
 		cmd := exec.CommandContext(ctx, "sudo", "-v", "-p", prompt)
 		// The reader's messages are matched in English.
 		cmd.Env = append(os.Environ(), "LC_ALL=C")
@@ -370,31 +387,99 @@ func sudoResult(runErr error, out []byte) (bool, []byte, error) {
 	return false, out, nil
 }
 
+// fingerprintLimits are the bounds of confirmByFingerprint: wait for the whole
+// confirmation, busyWait for a run of attempts that did not reach the reader,
+// busyPause between those attempts.
+type fingerprintLimits struct {
+	wait, busyWait, busyPause time.Duration
+	now                       func() time.Time
+}
+
 // confirmByFingerprint repeats attempt while its output shows the fingerprint
-// reader refusing, until it passes, ctx ends or wait runs out.
-func confirmByFingerprint(ctx context.Context, target string, wait time.Duration, log io.Writer, attempt func(context.Context) (bool, []byte, error)) error {
-	waitCtx, cancel := context.WithTimeout(ctx, wait)
+// reader refusing or busy, until it passes, ctx ends or the limits run out.
+// enrolled says why this user cannot be asked for a finger, nil when they can.
+func confirmByFingerprint(ctx context.Context, target string, limits fingerprintLimits, log io.Writer, enrolled func(context.Context) error, attempt func(context.Context) (bool, []byte, error)) error {
+	waitCtx, cancel := context.WithTimeout(ctx, limits.wait)
 	defer cancel()
 	deadline, _ := waitCtx.Deadline()
+	stopped := func() error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if waitCtx.Err() != nil {
+			return fmt.Errorf("deploying to %s was not confirmed: no fingerprint within %s", target, limits.wait)
+		}
+		return nil
+	}
+	refuse := func(reason string) error {
+		return fmt.Errorf("deploying to %s was not confirmed: without a terminal sudo takes only cached credentials or a fingerprint, and the fingerprint reader did not answer%s; run graft deploy in a terminal to type the password", target, reason)
+	}
+	var busySince time.Time
 	for n := 1; ; n++ {
 		ok, out, err := attempt(waitCtx)
 		if ok {
 			return nil
 		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if waitCtx.Err() != nil {
-			return fmt.Errorf("deploying to %s was not confirmed: no fingerprint within %s", target, wait)
+		if err := stopped(); err != nil {
+			return err
 		}
 		if err != nil {
 			return err
 		}
-		if !fingerprintRefused(out) {
-			return fmt.Errorf("deploying to %s was not confirmed: without a terminal sudo takes only cached credentials or a fingerprint, and the fingerprint reader did not answer; run graft deploy in a terminal to type the password", target)
+		if fingerprintRefused(out) {
+			busySince = time.Time{}
+			fmt.Fprintf(log, "graft: fingerprint attempt %d refused, asking again (%s left, Ctrl-C to stop)\n", n, time.Until(deadline).Round(time.Second))
+			continue
 		}
-		fmt.Fprintf(log, "graft: fingerprint attempt %d refused, asking again (%s left, Ctrl-C to stop)\n", n, time.Until(deadline).Round(time.Second))
+		if !bytes.Contains(out, []byte(fingerprintNotAsked)) {
+			return refuse("")
+		}
+		enrolledErr := enrolled(waitCtx)
+		if err := stopped(); err != nil {
+			return err
+		}
+		if enrolledErr != nil {
+			return refuse(fmt.Sprintf(" (%v)", enrolledErr))
+		}
+		if busySince.IsZero() {
+			busySince = limits.now()
+		}
+		if limits.now().Sub(busySince) >= limits.busyWait {
+			return refuse(fmt.Sprintf(" (busy for %s)", limits.busyWait))
+		}
+		fmt.Fprintf(log, "graft: the fingerprint reader looks busy (attempt %d), asking again in %s (%s left, Ctrl-C to stop)\n", n, limits.busyPause, time.Until(deadline).Round(time.Second))
+		select {
+		case <-waitCtx.Done():
+			return stopped()
+		case <-time.After(limits.busyPause):
+		}
 	}
+}
+
+// fingerprintEnrolled asks fprintd whether the user sudo authenticates has a
+// finger enrolled on a reader; the error says why not.
+func fingerprintEnrolled(ctx context.Context) error {
+	u, err := user.Current()
+	if err != nil {
+		return fmt.Errorf("finding the current user: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, fingerprintListWait)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "fprintd-list", u.Username)
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.CombinedOutput()
+	return enrolledFingers(out, err)
+}
+
+// enrolledFingers reads what fprintd-list printed: a line per enrolled finger.
+func enrolledFingers(out []byte, runErr error) error {
+	if runErr != nil {
+		return fmt.Errorf("fprintd-list: %w: %s", runErr, strings.TrimSpace(string(out)))
+	}
+	if !bytes.Contains(out, []byte(" - #")) {
+		return errors.New("fprintd-list shows no enrolled finger")
+	}
+	return nil
 }
 
 func fingerprintRefused(out []byte) bool {

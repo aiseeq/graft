@@ -1437,6 +1437,59 @@ func TestDeployConfirmWithoutTerminalRefused(t *testing.T) {
 	}
 }
 
+// fakeFprintdList shadows fprintd-list, next to the fake sudo whose calls file
+// is calls: the tests never reach a real fingerprint reader.
+func (d *deployFixture) fakeFprintdList(t *testing.T, calls, script string) {
+	t.Helper()
+	path := filepath.Join(filepath.Dir(calls), "fprintd-list")
+	writeFile(t, path, "#!/bin/sh\n"+script+"\n")
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// sudoNotAskedReader is what the real sudo prints without a terminal when PAM
+// did not get an answer from the reader, on a first call; the second passes.
+const sudoNotAskedReader = `if [ "$n" -eq 1 ]; then echo 'sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper' >&2; exit 1; fi`
+
+// Another sudo holding the reader: this one is not asked, the deploy waits for
+// the reader instead of failing.
+func TestDeployConfirmWaitsForABusyReader(t *testing.T) {
+	skipWaitInShort(t)
+	d := deployRepo(t)
+	d.mustGraft("deploy", "test")
+	calls := d.fakeSudoScript(t, sudoNotAskedReader)
+	d.fakeFprintdList(t, calls, `echo ' - #0: right-middle-finger'`)
+	out := d.mustGraft("deploy", "prod")
+	if !strings.Contains(out, "the fingerprint reader looks busy (attempt 1)") {
+		t.Errorf("no word about the busy reader:\n%s", out)
+	}
+	if d.stateFile("prod-run") == "" {
+		t.Error("prod deploy did not run after the reader was free")
+	}
+	if got := strings.Count(readFile(t, calls), "\n"); got != 2 {
+		t.Errorf("sudo asked %d times, want 2", got)
+	}
+}
+
+// The same sudo output with no reader: refused at once, with the reason.
+func TestDeployConfirmNoReaderRefusedAtOnce(t *testing.T) {
+	d := deployRepo(t)
+	d.mustGraft("deploy", "test")
+	calls := d.fakeSudoScript(t, sudoNotAskedReader)
+	d.fakeFprintdList(t, calls, "echo 'No devices available'; exit 1")
+	out, code := d.graft("", "deploy", "prod")
+	if code == 0 || !strings.Contains(out, "the fingerprint reader did not answer (fprintd-list: exit status 1: No devices available)") {
+		t.Errorf("exit %d:\n%s", code, out)
+	}
+	if d.stateFile("prod-run") != "" {
+		t.Error("prod deploy ran without confirmation")
+	}
+	if got := strings.Count(readFile(t, calls), "\n"); got != 1 {
+		t.Errorf("sudo asked %d times, want 1", got)
+	}
+}
+
 func TestDeployStatusAndLogs(t *testing.T) {
 	d := deployRepo(t)
 	d.mustGraft("deploy", "test")
