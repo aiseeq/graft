@@ -44,4 +44,13 @@ func TestCurrentHead(t *testing.T) {
 	if got, err := currentHead(repo); err != nil || got != (headState{sha: sha}) {
 		t.Errorf("detached: %+v, %v", got, err)
 	}
+	git("checkout", "-q", "feature/PROJ-1-x")
+	// A branch whose commit is gone counts as having none, as an unborn one.
+	ref := filepath.Join(work, ".git", "refs", "heads", "feature", "PROJ-1-x")
+	if err := os.WriteFile(ref, []byte(strings.Repeat("a", 40)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := currentHead(repo); err != nil || got != (headState{branch: "feature/PROJ-1-x"}) {
+		t.Errorf("a missing commit: %+v, %v", got, err)
+	}
 }

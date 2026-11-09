@@ -345,7 +345,11 @@ func (a *App) recordCommitAdvisoryAfterPush(repo *gitx.Repo, cfg *config.Config,
 func gateLeftHead(repo *gitx.Repo) (bool, error) {
 	headTree, err := repo.Git("rev-parse", "--verify", "--quiet", "HEAD^{tree}")
 	if gitx.ExitCode(err) == 1 {
-		return false, nil
+		// No HEAD, or a HEAD without its tree, which is an error.
+		hasHead, hasErr := repo.HasHead()
+		if hasErr != nil || !hasHead {
+			return false, hasErr
+		}
 	}
 	if err != nil {
 		return false, fmt.Errorf("reading HEAD tree after the gate: %w", err)
@@ -434,7 +438,7 @@ func (h headState) String() string {
 // and its branch, which fails only on an unborn branch or a broken repository,
 // the cases headOfUnusual tells apart.
 func currentHead(repo *gitx.Repo) (headState, error) {
-	out, err := repo.Git("rev-parse", "HEAD", "--symbolic-full-name", "HEAD")
+	out, err := repo.Git("rev-parse", "HEAD^{commit}", "--symbolic-full-name", "HEAD")
 	if err != nil {
 		return headOfUnusual(repo)
 	}
@@ -457,7 +461,7 @@ func headOfUnusual(repo *gitx.Repo) (headState, error) {
 		return h, fmt.Errorf("reading the branch of HEAD: %w", err)
 	}
 	h.branch = branch
-	sha, err := repo.Git("rev-parse", "--verify", "--quiet", "HEAD")
+	sha, err := repo.Git("rev-parse", "--verify", "--quiet", "HEAD^{commit}")
 	if gitx.ExitCode(err) == 1 {
 		return h, nil
 	}
