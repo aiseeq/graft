@@ -721,6 +721,34 @@ func TestDeadTestDBContainers(t *testing.T) {
 	}
 }
 
+// A container of a dead run goes, one of a live run stays.
+func TestTestDBContainerSweep(t *testing.T) {
+	if os.Getenv("GRAFT_TEST_DOCKER") != "1" {
+		t.Skip("set GRAFT_TEST_DOCKER=1 to run against docker")
+	}
+	gone := exec.Command("true")
+	if err := gone.Run(); err != nil {
+		t.Fatal(err)
+	}
+	dead := fmt.Sprintf("graft-it-testdb-sets-%d", gone.Process.Pid)
+	live := fmt.Sprintf("graft-it-testdb-tmpfs-%d", os.Getppid())
+	for _, name := range []string{dead, live} {
+		t.Cleanup(func() { exec.Command("docker", "rm", "-f", "-v", name).Run() })
+		if out, err := exec.Command("docker", "create", "--name", name, "postgres:18-alpine").CombinedOutput(); err != nil {
+			t.Fatalf("creating %s: %v: %s", name, err, out)
+		}
+	}
+	testDBContainer(t, "graft-it-testdb-fresh")
+	out, err := exec.Command("docker", "ps", "-a", "--filter", "name=graft-it-testdb", "--format", "{{.Names}}").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	left := strings.Fields(string(out))
+	if slices.Contains(left, dead) || !slices.Contains(left, live) {
+		t.Errorf("containers after the sweep: %v, want %s gone and %s kept", left, dead, live)
+	}
+}
+
 // TestTestDB needs docker and the postgres image; graft test enables it.
 func TestTestDB(t *testing.T) {
 	if os.Getenv("GRAFT_TEST_DOCKER") != "1" {
