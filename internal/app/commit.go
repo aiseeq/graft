@@ -439,8 +439,11 @@ func (h headState) String() string {
 // the cases headOfUnusual tells apart.
 func currentHead(repo *gitx.Repo) (headState, error) {
 	out, err := repo.Git("rev-parse", "HEAD^{commit}", "--symbolic-full-name", "HEAD")
-	if err != nil {
+	if gitx.ExitCode(err) == 128 {
 		return headOfUnusual(repo)
+	}
+	if err != nil {
+		return headState{}, fmt.Errorf("reading HEAD: %w", err)
 	}
 	fields := strings.Fields(out)
 	if len(fields) != 2 {
