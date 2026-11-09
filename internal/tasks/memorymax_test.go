@@ -1,10 +1,13 @@
 package tasks
 
 import (
+	"bytes"
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/iosched"
 )
 
@@ -82,5 +85,28 @@ func TestSplitGateCeiling(t *testing.T) {
 	}
 	if n := strings.Count(stderr.String(), "memory_max of task test not applied"); n != 1 {
 		t.Errorf("line printed %d times, want once:\n%s", n, stderr.String())
+	}
+}
+
+// TestExecPassesTheHeldScopeToItsGraft: a heavy exec that leaves admission to
+// the graft it starts hands it the scope a parent graft holds, which a scope
+// that graft was alone in is known by; another command does not get it.
+func TestExecPassesTheHeldScopeToItsGraft(t *testing.T) {
+	t.Setenv(HeldScopeEnv, "run-7.scope")
+	r := &Runner{Root: t.TempDir(), Config: &config.Config{}, frames: []*frame{{}}}
+	held := func(inner, remote bool) bool {
+		t.Helper()
+		var remoteStderr bytes.Buffer
+		cmd, err := r.execCommand(context.Background(), r.Root, []string{"graft", "inner"}, &config.Task{}, "the test", remote, inner, &remoteStderr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return slices.Contains(cmd.Env, HeldScopeEnv+"=run-7.scope")
+	}
+	if !held(true, false) {
+		t.Error("the graft of a heavy exec did not get the held scope")
+	}
+	if held(false, false) {
+		t.Error("another command got the held scope")
 	}
 }

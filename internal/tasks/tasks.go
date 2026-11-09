@@ -1873,6 +1873,12 @@ func (r *Runner) execCommand(ctx context.Context, dir string, argv []string, t *
 		if r.ExecMemoryMax != "" {
 			env = append(env, ExecMemoryMaxEnv+"="+r.ExecMemoryMax)
 		}
+		// BaseEnv dropped it, and an exec that leaves admission to its graft
+		// is not counted heavy for heavyEnv to give it again: without it that
+		// graft cannot raise the ceiling of a scope a parent graft was alone in.
+		if held := os.Getenv(HeldScopeEnv); held != "" && !remote {
+			env = append(env, HeldScopeEnv+"="+held)
+		}
 	}
 	commandArgv, env, err := trimRun(ctx, dir, s.Argv, env, remote)
 	if err != nil {
