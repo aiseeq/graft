@@ -343,11 +343,10 @@ func (a *App) recordCommitAdvisoryAfterPush(repo *gitx.Repo, cfg *config.Config,
 // path the commit started with back as HEAD has it. Without HEAD there is
 // nothing to compare with.
 func gateLeftHead(repo *gitx.Repo) (bool, error) {
-	hasHead, err := repo.HasHead()
-	if err != nil || !hasHead {
-		return false, err
+	headTree, err := repo.Git("rev-parse", "--verify", "--quiet", "HEAD^{tree}")
+	if gitx.ExitCode(err) == 1 {
+		return false, nil
 	}
-	headTree, err := repo.Git("rev-parse", "HEAD^{tree}")
 	if err != nil {
 		return false, fmt.Errorf("reading HEAD tree after the gate: %w", err)
 	}
@@ -431,21 +430,37 @@ func (h headState) String() string {
 	return sha + " on " + h.branch
 }
 
+// currentHead reads HEAD, a few times in every commit: one git for its commit
+// and its branch, which fails only on an unborn branch or a broken repository,
+// the cases headOfUnusual tells apart.
 func currentHead(repo *gitx.Repo) (headState, error) {
+	out, err := repo.Git("rev-parse", "HEAD", "--symbolic-full-name", "HEAD")
+	if err != nil {
+		return headOfUnusual(repo)
+	}
+	fields := strings.Fields(out)
+	if len(fields) != 2 {
+		return headState{}, fmt.Errorf("reading HEAD: git rev-parse gave %q, want a commit and a ref", out)
+	}
+	h := headState{sha: fields[0]}
+	if fields[1] != "HEAD" {
+		h.branch = strings.TrimPrefix(fields[1], "refs/heads/")
+	}
+	return h, nil
+}
+
+// headOfUnusual is currentHead where git could not read both at once.
+func headOfUnusual(repo *gitx.Repo) (headState, error) {
 	var h headState
 	branch, err := repo.Branch()
 	if err != nil && !errors.Is(err, gitx.ErrDetachedHead) {
 		return h, fmt.Errorf("reading the branch of HEAD: %w", err)
 	}
 	h.branch = branch
-	has, err := repo.HasHead()
-	if err != nil {
-		return h, fmt.Errorf("checking HEAD: %w", err)
-	}
-	if !has {
+	sha, err := repo.Git("rev-parse", "--verify", "--quiet", "HEAD")
+	if gitx.ExitCode(err) == 1 {
 		return h, nil
 	}
-	sha, err := repo.Git("rev-parse", "HEAD")
 	if err != nil {
 		return h, fmt.Errorf("reading HEAD: %w", err)
 	}
