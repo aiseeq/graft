@@ -34,6 +34,19 @@ func TestLightGate(t *testing.T) {
 		{name: "a run that took a step from the cache does not count", edit: func(r []Record) []Record {
 			return append(r, Record{Kind: KindCacheHit, Run: r[2].Run})
 		}},
+		{name: "a heavy failed run keeps it in the queue", edit: func(r []Record) []Record {
+			r = append(r, gate(6, 9))
+			r[len(r)-1].Exit = 1
+			return r
+		}},
+		{name: "a light failed run is no bar", edit: func(r []Record) []Record {
+			r = append(r, gate(6, 0.1))
+			r[len(r)-1].Exit = 1
+			return r
+		}, want: true},
+		{name: "a run with a step on a host does not count", edit: func(r []Record) []Record {
+			return append(r, Record{Kind: KindStep, Run: r[2].Run, Host: "pc"})
+		}},
 		{name: "another project does not count", edit: func(r []Record) []Record { r[4].Project = "/q"; return r }},
 		{name: "a nested gate does not count", edit: func(r []Record) []Record { r[4].Parent = "x"; return r }},
 		{name: "runs before the config changed do not count", since: base.Add(90 * time.Second)},
