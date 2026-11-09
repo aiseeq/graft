@@ -129,6 +129,11 @@ func TestGlintStaysWhenPackagesAreLinkedOutOfTheTree(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, true},
+		{"absolute link into the tree", "", func(t *testing.T, f *fixture, link string) {
+			if err := os.Symlink(filepath.Join(f.work, "packages"), link); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
 		{"link inside the tree", "", func(t *testing.T, f *fixture, link string) {
 			if err := os.Symlink("packages", link); err != nil {
 				t.Fatal(err)

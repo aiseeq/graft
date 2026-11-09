@@ -341,7 +341,9 @@ func (r *Runner) glintPackagesHere(t *config.Task) (string, error) {
 	return "", nil
 }
 
-// linksOutOf reports whether path is a symbolic link to a place outside root.
+// linksOutOf reports whether path is a symbolic link that does not lead into
+// the tree wherever it is carried: an absolute one keeps naming this
+// machine's path, one relative to a place outside root leaves the tree.
 func linksOutOf(root, path string) (bool, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -357,11 +359,11 @@ func linksOutOf(root, path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(filepath.Dir(path), target)
+	if filepath.IsAbs(target) {
+		return true, nil
 	}
 	root = filepath.Clean(root)
-	target = filepath.Clean(target)
+	target = filepath.Join(filepath.Dir(path), target)
 	return target != root && !strings.HasPrefix(target, root+string(filepath.Separator)), nil
 }
 
