@@ -109,4 +109,20 @@ func TestExecPassesTheHeldScopeToItsGraft(t *testing.T) {
 	if held(false, false) {
 		t.Error("another command got the held scope")
 	}
+
+	// The graft it starts asks for the ceiling with that scope, which
+	// iosched's TestHolds and TestRaise take from there.
+	var got iosched.Request
+	orig := configureHeavy
+	t.Cleanup(func() { configureHeavy = orig })
+	configureHeavy = func(_ context.Context, _ int, _ string, req iosched.Request) (iosched.Placement, error) {
+		got = req
+		return iosched.Placement{}, nil
+	}
+	if err := (&Runner{Stderr: &bytes.Buffer{}}).holdCeiling(context.Background(), "inner", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got.Held != "run-7.scope" {
+		t.Errorf("the inner graft asked with Held %q", got.Held)
+	}
 }
