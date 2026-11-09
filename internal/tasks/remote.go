@@ -295,6 +295,9 @@ func (r *Runner) stayHere(t *config.Task, dir string) (string, error) {
 	if why := r.taskStaysHere(t, dir); why != "" {
 		return why, nil
 	}
+	if why, err := r.glintPackagesHere(t); err != nil || why != "" {
+		return why, err
+	}
 	if _, ok := r.Extra[MessageFileEnv]; ok {
 		def, err := json.Marshal(t)
 		if err != nil {
@@ -311,6 +314,55 @@ func (r *Runner) stayHere(t *config.Task, dir string) (string, error) {
 		return "${" + key + "} would carry a .env value to the host", nil
 	}
 	return "", nil
+}
+
+// glintPackagesHere is why a task that runs glint stays on this machine for
+// the packages it reads, "" when it need not: a path of worktree.link that is
+// a link out of the work tree reaches the host as a link to nothing, and
+// glint there would report the project's packages as not installed.
+func (r *Runner) glintPackagesHere(t *config.Task) (string, error) {
+	runsGlint := slices.ContainsFunc(t.Run, func(s config.Step) bool {
+		return len(s.Argv) > 1 && filepath.Base(s.Argv[0]) == "glint" && s.Argv[1] == "check"
+	})
+	if !runsGlint {
+		return "", nil
+	}
+	for _, group := range r.Config.Worktree.Link {
+		for _, path := range group.Paths {
+			out, err := linksOutOf(r.Root, filepath.Join(r.Root, filepath.FromSlash(path)))
+			if err != nil {
+				return "", fmt.Errorf("reading worktree.link %s: %w", path, err)
+			}
+			if out {
+				return path + " links out of the work tree, and glint on the host would not have it", nil
+			}
+		}
+	}
+	return "", nil
+}
+
+// linksOutOf reports whether path is a symbolic link to a place outside root.
+func linksOutOf(root, path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return false, nil
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		return false, err
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(path), target)
+	}
+	root = filepath.Clean(root)
+	target = filepath.Clean(target)
+	return target != root && !strings.HasPrefix(target, root+string(filepath.Separator)), nil
 }
 
 // taskStaysHere is why the task's own settings keep it on this machine, ""

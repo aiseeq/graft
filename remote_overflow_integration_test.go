@@ -103,6 +103,67 @@ func TestUserRemoteHeavyGlintStaysWithoutTheSameCopy(t *testing.T) {
 	}
 }
 
+// TestGlintStaysWhenPackagesAreLinkedOutOfTheTree: a tree carried to the host
+// keeps a worktree.link as a link to what the host does not have, so glint
+// there would find no packages of the project; packages that are part of the
+// tree travel with it.
+func TestGlintStaysWhenPackagesAreLinkedOutOfTheTree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	const linkConfig = "  deps:\n    run: [[\"true\"]]\nworktree:\n  link:\n    - {key: [a.go], paths: [web/node_modules], setup: deps}\n"
+	outside := func(t *testing.T, f *fixture, link string) {
+		if err := os.Symlink(filepath.Join(f.base, "main-packages"), link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		name, task string
+		packages   func(t *testing.T, f *fixture, link string)
+		stays      bool
+	}{
+		{"link out of the tree", "", outside, true},
+		{"link out of the tree, remote: true", "    remote: true\n", outside, true},
+		{"relative link out of the tree", "", func(t *testing.T, f *fixture, link string) {
+			if err := os.Symlink(filepath.Join("..", "..", "main-packages"), link); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"link inside the tree", "", func(t *testing.T, f *fixture, link string) {
+			if err := os.Symlink("packages", link); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"a directory of the tree", "", func(t *testing.T, f *fixture, link string) {
+			if err := os.Mkdir(link, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"no packages", "", func(*testing.T, *fixture, string) {}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f, state := userRemoteRepo(t, "  lint:\n    heavy: true\n"+c.task+"    run: [[glint, check, ./...]]\n"+linkConfig)
+			path, sum := fakeGlint(t, f)
+			writeHostGlint(t, state, "pc", path, sum)
+			if err := os.MkdirAll(filepath.Join(f.work, "web"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			c.packages(t, f, filepath.Join(f.work, "web", "node_modules"))
+			loaded(t, state)
+			want := "heavy, on pc"
+			if c.stays {
+				want = "heavy, on this machine: web/node_modules links out of the work tree"
+			}
+			cmd, out := f.start(f.work, "lint")
+			waitFor(t, func() bool { return strings.Contains(out.String(), want) })
+			setRunnable(t, filepath.Join(state, "proc"), 0)
+			if err := cmd.Wait(); err != nil || c.stays != (callsOf(t, state) == "") {
+				t.Errorf("stays=%v: %v\n%s\ncalls: %q", c.stays, err, out.String(), callsOf(t, state))
+			}
+		})
+	}
+}
+
 func TestUserRemoteHeavyGlintInABusyGateSplit(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the run script is sh")

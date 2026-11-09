@@ -305,8 +305,10 @@ runs that destination by its path, not what its `PATH` finds. Otherwise the
 step stays here and says which hashes differ. `glint check` with `--cpuprofile` stays here; `-o` and
 `--output` select the report format and are allowed. The registry records what install copied, so a glint replaced
 by hand on the host is not detected, and the host has its own cold glint
-cache. A task with `remote: true` can
-send any heavy work. Output flags such as `-o`, `-coverprofile` and `-trace`
+cache. A task with a `glint check` step, `remote: true` too, stays here and
+says why when a path of `worktree.link` is a link out of the work tree: the
+packages it points to are not on the host. A task with `remote: true` can
+send any other heavy work. Output flags such as `-o`, `-coverprofile` and `-trace`
 (also as `-test.coverprofile`), `-fuzz` and `-mod=mod` keep the task here, in the step or in the arguments given for `{args}`: a
 `go test -v {args} ./...` task goes with `-run TestX` and stays with
 `-coverprofile=c.out`. A heavy task that would not queue here (a graft a step
