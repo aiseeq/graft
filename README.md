@@ -111,7 +111,10 @@ module file alone. If a raised version makes the gate fail, the commit stops
 and the raised files stay in the work tree for repair. Without this setting,
 module versions are left alone.
 
-A heavy task, and the gate as a whole, starts when the machine is not busy,
+A gate whose last 5 runs that really ran their steps each stayed under 2 s CPU
+and 300 MB, since `.graft.yaml` last changed, does not wait for a busy machine:
+it says so, its heavy tasks run with it, under the same memory ceiling. A heavy
+task, and any other gate as a whole, starts when the machine is not busy,
 by the rule of `github.com/aiseeq/akit/pressure`: both the tasks ready to run
 at this moment (`procs_running` of `/proc/stat`, one reading) and the
 1-minute load average below `runnable` (the instant count alone would let a

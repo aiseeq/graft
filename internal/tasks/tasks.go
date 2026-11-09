@@ -1001,13 +1001,24 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 	}
 	f := r.begin(stats.GateTask)
 	defer func() { r.end(f, err != nil) }()
-	splitGate, why, err := r.splitBusyGate(ctx, steps)
-	f.here = why
-	if err != nil {
-		return err
+	light := r.lightGate(ctx)
+	splitGate, why := false, ""
+	if !light {
+		var splitErr error
+		if splitGate, why, splitErr = r.splitBusyGate(ctx, steps); splitErr != nil {
+			f.here = why
+			return splitErr
+		}
 	}
+	f.here = why
 	defer func() { r.gateCosts = nil }()
-	if splitGate {
+	if light {
+		leave, enterErr := r.enterLightGate(ctx)
+		if enterErr != nil {
+			return enterErr
+		}
+		defer func() { err = errors.Join(err, leave()) }()
+	} else if splitGate {
 		r.gateSplit = true
 		defer func() {
 			r.gateSplit = false
@@ -2779,6 +2790,61 @@ const outerMemorySource = "--memory-max of the graft exec that started this graf
 // configureHeavy places the heavy work under its memory ceiling; tests
 // replace it.
 var configureHeavy = iosched.Configure
+
+// lightGate says whether this gate need not wait for a busy machine: one this
+// machine would make wait, whose last runs cost next to nothing
+// (stats.LightGate), since .graft.yaml last changed. A journal it cannot read
+// is said and leaves the gate in the queue.
+func (r *Runner) lightGate(ctx context.Context) bool {
+	if r.heavy > 0 || os.Getenv(AdmittedEnv) != "" {
+		return false
+	}
+	note := func(err error) bool {
+		fmt.Fprintf(r.Stderr, "graft: gate: not checked for a light gate, it waits as any: %v\n", err)
+		return false
+	}
+	busy, err := r.wouldWait(ctx, stats.GateTask)
+	if err != nil {
+		return note(err)
+	}
+	if !busy {
+		return false
+	}
+	since := time.Now().Add(-lightGateWindow)
+	info, err := os.Stat(filepath.Join(r.Root, ".graft.yaml"))
+	if err != nil {
+		return note(err)
+	}
+	if info.ModTime().After(since) {
+		since = info.ModTime()
+	}
+	path, err := stats.Path()
+	if err != nil {
+		return note(err)
+	}
+	recs, _, err := stats.Load(path, since)
+	if err != nil {
+		return note(err)
+	}
+	return stats.LightGate(recs, filepath.Clean(r.Root), since)
+}
+
+// lightGateWindow is how far back the runs of a light gate are looked for.
+const lightGateWindow = 30 * 24 * time.Hour
+
+// enterLightGate lets a light gate run without the queue, its heavy tasks
+// with it, under the memory ceiling of any heavy work.
+func (r *Runner) enterLightGate(ctx context.Context) (func() error, error) {
+	if err := r.holdCeiling(ctx, stats.GateTask, ""); err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(r.Stderr, "graft: gate: light (its last %d runs under %g s CPU and %g MB), not waiting for the machine\n", stats.LightGateRuns, stats.LightGateCPUSec, stats.LightGateTreeMemMB)
+	r.heavy++
+	return func() error {
+		r.heavy--
+		return nil
+	}, nil
+}
 
 // AdmittedEnv marks the steps of a heavy task this machine admitted: a graft
 // they start was admitted with them and does not queue again.

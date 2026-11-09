@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aiseeq/graft/v2/internal/stats"
 )
 
 // fakeMachine makes dir the /proc that graft measures the machine by: 22
@@ -464,5 +466,38 @@ func TestGateQueuesForTheMachine(t *testing.T) {
 	f.env = append(f.env, "GRAFT_ADMITTED=1")
 	if out, code := f.graft("", "build"); code != 0 || strings.Contains(out, "waiting") {
 		t.Errorf("an admitted graft queued again: exit %d\n%s", code, out)
+	}
+}
+
+// TestLightGateDoesNotWaitForTheMachine: a gate whose last runs cost next to
+// nothing runs on a busy machine at once, its heavy task with it; a change of .graft.yaml sends it
+// back to the queue until it has runs again.
+func TestLightGateDoesNotWaitForTheMachine(t *testing.T) {
+	config := "schema: 1\nversion: {mode: none}\ngate:\n  - task: lightstep\ntasks:\n  lightstep:\n    heavy: true\n    run:\n" +
+		"      - [" + yamlQuote(helperBin) + ", ok]\n"
+	f := newRepo(t, map[string]string{".graft.yaml": config})
+	proc := filepath.Join(t.TempDir(), "proc")
+	f.env = append(f.env, "XDG_CACHE_HOME="+t.TempDir(), fakeMachine(t, proc, 1))
+	for range stats.LightGateRuns {
+		f.mustGraft("gate")
+	}
+
+	setRunnable(t, proc, 30)
+	g := startGraft(t, f, "gate")
+	select {
+	case <-g.done:
+	case <-time.After(20 * time.Second):
+		g.kill()
+		t.Fatalf("the light gate did not end on a busy machine:\n%s", g.out.String())
+	}
+	if out := g.out.String(); !strings.Contains(out, "not waiting for the machine") || strings.Contains(out, ", waiting\n") {
+		t.Errorf("a light gate on a busy machine:\n%s", out)
+	}
+
+	f.write(".graft.yaml", config+"# changed\n")
+	waiting := startWaitingForMachine(t, f, "gate")
+	setRunnable(t, proc, 1)
+	if out := waiting.end(t); strings.Contains(out, "not waiting for the machine") {
+		t.Errorf("a gate just reconfigured was taken for light:\n%s", out)
 	}
 }
