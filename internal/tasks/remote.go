@@ -350,14 +350,14 @@ func linksOutOf(root, path string) (bool, error) {
 		return false, nil
 	}
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("examining the path: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
 		return false, nil
 	}
 	target, err := os.Readlink(path)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("reading the link: %w", err)
 	}
 	if filepath.IsAbs(target) {
 		return true, nil
