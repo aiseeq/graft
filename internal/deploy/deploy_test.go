@@ -99,9 +99,9 @@ func TestConfirmByFingerprintWaitsWhileTheReaderIsBusy(t *testing.T) {
 // No reader prints what a busy one does: only fprintd tells them apart.
 func TestConfirmByFingerprintStopsWithNoFingerEnrolled(t *testing.T) {
 	attempt, calls := scripted(step{out: notAsked})
-	enrolled := func(context.Context) error { return errors.New("No devices available") }
+	enrolled := func(context.Context) error { return errors.New("no devices available") }
 	err := confirmByFingerprint(context.Background(), confirmTo, limitsOf(time.Minute), &bytes.Buffer{}, enrolled, attempt)
-	if err == nil || !strings.Contains(err.Error(), "the fingerprint reader did not answer (No devices available)") {
+	if err == nil || !strings.Contains(err.Error(), "the fingerprint reader did not answer (no devices available)") {
 		t.Fatalf("err = %v, want the refusal with its reason", err)
 	}
 	if *calls != 1 {
