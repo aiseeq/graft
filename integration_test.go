@@ -1389,6 +1389,52 @@ func TestCommitConventional(t *testing.T) {
 	f.mustGraft("commit", "-m", "feat: add a")
 }
 
+// TestNoVerifyCommitIsRecordedAsBypass: a plain commit past the hook is listed
+// as bypass beside the refusals; graft's own commit, a merge and a branch of
+// commit.local_branches are not, with --no-verify too.
+func TestNoVerifyCommitIsRecordedAsBypass(t *testing.T) {
+	f := hookRepo(t, gateStep("ok"))
+	cfgDir := t.TempDir()
+	writeUserConfig(t, cfgDir, "commit: {local_branches: ['nightly/*']}\n")
+	f.env = append(f.env, "XDG_CACHE_HOME="+t.TempDir(), "XDG_CONFIG_HOME="+cfgDir, "CLAUDE_CODE_SESSION_ID=session-of-the-test")
+	// tryGit, not git: the hooks read f.env.
+	git := func(args ...string) {
+		t.Helper()
+		if out, code := f.tryGit(args...); code != 0 {
+			t.Fatalf("git %v: exit %d\n%s", args, code, out)
+		}
+	}
+
+	f.write("shared.txt", "refused\n")
+	f.git("add", "-A")
+	if _, code := f.tryGit("commit", "-m", "raw"); code == 0 {
+		t.Fatal("the hook let a raw commit through")
+	}
+	git("commit", "--no-verify", "-m", "past the hook")
+
+	branch := f.git("branch", "--show-current")
+	out := f.mustGraft("stats", "--refused")
+	for _, want := range []string{"1 raw git commit refused", "1 commit past the hook", "bypass", "refused", "session-of-the-test", branch} {
+		if !strings.Contains(out, want) {
+			t.Errorf("graft stats --refused lacks %q:\n%s", want, out)
+		}
+	}
+
+	f.write("shared.txt", "through graft\n")
+	f.mustGraft("commit", "-m", "fix: through graft")
+
+	git("checkout", "-q", "-b", "nightly/one")
+	f.write("nightly.txt", "x\n")
+	git("add", "-A")
+	git("commit", "--no-verify", "-m", "a local batch")
+	git("checkout", "-q", branch)
+	git("merge", "--no-ff", "--no-verify", "--no-edit", "nightly/one")
+
+	if out := f.mustGraft("stats", "--refused"); !strings.Contains(out, "1 commit past the hook") {
+		t.Errorf("graft's own commit, a merge or a local branch was counted as a bypass:\n%s", out)
+	}
+}
+
 // TestRefusedCommitIsRecorded: a raw git commit the hook refuses leaves a line
 // naming the session, the tree and the branch, graft stats --refused shows it,
 // and the refusal itself stays as it was. graft's own commit leaves no line.

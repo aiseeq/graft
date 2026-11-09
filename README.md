@@ -1177,8 +1177,11 @@ no `reason`; this keeps the child connected to the terminal.
 `graft stats --refused` lists the raw `git commit`s the pre-commit hook refused
 for going past `graft commit` (a branch of `commit.local_branches` is not refused
 that way, nor is it listed when its checks fail),
-newest first: time, work tree, branch and the Claude Code session
-(`CLAUDE_CODE_SESSION_ID`, `-` outside one). Lines are in
+newest first: time, work tree, branch, the Claude Code session
+(`CLAUDE_CODE_SESSION_ID`, `-` outside one) and the kind: `refused`, or `bypass`
+for a plain commit that skipped the hook, as `git commit --no-verify` does
+(seen from `prepare-commit-msg`, which that flag leaves running; a merge, a
+rebase and a `commit.local_branches` branch are not one). Lines are in
 `refused-commits.jsonl` next to `stats.jsonl`, one JSON object each, kept like
 it. `--since`, `--project` and `--all` work as below.
 

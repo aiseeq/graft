@@ -21,7 +21,14 @@ type RefusedCommit struct {
 	Project string `json:"project"`
 	// Branch is absent on a detached HEAD.
 	Branch string `json:"branch,omitempty"`
+	// Kind is KindBypass for a commit that went past the hook; absent for one
+	// the hook refused.
+	Kind string `json:"kind,omitempty"`
 }
+
+// KindBypass marks a commit that skipped the pre-commit hook, as git commit
+// --no-verify does.
+const KindBypass = "bypass"
 
 // RefusedCommitsPath is the file of refused commits next to the stats file at
 // path, apart from it: other tools read the stats file line by line.

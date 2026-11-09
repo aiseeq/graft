@@ -93,11 +93,21 @@ func (a *App) statsRefused(project, where string, since time.Time) error {
 		a.printf("no raw git commits refused in %s since %s", where, start)
 		return nil
 	}
-	a.printf("%s refused in %s since %s", plural(len(refused), "raw git commit"), where, start)
-	tw := tabwriter.NewWriter(a.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "TIME\tPROJECT/TREE\tBRANCH\tSESSION")
+	bypassed := 0
 	for _, r := range refused {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.Time.Local().Format("2006-01-02 15:04:05"), r.Project, cmp.Or(r.Branch, "-"), cmp.Or(r.Session, "-"))
+		if r.Kind == stats.KindBypass {
+			bypassed++
+		}
+	}
+	summary := plural(len(refused)-bypassed, "raw git commit") + " refused"
+	if bypassed > 0 {
+		summary += ", " + plural(bypassed, "commit") + " past the hook (--no-verify)"
+	}
+	a.printf("%s in %s since %s", summary, where, start)
+	tw := tabwriter.NewWriter(a.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "TIME\tPROJECT/TREE\tBRANCH\tSESSION\tKIND")
+	for _, r := range refused {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", r.Time.Local().Format("2006-01-02 15:04:05"), r.Project, cmp.Or(r.Branch, "-"), cmp.Or(r.Session, "-"), cmp.Or(r.Kind, "refused"))
 	}
 	if err := tw.Flush(); err != nil {
 		return fmt.Errorf("formatting the refused commits: %w", err)

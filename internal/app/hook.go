@@ -49,7 +49,7 @@ func (a *App) HookPreCommit(ctx context.Context) error {
 			return err
 		}
 		if local == "" {
-			a.recordRefusedCommit(repo)
+			a.recordRefusedCommit(repo, "")
 			return errors.New(commitHowTo(cfg))
 		}
 		a.printf("commit on %s, a local branch (commit.local_branches of the user config): the checks only, no gate, version or push", local)
@@ -65,10 +65,11 @@ func (a *App) HookPreCommit(ctx context.Context) error {
 	return nil
 }
 
-// recordRefusedCommit logs a refused raw git commit for graft stats --refused.
-// A failure is said and changes nothing: the commit is refused either way.
-func (a *App) recordRefusedCommit(repo *gitx.Repo) {
-	rec := stats.RefusedCommit{Time: time.Now(), Session: os.Getenv(agentSessionEnv), Project: repo.Root}
+// recordRefusedCommit logs a raw git commit for graft stats --refused: one the
+// hook refused, or with kind stats.KindBypass one that went past it. A failure
+// is said and changes nothing: the commit goes as it would have.
+func (a *App) recordRefusedCommit(repo *gitx.Repo, kind string) {
+	rec := stats.RefusedCommit{Time: time.Now(), Session: os.Getenv(agentSessionEnv), Project: repo.Root, Kind: kind}
 	branch, err := headBranch(repo)
 	if err != nil {
 		a.warn("the refused commit's branch is not recorded: %v", err)
@@ -125,6 +126,7 @@ func (a *App) HookPrepareCommitMsg(file string) error {
 	if err != nil {
 		return err
 	}
+	a.noteBypass(repo)
 	msg, err := os.ReadFile(file)
 	if err != nil {
 		return fmt.Errorf("the commit message: %w", err)
@@ -137,6 +139,29 @@ func (a *App) HookPrepareCommitMsg(file string) error {
 		return fmt.Errorf("the commit message: %w", err)
 	}
 	return nil
+}
+
+// noteBypass records a plain commit that reached prepare-commit-msg without
+// graft: pre-commit refuses every such commit, so it was skipped, which git
+// commit --no-verify does and which leaves this hook running. A failure is
+// said and changes nothing.
+func (a *App) noteBypass(repo *gitx.Repo) {
+	kind, err := hooks.Detect(repo.GitDir)
+	if err != nil {
+		a.warn("the commit past the hook is not recorded: %v", err)
+		return
+	}
+	if kind != hooks.Normal {
+		return
+	}
+	local, err := localBranch(repo)
+	if err != nil {
+		a.warn("the commit past the hook is not recorded: %v", err)
+		return
+	}
+	if local == "" {
+		a.recordRefusedCommit(repo, stats.KindBypass)
+	}
 }
 
 // graftsOwn tells whether graft itself runs the git command the hook is
