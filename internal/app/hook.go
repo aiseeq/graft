@@ -143,8 +143,10 @@ func (a *App) HookPrepareCommitMsg(file string) error {
 
 // noteBypass records a plain commit that reached prepare-commit-msg without
 // graft: pre-commit refuses every such commit, so it was skipped, which git
-// commit --no-verify does and which leaves this hook running. A failure is
-// said and changes nothing.
+// commit --no-verify does and which leaves this hook running. A commit given
+// up after this hook, by an empty message, stays on the list: the line says it
+// went past the hook, not that a commit came of it. A failure is said and
+// changes nothing.
 func (a *App) noteBypass(repo *gitx.Repo) {
 	kind, err := hooks.Detect(repo.GitDir)
 	if err != nil {
