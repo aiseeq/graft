@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/stats"
 )
 
@@ -654,13 +656,77 @@ tasks:
 	}
 }
 
+// testDBContainer names this run's container and removes it at the end. A run
+// killed outright leaves its container behind, restarting forever: the next
+// run's first step is to remove those.
+func testDBContainer(t *testing.T, stem string) string {
+	t.Helper()
+	out, err := exec.Command("docker", "ps", "-a", "--filter", "name=graft-it-testdb", "--format", "{{.Names}}").Output()
+	if err != nil {
+		t.Fatalf("listing test containers: %v", err)
+	}
+	dead, err := deadTestDBContainers(strings.Fields(string(out)), proc.Alive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range dead {
+		if out, err := exec.Command("docker", "rm", "-f", "-v", name).CombinedOutput(); err != nil {
+			t.Fatalf("removing %s: %v: %s", name, err, out)
+		}
+	}
+	container := fmt.Sprintf("%s-%d", stem, os.Getpid())
+	t.Cleanup(func() { exec.Command("docker", "rm", "-f", "-v", container).Run() })
+	return container
+}
+
+var testDBContainerName = regexp.MustCompile(`^graft-it-testdb(?:-sets|-fresh|-tmpfs)?-(\d+)$`)
+
+// deadTestDBContainers picks the containers of runs whose process is gone.
+func deadTestDBContainers(names []string, alive func(int) (bool, error)) ([]string, error) {
+	var dead []string
+	for _, name := range names {
+		m := testDBContainerName.FindStringSubmatch(name)
+		if m == nil {
+			continue
+		}
+		pid, err := strconv.Atoi(m[1])
+		if err != nil {
+			return nil, fmt.Errorf("container %s: %w", name, err)
+		}
+		up, err := alive(pid)
+		if err != nil {
+			return nil, fmt.Errorf("container %s: %w", name, err)
+		}
+		if !up {
+			dead = append(dead, name)
+		}
+	}
+	return dead, nil
+}
+
+func TestDeadTestDBContainers(t *testing.T) {
+	alive := func(pid int) (bool, error) { return pid == 100, nil }
+	names := []string{"graft-it-testdb-100", "graft-it-testdb-200", "graft-it-testdb-sets-200", "graft-it-testdb-fresh-100", "graft-it-testdb-tmpfs-300", "graft-test-pg", "graft-it-testdb-sets-x"}
+	got, err := deadTestDBContainers(names, alive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"graft-it-testdb-200", "graft-it-testdb-sets-200", "graft-it-testdb-tmpfs-300"}
+	if !slices.Equal(got, want) {
+		t.Errorf("dead = %v, want %v", got, want)
+	}
+	boom := errors.New("cannot tell")
+	if _, err := deadTestDBContainers([]string{"graft-it-testdb-100"}, func(int) (bool, error) { return false, boom }); !errors.Is(err, boom) {
+		t.Errorf("err = %v, want the failed check", err)
+	}
+}
+
 // TestTestDB needs docker and the postgres image; graft test enables it.
 func TestTestDB(t *testing.T) {
 	if os.Getenv("GRAFT_TEST_DOCKER") != "1" {
 		t.Skip("set GRAFT_TEST_DOCKER=1 to run against docker")
 	}
-	container := fmt.Sprintf("graft-it-testdb-%d", os.Getpid())
-	t.Cleanup(func() { exec.Command("docker", "rm", "-f", "-v", container).Run() })
+	container := testDBContainer(t, "graft-it-testdb")
 	f := tasksRepo(t, "", map[string]string{".env": "OTHER=1\nAPP_DSN=old\n"})
 	cache := shortCache(t)
 	f.env = append(f.env, "XDG_CACHE_HOME="+cache, "LOCALAPPDATA="+cache)
@@ -725,8 +791,7 @@ func TestTestDBPerMigrationSet(t *testing.T) {
 	if os.Getenv("GRAFT_TEST_DOCKER") != "1" {
 		t.Skip("set GRAFT_TEST_DOCKER=1 to run against docker")
 	}
-	container := fmt.Sprintf("graft-it-testdb-sets-%d", os.Getpid())
-	t.Cleanup(func() { exec.Command("docker", "rm", "-f", "-v", container).Run() })
+	container := testDBContainer(t, "graft-it-testdb-sets")
 	f := tasksRepo(t, "", map[string]string{"migrations/001_init.up.sql": "create table a();\n"})
 	f.env = append(f.env, "XDG_CACHE_HOME="+shortCache(t))
 	out := f.path("out.txt")
@@ -792,8 +857,7 @@ func TestTestDBMigrateOnFreshClone(t *testing.T) {
 	if os.Getenv("GRAFT_TEST_DOCKER") != "1" {
 		t.Skip("set GRAFT_TEST_DOCKER=1 to run against docker")
 	}
-	container := fmt.Sprintf("graft-it-testdb-fresh-%d", os.Getpid())
-	t.Cleanup(func() { exec.Command("docker", "rm", "-f", "-v", container).Run() })
+	container := testDBContainer(t, "graft-it-testdb-fresh")
 	f := tasksRepo(t, "", nil)
 	cache := shortCache(t)
 	f.env = append(f.env, "XDG_CACHE_HOME="+cache)
@@ -823,8 +887,7 @@ func TestTestDBTmpfs(t *testing.T) {
 	if os.Getenv("GRAFT_TEST_DOCKER") != "1" {
 		t.Skip("set GRAFT_TEST_DOCKER=1 to run against docker")
 	}
-	container := fmt.Sprintf("graft-it-testdb-tmpfs-%d", os.Getpid())
-	t.Cleanup(func() { exec.Command("docker", "rm", "-f", "-v", container).Run() })
+	container := testDBContainer(t, "graft-it-testdb-tmpfs")
 	f := tasksRepo(t, "", nil)
 	f.env = append(f.env, "XDG_CACHE_HOME="+shortCache(t))
 	base := f.read(".graft.yaml")
