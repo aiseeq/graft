@@ -72,7 +72,7 @@ func (a *App) Stats(o StatsOptions) error {
 		fmt.Fprintf(a.Stderr, "graft: %s: %d malformed line(s) left out\n", path, malformed)
 	}
 	if o.Failures {
-		return a.statsFailures(recs, f, o, where, since)
+		return a.statsFailures(recs, f, where, since)
 	}
 	if o.Value != "" {
 		return a.statsValue(recs, f, o)
@@ -179,8 +179,8 @@ func (a *App) statsTasks(recs []stats.Record, path string, f stats.Filter, o Sta
 	return nil
 }
 
-func (a *App) statsFailures(records []stats.Record, filter stats.Filter, o StatsOptions, where string, since time.Time) error {
-	failures := stats.FailureRuns(records, filter.Project, o.Task, o.In)
+func (a *App) statsFailures(records []stats.Record, filter stats.Filter, where string, since time.Time) error {
+	failures := stats.FailureRuns(records, filter)
 	start := sinceText(since, earliest(records, func(r *stats.Record) time.Time { return r.Time }))
 	if len(failures) == 0 {
 		a.printf("no failures since %s", start)

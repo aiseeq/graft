@@ -7,10 +7,9 @@ import (
 	"time"
 )
 
-// FailureRuns returns failed steps and task failures that have no failed step
-// in the same graft run. Newest records come first.
-
-func FailureRuns(records []Record, project, task, in string) []*Record {
+// FailureRuns returns the failed steps and the task failures with no failed
+// step in the same graft run that filter selects. Newest records come first.
+func FailureRuns(records []Record, filter Filter) []*Record {
 	failedSteps := map[string]bool{}
 	taskInputs := map[string]bool{}
 	for i := range records {
@@ -25,7 +24,7 @@ func FailureRuns(records []Record, project, task, in string) []*Record {
 	var failures []*Record
 	for i := range records {
 		r := &records[i]
-		if !failureMatches(r, project, task, in, failedSteps, taskInputs) {
+		if !filter.selects(r) || !failureMatches(r, filter.Task, filter.In, failedSteps, taskInputs) {
 			continue
 		}
 		failures = append(failures, r)
@@ -34,9 +33,8 @@ func FailureRuns(records []Record, project, task, in string) []*Record {
 	return failures
 }
 
-func failureMatches(r *Record, project, task, in string, failedSteps, taskInputs map[string]bool) bool {
-	if r.Exit == 0 || (r.Kind != KindStep && r.Kind != KindTask) ||
-		(project != "" && r.Project != project) || (task != "" && r.Task != task) {
+func failureMatches(r *Record, task, in string, failedSteps, taskInputs map[string]bool) bool {
+	if r.Exit == 0 || (r.Kind != KindStep && r.Kind != KindTask) || (task != "" && r.Task != task) {
 		return false
 	}
 	key := r.Run + "\x00" + r.Task
