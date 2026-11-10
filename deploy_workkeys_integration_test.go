@@ -572,8 +572,13 @@ func TestDeploySweepAcceptedSubtaskTakesReviewStep(t *testing.T) {
 	trunk := d.git("branch", "--show-current")
 	d.git("remote", "set-head", "origin", trunk)
 	d.statuses(map[string]string{"PROJ-90": "Ready for release", "PROJ-91": "Testing"}, map[string]string{"PROJ-91": "PROJ-90"})
-	d.write("s.txt", "x\n")
-	d.mustPlainCommit("feat: PROJ-91 a")
+	d.jira.mu.Lock()
+	d.jira.statusMoves = map[string][]fakeStatusMove{"PROJ-90": into("Ready for release", 2), "PROJ-91": into("Testing", 5)}
+	d.jira.mu.Unlock()
+	for i, msg := range []string{"feat: PROJ-90 parent", "feat: PROJ-91 a"} {
+		d.write("s"+strconv.Itoa(i)+".txt", "x\n")
+		d.mustPlainCommit(msg)
+	}
 	d.git("push", "-q", "origin", trunk)
 	d.mustGraft("deploy", "swept")
 	out := d.mustGraft("deploy", "sweep", "swept", "--apply")

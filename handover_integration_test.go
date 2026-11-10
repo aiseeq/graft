@@ -33,13 +33,13 @@ func TestDeployRequireComment(t *testing.T) {
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "sub")
 	d.write("a.txt", "a\n")
-	d.mustGraft("commit", "-m", "feat: PROJ-80 the form\n\nAlso PROJ-81, PROJ-82, PROJ-83 and PROJ-84")
+	d.mustGraft("commit", "-m", "feat: the form\n\nPROJ-80\nPROJ-81\nPROJ-82\nPROJ-83\nPROJ-84")
 	out := d.mustGraft("deploy", "sub")
 	_, moved := d.jira.snapshot()
 	d.jira.mu.Lock()
 	assigned := slices.Sorted(slices.Values(d.jira.assigned))
 	d.jira.mu.Unlock()
-	if slices.Sort(moved); !slices.Equal(moved, []string{"PROJ-81", "PROJ-84", "PROJ-85"}) || !slices.Equal(assigned, []string{"PROJ-81 to qa", "PROJ-85 to qa"}) {
+	if slices.Sort(moved); !slices.Equal(moved, []string{"PROJ-81", "PROJ-84", "PROJ-85"}) || !slices.Equal(assigned, []string{"PROJ-81 to qa"}) {
 		t.Errorf("moved = %v, assigned = %v\n%s", moved, assigned, out)
 	}
 	for _, want := range []string{
@@ -67,7 +67,7 @@ func TestDeployRequireComment(t *testing.T) {
 	d.jira.statuses["PROJ-83"] = "Testing"
 	d.jira.mu.Unlock()
 	d.write("b.txt", "b\n")
-	d.mustGraft("commit", "-m", "chore: PROJ-86 tidy")
+	d.mustGraft("commit", "-m", "chore: tidy\n\nPROJ-82\nPROJ-86")
 	out = d.mustGraft("deploy", "sub")
 	for _, want := range []string{"PROJ-82 moved to Testing\n", "PROJ-82 assigned to qa", "PROJ-83 is held no more: it is Testing"} {
 		if !strings.Contains(out, want) {

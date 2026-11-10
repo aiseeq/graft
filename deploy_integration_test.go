@@ -809,12 +809,12 @@ func productVersions() []map[string]any {
 	}
 }
 
-// deliverAllKeys deploys to target once to record a commit, then commits a
-// change that mentions PROJ-1 to PROJ-7.
+// deliverAllKeys deploys to target once to record a commit, then commits work
+// for PROJ-1 to PROJ-7.
 func (d *deployFixture) deliverAllKeys(target string) {
 	d.mustGraft("deploy", target)
 	d.write("b.txt", "b\n")
-	d.mustFixtureCommit("fix: second\n\nRefs PROJ-1, PROJ-2, PROJ-3, PROJ-4, PROJ-5, PROJ-6 and PROJ-7")
+	d.mustFixtureCommit("fix: second\n\nPROJ-1\nPROJ-2\nPROJ-3\nPROJ-4\nPROJ-5\nPROJ-6\nPROJ-7")
 }
 
 func (j *fakeJira) setVersions(versions []map[string]any, fixVersions map[string][]string, failEdit ...string) {
@@ -1062,7 +1062,7 @@ func TestDeployApprovedReleaseByStatus(t *testing.T) {
 	d := deployRepo(t)
 	d.jira.mu.Lock()
 	d.jira.statuses["PROJ-8"] = "Ready for release"
-	d.jira.statuses["PROJ-9"] = "In Progress"
+	d.jira.statuses["PROJ-9"] = "Ready for release"
 	d.jira.parents = map[string]string{"PROJ-9": "PROJ-8"}
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "--unapproved", "gate")
@@ -1098,9 +1098,9 @@ func TestDeployApprovedReleaseByStatus(t *testing.T) {
 			t.Errorf("no %q:\n%s", want, out)
 		}
 	}
-	for _, unwanted := range []string{"PROJ-8 checked work:", "PROJ-9 subtask of checked work:"} {
-		if strings.Contains(out, unwanted) {
-			t.Errorf("%q is listed:\n%s", unwanted, out)
+	for _, passing := range []string{"feat: PROJ-8 checked work:", "fix: PROJ-9 subtask of checked work:"} {
+		if strings.Contains(out, passing) {
+			t.Errorf("approved work %q is listed:\n%s", passing, out)
 		}
 	}
 }
@@ -1166,6 +1166,7 @@ func TestDeployApprovedReleaseAttribute(t *testing.T) {
 	// A subtask goes out by its parent, a version item by its approvals; the
 	// release note goes to the item.
 	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-9"] = "Ready for release"
 	d.jira.parents = map[string]string{"PROJ-9": "PROJ-8"}
 	d.jira.mu.Unlock()
 	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "APPROVED"}, "10030": {"APPROVED", "APPROVED"}})
@@ -1241,7 +1242,7 @@ func TestDeploySubtasksFollowParents(t *testing.T) {
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "sub")
 	d.write("a.txt", "a\n")
-	d.mustFixtureCommit("feat: PROJ-20 parent work\n\nAlso PROJ-30, PROJ-31 and PROJ-40")
+	d.mustFixtureCommit("feat: parent work\n\nPROJ-20\nPROJ-30\nPROJ-31\nPROJ-40")
 	out := d.mustGraft("deploy", "sub")
 	_, moved := d.jira.snapshot()
 	slices.Sort(moved)
@@ -1270,7 +1271,7 @@ func TestDeploySubtasksFollowParents(t *testing.T) {
 		"PROJ-20 moved to Testing\n",
 		"PROJ-20 assigned to qa",
 		"PROJ-21 moved to Testing after its parent PROJ-20\n",
-		"PROJ-21 stays with its assignee: label internal (keep_assignee_labels)",
+		"PROJ-21 stays with its assignee: a subtask of PROJ-20",
 		"PROJ-24 moved to Testing after its parent PROJ-20\n",
 		"PROJ-25 stays Ready for release after its parent PROJ-20: the transition to Testing moves only from In Progress",
 		"PROJ-32 moved to Done after its parent PROJ-30",
@@ -2066,29 +2067,32 @@ func TestDeploySweepApprovedRelease(t *testing.T) {
 	}
 }
 
-// TestDeployKeepAssigneeLabelOfParent: a subtask without a label of its own
-// stays with its assignee when its parent has one of keep_assignee_labels;
-// one under an unlabelled parent goes to the reviewer.
+// TestDeployKeepAssigneeLabelOfParent: the commit names each parent and
+// subtask as work; the labelled parent stays with its assignee, and subtasks
+// stay with theirs as they move with their parents. A subtask of a standing
+// item (skip_keys) moves alone and keeps its assignee by its parent's label.
 func TestDeployKeepAssigneeLabelOfParent(t *testing.T) {
 	d := deployRepo(t)
 	d.jira.mu.Lock()
-	maps.Copy(d.jira.statuses, map[string]string{"PROJ-70": "In Progress", "PROJ-71": "In Progress", "PROJ-72": "In Progress", "PROJ-73": "In Progress"})
-	d.jira.parents = map[string]string{"PROJ-71": "PROJ-70", "PROJ-73": "PROJ-72"}
-	d.jira.labels = map[string][]string{"PROJ-70": {"internal"}}
+	maps.Copy(d.jira.statuses, map[string]string{"PROJ-40": "In Progress", "PROJ-41": "In Progress", "PROJ-70": "In Progress", "PROJ-71": "In Progress", "PROJ-72": "In Progress", "PROJ-73": "In Progress"})
+	d.jira.parents = map[string]string{"PROJ-41": "PROJ-40", "PROJ-71": "PROJ-70", "PROJ-73": "PROJ-72"}
+	d.jira.labels = map[string][]string{"PROJ-40": {"internal"}, "PROJ-70": {"internal"}}
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "sub")
 	d.write("a.txt", "a\n")
-	d.mustFixtureCommit("chore: PROJ-71 tooling\n\nand PROJ-73 a screen")
+	d.mustFixtureCommit("chore: tooling\n\nPROJ-41\nPROJ-70\nPROJ-71\nPROJ-72\nPROJ-73")
 	out := d.mustGraft("deploy", "sub")
 	_, moved := d.jira.snapshot()
 	d.jira.mu.Lock()
 	assigned := slices.Clone(d.jira.assigned)
 	d.jira.mu.Unlock()
-	if slices.Sort(moved); !slices.Equal(moved, []string{"PROJ-71", "PROJ-73"}) || !slices.Equal(assigned, []string{"PROJ-73 to qa"}) {
+	if slices.Sort(moved); !slices.Equal(moved, []string{"PROJ-41", "PROJ-70", "PROJ-71", "PROJ-72", "PROJ-73"}) || !slices.Equal(assigned, []string{"PROJ-72 to qa"}) {
 		t.Errorf("moved = %v, assigned = %v\n%s", moved, assigned, out)
 	}
-	if !strings.Contains(out, "PROJ-71 stays with its assignee: label internal of its parent PROJ-70 (keep_assignee_labels)") {
-		t.Errorf("no word on the inherited label:\n%s", out)
+	for _, want := range []string{"PROJ-41 stays with its assignee: label internal of its parent PROJ-40 (keep_assignee_labels)", "PROJ-70 stays with its assignee: label internal (keep_assignee_labels)", "PROJ-71 stays with its assignee: a subtask of PROJ-70", "PROJ-73 stays with its assignee: a subtask of PROJ-72"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q:\n%s", want, out)
+		}
 	}
 }
 
