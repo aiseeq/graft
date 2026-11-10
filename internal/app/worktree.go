@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +44,7 @@ type worktree struct {
 
 // cleaner holds what one graft worktree clean works with.
 type cleaner struct {
+	ctx   context.Context
 	app   *App
 	repo  *gitx.Repo
 	cfg   *config.Config
@@ -72,18 +74,38 @@ type worktreeCleanResult struct {
 
 // WorktreeClean removes the worktrees and branches whose work is in the trunk
 // by content, and lists the others: in work, unmerged, or to check.
-func (a *App) WorktreeClean(o WorktreeCleanOptions) error {
+func (a *App) WorktreeClean(ctx context.Context, o WorktreeCleanOptions) error {
+	if err := worktreeCleanContext(ctx, 0, 1); err != nil {
+		return err
+	}
 	if err := unbindGitFromCaller(); err != nil {
 		return err
 	}
 	if len(o.In) != 0 {
-		return a.worktreeCleanIn(o)
+		return a.worktreeCleanIn(ctx, o)
 	}
-	_, err := a.worktreeCleanSingle(o)
+	_, err := a.worktreeCleanSingle(ctx, o)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return worktreeCleanInterrupted(0, 1)
+	}
 	return err
 }
 
-func (a *App) worktreeCleanSingle(o WorktreeCleanOptions) (result worktreeCleanResult, retErr error) {
+func worktreeCleanContext(ctx context.Context, done, total int) error {
+	if ctx.Err() == nil {
+		return nil
+	}
+	return worktreeCleanInterrupted(done, total)
+}
+
+func worktreeCleanInterrupted(done, total int) error {
+	return &ExitCodeError{
+		Code: 1,
+		Err:  fmt.Errorf("worktree clean: interrupted by a signal, done %d of %d repositories", done, total),
+	}
+}
+
+func (a *App) worktreeCleanSingle(ctx context.Context, o WorktreeCleanOptions) (result worktreeCleanResult, retErr error) {
 	repo, cfg, err := a.open()
 	if err != nil {
 		return result, err
@@ -101,11 +123,11 @@ func (a *App) worktreeCleanSingle(o WorktreeCleanOptions) (result worktreeCleanR
 			retErr = errors.Join(retErr, fmt.Errorf("releasing the worktree clean lock: %w", releaseErr))
 		}
 	}()
-	return a.worktreeCleanLocked(repo, cfg, o)
+	return a.worktreeCleanLocked(ctx, repo, cfg, o)
 }
 
-func (a *App) worktreeCleanLocked(repo *gitx.Repo, cfg *config.Config, o WorktreeCleanOptions) (worktreeCleanResult, error) {
-	c := &cleaner{app: a, repo: repo, cfg: cfg, opts: o, now: time.Now(), counts: map[string]int{}}
+func (a *App) worktreeCleanLocked(ctx context.Context, repo *gitx.Repo, cfg *config.Config, o WorktreeCleanOptions) (worktreeCleanResult, error) {
+	c := &cleaner{ctx: ctx, app: a, repo: repo, cfg: cfg, opts: o, now: time.Now(), counts: map[string]int{}}
 	result := worktreeCleanResult{counts: c.counts}
 	var err error
 	if c.remotes, err = repo.Remotes(); err != nil {
@@ -185,6 +207,9 @@ func (c *cleaner) cleanWorktrees(trees []worktree) ([]string, error) {
 			continue
 		}
 		if err := c.worktree(w); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return held, err
+			}
 			reason := strings.Join(strings.Fields(err.Error()), " ")
 			if strings.HasPrefix(reason, "git add -A --sparse:") {
 				reason = "worktree snapshot failed: " + strings.TrimPrefix(reason, "git add -A --sparse: ")
@@ -226,7 +251,7 @@ func (c *cleaner) readTrunkConfig() (*config.Config, error) {
 	return trunkCfg, nil
 }
 
-func (a *App) worktreeCleanIn(o WorktreeCleanOptions) error {
+func (a *App) worktreeCleanIn(ctx context.Context, o WorktreeCleanOptions) error {
 	roots, err := worktreeCleanRoots(o.In)
 	if err != nil {
 		return err
@@ -234,13 +259,20 @@ func (a *App) worktreeCleanIn(o WorktreeCleanOptions) error {
 	if len(roots) == 0 {
 		return fmt.Errorf("--in: no repositories found")
 	}
-	total := 0
+	total := len(roots)
+	done := 0
 	counts := map[string]int{}
 	var failed []string
 	for _, root := range roots {
+		if err := worktreeCleanContext(ctx, done, total); err != nil {
+			return err
+		}
 		a.printf("worktree clean: %s", root)
-		result, err := a.cleanInRepository(root, o)
-		total++
+		result, err := a.cleanInRepository(ctx, root, o)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return worktreeCleanInterrupted(done, total)
+		}
+		done++
 		for kind, count := range result.counts {
 			counts[kind] += count
 		}
@@ -299,10 +331,10 @@ func worktreeCleanRoots(parents []string) ([]string, error) {
 	return roots, nil
 }
 
-func (a *App) cleanInRepository(root string, o WorktreeCleanOptions) (worktreeCleanResult, error) {
+func (a *App) cleanInRepository(ctx context.Context, root string, o WorktreeCleanOptions) (worktreeCleanResult, error) {
 	child := *a
 	child.Dir, child.Stdout = root, a.Stdout
-	return child.worktreeCleanSingle(o)
+	return child.worktreeCleanSingle(ctx, o)
 }
 
 // trunkRef is the trunk, which merged work must be in and work is synced
@@ -607,6 +639,9 @@ func (c *cleaner) keptByWhatStatusHides(w worktree, what string, tree *gitx.Repo
 }
 
 func (c *cleaner) worktree(w worktree) error {
+	if err := c.ctx.Err(); err != nil {
+		return err
+	}
 	what := worktreeWhat(w)
 	switch {
 	case w.prunable:
@@ -750,6 +785,9 @@ func (c *cleaner) dirtyWorktree(w worktree, what string, tree *gitx.Repo, change
 			return nil
 		}
 	}
+	if err := c.ctx.Err(); err != nil {
+		return err
+	}
 	snap, err := tree.WorkTreeTreeAll()
 	if err != nil {
 		return err
@@ -822,9 +860,15 @@ func listSome(names []string, max int) string {
 // removeWorktree removes a worktree whose work is in the trunk, and its
 // branch.
 func (c *cleaner) removeWorktree(w worktree, what, why string, flags ...string) error {
+	if err := c.ctx.Err(); err != nil {
+		return err
+	}
 	if decision := c.checkIgnoredData(w, why); decision.kind != "" {
 		c.line(decision.kind, what, decision.why)
 		return nil
+	}
+	if err := c.ctx.Err(); err != nil {
+		return err
 	}
 	if !c.opts.Apply {
 		c.line("would remove", what, why)
@@ -1405,6 +1449,9 @@ type verdict struct {
 // commit has another hash, and a commit with the same subject may carry other
 // content.
 func (c *cleaner) verdict(rev string) (verdict, error) {
+	if err := c.ctx.Err(); err != nil {
+		return verdict{}, err
+	}
 	out, err := c.repo.Git("merge-tree", "--write-tree", "--name-only", "--no-messages", c.trunk, rev)
 	// Exit status 1 is a merge with conflicts; the tree is still written.
 	if err != nil && gitx.ExitCode(err) != 1 {
@@ -1456,11 +1503,17 @@ func (c *cleaner) verdict(rev string) (verdict, error) {
 
 // branches handles the local branches no worktree holds.
 func (c *cleaner) branches(held []string) error {
+	if err := c.ctx.Err(); err != nil {
+		return err
+	}
 	out, err := c.repo.Git("for-each-ref", "--format=%(refname:short)%00%(objectname)", "refs/heads")
 	if err != nil {
 		return err
 	}
 	for l := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		if err := c.ctx.Err(); err != nil {
+			return err
+		}
 		name, sha, ok := strings.Cut(l, "\x00")
 		if !ok || slices.Contains(held, name) {
 			continue
@@ -1484,6 +1537,9 @@ func (c *cleaner) branches(held []string) error {
 		case !c.opts.Apply:
 			c.line("would remove", what, "in "+c.trunk)
 		default:
+			if err := c.ctx.Err(); err != nil {
+				return err
+			}
 			if err := c.deleteBranch(name); err != nil {
 				return err
 			}

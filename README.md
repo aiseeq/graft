@@ -2442,7 +2442,7 @@ for the fix and a rerun of the task there.
 
 `graft worktree clean` lists every worktree but the main one and every local
 branch no worktree holds; with `--apply` it removes the ones whose work is in
-the trunk:
+the trunk. On SIGTERM or SIGINT, cleanup stops between repositories:
 
 - the trunk is `--trunk`, or the HEAD branch (`refs/remotes/<remote>/HEAD`) of
   `deploy.remote`, or of the only remote, or with several remotes the HEAD
