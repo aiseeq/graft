@@ -1200,6 +1200,9 @@ func TestWorktreeCleanCanceledWhileGitFails(t *testing.T) {
 	if strings.Contains(stdout.String(), "failed") {
 		t.Errorf("the interrupted repository is listed failed:\n%s", stdout.String())
 	}
+	if !strings.Contains(err.Error(), "the step under way: ") || !strings.Contains(err.Error(), "exit status 143") {
+		t.Errorf("error = %v, want how the git under way ended", err)
+	}
 }
 
 func TestWorktreeCleanStopsOnSIGTERM(t *testing.T) {

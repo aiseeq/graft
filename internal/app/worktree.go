@@ -88,7 +88,7 @@ func (a *App) WorktreeClean(ctx context.Context, o WorktreeCleanOptions) error {
 	// A signal that stops the unit's whole group fails the git graft runs
 	// with its own error: the cancelled context, not the error, tells.
 	if err != nil && ctx.Err() != nil {
-		return worktreeCleanInterrupted(0, 1)
+		return worktreeCleanInterrupted(0, 1, err)
 	}
 	return err
 }
@@ -97,14 +97,17 @@ func worktreeCleanContext(ctx context.Context, done, total int) error {
 	if ctx.Err() == nil {
 		return nil
 	}
-	return worktreeCleanInterrupted(done, total)
+	return worktreeCleanInterrupted(done, total, nil)
 }
 
-func worktreeCleanInterrupted(done, total int) error {
-	return &ExitCodeError{
-		Code: 1,
-		Err:  fmt.Errorf("worktree clean: interrupted by a signal, done %d of %d repositories", done, total),
+// worktreeCleanInterrupted is the cleanup stopped by a signal; cause is how
+// the step under way ended, when the signal stopped its git too.
+func worktreeCleanInterrupted(done, total int, cause error) error {
+	err := fmt.Errorf("worktree clean: interrupted by a signal, done %d of %d repositories", done, total)
+	if cause != nil {
+		err = fmt.Errorf("%w (the step under way: %s)", err, strings.Join(strings.Fields(cause.Error()), " "))
 	}
+	return &ExitCodeError{Code: 1, Err: err}
 }
 
 func (a *App) worktreeCleanSingle(ctx context.Context, o WorktreeCleanOptions) (result worktreeCleanResult, retErr error) {
@@ -276,7 +279,7 @@ func (a *App) worktreeCleanIn(ctx context.Context, o WorktreeCleanOptions) error
 		a.printf("worktree clean: %s", root)
 		result, err := a.cleanInRepository(ctx, root, o)
 		if err != nil && ctx.Err() != nil {
-			return worktreeCleanInterrupted(done, total)
+			return worktreeCleanInterrupted(done, total, err)
 		}
 		done++
 		for kind, count := range result.counts {
