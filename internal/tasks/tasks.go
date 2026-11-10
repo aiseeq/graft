@@ -1911,8 +1911,11 @@ func (r *Runner) execCommand(ctx context.Context, dir string, argv []string, t *
 // localStopGrace lets a cancelled local command clean up before its tree is killed.
 var localStopGrace = 10 * time.Second
 
+// stopLocalCommand makes a local command run under a reaper, whose orphans
+// cannot reach the session manager, and stop when its context ends.
 func (r *Runner) stopLocalCommand(cmd *exec.Cmd, local bool) {
 	if local {
+		proc.Reap(cmd)
 		proc.StopOnCancel(cmd, localStopGrace, func(err error) {
 			if r.Stats != nil {
 				r.Stats.Warn(fmt.Errorf("stopping command tree: %w", err))

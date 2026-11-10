@@ -81,6 +81,14 @@ var commands = []command{
 			"  126  the command was found but not started\n" +
 			"  127  the command was not found\n" +
 			"126 and 127 come with the line graft: exec: start <command>: …, which a command exiting 126 or 127 itself has not."},
+	{name: "reap", syntax: fixed("graft reap -- <command> [args]"),
+		summary: text("run a command as its processes' reaper (Linux): a process it leaves behind becomes graft's child, not the session manager's, so its kill \"$PPID\" ends this command, not the session; the local commands of tasks and graft exec run so already"),
+		details: "SIGTERM goes on to the command; SIGINT, SIGQUIT and SIGHUP do not, a terminal sends them to the command's process group itself. Once the command ended, the processes left in its session get SIGTERM after 0.5 s, SIGKILL 2 s later; those that left it (setsid, daemons) stay and are not waited for. Killed with SIGKILL, graft takes the command along.\n\n" +
+			"Exit status: the command's; a command a signal ended ends graft with the same signal.\n" +
+			"  2    a usage error\n" +
+			"  125  graft itself: not Linux, no subreaper\n" +
+			"  126  the command was found but not started\n" +
+			"  127  the command was not found"},
 	{name: "stats", syntax: fixed("graft stats [--failures | --refused | --tests | --value wall-p50|wall-p95|wait-p95 [--min-runs N]] [--since 7d] [--project <root>|--all] [--task <name> [--in <task>]] [--max-load N]"),
 		summary: text("resource use recorded for tasks: runs, wall and CPU time, peak memory, failures; --failures: recent failed steps and their reasons; --refused: the raw git commits the hook refused; --tests: the slowest tests, the skipped and the flaky ones"),
 		details: "--failures lists failed runs newest first with time, project tree, task, step, exit code and the captured reason; filter it with --task, --since, --project or --all, and --in <task> with --task."},

@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"math"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -51,6 +52,10 @@ var buildVersion string
 var errUsage = errors.New("usage")
 
 func main() {
+	// Before anything of graft's own starts a process the reaper would wait for.
+	if reapCall(os.Args[1:]) {
+		os.Exit(reap(os.Args[3:]))
+	}
 	// graft exec's own failures exit as env's do, apart from the command's.
 	failed := 1
 	if execCall(os.Args[1:]) {
@@ -118,6 +123,30 @@ func deployCall(args []string) bool {
 		args = args[2:]
 	}
 	return len(args) > 0 && args[0] == "deploy"
+}
+
+// reapCall reports graft reap -- <command>; graft reap otherwise is a usage
+// error of the reap subcommand.
+func reapCall(args []string) bool {
+	return len(args) > 2 && args[0] == "reap" && args[1] == "--"
+}
+
+// reap is graft reap: the command after -- runs with graft as its reaper.
+func reap(argv []string) int {
+	path, err := exec.LookPath(argv[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "graft: reap: start %s: %v\n", argv[0], err)
+		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
+			return app.ExitNotFound
+		}
+		return app.ExitCannotRun
+	}
+	return proc.RunReaper(path, argv)
+}
+
+// reapCmd answers a graft reap without a command.
+func reapCmd(context.Context, *app.App, []string) error {
+	return usageOf("reap")
 }
 
 // execCall reports a graft exec command line, after any -C.
@@ -241,7 +270,7 @@ var parsesItsFlags = map[string]bool{
 // subcommands are the commands that parse their own arguments.
 var subcommands = map[string]func(context.Context, *app.App, []string) error{
 	"commit": commitCmd, "release": releaseCmd, "version": versionCmd, "hook": hookCmd, "flags": flagsCmd,
-	"deploy": deployCmd, "worktree": worktreeCmd, "gocache": gocacheCmd, "exec": execCmd,
+	"deploy": deployCmd, "worktree": worktreeCmd, "gocache": gocacheCmd, "exec": execCmd, "reap": reapCmd,
 }
 
 func dispatch(ctx context.Context, a *app.App, args []string) error {

@@ -163,6 +163,23 @@ Ctrl-C, SIGTERM, or an unignored SIGHUP stops the wait and command. If both
 caller output pipes close, graft stops them too; deploy keeps its existing
 signal behavior.
 
+On Linux every local command of a task's step and of `graft exec` runs under
+a reaper, graft's own binary between graft and the command
+(`PR_SET_CHILD_SUBREAPER`, seen as `graft-reap` in `ps`): a process the
+command leaves behind becomes the reaper's child, not the session manager's.
+An orphan that signals its `$PPID` thus reaches the reaper, which ends this
+command, instead of `systemd --user`, which would end the user's whole
+session. The reaper passes SIGTERM on to the command and not SIGINT, SIGQUIT
+or SIGHUP, which a terminal sends to the command's process group itself.
+Once the command ended, the processes it left in its session get SIGTERM
+after 0.5 s and SIGKILL 2 s later: a step does not leave a test's background
+process running. One that left the session (`setsid`, a daemon such as
+`gpg-agent` or an ssh control master) stays and is not waited for; a step
+that starts a server for later has it leave the session or run under
+systemd. The command's exit status, or the signal that ended it, is the
+reaper's. `graft reap -- <command> [args]` runs any command so, without the
+config, the queue or the stats of `graft exec`.
+
 The steps of a heavy task, of the gate (each where it runs when the gate
 splits) and of `graft exec --heavy`, a graft such a step starts included, get
 `GOMAXPROCS` set to `threads`
@@ -455,6 +472,7 @@ stats` (`wait_s`).
 | `graft logs <service> [--lines N] [-f]` | the end of a service's log, or its journal; `-f` follows until Ctrl-C |
 | `graft stats [--failures|--refused] [--since 7d] [--project <root>\|--all] [--task <name>]` | recorded resource use and recent failure reasons (see [Resource stats](#resource-stats)) |
 | `graft exec [--heavy [--local] [--env <name>]... [--settle <duration>] [--cores <n>]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local`; the host gets no variable of the caller's but the go command's own unless `--env <name>` names it; `--settle` holds a separate FIFO lock for this long, waited on only by another `exec --settle`; `--cores` sets the live reservation instead of using history |
+| `graft reap -- <command> [args]` | run a command as the reaper of what it leaves behind (Linux): its orphans become graft's children, not the session manager's, and those left in its session end with it, as for the local commands of tasks and `graft exec` (see Install) |
 | `graft status` | services, the test database, held locks |
 | `graft locks` | who holds graft's locks |
 | `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |

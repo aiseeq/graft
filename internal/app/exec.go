@@ -12,6 +12,7 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/tasks"
 )
 
@@ -50,9 +51,9 @@ const (
 	// ExitGraft is graft failing: its config, the queue, a usage error.
 	ExitGraft = 125
 	// ExitCannotRun is a command found but not started (not executable).
-	ExitCannotRun = 126
+	ExitCannotRun = proc.ExitCannotRun
 	// ExitNotFound is a command not found.
-	ExitNotFound = 127
+	ExitNotFound = proc.ExitNotFound
 )
 
 // exitStatus is the command's exit status, 128 and the signal for one a

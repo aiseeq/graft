@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -53,13 +52,6 @@ func TestStopOnCancelKillsTheTreeAfterGrace(t *testing.T) {
 
 // running tells whether pid is a process that is not a zombie.
 func running(pid int) bool {
-	if err := syscall.Kill(pid, 0); err != nil {
-		return false
-	}
-	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return false
-	}
-	_, after, _ := strings.Cut(string(data), ") ")
-	return !strings.HasPrefix(after, "Z")
+	zombie, err := isZombie(pid)
+	return err == nil && !zombie
 }
