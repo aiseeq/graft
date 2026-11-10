@@ -69,6 +69,8 @@ func exitStatus(exit *exec.ExitError) int {
 type ExecOptions struct {
 	// Heavy queues the command as a heavy task.
 	Heavy bool
+	// TestDB gives the command the configured test database DSN.
+	TestDB bool
 	// Settle holds the exec settling lock for this duration after admission.
 	Settle time.Duration
 	// Cores is the requested live reservation for this heavy exec.
@@ -86,7 +88,7 @@ func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
 	case err == nil:
 		root = repo.Root
 		// A heavy command goes where the project sends heavy work.
-		if heavy {
+		if heavy || opts.TestDB {
 			if cfg, err = projectConfig(root); err != nil {
 				return err
 			}
@@ -97,7 +99,17 @@ func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
 	case !errors.Is(err, gitx.ErrNotRepo):
 		return err
 	}
+	if opts.TestDB && cfg.TestDB == nil {
+		return errors.New("exec --test-db: the config has no test_db section")
+	}
 	r := a.newRunner(root, cfg)
+	if opts.TestDB {
+		repo, err := gitx.Open(root)
+		if err != nil {
+			return err
+		}
+		r.TestDB = func(ctx context.Context) (tasks.TestDB, error) { return a.testDB(ctx, repo, cfg) }
+	}
 	r.ExecCores = opts.Cores
 	r.ExecMemoryMax = opts.MemoryMax
 	if opts.Settle > 0 {
@@ -107,7 +119,7 @@ func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
 		}
 		r.ExecSettleLock, r.ExecSettle = lockPath, opts.Settle
 	}
-	return r.Exec(ctx, a.Dir, argv, heavy)
+	return r.Exec(ctx, a.Dir, argv, heavy, opts.TestDB)
 }
 
 // projectConfig is the work tree's config, an empty one when it has none:

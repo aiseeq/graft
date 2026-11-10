@@ -686,7 +686,7 @@ func (s *stringListFlag) String() string         { return strings.Join(*s, ",") 
 func (s *stringListFlag) Set(value string) error { *s = append(*s, value); return nil }
 
 // execSyntax is graft exec's usage, in its error and in graft help.
-const execSyntax = "graft exec [--heavy [--local] [--env <name>]... [--settle <duration>] [--cores <n>] [--memory-max <value>]] -- <command> [args]"
+const execSyntax = "graft exec [--heavy [--local] [--test-db] [--env <name>]... [--settle <duration>] [--cores <n>] [--memory-max <value>]] -- <command> [args]"
 
 // execCmd is graft exec; its own failures, usage too, exit app.ExitGraft
 // (run).
@@ -701,7 +701,7 @@ func execCmd(ctx context.Context, a *app.App, args []string) error {
 		}
 		args = args[consumed:]
 	}
-	if len(args) < 2 || ((local || opts.Settle > 0 || opts.Cores > 0 || opts.MemoryMax != "" || len(pass) > 0) && !opts.Heavy) {
+	if len(args) < 2 || ((local || opts.TestDB || opts.Settle > 0 || opts.Cores > 0 || opts.MemoryMax != "" || len(pass) > 0) && !opts.Heavy) {
 		return execUsage()
 	}
 	if err := exportExecEnv(pass, local); err != nil {
@@ -719,6 +719,8 @@ func parseExecFlag(args []string, opts *app.ExecOptions, local *bool, pass *[]st
 		opts.Heavy = true
 	case "--local":
 		*local = true
+	case "--test-db":
+		opts.TestDB = true
 	case "--env":
 		if len(args) < 2 {
 			return 0, usage

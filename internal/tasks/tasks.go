@@ -1980,7 +1980,14 @@ func (r *Runner) execCommand(ctx context.Context, dir string, argv []string, t *
 	if err != nil {
 		return nil, err
 	}
-	env, own, err := r.env(t, nil)
+	var vars map[string]string
+	if t.TestDB {
+		vars = map[string]string{}
+		if err := r.testDBVar(ctx, vars); err != nil {
+			return nil, err
+		}
+	}
+	env, own, err := r.env(t, vars)
 	if err != nil {
 		return nil, err
 	}
@@ -2038,13 +2045,13 @@ func (r *Runner) stopLocalCommand(cmd *exec.Cmd, local bool) {
 // Exec runs argv in dir, a command that is not a task, recorded as the task
 // exec. A heavy one queues for the machine as a heavy task does and gets
 // {threads} filled and GRAFT_THREADS.
-func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool) (err error) {
+func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy, usesTestDB bool) (err error) {
 	if !heavy {
 		if heavy, err = execHeavyAsked(); err != nil {
 			return err
 		}
 	}
-	t := &config.Task{Heavy: heavy}
+	t := &config.Task{Heavy: heavy, TestDB: usesTestDB}
 	innerGraft := graftCommand(argv)
 	if heavy && !innerGraft {
 		t.Run = []config.Step{{Argv: slices.Clone(argv)}}
@@ -2583,20 +2590,29 @@ func (r *Runner) vars(ctx context.Context, t *config.Task, report string) (map[s
 		vars[config.TestReportEnv] = report
 	}
 	if t.TestDB {
-		if r.TestDB == nil {
-			return nil, errors.New("test_db is set but no test database is configured")
+		if err := r.testDBVar(ctx, vars); err != nil {
+			return nil, err
 		}
-		if r.testDB == nil {
-			db, err := r.TestDB(ctx)
-			if err != nil {
-				return nil, err
-			}
-			r.testDB = &db
-		}
-		vars[r.Config.TestDB.DSNVar] = r.testDB.DSN
-		r.watchDB()
 	}
 	return vars, nil
+}
+
+// testDBVar sets the DSN variable of the test database in vars, bringing the
+// database up the first time.
+func (r *Runner) testDBVar(ctx context.Context, vars map[string]string) error {
+	if r.TestDB == nil {
+		return errors.New("test_db is set but no test database is configured")
+	}
+	if r.testDB == nil {
+		db, err := r.TestDB(ctx)
+		if err != nil {
+			return err
+		}
+		r.testDB = &db
+	}
+	vars[r.Config.TestDB.DSNVar] = r.testDB.DSN
+	r.watchDB()
+	return nil
 }
 
 // watchDB starts following the test database's container for the running
