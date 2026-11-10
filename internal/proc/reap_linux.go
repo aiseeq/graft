@@ -134,10 +134,8 @@ func RunReaper(path string, argv []string) int {
 	}
 	r := &reaper{child: pid}
 	for !r.done {
-		if sig, ok := (<-sigs).(unix.Signal); ok && sig == unix.SIGTERM {
-			// The command is not reaped yet: its pid is still its own. Asked
-			// to stop, the reaper ends the orphans at once after it.
-			r.hurried = true
+		if sig, ok := (<-sigs).(unix.Signal); ok && r.note(sig) {
+			// The command is not reaped yet: its pid is still its own.
 			if err := unix.Kill(pid, sig); err != nil && !errors.Is(err, unix.ESRCH) {
 				fmt.Fprintf(os.Stderr, "graft: reaper: passing %v to %d: %v\n", sig, pid, err)
 			}
@@ -147,11 +145,28 @@ func RunReaper(path string, argv []string) int {
 			return ExitReaper
 		}
 	}
+	// A signal sent to the group with the command (Ctrl-C) may still wait
+	// behind the SIGCHLD of the command it ended; read after the command, it
+	// hurries the orphans as one in the settle would.
+	for drained := false; !drained; {
+		select {
+		case sig := <-sigs:
+			if s, ok := sig.(unix.Signal); ok && s != unix.SIGCHLD {
+				r.signalled, r.hurried = true, true
+			}
+		default:
+			drained = true
+		}
+	}
 	// The new name tells graft the command ended alone: a SIGTERM from now
-	// on hurries the orphans and does not end the command (reaperEnded).
-	if err := nameReaped(); err != nil {
-		// graft then takes a signal it sends for the end of the command.
-		fmt.Fprintf(os.Stderr, "graft: reaper: %v\n", err)
+	// on hurries the orphans and does not end the command (reaperEnded). A
+	// command a signal reached may have ended by it, even with status 0: the
+	// reaper keeps its name, and graft's stop counts as the command's end.
+	if !r.signalled {
+		if err := nameReaped(); err != nil {
+			// graft then takes a signal it sends for the end of the command.
+			fmt.Fprintf(os.Stderr, "graft: reaper: %v\n", err)
+		}
 	}
 	// The signals stay caught to the end: one that ended the reaper now
 	// would lose the command's status and leave its orphans behind.
@@ -197,8 +212,26 @@ type reaper struct {
 	status unix.WaitStatus
 	// hurried: a signal asked the reaper to stop.
 	hurried bool
+	// signalled: a signal other than SIGCHLD came while the command ran.
+	signalled bool
 	// childless: wait4 found no child, so no descendant is left at all.
 	childless bool
+}
+
+// note records sig, which came while the command ran, and tells whether
+// the reaper passes it on: SIGTERM, which asks the reaper to stop, so it
+// ends the orphans at once after the command. SIGINT, SIGQUIT and SIGHUP
+// the terminal sends to the command's group itself.
+func (r *reaper) note(sig unix.Signal) bool {
+	if sig == unix.SIGCHLD {
+		return false
+	}
+	r.signalled = true
+	if sig == unix.SIGTERM {
+		r.hurried = true
+		return true
+	}
+	return false
 }
 
 // reapAll waits for every child that has exited, the command's status kept.

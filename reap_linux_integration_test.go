@@ -3,7 +3,10 @@
 package main
 
 import (
+	"bufio"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -136,5 +139,78 @@ func TestReapTakesDir(t *testing.T) {
 	}
 	if code != 0 || strings.TrimSpace(out) != want {
 		t.Fatalf("exit %d, ran in %q, want %q", code, strings.TrimSpace(out), want)
+	}
+}
+
+// reaperOf is the reaper of the orphan whose pid the file holds, its parent,
+// once the orphan has written it.
+func reaperOf(t *testing.T, pidFile string) int {
+	t.Helper()
+	orphan := waitForProcessID(t, pidFile)
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(orphan) + "/stat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+1:]))
+	ppid, err := strconv.Atoi(fields[1])
+	if err != nil {
+		t.Fatalf("parent of %d in %q: %v", orphan, stat, err)
+	}
+	return ppid
+}
+
+func processName(pid int) string {
+	comm, _ := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm")
+	return strings.TrimSpace(string(comm))
+}
+
+// leaveOrphan is a shell command leaving an orphan that writes its pid to $1
+// and lives 3 s with no pipe of the command's.
+const leaveOrphan = `(sh -c 'echo $$ > "$0"; exec sleep 3' "$1" </dev/null >/dev/null 2>&1 &)`
+
+// A command that ended alone keeps its status when its caller leaves while
+// graft still ends the orphans it left: graft did not end the command.
+func TestCallerGoneAfterCommandEndedKeepsItsStatus(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "orphan.pid")
+	cmd, out, errOut := callerCommand(t, "exec", "--", "sh", "-c", leaveOrphan+"; printf 'alive\\n'", "sh", pidFile)
+	_ = errOut.Close()
+	data, _ := bufio.NewReader(out).ReadString('\n')
+	reaper := reaperOf(t, pidFile)
+	// The caller leaves once the command has ended: its reaper says so.
+	waitFor(t, func() bool { return processName(reaper) == "graft-reaped" })
+	_ = out.Close()
+	if err := waitProcess(t, cmd); err != nil || data != "alive\n" {
+		t.Fatalf("exit %v, stdout %q", err, data)
+	}
+}
+
+// A command a signal reached (Ctrl-C to its group) and that ended with
+// status 0 is still a command graft stopped: the caller leaving after it is
+// no success.
+func TestCallerGoneAfterSignalledCommandIsStopped(t *testing.T) {
+	dir := t.TempDir()
+	pidFile, shFile := filepath.Join(dir, "orphan.pid"), filepath.Join(dir, "sh.pid")
+	cmd, out, errOut := callerCommand(t, "exec", "--", "sh", "-c", `trap 'exit 0' INT; `+leaveOrphan+`; echo $$ > "$2"; printf 'alive\n'; while :; do sleep 0.05; done`, "sh", pidFile, shFile)
+	_ = errOut.Close()
+	data, _ := bufio.NewReader(out).ReadString('\n')
+	reaper := reaperOf(t, pidFile)
+	command := waitForProcessID(t, shFile)
+	// The terminal's SIGINT to the group, graft left out: the reaper and the
+	// command, both started by this test's graft.
+	for _, pid := range []int{reaper, command} {
+		if err := syscall.Kill(pid, syscall.SIGINT); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForProcessGone(t, shFile)
+	time.Sleep(150 * time.Millisecond) // the reaper's settle lasts 500 ms
+	if name := processName(reaper); name == "graft-reaped" {
+		t.Fatalf("the reaper of a signalled command calls it ended alone (%s)", name)
+	}
+	_ = out.Close()
+	err := waitProcess(t, cmd)
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 125 || data != "alive\n" {
+		t.Fatalf("exit %v, stdout %q; want 125", err, data)
 	}
 }
