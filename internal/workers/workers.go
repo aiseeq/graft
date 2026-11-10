@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/proc"
@@ -37,6 +38,9 @@ type Marker struct {
 	Finished bool     `json:"finished"`
 	// file is where the marker was read, for messages.
 	file string
+	// written is when the marker was last written: for a finished round,
+	// when the round ended, the tool writing it then.
+	written time.Time
 }
 
 // markerDir holds the markers of a repository, shared by its worktrees.
@@ -82,7 +86,11 @@ func readMarker(file string) (Marker, error) {
 	if m.ID == "" || len(m.Models) == 0 || slices.Contains(m.Models, "") || m.Dir == "" || (m.PID <= 0 && !m.Finished) {
 		return Marker{}, errors.New("id, models, dir and a pid or finished are required")
 	}
-	m.file = file
+	info, err := os.Stat(file)
+	if err != nil {
+		return Marker{}, fmt.Errorf("reading: %w", err)
+	}
+	m.file, m.written = file, info.ModTime()
 	return m, nil
 }
 
@@ -157,7 +165,7 @@ func Models(repo *gitx.Repo, warn io.Writer, excluded []string) ([]string, error
 			return nil, err
 		}
 		for _, m := range others {
-			n, err := carried(repo, m.Dir, staged, excluded)
+			n, err := carried(repo, m.Dir, m.written, staged, excluded)
 			if err != nil {
 				passOver(warn, m.file, err)
 				continue
@@ -234,8 +242,9 @@ var goModuleFiles = []string{"go.mod", "go.sum", "go.work", "go.work.sum"}
 // carried counts the files of staged but excluded and goModuleFiles the
 // worktree at dir holds with the same content and changed since it forked
 // from HEAD: the job's work, not a file it left as it found it, nor one
-// graft writes the same way in both trees.
-func carried(repo *gitx.Repo, dir string, staged map[string]string, excluded []string) (int, error) {
+// graft writes the same way in both trees, nor one changed there after
+// the round ended at ended.
+func carried(repo *gitx.Repo, dir string, ended time.Time, staged map[string]string, excluded []string) (int, error) {
 	var paths []string
 	for p := range staged {
 		if slices.Contains(excluded, p) || slices.Contains(goModuleFiles, path.Base(p)) {
@@ -248,7 +257,9 @@ func carried(repo *gitx.Repo, dir string, staged map[string]string, excluded []s
 		if err != nil {
 			return 0, fmt.Errorf("the job's copy of %s: %w", p, err)
 		}
-		if info.Mode().IsRegular() && !strings.Contains(p, "\n") {
+		// A file changed after the round ended is not the job's: the master
+		// edited it in the job's tree by hand.
+		if info.Mode().IsRegular() && !strings.Contains(p, "\n") && !info.ModTime().After(ended) {
 			paths = append(paths, p)
 		}
 	}

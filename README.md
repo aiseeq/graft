@@ -595,6 +595,8 @@ and removed when the job is over. `models` lists the exact model ids, in
 order; `pid` is the process that lives as long as the job's round runs, its
 command line naming the `id`; `finished: true` marks a round that ended as it
 should, its work not yet taken: the marker stays until then, the process gone.
+The tool writes the marker with `finished: true` when the round ends, after
+the job's files: the marker's modification time is the round's end.
 `graft commit`, `graft amend` and the `prepare-commit-msg` hook add a
 `Worker: <model>` trailer for each model whose work the commit carries, once,
 and not when the message already names it:
@@ -603,9 +605,10 @@ and not when the message already names it:
   whose process lives: the job's work is here;
 - a marker of another worktree whose round is finished, when the commit
   stages some file byte for byte as the job left it there, committed or not,
-  and the job changed that file since its worktree forked from `HEAD`: its
-  changes were carried over by hand (`git diff` there, `git apply` here),
-  the master's own edits on top of some files aside;
+  and the job changed that file since its worktree forked from `HEAD`, and
+  not after its round ended (a file changed there later is the master's
+  edit): its changes were carried over by hand (`git diff` there,
+  `git apply` here), the master's own edits on top of some files aside;
 - the `Worker` trailers of the commits a merge (`MERGE_HEAD`) or
   `git merge --squash` brings in.
 

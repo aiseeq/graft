@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeMarker leaves the marker of a job running models in the worktree at
@@ -196,9 +197,10 @@ func TestWorkerTrailersOfCarriedOverWork(t *testing.T) {
 	f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
 	f.write("b.txt", "b2\n")
 	f.mustPlainCommit("feat: the trunk moves on")
-	writeMarkerJSON(t, f, map[string]any{"id": "job1", "models": []string{"vendor/model-a"}, "client": "cli", "dir": job, "finished": true})
 	writeFile(t, filepath.Join(job, "a.txt"), "by the job\n")
 	writeFile(t, filepath.Join(job, "c.txt"), "new by the job\n")
+	writeFile(t, filepath.Join(job, "d.txt"), "d by the job\n")
+	finishJob(t, f, map[string]any{"id": "job1", "models": []string{"vendor/model-a"}, "client": "cli", "dir": job, "finished": true})
 
 	f.write("a.txt", "by the master\n")
 	f.write("b.txt", "b\n")
@@ -214,7 +216,6 @@ func TestWorkerTrailersOfCarriedOverWork(t *testing.T) {
 		t.Errorf("the job's work carried over, trailers %q\n%s", got, out)
 	}
 
-	writeFile(t, filepath.Join(job, "d.txt"), "d by the job\n")
 	f.write("d.txt", "d by the job\n")
 	f.git("add", "d.txt")
 	if out, code := f.exec(f.work, "", "git", "commit", "-q", "--no-verify", "-m", "feat: more of the job's work"); code != 0 {
@@ -222,6 +223,44 @@ func TestWorkerTrailersOfCarriedOverWork(t *testing.T) {
 	}
 	if got := f.workers("HEAD"); got != "vendor/model-a" {
 		t.Errorf("git commit of the job's work, trailers %q\n%s", got, f.git("log", "-1", "--format=%B"))
+	}
+}
+
+// finishJob writes the marker of a finished round after the job's files, as
+// a tool does when the round ends: the marker's time is the round's end.
+func finishJob(t *testing.T, f *fixture, m map[string]any) {
+	t.Helper()
+	writeMarkerJSON(t, f, m)
+	end := time.Now().Add(time.Second)
+	if err := os.Chtimes(filepath.Join(f.markers(), m["id"].(string)), end, end); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestWorkerTrailersNotFromChangesAfterTheRound: a file of the job's tree
+// changed after its round ended is not the job's work, though the commit
+// stages it as the tree holds it: the master edited it there by hand.
+func TestWorkerTrailersNotFromChangesAfterTheRound(t *testing.T) {
+	f := workerRepo(t, "none")
+	job := filepath.Join(f.base, "job")
+	f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
+	writeFile(t, filepath.Join(job, "c.txt"), "new by the job\n")
+	finishJob(t, f, map[string]any{"id": "job1", "models": []string{"vendor/model-a"}, "client": "cli", "dir": job, "finished": true})
+	edited := filepath.Join(job, "a.txt")
+	writeFile(t, edited, "by the master, in the job's tree\n")
+	later := time.Now().Add(time.Minute)
+	if err := os.Chtimes(edited, later, later); err != nil {
+		t.Fatal(err)
+	}
+
+	f.write("a.txt", "by the master, in the job's tree\n")
+	out := f.mustGraft("commit", "-m", "feat: the master's edit")
+	if got := f.workers("HEAD"); got != "" || strings.Contains(out, "as the finished job job1 left them") {
+		t.Errorf("a file changed after the round, trailers %q\n%s", got, out)
+	}
+	f.write("c.txt", "new by the job\n")
+	if out := f.mustGraft("commit", "-m", "feat: the job's work"); f.workers("HEAD") != "vendor/model-a" {
+		t.Errorf("the job's own file, trailers %q\n%s", f.workers("HEAD"), out)
 	}
 }
 
