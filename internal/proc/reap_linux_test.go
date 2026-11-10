@@ -272,3 +272,72 @@ exit 0`)
 		}
 	}
 }
+
+// A SIGTERM that reaches the reaper while it ends the command's orphans,
+// from one of them here, neither ends it nor loses the command's status:
+// it hurries the orphans to SIGKILL.
+func TestReapSignalWhileEndingOrphans(t *testing.T) {
+	dir := t.TempDir()
+	// The orphan ignores SIGTERM and signals the pid the test started and
+	// wrote down, the reaper's, only once that is its parent: once the
+	// command that started it is gone.
+	stub := `d=$1
+trap '' TERM
+echo $$ > "$d/orphan"
+i=0
+while [ ! -s "$d/expect" ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
+reaper=$(cat "$d/expect")
+if [ "$PPID" = "$reaper" ]; then kill -TERM "$reaper"; fi
+exec sleep 30
+`
+	if err := os.WriteFile(filepath.Join(dir, "stub.sh"), []byte(stub), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	cmd := reaped(t, dir, `(sleep 0.1; exec sh "$1/stub.sh" "$1") &
+exit 0`)
+	if err := os.WriteFile(filepath.Join(dir, "expect"), []byte(strconv.Itoa(cmd.Process.Pid)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.Wait()
+	took := time.Since(start)
+	orphan := pidIn(t, filepath.Join(dir, "orphan"))
+	stopAfter(t, orphan)
+	if err != nil {
+		t.Fatalf("want the command's exit 0, got %v", err)
+	}
+	if running(orphan) {
+		t.Errorf("the orphan %d outlived the reaper", orphan)
+	}
+	if took >= orphanSettle+orphanGrace {
+		t.Errorf("the reaper took %v: the signal did not hurry it to SIGKILL", took)
+	}
+}
+
+// A signal the reaper was started ignoring, as nohup and a background job
+// start it, stays ignored for the command.
+func TestReapKeepsIgnoredSignals(t *testing.T) {
+	ignored := []syscall.Signal{syscall.SIGHUP, syscall.SIGINT}
+	for _, sig := range ignored {
+		signal.Ignore(sig)
+	}
+	t.Cleanup(func() {
+		for _, sig := range ignored {
+			signal.Reset(sig)
+		}
+	})
+	dir := t.TempDir()
+	if err := reaped(t, dir, `grep '^SigIgn:' /proc/self/status > "$1/ign"`).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	field := strings.Fields(waitFile(t, filepath.Join(dir, "ign")))
+	mask, err := strconv.ParseUint(field[len(field)-1], 16, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sig := range ignored {
+		if mask&(1<<(sig-1)) == 0 {
+			t.Errorf("the command does not ignore %v: SigIgn %x", sig, mask)
+		}
+	}
+}

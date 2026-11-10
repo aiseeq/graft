@@ -73,3 +73,16 @@ tasks:
 		})
 	}
 }
+
+// graft -C dir reap runs the command in dir, as other commands take -C.
+func TestReapTakesDir(t *testing.T) {
+	f := newRepo(t, map[string]string{"sub/a": "a"})
+	out, code := f.graft("", "-C", "sub", "reap", "--", "sh", "-c", "pwd -P")
+	want, err := filepath.EvalSymlinks(filepath.Join(f.work, "sub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 || strings.TrimSpace(out) != want {
+		t.Fatalf("exit %d, ran in %q, want %q", code, strings.TrimSpace(out), want)
+	}
+}

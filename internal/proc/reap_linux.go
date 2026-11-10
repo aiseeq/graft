@@ -94,8 +94,10 @@ const ExitReaper = 125
 // reaper with the same signal, so the caller sees what it would have seen
 // of the command. SIGTERM goes on to the command while it runs; SIGINT,
 // SIGQUIT and SIGHUP do not, the terminal sends them to the command's
-// process group itself. Once the command ended, the processes left in its
-// session get SIGTERM, then SIGKILL; those that left the session (daemons)
+// process group itself; one the reaper was started ignoring stays ignored
+// for the command. Once the command ended, the processes left in its
+// session get SIGTERM, then SIGKILL, at once when one of those signals
+// reaches the reaper meanwhile; those that left the session (daemons)
 // stay and are not waited for. A command that could not start exits 127
 // when it is missing, 126 otherwise.
 func RunReaper(path string, argv []string) int {
@@ -106,7 +108,14 @@ func RunReaper(path string, argv []string) int {
 		return ExitReaper
 	}
 	sigs := make(chan os.Signal, 16)
-	signal.Notify(sigs, unix.SIGCHLD, unix.SIGTERM, unix.SIGINT, unix.SIGQUIT, unix.SIGHUP)
+	signal.Notify(sigs, unix.SIGCHLD)
+	// A signal the reaper was started ignoring (nohup, a background job)
+	// stays ignored for the command: a handler would reset it on exec.
+	for _, sig := range []os.Signal{unix.SIGTERM, unix.SIGINT, unix.SIGQUIT, unix.SIGHUP} {
+		if !signal.Ignored(sig) {
+			signal.Notify(sigs, sig)
+		}
+	}
 	pid, err := syscall.ForkExec(path, argv, &syscall.ProcAttr{
 		Env:   os.Environ(),
 		Files: []uintptr{0, 1, 2},
@@ -133,8 +142,9 @@ func RunReaper(path string, argv []string) int {
 			return ExitReaper
 		}
 	}
-	signal.Stop(sigs)
-	if err := r.endOrphans(); err != nil {
+	// The signals stay caught to the end: one that ended the reaper now
+	// would lose the command's status and leave its orphans behind.
+	if err := r.endOrphans(sigs); err != nil {
 		fmt.Fprintf(os.Stderr, "graft: reaper: %v\n", err)
 	}
 	if r.status.Signaled() {
@@ -147,6 +157,8 @@ type reaper struct {
 	child  int
 	done   bool
 	status unix.WaitStatus
+	// hurried: a signal asked the reaper to stop while it ended orphans.
+	hurried bool
 }
 
 // reapAll waits for every child that has exited, the command's status kept.
@@ -170,14 +182,15 @@ func (r *reaper) reapAll() error {
 
 // endOrphans ends the processes the command left in its session: SIGTERM
 // after a settle in which a starting daemon leaves the session, SIGKILL to
-// those still there and those they started meanwhile.
-func (r *reaper) endOrphans() error {
-	left, err := r.settle(orphanSettle)
+// those still there and those they started meanwhile. A signal that asks
+// the reaper to stop meanwhile skips to SIGKILL.
+func (r *reaper) endOrphans(sigs <-chan os.Signal) error {
+	left, err := r.settle(orphanSettle, sigs)
 	if err != nil || len(left) == 0 {
 		return err
 	}
 	signalAll(left, unix.SIGTERM)
-	if left, err = r.settle(orphanGrace); err != nil || len(left) == 0 {
+	if left, err = r.settle(orphanGrace, sigs); err != nil || len(left) == 0 {
 		return err
 	}
 	deadline := time.Now().Add(orphanKill)
@@ -197,18 +210,23 @@ func (r *reaper) endOrphans() error {
 	return nil
 }
 
-// settle reaps for up to d, until no orphan is left, and returns those left.
-func (r *reaper) settle(d time.Duration) ([]int, error) {
+// settle reaps for up to d, until no orphan is left or a signal other than
+// SIGCHLD hurries the reaper, and returns those left.
+func (r *reaper) settle(d time.Duration, sigs <-chan os.Signal) ([]int, error) {
 	deadline := time.Now().Add(d)
 	for {
 		if err := r.reapAll(); err != nil {
 			return nil, err
 		}
 		left, err := orphans()
-		if err != nil || len(left) == 0 || !time.Now().Before(deadline) {
+		if err != nil || len(left) == 0 || r.hurried || !time.Now().Before(deadline) {
 			return left, err
 		}
-		time.Sleep(min(orphanPoll, time.Until(deadline)))
+		select {
+		case sig := <-sigs:
+			r.hurried = r.hurried || sig != unix.SIGCHLD
+		case <-time.After(min(orphanPoll, time.Until(deadline))):
+		}
 	}
 }
 

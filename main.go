@@ -53,8 +53,8 @@ var errUsage = errors.New("usage")
 
 func main() {
 	// Before anything of graft's own starts a process the reaper would wait for.
-	if reapCall(os.Args[1:]) {
-		os.Exit(reap(os.Args[3:]))
+	if argv, ok := reapCall(os.Args[1:]); ok {
+		os.Exit(reap(os.Args[1:], argv))
 	}
 	// graft exec's own failures exit as env's do, apart from the command's.
 	failed := 1
@@ -125,14 +125,27 @@ func deployCall(args []string) bool {
 	return len(args) > 0 && args[0] == "deploy"
 }
 
-// reapCall reports graft reap -- <command>; graft reap otherwise is a usage
-// error of the reap subcommand.
-func reapCall(args []string) bool {
-	return len(args) > 2 && args[0] == "reap" && args[1] == "--"
+// reapCall reports graft reap -- <command>, after any -C, and the command;
+// graft reap otherwise is a usage error of the reap subcommand.
+func reapCall(args []string) ([]string, bool) {
+	for len(args) > 1 && args[0] == "-C" {
+		args = args[2:]
+	}
+	if len(args) > 2 && args[0] == "reap" && args[1] == "--" {
+		return args[2:], true
+	}
+	return nil, false
 }
 
-// reap is graft reap: the command after -- runs with graft as its reaper.
-func reap(argv []string) int {
+// reap is graft reap: the command after -- runs with graft as its reaper,
+// in the directory the -C before reap name, each from the one before.
+func reap(args, argv []string) int {
+	for ; args[0] == "-C"; args = args[2:] {
+		if err := os.Chdir(args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "graft: reap: -C %q: %v\n", args[1], err)
+			return app.ExitGraft
+		}
+	}
 	path, err := exec.LookPath(argv[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "graft: reap: start %s: %v\n", argv[0], err)
