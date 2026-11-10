@@ -145,15 +145,16 @@ func waitForProcessID(t *testing.T, pidFile string) int {
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
 	for {
+		// A shell's redirection creates the file before it writes the pid.
 		data, err := os.ReadFile(pidFile)
-		if err == nil {
+		if err == nil && len(bytes.TrimSpace(data)) > 0 {
 			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 			if err != nil {
 				t.Fatalf("invalid child pid %q: %v", data, err)
 			}
 			return pid
 		}
-		if !os.IsNotExist(err) {
+		if err != nil && !os.IsNotExist(err) {
 			t.Fatalf("read child pid: %v", err)
 		}
 		select {
