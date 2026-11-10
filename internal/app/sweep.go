@@ -243,7 +243,7 @@ type sweepRun struct {
 	now    time.Time
 	apply  bool
 	issues map[string]jira.Issue
-	// review are the statuses work waits in for a reviewer, with work_keys.
+	// review are the statuses work waits in for a reviewer.
 	review []string
 	// lines are the items to look at by hand; judged are the items moved,
 	// or that would be, and the parents listed: their own commits say no
@@ -308,9 +308,7 @@ func (a *App) sweep(ctx context.Context, r *deployRun, head string, withheld []s
 	}
 	s := &sweepRun{app: a, r: r, conf: conf, notes: r.cfg.ReleaseNotes.Jira, client: client, me: me, trunk: trunk, now: now, apply: apply,
 		issues: map[string]jira.Issue{}, judged: map[string]bool{}, glint: r.glint}
-	if r.cfg.ByWork() {
-		s.review = r.cfg.ReviewStatuses()
-	}
+	s.review = r.cfg.ReviewStatuses()
 	if s.glint == nil {
 		if s.glint, err = newGlintCheck(r, "", func(context.Context) (string, error) { return head, nil }); err != nil {
 			return err
@@ -385,7 +383,7 @@ func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.
 		if isRevert(c.subject) || reverted[c.sha] {
 			continue
 		}
-		keys := sweepKeys(r, keyRe, c.deliveredCommit)
+		keys := workKeys(keyRe, r.target.ApprovedRelease, c.deliveredCommit)
 		if len(keys) == 0 {
 			continue
 		}
@@ -402,23 +400,6 @@ func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.
 		}
 	}
 	return items, nil
-}
-
-// sweepKeys are the items the sweep counts a commit for: with work_keys all of
-// its work; without it one item, its attribution or the first key, a commit
-// quoted as reverted aside.
-func sweepKeys(r *deployRun, keyRe *regexp.Regexp, c deliveredCommit) []string {
-	conf := r.target.ApprovedRelease
-	if r.cfg.ByWork() {
-		return workKeys(keyRe, conf, c)
-	}
-	if conf != nil {
-		if at, ok := conf.Attributed[c.sha]; ok {
-			return []string{at.Item}
-		}
-	}
-	keys := messageWorkKeys(keyRe, c)
-	return keys[:min(1, len(keys))]
 }
 
 // pickedRe is the line git cherry-pick -x adds; a commit that takes another
@@ -696,9 +677,7 @@ func (s *sweepRun) parents(ctx context.Context, keys []string, items map[string]
 		if !ok || slices.Contains(s.notes.SkipKeys, key) {
 			continue
 		}
-		if s.r.cfg.ByWork() {
-			s.acceptedSubtasks(ctx, parent, allOn)
-		}
+		s.acceptedSubtasks(ctx, parent, allOn)
 		if !parent.Done && len(parent.Subtasks) > 0 && allOn(key) {
 			s.finishParent(ctx, parent, allOn)
 		}
@@ -825,13 +804,10 @@ func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, check
 	s.markDone(issue)
 }
 
-// markDone lets the rest of the pass see the item done, with work_keys: its
-// parent may close.
+// markDone lets the rest of the pass see the item done: its parent may close.
 func (s *sweepRun) markDone(issue jira.Issue) {
-	if s.r.cfg.ByWork() {
-		issue.Done, issue.Status = true, s.conf.Done
-		s.issues[issue.Key] = issue
-	}
+	issue.Done, issue.Status = true, s.conf.Done
+	s.issues[issue.Key] = issue
 }
 
 // transitionDone takes the item to the done status; a subtask in a status of

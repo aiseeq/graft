@@ -1052,7 +1052,7 @@ func checkFreezeCommit(ctx context.Context, r *deployRun, f *activeFreeze, gate 
 	if isRevert(commit.subject) || reverted != "" {
 		return nil
 	}
-	keys := itemKeys(r.cfg, keyRe, f.config.ApprovedRelease, commit)
+	keys := itemKeys(keyRe, f.config.ApprovedRelease, commit)
 	if len(keys) == 0 {
 		ignored, err := shipsNothing(r.repo, r.cfg, f.config.ApprovedRelease, commit.sha)
 		if err != nil || ignored {
@@ -1071,8 +1071,8 @@ func checkFreezeCommit(ctx context.Context, r *deployRun, f *activeFreeze, gate 
 			refusal = errors.Join(refusal, err)
 		}
 	}
-	// With work_keys every item of the commit is in the release, not one.
-	outside := len(matched) == 0 || r.cfg.ByWork() && len(matched) < len(keys)
+	// Every item of the commit's work must be in the release.
+	outside := len(matched) < len(keys)
 	if refusal == nil && !outside {
 		return nil
 	}

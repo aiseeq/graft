@@ -153,8 +153,8 @@ func unlabelled(ctx context.Context, r *deployRun, commits []deliveredCommit) (o
 		if isRevert(c.subject) {
 			continue
 		}
-		keys := itemKeys(r.cfg, keyRe, conf, c)
-		labelled, err := labelledItems(ctx, client, keys, h.Label, r.cfg.ByWork())
+		keys := itemKeys(keyRe, conf, c)
+		labelled, err := labelledItems(ctx, client, keys, h.Label)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -184,22 +184,18 @@ func unlabelled(ctx context.Context, r *deployRun, commits []deliveredCommit) (o
 	return outside, items, nil
 }
 
-// labelledItems names the first of the items with the label, or with all
-// every item when each has it; none otherwise.
-func labelledItems(ctx context.Context, client *jira.Client, keys []string, label string, all bool) ([]string, error) {
+// labelledItems names every item with the label when each has it; none otherwise.
+func labelledItems(ctx context.Context, client *jira.Client, keys []string, label string) ([]string, error) {
 	var labelled []string
 	for _, key := range keys {
 		issue, err := client.Issue(ctx, key)
 		if err != nil {
 			return nil, err
 		}
-		switch has := slices.Contains(issue.Labels, label); {
-		case has && !all:
-			return []string{key}, nil
-		case has:
-			labelled = append(labelled, key)
-		case all:
+		if !slices.Contains(issue.Labels, label) {
 			return nil, nil
+		} else {
+			labelled = append(labelled, key)
 		}
 	}
 	return labelled, nil

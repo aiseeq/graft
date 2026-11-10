@@ -326,6 +326,7 @@ func (c *Config) validate() error {
 		c.validateEnvs,
 		c.validateDotEnvSets,
 		c.validateFlags,
+		c.validateRemovedKeys,
 		c.validateDeploy,
 		c.validateTestDB,
 		c.validateTasks,

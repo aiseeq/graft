@@ -161,7 +161,7 @@ func notInTrunk(r *deployRun, trunk string) (missing, byItem []string, err error
 func commitItems(r *deployRun, c deliveredCommit) []string {
 	switch {
 	case r.cfg.ReleaseNotes != nil && r.cfg.ReleaseNotes.Jira != nil:
-		return itemKeys(r.cfg, projectKeyRe(r.cfg), r.target.ApprovedRelease, c)
+		return itemKeys(projectKeyRe(r.cfg), r.target.ApprovedRelease, c)
 	case r.cfg.Ticket != nil:
 		return commitKeys(r.cfg.Ticket.Regexp, r.target.ApprovedRelease, c)
 	}

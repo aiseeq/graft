@@ -345,11 +345,9 @@ type JiraNotes struct {
 	Comment     string   `yaml:"comment"`
 	// Project is the product's name, for {project} in a comment.
 	Project string `yaml:"project"`
-	// WorkKeys counts a commit for the items it is the work of, all of which
-	// must pass the gate, not for every key it mentions; a done item whose
-	// work ships gets the note, and a parent ready with open subtasks keeps
-	// its work in.
-	WorkKeys bool `yaml:"work_keys"`
+	// RemovedWorkKeys is the key work_keys, an error now: graft always
+	// counts a commit for the items it is the work of.
+	RemovedWorkKeys *bool `yaml:"work_keys"`
 	// SkipStatuses leaves items in these statuses alone: no note, no move.
 	SkipStatuses []string `yaml:"skip_statuses"`
 	// SkipKeys leaves these items alone, a standing item that collects small
@@ -672,11 +670,6 @@ func (c *Config) validateRequires(where, name string, t *DeployTarget) error {
 	return nil
 }
 
-// ByWork tells whether release_notes.jira.work_keys is on.
-func (c *Config) ByWork() bool {
-	return c.ReleaseNotes != nil && c.ReleaseNotes.Jira != nil && c.ReleaseNotes.Jira.WorkKeys
-}
-
 // ReadyStatuses are the statuses of finished work waiting for the release:
 // those approved_release passes and those a transition takes to the sweep's
 // done status.
@@ -765,8 +758,8 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 	if err := validateSweep(where+".release_notes.sweep", n); err != nil {
 		return err
 	}
-	if j := c.ReleaseNotes.Jira; j.WorkKeys && n.Sweep != nil && slices.Contains(j.SkipStatuses, n.Sweep.Done) {
-		return fmt.Errorf("release_notes.jira.skip_statuses names %s, the done status of %s: with work_keys a done item whose work ships gets the note, take %s out", n.Sweep.Done, where, n.Sweep.Done)
+	if j := c.ReleaseNotes.Jira; n.Sweep != nil && slices.Contains(j.SkipStatuses, n.Sweep.Done) {
+		return fmt.Errorf("release_notes.jira.skip_statuses names %s, the done status of %s: a done item whose work ships gets the note, take %s out", n.Sweep.Done, where, n.Sweep.Done)
 	}
 	if err := validateGlint(where+".release_notes.glint", n); err != nil {
 		return err
@@ -873,6 +866,14 @@ func validateTransitions(where string, ts []NoteTransition) error {
 			}
 			from[f] = i
 		}
+	}
+	return nil
+}
+
+// validateRemovedKeys refuses a key graft no longer takes, with the way out.
+func (c *Config) validateRemovedKeys() error {
+	if n := c.ReleaseNotes; n != nil && n.Jira != nil && n.Jira.RemovedWorkKeys != nil {
+		return errors.New("release_notes.jira.work_keys: removed, graft always counts a commit for the items it is the work of: delete the key")
 	}
 	return nil
 }

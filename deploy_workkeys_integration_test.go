@@ -9,12 +9,11 @@ import (
 	"time"
 )
 
-// workKeysRepo is a deploy fixture whose project counts commits by their work.
+// workKeysRepo is a deploy fixture for commit work attribution.
 func workKeysRepo(t *testing.T) *deployFixture {
 	t.Helper()
 	d := deployRepo(t)
 	d.write(".graft.yaml", strings.Replace(d.read(".graft.yaml"), "    skip_keys: [PROJ-40]\n", `    skip_keys: [PROJ-40]
-    work_keys: true
     project: Widget
     comment: "{project}: deployed to {target}"
 `, 1))
@@ -77,22 +76,6 @@ func TestDeployWorkKeysGate(t *testing.T) {
 	}, []string{"own work:", "PROJ-8 Ready"})
 }
 
-// The same commits pass by any key they name without work_keys: other projects
-// stay as they are until they turn it on.
-func TestDeployWithoutWorkKeysCountsMentions(t *testing.T) {
-	d := deployRepo(t)
-	d.statuses(map[string]string{"PROJ-8": "Ready for release", "PROJ-9": "In Progress"}, map[string]string{"PROJ-9": "PROJ-8"})
-	d.mustGraft("deploy", "--unapproved", "gate")
-	d.commits(
-		"chore: mentions only\n\nAfter PROJ-8.",
-		"feat: PROJ-8 PROJ-5 two at once",
-		"fix: PROJ-9 subtask of a parent with open subtasks",
-	)
-	if out, code := d.graft("", "deploy", "gate"); code != 0 {
-		t.Fatalf("exit %d:\n%s", code, out)
-	}
-}
-
 // An attribution ties a commit that only mentions the item to it, and passes
 // in spite of the neighbour its subject names.
 func TestDeployWorkKeysAttribute(t *testing.T) {
@@ -138,18 +121,6 @@ func TestDeployWorkKeysNotes(t *testing.T) {
 	}
 	if len(d.jira.fixVersions["PROJ-1"]) == 0 {
 		t.Errorf("the item in work got no version: %v", d.jira.fixVersions)
-	}
-}
-
-// Without work_keys a done item stays without a note, as it was.
-func TestDeployWithoutWorkKeysDoneGetsNoNote(t *testing.T) {
-	d := deployRepo(t)
-	d.mustGraft("deploy", "--unapproved", "uat")
-	d.commits("fix: PROJ-2 the part of a done item")
-	out := d.mustGraft("deploy", "uat")
-	wantLines(t, out, []string{"release note for PROJ-2 not posted, PROJ-2 left alone: it is Done"}, nil)
-	if comments, _ := d.jira.snapshot(); len(comments["PROJ-2"]) > 0 {
-		t.Errorf("a note on the done item: %v", comments["PROJ-2"])
 	}
 }
 
@@ -216,7 +187,6 @@ func TestReleaseHotfixWorkKeys(t *testing.T) {
 	prod := strings.TrimSpace(d.stateFile("prod-sha"))
 	d.at("2026-10-21 18:30")
 	d.git("switch", "-q", "-c", "hotfix/PROJ-9", prod)
-	d.write(".graft.yaml", strings.Replace(d.read(".graft.yaml"), "project_keys: [PROJ]\n", "project_keys: [PROJ]\n    work_keys: true\n", 1))
 	d.commitFile("fix.txt", "fix: PROJ-9 urgent\n\nAfter PROJ-8.")
 	d.jira.mu.Lock()
 	d.jira.labels = map[string][]string{"PROJ-9": {"hotfix"}}
@@ -236,7 +206,7 @@ func TestReleaseHotfixWorkKeys(t *testing.T) {
 // In a freeze every item of a commit's work is in the release, not one.
 func TestFreezeWorkKeysAllItemsInTheRelease(t *testing.T) {
 	d := freezeRepoWith(t, func(state string, q func(string) string) string {
-		return strings.Replace(freezeConfig(state, q), "project_keys: [PROJ]\n", "project_keys: [PROJ]\n    work_keys: true\n", 1)
+		return freezeConfig(state, q)
 	})
 	d.commitFile("one.txt", "feat: PROJ-1 accepted work")
 	d.freeze()
@@ -260,7 +230,7 @@ func TestDeployWorkKeysSentence(t *testing.T) {
 }
 
 // Skipping the done status would take the note from a done item whose work
-// ships, which work_keys is there to give it: a config error, not a silence.
+// ships: a config error, not a silence.
 func TestDeployWorkKeysSkipStatusesNamesDone(t *testing.T) {
 	d := workKeysRepo(t)
 	d.write(".graft.yaml", strings.NewReplacer(
@@ -271,35 +241,20 @@ func TestDeployWorkKeysSkipStatusesNamesDone(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "skip_statuses names Done") {
 		t.Errorf("exit %d\n%s", code, out)
 	}
-	d.write(".graft.yaml", strings.Replace(d.read(".graft.yaml"), "    work_keys: true\n", "", 1))
-	if out, code := d.graft("", "deploy", "check", "sub"); strings.Contains(out, "skip_statuses names Done") {
-		t.Errorf("without work_keys, exit %d\n%s", code, out)
-	}
 }
 
 // A done parent only learns what shipped: its subtasks have their own commits
-// to go by. Without work_keys they follow it, as they did.
+// to go by.
 func TestDeployDoneParentSubtasks(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		repo func(*testing.T) *deployFixture
-		want string
-	}{
-		{"work_keys", workKeysRepo, "Ready for release"},
-		{"without", deployRepo, "Done"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			d := tc.repo(t)
-			d.statuses(map[string]string{"PROJ-70": "Ready for release"}, map[string]string{"PROJ-70": "PROJ-2"})
-			d.mustGraft("deploy", "--unapproved", "sub")
-			d.commits("fix: PROJ-2 the work of a done parent")
-			d.mustGraft("deploy", "sub")
-			d.jira.mu.Lock()
-			defer d.jira.mu.Unlock()
-			if got := d.jira.statuses["PROJ-70"]; got != tc.want {
-				t.Errorf("the subtask is %s, want %s", got, tc.want)
-			}
-		})
+	d := workKeysRepo(t)
+	d.statuses(map[string]string{"PROJ-70": "Ready for release"}, map[string]string{"PROJ-70": "PROJ-2"})
+	d.mustGraft("deploy", "--unapproved", "sub")
+	d.commits("fix: PROJ-2 the work of a done parent")
+	d.mustGraft("deploy", "sub")
+	d.jira.mu.Lock()
+	defer d.jira.mu.Unlock()
+	if got := d.jira.statuses["PROJ-70"]; got != "Ready for release" {
+		t.Errorf("the subtask is %s, want Ready for release", got)
 	}
 }
 
@@ -340,7 +295,7 @@ func TestDeployWorkKeysOpenParentWords(t *testing.T) {
 // A subtask in the release by its parent is not named as outside it.
 func TestFreezeWorkKeysNamesTheItemOutside(t *testing.T) {
 	d := freezeRepoWith(t, func(state string, q func(string) string) string {
-		return strings.Replace(freezeConfig(state, q), "project_keys: [PROJ]\n", "project_keys: [PROJ]\n    work_keys: true\n", 1)
+		return freezeConfig(state, q)
 	})
 	d.jira.mu.Lock()
 	d.jira.parents = map[string]string{"PROJ-31": "PROJ-1"}
@@ -355,39 +310,29 @@ func TestFreezeWorkKeysNamesTheItemOutside(t *testing.T) {
 	wantLines(t, out, []string{"PROJ-30 not in Product v1.2.10"}, []string{"PROJ-31 not in"})
 }
 
-// With work_keys a subtask moves but is not handed over, named in a commit or
+// A subtask moves but is not handed over, named in a commit or
 // following its parent, and needs no comment for it; the parent is handed over
-// as before. Without the key both go to the reviewer.
+// as before.
 func TestDeploySubtaskKeepsAssignee(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		repo func(*testing.T) *deployFixture
-		want []string
-	}{
-		{"work_keys", workKeysRepo, []string{"PROJ-70 to qa"}},
-		{"without", deployRepo, []string{"PROJ-70 to qa", "PROJ-71 to qa", "PROJ-73 to qa"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			d := tc.repo(t)
-			d.jira.mu.Lock()
-			maps.Copy(d.jira.statuses, map[string]string{"PROJ-70": "In Progress", "PROJ-71": "In Progress", "PROJ-72": "In Progress", "PROJ-73": "In Progress"})
-			d.jira.parents = map[string]string{"PROJ-71": "PROJ-70", "PROJ-73": "PROJ-72"}
-			d.jira.mu.Unlock()
-			d.mustGraft("deploy", "--unapproved", "sub")
-			d.commits("feat: PROJ-70 the item", "feat: PROJ-73 a subtask named, its parent in work")
-			out := d.mustGraft("deploy", "sub")
-			d.jira.mu.Lock()
-			defer d.jira.mu.Unlock()
-			assigned := slices.Sorted(slices.Values(d.jira.assigned))
-			if !slices.Equal(assigned, tc.want) {
-				t.Errorf("assigned = %v, want %v\n%s", assigned, tc.want, out)
-			}
-			for key, want := range map[string]string{"PROJ-70": "Testing", "PROJ-71": "Testing", "PROJ-73": "Testing", "PROJ-72": "In Progress"} {
-				if got := d.jira.statuses[key]; got != want {
-					t.Errorf("%s is %s, want %s\n%s", key, got, want, out)
-				}
-			}
-		})
+	d := workKeysRepo(t)
+	d.jira.mu.Lock()
+	maps.Copy(d.jira.statuses, map[string]string{"PROJ-70": "In Progress", "PROJ-71": "In Progress", "PROJ-72": "In Progress", "PROJ-73": "In Progress"})
+	d.jira.parents = map[string]string{"PROJ-71": "PROJ-70", "PROJ-73": "PROJ-72"}
+	d.jira.mu.Unlock()
+	d.mustGraft("deploy", "--unapproved", "sub")
+	d.commits("feat: PROJ-70 the item", "feat: PROJ-73 a subtask named, its parent in work")
+	out := d.mustGraft("deploy", "sub")
+	d.jira.mu.Lock()
+	defer d.jira.mu.Unlock()
+	assigned := slices.Sorted(slices.Values(d.jira.assigned))
+	want := []string{"PROJ-70 to qa"}
+	if !slices.Equal(assigned, want) {
+		t.Errorf("assigned = %v, want %v\n%s", assigned, want, out)
+	}
+	for key, want := range map[string]string{"PROJ-70": "Testing", "PROJ-71": "Testing", "PROJ-73": "Testing", "PROJ-72": "In Progress"} {
+		if got := d.jira.statuses[key]; got != want {
+			t.Errorf("%s is %s, want %s\n%s", key, got, want, out)
+		}
 	}
 }
 
@@ -458,7 +403,7 @@ func TestDeployWorkKeysSubtaskAcceptedWithParent(t *testing.T) {
 // with or without commits of its own, and the parent closes in the same pass.
 func TestDeploySweepSubtaskAcceptedWithParent(t *testing.T) {
 	d := newDeployFixture(t, func(state string, q func(string) string) string {
-		return strings.Replace(sweepConfig(state, q), "    skip_keys: [PROJ-40]\n", "    skip_keys: [PROJ-40]\n    work_keys: true\n", 1)
+		return sweepConfig(state, q)
 	})
 	trunk := d.git("branch", "--show-current")
 	d.git("remote", "set-head", "origin", trunk)
@@ -505,15 +450,11 @@ func TestDeploySweepSubtaskAcceptedWithParent(t *testing.T) {
 	}
 }
 
-// sweepRepo is a repo with the sweep target, with work_keys or without.
-func sweepRepo(t *testing.T, work bool) *deployFixture {
+// sweepRepo is a repo with the sweep target.
+func sweepRepo(t *testing.T) *deployFixture {
 	t.Helper()
 	d := newDeployFixture(t, func(state string, q func(string) string) string {
-		c := sweepConfig(state, q)
-		if work {
-			c = strings.Replace(c, "    skip_keys: [PROJ-40]\n", "    skip_keys: [PROJ-40]\n    work_keys: true\n", 1)
-		}
-		return c
+		return sweepConfig(state, q)
 	})
 	d.git("remote", "set-head", "origin", d.git("branch", "--show-current"))
 	return d
@@ -531,31 +472,27 @@ func (d *deployFixture) pushCommits(msgs ...string) {
 
 // A parent stays open while the work of a done subtask is off the target.
 func TestDeploySweepParentWaitsForSubtaskWork(t *testing.T) {
-	for _, work := range []bool{false, true} {
-		t.Run("work_keys="+strconv.FormatBool(work), func(t *testing.T) {
-			d := sweepRepo(t, work)
-			d.statuses(map[string]string{"PROJ-20": "In Progress", "PROJ-21": "Done", "PROJ-22": "Done"},
-				map[string]string{"PROJ-21": "PROJ-20", "PROJ-22": "PROJ-20"})
-			d.pushCommits("feat: PROJ-21 a")
-			d.mustGraft("deploy", "swept")
-			d.git("checkout", "-q", "-b", "side")
-			d.pushCommits("feat: PROJ-22 on a branch")
-			d.git("checkout", "-q", "-")
+	d := sweepRepo(t)
+	d.statuses(map[string]string{"PROJ-20": "In Progress", "PROJ-21": "Done", "PROJ-22": "Done"},
+		map[string]string{"PROJ-21": "PROJ-20", "PROJ-22": "PROJ-20"})
+	d.pushCommits("feat: PROJ-21 a")
+	d.mustGraft("deploy", "swept")
+	d.git("checkout", "-q", "-b", "side")
+	d.pushCommits("feat: PROJ-22 on a branch")
+	d.git("checkout", "-q", "-")
 
-			out := d.mustGraft("deploy", "sweep", "swept", "--apply")
-			d.jira.mu.Lock()
-			defer d.jira.mu.Unlock()
-			if got := d.jira.statuses["PROJ-20"]; got != "In Progress" {
-				t.Errorf("PROJ-20 is %s with the work of PROJ-22 off the target\n%s", got, out)
-			}
-		})
+	out := d.mustGraft("deploy", "sweep", "swept", "--apply")
+	d.jira.mu.Lock()
+	defer d.jira.mu.Unlock()
+	if got := d.jira.statuses["PROJ-20"]; got != "In Progress" {
+		t.Errorf("PROJ-20 is %s with the work of PROJ-22 off the target\n%s", got, out)
 	}
 }
 
 // A done parent still takes along a subtask that waited for the reviewer when
 // it was accepted.
 func TestDeploySweepDoneParentTakesAcceptedSubtask(t *testing.T) {
-	d := sweepRepo(t, true)
+	d := sweepRepo(t)
 	d.statuses(map[string]string{"PROJ-80": "Done", "PROJ-81": "Testing"}, map[string]string{"PROJ-81": "PROJ-80"})
 	d.jira.mu.Lock()
 	d.jira.statusMoves = map[string][]fakeStatusMove{"PROJ-80": into("Done", 2), "PROJ-81": into("Testing", 5)}
@@ -576,7 +513,7 @@ func TestDeploySweepDoneParentTakesAcceptedSubtask(t *testing.T) {
 func TestDeploySweepParentAsideListedOnce(t *testing.T) {
 	for _, status := range []string{"Paused", "To Do"} {
 		t.Run(status, func(t *testing.T) {
-			d := sweepRepo(t, false)
+			d := sweepRepo(t)
 			d.statuses(map[string]string{"PROJ-60": status, "PROJ-61": "Done"}, map[string]string{"PROJ-61": "PROJ-60"})
 			d.pushCommits("feat: PROJ-61 k", "feat: PROJ-60 own")
 			d.mustGraft("deploy", "swept")
@@ -627,22 +564,21 @@ func TestDeploySubtaskOfStandingItemHandedOver(t *testing.T) {
 	}
 }
 
-// Without work_keys the sweep takes a subtask straight to done, whatever
-// status a transition with assign leads to.
-func TestDeploySweepWithoutWorkKeysTakesNoStep(t *testing.T) {
+// The sweep takes an accepted subtask through the review status before done.
+func TestDeploySweepAcceptedSubtaskTakesReviewStep(t *testing.T) {
 	d := newDeployFixture(t, func(state string, q func(string) string) string {
-		return strings.Replace(sweepConfig(state, q), "to: Testing, assign: qa", "to: Ready for release, assign: qa", 1)
+		return sweepConfig(state, q)
 	})
 	trunk := d.git("branch", "--show-current")
 	d.git("remote", "set-head", "origin", trunk)
-	d.statuses(map[string]string{"PROJ-90": "In Progress", "PROJ-91": "Ready for release"}, map[string]string{"PROJ-91": "PROJ-90"})
+	d.statuses(map[string]string{"PROJ-90": "Ready for release", "PROJ-91": "Testing"}, map[string]string{"PROJ-91": "PROJ-90"})
 	d.write("s.txt", "x\n")
 	d.mustPlainCommit("feat: PROJ-91 a")
 	d.git("push", "-q", "origin", trunk)
 	d.mustGraft("deploy", "swept")
 	out := d.mustGraft("deploy", "sweep", "swept", "--apply")
 	_, moved := d.jira.snapshot()
-	if steps := slices.DeleteFunc(slices.Clone(moved), func(k string) bool { return k != "PROJ-91" }); len(steps) != 1 {
-		t.Errorf("PROJ-91 moved %d times: %v\n%s", len(steps), moved, out)
+	if steps := slices.DeleteFunc(slices.Clone(moved), func(k string) bool { return k != "PROJ-91" }); len(steps) != 2 {
+		t.Errorf("PROJ-91 moved %d times, want through review to done: %v\n%s", len(steps), moved, out)
 	}
 }

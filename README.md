@@ -1730,7 +1730,6 @@ release_notes:
     project_keys: [PROJ]        # required: SHA-256 is shaped like a key too
     comment: "Deployed to {target}, version {version}, commit {short}"   # default; {sha} and, with project, {project} too
     project: Product            # optional: the product's name for {project}; a comment with {project} requires it
-    work_keys: true             # optional: count a commit for the items it is the work of, see below
     skip_statuses: [On Hold]    # leave these items alone: no note, no move
     skip_keys: [PROJ-100]       # these too, and no subtask follows them; a subtask named by its own key goes as any item
 ```
@@ -1961,8 +1960,8 @@ deploy to it, once a day after a `graft commit`, and on `graft deploy sweep
         sweep: {apply: true}   # days: 30, stale_days: 3, done: Done by default
 ```
 
-With `release_notes.jira.work_keys: true` everything that asks which items a
-commit is for asks what it is the work of, not what it mentions: the first key
+Everything that asks which items a commit is for asks what it is the work of,
+not what it mentions: the first key
 of its subject, the keys right after that one (separated by spaces, commas,
 `и`, `and`, `+`, `/` or `&` alone), a key right after a `;` or opening a
 sentence with the keys right after that, or else the lines of its body that are
@@ -1971,7 +1970,7 @@ a key alone, or its `approved_release.attribute`. The rest are mentions. So
 `fix: PROJ-1 after PROJ-2` of PROJ-1 alone, and a
 commit with only a mention names no item. This covers the gate, the release
 notes, the release page, the items taken out of a window version, the hotfix
-label, the freeze and the trunk merge check. With the key on:
+label, the freeze and the trunk merge check:
 
 - a commit passes `approved_release`, the hotfix label and the freeze only when
   all the items of its work do, not one of them;
@@ -1997,10 +1996,8 @@ label, the freeze and the trunk merge check. With the key on:
   through the `from` of the transition to the sweep's `done` and on to `done`
   once the target runs its work, by the sweep.
 
-Without the key every key a commit names counts, and the sweep takes the first
-item of its work alone. graft cannot tell a key that opens the subject as a
-mention from work: give such a commit the key of its own item first, or an
-attribute.
+graft cannot tell a key that opens the subject as a mention from work: give
+such a commit the key of its own item first, or an attribute.
 
 The sweep takes the commits of the last `days` on any remote branch or on
 the target, merges left out, and groups them by the item each is the work
