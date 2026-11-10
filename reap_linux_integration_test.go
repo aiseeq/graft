@@ -189,8 +189,11 @@ func TestCallerGoneAfterCommandEndedKeepsItsStatus(t *testing.T) {
 // no success.
 func TestCallerGoneAfterSignalledCommandIsStopped(t *testing.T) {
 	dir := t.TempDir()
-	pidFile, shFile := filepath.Join(dir, "orphan.pid"), filepath.Join(dir, "sh.pid")
-	cmd, out, errOut := callerCommand(t, "exec", "--", "sh", "-c", `trap 'exit 0' INT; `+leaveOrphan+`; echo $$ > "$2"; printf 'alive\n'; while :; do sleep 0.05; done`, "sh", pidFile, shFile)
+	pidFile, shFile, termFile := filepath.Join(dir, "orphan.pid"), filepath.Join(dir, "sh.pid"), filepath.Join(dir, "orphan.term")
+	// The orphan outlives the reaper's SIGTERM and marks it: the reaper then
+	// waits out its grace, and it names itself, if at all, before that SIGTERM.
+	orphan := `(sh -c 'trap "echo \$\$ > \"\$1\"" TERM; echo $$ > "$0"; while :; do sleep 0.05; done' "$1" "$3" </dev/null >/dev/null 2>&1 &)`
+	cmd, out, errOut := callerCommand(t, "exec", "--", "sh", "-c", `trap 'exit 0' INT; `+orphan+`; echo $$ > "$2"; printf 'alive\n'; while :; do sleep 0.05; done`, "sh", pidFile, shFile, termFile)
 	_ = errOut.Close()
 	data, _ := bufio.NewReader(out).ReadString('\n')
 	reaper := reaperOf(t, pidFile)
@@ -203,7 +206,7 @@ func TestCallerGoneAfterSignalledCommandIsStopped(t *testing.T) {
 		}
 	}
 	waitForProcessGone(t, shFile)
-	time.Sleep(150 * time.Millisecond) // the reaper's settle lasts 500 ms
+	waitForProcessID(t, termFile)
 	if name := processName(reaper); name == "graft-reaped" {
 		t.Fatalf("the reaper of a signalled command calls it ended alone (%s)", name)
 	}
