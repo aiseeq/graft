@@ -174,9 +174,9 @@ func NewBudget(dir string, d time.Duration) (string, error) {
 	return f.Name(), nil
 }
 
-// spend takes d from the budget and returns what is left, under a lock: the
-// heavy tasks of a deploy wait side by side, and their waits add up.
-func (p *Priority) spend(d time.Duration) (left time.Duration, err error) {
+// spend takes the part of [from, to] not already counted from the shared wall-time budget.
+// Empty endpoints read the remaining budget without changing its watermark.
+func (p *Priority) spend(from, to time.Time) (left time.Duration, err error) {
 	fl := flock.New(p.Budget + ".lock")
 	if err := fl.Lock(); err != nil {
 		return 0, fmt.Errorf("locking the budget for waiting %s: %w", p.Budget, err)
@@ -190,11 +190,43 @@ func (p *Priority) spend(d time.Duration) (left time.Duration, err error) {
 	if err != nil {
 		return 0, fmt.Errorf("the budget for waiting %s: %q is not a number of nanoseconds", p.Budget, data)
 	}
-	left = time.Duration(n) - d
-	if d > 0 {
-		if err := os.WriteFile(p.Budget, []byte(strconv.FormatInt(int64(max(left, 0)), 10)), 0o644); err != nil {
-			return 0, fmt.Errorf("the budget for waiting: %w", err)
+	left = time.Duration(n)
+	if from.IsZero() && to.IsZero() {
+		return left, nil
+	}
+	from, to = time.Unix(0, from.UnixNano()), time.Unix(0, to.UnixNano())
+	untilPath := p.Budget + ".until"
+	untilData, readErr := os.ReadFile(untilPath)
+	var until time.Time
+	haveUntil := readErr == nil
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return 0, fmt.Errorf("reading the budget wall-time mark %s: %w", untilPath, readErr)
+	}
+	if haveUntil {
+		ns, err := strconv.ParseInt(strings.TrimSpace(string(untilData)), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("budget wall-time mark %s: %q is not Unix nanoseconds", untilPath, untilData)
 		}
+		until = time.Unix(0, ns)
+	}
+	if haveUntil && until.Sub(to) >= time.Minute {
+		until, haveUntil = to, true
+		left -= max(to.Sub(from), 0)
+	} else {
+		accountedFrom := from
+		if haveUntil && until.After(accountedFrom) {
+			accountedFrom = until
+		}
+		left -= max(to.Sub(accountedFrom), 0)
+		if !haveUntil || to.After(until) {
+			until, haveUntil = to, true
+		}
+	}
+	if err := os.WriteFile(untilPath, []byte(strconv.FormatInt(until.UnixNano(), 10)), 0o644); err != nil {
+		return 0, fmt.Errorf("writing the budget wall-time mark %s: %w", untilPath, err)
+	}
+	if err := os.WriteFile(p.Budget, []byte(strconv.FormatInt(int64(max(left, 0)), 10)), 0o644); err != nil {
+		return 0, fmt.Errorf("the budget for waiting: %w", err)
 	}
 	return left, nil
 }
@@ -363,7 +395,7 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 		waited = true
 		if p != nil {
 			now := m.now()
-			left, err := p.spend(now.Sub(spent))
+			left, err := p.spend(spent, now)
 			if err != nil {
 				return err
 			}
@@ -384,7 +416,7 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 		}
 		pause := m.l.Poll
 		if p != nil {
-			left, err := p.spend(0)
+			left, err := p.spend(time.Time{}, time.Time{})
 			if err != nil {
 				return err
 			}

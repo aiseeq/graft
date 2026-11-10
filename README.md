@@ -428,10 +428,11 @@ test runs of every project, and check the machine with live reservations
 included. Once admitted, they write their own reservation. They wait out of
 one budget for the whole deploy, `deploy.load_wait`; when it is spent
 they start, or with `then: fail` fail the deploy. Only waiting spends the
-budget, the waits of tasks side by side adding up: a task that finds the
-machine calm late in a long deploy takes nothing from it. The budget lives in
-a file in the user cache (`graft/load-budget-*`) for as long as the deploy
-runs. The wait shows in `graft
+budget; overlapping waits count once by wall time while any task of the
+deploy is waiting. Overlap accounting can differ by at most one poll interval.
+A task that finds the machine calm late in a long deploy takes nothing from
+the budget. The budget lives in a file in the user cache (`graft/load-budget-*`)
+for as long as the deploy runs. The wait shows in `graft
 stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest kernel load samples recovered from consecutive `/proc/loadavg` readings, falling back to the 1-minute average until two samples are known. This avoids spending the deploy's shared wait budget on the slow tail left by its own earlier stages, while the instantaneous runnable count still blocks admission.
 
 ## Commands

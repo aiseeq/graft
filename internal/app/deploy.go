@@ -152,7 +152,7 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 			return err
 		}
 		defer func() {
-			for _, f := range []string{budget, budget + ".lock"} {
+			for _, f := range []string{budget, budget + ".lock", budget + ".until"} {
 				if err := fsx.Remove(f); err != nil {
 					fmt.Fprintf(a.Stderr, "graft: warning: removing the budget for waiting: %v\n", err)
 				}

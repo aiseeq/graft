@@ -1068,6 +1068,99 @@ func TestSwappingAloneStarts(t *testing.T) {
 	}
 }
 
+func TestBudgetSpendsWallTimeOfParallelWaits(t *testing.T) {
+	p := &Priority{For: "projectA deploy", Budget: newBudget(t, 3*time.Minute)}
+	base := time.Unix(1_800_000_000, 0)
+	intervals := []struct {
+		from, to time.Time
+	}{
+		{base, base.Add(2 * time.Second)},
+		{base.Add(2 * time.Second), base.Add(4 * time.Second)}, // B then A at this tick.
+		{base.Add(2 * time.Second), base.Add(4 * time.Second)},
+		{base.Add(4 * time.Second), base.Add(6 * time.Second)}, // A then B.
+		{base.Add(4 * time.Second), base.Add(6 * time.Second)},
+		{base.Add(6 * time.Second), base.Add(8 * time.Second)}, // B then A.
+		{base.Add(6 * time.Second), base.Add(8 * time.Second)},
+		{base.Add(8 * time.Second), base.Add(10 * time.Second)},
+	}
+	for i, interval := range intervals {
+		if _, err := p.spend(interval.from, interval.to); err != nil {
+			t.Fatalf("spend interval %d [%s, %s]: %v", i, interval.from, interval.to, err)
+		}
+	}
+	left, err := p.spend(time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spent := 3*time.Minute - left
+	if spent < 8*time.Second || spent > 12*time.Second {
+		t.Fatalf("parallel intervals spent %s; want 10s ± one 2s poll", spent)
+	}
+}
+
+func TestBudgetSequentialWaitsAddUp(t *testing.T) {
+	p := &Priority{For: "projectA deploy", Budget: newBudget(t, time.Minute)}
+	base := time.Unix(1_800_000_000, 0)
+	for _, interval := range [][2]time.Time{
+		{base, base.Add(5 * time.Second)},
+		{base.Add(20 * time.Second), base.Add(25 * time.Second)},
+	} {
+		if _, err := p.spend(interval[0], interval[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	left, err := p.spend(time.Time{}, time.Time{})
+	if err != nil || left != time.Minute-10*time.Second {
+		t.Fatalf("remaining budget = %s, %v; want 50s", left, err)
+	}
+}
+
+func TestBudgetClockBackwards(t *testing.T) {
+	p := &Priority{For: "projectA deploy", Budget: newBudget(t, time.Minute)}
+	base := time.Unix(1_800_000_000, 0)
+	from, to := base.Add(10*time.Second), base.Add(20*time.Second)
+	if err := os.WriteFile(p.Budget+".until", []byte(strconv.FormatInt(to.Add(2*time.Minute).UnixNano(), 10)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	left, err := p.spend(from, to)
+	if err != nil || left != time.Minute-10*time.Second {
+		t.Fatalf("remaining budget after clock reversal = %s, %v; want 50s", left, err)
+	}
+	data, err := os.ReadFile(p.Budget + ".until")
+	if err != nil || strings.TrimSpace(string(data)) != strconv.FormatInt(to.UnixNano(), 10) {
+		t.Fatalf("watermark after clock reversal = %q, %v; want to=%d", data, err, to.UnixNano())
+	}
+}
+
+func TestBudgetParallelExhaustion(t *testing.T) {
+	p := &Priority{For: "projectA deploy", Budget: newBudget(t, 3*time.Minute)}
+	base := time.Unix(1_800_000_000, 0)
+	for _, interval := range [][2]time.Time{
+		{base, base.Add(2 * time.Minute)},
+		{base, base.Add(2 * time.Minute)},
+	} {
+		left, err := p.spend(interval[0], interval[1])
+		if err != nil || left <= 0 {
+			t.Fatalf("parallel spend [%s, %s] left %s, %v; neither task should exhaust a 3m budget", interval[0], interval[1], left, err)
+		}
+	}
+	left, err := p.spend(time.Time{}, time.Time{})
+	if err != nil || left != time.Minute {
+		t.Fatalf("remaining budget = %s, %v; want 1m", left, err)
+	}
+}
+
+func TestBudgetInvalidWatermarkIsError(t *testing.T) {
+	p := &Priority{For: "projectA deploy", Budget: newBudget(t, time.Minute)}
+	if err := os.WriteFile(p.Budget+".until", []byte("invalid"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Unix(1_800_000_000, 0)
+	if _, err := p.spend(base, base.Add(time.Second)); err == nil || !strings.Contains(err.Error(), ".until") {
+		t.Fatalf("spend with malformed watermark error = %v; want an explicit .until error", err)
+	}
+}
+
 func newBudget(t *testing.T, d time.Duration) string {
 	t.Helper()
 	path, err := NewBudget(t.TempDir(), d)
@@ -1092,7 +1185,7 @@ func TestPriorityBudget(t *testing.T) {
 	if waited, _, err := wait(context.Background(), "lint", p, testLoad, lockPath, &log); err != nil || waited.Total() != 0 {
 		t.Fatalf("on a calm machine: waited %s, %v", waited, err)
 	}
-	if left, err := p.spend(0); err != nil || left != 100*time.Millisecond {
+	if left, err := p.spend(time.Time{}, time.Time{}); err != nil || left != 100*time.Millisecond {
 		t.Fatalf("budget left after a calm start: %s, %v", left, err)
 	}
 	setRunnable(30)
