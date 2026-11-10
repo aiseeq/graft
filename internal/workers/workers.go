@@ -30,12 +30,13 @@ const TrailerKey = "Worker"
 // while the process PID, whose command line names ID, lives, or after its
 // round is Finished, its work not yet taken.
 type Marker struct {
-	ID       string   `json:"id"`
-	Models   []string `json:"models"`
-	Client   string   `json:"client"`
-	Dir      string   `json:"dir"`
-	PID      int      `json:"pid"`
-	Finished bool     `json:"finished"`
+	ID           string             `json:"id"`
+	Models       []string           `json:"models"`
+	Client       string             `json:"client"`
+	Dir          string             `json:"dir"`
+	PID          int                `json:"pid"`
+	Finished     bool               `json:"finished"`
+	FighterFiles *map[string]string `json:"fighter_files"`
 	// file is where the marker was read, for messages.
 	file string
 	// written is when the marker was last written: for a finished round,
@@ -103,8 +104,9 @@ func passOver(warn io.Writer, file string, err error) {
 // in order, each once:
 //   - the markers of this worktree whose job runs or whose round is
 //     finished: the master commits its work after the job's process exits;
-//   - the markers of other worktrees whose round is finished and some of
-//     whose files the commit stages as the job left them (carried): the
+//   - the markers of other worktrees whose round is finished and whose
+//     fighter_files list names staged files (or whose older markers have
+//     some files the commit stages as the job left them): the
 //     master carried the job's diff over by hand; project version files and
 //     Go module and workspace files do not count as carried work;
 //   - the Worker trailers of the commits a merge or a squash brings in.
@@ -112,26 +114,63 @@ func passOver(warn io.Writer, file string, err error) {
 // The marker of another worktree whose job still runs names no model, nor
 // does one whose files the commit changes otherwise: two jobs changing the
 // same file for their own reasons is common. A marker whose worktree is
-// gone or cannot be read, and one of a round not finished whose process is
-// gone, the job killed and the marker left, is reported to warn and passed
-// over.
+// gone or cannot be read is reported to warn and passed over, unless a
+// finished marker has fighter_files; one of a round not finished whose
+// process is gone, the job killed and the marker left, is also reported to
+// warn and passed over.
 func Models(repo *gitx.Repo, warn io.Writer, excluded []string) ([]string, error) {
-	var models []string
-	add := func(ms ...string) {
-		for _, m := range ms {
-			if !slices.Contains(models, m) {
-				models = append(models, m)
-			}
-		}
-	}
 	root, err := realPath(repo.Root)
 	if err != nil {
 		return nil, err
 	}
+	models, others := markerModels(repo, warn, root)
+	if len(others) > 0 {
+		staged, deleted, err := stagedBlobs(repo)
+		if err != nil {
+			return nil, err
+		}
+		for i := range others {
+			m := others[i]
+			var n int
+			if m.FighterFiles != nil {
+				n = listedFiles(*m.FighterFiles, staged, deleted, excluded)
+			} else {
+				n, err = carried(repo, m.Dir, m.written, staged, excluded)
+			}
+			if err != nil {
+				passOver(warn, m.file, err)
+				continue
+			}
+			if n > 0 {
+				if m.FighterFiles != nil {
+					fmt.Fprintf(warn, "graft: the commit stages %d files as the finished job %s left them in %s by its file list: Worker %s\n", n, m.ID, m.Dir, strings.Join(m.Models, ", "))
+				} else {
+					fmt.Fprintf(warn, "graft: the commit stages %d files as the finished job %s left them in %s: Worker %s\n", n, m.ID, m.Dir, strings.Join(m.Models, ", "))
+				}
+				addModels(&models, m.Models...)
+			}
+		}
+	}
+	merged, err := mergedModels(repo)
+	if err != nil {
+		return nil, err
+	}
+	addModels(&models, merged...)
+	return models, nil
+}
+
+func markerModels(repo *gitx.Repo, warn io.Writer, root string) ([]string, []Marker) {
+	var models []string
 	var others []Marker
-	for _, m := range Markers(repo, warn) {
+	markers := Markers(repo, warn)
+	for i := range markers {
+		m := markers[i]
 		dir, err := realPath(m.Dir)
 		if errors.Is(err, os.ErrNotExist) {
+			if m.Finished && m.FighterFiles != nil {
+				others = append(others, m)
+				continue
+			}
 			fmt.Fprintf(warn, "graft: the worker marker %s names %s, which is gone: passed over\n", m.file, m.Dir)
 			continue
 		}
@@ -157,31 +196,17 @@ func Models(repo *gitx.Repo, warn io.Writer, excluded []string) ([]string, error
 				continue
 			}
 		}
-		add(m.Models...)
+		addModels(&models, m.Models...)
 	}
-	if len(others) > 0 {
-		staged, err := stagedBlobs(repo)
-		if err != nil {
-			return nil, err
-		}
-		for _, m := range others {
-			n, err := carried(repo, m.Dir, m.written, staged, excluded)
-			if err != nil {
-				passOver(warn, m.file, err)
-				continue
-			}
-			if n > 0 {
-				fmt.Fprintf(warn, "graft: the commit stages %d files as the finished job %s left them in %s: Worker %s\n", n, m.ID, m.Dir, strings.Join(m.Models, ", "))
-				add(m.Models...)
-			}
+	return models, others
+}
+
+func addModels(models *[]string, ms ...string) {
+	for _, m := range ms {
+		if !slices.Contains(*models, m) {
+			*models = append(*models, m)
 		}
 	}
-	merged, err := mergedModels(repo)
-	if err != nil {
-		return nil, err
-	}
-	add(merged...)
-	return models, nil
 }
 
 // runs reports whether the job's process lives. A pid reused by another
@@ -218,21 +243,43 @@ func realPath(p string) (string, error) {
 
 // stagedBlobs are the blobs of the regular files the commit adds or
 // changes, by path.
-func stagedBlobs(repo *gitx.Repo) (map[string]string, error) {
+func stagedBlobs(repo *gitx.Repo) (map[string]string, map[string]bool, error) {
 	out, err := repo.Git("diff", "--cached", "--raw", "--no-renames", "--no-abbrev", "-z")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	blobs := map[string]string{}
+	deleted := map[string]bool{}
 	fields := strings.Split(out, "\x00")
 	for i := 0; i+1 < len(fields); i += 2 {
 		// :<old mode> <new mode> <old blob> <new blob> <status>
 		meta := strings.Fields(fields[i])
-		if len(meta) == 5 && (meta[1] == "100644" || meta[1] == "100755") && meta[4] != "D" {
-			blobs[fields[i+1]] = meta[3]
+		if len(meta) == 5 {
+			if meta[4] == "D" && (meta[0] == ":100644" || meta[0] == ":100755") {
+				deleted[fields[i+1]] = true
+			} else if (meta[1] == "100644" || meta[1] == "100755") && meta[4] != "D" {
+				blobs[fields[i+1]] = meta[3]
+			}
 		}
 	}
-	return blobs, nil
+	return blobs, deleted, nil
+}
+
+func listedFiles(files map[string]string, staged map[string]string, deleted map[string]bool, excluded []string) int {
+	n := 0
+	for p, oid := range files {
+		if slices.Contains(excluded, p) || slices.Contains(goModuleFiles, path.Base(p)) {
+			continue
+		}
+		if oid == "" {
+			if deleted[p] {
+				n++
+			}
+		} else if staged[p] == oid {
+			n++
+		}
+	}
+	return n
 }
 
 // goModuleFiles are the names of the files graft commit and the go command

@@ -226,6 +226,93 @@ func TestWorkerTrailersOfCarriedOverWork(t *testing.T) {
 	}
 }
 
+func TestWorkerTrailersFromFinishedFileList(t *testing.T) {
+	t.Run("matching blob without worktree", func(t *testing.T) {
+		f := workerRepo(t, "none")
+		job := filepath.Join(f.base, "job")
+		f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
+		writeFile(t, filepath.Join(job, "c.txt"), "by the job\n")
+		f.write("c.txt", "by the job\n")
+		f.git("add", "c.txt")
+		writeFile(t, filepath.Join(f.markers(), "job1"), "{\"id\":\"job1\",\"models\":[\"vendor/model-a\"],\"client\":\"cli\",\"dir\":\""+job+"\",\"finished\":true,\"fighter_files\":{\"c.txt\":\""+f.git("hash-object", "c.txt")+"\"}}")
+		f.git("worktree", "remove", "--force", job)
+		if got := f.workers("HEAD"); got != "" {
+			t.Fatalf("trailer was written before commit: %q", got)
+		}
+		out := f.mustGraft("commit", "-m", "feat: carry finished work")
+		if got := f.workers("HEAD"); got != "vendor/model-a" || !strings.Contains(out, "as the finished job job1 left them") || !strings.Contains(out, "file list") {
+			t.Errorf("finished file list, trailers %q\n%s", got, out)
+		}
+	})
+
+	t.Run("different blob", func(t *testing.T) {
+		f := workerRepo(t, "none")
+		job := filepath.Join(f.base, "job")
+		f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
+		f.write("c.txt", "staged content\n")
+		f.git("add", "c.txt")
+		finishJob(t, f, map[string]any{"id": "job1", "models": []string{"vendor/model-a"}, "client": "cli", "dir": job, "finished": true, "fighter_files": map[string]string{"c.txt": f.git("hash-object", "a.txt")}})
+		f.mustGraft("commit", "-m", "feat: different content")
+		if got := f.workers("HEAD"); got != "" {
+			t.Errorf("different blob, trailers %q", got)
+		}
+	})
+
+	t.Run("empty list does not use legacy matching", func(t *testing.T) {
+		f := workerRepo(t, "none")
+		job := filepath.Join(f.base, "job")
+		f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
+		writeFile(t, filepath.Join(job, "c.txt"), "by the job\n")
+		f.write("c.txt", "by the job\n")
+		f.git("add", "c.txt")
+		finishJob(t, f, map[string]any{"id": "job1", "models": []string{"vendor/model-a"}, "client": "cli", "dir": job, "finished": true, "fighter_files": map[string]string{}})
+		f.mustGraft("commit", "-m", "feat: empty list")
+		if got := f.workers("HEAD"); got != "" {
+			t.Errorf("empty list, trailers %q", got)
+		}
+	})
+
+	t.Run("deletion list matches staged deletion", func(t *testing.T) {
+		f := workerRepo(t, "none")
+		job := filepath.Join(f.base, "job")
+		f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
+		f.git("rm", "-q", "a.txt")
+		finishJob(t, f, map[string]any{"id": "job1", "models": []string{"vendor/model-a"}, "client": "cli", "dir": job, "finished": true, "fighter_files": map[string]string{"a.txt": ""}})
+		f.mustGraft("commit", "-m", "feat: delete listed file")
+		if got := f.workers("HEAD"); got != "vendor/model-a" {
+			t.Errorf("listed deletion, trailers %q", got)
+		}
+	})
+
+	t.Run("unlisted deletion does not match", func(t *testing.T) {
+		f := workerRepo(t, "none")
+		job := filepath.Join(f.base, "job")
+		f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
+		f.git("rm", "-q", "a.txt")
+		finishJob(t, f, map[string]any{"id": "job1", "models": []string{"vendor/model-a"}, "client": "cli", "dir": job, "finished": true, "fighter_files": map[string]string{"c.txt": ""}})
+		f.mustGraft("commit", "-m", "feat: delete unlisted file")
+		if got := f.workers("HEAD"); got != "" {
+			t.Errorf("unlisted deletion, trailers %q", got)
+		}
+	})
+
+	t.Run("go module file is excluded", func(t *testing.T) {
+		f := workerRepo(t, "none")
+		f.write("go.sum", "example.test/projectA v1.0.0 h1:synthetic\n")
+		f.git("add", "go.sum")
+		f.mustPlainCommit("chore: add module")
+		job := filepath.Join(f.base, "job")
+		f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
+		f.write("go.sum", "example.test/projectA v1.0.0 h1:changed\n")
+		f.git("add", "go.sum")
+		finishJob(t, f, map[string]any{"id": "job1", "models": []string{"vendor/model-a"}, "client": "cli", "dir": job, "finished": true, "fighter_files": map[string]string{"go.sum": f.git("hash-object", "go.sum")}})
+		f.mustGraft("commit", "-m", "feat: module edit")
+		if got := f.workers("HEAD"); got != "" {
+			t.Errorf("go.sum should be excluded, trailers %q", got)
+		}
+	})
+}
+
 // finishJob writes the marker of a finished round after the job's files, as
 // a tool does when the round ends: the marker's time is the round's end.
 func finishJob(t *testing.T, f *fixture, m map[string]any) {

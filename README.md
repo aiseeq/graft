@@ -609,7 +609,12 @@ and not when the message already names it:
   and the job changed that file since its worktree forked from `HEAD`, and
   not after its round ended (a file changed there later is the master's
   edit): its changes were carried over by hand (`git diff` there,
-  `git apply` here), the master's own edits on top of some files aside;
+  `git apply` here), the master's own edits on top of some files aside.
+  A finished marker with `fighter_files` (path from the job's worktree root
+  to the blob the job left, `""` for a file it deleted; `{}` when nothing
+  is the job's) is matched by that list instead: a staged file with that
+  blob or a staged deletion of a `""` path, with no look at the job's
+  worktree, which may be gone;
 - the `Worker` trailers of the commits a merge (`MERGE_HEAD`) or
   `git merge --squash` brings in.
 
