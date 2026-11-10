@@ -257,6 +257,14 @@ type FlakyRow struct {
 	Trees, Failed, Passed int
 }
 
+// FailedTestRow is a test that failed in some runs: how many of its runs
+// failed and when it failed last.
+type FailedTestRow struct {
+	Project, Package, Test string
+	Runs, Failed           int
+	LastFailure            time.Time
+}
+
 // SkipRow is a test skipped in some runs of its package.
 type SkipRow struct {
 	Project, Package, Test string
@@ -272,9 +280,11 @@ type TestReport struct {
 	Tests, Packages []TimingRow
 	// Skipped are the most skipped tests, SkippedAll how many were skipped
 	// in all.
-	Skipped    []SkipRow
-	SkippedAll int
-	Flaky      []FlakyRow
+	Skipped     []SkipRow
+	SkippedAll  int
+	FailedTests []FailedTestRow
+	FailedAll   int
+	Flaky       []FlakyRow
 	// Reruns are the tasks a graft reran to a pass (Reruns).
 	Reruns []RerunRow
 }
@@ -287,9 +297,10 @@ func (k testKey) String() string { return k.project + "\x00" + k.pkg + "\x00" + 
 type compactKey struct{ project, pkg, test uint32 }
 
 type timing struct {
-	walls  []uint32
-	failed int
-	id     uint32
+	walls       []uint32
+	failed      int
+	lastFailure time.Time
+	id          uint32
 }
 
 type outcome struct{ failed, passed uint32 }
@@ -527,6 +538,9 @@ func (t *testTally) add(r *PackageRun, project string) {
 		k := t.compact(testKey{project, r.Package, tr.Name})
 		failed, flaky := tr.Result == ResultFail, tr.Result == ResultFlaky
 		tm := t.time(t.tests, k, tr.WallS, failed)
+		if failed && (tm.lastFailure.IsZero() || r.Time.After(tm.lastFailure)) {
+			tm.lastFailure = r.Time
+		}
 		if r.Tree == "" {
 			continue
 		}
@@ -628,6 +642,7 @@ func newTestTally() *testTally {
 func (t *testTally) report(limit int) TestReport {
 	rep := TestReport{Tests: t.slowest(t.tests, limit), Packages: t.slowest(t.pkgs, limit), Flaky: t.flaky()}
 	rep.Skipped, rep.SkippedAll = t.mostSkipped(limit)
+	rep.FailedTests, rep.FailedAll = t.failedTests(limit)
 	return rep
 }
 
@@ -644,6 +659,29 @@ func (t *testTally) slowest(m map[compactKey]*timing, limit int) []TimingRow {
 		return strings.Compare(testKey{a.Project, a.Package, a.Test}.String(), testKey{b.Project, b.Package, b.Test}.String())
 	})
 	return out[:min(len(out), limit)]
+}
+
+func (t *testTally) failedTests(limit int) ([]FailedTestRow, int) {
+	out := make([]FailedTestRow, 0)
+	for k, timing := range t.tests {
+		if timing.failed == 0 {
+			continue
+		}
+		out = append(out, FailedTestRow{
+			Project: t.names.names[k.project], Package: t.names.names[k.pkg], Test: t.names.names[k.test],
+			Runs: len(timing.walls), Failed: timing.failed, LastFailure: timing.lastFailure,
+		})
+	}
+	slices.SortFunc(out, func(a, b FailedTestRow) int {
+		if a.Failed != b.Failed {
+			return b.Failed - a.Failed
+		}
+		if c := cmpFloat(float64(b.Failed)/float64(b.Runs), float64(a.Failed)/float64(a.Runs)); c != 0 {
+			return c
+		}
+		return strings.Compare(testKey{a.Project, a.Package, a.Test}.String(), testKey{b.Project, b.Package, b.Test}.String())
+	})
+	return out[:min(len(out), limit)], len(out)
 }
 
 func medianIDs(ids []uint32, walls []float64) float64 {
@@ -717,7 +755,7 @@ func cmpFloat(a, b float64) int {
 // maxReason is as much of a skip's reason as a row shows.
 const maxReason = 100
 
-// RenderTests prints the report as five tables; withProject adds the
+// RenderTests prints the report tables; withProject adds the
 // project column.
 func RenderTests(w io.Writer, rep TestReport, withProject bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
@@ -739,6 +777,19 @@ func RenderTests(w io.Writer, rep TestReport, withProject bool) error {
 	for _, r := range rep.Tests {
 		project(r.Project)
 		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%d%%\n", r.Package, r.Test, r.Runs, formatSeconds(r.WallMed), formatSeconds(r.WallMax), percent(r.Failed, r.Runs))
+	}
+	fmt.Fprintln(tw, "\nfailed tests: failed in some runs")
+	if len(rep.FailedTests) == 0 {
+		fmt.Fprintln(tw, "none")
+	} else {
+		header("PACKAGE\tTEST\tRUNS\tFAILED\tFAILED %\tLAST FAILURE")
+	}
+	for _, r := range rep.FailedTests {
+		project(r.Project)
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d%%\t%s\n", r.Package, r.Test, r.Runs, r.Failed, percent(r.Failed, r.Runs), r.LastFailure.Format(time.RFC3339))
+	}
+	if more := rep.FailedAll - len(rep.FailedTests); more > 0 {
+		fmt.Fprintf(tw, "and %d more\n", more)
 	}
 	fmt.Fprintln(tw, "\nslow packages")
 	header("PACKAGE\tRUNS\tWALL MED\tWALL MAX\tFAILED")

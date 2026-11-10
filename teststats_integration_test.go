@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // goTestStream builds a go test -json stream: one event per line.
@@ -195,6 +196,14 @@ func TestGoTestsAreRecordedPerTest(t *testing.T) {
 		var rows []string
 		for l := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 			if l = strings.Join(strings.Fields(l), " "); l != "" && !strings.HasPrefix(l, "graft:") {
+				fields := strings.Fields(l)
+				if len(fields) == 6 && (fields[1] == "TestFlaky" || fields[1] == "TestTable") && strings.Contains(fields[4], "%") {
+					if _, err := time.Parse(time.RFC3339, fields[5]); err != nil {
+						t.Errorf("invalid last-failure time %q", fields[5])
+					}
+					fields[5] = "<time>"
+					l = strings.Join(fields, " ")
+				}
 				rows = append(rows, l)
 			}
 		}
@@ -211,6 +220,10 @@ func TestGoTestsAreRecordedPerTest(t *testing.T) {
 		"example.com/p TestSlow 3 2.5s 3.5s 0%",
 		"example.com/p TestFlaky 3 100ms 200ms 67%",
 		"example.com/p TestTable 3 0s 0s 67%",
+		"failed tests: failed in some runs",
+		"PACKAGE TEST RUNS FAILED FAILED % LAST FAILURE",
+		"example.com/p TestFlaky 3 2 67% <time>",
+		"example.com/p TestTable 3 2 67% <time>",
 		"slow packages",
 		"PACKAGE RUNS WALL MED WALL MAX FAILED",
 		"example.com/p 3 2.7s 3.8s 67%",

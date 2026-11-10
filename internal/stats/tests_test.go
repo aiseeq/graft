@@ -2,6 +2,7 @@ package stats
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -51,6 +52,82 @@ func TestSkippedTests(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "\nand 1 more\n") {
 		t.Errorf("report does not count the rows left out:\n%s", out.String())
+	}
+}
+
+func TestFailedTestsIncludeFastFailuresAndRespectLimit(t *testing.T) {
+	at := time.Date(2026, 1, 5, 10, 0, 0, 0, time.UTC)
+	first := PackageRun{Time: at, Project: "projectA", Package: "pkg", Result: ResultPass}
+	second := PackageRun{Time: at.Add(time.Minute), Project: "projectA", Package: "pkg", Result: ResultPass}
+	for i := range 24 {
+		name := fmt.Sprintf("TestSlow%02d", i)
+		first.Tests = append(first.Tests, TestResult{Name: name, WallS: float64(10 + i), Result: ResultPass})
+		second.Tests = append(second.Tests, TestResult{Name: name, WallS: float64(10 + i), Result: ResultPass})
+	}
+	first.Tests = append(first.Tests, TestResult{Name: "TestFastFail", WallS: 0.01, Result: ResultFail})
+	second.Tests = append(second.Tests, TestResult{Name: "TestFastFail", WallS: 0.01, Result: ResultPass})
+
+	report := summarizeTests([]PackageRun{first, second}, TestFilter{}, 20)
+	if len(report.Tests) != 20 {
+		t.Fatalf("slow tests = %d, want 20", len(report.Tests))
+	}
+	for _, row := range report.Tests {
+		if row.Test == "TestFastFail" {
+			t.Fatal("fast failure appeared among slow tests")
+		}
+	}
+	if len(report.FailedTests) != 1 {
+		t.Fatalf("failed tests: %+v", report.FailedTests)
+	}
+	row := report.FailedTests[0]
+	if row.Test != "TestFastFail" || row.Failed != 1 || row.Runs != 2 || row.LastFailure != at {
+		t.Errorf("failed test row: %+v", row)
+	}
+	var output strings.Builder
+	if err := RenderTests(&output, report, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "failed tests: failed in some runs") || !strings.Contains(output.String(), "TestFastFail") || !strings.Contains(output.String(), "50%") {
+		t.Errorf("failed section missing expected test and share:\n%s", output.String())
+	}
+	data, err := json.Marshal(report)
+	if err != nil || !strings.Contains(string(data), "FailedTests") {
+		t.Errorf("JSON omits failed tests: %s (%v)", data, err)
+	}
+
+	runs := []PackageRun{
+		{Time: at, Package: "pkg", Result: ResultPass, Tests: []TestResult{{Name: "TestThree", Result: ResultFail}, {Name: "TestTwo", Result: ResultFail}, {Name: "TestOne", Result: ResultFail}}},
+		{Time: at.Add(time.Minute), Package: "pkg", Result: ResultPass, Tests: []TestResult{{Name: "TestThree", Result: ResultFail}, {Name: "TestTwo", Result: ResultFail}, {Name: "TestOne", Result: ResultPass}}},
+		{Time: at.Add(2 * time.Minute), Package: "pkg", Result: ResultPass, Tests: []TestResult{{Name: "TestThree", Result: ResultFail}, {Name: "TestTwo", Result: ResultPass}, {Name: "TestOne", Result: ResultPass}}},
+	}
+	limited := summarizeTests(runs, TestFilter{}, 2)
+	if limited.FailedAll != 3 || len(limited.FailedTests) != 2 || limited.FailedTests[0].Test != "TestThree" || limited.FailedTests[1].Test != "TestTwo" {
+		t.Errorf("failed-test order/limit: all=%d rows=%+v", limited.FailedAll, limited.FailedTests)
+	}
+	if got, want := limited.FailedTests[0].LastFailure, at.Add(2*time.Minute); !got.Equal(want) {
+		t.Errorf("TestThree last failure = %v, want the latest of its failures %v", got, want)
+	}
+	output.Reset()
+	if err := RenderTests(&output, limited, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "and 1 more") {
+		t.Errorf("failed-test overflow is not reported:\n%s", output.String())
+	}
+	ranked := summarizeTests([]PackageRun{
+		{Time: at, Package: "pkg", Result: ResultPass, Tests: []TestResult{{Name: "TestAHigh", Result: ResultFail}, {Name: "TestZLow", Result: ResultFail}}},
+		{Time: at.Add(time.Minute), Package: "pkg", Result: ResultPass, Tests: []TestResult{{Name: "TestZLow", Result: ResultPass}}},
+		{Time: at.Add(2 * time.Minute), Package: "pkg", Result: ResultPass, Tests: []TestResult{{Name: "TestZLow", Result: ResultPass}}},
+	}, TestFilter{}, 10)
+	if len(ranked.FailedTests) != 2 || ranked.FailedTests[0].Test != "TestAHigh" || ranked.FailedTests[1].Test != "TestZLow" {
+		t.Errorf("equal failure counts should rank by failure share: %+v", ranked.FailedTests)
+	}
+	output.Reset()
+	if err := RenderTests(&output, TestReport{}, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "failed tests: failed in some runs\nnone") {
+		t.Errorf("empty failed-test section is not none:\n%s", output.String())
 	}
 }
 

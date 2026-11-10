@@ -1271,7 +1271,8 @@ not. Inner tasks and deps count in the outermost.
 
 `graft stats --tests` reports the tests file instead: the 20 slowest
 top-level tests and packages by median wall time, with their runs, maximum
-and share of failed runs, the 20 most skipped tests (skipped ones are left
+and share of failed runs, the tests that failed in some runs, ranked by
+failure count and share, and the 20 most skipped tests (skipped ones are left
 out of the timing) with how many runs skipped them, the runs of their
 package and the reason of the last skip, and the flaky tests: those that both failed and
 passed on the same tree, with how many trees saw that. A test that fails
