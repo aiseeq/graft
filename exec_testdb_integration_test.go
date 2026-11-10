@@ -66,6 +66,7 @@ func TestExecTestDBBringsUpTheDatabase(t *testing.T) {
   user: app
   password: app
   dsn_var: APP_DSN
+  migrate: [sh, -c, "echo migrated"]
 `, container)})
 	cache := shortCache(t)
 	f.env = append(f.env, "XDG_CACHE_HOME="+cache, "LOCALAPPDATA="+cache)

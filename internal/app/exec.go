@@ -108,7 +108,11 @@ func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
 		if err != nil {
 			return err
 		}
-		r.TestDB = func(ctx context.Context) (tasks.TestDB, error) { return a.testDB(ctx, repo, cfg) }
+		// The command's stdout is its own (go test -json): bringing the
+		// database up, migrations too, reports to stderr.
+		quiet := *a
+		quiet.Stdout = a.Stderr
+		r.TestDB = func(ctx context.Context) (tasks.TestDB, error) { return quiet.testDB(ctx, repo, cfg) }
 	}
 	r.ExecCores = opts.Cores
 	r.ExecMemoryMax = opts.MemoryMax
