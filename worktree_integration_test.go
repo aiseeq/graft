@@ -1142,6 +1142,66 @@ func TestWorktreeCleanCanceledBetweenRepositories(t *testing.T) {
 	}
 }
 
+// TestWorktreeCleanCanceledWhileGitFails: a signal that also stops the git
+// graft runs (systemd stops the unit's whole group) makes that git fail; the
+// repository it was in is interrupted, not counted done and listed failed.
+func TestWorktreeCleanCanceledWhileGitFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the git shim is a shell script")
+	}
+	parent := t.TempDir()
+	var roots []string
+	for _, name := range []string{"projectA", "projectB", "projectC"} {
+		f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: file}\n", "VERSION": "1.0.0\n"})
+		dest := filepath.Join(parent, name)
+		if err := os.Rename(f.work, dest); err != nil {
+			t.Fatal(err)
+		}
+		f.work = dest
+		f.git("checkout", "-q", "-b", "main")
+		f.mustPlainCommit("feat: base")
+		roots = append(roots, dest)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shimDir := t.TempDir()
+	started, release := filepath.Join(shimDir, "started"), filepath.Join(shimDir, "release")
+	// The first git in the second repository waits for the test to cancel,
+	// then fails as a git stopped by the signal would.
+	shim := "#!/bin/sh\nif [ \"$PWD\" = \"" + roots[1] + "\" ] && [ ! -e \"" + started + "\" ]; then : > \"" + started + "\"; while [ ! -e \"" + release + "\" ]; do sleep 0.01; done; exit 143; fi\nexec \"" + realGit + "\" \"$@\"\n"
+	writeFile(t, filepath.Join(shimDir, "git"), shim)
+	if err := os.Chmod(filepath.Join(shimDir, "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		for {
+			if _, err := os.Stat(started); err == nil {
+				break
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+		writeFile(t, release, "")
+	}()
+	var stdout, stderr strings.Builder
+	a := &app.App{Dir: roots[0], Stdout: &stdout, Stderr: &stderr}
+	err = a.WorktreeClean(ctx, app.WorktreeCleanOptions{In: []string{parent}})
+	if err == nil || !strings.Contains(err.Error(), "interrupted by a signal, done 1 of 3 repositories") {
+		t.Fatalf("error = %v, want the second repository interrupted\nstdout:\n%s", err, stdout.String())
+	}
+	if strings.Contains(stdout.String(), "failed") {
+		t.Errorf("the interrupted repository is listed failed:\n%s", stdout.String())
+	}
+}
+
 func TestWorktreeCleanStopsOnSIGTERM(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("SIGTERM integration test is Linux-only")

@@ -242,7 +242,7 @@ func realPath(p string) (string, error) {
 }
 
 // stagedBlobs are the blobs of the regular files the commit adds or
-// changes, by path.
+// changes, by path, and the regular files it deletes.
 func stagedBlobs(repo *gitx.Repo) (map[string]string, map[string]bool, error) {
 	out, err := repo.Git("diff", "--cached", "--raw", "--no-renames", "--no-abbrev", "-z")
 	if err != nil {

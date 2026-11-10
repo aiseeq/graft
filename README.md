@@ -2545,13 +2545,16 @@ unknown.
 For all repositories directly under a directory, a systemd user service and
 timer can run clean daily (systemd does not look in `~/bin`, hence the absolute
 path; a failed repository marks the unit failed, `journalctl --user -u
-graft-worktree-clean` shows which):
+graft-worktree-clean` shows which; `KillMode=mixed` sends the stop signal
+to graft alone, which ends the git it runs and stops before the next
+repository, where the default would stop that git midway too):
 
 ```ini
 # ~/.config/systemd/user/graft-worktree-clean.service
 [Service]
 Type=oneshot
 ExecStart=/absolute/path/graft worktree clean --apply --in %h/projects
+KillMode=mixed
 Nice=10
 IOSchedulingClass=idle
 ```

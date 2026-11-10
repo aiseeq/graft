@@ -85,7 +85,9 @@ func (a *App) WorktreeClean(ctx context.Context, o WorktreeCleanOptions) error {
 		return a.worktreeCleanIn(ctx, o)
 	}
 	_, err := a.worktreeCleanSingle(ctx, o)
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	// A signal that stops the unit's whole group fails the git graft runs
+	// with its own error: the cancelled context, not the error, tells.
+	if err != nil && ctx.Err() != nil {
 		return worktreeCleanInterrupted(0, 1)
 	}
 	return err
@@ -269,7 +271,7 @@ func (a *App) worktreeCleanIn(ctx context.Context, o WorktreeCleanOptions) error
 		}
 		a.printf("worktree clean: %s", root)
 		result, err := a.cleanInRepository(ctx, root, o)
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if err != nil && ctx.Err() != nil {
 			return worktreeCleanInterrupted(done, total)
 		}
 		done++
