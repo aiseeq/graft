@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -458,6 +459,280 @@ func awaitFiles(t *testing.T, pattern string, count int) {
 	}
 }
 
+func kernelLoad(old int64, n int) int64 {
+	newFixed := old*1884 + int64(n)*2048*(2048-1884)
+	if int64(n)*2048 >= old {
+		newFixed += 2047
+	}
+	return newFixed >> 11
+}
+
+func visibleLoad(fixed int64) float64 {
+	return math.Round(float64(fixed)/2048*100) / 100
+}
+
+func TestKernelSamplesFromLoadAvg(t *testing.T) {
+	s := kernelSamples{}
+	at := time.Unix(0, 0)
+	fixed, avg := int64(0), 0.0
+	s.observe(at, avg, true)
+	want := []int{12, 17, 17, 12, 11, 17, 31, 46}
+	for i, n := range want {
+		at = at.Add(500 * time.Millisecond)
+		before := avg
+		fixed = kernelLoad(fixed, n)
+		avg = visibleLoad(fixed)
+		s.observe(at, before, true)
+		at = at.Add(500 * time.Millisecond)
+		s.observe(at, avg, true)
+		got := s.values[len(s.values)-1]
+		if math.Abs(got-float64(n)) > .15 {
+			t.Fatalf("sample %d = %.3f; want %d ±0.15 (visible avg %.2f)", i, got, n, avg)
+		}
+		for range 4 {
+			at = at.Add(time.Second)
+			s.observe(at, avg, true)
+		}
+	}
+	last := len(s.values)
+	if last != 2 {
+		t.Fatalf("retained %d samples, want the latest two", last)
+	}
+	mean := (s.values[0] + s.values[1]) / 2
+	if got := (&machine{avg1: avg, samples: s}).loadValue(true); got != mean || got == avg {
+		t.Fatalf("priority load value %.2f, sample mean %.2f, avg1 %.2f", got, mean, avg)
+	}
+	before := len(s.values)
+	at = at.Add(2 * time.Second)
+	avg = visibleLoad(kernelLoad(fixed, 20))
+	s.observe(at, avg, true)
+	if len(s.values) != 0 || !s.have {
+		t.Fatalf("missed kernel tick did not clear sample history: %+v (was %d samples)", s, before)
+	}
+	s.observe(at.Add(time.Second), 0, false)
+	if len(s.values) != 0 || s.have {
+		t.Fatalf("failed loadavg read did not clear sampling baseline: %+v", s)
+	}
+}
+
+func TestPriorityWaitPollsKernelSamplesBetweenLoadChecks(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(1)
+	setRunnableLimit(t, 23)
+	fixed := int64(26 * 2048) // A prior stage has left an avg1 tail above the limit.
+	for range 6 {
+		fixed = kernelLoad(fixed, 32) // Background 12 plus this stage's 20, for 30 seconds.
+	}
+	avg := visibleLoad(fixed)
+	if avg <= 23 {
+		t.Fatalf("stage-end avg1 %.2f; want the prior tail still above 23", avg)
+	}
+	setLoadavg(t, avg)
+	m := newMachine(testLoad, io.Discard, "sample-cycle", "projectA:sample-cycle")
+	m.l.Poll = 5 * time.Second
+	start := time.Unix(1000, 0)
+	now := start
+	m.now = func() time.Time { return now }
+	nextKernelTick := start.Add(5 * time.Second)
+	m.sleep = func(ctx context.Context, d time.Duration) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		now = now.Add(d)
+		for !nextKernelTick.After(now) {
+			fixed = kernelLoad(fixed, 12)
+			avg = visibleLoad(fixed)
+			setLoadavg(t, avg)
+			nextKernelTick = nextKernelTick.Add(5 * time.Second)
+		}
+		return nil
+	}
+	budget, err := NewBudget(t.TempDir(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Priority{For: "projectA deploy", Budget: budget}
+	if err := m.admitWithReserves(context.Background(), p, filepath.Join(t.TempDir(), "load.lock")); err != nil {
+		t.Fatalf("priority admission: %v", err)
+	}
+	a, b, ok := m.samples.lastTwo()
+	if !ok || math.Abs(a-12) > .15 || math.Abs(b-12) > .15 {
+		t.Fatalf("admitted without two recovered background samples: %.2f, %.2f, %v", a, b, ok)
+	}
+	if elapsed := now.Sub(start); elapsed > 10*time.Second+500*time.Millisecond+m.l.Poll || m.avg1 <= 23 {
+		t.Fatalf("admitted after %s at avg1 %.2f; want within two samples plus one Poll while avg1 stays above 23", elapsed, m.avg1)
+	}
+}
+
+func TestPriorityOwnTailDoesNotSpendBudget(t *testing.T) {
+	fakeMachine(t)
+	setRunnableLimit(t, 23)
+	fixed := int64(20 * 2048)
+	avg := visibleLoad(fixed)
+	at := time.Unix(1000, 0)
+	samples := kernelSamples{}
+	samples.observe(at, avg, true)
+	step := func(n int) {
+		for range 4 {
+			at = at.Add(time.Second)
+			samples.observe(at, avg, true)
+		}
+		at = at.Add(time.Second)
+		fixed = kernelLoad(fixed, n)
+		avg = visibleLoad(fixed)
+		samples.observe(at, avg, true)
+	}
+	for range 6 { // 30 seconds at background 20 plus this stage's 20.
+		step(40)
+	}
+	stageEnded := at
+	for range 2 { // Two fresh background samples arrive within 10 seconds.
+		step(20)
+	}
+	if at.Sub(stageEnded) > 10500*time.Millisecond || avg <= 23 {
+		t.Fatalf("after-stage observation took %s with load average %.2f; want ≤10.5s and tail >23", at.Sub(stageEnded), avg)
+	}
+	a, b, ok := samples.lastTwo()
+	if !ok || a > 23 || b > 23 {
+		t.Fatalf("post-stage kernel samples %.1f, %.1f, %v; want both below 23", a, b, ok)
+	}
+	setLoadavg(t, avg)
+	m := newMachine(testLoad, io.Discard, "sample-check", "projectA:sample-check")
+	m.runnable = 1
+	m.runnableLimit = 23
+	m.avg1, m.avg1Known = avg, true
+	m.samples = samples
+	m.now = func() time.Time { return at }
+	priority, err := m.busy(context.Background(), true, true)
+	if err != nil || priority.why != "" {
+		t.Fatalf("priority task with post-stage samples %.1f, %.1f: %+v, %v; want admitted", a, b, priority, err)
+	}
+	ordinary, err := m.busy(context.Background(), false, false)
+	if err != nil || ordinary.why != WhyLoad {
+		t.Fatalf("ordinary task at avg1 %.2f: %+v, %v; want load wait", avg, ordinary, err)
+	}
+}
+
+func TestPriorityForeignLoadWaits(t *testing.T) {
+	fakeMachine(t)
+	setRunnableLimit(t, 23)
+	setLoadavg(t, 29)
+	m := newMachine(testLoad, io.Discard, "sample-check", "projectA:sample-check")
+	m.runnable, m.runnableLimit = 1, 23
+	m.avg1, m.avg1Known = 29, true
+	m.samples.values = []float64{30, 30}
+	m.samples.at, m.samples.avg, m.samples.have = time.Now(), 29, true
+	m.samples.stableAt = m.samples.at
+	b, err := m.busy(context.Background(), true, true)
+	if err != nil || b.why != WhyLoad || !strings.Contains(b.text, "kernel load samples 30.0, 30.0 reach 23") {
+		t.Fatalf("foreign load verdict = %+v, %v; want sample reason", b, err)
+	}
+	p := &Priority{For: "projectA deploy", Budget: filepath.Join(t.TempDir(), "budget"), Fail: true}
+	if err := os.WriteFile(p.Budget, []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = m.admitWithReserves(context.Background(), p, filepath.Join(t.TempDir(), "load.lock"))
+	if err == nil || !strings.Contains(err.Error(), "kernel load samples 30.0, 30.0 reach 23") {
+		t.Fatalf("priority failure = %v; want sample reason", err)
+	}
+	if left, readErr := os.ReadFile(p.Budget); readErr != nil || string(left) != "0" {
+		t.Fatalf("remaining wait budget = %q, %v; want spent budget 0", left, readErr)
+	}
+}
+
+func TestPriorityWithoutSamplesUsesAvg1(t *testing.T) {
+	fakeMachine(t)
+	setRunnableLimit(t, 23)
+	setLoadavg(t, 22)
+	m := newMachine(testLoad, io.Discard, "sample-check", "projectA:sample-check")
+	m.runnable, m.runnableLimit = 1, 23
+	m.avg1, m.avg1Known = 22, true
+	b, err := m.busy(context.Background(), true, true)
+	if err != nil || b.why != "" {
+		t.Fatalf("avg1 22 without samples: %+v, %v; want admitted", b, err)
+	}
+	setLoadavg(t, 25)
+	b, err = m.busy(context.Background(), false, true)
+	if err != nil || b.why != WhyLoad {
+		t.Fatalf("avg1 25 before two samples: %+v, %v; want wait on avg1", b, err)
+	}
+	at := time.Unix(100, 0)
+	s := kernelSamples{}
+	for i := 0; i <= 12; i++ {
+		s.observe(at.Add(time.Duration(i)*time.Second), 25, true)
+	}
+	if a, b, ok := s.lastTwo(); !ok || a != 25 || b != 25 {
+		t.Fatalf("stable avg1 samples = %.1f, %.1f, %v; want 25, 25 after frequent polls", a, b, ok)
+	}
+	setLoadavg(t, 25)
+	withSamples := newMachine(testLoad, io.Discard, "stable-check", "projectA:stable-check")
+	withSamples.runnable, withSamples.runnableLimit = 1, 23
+	withSamples.avg1, withSamples.avg1Known = 25, true
+	withSamples.samples.values = []float64{12, 12}
+	withSamples.samples.at, withSamples.samples.avg = time.Now(), 25
+	withSamples.samples.have = true
+	withSamples.samples.stableAt = withSamples.samples.at
+	if b, err := withSamples.busy(context.Background(), true, true); err != nil || b.why != "" {
+		t.Fatalf("priority decision with samples 12, 12 and avg1 25: %+v, %v; want admitted", b, err)
+	}
+}
+
+func TestPriorityRunnableStillBlocks(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(23)
+	setRunnableLimit(t, 23)
+	setLoadavg(t, 10)
+	m := newMachine(testLoad, io.Discard, "sample-check", "projectA:sample-check")
+	m.samples.values = []float64{10, 10}
+	m.samples.at, m.samples.avg, m.samples.have = time.Now(), 10, true
+	b, err := m.busy(context.Background(), true, true)
+	if err != nil || b.why != WhyLoad || !strings.Contains(b.text, "runnable") {
+		t.Fatalf("runnable threshold verdict = %+v, %v; want immediate runnable wait", b, err)
+	}
+	setRunnable(1)
+	setLoadavg(t, 25)
+	withSamples := newMachine(testLoad, io.Discard, "sample-check", "projectA:sample-check")
+	withSamples.runnableLimit = 23
+	withSamples.avg1, withSamples.avg1Known = 25, true
+	withSamples.samples.values = []float64{10, 10}
+	withSamples.samples.at, withSamples.samples.avg = time.Now(), 25
+	withSamples.samples.have = true
+	withSamples.samples.stableAt = withSamples.samples.at
+	if b, err := withSamples.busy(context.Background(), true, true); err != nil || b.why != "" {
+		t.Fatalf("samples 10, 10 with avg1 25 after runnable clears: %+v, %v; want admitted", b, err)
+	}
+}
+
+func TestPriorityReservesUseSamples(t *testing.T) {
+	fakeMachine(t)
+	setRunnableLimit(t, 23)
+	m := newMachine(testLoad, io.Discard, "sample-check", "projectA:sample-check")
+	m.runnable, m.runnableLimit = 1, 23
+	m.avg1, m.avg1Known = 25, true
+	m.samples.values = []float64{12, 12}
+	lockPath := filepath.Join(t.TempDir(), "load.lock")
+	release := admitOne(t, lockPath, 5)
+	defer release()
+	b, err := m.reservesBusy(lockPath, true)
+	if err != nil || b.why != "" {
+		t.Fatalf("samples 12, 12 plus reserve 5: %+v, %v; want admitted despite avg1 25", b, err)
+	}
+	b, err = m.reservesBusy(lockPath, false)
+	if err != nil || b.why != WhyReserve {
+		t.Fatalf("ordinary avg1 25 plus reserve 5: %+v, %v; want reserve wait", b, err)
+	}
+}
+
+func setRunnableLimit(t *testing.T, n int) {
+	t.Helper()
+	path := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "akit", "pressure.yaml")
+	if err := os.WriteFile(path, fmt.Appendf(nil, "runnable: %d\nmax_io_full: 10\nmax_swap_kbs: 1024\nswap_window: 20ms\n", n), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type waitLogWriter struct{ observed chan struct{} }
 
 func (w waitLogWriter) Write(p []byte) (int, error) {
@@ -895,10 +1170,10 @@ func (lateTimer) Err() error                  { return nil }
 func TestLookPastTheDeadlineIsNoMeasure(t *testing.T) {
 	fakeMachine(t)
 	m := newMachine(testLoad, io.Discard, "build", "projectA:build")
-	if _, err := m.busy(lateTimer{context.Background()}, true); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := m.busy(lateTimer{context.Background()}, true, false); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("busy past the deadline: %v, want %v", err, context.DeadlineExceeded)
 	}
-	if _, err := m.busy(context.Background(), true); err != nil {
+	if _, err := m.busy(context.Background(), true, false); err != nil {
 		t.Fatalf("busy without a deadline: %v", err)
 	}
 }

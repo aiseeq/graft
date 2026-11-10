@@ -432,7 +432,7 @@ budget, the waits of tasks side by side adding up: a task that finds the
 machine calm late in a long deploy takes nothing from it. The budget lives in
 a file in the user cache (`graft/load-budget-*`) for as long as the deploy
 runs. The wait shows in `graft
-stats` (`wait_s`).
+stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest kernel load samples recovered from consecutive `/proc/loadavg` readings, falling back to the 1-minute average until two samples are known. This avoids spending the deploy's shared wait budget on the slow tail left by its own earlier stages, while the instantaneous runnable count still blocks admission.
 
 ## Commands
 
