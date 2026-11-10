@@ -666,7 +666,7 @@ func TestDeployRunsScriptAndPostsReleaseNotes(t *testing.T) {
 	d.write("a.txt", "a\n")
 	d.mustFixtureCommit("feat: PROJ-1 first thing, hashes with SHA-256")
 	d.write("b.txt", "b\n")
-	d.mustFixtureCommit("fix: second\n\nRefs PROJ-2 and OTHER-5, see also PROJ-3, PROJ-4, PROJ-5, PROJ-6 and PROJ-7")
+	d.mustFixtureCommit("fix: second\n\nPROJ-2\nOTHER-5\nPROJ-3\nPROJ-4\nPROJ-5\nPROJ-6\nPROJ-7")
 	out = d.mustGraft("deploy", "test")
 	if !strings.Contains(d.stateFile("test-run"), "prev="+head) {
 		t.Errorf("previous sha not passed:\n%s", d.stateFile("test-run"))
@@ -679,17 +679,17 @@ func TestDeployRunsScriptAndPostsReleaseNotes(t *testing.T) {
 			}
 		}
 	})
-	if !slices.Equal(keys, []string{"PROJ-1", "PROJ-5", "PROJ-6"}) {
+	// PROJ-2 is done: its work shipped, so it learns of it and stays put.
+	if !slices.Equal(keys, []string{"PROJ-1", "PROJ-2", "PROJ-5", "PROJ-6"}) {
 		t.Errorf("commented keys = %v\n%s", keys, out)
 	}
 	if c := comments["PROJ-1"]; len(c) != 1 || !strings.HasPrefix(c[0], "Deployed to test, version 1.0.3, commit ") {
 		t.Errorf("comment = %v", c)
 	}
 	if !slices.Equal(moved, []string{"PROJ-1"}) {
-		t.Errorf("moved = %v (PROJ-5 is already in Testing, PROJ-6 is paused)", moved)
+		t.Errorf("moved = %v (PROJ-2 is done, PROJ-5 is already in Testing, PROJ-6 is paused)", moved)
 	}
 	for _, want := range []string{
-		"PROJ-2 left alone: it is Done",
 		"PROJ-6 stays Paused: release_notes.transitions move only from In Progress",
 		"PROJ-7 left alone: it is Blocked",
 		"PROJ-3 left alone: assigned to Colleague colleague and never assigned to the owner",
