@@ -607,7 +607,7 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 	case "check":
 		return worktreeCheckCmd(a, args[1:], usage)
 	case "clean":
-		return worktreeCleanCmd(a, args[1:], usage)
+		return worktreeCleanCmd(ctx, a, args[1:], usage)
 	}
 	return usage
 }
@@ -660,7 +660,7 @@ func worktreeCheckCmd(a *app.App, args []string, usage error) error {
 	return a.WorktreeCheck(o)
 }
 
-func worktreeCleanCmd(a *app.App, args []string, usage error) error {
+func worktreeCleanCmd(ctx context.Context, a *app.App, args []string, usage error) error {
 	fs := newFlags(a, "worktree clean")
 	o := app.WorktreeCleanOptions{}
 	fs.BoolVar(&o.Apply, "apply", false, "remove; without it only report")
@@ -677,7 +677,7 @@ func worktreeCleanCmd(a *app.App, args []string, usage error) error {
 	if len(o.In) != 0 && o.Trunk != "" {
 		return fmt.Errorf("%w: --trunk cannot be used with --in: each repository has its own trunk", errUsage)
 	}
-	return a.WorktreeClean(o)
+	return a.WorktreeClean(ctx, o)
 }
 
 type stringListFlag []string

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1089,6 +1092,127 @@ func TestWorktreeCleanTrunkByUpstream(t *testing.T) {
 				t.Errorf("exit %d:\n%s\nwant %q", code, out, tc.want)
 			}
 		})
+	}
+}
+
+type cancelAfterCleanSummary struct {
+	cancel context.CancelFunc
+	output strings.Builder
+}
+
+func (w *cancelAfterCleanSummary) Write(p []byte) (int, error) {
+	n, err := w.output.Write(p)
+	if strings.Contains(w.output.String(), "dry run: graft worktree clean") {
+		w.cancel()
+	}
+	return n, err
+}
+
+func TestWorktreeCleanCanceledBetweenRepositories(t *testing.T) {
+	parent := t.TempDir()
+	roots := make([]string, 3)
+	for i, name := range []string{"projectA", "projectB", "projectC"} {
+		f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: file}\n", "VERSION": "1.0.0\n"})
+		dest := filepath.Join(parent, name)
+		if err := os.Rename(f.work, dest); err != nil {
+			t.Fatal(err)
+		}
+		f.work = dest
+		f.git("checkout", "-q", "-b", "main")
+		f.mustPlainCommit("feat: base")
+		roots[i] = dest
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stdout := &cancelAfterCleanSummary{cancel: cancel}
+	var stderr strings.Builder
+	a := &app.App{Dir: roots[0], Stdout: stdout, Stderr: &stderr}
+	err := a.WorktreeClean(ctx, app.WorktreeCleanOptions{In: []string{parent}})
+	var exitCode *app.ExitCodeError
+	if !errors.As(err, &exitCode) || exitCode.Code == 0 || !strings.Contains(err.Error(), "interrupted by a signal, done 1 of 3 repositories") {
+		t.Fatalf("error = %v, want interrupted after one repository", err)
+	}
+	if got := strings.Count(stdout.output.String(), "dry run: graft worktree clean"); got != 1 {
+		t.Fatalf("cleaned %d repositories before interruption:\n%s", got, stdout.output.String())
+	}
+	for _, root := range roots[1:] {
+		if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
+			t.Errorf("repository %s was touched: %v", root, err)
+		}
+	}
+}
+
+func TestWorktreeCleanStopsOnSIGTERM(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("SIGTERM integration test is Linux-only")
+	}
+	skipWaitInShort(t)
+	parent := t.TempDir()
+	var first *fixture
+	var slowRepo string
+	for i, name := range []string{"projectA", "projectB", "projectC"} {
+		f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: file}\n", "VERSION": "1.0.0\n"})
+		dest := filepath.Join(parent, name)
+		if err := os.Rename(f.work, dest); err != nil {
+			t.Fatal(err)
+		}
+		f.work = dest
+		f.git("checkout", "-q", "-b", "main")
+		f.mustPlainCommit("feat: base")
+		if i == 0 {
+			first = f
+		}
+		if i == 1 {
+			slowRepo = dest
+		}
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shimDir := t.TempDir()
+	marker := filepath.Join(shimDir, "git-started")
+	shim := "#!/bin/sh\nif [ \"$PWD\" = \"$GRAFT_TEST_SLOW_REPO\" ] && [ \"$1\" = ls-tree ]; then : > \"$GRAFT_TEST_MARKER\"; sleep 1.25; fi\nexec \"$GRAFT_TEST_REAL_GIT\" \"$@\"\n"
+	writeFile(t, filepath.Join(shimDir, "git"), shim)
+	if err := os.Chmod(filepath.Join(shimDir, "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first.env = []string{
+		"PATH=" + shimDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"GRAFT_TEST_MARKER=" + marker,
+		"GRAFT_TEST_REAL_GIT=" + realGit,
+		"GRAFT_TEST_SLOW_REPO=" + slowRepo,
+	}
+	cmd, out := first.start(parent, "worktree", "clean", "--in", parent)
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("git shim did not start:\n%s", out.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(out.String(), "graft: worktree clean: interrupted by a signal, done 1 of 3 repositories") {
+			t.Fatalf("exit %v, output:\n%s", err, out.String())
+		}
+	case <-time.After(3 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatalf("graft did not stop within 3 seconds:\n%s", out.String())
 	}
 }
 
