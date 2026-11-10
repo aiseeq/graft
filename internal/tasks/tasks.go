@@ -71,7 +71,9 @@ const ArgsPlaceholder = config.ArgsPlaceholder
 
 // Runner runs tasks of one project.
 type Runner struct {
-	Root string
+	// admitTask overrides heavy-task admission in tests.
+	admitTask func(context.Context, string) (loadgate.Admission, func() error, error)
+	Root      string
 	// Repo is the repository at Root; nil opens it when a step needs it.
 	Repo *gitx.Repo
 	// repoName names the repository in the profiles of its runs, set once;
@@ -1000,7 +1002,7 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 		return err
 	}
 	f := r.begin(stats.GateTask)
-	defer func() { r.end(f, err != nil) }()
+	defer func() { r.end(f, err) }()
 	light := r.lightGate(ctx)
 	splitGate, why := false, ""
 	if !light {
@@ -1361,7 +1363,7 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 	}
 	f := r.begin(name)
 	defer func() {
-		use := r.end(f, err != nil)
+		use := r.end(f, err)
 		if err == nil && key != "" {
 			r.keep(ctx, key, name, args, use)
 		}
@@ -1943,7 +1945,7 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy bool
 	}
 	f := r.begin(ExecTask)
 	f.program = filepath.Base(argv[0])
-	defer func() { r.end(f, err != nil) }()
+	defer func() { r.end(f, err) }()
 	leave, err := r.prepareExec(ctx, f, t, dir, heavy && !innerGraft)
 	if err != nil {
 		return err
@@ -2004,7 +2006,7 @@ func (e *CommandError) Unwrap() error { return e.Err }
 // run in it, and Measure records its steps.
 func (r *Runner) Unit(name string, fn func() error) (err error) {
 	f := r.begin(name)
-	defer func() { r.end(f, err != nil) }()
+	defer func() { r.end(f, err) }()
 	return fn()
 }
 
@@ -2337,7 +2339,7 @@ func (r *Runner) begin(task string) *frame {
 
 // end closes the frame of a task and records the task as a whole, returning
 // what it cost; the task's error itself goes back to its caller.
-func (r *Runner) end(f *frame, failed bool) stats.Usage {
+func (r *Runner) end(f *frame, err error) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
 	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, WaitedBehind: f.waitedBehind}
 	if f.reserveRelease != nil {
@@ -2356,7 +2358,7 @@ func (r *Runner) end(f *frame, failed bool) stats.Usage {
 			rec.ReserveEnd = f.reserveEnd()
 		}
 	}
-	if failed {
+	if err != nil {
 		rec.Time = time.Now()
 		rec.Project = r.Root
 		// A failure outside the processes (a missing key, a lock timeout)
@@ -2366,6 +2368,9 @@ func (r *Runner) end(f *frame, failed bool) stats.Usage {
 			rec.Exit = -1
 		}
 		rec.Reason = f.reason
+		if rec.Reason == "" {
+			rec.Reason = stats.LimitReason(err.Error())
+		}
 		if after, count, same := r.sameFailure(rec); same {
 			fmt.Fprintf(r.Stderr, "graft: %s: %s\n", f.task, stats.RepeatFailureLine(after, count))
 		}
@@ -2856,6 +2861,9 @@ const AdmittedEnv = "GRAFT_ADMITTED"
 // admit waits until the machine takes a heavy task and returns how long it
 // waited, by why, and the release the task calls when it ends.
 func (r *Runner) admit(ctx context.Context, name string) (loadgate.Admission, func() error, error) {
+	if r.admitTask != nil {
+		return r.admitTask(ctx, name)
+	}
 	none := func() error { return nil }
 	if os.Getenv(AdmittedEnv) != "" {
 		return loadgate.Admission{}, none, nil

@@ -33,7 +33,7 @@ func TestTaskReserveSecondsEndAtCPURelease(t *testing.T) {
 	time.Sleep(50 * time.Millisecond) // synthetic CPU release after the sample window
 	stopped = time.Now()
 	time.Sleep(80 * time.Millisecond) // the task keeps running after its reservation ends
-	r.end(f, false)
+	r.end(f, nil)
 
 	path, err := stats.Path()
 	if err != nil {
