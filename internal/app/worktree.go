@@ -197,6 +197,9 @@ func (c *cleaner) cleanWorktrees(trees []worktree) ([]string, error) {
 		// A rebase detaches HEAD: its branch is still the worktree's.
 		if !w.prunable {
 			rebasing, err := rebaseBranch(c.repo, w.path)
+			if err != nil && c.ctx.Err() != nil {
+				return held, c.ctx.Err()
+			}
 			if err != nil {
 				c.line("check", worktreeWhat(w), "not removed: "+strings.Join(strings.Fields(err.Error()), " "))
 				continue
@@ -209,8 +212,9 @@ func (c *cleaner) cleanWorktrees(trees []worktree) ([]string, error) {
 			continue
 		}
 		if err := c.worktree(w); err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return held, err
+			// A git the signal stopped too fails with its own error.
+			if c.ctx.Err() != nil {
+				return held, c.ctx.Err()
 			}
 			reason := strings.Join(strings.Fields(err.Error()), " ")
 			if strings.HasPrefix(reason, "git add -A --sparse:") {
