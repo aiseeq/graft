@@ -270,6 +270,33 @@ func TestGoTestOverlayHasItsOwnTree(t *testing.T) {
 	}
 }
 
+// TestGoTestOverlayOfTaskDir: a task in a subdirectory names its overlay and
+// replacements relative to it, as go reads them, and the mutants live where
+// git does not look: only the overlay's contents tell its runs apart.
+func TestGoTestOverlayOfTaskDir(t *testing.T) {
+	f, statsFile := statsRepo(t, "tasks:\n  overlay:\n    tests: go\n    dir: sub\n    run: [[go, test, -json, -count=1, -overlay, mutants/overlay.json, .]]\n")
+	f.write("go.mod", "module projectA\n\ngo 1.23\n")
+	f.write(".gitignore", "mutants/\n")
+	f.write("sub/case_test.go", "package sub\nimport \"testing\"\nfunc TestOverlayCase(t *testing.T) {}\n")
+	f.write("sub/mutants/overlay.json", `{"Replace":{"case_test.go":"mutants/replacement.go"}}`)
+	trees := func() []string {
+		var ids []string
+		for _, l := range readTests(t, filepath.Join(filepath.Dir(statsFile), "tests.jsonl")) {
+			ids = append(ids, l.Tree)
+		}
+		return ids
+	}
+	for i, body := range []string{"t.Fatal(\"PROJ-123 one\")", "t.Fatal(\"PROJ-123 two\")"} {
+		f.write("sub/mutants/replacement.go", "package sub\nimport \"testing\"\nfunc TestOverlayCase(t *testing.T) { "+body+" }\n")
+		if out, code := f.graft("", "overlay"); code == 0 || !strings.Contains(out, "PROJ-123") {
+			t.Fatalf("mutant %d: exit %d\n%s", i, code, out)
+		}
+	}
+	if ids := trees(); len(ids) != 2 || ids[0] == "" || ids[1] == "" || ids[0] == ids[1] {
+		t.Fatalf("two mutants outside git should have two nonempty tree ids: %q", ids)
+	}
+}
+
 // TestUnreadableGoTestOverlayHasNoTree: an unreadable overlay warns and
 // leaves its recorded run out of flaky comparisons.
 func TestUnreadableGoTestOverlayHasNoTree(t *testing.T) {

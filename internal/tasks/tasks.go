@@ -1835,6 +1835,12 @@ func (r *Runner) goTestTreeID(words, env []string, dir string) (string, error) {
 	if !found {
 		return id, nil
 	}
+	return overlayTreeID(id, overlay), nil
+}
+
+// overlayTreeID is the tree id of a run whose overlay replaces files of the
+// work tree id: the overlay's paths and the contents it puts there.
+func overlayTreeID(id string, overlay []overlayFile) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00", id)
 	for _, item := range overlay {
@@ -1844,7 +1850,7 @@ func (r *Runner) goTestTreeID(words, env []string, dir string) (string, error) {
 		}
 		fmt.Fprintf(h, "%d:%sF%d:%s", len(item.path), item.path, len(item.content), item.content)
 	}
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 type overlayFile struct {
@@ -1856,10 +1862,10 @@ type overlayFile struct {
 // flag on the command line wins over GOFLAGS, as with go, and the words after
 // -args go to the test binary. A nil env is the inherited environment.
 func goTestOverlay(words, env []string, dir string) ([]overlayFile, bool, error) {
-	if env == nil {
-		env = os.Environ()
+	flags, err := goFlags(env, dir)
+	if err != nil {
+		return nil, false, err
 	}
-	flags, _ := lookupEnv(env, "GOFLAGS")
 	if i := slices.Index(words, "-args"); i >= 0 {
 		words = words[:i]
 	}
@@ -3562,4 +3568,23 @@ func (r *Runner) taskDir(t *config.Task) string {
 		return filepath.Join(r.Root, filepath.FromSlash(t.Dir))
 	}
 	return r.Root
+}
+
+// goFlags is the GOFLAGS go sees in env (nil: the inherited one) run in dir:
+// the variable when set, otherwise go env's, which also reads the go env file
+// (go env -w).
+func goFlags(env []string, dir string) (string, error) {
+	if env == nil {
+		env = os.Environ()
+	}
+	if v, _ := lookupEnv(env, "GOFLAGS"); v != "" {
+		return v, nil
+	}
+	cmd := exec.Command("go", "env", "GOFLAGS")
+	cmd.Env, cmd.Dir = env, dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("go env GOFLAGS: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
