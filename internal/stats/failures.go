@@ -14,7 +14,8 @@ func FailureRuns(records []Record, filter Filter) []*Record {
 	taskInputs := map[string]bool{}
 	for i := range records {
 		r := &records[i]
-		if r.Kind == KindStep && r.Exit != 0 {
+		// A step before since is not shown, so it does not hide its task.
+		if r.Kind == KindStep && r.Exit != 0 && filter.selects(r) {
 			failedSteps[r.Run+"\x00"+r.Task] = true
 		}
 		if r.Kind == KindTask {

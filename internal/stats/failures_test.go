@@ -57,3 +57,17 @@ func TestRepeatFailureLineUsesMinutesAndSeconds(t *testing.T) {
 		t.Errorf("RepeatFailureLine(42s, 2) = %q, want %q", got, want)
 	}
 }
+
+// A run whose failed step ended before since and whose task ended after it
+// shows by its task: the step outside the window does not stand for it.
+func TestFailureRunsAcrossSince(t *testing.T) {
+	now := time.Now()
+	recs := []Record{
+		{Time: now.Add(-61 * time.Minute), Kind: KindStep, Project: "projectA", Task: "gate", Run: "r1", Exit: 1},
+		{Time: now.Add(-59 * time.Minute), Kind: KindTask, Project: "projectA", Task: "gate", Run: "r1", Exit: 1},
+	}
+	got := FailureRuns(recs, Filter{Since: now.Add(-time.Hour)})
+	if len(got) != 1 || got[0].Kind != KindTask {
+		t.Fatalf("want the task failure of the run, got %+v", got)
+	}
+}
