@@ -341,3 +341,28 @@ func TestReapKeepsIgnoredSignals(t *testing.T) {
 		}
 	}
 }
+
+// SIGTERM to the reaper while its command runs ends the command, and the
+// orphans after it at once: a caller that stops it waits no grace for them.
+func TestReapSIGTERMHurriesOrphans(t *testing.T) {
+	dir := t.TempDir()
+	cmd := reaped(t, dir, `sh -c 'trap "" TERM; exec sleep 30' & echo $! > "$1/orphan"
+while :; do sleep 0.05; done`)
+	orphan := pidIn(t, filepath.Join(dir, "orphan"))
+	stopAfter(t, orphan)
+	start := time.Now()
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.Wait()
+	took := time.Since(start)
+	if sig := signalOf(t, err); sig != syscall.SIGTERM {
+		t.Fatalf("the command ended with %v, want SIGTERM", sig)
+	}
+	if running(orphan) {
+		t.Errorf("the orphan %d outlived the reaper", orphan)
+	}
+	if took >= orphanGrace {
+		t.Errorf("the reaper took %v after SIGTERM: it gave the orphans their grace", took)
+	}
+}

@@ -94,10 +94,11 @@ const ExitReaper = 125
 // reaper with the same signal, so the caller sees what it would have seen
 // of the command. SIGTERM goes on to the command while it runs; SIGINT,
 // SIGQUIT and SIGHUP do not, the terminal sends them to the command's
-// process group itself; one the reaper was started ignoring stays ignored
-// for the command. Once the command ended, the processes left in its
-// session get SIGTERM, then SIGKILL, at once when one of those signals
-// reaches the reaper meanwhile; those that left the session (daemons)
+// process group itself; a SIGHUP or SIGINT the reaper was started ignoring
+// stays ignored for the command (Go keeps no other signal ignored). Once the
+// command ended, the processes left in its session get SIGTERM, then
+// SIGKILL, at once when the reaper got SIGTERM or, after the command, one of
+// those signals; those that left the session (daemons)
 // stay and are not waited for. A command that could not start exits 127
 // when it is missing, 126 otherwise.
 func RunReaper(path string, argv []string) int {
@@ -109,8 +110,10 @@ func RunReaper(path string, argv []string) int {
 	}
 	sigs := make(chan os.Signal, 16)
 	signal.Notify(sigs, unix.SIGCHLD)
-	// A signal the reaper was started ignoring (nohup, a background job)
-	// stays ignored for the command: a handler would reset it on exec.
+	// A SIGHUP or SIGINT the reaper was started ignoring (nohup, a background
+	// job) stays ignored for the command: a handler would reset it on exec.
+	// Go's runtime keeps only these two ignored, SIGTERM and SIGQUIT it
+	// handles whatever it inherited.
 	for _, sig := range []os.Signal{unix.SIGTERM, unix.SIGINT, unix.SIGQUIT, unix.SIGHUP} {
 		if !signal.Ignored(sig) {
 			signal.Notify(sigs, sig)
@@ -132,7 +135,9 @@ func RunReaper(path string, argv []string) int {
 	r := &reaper{child: pid}
 	for !r.done {
 		if sig, ok := (<-sigs).(unix.Signal); ok && sig == unix.SIGTERM {
-			// The command is not reaped yet: its pid is still its own.
+			// The command is not reaped yet: its pid is still its own. Asked
+			// to stop, the reaper ends the orphans at once after it.
+			r.hurried = true
 			if err := unix.Kill(pid, sig); err != nil && !errors.Is(err, unix.ESRCH) {
 				fmt.Fprintf(os.Stderr, "graft: reaper: passing %v to %d: %v\n", sig, pid, err)
 			}
@@ -157,8 +162,10 @@ type reaper struct {
 	child  int
 	done   bool
 	status unix.WaitStatus
-	// hurried: a signal asked the reaper to stop while it ended orphans.
+	// hurried: a signal asked the reaper to stop.
 	hurried bool
+	// childless: wait4 found no child, so no descendant is left at all.
+	childless bool
 }
 
 // reapAll waits for every child that has exited, the command's status kept.
@@ -169,7 +176,10 @@ func (r *reaper) reapAll() error {
 		switch {
 		case errors.Is(err, unix.EINTR):
 			continue
-		case errors.Is(err, unix.ECHILD), err == nil && pid == 0:
+		case errors.Is(err, unix.ECHILD):
+			r.childless = true
+			return nil
+		case err == nil && pid == 0:
 			return nil
 		case err != nil:
 			return fmt.Errorf("waiting for children: %w", err)
@@ -217,6 +227,11 @@ func (r *reaper) settle(d time.Duration, sigs <-chan os.Signal) ([]int, error) {
 	for {
 		if err := r.reapAll(); err != nil {
 			return nil, err
+		}
+		// Without a child no scan of /proc is needed: a command that ended
+		// alone keeps its caller waiting no longer than it did.
+		if r.childless {
+			return nil, nil
 		}
 		left, err := orphans()
 		if err != nil || len(left) == 0 || r.hurried || !time.Now().Before(deadline) {

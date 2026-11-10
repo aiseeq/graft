@@ -1916,13 +1916,14 @@ var localStopGrace = 10 * time.Second
 func (r *Runner) stopLocalCommand(cmd *exec.Cmd, local bool) {
 	if local {
 		proc.Reap(cmd)
+		// StopOnCancel's WaitDelay holds for the output pipes too: a shorter
+		// one would kill the reaper before its command ends, and its orphans
+		// would pass to the session manager.
 		proc.StopOnCancel(cmd, localStopGrace, func(err error) {
 			if r.Stats != nil {
 				r.Stats.Warn(fmt.Errorf("stopping command tree: %w", err))
 			}
 		})
-		// measureWithReason sets the output-pipe WaitDelay for local steps.
-		cmd.WaitDelay = 0
 	}
 }
 
@@ -2090,11 +2091,8 @@ func (r *Runner) measureWithCapture(cmd *exec.Cmd, source string, capture bool, 
 // first useful cleaned reason from reasonSource, stderr, or stdout.
 func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, captureStdout bool, remoteStderr *bytes.Buffer, reasonSource func() string, missingRunNames func() bool) (stats.Usage, error) {
 	stdout, stderr, piped := captureStepOutput(cmd, captureStderr, captureStdout)
-	autoWaitDelay := false
-	if piped {
-		if cmd.WaitDelay == 0 {
-			cmd.WaitDelay, autoWaitDelay = backgroundPipeWait, true
-		}
+	if piped && cmd.WaitDelay == 0 {
+		cmd.WaitDelay = backgroundPipeWait
 	}
 	before := r.memoryEventsBefore(source)
 	start := time.Now()
@@ -2103,7 +2101,9 @@ func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, 
 	}
 	watch := stats.WatchProcess(cmd.Process.Pid)
 	err := cmd.Wait()
-	if autoWaitDelay && errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+	// A step that succeeded is not failed by a process that left its session
+	// and holds the step's output pipe.
+	if piped && errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
 		err = nil
 	}
 	seen := watch.Stop()
