@@ -3,6 +3,7 @@ package stats
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -114,13 +115,28 @@ func TestFailedTestsIncludeFastFailuresAndRespectLimit(t *testing.T) {
 	if !strings.Contains(output.String(), "and 1 more") {
 		t.Errorf("failed-test overflow is not reported:\n%s", output.String())
 	}
+	// The name order runs against the share order, and two tests tie on
+	// both count and share, so each key of the sort is seen on its own.
 	ranked := summarizeTests([]PackageRun{
-		{Time: at, Package: "pkg", Result: ResultPass, Tests: []TestResult{{Name: "TestAHigh", Result: ResultFail}, {Name: "TestZLow", Result: ResultFail}}},
-		{Time: at.Add(time.Minute), Package: "pkg", Result: ResultPass, Tests: []TestResult{{Name: "TestZLow", Result: ResultPass}}},
-		{Time: at.Add(2 * time.Minute), Package: "pkg", Result: ResultPass, Tests: []TestResult{{Name: "TestZLow", Result: ResultPass}}},
+		{Time: at, Package: "pkg", Result: ResultPass, Tests: []TestResult{{Name: "TestZHigh", Result: ResultFail}, {Name: "TestALow", Result: ResultFail}, {Name: "TestNTieB", Result: ResultFail}, {Name: "TestNTieA", Result: ResultFail}}},
+		{Time: at.Add(time.Minute), Package: "pkg", Result: ResultPass, Tests: []TestResult{{Name: "TestALow", Result: ResultPass}, {Name: "TestNTieB", Result: ResultPass}, {Name: "TestNTieA", Result: ResultPass}}},
+		{Time: at.Add(2 * time.Minute), Package: "pkg", Result: ResultPass, Tests: []TestResult{{Name: "TestALow", Result: ResultPass}}},
 	}, TestFilter{}, 10)
-	if len(ranked.FailedTests) != 2 || ranked.FailedTests[0].Test != "TestAHigh" || ranked.FailedTests[1].Test != "TestZLow" {
-		t.Errorf("equal failure counts should rank by failure share: %+v", ranked.FailedTests)
+	var order []string
+	for _, row := range ranked.FailedTests {
+		order = append(order, row.Test)
+	}
+	if want := []string{"TestZHigh", "TestNTieA", "TestNTieB", "TestALow"}; !slices.Equal(order, want) {
+		t.Errorf("equal failure counts should rank by failure share, then by name: %v, want %v", order, want)
+	}
+	// Records out of time order: the last failure is the latest, not the
+	// last read.
+	late := summarizeTests([]PackageRun{
+		{Time: at.Add(5 * time.Minute), Package: "pkg", Result: ResultFail, Tests: []TestResult{{Name: "TestLate", Result: ResultFail}}},
+		{Time: at, Package: "pkg", Result: ResultFail, Tests: []TestResult{{Name: "TestLate", Result: ResultFail}}},
+	}, TestFilter{}, 10)
+	if len(late.FailedTests) != 1 || !late.FailedTests[0].LastFailure.Equal(at.Add(5*time.Minute)) {
+		t.Errorf("last failure of records out of order: %+v, want %v", late.FailedTests, at.Add(5*time.Minute))
 	}
 	output.Reset()
 	if err := RenderTests(&output, TestReport{}, false); err != nil {
