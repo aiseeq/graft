@@ -1275,7 +1275,8 @@ and share of failed runs, the 20 most skipped tests (skipped ones are left
 out of the timing) with how many runs skipped them, the runs of their
 package and the reason of the last skip, and the flaky tests: those that both failed and
 passed on the same tree, with how many trees saw that. A test that fails
-after a change and passes after the next one is not flaky; the same code
+after a change and passes after the next one is not flaky; runs with `-overlay`
+use their own tree fingerprint; the same code
 failing and passing is. The flaky tasks follow: a task that failed and then
 passed under the same graft, as when a test script run by a task reruns a
 failed stage `graft e2e`, is a retry that hides a flake the way a test

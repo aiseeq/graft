@@ -1802,18 +1802,118 @@ func verboseGoTest(words []string) bool {
 // treeID identifies the work tree a tests step runs on; "" when the stats
 // are off or the tree cannot be read, which the flaky report then skips.
 func (r *Runner) treeID() string {
+	return r.treeIDWithOverlay(nil, nil, "")
+}
+
+// treeIDWithOverlay identifies a go test run, including files supplied by its
+// overlay. With no overlay, it returns the work tree ID unchanged.
+func (r *Runner) treeIDWithOverlay(words, env []string, dir string) string {
 	if r.Stats == nil {
 		return ""
 	}
-	repo, err := r.repo()
+	id, err := r.goTestTreeID(words, env, dir)
 	if err == nil {
-		var id string
-		if id, err = repo.WorkTreeID(); err == nil {
-			return id
+		return id
+	}
+	r.Stats.Warn(err)
+	return ""
+}
+
+func (r *Runner) goTestTreeID(words, env []string, dir string) (string, error) {
+	repo, err := r.repo()
+	if err != nil {
+		return "", fmt.Errorf("identifying the work tree of the tests: %w", err)
+	}
+	id, err := repo.WorkTreeID()
+	if err != nil {
+		return "", fmt.Errorf("identifying the work tree of the tests: %w", err)
+	}
+	overlay, found, err := goTestOverlay(words, env, dir)
+	if err != nil {
+		return "", fmt.Errorf("reading the go test overlay: %w", err)
+	}
+	if !found {
+		return id, nil
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00", id)
+	for _, item := range overlay {
+		if item.deleted {
+			fmt.Fprintf(h, "%d:%sD", len(item.path), item.path)
+			continue
+		}
+		fmt.Fprintf(h, "%d:%sF%d:%s", len(item.path), item.path, len(item.content), item.content)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+type overlayFile struct {
+	path, content string
+	deleted       bool
+}
+
+// goTestOverlay reads the overlay named by the go test flags or GOFLAGS: a
+// flag on the command line wins over GOFLAGS, as with go, and the words after
+// -args go to the test binary. A nil env is the inherited environment.
+func goTestOverlay(words, env []string, dir string) ([]overlayFile, bool, error) {
+	if env == nil {
+		env = os.Environ()
+	}
+	flags, _ := lookupEnv(env, "GOFLAGS")
+	if i := slices.Index(words, "-args"); i >= 0 {
+		words = words[:i]
+	}
+	args := slices.Concat(strings.Fields(flags), words)
+	var name string
+	for i := 0; i < len(args); i++ {
+		w := args[i]
+		if w == "--overlay" || w == "-overlay" {
+			if i+1 == len(args) {
+				return nil, true, fmt.Errorf("-overlay has no value")
+			}
+			i++
+			name = args[i]
+		} else if v, ok := strings.CutPrefix(w, "-overlay="); ok {
+			name = v
+		} else if v, ok := strings.CutPrefix(w, "--overlay="); ok {
+			name = v
 		}
 	}
-	r.Stats.Warn(fmt.Errorf("identifying the work tree of the tests: %w", err))
-	return ""
+	if name == "" {
+		return nil, false, nil
+	}
+	if !filepath.IsAbs(name) {
+		name = filepath.Join(dir, name)
+	}
+	data, err := os.ReadFile(name)
+	if err != nil {
+		return nil, true, fmt.Errorf("reading %s: %w", name, err)
+	}
+	var doc struct {
+		Replace map[string]string `json:"Replace"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, true, fmt.Errorf("parsing %s: %w", name, err)
+	}
+	keys := slices.Sorted(maps.Keys(doc.Replace))
+	files := make([]overlayFile, 0, len(keys))
+	for _, original := range keys {
+		replacement := doc.Replace[original]
+		content := ""
+		if replacement != "" {
+			p := replacement
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(dir, p)
+			}
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return nil, true, fmt.Errorf("reading replacement %s: %w", p, err)
+			}
+			content = string(b)
+		}
+		files = append(files, overlayFile{path: original, content: content, deleted: replacement == ""})
+	}
+	return files, true, nil
 }
 
 // recordTests writes the package runs of a tests step to the tests file.
@@ -2026,7 +2126,7 @@ func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
 // goTestStep runs a step of a tests: go task: its stdout is go test -json,
 // parsed into the tests journal and the reason of its stats line.
 func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string, directGoTest bool, remoteStderr *bytes.Buffer) error {
-	tree := r.treeID()
+	tree := r.treeIDWithOverlay(words, cmd.Env, cmd.Dir)
 	report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
 	if directGoTest && testreport.HasRun(words) {
 		r.checkRunWords(report, cmd, words)

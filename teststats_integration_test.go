@@ -236,6 +236,58 @@ func TestGoTestsAreRecordedPerTest(t *testing.T) {
 	}
 }
 
+// TestGoTestOverlayHasItsOwnTree: an overlay run and a normal run share the
+// repository tree but must not be counted as flaky.
+func TestGoTestOverlayHasItsOwnTree(t *testing.T) {
+	f, statsFile := statsRepo(t, "tasks:\n  overlay:\n    tests: go\n    run: [[go, test, -json, -count=1, -overlay, overlay.json, .]]\n  plain:\n    tests: go\n    run: [[go, test, -json, -count=1, .]]\n")
+	f.write("go.mod", "module projectA\n\ngo 1.23\n")
+	f.write("case_test.go", "package projectA\nimport \"testing\"\nfunc TestOverlayCase(t *testing.T) {}\n")
+	f.write("overlayfiles/replacement.go", "package projectA\nimport \"testing\"\nfunc TestOverlayCase(t *testing.T) { t.Fatal(\"PROJ-123\") }\n")
+	f.write("overlay.json", `{"Replace":{"case_test.go":"overlayfiles/replacement.go"}}`)
+	out, code := f.graft("", "overlay")
+	if code == 0 || !strings.Contains(out, "FAIL") {
+		t.Fatalf("overlay run: exit %d\n%s", code, out)
+	}
+	out, code = f.graft("", "plain")
+	if code != 0 || !strings.Contains(out, "ok  ") {
+		t.Fatalf("plain run: exit %d\n%s", code, out)
+	}
+	lines := readTests(t, filepath.Join(filepath.Dir(statsFile), "tests.jsonl"))
+	if len(lines) != 2 || lines[0].Tree == "" || lines[1].Tree == "" || lines[0].Tree == lines[1].Tree {
+		t.Fatalf("overlay and plain runs should have distinct nonempty tree IDs: %+v", lines)
+	}
+	f.write("overlayfiles/replacement.go", "package projectA\nimport \"testing\"\nfunc TestOverlayCase(t *testing.T) { t.Fatal(\"PROJ-123 changed\") }\n")
+	if _, code := f.graft("", "overlay"); code == 0 {
+		t.Fatal("changed overlay passed")
+	}
+	lines = readTests(t, filepath.Join(filepath.Dir(statsFile), "tests.jsonl"))
+	if len(lines) != 3 || lines[0].Tree == lines[2].Tree {
+		t.Fatalf("replacement contents must change the tree ID: %+v", lines)
+	}
+	report := f.mustGraft("stats", "--tests")
+	if !strings.Contains(report, "\nflaky: failed and passed on the same tree\nnone\n") {
+		t.Fatalf("overlay mutant was counted as flaky:\n%s", report)
+	}
+}
+
+// TestUnreadableGoTestOverlayHasNoTree: an unreadable overlay warns and
+// leaves its recorded run out of flaky comparisons.
+func TestUnreadableGoTestOverlayHasNoTree(t *testing.T) {
+	stream := filepath.Join(t.TempDir(), "stream.json")
+	writeFile(t, stream, passingRun)
+	command := helperBin + " cat " + stream + "; true -overlay absent.json"
+	config := "tasks:\n  missing:\n    tests: go\n    run:\n      - sh: " + yamlQuote(command) + "\n"
+	f, statsFile := statsRepo(t, config)
+	out, code := f.graft("", "missing")
+	if code != 0 || !strings.Contains(out, "reading the go test overlay") {
+		t.Fatalf("overlay warning: exit %d\n%s", code, out)
+	}
+	lines := readTests(t, filepath.Join(filepath.Dir(statsFile), "tests.jsonl"))
+	if len(lines) != 1 || lines[0].Tree != "" {
+		t.Fatalf("unreadable overlay tree ID: %+v", lines)
+	}
+}
+
 // TestReportFileTestsAreRecorded: a task with tests: jest or playwright
 // gets a file in GRAFT_TEST_REPORT for the runner's JSON report and records
 // the tests in it; the terminal output is the runner's own. A test a retry
