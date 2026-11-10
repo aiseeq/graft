@@ -29,12 +29,20 @@ func Terminate(pid int) error {
 // the work), what fails then goes to warn, and Wait returns soon after.
 func StopOnCancel(cmd *exec.Cmd, grace time.Duration, warn func(error)) {
 	cmd.Cancel = func() error {
+		// Asked before the signal: a reaper whose command ended alone gets
+		// it only to end the orphans sooner, and Wait keeps the command's
+		// own status, a success too.
+		ended := reaperEnded(cmd)
 		time.AfterFunc(grace, func() {
 			if err := killTree(cmd.Process); err != nil {
 				warn(err)
 			}
 		})
-		return cmd.Process.Signal(syscall.SIGTERM)
+		err := cmd.Process.Signal(syscall.SIGTERM)
+		if ended && err == nil {
+			return os.ErrProcessDone
+		}
+		return err
 	}
 	cmd.WaitDelay = grace + killSettle
 }

@@ -246,6 +246,23 @@ func TestCallerGoneWaitingDoesNotStart(t *testing.T) {
 func TestCallerGoneOneChannelKeepsRunning(t *testing.T) {
 	cmd, out, errOut := callerCommand(t, "exec", "--", "sh", "-c", "sleep 0.15; printf 'alive\\n'")
 	_ = errOut.Close()
+	// Read to the end: closing stdout too would make the caller gone,
+	// racing the command's own end.
+	data, _ := io.ReadAll(out)
+	_ = out.Close()
+	if err := waitProcess(t, cmd); err != nil || string(data) != "alive\n" {
+		t.Fatalf("exit %v, stdout %q", err, data)
+	}
+}
+
+// A command that ended alone keeps its status when its caller leaves while
+// graft still ends the orphans it left: graft did not end the command.
+func TestCallerGoneAfterCommandEndedKeepsItsStatus(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the reaper is Linux only")
+	}
+	cmd, out, errOut := callerCommand(t, "exec", "--", "sh", "-c", "(sleep 3 </dev/null >/dev/null 2>&1 &); printf 'alive\\n'")
+	_ = errOut.Close()
 	data, _ := bufio.NewReader(out).ReadString('\n')
 	_ = out.Close()
 	if err := waitProcess(t, cmd); err != nil || data != "alive\n" {

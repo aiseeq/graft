@@ -147,6 +147,12 @@ func RunReaper(path string, argv []string) int {
 			return ExitReaper
 		}
 	}
+	// The new name tells graft the command ended alone: a SIGTERM from now
+	// on hurries the orphans and does not end the command (reaperEnded).
+	if err := nameReaped(); err != nil {
+		// graft then takes a signal it sends for the end of the command.
+		fmt.Fprintf(os.Stderr, "graft: reaper: %v\n", err)
+	}
 	// The signals stay caught to the end: one that ended the reaper now
 	// would lose the command's status and leave its orphans behind.
 	if err := r.endOrphans(sigs); err != nil {
@@ -156,6 +162,33 @@ func RunReaper(path string, argv []string) int {
 		dieOf(r.status.Signal())
 	}
 	return r.status.ExitStatus()
+}
+
+// reapedName is the reaper's name once its command ended and only its
+// orphans keep it: its thread runs init and stays locked, so the name is
+// the process's in /proc.
+const reapedName = "graft-reaped"
+
+// nameReaped renames the reaper reapedName.
+func nameReaped() error {
+	name, err := unix.BytePtrFromString(reapedName)
+	if err == nil {
+		err = unix.Prctl(unix.PR_SET_NAME, uintptr(unsafe.Pointer(name)), 0, 0, 0)
+	}
+	if err != nil {
+		return fmt.Errorf("naming itself %s: %w", reapedName, err)
+	}
+	return nil
+}
+
+// reaperEnded tells whether cmd is a reaper whose command already ended, so
+// a signal to it ends only the orphans, not the command.
+func reaperEnded(cmd *exec.Cmd) bool {
+	if cmd.Process == nil || len(cmd.Args) == 0 || cmd.Args[0] != reapArg0 {
+		return false
+	}
+	comm, err := os.ReadFile("/proc/" + strconv.Itoa(cmd.Process.Pid) + "/comm")
+	return err == nil && strings.TrimSpace(string(comm)) == reapedName
 }
 
 type reaper struct {
