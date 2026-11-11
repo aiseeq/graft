@@ -86,10 +86,28 @@ func TestGlobalPreCommit(t *testing.T) {
 	}
 
 	plain := newRepo(t, map[string]string{"file.txt": "contents\n"})
-	setFixtureEnv(plain, "GIT_CONFIG_GLOBAL="+global)
+	// Outside a graft project no graft starts: a stub graft first on the
+	// PATH, as a test of another tool puts there, fails the commit if run.
+	stub := filepath.Join(plain.base, "stub")
+	if err := os.MkdirAll(stub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stub, "graft"), []byte("#!/bin/sh\necho stub graft ran >&2\nexit 7\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	setFixtureEnv(plain, "GIT_CONFIG_GLOBAL="+global, "PATH="+stub+string(os.PathListSeparator)+os.Getenv("PATH"))
 	plain.git("add", "-A")
-	if out, code := plain.tryGit("commit", "-m", "plain"); code != 0 {
+	if out, code := plain.tryGit("commit", "-m", "plain"); code != 0 || strings.Contains(out, "stub graft ran") {
 		t.Fatalf("commit outside a graft project: exit %d\n%s", code, out)
+	}
+	// A subdirectory of a graft project is still checked.
+	if err := os.MkdirAll(filepath.Join(f.work, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.write("sub/more.txt", "more\n")
+	f.git("add", "-A")
+	if out, code := f.exec(filepath.Join(f.work, "sub"), "", "git", "commit", "-m", "raw in sub"); code == 0 || !strings.Contains(out, "plain git commit is not used") {
+		t.Fatalf("raw commit in a subdirectory: exit %d\n%s", code, out)
 	}
 
 	local := tasksRepo(t, "", map[string]string{"file.txt": "contents\n"})

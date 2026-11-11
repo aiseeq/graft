@@ -209,11 +209,16 @@ func InstallGlobal() ([]Change, error) {
 	if err := installConfigHook("hook.graft-leaks", "graft hook pre-push", "pre-push", &changes); err != nil {
 		return nil, err
 	}
-	if err := installConfigHook("hook.graft-commit", "graft hook global-pre-commit", "pre-commit", &changes); err != nil {
+	if err := installConfigHook("hook.graft-commit", GlobalPreCommitCommand, "pre-commit", &changes); err != nil {
 		return nil, err
 	}
 	return changes, nil
 }
+
+// GlobalPreCommitCommand runs graft only in a work tree with .graft.yaml at
+// its top: a commit anywhere else, such as a test's scratch repository with a
+// stub graft on its PATH, starts no graft at all.
+const GlobalPreCommitCommand = `top=$(git rev-parse --show-toplevel 2>/dev/null) && test -f "$top/.graft.yaml" || exit 0; exec graft hook global-pre-commit`
 
 func installConfigHook(name, command, event string, changes *[]Change) error {
 	key := name + ".command"

@@ -2385,7 +2385,12 @@ up to date and release again.
   branches and tags. `graft init --global` installs Git's global `pre-push`
   leak check and `pre-commit` hook. The pre-commit hook refuses raw commits in
   repositories with `.graft.yaml`, unless `graft init` has already installed
-  the local hook there. Git 2.54 or newer is required. The leak check checks
+  the local hook there. Its command tests for `.graft.yaml` at the top of
+  the work tree in the shell and starts graft only there, so a commit in any
+  other repository, a test's scratch one with a stub `graft` on its PATH too,
+  runs no graft. A test that commits raw into a scratch repository with
+  `.graft.yaml` sets `GIT_CONFIG_GLOBAL` to a file of its own (or
+  `/dev/null`). Git 2.54 or newer is required. The leak check checks
   the push URL and objects currently at that
   destination. Findings stop the push. `git push --no-verify` knowingly skips
   hooks. Set `leaks.github_visibility: true` in the user config to ask `gh`
