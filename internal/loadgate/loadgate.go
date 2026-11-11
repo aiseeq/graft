@@ -808,7 +808,8 @@ func DirtyWritebackKB() (int64, error) {
 const (
 	loadSampleMaxGap = time.Second
 	loadSampleStale  = 5500 * time.Millisecond
-	// loadSamplePeriod is the kernel's sampling period, 5 s and a tick.
+	// loadSamplePeriod is the kernel's sampling period, 5 s and a tick
+	// (10 ms at HZ=100, the longest tick, so an estimate with margin above).
 	loadSamplePeriod = 5*time.Second + 10*time.Millisecond
 	loadFactor       = 1884.0 / 2048
 )
@@ -820,7 +821,9 @@ type kernelSamples struct {
 	have         bool
 
 	values []float64
-	// times are when the last values were seen, appended with them and kept
+	// times estimate when the kernel took the last values, no later than it
+	// did, so a task admitted after the estimate counts as not in the sample
+	// (a count too many, not too few); they are appended with the values and kept
 	// to two the same way, so the last of each go together: a reset of values
 	// leaves no pair until two more are seen, and values set without times (a
 	// test's) leave the share of admitted tasks to the average's.
@@ -868,7 +871,7 @@ func (s *kernelSamples) append(sample float64, at time.Time) {
 	}
 }
 
-// lastTwoAt are when the last two samples were seen.
+// lastTwoAt are the estimated times the kernel took the last two samples.
 func (s *kernelSamples) lastTwoAt() (time.Time, time.Time, bool) {
 	if len(s.values) < 2 || len(s.times) < 2 {
 		return time.Time{}, time.Time{}, false
