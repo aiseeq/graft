@@ -577,7 +577,7 @@ func (a *App) runDeployScript(ctx context.Context, r *deployRun, args []string) 
 		EnvDeployVersion+"="+r.version,
 		EnvDeployPrevious+"="+r.prev,
 	)
-	err = r.tasks.Measure(r.target.Run.Source, cmd)
+	err = r.tasks.Measure(ctx, r.target.Run.Source, cmd)
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		return &ExitCodeError{Code: exitErr.ExitCode(), Err: fmt.Errorf("the deploy script failed with exit status %d; nothing recorded", exitErr.ExitCode())}

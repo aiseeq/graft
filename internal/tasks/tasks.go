@@ -156,6 +156,7 @@ type Runner struct {
 	remoteAsked        bool
 	remoteDown         string
 	remoteHeavy        *config.RemoteHeavy
+	remoteLoadWarned   bool
 	userRemote         bool
 	remoteBrokenReason string
 	gateCosts          *gateStepCosts
@@ -217,6 +218,11 @@ type frame struct {
 	reserveEnd       func() string
 	reserveStoppedAt func() time.Time
 	reserveRelease   func() error
+	loadMachine      string
+	loadMachineSet   bool
+	mixedLoadMachine bool
+	stepLoads        stats.Usage
+	loadStepUnknown  bool
 }
 
 // TestDB is the test database of test_db tasks.
@@ -881,6 +887,15 @@ func stepExit(err error) int {
 	return 1
 }
 
+// warnRemoteLoad reports the first failed remote load command in this run.
+func (r *Runner) warnRemoteLoad(err error) {
+	if r.remoteLoadWarned {
+		return
+	}
+	r.remoteLoadWarned = true
+	fmt.Fprintf(r.Stderr, "graft: remote load command %q failed: %v\n", r.remoteHeavy.Load, err)
+}
+
 // recordStep adds a step's usage and exit to the open frames and writes its
 // stats record.
 func (r *Runner) recordStep(source string, use stats.Usage, code int, reason string) {
@@ -890,9 +905,20 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int, reason str
 	if code == 0 {
 		reason = ""
 	}
+	inner := r.frames[len(r.frames)-1]
+	stepHost := r.hostOf(inner)
 	for _, f := range r.frames {
+		if f.loadMachineSet && f.loadMachine != stepHost {
+			f.mixedLoadMachine = true
+		} else if !f.loadMachineSet {
+			f.loadMachine, f.loadMachineSet = stepHost, true
+		}
 		f.steps++
 		f.use.Add(use)
+		f.stepLoads.Add(use)
+		if !use.LoadKnown {
+			f.loadStepUnknown = true
+		}
 		if f.exit == 0 {
 			f.exit = code
 		}
@@ -900,7 +926,6 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int, reason str
 			f.reason = reason
 		}
 	}
-	inner := r.frames[len(r.frames)-1]
 	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Profile: r.profile(inner), Step: stats.StepText(source), Exit: code, Reason: reason, Host: r.hostOf(inner), Here: inner.stepHere}, use, r.frames[0].task)
 }
 
@@ -1633,13 +1658,13 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	}
 	switch t.Tests {
 	case config.TestsGo:
-		return r.goTestStep(cmd, s.Source, t.Tests, words, directGoTest, &remoteStderr)
+		return r.goTestStep(ctx, cmd, s.Source, t.Tests, words, directGoTest, &remoteStderr)
 	case config.TestsJest, config.TestsPlaywright:
-		err := r.reportFileStep(cmd, s.Source, t.Tests, report, &remoteStderr)
+		err := r.reportFileStep(ctx, cmd, s.Source, t.Tests, report, &remoteStderr)
 		r.noteBrokenRemote(cmd, err, remoteStderr.String())
 		return err
 	}
-	_, err = r.measureWithCapture(cmd, s.Source, true, &remoteStderr)
+	_, err = r.measureWithCapture(ctx, cmd, s.Source, true, &remoteStderr)
 	r.noteBrokenRemote(cmd, err, remoteStderr.String())
 	return err
 }
@@ -1743,7 +1768,7 @@ func reportFile(t *config.Task) bool {
 // path, the file in GRAFT_TEST_REPORT, then records the tests in it; the
 // failed tests in it are the step's reason, the runner's closing lines say
 // less.
-func (r *Runner) reportFileStep(cmd *exec.Cmd, source, runner, path string, remoteStderr *bytes.Buffer) error {
+func (r *Runner) reportFileStep(ctx context.Context, cmd *exec.Cmd, source, runner, path string, remoteStderr *bytes.Buffer) error {
 	tree := r.treeID()
 	var (
 		runs []stats.PackageRun
@@ -1755,7 +1780,7 @@ func (r *Runner) reportFileStep(cmd *exec.Cmd, source, runner, path string, remo
 		once.Do(read)
 		return testreport.FailureReason(runs)
 	}
-	use, err := r.measureWithReason(cmd, source, true, true, remoteStderr, reason, nil)
+	use, err := r.measureWithReason(ctx, cmd, source, true, true, remoteStderr, reason, nil)
 	once.Do(read)
 	switch {
 	case errors.Is(rerr, os.ErrNotExist):
@@ -2072,7 +2097,7 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy, use
 	if err != nil {
 		return err
 	}
-	_, err = r.measureWithCapture(cmd, source, true, &remoteStderr)
+	_, err = r.measureWithCapture(ctx, cmd, source, true, &remoteStderr)
 	r.noteBrokenRemote(cmd, err, remoteStderr.String())
 	if leave, fallback, herr := r.fallbackBrokenRemote(ctx, ExecTask, r.ExecMemoryMax); fallback {
 		if herr != nil {
@@ -2082,7 +2107,7 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy, use
 		if runErr != nil {
 			return errors.Join(err, runErr, leave())
 		}
-		_, err = r.measure(localCmd, source)
+		_, err = r.measure(ctx, localCmd, source)
 		return errors.Join(commandError(localCmd, err), leave())
 	}
 	switch {
@@ -2125,20 +2150,20 @@ func (r *Runner) Unit(name string, fn func() error) (err error) {
 
 // Measure runs cmd as a step of the unit or task running, and records it
 // the way task steps are recorded.
-func (r *Runner) Measure(source string, cmd *exec.Cmd) error {
-	_, err := r.measureWithCapture(cmd, source, false, nil)
+func (r *Runner) Measure(ctx context.Context, source string, cmd *exec.Cmd) error {
+	_, err := r.measureWithCapture(ctx, cmd, source, false, nil)
 	return err
 }
 
 // measure runs cmd and records what it cost against every running task.
 // A command that never started records nothing: no process ran.
-func (r *Runner) measure(cmd *exec.Cmd, source string) (stats.Usage, error) {
-	return r.measureWithCapture(cmd, source, true, nil)
+func (r *Runner) measure(ctx context.Context, cmd *exec.Cmd, source string) (stats.Usage, error) {
+	return r.measureWithCapture(ctx, cmd, source, true, nil)
 }
 
 // goTestStep runs a step of a tests: go task: its stdout is go test -json,
 // parsed into the tests journal and the reason of its stats line.
-func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string, directGoTest bool, remoteStderr *bytes.Buffer) error {
+func (r *Runner) goTestStep(ctx context.Context, cmd *exec.Cmd, source, runner string, words []string, directGoTest bool, remoteStderr *bytes.Buffer) error {
 	tree := r.treeIDWithOverlay(words, cmd.Env, cmd.Dir)
 	report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
 	if directGoTest && testreport.HasRun(words) {
@@ -2152,7 +2177,7 @@ func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string
 	var cerr error
 	closed := false
 	missingRunFailure := false
-	use, err := r.measureGoTest(cmd, source, remoteStderr, func() string {
+	use, err := r.measureGoTest(ctx, cmd, source, remoteStderr, func() string {
 		closed = true
 		runs, cerr = report.Close()
 		reason := report.Reason()
@@ -2188,23 +2213,175 @@ func (r *Runner) goTestStep(cmd *exec.Cmd, source, runner string, words []string
 
 // measureGoTest is measure for a go test -json step: its stdout is the
 // stream, so only stderr is kept, and reason gives the parsed failures.
-func (r *Runner) measureGoTest(cmd *exec.Cmd, source string, remoteStderr *bytes.Buffer, reason func() string, missingRunNames func() bool) (stats.Usage, error) {
-	return r.measureWithReason(cmd, source, true, false, remoteStderr, reason, missingRunNames)
+func (r *Runner) measureGoTest(ctx context.Context, cmd *exec.Cmd, source string, remoteStderr *bytes.Buffer, reason func() string, missingRunNames func() bool) (stats.Usage, error) {
+	return r.measureWithReason(ctx, cmd, source, true, false, remoteStderr, reason, missingRunNames)
 }
 
 // backgroundPipeWait bounds how long an inherited output pipe can keep Wait
 // blocked after the step exits, while allowing ordinary child shutdown.
 const backgroundPipeWait = 2 * time.Second
 
+const remoteLoadInterval = 5 * time.Second
+const remoteLoadTimeout = 5 * time.Second
+const remoteLoadStopWait = 100 * time.Millisecond
+
+type remoteLoadWatch struct {
+	stop     chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
+	cancel   context.CancelFunc
+	mu       sync.Mutex
+	sample   stats.Sample
+	err      error
+	stopping bool
+}
+
+func readRemoteLoad(parent context.Context, argv []string) (float64, error) {
+	ctx, cancel := context.WithTimeout(parent, remoteLoadTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.WaitDelay = remoteLoadStopWait
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("command failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	load, err := stats.ParseLoadAverage(string(out))
+	if err != nil {
+		return 0, fmt.Errorf("cannot parse output %q: %w", strings.TrimSpace(string(out)), err)
+	}
+	return load, nil
+}
+
+func watchRemoteLoad(parent context.Context, argv []string) *remoteLoadWatch {
+	ctx, cancel := context.WithCancel(parent)
+	w := &remoteLoadWatch{stop: make(chan struct{}), done: make(chan struct{}), cancel: cancel}
+	go w.run(ctx, argv)
+	return w
+}
+
+func (w *remoteLoadWatch) run(ctx context.Context, argv []string) {
+	defer close(w.done)
+	defer w.cancel()
+	defer func() {
+		if p := recover(); p != nil {
+			w.fail(context.Background(), fmt.Errorf("sampling panicked: %v", p))
+		}
+	}()
+	load, err := readRemoteLoad(ctx, argv)
+	if err != nil {
+		w.fail(ctx, err)
+		return
+	}
+	w.record(load, true)
+	t := time.NewTicker(remoteLoadInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-w.stop:
+			return
+		case <-ctx.Done():
+			w.fail(ctx, ctx.Err())
+			return
+		case <-t.C:
+			load, err := readRemoteLoad(ctx, argv)
+			if err != nil {
+				w.fail(ctx, err)
+				return
+			}
+			w.record(load, false)
+		}
+	}
+}
+
+func (w *remoteLoadWatch) record(load float64, first bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopping {
+		return
+	}
+	if first {
+		w.sample.LoadStart = load
+	}
+	w.sample.LoadMax = max(w.sample.LoadMax, load)
+	w.sample.LoadKnown = true
+}
+
+// fail leaves the load unknown. A step whose context ended (Ctrl-C, the
+// task cancelled) stopped the sampling, the command did not fail: no error
+// to warn about.
+func (w *remoteLoadWatch) fail(ctx context.Context, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopping {
+		return
+	}
+	w.sample.LoadKnown = false
+	if ctx.Err() == nil {
+		w.err = err
+	}
+}
+
+func (w *remoteLoadWatch) stopAndSample() stats.Sample {
+	w.stopOnce.Do(func() {
+		w.mu.Lock()
+		w.stopping = true
+		w.mu.Unlock()
+		w.cancel()
+		close(w.stop)
+	})
+	t := time.NewTimer(remoteLoadStopWait)
+	defer t.Stop()
+	finished := false
+	select {
+	case <-w.done:
+		finished = true
+	case <-t.C:
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	sample := w.sample
+	if w.err != nil {
+		sample.LoadErr = w.err
+	}
+	if !finished {
+		sample.LoadKnown = false
+	}
+	return sample
+}
+
+func (r *Runner) remoteStepLoad(ctx context.Context) (*remoteLoadWatch, bool) {
+	if len(r.frames) == 0 || !r.frames[len(r.frames)-1].remote {
+		return nil, false
+	}
+	if len(r.remoteHeavy.Load) == 0 {
+		return nil, true
+	}
+	return watchRemoteLoad(ctx, r.remoteHeavy.Load), false
+}
+
+func (r *Runner) finishRemoteStepLoad(sample stats.Sample, watch *remoteLoadWatch, failed bool) stats.Sample {
+	if watch != nil {
+		remote := watch.stopAndSample()
+		sample.LoadStart, sample.LoadMax, sample.LoadKnown = remote.LoadStart, remote.LoadMax, remote.LoadKnown
+		if remote.LoadErr != nil {
+			r.warnRemoteLoad(remote.LoadErr)
+		}
+		sample.LoadErr = nil
+	} else if failed {
+		sample.LoadKnown, sample.LoadErr = false, nil
+	}
+	return sample
+}
+
 // measureWithCapture is measure; with capture the step's output also goes to
 // a bounded tail, the reason of its stats line when it fails.
-func (r *Runner) measureWithCapture(cmd *exec.Cmd, source string, capture bool, remoteStderr *bytes.Buffer) (stats.Usage, error) {
-	return r.measureWithReason(cmd, source, capture, capture, remoteStderr, nil, nil)
+func (r *Runner) measureWithCapture(ctx context.Context, cmd *exec.Cmd, source string, capture bool, remoteStderr *bytes.Buffer) (stats.Usage, error) {
+	return r.measureWithReason(ctx, cmd, source, capture, capture, remoteStderr, nil, nil)
 }
 
 // measureWithReason runs and records cmd; the reason of a failed step is the
 // first useful cleaned reason from reasonSource, stderr, or stdout.
-func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, captureStdout bool, remoteStderr *bytes.Buffer, reasonSource func() string, missingRunNames func() bool) (stats.Usage, error) {
+func (r *Runner) measureWithReason(ctx context.Context, cmd *exec.Cmd, source string, captureStderr, captureStdout bool, remoteStderr *bytes.Buffer, reasonSource func() string, missingRunNames func() bool) (stats.Usage, error) {
 	stdout, stderr, piped := captureStepOutput(cmd, captureStderr, captureStdout)
 	if piped && cmd.WaitDelay == 0 {
 		cmd.WaitDelay = backgroundPipeWait
@@ -2215,13 +2392,14 @@ func (r *Runner) measureWithReason(cmd *exec.Cmd, source string, captureStderr, 
 		return stats.Usage{}, fmt.Errorf("start %s: %w", cmd.Path, err)
 	}
 	watch := stats.WatchProcess(cmd.Process.Pid)
+	remoteLoad, remoteLoadFailed := r.remoteStepLoad(ctx)
 	err := cmd.Wait()
 	// A step that succeeded is not failed by a process that left its session
 	// and holds the step's output pipe.
 	if piped && errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
 		err = nil
 	}
-	seen := watch.Stop()
+	seen := r.finishRemoteStepLoad(watch.Stop(), remoteLoad, remoteLoadFailed)
 	memoryErr := r.memoryFailure(before, source)
 	if memoryErr != nil {
 		err = errors.Join(err, memoryErr)
@@ -2450,6 +2628,23 @@ func (r *Runner) begin(task string) *frame {
 	return f
 }
 
+// taskLoad keeps a task's load only when its host steps all ran on the same
+// host and each step has a complete sample.
+func taskLoad(use stats.Usage, f *frame, host string) stats.Usage {
+	if host == "" {
+		if f.mixedLoadMachine || f.loadMachineSet && f.loadMachine != "" {
+			use.LoadKnown = false
+		}
+		return use
+	}
+	if f.mixedLoadMachine || f.loadMachine != host || !f.loadMachineSet || f.loadStepUnknown {
+		use.LoadKnown = false
+	} else {
+		use.LoadStart, use.LoadMax, use.LoadKnown = f.stepLoads.LoadStart, f.stepLoads.LoadMax, f.stepLoads.LoadKnown
+	}
+	return use
+}
+
 // end closes the frame of a task and records the task as a whole, returning
 // what it cost; the task's error itself goes back to its caller.
 func (r *Runner) end(f *frame, err error) stats.Usage {
@@ -2495,6 +2690,7 @@ func (r *Runner) end(f *frame, err error) stats.Usage {
 			r.Stats.Warn(err)
 		}
 	}
+	use = taskLoad(use, f, rec.Host)
 	if f.db != nil {
 		if use.DB = f.db.Stop(); use.DB.Err == nil {
 			use.DBKnown = true

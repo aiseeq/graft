@@ -33,6 +33,190 @@ func remoteRepo(t *testing.T, threads int, tasks string) (f *fixture, state stri
 	return f, state
 }
 
+func remoteLoadRepo(t *testing.T, tasks string, load []string) (*fixture, string) {
+	t.Helper()
+	f, state := remoteRepo(t, 8, tasks)
+	cfg := strings.Replace(f.read(".graft.yaml"), "host: pc", "host: hostA", 1)
+	if len(load) > 0 {
+		words := make([]string, len(load))
+		for i, word := range load {
+			words[i] = yamlQuote(word)
+		}
+		cfg = strings.Replace(cfg, "threads: 8}", "threads: 8, load: ["+strings.Join(words, ", ")+"]}", 1)
+	}
+	f.write(".graft.yaml", cfg)
+	return f, state
+}
+
+// TestRemoteHostLoadStats checks remote load sampling and failure handling.
+func TestRemoteHostLoadStats(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		load      string
+		wantStart float64
+		wantMax   float64
+		wantWarn  bool
+	}{
+		{name: "configured", wantStart: 3.5, wantMax: 7.25},
+		{name: "unset"},
+		{name: "failed", load: "[sh, -c, 'exit 1']", wantWarn: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, state := remoteRepo(t, 8, "  work:\n    heavy: true\n    run: [[sh, -c, 'sleep 5.3']]\n")
+			if tc.name == "configured" {
+				loadScript := filepath.Join(state, "load.sh")
+				writeFile(t, loadScript, "#!/bin/sh\nif [ -e "+filepath.Join(state, "seen")+" ]; then echo '7.25 2.00 1.00 1/100 123'; else touch "+filepath.Join(state, "seen")+"; echo '3.50 2.00 1.00 1/100 123'; fi\n")
+				tc.load = "[sh, " + yamlQuote(loadScript) + "]"
+			}
+			cfg := strings.Replace(f.read(".graft.yaml"), "host: pc", "host: hostA", 1)
+			if tc.load != "" {
+				cfg = strings.Replace(cfg, "threads: 8}", "threads: 8, load: "+tc.load+"}", 1)
+			}
+			if tc.name == "unset" {
+				cfg = strings.Replace(cfg, "run: [[sh, -c, 'sleep 5.3']]", "run: [[sh, -c, 'true']]", 1)
+			} else if tc.name == "failed" {
+				cfg = strings.Replace(cfg, "run: [[sh, -c, 'sleep 5.3']]", "run: [[sh, -c, 'sleep 0.2'], [sh, -c, 'sleep 0.2']]", 1)
+			}
+			f.write(".graft.yaml", cfg)
+			out, code := f.graft("", "work")
+			if code != 0 {
+				t.Fatalf("work failed (%d):\n%s", code, out)
+			}
+			lines := readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl"))
+			var step, task *statsLine
+			for i := range lines {
+				if lines[i].Host == "hostA" && lines[i].Kind == "step" {
+					step = &lines[i]
+				}
+				if lines[i].Host == "hostA" && lines[i].Kind == "task" {
+					task = &lines[i]
+				}
+			}
+			if step == nil || task == nil {
+				t.Fatalf("host records absent: %+v", lines)
+			}
+			if tc.name == "configured" {
+				for _, line := range []*statsLine{step, task} {
+					if line.LoadMin == nil || line.LoadMax == nil || *line.LoadMin != tc.wantStart || *line.LoadMax != tc.wantMax {
+						t.Errorf("host load = %v, %v; want %v, %v", line.LoadMin, line.LoadMax, tc.wantStart, tc.wantMax)
+					}
+				}
+			} else if step.LoadMin != nil || step.LoadMax != nil || task.LoadMin != nil || task.LoadMax != nil {
+				t.Errorf("host records contain load without a complete host sample: step=%+v task=%+v", step, task)
+			}
+			if got := strings.Count(out, "remote load command"); (got == 1) != tc.wantWarn {
+				t.Errorf("remote load warning count = %d; output:\n%s", got, out)
+			}
+		})
+	}
+}
+
+// TestRemoteTaskLoadAggregatesEveryHostStep checks load from multiple host steps.
+func TestRemoteTaskLoadAggregatesEveryHostStep(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake remote uses shell scripts")
+	}
+	state := t.TempDir()
+	seen := filepath.Join(state, "seen")
+	loadScript := filepath.Join(state, "load.sh")
+	writeFile(t, loadScript, "#!/bin/sh\nif [ -e "+seen+" ]; then echo '7.25 2 1 1/100 123'; else touch "+seen+"; echo '3.50 2 1 1/100 123'; fi\n")
+	tasks := `  work:
+    heavy: true
+    run: [[sh, -c, 'sleep 0.2'], [sh, -c, 'sleep 0.2']]
+`
+	f, state := remoteLoadRepo(t, tasks, []string{"sh", loadScript})
+	out, code := f.graft("", "work")
+	if code != 0 {
+		t.Fatalf("work failed (%d):\n%s", code, out)
+	}
+	var steps []statsLine
+	var task *statsLine
+	lines := readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl"))
+	for i := range lines {
+		if lines[i].Host == "hostA" && lines[i].Kind == "step" {
+			steps = append(steps, lines[i])
+		}
+		if lines[i].Host == "hostA" && lines[i].Kind == "task" {
+			task = &lines[i]
+		}
+	}
+	if len(steps) != 2 || task == nil {
+		t.Fatalf("host records: %d steps, task=%+v", len(steps), task)
+	}
+	if steps[0].LoadMin == nil || *steps[0].LoadMin != 3.5 || steps[1].LoadMin == nil || *steps[1].LoadMin != 7.25 {
+		t.Fatalf("step samples: %+v", steps)
+	}
+	if task.LoadMin == nil || *task.LoadMin != 3.5 || task.LoadMax == nil || *task.LoadMax != 7.25 {
+		t.Errorf("task did not aggregate both host steps: %+v", task)
+	}
+}
+
+func TestRemoteLoadFailureDuringStepIsReportedOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake remote uses shell scripts")
+	}
+	state := t.TempDir()
+	seen := filepath.Join(state, "seen")
+	loadScript := filepath.Join(state, "load.sh")
+	writeFile(t, loadScript, "#!/bin/sh\nif [ -e "+seen+" ]; then exit 1; fi\ntouch "+seen+"\necho '3.50 2 1 1/100 123'\n")
+	tasks := `  work:
+    heavy: true
+    run: [[sh, -c, 'sleep 5.5']]
+`
+	f, state := remoteLoadRepo(t, tasks, []string{"sh", loadScript})
+	out, code := f.graft("", "work")
+	if code != 0 {
+		t.Fatalf("work failed (%d):\n%s", code, out)
+	}
+	lines := readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl"))
+	var step, task *statsLine
+	for i := range lines {
+		if lines[i].Host == "hostA" && lines[i].Kind == "step" {
+			step = &lines[i]
+		}
+		if lines[i].Host == "hostA" && lines[i].Kind == "task" {
+			task = &lines[i]
+		}
+	}
+	if step == nil || step.LoadMin != nil || task == nil || task.LoadMax != nil {
+		t.Errorf("failed sample recorded: step=%+v task=%+v", step, task)
+	}
+	if got := strings.Count(out, "remote load command"); got != 1 {
+		t.Errorf("warnings=%d, want 1: %s", got, out)
+	}
+	if strings.Contains(out, "resource stats not recorded") {
+		t.Errorf("generic stats warning leaked: %s", out)
+	}
+}
+
+func TestRemoteLoadDoesNotDelayStepEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake remote uses shell scripts")
+	}
+	tasks := `  work:
+    heavy: true
+    run: [[sh, -c, 'sleep 1']]
+`
+	f, state := remoteLoadRepo(t, tasks, []string{"sh", "-c", "sleep 3; echo '3.50 2 1 1/100 123'"})
+	out, code := f.graft("", "work")
+	if code != 0 {
+		t.Fatalf("work failed (%d):\n%s", code, out)
+	}
+	for _, line := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+		if line.Host == "hostA" && line.Kind == "step" {
+			if line.WallS >= 2 {
+				t.Errorf("load command delayed step: wall_s=%v", line.WallS)
+			}
+			if line.LoadMin != nil || line.LoadMax != nil {
+				t.Errorf("unfinished load recorded: %+v", line)
+			}
+		}
+	}
+	if strings.Contains(out, "remote load command") {
+		t.Errorf("intentional cancellation warned: %s", out)
+	}
+}
+
 // A go test step on the host answers for its -run like one here, with the
 // GOFLAGS it is sent with; this machine's go env says nothing about it.
 func TestGoTestRunCheckOnRemoteHost(t *testing.T) {

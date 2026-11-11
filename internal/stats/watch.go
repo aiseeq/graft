@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -362,6 +365,24 @@ func (w *Watch) Stop() Sample {
 	w.stopOnce.Do(func() { close(w.stop) })
 	<-w.done
 	return w.sample
+}
+
+// ParseLoadAverage parses the first field of a /proc/loadavg line.
+func ParseLoadAverage(line string) (float64, error) {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return 0, errors.New("empty load average")
+	}
+	field := fields[0]
+
+	load, err := strconv.ParseFloat(field, 64)
+	if err != nil || math.IsNaN(load) || math.IsInf(load, 0) || load < 0 {
+		if err == nil {
+			err = fmt.Errorf("invalid load average %q", field)
+		}
+		return 0, err
+	}
+	return load, nil
 }
 
 // Unsupported tells whether err only means the system does not offer the
