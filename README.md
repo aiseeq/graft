@@ -2574,10 +2574,17 @@ IOSchedulingClass=idle
 [Timer]
 OnCalendar=daily
 Persistent=true
+OnStartupSec=15min
 
 [Install]
 WantedBy=timers.target
 ```
+
+`Persistent=true` records the time a run started, not that it finished: a run
+that a reboot or a stop of the user's service manager cuts short counts as
+done, and the next one comes a day later. `OnStartupSec=15min` runs it again
+15 minutes after every start of the service manager; a second run in a day
+finds nothing left to do.
 
 `graft worktree sync [--trunk <ref>]`, run in a worktree, moves its work onto
 the fresh trunk: it fetches every remote, rebases the branch's own commits
@@ -2615,7 +2622,8 @@ because trimming is already-running work whose added load is on the disk.
 reports what remains for the next run. Without `--apply` it reports the
 would-be removals immediately. Run it daily from a timer, for instance a
 systemd user unit with `ExecStart=` the absolute path of graft and `gocache
-trim --apply`, and `OnCalendar=daily`: systemd does not look in `~/bin`. Set
+trim --apply`, and `OnCalendar=daily` with `Persistent=true` and
+`OnStartupSec=15min`, as for the worktree cleanup: systemd does not look in `~/bin`. Set
 `TimeoutStartSec=12h` as well: a timer does not start a unit that is still
 active, so a hung run would hold off every later one. A run stopped this way
 fails the unit and exits at the end of its batch, without the summary line, and
