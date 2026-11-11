@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -360,10 +361,19 @@ func LocalShimActive(repo *gitx.Repo, name string) (bool, error) {
 	if !filepath.IsAbs(dir) {
 		dir = filepath.Join(repo.Root, filepath.FromSlash(dir))
 	}
-	content, err := os.ReadFile(filepath.Join(dir, name))
+	path := filepath.Join(dir, name)
+	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
+	if err != nil {
+		return false, err
+	}
+	// git skips a hook without the executable bit, outside Windows.
+	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
+		return false, nil
+	}
+	content, err := os.ReadFile(path)
 	if err != nil {
 		return false, err
 	}

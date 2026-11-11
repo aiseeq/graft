@@ -102,6 +102,22 @@ func TestGlobalPreCommit(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "plain git commit is not used") || strings.Count(out, "plain git commit is not used") != 1 {
 		t.Fatalf("local shim refusal: exit %d\n%s", code, out)
 	}
+
+	// A shim that lost its executable bit is not run by git: the global
+	// hook checks instead of taking it for done.
+	if runtime.GOOS == "windows" {
+		return
+	}
+	stale, err := filepath.Glob(filepath.Join(local.work, "*", hooks.PreCommit))
+	if err != nil || len(stale) != 1 {
+		t.Fatalf("local pre-commit shim: %v %v", stale, err)
+	}
+	if err := os.Chmod(stale[0], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := local.tryGit("commit", "-m", "raw"); code == 0 || !strings.Contains(out, "plain git commit is not used") {
+		t.Fatalf("shim without the executable bit: exit %d\n%s", code, out)
+	}
 }
 
 func TestVersionDescribeFileMode(t *testing.T) {
