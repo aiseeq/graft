@@ -88,10 +88,23 @@ func TestReportShowsDiskUse(t *testing.T) {
 	}
 }
 
+// TestReportReserveShare: how the reservations of admitted tasks ended, in
+// English as the rest of graft's output; none, no line.
 func TestReportReserveShare(t *testing.T) {
-	recs := []Record{{Kind: KindTask, Task: "one", ReserveCores: 1, ReserveEnd: "done"}, {Kind: KindTask, Task: "two", ReserveCores: 2, ReserveEnd: "cap"}}
-	if got := ReserveSummary(recs); !strings.Contains(got, "по сроку 1 (50%)") {
-		t.Fatalf("ReserveSummary = %q", got)
+	recs := []Record{
+		{Kind: KindTask, Task: "one", ReserveCores: 1, ReserveEnd: "done"},
+		{Kind: KindTask, Task: "two", ReserveCores: 2, ReserveEnd: "cap"},
+		{Kind: KindTask, Task: "three", ReserveCores: 2, ReserveEnd: "cpu"},
+		{Kind: KindTask, Task: "four", ReserveCores: 2, ReserveEnd: "cap"},
+		{Kind: KindStep, ReserveCores: 2, ReserveEnd: "cpu"},
+		{Kind: KindTask, Task: "five"},
+	}
+	want := "reserve: 4 tasks, released by CPU 1, at the time limit 2 (50%), ended first 1"
+	if got := ReserveSummary(recs); got != want {
+		t.Errorf("ReserveSummary = %q, want %q", got, want)
+	}
+	if got := ReserveSummary(recs[5:]); got != "" {
+		t.Errorf("no reservations: %q, want empty", got)
 	}
 }
 

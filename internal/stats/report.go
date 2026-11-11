@@ -604,7 +604,7 @@ func ReserveSummary(recs []Record) string {
 	if total == 0 {
 		return ""
 	}
-	return fmt.Sprintf("reserve: %d tasks, снят по CPU %d, по сроку %d (%d%%), кончились раньше %d", total, cpu, cap, (cap*100+total/2)/total, done)
+	return fmt.Sprintf("reserve: %d tasks, released by CPU %d, at the time limit %d (%d%%), ended first %d", total, cpu, cap, (cap*100+total/2)/total, done)
 }
 
 func formatSeconds(s float64) string {
