@@ -41,8 +41,8 @@ var commands = []command{
 	{name: "gate", syntax: fixed("graft gate"), summary: text("run the gate (go vet ./... in every Go module first; go_vet.enabled: false or go_vet.exclude, with a reason, skips it)")},
 	{name: "hook", syntax: fixed("graft hook (pre-commit|post-merge)", "graft hook pre-push <remote> <url>"), summary: text("entry point of the installed hooks")},
 	{name: "flags", syntax: fixed(
-		"graft flags [status] [--env E] [--reason R]",
-		"graft flags show <id> [--env E] [--reason R]",
+		"graft flags [status] [--env E]",
+		"graft flags show <id> [--env E]",
 		"graft flags ack <id> --reason R [--env E]",
 		"graft flags mute <id> --reason R [--match S] [--in subject|body|key] [--all-envs] [--env E]",
 	), summary: text("review the project's event journal: status, show, ack, mute"),
@@ -113,7 +113,10 @@ func releaseSyntax(_ *config.Config) []string {
 // helpCmd prints graft help, or with a command's name its section.
 func helpCmd(a *app.App, args []string) error {
 	switch {
-	case len(args) == 1 && args[0] == "--json":
+	case len(args) > 0 && args[0] == "--json":
+		if len(args) > 1 {
+			return fmt.Errorf("%w: help --json: unexpected argument %q", errUsage, args[1])
+		}
 		return helpJSON(a)
 	case len(args) == 0:
 		return help(a)

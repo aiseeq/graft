@@ -415,7 +415,7 @@ func statsCmd(a *app.App, args []string) error {
 	tests := fs.Bool("tests", false, "report tests instead of tasks: the slowest, and the flaky ones")
 	maxLoad := fs.Float64("max-load", 0, "count only the runs whose 1-minute load average stayed below this `load`")
 	value := fs.String("value", "", "print one timing: wall-p50, wall-p95 or wait-p95")
-	minRuns := fs.Int("min-runs", 3, "minimum runs for --value (default 3)")
+	minRuns := fs.Int("min-runs", 3, "minimum runs for --value")
 	failures := fs.Bool("failures", false, "show recent failed tasks and steps with their captured reason")
 	refused := fs.Bool("refused", false, "show the raw git commits the hook refused: when, where, which session")
 	if err := parse(fs, args); err != nil {
@@ -929,7 +929,7 @@ func commitCmd(ctx context.Context, a *app.App, args []string) error {
 	fs.Var(&parts, "m", "commit message paragraph (repeatable)")
 	file := fs.String("F", "", "read the commit message from a file, - for stdin")
 	level := levelFlags(fs)
-	fs.BoolVar(&a.NoCache, "no-cache", false, "run the gate's tasks with cache even if they passed on this tree")
+	fs.BoolVar(&a.NoCache, "no-cache", false, "run the gate's tasks again, without the cache, even if they passed on this tree")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -1099,7 +1099,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	reason := fs.String("reason", "", "thaw: why the freeze ended")
 	apply := fs.Bool("apply", false, "sweep: move the items, not only list them")
 	glintTicket := fs.String("glint-ticket", "", "deploy, handover: the item that takes the glint findings of the deployed commit, at a release acceptance")
-	fs.BoolVar(&a.NoCache, "no-cache", false, "run the deps with cache even if they passed on this tree")
+	fs.BoolVar(&a.NoCache, "no-cache", false, "run the deps again, without the cache, even if they passed on this tree")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err

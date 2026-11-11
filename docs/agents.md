@@ -17,7 +17,7 @@ For a one-off command use `graft exec --heavy -- <cmd>` when it is heavy.
 `graft commit` stages changes, runs the gate and checks the staged content.
 It can add a ticket key from the branch, commit and push to every remote.
 Read a refusal and its hint, then fix the cause before trying again.
-Use bypass flags only when the user explicitly asks for them.
+graft commit has no flag to skip a check. Flags that relax a safeguard elsewhere (deploy --unapproved, --past-freeze) are for the user's explicit word only.
 
 ## Heavy
 
