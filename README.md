@@ -1554,9 +1554,11 @@ place, and when the latest version cannot be learned, graft warns and keeps
 the build on PATH. `graft tools` reports, `graft tools install` and
 `graft init` run `go install` for the failing ones into `tools.bin_dir` from
 the user config (by default where go install puts binaries) and check again.
-Before installing, graft warns when the new copy will come ahead of another
-one on PATH, such as a development build; when PATH still finds another copy
-first after the install, graft says where both are.
+When a `go_install` tool pins a module listed in `modules.latest`, graft warns
+that the pin should be removed. Before installing, graft warns when the new
+copy will come ahead of another one on PATH, such as a development build; when
+PATH still finds another copy first after the install, graft says where both
+are.
 
 A tool that go install cannot provide, such as a system package, takes
 `manual` instead of `go_install`: it is checked the same way, and when the

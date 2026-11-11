@@ -33,6 +33,25 @@ func TestUserconfigRemoteIsPublic(t *testing.T) {
 	}
 }
 
+func TestPinnedOwnTool(t *testing.T) {
+	modules := Modules{Latest: []string{"example.org/team/"}}
+	for _, tc := range []struct {
+		name, install, want string
+	}{
+		{"pinned own", "example.org/team/tool/cmd/x@v1.2.3", "example.org/team/tool/cmd/x"},
+		{"latest", "example.org/team/tool@latest", ""},
+		{"unpinned", "example.org/team/tool", ""},
+		{"foreign", "example.org/other/tool@v1.2.3", ""},
+		{"prefix is not a path segment", "example.org/teamX/tool@v1.2.3", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := modules.PinnedOwnTool(config.Tool{GoInstall: tc.install}); got != tc.want {
+				t.Errorf("PinnedOwnTool(%q) = %q, want %q", tc.install, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestModulesIsLatest(t *testing.T) {
 	m := Modules{Latest: []string{"example.com/own/", "example.org/team"}}
 	for path, want := range map[string]bool{

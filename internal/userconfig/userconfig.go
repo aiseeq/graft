@@ -73,6 +73,15 @@ func (m Modules) IsLatest(path string) bool {
 	return false
 }
 
+// PinnedOwnTool reports the module path when tool pins a module in modules.latest.
+func (m Modules) PinnedOwnTool(tool config.Tool) string {
+	pkg, version := tool.Pin()
+	if version != "" && m.IsLatest(pkg) {
+		return pkg
+	}
+	return ""
+}
+
 // ModulesSettings is the user's module settings; without a user config none
 // are enabled.
 func ModulesSettings() (Modules, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1007,6 +1008,7 @@ func (a *App) raiseOwnModules(ctx context.Context, repo *gitx.Repo, cfg *config.
 	if err != nil || len(settings.Latest) == 0 {
 		return err
 	}
+	warnPinnedTools(cfg.Tools, settings, a.warn)
 	if held := modulesHeldBy(cfg, branch); held != "" {
 		a.printf("modules.latest: %s keeps its module versions (%s); the trunk raises them", branch, held)
 		return nil
@@ -1029,4 +1031,16 @@ func modulesHeldBy(cfg *config.Config, branch string) string {
 		return "version.build_branches"
 	}
 	return ""
+}
+
+// warnPinnedTools warns once for each go_install tool pinned to a module in
+// modules.latest. Pin parses the version using the config's shared logic.
+func warnPinnedTools(toolsByName map[string]*config.Tool, modules userconfig.Modules, warn func(string, ...any)) {
+	for _, name := range slices.Sorted(maps.Keys(toolsByName)) {
+		if tool := toolsByName[name]; tool != nil {
+			if module := modules.PinnedOwnTool(*tool); module != "" {
+				warn("tool %s pins our module %s; remove @vX… from go_install in .graft.yaml; modules.latest keeps our tools at the latest version", name, module)
+			}
+		}
+	}
 }

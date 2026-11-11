@@ -215,6 +215,7 @@ func (a *App) checkTools(ctx context.Context, cfg *config.Config, install bool) 
 	if err != nil {
 		return err
 	}
+	warnPinnedTools(cfg.Tools, moduleSettings, a.warn)
 	results := make(map[string]tools.Result, len(cfg.Tools))
 	var modules []string
 	for _, name := range slices.Sorted(maps.Keys(cfg.Tools)) {

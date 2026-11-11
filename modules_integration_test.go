@@ -203,9 +203,13 @@ func TestCommitRaisesOwnModulesToTheirLatest(t *testing.T) {
 func TestGateRaisesOwnModules(t *testing.T) {
 	skipGoToolchainInShort(t)
 	f := modulesRepo(t, modulesProxy(t), latestConfig, "New")
+	f.write(".graft.yaml", strings.Replace(f.read(".graft.yaml"), "gate:\n", "tools:\n  fake: {go_install: "+ownLib+"/cmd/fake@v0.1.0}\ngate:\n", 1))
 	out, code := f.graft("", "gate")
 	if code != 0 {
 		t.Fatalf("gate: exit %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "graft: warning: tool fake pins our module "+ownLib+"/cmd/fake; remove @vX… from go_install in .graft.yaml; modules.latest keeps our tools at the latest version") {
+		t.Errorf("gate lacks tool pin warning:\n%s", out)
 	}
 	if line := requireLine(t, f.read("go.mod"), ownLib); !strings.HasSuffix(line, " v0.2.0") {
 		t.Errorf("go.mod after the gate: %q", line)
@@ -285,16 +289,32 @@ func TestToolsInstallTakesOwnToolsAtLatest(t *testing.T) {
 		"GOPROXY="+proxy, "GOSUMDB=off", "GOPRIVATE=", "GONOPROXY=", "GONOSUMDB=", "GOFLAGS=-modcacherw",
 		"GOMODCACHE="+filepath.Join(t.TempDir(), "modcache"),
 		"PATH="+bin+string(os.PathListSeparator)+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out, code := f.graft("", "tools")
+	wantWarning := "graft: warning: tool fake pins our module " + tool + "; remove @vX… from go_install in .graft.yaml; modules.latest keeps our tools at the latest version"
+	if !strings.Contains(out, wantWarning) {
+		t.Errorf("tools lacks pin warning:\n%s", out)
+	}
 	if out, code := f.graft("", "tools", "install"); code != 0 {
 		t.Fatalf("tools install: exit %d\n%s", code, out)
+	} else if !strings.Contains(out, wantWarning) {
+		t.Errorf("tools install lacks pin warning:\n%s", out)
 	}
 	exe := "fake"
 	if runtime.GOOS == "windows" {
 		exe += ".exe"
 	}
-	out, code := f.exec(f.work, "", "go", "version", "-m", filepath.Join(bin, exe))
+	out, code = f.exec(f.work, "", "go", "version", "-m", filepath.Join(bin, exe))
 	if code != 0 || !strings.Contains(out, tool+"\tv0.2.0") {
 		t.Errorf("installed build (exit %d):\n%s", code, out)
+	}
+	writeUserConfig(t, cfgDir, "modules: {latest: [example.com/foreign/]}\ntools: {bin_dir: "+yamlQuote(bin)+"}\n")
+	out, code = f.graft("", "tools")
+	if strings.Contains(out, "pins our module") {
+		t.Errorf("foreign module prefix warned:\n%s", out)
+	}
+	out, code = f.graft("", "tools", "install")
+	if code != 0 || strings.Contains(out, "pins our module") {
+		t.Errorf("foreign module prefix: exit %d\n%s", code, out)
 	}
 }
 
