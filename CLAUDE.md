@@ -1,3 +1,4 @@
+<!-- lex: собран из ~/.claude/codex/manifest/git-graft-CLAUDE.md.yaml. Правь фрагменты в ~/.claude/codex/frag и запусти `lex build --codex ~/.claude/codex`; правку прямо в этом файле перенеси во фрагменты: `lex absorb --codex ~/.claude/codex <этот файл>` -->
 Контекст
 - graft (github.com/aiseeq/graft) — единый инструмент разработки для git-репозиториев: commit с гейтом, bump версии, проверками секретов и крупных файлов, ключом тикета из ветки и push во все remotes; хуки против сырого git commit. Проектные различия — в `.graft.yaml` потребителя, схема в README.
 - Go, один бинарь, ядро без bash: пути через filepath, хуки — sh-шимы `exec graft hook …`. Должно работать на Windows (Git for Windows): задача `vet` проверяет и GOOS=windows.
