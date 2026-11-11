@@ -4,8 +4,10 @@ import (
 	"archive/zip"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -362,7 +364,7 @@ gate: []
 	writeUserConfig(t, userDir, "modules: {latest: [example.org/projectA/]}\n")
 	f.env = append(f.env, "GIT_CONFIG_GLOBAL="+config, "GIT_CONFIG_NOSYSTEM=1", "XDG_CONFIG_HOME="+userDir, "APPDATA="+userDir)
 	if out, code := f.exec(f.work, "", "npm", "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"); code != 0 {
-		t.Fatalf("initial npm lock: exit %d\\n%s", code, out)
+		t.Fatalf("initial npm lock: exit %d\n%s", code, out)
 	}
 	oldLock := f.read("package-lock.json")
 	originalPackage := f.read("package.json")
@@ -372,21 +374,21 @@ gate: []
 	}
 	out, code := f.graft("", "commit", "-m", "feat: raise dependency")
 	if code != 0 {
-		t.Fatalf("commit: exit %d\\n%s", code, out)
+		t.Fatalf("commit: exit %d\n%s", code, out)
 	}
 	if got, want := f.read("package.json"), strings.Replace(originalPackage, "#v0.1.0", "#v0.2.0", 1); got != want {
-		t.Errorf("package.json changed beyond the raised tag:\\n%s", got)
+		t.Errorf("package.json changed beyond the raised tag:\n%s", got)
 	}
 	if !strings.Contains(out, "graft: package.json: @scope/shared v0.1.0 -> v0.2.0") {
-		t.Errorf("raise was not logged:\\n%s", out)
+		t.Errorf("raise was not logged:\n%s", out)
 	}
 	lock := f.read("package-lock.json")
 	if !strings.Contains(lock, newCommit) {
-		t.Errorf("lock does not resolve the new commit %s:\\n%s", newCommit, lock)
+		t.Errorf("lock does not resolve the new commit %s:\n%s", newCommit, lock)
 	}
 	for _, unchanged := range []string{"git+ssh://git@example.org/other/dep.git#v0.1.0", "git+ssh://git@example.org/projectA/dep.git#main"} {
 		if !strings.Contains(f.read("package.json"), unchanged) {
-			t.Errorf("unexpectedly changed %q:\\n%s", unchanged, f.read("package.json"))
+			t.Errorf("unexpectedly changed %q:\n%s", unchanged, f.read("package.json"))
 		}
 	}
 	f.write(".graft.yaml", `schema: 1
@@ -398,6 +400,31 @@ gate: []
 	f.write("package.json", strings.Replace(f.read("package.json"), "#v0.2.0", "#v0.1.0", 1))
 	out, code = f.graft("", "gate")
 	if code != 0 || !strings.Contains(f.read("package.json"), "#v0.1.0") {
-		t.Errorf("hotfix gate raised the dependency: exit %d\\n%s\\n%s", code, out, f.read("package.json"))
+		t.Errorf("hotfix gate raised the dependency: exit %d\n%s\n%s", code, out, f.read("package.json"))
+	}
+
+	// Without npm a raise that needs the lock fails and names the dependency.
+	if runtime.GOOS == "windows" {
+		return
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onlyGit := filepath.Join(f.base, "only-git")
+	if err := os.MkdirAll(onlyGit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(gitPath, filepath.Join(onlyGit, "git")); err != nil {
+		t.Fatal(err)
+	}
+	f.git("checkout", "-q", "-b", "trunk-again")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none}\ngate: []\n")
+	saved := f.env
+	f.env = append(slices.Clone(f.env), "PATH="+onlyGit)
+	out, code = f.graft("", "gate")
+	f.env = saved
+	if code == 0 || !strings.Contains(out, "npm is required to raise @scope/shared v0.1.0 -> v0.2.0") {
+		t.Errorf("gate without npm: exit %d\n%s", code, out)
 	}
 }

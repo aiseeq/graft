@@ -69,7 +69,11 @@ func raiseManifest(ctx context.Context, root, name string, env []string, own fun
 	}
 	npm, err := exec.LookPath("npm")
 	if errors.Is(err, exec.ErrNotFound) {
-		return fmt.Errorf("%s: npm is required to raise a git dependency", display)
+		var names []string
+		for _, p := range raised {
+			names = append(names, fmt.Sprintf("%s %s -> %s", p.name, p.tag, p.latest))
+		}
+		return fmt.Errorf("%s: npm is required to raise %s", display, strings.Join(names, ", "))
 	}
 	if err != nil {
 		return fmt.Errorf("looking up npm: %w", err)
@@ -212,11 +216,18 @@ func latestPins(ctx context.Context, display string, env []string, pins []pin, w
 	return raised
 }
 
+// lsRemoteTimeout bounds asking a repository for its tags, so a host that
+// does not answer delays a commit by this much, not forever.
+const lsRemoteTimeout = time.Minute
+
 func latestTag(ctx context.Context, env []string, rawURL, current string) (string, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, lsRemoteTimeout)
 	defer cancel()
 	stdout, stderr, err := execx.Run(ctx, "", "git", env, "ls-remote", "--tags", strings.TrimPrefix(rawURL, "git+"))
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", false, fmt.Errorf("git ls-remote: no answer in %s", lsRemoteTimeout)
+		}
 		if strings.TrimSpace(stderr) == "" {
 			stderr = err.Error()
 		}
