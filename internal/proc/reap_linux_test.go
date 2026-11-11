@@ -149,17 +149,44 @@ func TestReapExitStatus(t *testing.T) {
 	if err := reaped(t, t.TempDir(), "exit 3").Wait(); err == nil || err.(*exec.ExitError).ExitCode() != 3 {
 		t.Fatalf("want exit 3, got %v", err)
 	}
-	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGABRT, syscall.SIGKILL} {
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL} {
 		err := reaped(t, t.TempDir(), "kill -s "+strings.TrimPrefix(unix.SignalName(sig), "SIG")+" $$").Wait()
 		if got := signalOf(t, err); got != sig {
 			t.Errorf("the command ended with %v, the reaper with %v", sig, got)
 		}
+	}
+	// A core-dumping signal: a shell would leave a crash record of its own,
+	// so the command is this binary, made non-dumpable first.
+	abort := exec.Command(os.Args[0], "-test.run=^TestReapAbortCommand$")
+	abort.Env = append(os.Environ(), abortEnv+"=1")
+	abort.Stdout, abort.Stderr = os.Stdout, os.Stderr
+	Reap(abort)
+	if err := abort.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if got := signalOf(t, abort.Wait()); got != syscall.SIGABRT {
+		t.Errorf("the command ended with %v, the reaper with %v", syscall.SIGABRT, got)
 	}
 	missing := exec.Command("/proc/self/exe")
 	missing.Args = []string{reapArg0, "/nonexistent/command", "command"}
 	if err := missing.Run(); err == nil || err.(*exec.ExitError).ExitCode() != 127 {
 		t.Fatalf("want exit 127 for a missing command, got %v", err)
 	}
+}
+
+// abortEnv makes TestReapAbortCommand, run as a command, end by SIGABRT.
+const abortEnv = "GRAFT_TEST_ABORT_COMMAND"
+
+// TestReapAbortCommand is a command for TestReapExitStatus: non-dumpable, so
+// the kernel hands no core to systemd-coredump, it ends by SIGABRT.
+func TestReapAbortCommand(t *testing.T) {
+	if os.Getenv(abortEnv) == "" {
+		t.Skip("a command of TestReapExitStatus")
+	}
+	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	dieOf(syscall.SIGABRT)
 }
 
 // SIGTERM reaches the command; SIGINT does not, a terminal sends it to the
