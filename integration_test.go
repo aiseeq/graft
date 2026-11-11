@@ -1378,6 +1378,33 @@ func TestCommitWarnsAboutOutdatedHooks(t *testing.T) {
 	}
 }
 
+// TestProjectCommitConventionalOverrides checks explicit project true and false.
+func TestProjectCommitConventionalOverrides(t *testing.T) {
+	cases := []struct {
+		name, project, user string
+		wantCode            int
+		want                string
+	}{
+		{"true", "commit: {conventional: true}\n", "", 1, "project .graft.yaml commit.conventional"},
+		{"false overrides true", "commit: {conventional: false}\n", "commit: {conventional: true}\n", 0, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: git-tag}\n" + tc.project})
+			cfgDir := t.TempDir()
+			writeUserConfig(t, cfgDir, tc.user)
+			f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
+			out, code := f.graft("", "commit", "-m", "bad subject")
+			if code != tc.wantCode {
+				t.Fatalf("exit %d, want %d: %s", code, tc.wantCode, out)
+			}
+			if tc.want != "" && !strings.Contains(out, tc.want) {
+				t.Fatalf("missing %q in:\n%s", tc.want, out)
+			}
+		})
+	}
+}
+
 // TestCommitConventional: with commit.conventional in the user config a
 // subject that is not Conventional Commits is refused before the gate and
 // nothing is committed; without it any subject goes.

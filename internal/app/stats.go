@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
@@ -165,11 +166,10 @@ func (a *App) statsTasks(recs []stats.Record, path string, f stats.Filter, o Sta
 	if o.Task != "" {
 		return nil
 	}
-	limits, err := userconfig.LimitSettings()
+	over, err := a.overLimits(rows, f, o)
 	if err != nil {
 		return err
 	}
-	over := stats.OverLimits(rows, limits.Gate, limits.Task)
 	for _, o := range over[:min(len(over), overLimitsShown)] {
 		a.printf("%s", stats.FormatOverLimit(o))
 	}
@@ -177,6 +177,47 @@ func (a *App) statsTasks(recs []stats.Record, path string, f stats.Filter, o Sta
 		a.printf("and %d more over their limits", more)
 	}
 	return nil
+}
+
+func (a *App) overLimits(rows []stats.Row, filter stats.Filter, o StatsOptions) ([]stats.OverLimit, error) {
+	base, err := userconfig.LimitSettingsFor(config.ProjectLimits{})
+	if err != nil {
+		return nil, err
+	}
+	selections := map[string]userconfig.LimitSelection{}
+	selectionOf := func(root string) userconfig.LimitSelection {
+		if s, ok := selections[root]; ok {
+			return s
+		}
+		s := base
+		cfg, err := config.Load(root)
+		switch {
+		case errors.Is(err, config.ErrNotFound):
+		case err != nil:
+			// One project's broken config must not hide the whole report.
+			fmt.Fprintf(a.Stderr, "graft: %s: %v; its limits are the user's\n", root, err)
+		default:
+			if s, err = userconfig.LimitSettingsFor(cfg.Limits); err != nil {
+				fmt.Fprintf(a.Stderr, "graft: %s: %v; its limits are the user's\n", root, err)
+				s = base
+			}
+		}
+		selections[root] = s
+		return s
+	}
+	return stats.OverLimitsUsing(rows, func(row *stats.Row) (time.Duration, string) {
+		selection := base
+		switch {
+		case filter.Project != "":
+			selection = selectionOf(filter.Project)
+		case o.All && row.Project != "":
+			selection = selectionOf(row.Project)
+		}
+		if row.Label == stats.GateTask {
+			return selection.Values.Gate, selection.GateSource
+		}
+		return selection.Values.Task, selection.TaskSource
+	}), nil
 }
 
 func (a *App) statsFailures(records []stats.Record, filter stats.Filter, where string, since time.Time) error {

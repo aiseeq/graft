@@ -42,8 +42,12 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 	if err != nil {
 		return err
 	}
-	if uc.Conventional {
-		if err := message.CheckConventional(msg); err != nil {
+	conventional, source := uc.Conventional, "user config commit.conventional"
+	if cfg.Commit.Conventional != nil {
+		conventional, source = *cfg.Commit.Conventional, "project .graft.yaml commit.conventional"
+	}
+	if conventional {
+		if err := message.CheckConventionalSource(msg, source); err != nil {
 			return err
 		}
 	}

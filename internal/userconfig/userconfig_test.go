@@ -1,6 +1,7 @@
 package userconfig
 
 import (
+	"github.com/aiseeq/graft/v2/internal/config"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,6 +119,47 @@ func TestLoadPressureLimitsMustMoveToAkit(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), path+": load: "+key+" moved to "+pressurePath) || !strings.Contains(err.Error(), strings.Join(pressure.LimitKeys, ", ")) {
 			t.Errorf("load key %s: got %v, want moved-key error naming %s and keys %v", key, err, pressurePath, pressure.LimitKeys)
 		}
+	}
+}
+
+func TestLimitSettingsForPrecedence(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	got, err := LimitSettingsFor(config.ProjectLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Values != DefaultLimits || got.GateSource != "built-in limits.gate" || got.TaskSource != "built-in limits.task" {
+		t.Fatalf("built-in: %+v", got)
+	}
+	path := filepath.Join(cfgDir, "graft", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("limits: {gate: 2m, task: 4m}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = LimitSettingsFor(config.ProjectLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Values.Gate != 2*time.Minute || got.Values.Task != 4*time.Minute || got.GateSource != "user config limits.gate" {
+		t.Fatalf("user config: %+v", got)
+	}
+	gate, task := 30*time.Second, 6*time.Minute
+	got, err = LimitSettingsFor(config.ProjectLimits{Gate: &gate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Values.Gate != gate || got.Values.Task != 4*time.Minute || got.GateSource != "project .graft.yaml limits.gate" || got.TaskSource != "user config limits.task" {
+		t.Fatalf("project gate: %+v", got)
+	}
+	got, err = LimitSettingsFor(config.ProjectLimits{Task: &task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Values.Gate != 2*time.Minute || got.Values.Task != task || got.TaskSource != "project .graft.yaml limits.task" {
+		t.Fatalf("project task: %+v", got)
 	}
 }
 

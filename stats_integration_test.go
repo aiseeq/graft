@@ -455,7 +455,36 @@ func TestStatsRerunsAreFlaky(t *testing.T) {
 	}
 }
 
-// TestStatsMarkTasksOverTheLimits: graft stats marks the gate over
+// TestProjectLimitsOverrideUserConfig checks source and project precedence.
+func TestProjectLimitsOverrideUserConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	f, _ := statsRepo(t, "limits:\n  gate: 200ms\n  task: 400ms\ngate:\n  - sh: sleep 0.3\ntasks:\n  slow:\n    run: [[sh, -c, 'sleep 0.5']]\n")
+	cfgDir := t.TempDir()
+	writeUserConfig(t, cfgDir, "limits: {gate: 50ms, task: 50ms}\n")
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir)
+	if out := f.mustGraft("gate"); !strings.Contains(out, "above 200ms (project .graft.yaml limits.gate)") {
+		t.Errorf("gate run:\n%s", out)
+	}
+	if out := f.mustGraft("slow"); !strings.Contains(out, "above 400ms (project .graft.yaml limits.task)") {
+		t.Errorf("task run:\n%s", out)
+	}
+	out := f.mustGraft("stats")
+	if !strings.Contains(out, "above 200ms (project .graft.yaml limits.gate)") || !strings.Contains(out, "above 400ms (project .graft.yaml limits.task)") {
+		t.Errorf("stats:\n%s", out)
+	}
+	// A project whose config no longer parses keeps the report of every
+	// project going: its rows fall back to the user's limits, with a warning.
+	if err := os.WriteFile(filepath.Join(f.work, ".graft.yaml"), []byte("schema: 1\nlimits: {gate: soon}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code := f.graft("", "stats", "--all")
+	if code != 0 || !strings.Contains(out, "its limits are the user's") || !strings.Contains(out, "(user config limits.gate)") {
+		t.Errorf("stats --all with a broken project config, exit %d:\n%s", code, out)
+	}
+}
+
 // limits.gate and any other task over limits.task, by their median run
 // without the waits, and a run over its limit says so as it ends; a task
 // under its limit and a broken down task carry no mark.

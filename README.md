@@ -56,7 +56,7 @@ load:                            # heavy tasks on a shared machine (heavy: true 
   threads: 4                     # default 4: {threads} in steps, GRAFT_THREADS, GOMAXPROCS and -p in heavy tasks
   settle: 30s                    # default 30s: maximum lifetime of an expected CPU reservation
   poll: 5s                       # default 5s; 0 anywhere here means the default
-limits:                          # graft stats marks the tasks over them, by median without the waits; a run over says so when it ends
+limits:                          # graft stats marks the tasks over them, by median without the waits; a run over says so when it ends; a project's .graft.yaml limits override these
   gate: 1m                       # default 1m: the gate of a commit as a whole
   task: 8m                       # default 8m: any other task, a test run before a deploy, merge or release
 commit:
@@ -84,8 +84,8 @@ settings.
 
 With `commit.conventional` graft commit wants the subject as `type(scope)!:
 description`, the type one of build, chore, ci, docs, feat, fix, perf,
-refactor, revert, style, test; git's own `Revert "..."` passes. It is the
-user's, so it holds in every project they commit to.
+refactor, revert, style, test; git's own `Revert "..."` passes. The project
+setting overrides the user config, including `false` overriding `true`.
 
 `commit.local_branches` are branches whose commits stay on the machine until
 the project merges them, such as a batch of edits a scheduled tool leaves for
@@ -644,6 +644,8 @@ Without markers the message is left as it is.
 ```yaml
 schema: 1                       # required
 graft: '>=0.5.0'                # optional: the oldest graft this config works with
+limits: {gate: 30s, task: 8m}   # project overrides user config, then built-in defaults
+commit: {conventional: false}   # project override of user config
 
 # Commands run before every commit, in order, stopping at the first failure.
 # A string is split into words by shell quoting rules but is NOT run by a
@@ -1271,10 +1273,10 @@ their wall time part of the task's own.
 
 Under the table a line `over the limit: <task> takes 1m12s by median without
 waits, above 1m0s (user config limits.gate)` marks the gate over
-`limits.gate` and any other task over `limits.task`: the median of the
-period's runs, the waits for the load and the locks taken out; the 10
-farthest over show, the rest counted. `--max-load` leaves the runs on a busy
-machine out of it too.
+`limits.gate` and any other task over `limits.task`: project values override
+user config, which overrides the built-in defaults (1m and 8m). The line names
+the source. The median covers runs without waits for load or locks; the 10
+farthest over show, the rest counted. `--max-load` leaves busy-machine runs out.
 
 A run says so itself as it ends: when graft's outermost task (the gate of
 `graft commit`, `graft <task>`, `graft exec`) took longer than its limit

@@ -122,19 +122,6 @@ type Limits struct {
 // before a deploy, merge or release under 8 minutes.
 var DefaultLimits = Limits{Gate: time.Minute, Task: 8 * time.Minute}
 
-// LimitSettings is the user's limits over the defaults; without a user
-// config it is the defaults.
-func LimitSettings() (Limits, error) {
-	cfg, _, err := Load()
-	if errors.Is(err, ErrNotFound) {
-		return DefaultLimits, nil
-	}
-	if err != nil {
-		return Limits{}, err
-	}
-	return cfg.Limits, nil
-}
-
 func (l *Limits) normalize(path string) error {
 	if l.Gate < 0 || l.Task < 0 {
 		return fmt.Errorf("%s: limits: gate and task must be positive", path)
@@ -146,6 +133,36 @@ func (l *Limits) normalize(path string) error {
 		l.Task = DefaultLimits.Task
 	}
 	return nil
+}
+
+// LimitSelection includes the effective values and the config source of each.
+type LimitSelection struct {
+	Values     Limits
+	GateSource string
+	TaskSource string
+}
+
+// LimitSettingsFor applies project settings over user settings and built-ins.
+func LimitSettingsFor(project config.ProjectLimits) (LimitSelection, error) {
+	cfg, _, err := Load()
+	selection := LimitSelection{Values: DefaultLimits, GateSource: "built-in limits.gate", TaskSource: "built-in limits.task"}
+	if errors.Is(err, ErrNotFound) {
+		err = nil
+	} else if err == nil {
+		selection.Values = cfg.Limits
+		selection.GateSource, selection.TaskSource = "user config limits.gate", "user config limits.task"
+	}
+	if err != nil {
+		return LimitSelection{}, err
+	}
+	// config.Parse has refused a project limit that is not positive.
+	if project.Gate != nil {
+		selection.Values.Gate, selection.GateSource = *project.Gate, "project .graft.yaml limits.gate"
+	}
+	if project.Task != nil {
+		selection.Values.Task, selection.TaskSource = *project.Task, "project .graft.yaml limits.task"
+	}
+	return selection, nil
 }
 
 // MachineLoad tunes how heavy tasks run on this machine. Pressure limits

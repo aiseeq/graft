@@ -165,6 +165,8 @@ func TestParseErrors(t *testing.T) {
 		"duplicate remote":          minimal + "push:\n  remotes: [a, a]\n",
 		"dotted extension":          minimal + "checks:\n  large_files:\n    binary_extensions: [.png]\n",
 		"negative timeout":          minimal + "lock:\n  timeout: -1s\n",
+		"invalid gate limit":        minimal + "limits: {gate: not-a-duration}\n",
+		"unknown limit key":         minimal + "limits: {other: 1m}\n",
 		"template is dotenv":        minimal + "dotenv_template: .env\n",
 		"template escapes tree":     minimal + "dotenv_template: ../.env.example\n",
 	}
@@ -175,6 +177,12 @@ func TestParseErrors(t *testing.T) {
 	}
 }
 
+func TestProjectLimitErrorNamesKey(t *testing.T) {
+	_, err := Parse([]byte(minimal + "limits: {gate: not-a-duration}\n"))
+	if err == nil || !strings.Contains(err.Error(), "limits.gate") {
+		t.Fatalf("got %v, want error naming limits.gate", err)
+	}
+}
 func TestCompileGlob(t *testing.T) {
 	cases := []struct {
 		glob  string

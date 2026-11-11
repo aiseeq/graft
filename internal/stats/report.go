@@ -460,31 +460,20 @@ type OverLimit struct {
 	Key   string
 }
 
-// OverLimits are the task rows over their limits, the farthest over first:
-// the gate's over gate, every other task's over task. Rows of a broken down
-// task are steps and have none.
-func OverLimits(rows []Row, gate, task time.Duration) []OverLimit {
+// OverLimitsUsing compares each row with its project-specific effective limit.
+func OverLimitsUsing(rows []Row, limitFor func(*Row) (time.Duration, string)) []OverLimit {
 	var out []OverLimit
 	for i := range rows {
 		r := &rows[i]
-		limit, key := LimitOf(r.Label, gate, task)
+		limit, source := limitFor(r)
 		if r.OwnMed > limit.Seconds() {
-			out = append(out, OverLimit{Project: r.Project, Task: r.Label, OwnMed: r.OwnMed, Limit: limit, Key: key})
+			out = append(out, OverLimit{Project: r.Project, Task: r.Label, OwnMed: r.OwnMed, Limit: limit, Key: source})
 		}
 	}
 	slices.SortStableFunc(out, func(a, b OverLimit) int {
 		return cmpFloat(b.OwnMed/b.Limit.Seconds(), a.OwnMed/a.Limit.Seconds())
 	})
 	return out
-}
-
-// LimitOf is the limit of a task line and its user config key: gate for
-// the gate, task for every other task.
-func LimitOf(label string, gate, task time.Duration) (time.Duration, string) {
-	if label == GateTask {
-		return gate, "limits.gate"
-	}
-	return task, "limits.task"
 }
 
 // FormatOverLimit is the line that marks a row over its limit.
@@ -503,7 +492,7 @@ func FormatRunOverLimit(task string, own, limit time.Duration, key string) strin
 }
 
 func overLimit(task, verb, measure string, own float64, limit time.Duration, key string) string {
-	return fmt.Sprintf("over the limit: %s %s %s %swithout waits, above %s (user config %s)", task, verb, formatSeconds(own), measure, formatSeconds(limit.Seconds()), key)
+	return fmt.Sprintf("over the limit: %s %s %s %swithout waits, above %s (%s)", task, verb, formatSeconds(own), measure, formatSeconds(limit.Seconds()), key)
 }
 
 // FormatSaved is the line a report ends with when the cache skipped runs.

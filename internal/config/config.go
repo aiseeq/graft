@@ -61,16 +61,18 @@ type Config struct {
 	// MinGraft is the X.Y.Z from Graft, empty when the project sets none.
 	MinGraft string `yaml:"-"`
 
-	Gate    []Step  `yaml:"gate"`
-	GoVet   GoVet   `yaml:"go_vet"`
-	GoFix   GoFix   `yaml:"go_fix"`
-	GoFmt   GoFmt   `yaml:"go_fmt"`
-	Version Version `yaml:"version"`
-	Ticket  *Ticket `yaml:"ticket"`
-	Push    Push    `yaml:"push"`
-	Checks  Checks  `yaml:"checks"`
-	Hooks   Hooks   `yaml:"hooks"`
-	Lock    Lock    `yaml:"lock"`
+	Gate    []Step        `yaml:"gate"`
+	GoVet   GoVet         `yaml:"go_vet"`
+	GoFix   GoFix         `yaml:"go_fix"`
+	GoFmt   GoFmt         `yaml:"go_fmt"`
+	Version Version       `yaml:"version"`
+	Ticket  *Ticket       `yaml:"ticket"`
+	Push    Push          `yaml:"push"`
+	Checks  Checks        `yaml:"checks"`
+	Hooks   Hooks         `yaml:"hooks"`
+	Lock    Lock          `yaml:"lock"`
+	Limits  ProjectLimits `yaml:"limits"`
+	Commit  CommitPolicy  `yaml:"commit"`
 
 	Envs   map[string]*Env `yaml:"envs"`
 	DotEnv string          `yaml:"dotenv"`
@@ -93,6 +95,42 @@ type Config struct {
 	Tools        map[string]*Tool    `yaml:"tools"`
 	Worktree     Worktree            `yaml:"worktree"`
 	RemoteHeavy  *RemoteHeavy        `yaml:"remote_heavy"`
+}
+
+// ProjectLimits override the user's run limits, one key at a time.
+type ProjectLimits struct {
+	Gate *time.Duration `yaml:"gate"`
+	Task *time.Duration `yaml:"task"`
+}
+
+func (l *ProjectLimits) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("limits: must be a mapping")
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key, value := node.Content[i].Value, node.Content[i+1]
+		if key != "gate" && key != "task" {
+			return fmt.Errorf("limits.%s: unknown key", key)
+		}
+		if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+			return fmt.Errorf("limits.%s: must be a duration string", key)
+		}
+		d, err := time.ParseDuration(value.Value)
+		if err != nil {
+			return fmt.Errorf("limits.%s: invalid duration %q: %w", key, value.Value, err)
+		}
+		if key == "gate" {
+			l.Gate = &d
+		} else {
+			l.Task = &d
+		}
+	}
+	return nil
+}
+
+// CommitPolicy contains commit behavior configured for a project.
+type CommitPolicy struct {
+	Conventional *bool `yaml:"conventional"`
 }
 
 // Version describes where the project version lives.
@@ -308,6 +346,12 @@ func Parse(data []byte) (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	if c.Limits.Gate != nil && *c.Limits.Gate <= 0 {
+		return fmt.Errorf("limits.gate: must be positive")
+	}
+	if c.Limits.Task != nil && *c.Limits.Task <= 0 {
+		return fmt.Errorf("limits.task: must be positive")
+	}
 	if c.Schema != SchemaVersion {
 		return fmt.Errorf("schema: must be %d, got %d", SchemaVersion, c.Schema)
 	}

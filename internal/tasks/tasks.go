@@ -140,7 +140,7 @@ type Runner struct {
 	Load func() (userconfig.MachineLoad, error)
 	// Limits are the user's limits, which the outermost task's run is
 	// held to when it ends.
-	Limits func() (userconfig.Limits, error)
+	Limits func() (userconfig.LimitSelection, error)
 	// heavy counts the heavy tasks running, admitted by the outermost.
 	heavy int
 	// gateSplit runs a busy user's gate one process step at a time.
@@ -246,7 +246,7 @@ func NewRunner(root string, cfg *config.Config, stdout, stderr io.Writer) *Runne
 		done:   map[string]bool{},
 		held:   map[string]lock.Mode{},
 		Load:   userconfig.LoadSettings,
-		Limits: userconfig.LimitSettings,
+		Limits: func() (userconfig.LimitSelection, error) { return userconfig.LimitSettingsFor(cfg.Limits) },
 	}
 }
 
@@ -2528,7 +2528,7 @@ func (r *Runner) sameFailure(current stats.Record) (time.Duration, int, bool) {
 	return stats.SameFailure(r.failureHistory, current)
 }
 
-// overLimit says when the outermost task took longer than its user config
+// overLimit says when the outermost task took longer than its configured
 // limit without its waits, the line graft stats marks a slow task with.
 func (r *Runner) overLimit(task string, use stats.Usage) {
 	if r.Limits == nil {
@@ -2539,9 +2539,12 @@ func (r *Runner) overLimit(task string, use stats.Usage) {
 		fmt.Fprintf(r.Stderr, "graft: %v\n", err)
 		return
 	}
-	limit, key := stats.LimitOf(task, limits.Gate, limits.Task)
+	limit, source := limits.Values.Gate, limits.GateSource
+	if task != stats.GateTask {
+		limit, source = limits.Values.Task, limits.TaskSource
+	}
 	if own := use.Wall - use.Wait; own > limit {
-		fmt.Fprintf(r.Stderr, "graft: %s\n", stats.FormatRunOverLimit(task, own, limit, key))
+		fmt.Fprintf(r.Stderr, "graft: %s\n", stats.FormatRunOverLimit(task, own, limit, source))
 	}
 }
 

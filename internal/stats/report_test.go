@@ -145,7 +145,12 @@ func TestOverLimits(t *testing.T) {
 		{Kind: KindTask, Task: "e2e", WallS: 500},
 	}
 	rows, _ := Summarize(recs, Filter{})
-	over := OverLimits(rows, time.Minute, 8*time.Minute)
+	over := OverLimitsUsing(rows, func(r *Row) (time.Duration, string) {
+		if r.Label == GateTask {
+			return time.Minute, "user config limits.gate"
+		}
+		return 8 * time.Minute, "user config limits.task"
+	})
 	var got []string
 	for _, o := range over {
 		got = append(got, FormatOverLimit(o))
