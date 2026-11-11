@@ -49,9 +49,9 @@ func TestDecide(t *testing.T) {
 				t.Fatalf("limited = %q, want %q", got.limited, tt.wantLimited)
 			}
 			if move {
-				want := []string{"8", "PIDs", "au", "1", "42", "Slice", "s", tt.wantSlice,
+				want := []string{"9", "PIDs", "au", "1", "42", "Slice", "s", tt.wantSlice,
 					"PartOf", "as", "1", tt.wantSource, "After", "as", "1", tt.wantSource,
-					"CollectMode", "s", "inactive-or-failed",
+					"CollectMode", "s", "inactive-or-failed", "IOAccounting", "b", "true",
 					"MemoryMax", "t", "7", "MemorySwapMax", "t", "0", "OOMPolicy", "s", "continue", "0"}
 				if properties := scopeProperties(got, 42); !reflect.DeepEqual(properties, want) {
 					t.Fatalf("scope properties = %q, want %q", properties, want)
@@ -75,7 +75,7 @@ func TestDecideSession(t *testing.T) {
 	if !ok || move.slice != "app-graft.slice" || move.source != "session-7.scope" || move.scope != "graft-heavy-42.scope" || move.linkSource {
 		t.Fatalf("session plan = %+v, move %v", move, ok)
 	}
-	want := []string{"6", "PIDs", "au", "1", "42", "Slice", "s", "app-graft.slice", "CollectMode", "s", "inactive-or-failed",
+	want := []string{"7", "PIDs", "au", "1", "42", "Slice", "s", "app-graft.slice", "CollectMode", "s", "inactive-or-failed", "IOAccounting", "b", "true",
 		"MemoryMax", "t", "7", "MemorySwapMax", "t", "0", "OOMPolicy", "s", "continue", "0"}
 	if got := scopeProperties(move, 42); !reflect.DeepEqual(got, want) {
 		t.Fatalf("session scope properties = %q, want %q", got, want)
@@ -370,7 +370,7 @@ func TestSoleProcess(t *testing.T) {
 // properties that follow, with and without the link to the source scope; a
 // wrong count fails StartTransientUnit with too few parameters.
 func TestScopePropertiesCount(t *testing.T) {
-	names := map[string]bool{"PIDs": true, "Slice": true, "PartOf": true, "After": true, "CollectMode": true, "MemoryMax": true, "MemorySwapMax": true, "OOMPolicy": true}
+	names := map[string]bool{"PIDs": true, "Slice": true, "PartOf": true, "After": true, "CollectMode": true, "IOAccounting": true, "MemoryMax": true, "MemorySwapMax": true, "OOMPolicy": true}
 	for _, linked := range []bool{true, false} {
 		p := plan{source: "app-x.scope", slice: "app-graft.slice", scope: "graft-heavy-42.scope", ceiling: 7, linkSource: linked}
 		properties := scopeProperties(p, 42)

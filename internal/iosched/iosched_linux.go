@@ -150,14 +150,17 @@ func holds(cgroup string, limits map[string]string, sole bool, owned ...string) 
 // scope, graft with it, when the kernel kills a process at the ceiling.
 func scopeProperties(p plan, pid int) []string {
 	// busctl takes the number of properties first: 3 of the memory, PIDs,
-	// Slice, CollectMode, and PartOf and After when the source is linked.
-	count := 6
+	// Slice, CollectMode, IOAccounting, and PartOf and After when the source
+	// is linked. IOAccounting gives the scope its io.stat: systemd enables
+	// the io controller under a slice only while some child asks for it, and
+	// the slice's IOWeight does not count the scope's own reads and writes.
+	count := 7
 	properties := []string{"PIDs", "au", "1", strconv.Itoa(pid), "Slice", "s", p.slice}
 	if p.linkSource {
 		count += 2
 		properties = append(properties, "PartOf", "as", "1", p.source, "After", "as", "1", p.source)
 	}
-	properties = append(properties, "CollectMode", "s", "inactive-or-failed")
+	properties = append(properties, "CollectMode", "s", "inactive-or-failed", "IOAccounting", "b", "true")
 	properties = append(properties, memoryProperties(p.ceiling)...)
 	return append(append([]string{strconv.Itoa(count)}, properties...), "0")
 }
