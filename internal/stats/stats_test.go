@@ -44,6 +44,24 @@ func TestExpectedCoresP90(t *testing.T) {
 	}
 }
 
+func TestParseLoadAverage(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want float64
+		bad  bool
+	}{
+		{"3.50 2.00 1.00 1/100 123", 3.5, false},
+		{"garbage", 0, true},
+		{"", 0, true},
+		{"NaN 2 1", 0, true},
+	} {
+		got, err := ParseLoadAverage(tc.line)
+		if (err != nil) != tc.bad || (!tc.bad && got != tc.want) {
+			t.Errorf("ParseLoadAverage(%q) = %v, %v; want %v, bad=%v", tc.line, got, err, tc.want, tc.bad)
+		}
+	}
+}
+
 func TestUsageKeepsPartialLoadPeakAndRejectsUnknownStep(t *testing.T) {
 	peak := Usage{}
 	if err := peak.Watched(Sample{LoadStart: 3, LoadMax: 30, LoadKnown: true, LoadErr: errors.New("temporary read failure")}); err == nil {

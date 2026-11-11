@@ -22,6 +22,7 @@ func TestParseRemoteHeavy(t *testing.T) {
 
 func TestParseRemoteHeavyErrors(t *testing.T) {
 	cases := map[string]struct{ data, want string }{
+		"empty load":       {"remote_heavy: {host: pc, up: [a], run: [b], load: []}\n", "remote_heavy.load"},
 		"no host":          {"remote_heavy: {up: [a], run: [b]}\n", "remote_heavy.host"},
 		"no up":            {"remote_heavy: {host: pc, run: [b]}\n", "remote_heavy.up"},
 		"empty up":         {"remote_heavy: {host: pc, up: [''], run: [b]}\n", "remote_heavy.up"},

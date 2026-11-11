@@ -21,6 +21,8 @@ type RemoteHeavy struct {
 	// root filled in; without {root} a task run in a subdirectory stays
 	// on this machine.
 	Run []string `yaml:"run"`
+	// Load prints the host's /proc/loadavg line; nil leaves host load unknown.
+	Load []string `yaml:"load"`
 	// Threads fills {threads} and GRAFT_THREADS of a step run there; 0
 	// leaves them to the host, and a step that uses {threads} is refused.
 	Threads int `yaml:"threads"`
@@ -67,6 +69,8 @@ func ValidateRemoteHeavy(r *RemoteHeavy) error {
 		return errors.New("remote_heavy.up: a command that exits 0 when the host takes commands")
 	case len(r.Run) == 0 || r.Run[0] == "":
 		return errors.New("remote_heavy.run: the command that runs a step on the host")
+	case r.Load != nil && (len(r.Load) == 0 || r.Load[0] == ""):
+		return errors.New("remote_heavy.load: a command that prints the host's /proc/loadavg line")
 	case r.Threads < 0:
 		return fmt.Errorf("remote_heavy.threads: %d is below 0", r.Threads)
 	case r.When != "always" && r.When != "busy":

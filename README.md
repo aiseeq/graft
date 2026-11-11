@@ -68,6 +68,7 @@ remote_heavy:
   host: pc
   up: [scripts/remote.sh, up]
   run: [scripts/remote.sh, run]
+  load: [ssh, -o, BatchMode=yes, pc, cat, /proc/loadavg] # optional: prints the host's load average
   threads: 16
   when: busy                    # default for user config; also: always
   broken_exit: 125              # run's transport failure status
@@ -307,6 +308,7 @@ remote_heavy:
   host: pc                       # the machine, in graft's lines and in stats
   up: [scripts/remote.sh, up]          # exits 0 when the host takes commands, within 30s
   run: [scripts/remote.sh, run]        # runs the appended argv on the host from the work tree root; with {root}, from the step's directory
+  load: [ssh, -o, BatchMode=yes, pc, cat, /proc/loadavg] # optional: host 1-minute load, read at the start and every 5s
   threads: 16                    # {threads}, GRAFT_THREADS, GOMAXPROCS and -p there; 0 leaves them unset, the caller's -p too, and refuses {threads}
   when: always                   # project default; user config defaults to busy
   broken_exit: 125               # run's transport failure status; a project's has none unless named
@@ -1157,9 +1159,12 @@ graft's version, pid and command line. A
   are not read. A task line has its largest step's. Linux only.
 - `load_start` and `load_max` are the machine's 1-minute load average when
   the step or task started and the highest seen while it ran, read with
-  `tree_mem_mb`. A task starts when it is called, so on its line they cover
-  the waits before its steps too (admission, lock): the load a waiting task
-  was admitted at is its first step's `load_start`. Wall time on a machine
+  `tree_mem_mb`. For a record with `host`, they are sampled on that host
+  through `remote_heavy.load`; without that key the fields are absent. A task
+  line with `host` aggregates its host steps' samples, so waits before its
+  steps are not included. A task without `host` starts when it is called, so
+  its line covers waits before its steps too (admission, lock): the load a
+  waiting task was admitted at is its first step's `load_start`. Wall time on a machine
   at load 30 does not compare with wall time at load 5: they tell such runs
   apart. Absent where there is no `/proc/loadavg`.
 - `db_cpu_s` and `db_mem_mb`, on the line of a task with `test_db: true`,
@@ -1310,8 +1315,11 @@ written before graft 2.19 carry no run to tell. `--since`, `--project`,
 `--all` and `--task` select the runs as above.
 
 `--max-load 16`, in both reports, counts only the runs whose `load_max`
-stayed below 16; task load includes waits before steps, and runs with an
-incomplete load sample are left out with runs recorded without a load. Pass
+stayed below 16; for records with `host`, `load_max` is the host's load
+sampled through `remote_heavy.load`, and is absent when that key is unset.
+Task load includes waits before steps only for records without `host`; host
+records use their completed step samples. Runs with an incomplete load
+sample are left out with runs recorded without a load. Pass
 a positive value when setting `--max-load`; zero and non-finite values are
 usage errors.
 

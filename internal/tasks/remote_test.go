@@ -1,10 +1,90 @@
 package tasks
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/stats"
 )
+
+func TestTaskLoadKeepsOneMachineOnly(t *testing.T) {
+	local := stats.Usage{LoadStart: 30, LoadMax: 30, LoadKnown: true}
+	frame := &frame{
+		loadMachine:    "hostA",
+		loadMachineSet: true,
+		stepLoads:      stats.Usage{LoadStart: 3.5, LoadMax: 7.25, LoadKnown: true},
+	}
+	got := taskLoad(local, frame, "hostA")
+	if !got.LoadKnown || got.LoadStart != 3.5 || got.LoadMax != 7.25 {
+		t.Fatalf("same-host summary = %+v, want host load 3.5..7.25", got)
+	}
+	frame.mixedLoadMachine = true
+	if got := taskLoad(local, frame, "hostA"); got.LoadKnown {
+		t.Errorf("mixed-machine task retained load: %+v", got)
+	}
+	frame.mixedLoadMachine = false
+	frame.loadStepUnknown = true
+	if got := taskLoad(local, frame, "hostA"); got.LoadKnown {
+		t.Errorf("task with an unknown step retained load: %+v", got)
+	}
+	frame.loadStepUnknown = false
+	if got := taskLoad(local, frame, ""); got.LoadKnown {
+		t.Errorf("task without a host retained remote load: %+v", got)
+	}
+}
+
+func TestRecordStepTracksMixedHostMachines(t *testing.T) {
+	f := &frame{remote: true}
+	r := &Runner{
+		noRepoName:  true,
+		remoteHeavy: &config.RemoteHeavy{Host: "hostA"},
+		frames:      []*frame{f},
+	}
+	r.recordStep("first", stats.Usage{LoadStart: 3, LoadMax: 3, LoadKnown: true}, 0, "")
+	r.remoteHeavy.Host = "hostB"
+	r.recordStep("second", stats.Usage{LoadStart: 7, LoadMax: 7, LoadKnown: true}, 0, "")
+	if !f.mixedLoadMachine {
+		t.Fatal("steps on different hosts were not marked mixed")
+	}
+	if got := taskLoad(stats.Usage{LoadKnown: true}, f, "hostA"); got.LoadKnown {
+		t.Errorf("mixed task retained host load: %+v", got)
+	}
+}
+
+func TestReadRemoteLoadWaitDelay(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell command")
+	}
+	if testing.Short() {
+		t.Skip("waits for the remote load timeout")
+	}
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	command := "sleep 12 & echo $! > " + pidFile + "; wait"
+	started := time.Now()
+	_, err := readRemoteLoad(context.Background(), []string{"sh", "-c", command})
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("load command unexpectedly succeeded without load output")
+	}
+	if elapsed < 4*time.Second || elapsed > 7*time.Second {
+		t.Errorf("load command with inherited stdout took %v, want about 5s", elapsed)
+	}
+	if data, readErr := os.ReadFile(pidFile); readErr == nil {
+		if pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil {
+			if process, findErr := os.FindProcess(pid); findErr == nil {
+				_ = process.Kill()
+			}
+		}
+	}
+}
 
 func TestTailCaptureReason(t *testing.T) {
 	var capture tailCapture
@@ -75,5 +155,25 @@ func TestGoCheckNoOutput(t *testing.T) {
 		if got := goCheckNoOutput(c.argv, c.args); got != c.want {
 			t.Errorf("goCheckNoOutput(%q, %q) = %v, want %v", c.argv, c.args, got, c.want)
 		}
+	}
+}
+
+// TestRemoteLoadCancelIsNoFailure: a step cancelled (Ctrl-C) while its load
+// command runs leaves the load unknown without a load failure to warn about.
+func TestRemoteLoadCancelIsNoFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell command")
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	w := watchRemoteLoad(parent, []string{"sleep", "5"})
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-w.done
+	sample := w.stopAndSample()
+	if sample.LoadErr != nil {
+		t.Errorf("cancelled step reports a load failure: %v", sample.LoadErr)
+	}
+	if sample.LoadKnown {
+		t.Errorf("cancelled step before any answer has a known load: %+v", sample)
 	}
 }
