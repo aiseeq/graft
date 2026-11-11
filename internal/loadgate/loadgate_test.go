@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -759,6 +760,61 @@ func TestPrioritySamplesCountAStageOnce(t *testing.T) {
 	// avg1 15.2 plus the 6.8 it does not show yet stays under 23, though
 	// both samples predate the stage.
 	check(-2*time.Second, -time.Second, 20, 14, false, "")
+}
+
+// TestPriorityObservedSamplesCountAStageOnce: samples recovered from the
+// load average as the waiting loop sees it carry the time of the kernel's
+// sample, at the latest: a stage admitted between two of them counts by the
+// one taken before it, whether the samples come from changes of the average
+// or from a steady one.
+func TestPriorityObservedSamplesCountAStageOnce(t *testing.T) {
+	fakeMachine(t)
+	setRunnableLimit(t, 23)
+	lockPath := filepath.Join(t.TempDir(), "load.lock")
+	release := admitOne(t, lockPath, 8)
+	defer release()
+	admitted := time.Now()
+	for _, tc := range []struct {
+		name       string
+		start, end time.Duration
+		changes    []time.Duration
+		want       string
+	}{
+		{"changing average", -9 * time.Second, 3 * time.Second, []time.Duration{-3 * time.Second, 3 * time.Second}, ""},
+		{"steady average", -3 * time.Second, 9 * time.Second, nil, ""},
+		// The look that saw the second change came after the admission, the
+		// look before it did not: the kernel may have sampled before the
+		// stage started, so the stage counts as missing from both.
+		{"change seen just after the admission", -8750 * time.Millisecond, 250 * time.Millisecond,
+			[]time.Duration{-2750 * time.Millisecond, 250 * time.Millisecond}, WhyReserve},
+		// A steady sample seen 2 s before the admission and the next one
+		// 4 s after it: each may be a period older, both before the stage.
+		{"steady samples up to a period old", -8 * time.Second, 4 * time.Second, nil, WhyReserve},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMachine(testLoad, io.Discard, "x", "projectA:x")
+			m.runnable, m.runnableLimit = 1, 23
+			m.avg1, m.avg1Known = 16, true
+			avg := 16.0
+			if tc.changes != nil {
+				avg = 10
+			}
+			for at := tc.start; at <= tc.end; at += 500 * time.Millisecond {
+				if slices.Contains(tc.changes, at) {
+					avg = loadFactor*avg + (1-loadFactor)*16
+				}
+				m.samples.observe(admitted.Add(at), avg, true)
+			}
+			a, b, ok := m.samples.lastTwo()
+			if !ok || math.Abs(a-16) > 0.01 || math.Abs(b-16) > 0.01 {
+				t.Fatalf("samples %.2f, %.2f, %v; want 16, 16", a, b, ok)
+			}
+			// 16 plus half of 8 stays under 23; the whole 8 reaches it.
+			if b, err := m.reservesBusy(lockPath, true); err != nil || b.why != tc.want {
+				t.Errorf("reserves: %+v, %v; want %q", b, err, tc.want)
+			}
+		})
+	}
 }
 
 func setRunnableLimit(t *testing.T, n int) {

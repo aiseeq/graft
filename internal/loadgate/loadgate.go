@@ -808,6 +808,8 @@ func DirtyWritebackKB() (int64, error) {
 const (
 	loadSampleMaxGap = time.Second
 	loadSampleStale  = 5500 * time.Millisecond
+	// loadSamplePeriod is the kernel's sampling period, 5 s and a tick.
+	loadSamplePeriod = 5*time.Second + 10*time.Millisecond
 	loadFactor       = 1884.0 / 2048
 )
 
@@ -838,14 +840,18 @@ func (s *kernelSamples) observe(at time.Time, avg float64, valid bool) {
 	}
 	if avg != s.avg {
 		delta := (avg - loadFactor*s.avg) / (1 - loadFactor)
+		// The kernel took this sample after the last look without a
+		// change: that look is the sample's time, so a task admitted in
+		// between counts as not in it rather than as in it.
 		if delta >= 0 {
-			s.append(delta, at)
+			s.append(delta, s.at)
 		}
 		s.avg, s.at, s.stableAt = avg, at, at
 		return
 	}
 	if at.Sub(s.stableAt) > loadSampleStale {
-		s.append(avg, at)
+		// Unchanged, the last sample may be up to a period old.
+		s.append(avg, at.Add(-loadSamplePeriod))
 		s.stableAt = at
 	}
 	s.at = at
