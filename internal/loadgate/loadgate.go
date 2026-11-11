@@ -483,7 +483,7 @@ func (m *machine) reservesBusy(lockPath string, priority bool) (busyness, error)
 	if err != nil {
 		return busyness{}, err
 	}
-	unseen, err := unseenAdmittedCores(lockPath, m.now())
+	unseen, err := unseenAdmittedCores(lockPath, m.unseenShare(priority))
 	if err != nil {
 		return busyness{}, err
 	}
@@ -509,11 +509,35 @@ const loadAvgTau = time.Minute
 // long as the task, past its reserve.
 func admittedPattern(lockPath string) string { return filepath.Base(lockPath) + ".*.admitted" }
 
+// unseenShare is the share of an admitted task's cores the load m decides by
+// does not show yet, by the time of its admission. The 1-minute load average
+// shows c·(1 − e^(−t/τ)) of it t after; the mean of the last two kernel
+// samples a priority task decides by shows all of it in a sample taken after
+// the admission and none in one taken before, so counting the average's
+// share there would count a stage the samples already hold twice.
+func (m *machine) unseenShare(priority bool) func(admitted time.Time) float64 {
+	if a, b, ok := m.samples.lastTwoAt(); priority && ok {
+		return func(admitted time.Time) float64 {
+			var share float64
+			for _, at := range []time.Time{a, b} {
+				if !at.After(admitted) {
+					share += 0.5
+				}
+			}
+			return share
+		}
+	}
+	now := m.now()
+	return func(admitted time.Time) float64 {
+		return math.Exp(-max(now.Sub(admitted), 0).Seconds() / loadAvgTau.Seconds())
+	}
+}
+
 // unseenAdmittedCores is how much of the expected cores of the running
-// admitted tasks the 1-minute load average does not show yet at now: c·e^(−t/τ)
-// each, t since its admission. The load average of a queue's dip is that of
-// the machine before the tasks it let in: the next counts them so.
-func unseenAdmittedCores(lockPath string, now time.Time) (float64, error) {
+// admitted tasks the load does not show yet: c·share(admission) each. The
+// load average of a queue's dip is that of the machine before the tasks it
+// let in: the next counts them so.
+func unseenAdmittedCores(lockPath string, share func(admitted time.Time) float64) (float64, error) {
 	files, err := lock.LiveData(filepath.Dir(lockPath), admittedPattern(lockPath))
 	if err != nil {
 		return 0, err
@@ -528,7 +552,7 @@ func unseenAdmittedCores(lockPath string, now time.Time) (float64, error) {
 		if err != nil {
 			return 0, fmt.Errorf("admitted task %s: %w", file.Path, err)
 		}
-		sum += d.Cores * math.Exp(-max(now.Sub(at), 0).Seconds()/loadAvgTau.Seconds())
+		sum += d.Cores * share(at)
 	}
 	return sum, nil
 }
@@ -794,6 +818,11 @@ type kernelSamples struct {
 	have         bool
 
 	values []float64
+	// times are when the last values were seen, appended with them and kept
+	// to two the same way, so the last of each go together: a reset of values
+	// leaves no pair until two more are seen, and values set without times (a
+	// test's) leave the share of admitted tasks to the average's.
+	times []time.Time
 }
 
 func (s *kernelSamples) observe(at time.Time, avg float64, valid bool) {
@@ -810,23 +839,35 @@ func (s *kernelSamples) observe(at time.Time, avg float64, valid bool) {
 	if avg != s.avg {
 		delta := (avg - loadFactor*s.avg) / (1 - loadFactor)
 		if delta >= 0 {
-			s.append(delta)
+			s.append(delta, at)
 		}
 		s.avg, s.at, s.stableAt = avg, at, at
 		return
 	}
 	if at.Sub(s.stableAt) > loadSampleStale {
-		s.append(avg)
+		s.append(avg, at)
 		s.stableAt = at
 	}
 	s.at = at
 }
 
-func (s *kernelSamples) append(sample float64) {
+func (s *kernelSamples) append(sample float64, at time.Time) {
 	s.values = append(s.values, sample)
+	s.times = append(s.times, at)
 	if len(s.values) > 2 {
 		s.values = s.values[len(s.values)-2:]
 	}
+	if len(s.times) > 2 {
+		s.times = s.times[len(s.times)-2:]
+	}
+}
+
+// lastTwoAt are when the last two samples were seen.
+func (s *kernelSamples) lastTwoAt() (time.Time, time.Time, bool) {
+	if len(s.values) < 2 || len(s.times) < 2 {
+		return time.Time{}, time.Time{}, false
+	}
+	return s.times[len(s.times)-2], s.times[len(s.times)-1], true
 }
 
 func (s *kernelSamples) lastTwo() (float64, float64, bool) {

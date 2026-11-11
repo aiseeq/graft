@@ -725,6 +725,42 @@ func TestPriorityReservesUseSamples(t *testing.T) {
 	}
 }
 
+// TestPrioritySamplesCountAStageOnce: a stage of the deploy admitted before
+// both kernel samples is in them, and the priority task adds nothing for it
+// however recent its admission; one admitted after a sample is missing from
+// it and counts by the samples that miss it. A task without a priority keeps
+// the load average's share.
+func TestPrioritySamplesCountAStageOnce(t *testing.T) {
+	fakeMachine(t)
+	setRunnableLimit(t, 23)
+	lockPath := filepath.Join(t.TempDir(), "load.lock")
+	release := admitOne(t, lockPath, 8)
+	defer release()
+	admitted := time.Now()
+	check := func(first, second time.Duration, sampled, background float64, priority bool, want string) {
+		t.Helper()
+		later := admitted.Add(10 * time.Second)
+		m := newMachine(testLoad, io.Discard, "x", "projectA:x")
+		m.runnable, m.runnableLimit = 1, 23
+		m.now = func() time.Time { return later }
+		// The background with the stage's 8 shown 10 s in.
+		m.avg1, m.avg1Known = background+8*(1-math.Exp(-10.0/60)), true
+		m.samples.append(sampled, admitted.Add(first))
+		m.samples.append(sampled, admitted.Add(second))
+		b, err := m.reservesBusy(lockPath, priority)
+		if err != nil || b.why != want {
+			t.Errorf("samples at %s and %s after admission, priority %v: %+v, %v; want %q", first, second, priority, b, err, want)
+		}
+	}
+	check(5*time.Second, 10*time.Second, 20, 12, true, "")
+	check(-time.Second, 5*time.Second, 20, 12, true, WhyReserve)  // 20 + 8/2 reaches 23
+	check(-time.Second, 5*time.Second, 16, 12, true, "")          // 16 + 8/2 stays under
+	check(-2*time.Second, -time.Second, 16, 12, true, WhyReserve) // 16 + 8 reaches 23
+	// avg1 15.2 plus the 6.8 it does not show yet stays under 23, though
+	// both samples predate the stage.
+	check(-2*time.Second, -time.Second, 20, 14, false, "")
+}
+
 func setRunnableLimit(t *testing.T, n int) {
 	t.Helper()
 	path := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "akit", "pressure.yaml")
