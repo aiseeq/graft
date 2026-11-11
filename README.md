@@ -863,7 +863,10 @@ dotenv_sets:                   # key lists several tasks and services share
   executable, a running program keeps its old file, an identical file is
   left alone (a symlink there, say to the build output, is replaced with a
   file), and each file prints `graft: install: <name> <revision> ->
-  <path>`. With `install.hosts` in the user config, the same file is sent by
+  <path>`. After a successful `graft commit` or `graft release`, graft warns
+  if an installed Go binary is behind the current commit or latest reachable
+  version tag; run `graft <task>` to update it. With `install.hosts` in the
+  user config, the same file is sent by
   `rsync` to each host at that absolute path, creating its directory, once
   every file is installed here; a host that fails is not tried for the rest
   of the files, and the step fails naming it, its error and the files it did

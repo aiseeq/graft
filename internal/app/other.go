@@ -242,9 +242,13 @@ func (a *App) Release(ctx context.Context, opts ReleaseOptions) error {
 		return err
 	}
 	return a.withLock(ctx, repoLock(repo), cfg, "graft release", func() error {
-		return releaseAuthorsThen(repo, cfg, func() error {
+		err := releaseAuthorsThen(repo, cfg, func() error {
 			return a.releaseLocked(ctx, repo, cfg, opts)
 		})
+		if err == nil {
+			a.warnInstallFreshness(ctx, repo, cfg)
+		}
+		return err
 	})
 }
 
@@ -693,6 +697,40 @@ func releasedAs(repo *gitx.Repo, prefix string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// warnInstallFreshness checks installed task binaries after a successful
+// commit or release. A failed advisory check must not change the command result.
+func (a *App) warnInstallFreshness(ctx context.Context, repo *gitx.Repo, cfg *config.Config) {
+	reference, err := installFreshnessReference(repo, cfg)
+	if err != nil {
+		a.warn("cannot check installed binary freshness: %v", err)
+		return
+	}
+	for _, warning := range a.runner(repo, cfg).InstallFreshnessWarnings(ctx, reference) {
+		a.warn("%s", warning)
+	}
+}
+
+// installFreshnessReference is the latest reachable version tag in git-tag
+// mode, otherwise HEAD. Before the first version tag, HEAD is the only useful
+// reference available.
+func installFreshnessReference(repo *gitx.Repo, cfg *config.Config) (string, error) {
+	ref := "HEAD"
+	if cfg.Version.Mode == config.ModeGitTag {
+		latest, found, err := latestTag(repo, cfg.Version.TagPrefix)
+		if err != nil {
+			return "", err
+		}
+		if found {
+			ref = cfg.Version.TagPrefix + latest.String()
+		}
+	}
+	out, err := repo.Git("rev-parse", "--verify", ref+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolving reference %s: %w", ref, err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // latestTag finds the highest MAJOR.MINOR.PATCH tag reachable from HEAD.

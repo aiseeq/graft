@@ -9,6 +9,76 @@ import (
 	"testing"
 )
 
+func TestCommitWarnsForStaleInstalledGoBinary(t *testing.T) {
+	f := tasksRepo(t, `gate: []
+tasks:
+  build:
+    run: [[go, build, -o, bin/tool, .]]
+  install:
+    run: [{install: bin/tool}]
+`, map[string]string{
+		".gitignore": "bin/\n",
+		"go.mod":     "module example.org/tool\n\ngo 1.22\n",
+		"main.go":    "package main\n\nfunc main() { println(\"one\") }\n",
+	})
+	f.mustPlainCommit("install fixture")
+	userBin, cfgHome := filepath.Join(f.base, "user-bin"), filepath.Join(f.base, "user-config")
+	writeUserConfig(t, cfgHome, "tools:\n  bin_dir: "+yamlQuote(userBin)+"\n")
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgHome, "APPDATA="+cfgHome)
+	f.mustGraft("build")
+	f.mustGraft("install")
+	f.write("main.go", "package main\n\nfunc main() { println(\"two\") }\n")
+	out, code := f.graft("", "commit", "-m", "feat: update tool")
+	if code != 0 {
+		t.Fatalf("graft commit failed: exit %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "tool is from ") || !strings.Contains(out, "1 commit behind") || !strings.Contains(out, "run graft install") {
+		t.Fatalf("commit did not warn about the stale install: exit %d\n%s", code, out)
+	}
+
+	f.mustGraft("build")
+	f.mustGraft("install")
+	out, code = f.graft("", "release")
+	if code != 0 || strings.Contains(out, "warning: tool is from") {
+		t.Fatalf("fresh tagged binary was reported stale: exit %d\n%s", code, out)
+	}
+
+	f.write("main.go", "package main\n\nfunc main() { println(\"three\") }\n")
+	out, code = f.graft("", "commit", "-m", "feat: another tool update")
+	if code != 0 || strings.Contains(out, "warning: tool is from") {
+		t.Fatalf("commit between tags should not report staleness: exit %d\n%s", code, out)
+	}
+	out, code = f.graft("", "release")
+	if code != 0 || !strings.Contains(out, "tool is from ") || !strings.Contains(out, "run graft install") {
+		t.Fatalf("new tag did not report the older install: exit %d\n%s", code, out)
+	}
+}
+
+func TestCommitSkipsInstalledGoBinaryWithoutVCSRevision(t *testing.T) {
+	f := tasksRepo(t, `gate: []
+tasks:
+  build:
+    run: [[go, build, -buildvcs=false, -o, bin/tool, .]]
+  install:
+    run: [{install: bin/tool}]
+`, map[string]string{
+		".gitignore": "bin/\n",
+		"go.mod":     "module example.org/tool\n\ngo 1.22\n",
+		"main.go":    "package main\n\nfunc main() {}\n",
+	})
+	f.mustPlainCommit("install fixture")
+	userBin, cfgHome := filepath.Join(f.base, "user-bin"), filepath.Join(f.base, "user-config")
+	writeUserConfig(t, cfgHome, "tools:\n  bin_dir: "+yamlQuote(userBin)+"\n")
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgHome, "APPDATA="+cfgHome)
+	f.mustGraft("build")
+	f.mustGraft("install")
+	f.write("main.go", "package main\n\nfunc main() { println(1) }\n")
+	out, code := f.graft("", "commit", "-m", "feat: update tool")
+	if code != 0 || strings.Contains(out, "warning: tool is from") {
+		t.Fatalf("binary without vcs.revision should be skipped: exit %d\n%s", code, out)
+	}
+}
+
 // installRepo is a committed Go module whose task build writes bin/tool;
 // the install tasks put it into dest.
 func installRepo(t *testing.T, dest string) *fixture {

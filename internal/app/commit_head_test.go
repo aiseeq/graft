@@ -2,30 +2,52 @@ package app
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/gittest"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 )
+
+func TestInstallFreshnessReference(t *testing.T) {
+	root := t.TempDir()
+	git := func(args ...string) string { return gittest.Run(t, root, args...) }
+	git("init", "-q", "-b", "main")
+	git("commit", "-q", "--allow-empty", "-m", "one")
+	git("tag", "-a", "v1.0.0", "-m", "v1.0.0")
+	git("commit", "-q", "--allow-empty", "-m", "two")
+	git("tag", "-a", "v1.1.0", "-m", "v1.1.0")
+	latest := git("rev-parse", "HEAD")
+	git("commit", "-q", "--allow-empty", "-m", "three")
+	repo, err := gitx.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want string
+	}{
+		{"latest reachable tag", &config.Config{Version: config.Version{Mode: config.ModeGitTag, TagPrefix: "v"}}, latest},
+		{"HEAD for other modes", &config.Config{Version: config.Version{Mode: config.ModeFile}}, git("rev-parse", "HEAD")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := installFreshnessReference(repo, test.cfg)
+			if err != nil || got != test.want {
+				t.Fatalf("reference = %s, %v; want %s", got, err, test.want)
+			}
+		})
+	}
+}
 
 // TestCurrentHead: the branch and commit HEAD is on, on a branch, detached
 // and unborn, as a commit compares them around its gate.
 func TestCurrentHead(t *testing.T) {
 	work := t.TempDir()
-	git := func(args ...string) string {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = work
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(work, ".none"), "GIT_CONFIG_NOSYSTEM=1",
-			"GIT_AUTHOR_NAME=T", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=T", "GIT_COMMITTER_EMAIL=t@example.com")
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
+	git := func(args ...string) string { return gittest.Run(t, work, args...) }
 	git("init", "-q", "-b", "feature/PROJ-1-x")
 	repo, err := gitx.Open(work)
 	if err != nil {

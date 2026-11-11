@@ -70,7 +70,11 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 		if err := a.raiseOwnModules(ctx, repo, cfg, plan.branch); err != nil {
 			return err
 		}
-		return a.commit(ctx, repo, cfg, plan)
+		if err := a.commit(ctx, repo, cfg, plan); err != nil {
+			return err
+		}
+		a.warnInstallFreshness(ctx, repo, cfg)
+		return nil
 	})
 	if err != nil {
 		return err

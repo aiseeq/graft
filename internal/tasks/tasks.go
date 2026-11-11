@@ -3801,20 +3801,9 @@ func (r *Runner) repo() (*gitx.Repo, error) {
 
 // install expands source patterns, validates each binary, then installs it.
 func (r *Runner) install(ctx context.Context, s config.Step, t *config.Task) error {
-	patterns := strings.Fields(s.Install.Path)
-	if len(patterns) == 0 {
-		return errors.New("install: empty path")
-	}
-	var files []string
-	for _, pattern := range patterns {
-		matches, err := filepath.Glob(filepath.Join(r.taskDir(t), filepath.FromSlash(pattern)))
-		if err != nil {
-			return fmt.Errorf("install glob %q: %w", pattern, err)
-		}
-		if len(matches) == 0 {
-			return fmt.Errorf("install glob %q matched no files", pattern)
-		}
-		files = append(files, matches...)
+	files, err := r.installFiles(s, t)
+	if err != nil {
+		return err
 	}
 	repo, err := r.repo()
 	if err != nil {
@@ -4077,6 +4066,141 @@ func removeOld(dir, prefix string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// installFiles expands an install step's paths exactly as install does.
+func (r *Runner) installFiles(s config.Step, t *config.Task) ([]string, error) {
+	if len(strings.Fields(s.Install.Path)) == 0 {
+		return nil, errors.New("install: empty path")
+	}
+	return r.installMatches(s, t, func(pattern string) ([]string, error) {
+		return nil, fmt.Errorf("install glob %q matched no files", pattern)
+	})
+}
+
+// installedNames are the names an install step gives its files in the
+// destination. A path matching nothing yet (a fresh clone, nothing built)
+// names its last element: a plain path its file, a pattern no installed
+// file, so a commit before the first build says nothing about it.
+func (r *Runner) installedNames(s config.Step, t *config.Task) ([]string, error) {
+	files, err := r.installMatches(s, t, func(pattern string) ([]string, error) {
+		return []string{filepath.FromSlash(pattern)}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(files))
+	for _, file := range files {
+		names = append(names, filepath.Base(file))
+	}
+	return names, nil
+}
+
+// installMatches globs each path of an install step in the task's
+// directory; a path matching nothing gets what unmatched says.
+func (r *Runner) installMatches(s config.Step, t *config.Task, unmatched func(pattern string) ([]string, error)) ([]string, error) {
+	var files []string
+	for pattern := range strings.FieldsSeq(s.Install.Path) {
+		matches, err := filepath.Glob(filepath.Join(r.taskDir(t), filepath.FromSlash(pattern)))
+		if err != nil {
+			return nil, fmt.Errorf("install glob %q: %w", pattern, err)
+		}
+		if len(matches) == 0 {
+			if matches, err = unmatched(pattern); err != nil {
+				return nil, err
+			}
+		}
+		files = append(files, matches...)
+	}
+	return files, nil
+}
+
+// InstallFreshnessWarnings reports installed Go binaries older than reference.
+// Missing, unreadable, non-Go or unversioned files are skipped; Git errors
+// are returned as advisory warnings.
+func (r *Runner) InstallFreshnessWarnings(ctx context.Context, reference string) []string {
+	repo, repoErr := r.repo()
+	if repoErr != nil {
+		return []string{fmt.Sprintf("cannot inspect installed binaries: %v", repoErr)}
+	}
+	var warnings []string
+	taskNames := slices.Sorted(maps.Keys(r.Config.Tasks))
+	for _, taskName := range taskNames {
+		task := r.Config.Tasks[taskName]
+		for _, step := range task.Run {
+			if step.Install == nil {
+				continue
+			}
+			names, err := r.installedNames(step, task)
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("cannot inspect install paths for task %s: %v", taskName, err))
+				continue
+			}
+			destination, err := installDestination(ctx, step.Install.To)
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("cannot resolve install destination for task %s: %v", taskName, err))
+				continue
+			}
+			for _, name := range names {
+				installed := filepath.Join(destination, name)
+				info, err := buildinfo.ReadFile(installed)
+				if err != nil { //nolint:silent-error-handling // Missing and non-Go installed files are intentionally ignored.
+					continue
+				}
+				revision, ok := installSetting(info, "vcs.revision")
+				if !hasInstallRevision(revision, ok) {
+					continue
+				}
+				count, behind, err := installRevisionDistance(repo, revision, reference)
+				if errors.Is(err, errInstallRevisionUnknown) {
+					continue
+				}
+				if err != nil {
+					warnings = append(warnings, fmt.Sprintf("cannot check installed binary %s for task %s: %v", name, taskName, err))
+					continue
+				}
+				if !behind {
+					continue
+				}
+				commits := "commits"
+				if count == 1 {
+					commits = "commit"
+				}
+				warnings = append(warnings, fmt.Sprintf("%s is from %s, %d %s behind; run graft %s", name, shortRevision(revision), count, commits, taskName))
+			}
+		}
+	}
+	return warnings
+}
+
+var errInstallRevisionUnknown = errors.New("installed revision is not in this repository")
+
+func hasInstallRevision(revision string, present bool) bool {
+	return present && revision != ""
+}
+
+// installRevisionDistance uses one rev-list query to distinguish an ancestor
+// from a divergent revision and count commits between it and the reference.
+func installRevisionDistance(repo *gitx.Repo, revision, reference string) (int, bool, error) {
+	known, err := repo.RefExists(revision + "^{commit}")
+	if err != nil {
+		return 0, false, fmt.Errorf("checking installed revision %s: %w", shortRevision(revision), err)
+	}
+	if !known {
+		return 0, false, errInstallRevisionUnknown
+	}
+	out, err := repo.Git("rev-list", "--left-right", "--count", revision+"..."+reference)
+	if err != nil {
+		return 0, false, err
+	}
+	var left, right int
+	if _, err := fmt.Sscan(out, &left, &right); err != nil {
+		return 0, false, fmt.Errorf("parsing git revision distance %q...%q: %w", revision, reference, err)
+	}
+	if left != 0 || right == 0 {
+		return 0, false, nil
+	}
+	return right, true, nil
 }
 
 // taskDir is the directory a task's steps run in.
