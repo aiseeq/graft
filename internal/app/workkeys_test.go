@@ -8,6 +8,61 @@ import (
 	"github.com/aiseeq/graft/v2/internal/config"
 )
 
+func TestReleaseAuthorLogArgsExcludeEveryReachableTag(t *testing.T) {
+	args, input := releaseAuthorLog([]string{"v1.0.0", "v1.0.1", "v1.1.0"})
+	want := []string{"log", "--format=%H%x00%ae%x00%ce", "--stdin", "HEAD"}
+	if !slices.Equal(args, want) {
+		t.Fatalf("releaseAuthorLog args = %q, want %q", args, want)
+	}
+	if wantInput := "^refs/tags/v1.0.0\n^refs/tags/v1.0.1\n^refs/tags/v1.1.0\n"; input != wantInput {
+		t.Fatalf("releaseAuthorLog input = %q, want %q", input, wantInput)
+	}
+	if args, input := releaseAuthorLog(nil); !slices.Equal(args, want) || input != "" {
+		t.Fatalf("releaseAuthorLog without tags = %q, %q", args, input)
+	}
+}
+
+func TestReleaseAuthorViolations(t *testing.T) {
+	commit := releaseCommit{sha: "abcdef1234567890", author: "dev@example.org", committer: "dev@example.org"}
+	cases := []struct {
+		name    string
+		commit  releaseCommit
+		allowed []string
+		want    []string
+	}{
+		{"all permitted", commit, []string{"dev@example.org"}, nil},
+		{"foreign author", releaseCommit{sha: commit.sha, author: "other@example.com", committer: commit.committer}, []string{"dev@example.org"}, []string{"author", "other@example.com"}},
+		{"foreign committer", releaseCommit{sha: commit.sha, author: commit.author, committer: "other@example.com"}, []string{"dev@example.org"}, []string{"committer", "other@example.com"}},
+		{"address case ignored", releaseCommit{sha: commit.sha, author: "DEV@EXAMPLE.ORG", committer: "dev@example.org"}, []string{"dev@example.org"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := releaseAuthorViolations([]releaseCommit{tc.commit}, tc.allowed)
+			if len(got) != len(tc.want)/2 {
+				t.Fatalf("violations = %+v, want %v", got, tc.want)
+			}
+			if len(tc.want) > 0 && (got[0].role != tc.want[0] || got[0].address != tc.want[1]) {
+				t.Fatalf("violation = %+v, want role %q and address %q", got[0], tc.want[0], tc.want[1])
+			}
+		})
+	}
+}
+
+func TestReleaseAuthorViolationsListsEveryCommit(t *testing.T) {
+	commits := []releaseCommit{
+		{sha: "abcdef123456", author: "other@example.com", committer: "dev@example.org"},
+		{sha: "123456abcdef", author: "dev@example.org", committer: "outsider@example.net"},
+	}
+	got := releaseAuthorViolations(commits, []string{"dev@example.org"})
+	if len(got) != 2 {
+		t.Fatalf("violations = %+v, want both commits", got)
+	}
+	if got[0].sha != commits[0].sha || got[0].role != "author" || got[0].address != "other@example.com" ||
+		got[1].sha != commits[1].sha || got[1].role != "committer" || got[1].address != "outsider@example.net" {
+		t.Fatalf("violations = %+v", got)
+	}
+}
+
 func TestWorkKeys(t *testing.T) {
 	re := regexp.MustCompile(`\bPROJ-[0-9]+\b`)
 	attributed := &config.ApprovedRelease{Attributed: map[string]config.Attribution{"abc1234": {Item: "PROJ-9"}}}

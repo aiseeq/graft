@@ -2,9 +2,19 @@ package main
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
+
+// withTestEnv runs fn with extra appended to testEnv, restoring it even when
+// fn stops the test.
+func withTestEnv(extra []string, fn func()) {
+	prior := testEnv
+	defer func() { testEnv = prior }()
+	testEnv = append(slices.Clip(testEnv), extra...)
+	fn()
+}
 
 func releaseBranchRepo(t *testing.T) *fixture {
 	t.Helper()
@@ -163,6 +173,143 @@ func TestReleaseAsksRemoteWithoutTrackingCopy(t *testing.T) {
 		if got := f.gitIn(f.remote(r), "rev-parse", "refs/heads/main"); got != head {
 			t.Errorf("%s main = %s, want %s", r, got, head)
 		}
+	}
+}
+
+func releaseAuthorsRepo(t *testing.T, authors string) *fixture {
+	t.Helper()
+	conf := "schema: 1\nversion: {mode: git-tag}\ngate: []\n"
+	if authors == "" {
+		conf += "release: {}\n"
+	} else {
+		conf += "release:\n  authors: " + authors + "\n"
+	}
+	f := newRepo(t, map[string]string{".graft.yaml": conf, "base.txt": "base\n"}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	withTestEnv([]string{"GIT_AUTHOR_EMAIL=test@example.com", "GIT_COMMITTER_EMAIL=test@example.com"}, func() {
+		f.mustPlainCommit("feat: base")
+	})
+	f.git("push", "-q", "-u", "origin", "main")
+	return f
+}
+
+func (f *fixture) commitWithAuthor(email string) string {
+	f.t.Helper()
+	f.write("change.txt", "change\n")
+	f.git("add", "-A")
+	prior := f.env
+	f.env = append(f.env, "GIT_AUTHOR_EMAIL="+email, "GIT_COMMITTER_EMAIL=test@example.com")
+	out, code := f.exec(f.work, "", "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "feat: change")
+	f.env = prior
+	if code != 0 {
+		f.t.Fatalf("git commit: exit %d\n%s", code, out)
+	}
+	f.git("push", "-q", "origin", "HEAD")
+	return f.git("rev-parse", "HEAD")
+}
+
+func (f *fixture) commitStagedAs(email, message string) {
+	f.t.Helper()
+	prior := f.env
+	f.env = append(f.env, "GIT_AUTHOR_EMAIL="+email, "GIT_COMMITTER_EMAIL=test@example.com")
+	out, code := f.exec(f.work, "", "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", message)
+	f.env = prior
+	if code != 0 {
+		f.t.Fatalf("git commit failed: %s", out)
+	}
+}
+
+func TestReleaseChecksAuthorsBeforeTag(t *testing.T) {
+	f := releaseAuthorsRepo(t, "[test@example.com]")
+	if out, code := f.graft("", "release"); code != 0 {
+		t.Fatalf("initial release tag: exit %d\n%s", code, out)
+	}
+	sha := f.commitWithAuthor("other@example.com")
+	out, code := f.graft("", "release")
+	if code == 0 || !strings.Contains(out, sha[:12]+" author other@example.com") || !strings.HasSuffix(strings.TrimSpace(out), "rewrite the author or add the address to release.authors") {
+		t.Fatalf("release with foreign author: exit %d\n%s", code, out)
+	}
+	if _, code := f.tryGit("show-ref", "--verify", "--quiet", "refs/tags/v0.1.1"); code == 0 {
+		t.Fatal("new release tag exists after author refusal")
+	}
+}
+
+func TestReleaseAllowsConfiguredAuthors(t *testing.T) {
+	f := releaseAuthorsRepo(t, "[test@example.com, dev@example.org]")
+	f.commitWithAuthor("dev@example.org")
+	if out, code := f.graft("", "release"); code != 0 {
+		t.Fatalf("release with allowed authors: exit %d\n%s", code, out)
+	}
+	if _, code := f.tryGit("show-ref", "--verify", "--quiet", "refs/tags/v0.1.0"); code != 0 {
+		t.Fatal("release tag is missing")
+	}
+}
+
+func TestReleaseWithoutAuthorList(t *testing.T) {
+	f := releaseAuthorsRepo(t, "")
+	f.commitWithAuthor("other@example.com")
+	if out, code := f.graft("", "release"); code != 0 {
+		t.Fatalf("release without author list: exit %d\n%s", code, out)
+	}
+}
+
+func TestReleaseDoesNotRecheckHotfixCommitsAlreadyTagged(t *testing.T) {
+	f := releaseAuthorsRepo(t, "")
+	if out, code := f.graft("", "release", "--version", "1.0.0"); code != 0 {
+		t.Fatalf("release v1.0.0: exit %d\n%s", code, out)
+	}
+	f.git("checkout", "-q", "-b", "hotfix/one")
+	f.write("hotfix.txt", "hotfix\n")
+	f.git("add", "-A")
+	prior := f.env
+	f.env = append(f.env, "GIT_AUTHOR_EMAIL=other@example.com", "GIT_COMMITTER_EMAIL=test@example.com")
+	out, code := f.exec(f.work, "", "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "fix: hotfix")
+	f.env = prior
+	if code != 0 {
+		t.Fatalf("hotfix commit: exit %d\n%s", code, out)
+	}
+	f.git("push", "-q", "-u", "origin", "HEAD")
+	if out, code := f.graft("", "release", "--version", "1.0.1"); code != 0 {
+		t.Fatalf("release v1.0.1: exit %d\n%s", code, out)
+	}
+	f.git("checkout", "-q", "main")
+	f.write("main.txt", "main\n")
+	f.git("add", "-A")
+	f.commitStagedAs("test@example.com", "feat: main work")
+	f.git("push", "-q", "origin", "HEAD")
+	if out, code := f.graft("", "release", "--version", "1.1.0"); code != 0 {
+		t.Fatalf("release v1.1.0: exit %d\n%s", code, out)
+	}
+	withTestEnv([]string{"GIT_AUTHOR_EMAIL=test@example.com", "GIT_COMMITTER_EMAIL=test@example.com"}, func() {
+		f.git("merge", "-q", "--no-ff", "hotfix/one", "-m", "merge: hotfix")
+	})
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: git-tag}\ngate: []\nrelease:\n  authors: [test@example.com]\n")
+	f.git("add", "-A")
+	f.commitStagedAs("test@example.com", "chore: configure release authors")
+	f.git("push", "-q", "origin", "HEAD")
+	if out, code := f.graft("", "release", "--version", "1.1.1"); code != 0 {
+		t.Fatalf("release after merging released hotfix: exit %d\n%s", code, out)
+	}
+	if _, code := f.tryGit("show-ref", "--verify", "--quiet", "refs/tags/v1.1.1"); code != 0 {
+		t.Fatal("release tag v1.1.1 is missing")
+	}
+}
+
+func TestReleaseAuthorCheckStartsAfterPreviousTag(t *testing.T) {
+	f := releaseAuthorsRepo(t, "")
+	f.commitWithAuthor("other@example.com")
+	if out, code := f.graft("", "release"); code != 0 {
+		t.Fatalf("initial release: exit %d\n%s", code, out)
+	}
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: git-tag}\ngate: []\nrelease:\n  authors: [test@example.com]\n")
+	f.git("add", "-A")
+	f.commitStagedAs("test@example.com", "chore: configure release authors")
+	f.git("push", "-q", "origin", "HEAD")
+	if out, code := f.graft("", "release"); code != 0 {
+		t.Fatalf("release after previous tag: exit %d\n%s", code, out)
+	}
+	if _, code := f.tryGit("show-ref", "--verify", "--quiet", "refs/tags/v0.1.1"); code != 0 {
+		t.Fatal("second release tag is missing")
 	}
 }
 

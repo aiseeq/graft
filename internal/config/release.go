@@ -4,10 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/mail"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // Hotfix lets a branch from the commit production runs go out past the
@@ -37,6 +40,55 @@ type ReleaseVersion struct {
 	// Template and HotfixTemplate are Name and Hotfix compiled.
 	Template       *VersionName `yaml:"-"`
 	HotfixTemplate *VersionName `yaml:"-"`
+}
+
+// ReleaseAuthors records the optional list and whether its key was present.
+type ReleaseAuthors struct {
+	// Addresses are the e-mail addresses in the allowlist.
+	Addresses []string
+	// Set distinguishes an omitted key from a present null or empty value.
+	Set bool
+}
+
+// Release configures checks that run before graft release changes the repository.
+type Release struct {
+	// Authors is the e-mail allowlist for authors and committers of unreleased commits.
+	Authors ReleaseAuthors `yaml:"authors"`
+}
+
+func (r *Release) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return errors.New("release: must be a mapping")
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if key.Value != "authors" {
+			return fmt.Errorf("line %d: field %q not found in type config.Release", key.Line, key.Value)
+		}
+		r.Authors.Set = true
+		if value.Tag != "!!null" {
+			if err := value.Decode(&r.Authors.Addresses); err != nil {
+				return fmt.Errorf("release.authors: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateReleaseAuthors() error {
+	if c.Release == nil || !c.Release.Authors.Set {
+		return nil
+	}
+	if len(c.Release.Authors.Addresses) == 0 {
+		return errors.New("release.authors: must contain at least one e-mail address")
+	}
+	for i, address := range c.Release.Authors.Addresses {
+		parsed, err := mail.ParseAddress(address)
+		if err != nil || parsed.Address != address {
+			return fmt.Errorf("release.authors[%d]: %q is not an e-mail address", i, address)
+		}
+	}
+	return nil
 }
 
 // ReleasePage is the Confluence page a release publishes: what went out,
