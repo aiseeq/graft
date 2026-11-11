@@ -266,6 +266,11 @@ const GoFixSource = "go fix -diff ./..."
 // GoFmtSource is how the implicit gofmt step reads in the gate.
 const GoFmtSource = "gofmt -l"
 
+// LexOutputsSource is how the built-in lex output check reads in the gate.
+const LexOutputsSource = "lex check --codex <path> --outputs-under <root>"
+
+const lexOutputsHint = "run lex absorb for the named files, then commit the generated outputs"
+
 // goFixHint follows a failing go_fix step.
 const goFixHint = "go fix has rewrites to make: run go fix ./... in the module, again until go fix -diff ./... is empty (one pass leaves rewrites that overlap), and commit them. " +
 	"A new Go release brings new rewrites: after a Go upgrade this step fails in every project that turns it on, whatever the change"
@@ -294,7 +299,9 @@ func builtinGateGoCheck(s config.Step) bool {
 	return isBuiltinGoVet(s) || isBuiltinGoFixDiff(s)
 }
 
-// gateSteps is the gate: go vet ./... in every Go module of the tree first,
+// gateSteps is the gate: when lex headers are present, lex checks generated
+// Markdown outputs against the main checkout from git worktree list,
+// then go vet ./... in every Go module of the tree first,
 // unless go_vet is turned off, then go fix -diff ./... in each with go_fix,
 // then the steps of the config. A module is the
 // root when it has go.mod, and every directory below it with a go.mod that
@@ -302,8 +309,18 @@ func builtinGateGoCheck(s config.Step) bool {
 // skipped, and so are the directories of go_vet.exclude. The steps take
 // go_vet.env, the project's build flags: vet with other flags is another
 // build, which the build cache does not share.
-func (r *Runner) gateSteps() ([]gateStep, error) {
+func (r *Runner) gateSteps(ctx context.Context) ([]gateStep, error) {
 	var steps []gateStep
+	lexCodices, err := r.lexOutputCodices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(lexCodices) > 0 {
+		steps = append(steps, gateStep{
+			step: config.Step{Source: LexOutputsSource}, task: &config.Task{},
+			run: func(ctx context.Context) error { return r.checkLexOutputs(ctx, lexCodices) },
+		})
+	}
 	if !r.Config.GoVet.IsEnabled() && !r.Config.GoFix.Enabled && !r.Config.GoFmt.IsEnabled() {
 		return r.configSteps(steps), nil
 	}
@@ -342,6 +359,237 @@ func (r *Runner) gateSteps() ([]gateStep, error) {
 		})
 	}
 	return r.configSteps(steps), nil
+}
+
+// lexCodexFromHeader returns the codex path in a lex header on the first body
+// line. A leading YAML front matter block is skipped.
+func lexCodexFromHeader(firstLine func() (string, error)) (string, bool, error) {
+	line, err := firstLine()
+	if err != nil {
+		return "", false, err
+	}
+	line = strings.TrimSuffix(line, "\r")
+	if line == "---" {
+		for {
+			line, err = firstLine()
+			if err != nil {
+				return "", false, err
+			}
+			line = strings.TrimSuffix(line, "\r")
+			if line == "---" {
+				break
+			}
+		}
+		line, err = firstLine()
+		if err != nil {
+			return "", false, err
+		}
+		line = strings.TrimSuffix(line, "\r")
+	}
+	if !strings.HasPrefix(line, "<!-- lex:") {
+		return "", false, nil
+	}
+	for token := range strings.FieldsSeq(line) {
+		marker := strings.Index(token, "/manifest/")
+		if marker <= 0 {
+			continue
+		}
+		yaml := strings.Index(token[marker+len("/manifest/"):], ".yaml")
+		if yaml < 0 {
+			continue
+		}
+		return token[:marker], true, nil
+	}
+	return "", true, errors.New("lex header has no <codex>/manifest/<name>.yaml path")
+}
+
+// checkLexOutputs checks generated Markdown files in each codex named by a
+// lex header. Files without headers require no external lex executable.
+func (r *Runner) checkLexOutputs(ctx context.Context, codices map[string]bool) error {
+	if len(codices) == 0 {
+		return nil
+	}
+	repo, err := r.repo()
+	if err != nil {
+		return fmt.Errorf("finding the main checkout for lex: %w", err)
+	}
+	mainCheckout, err := lexMainCheckout(repo)
+	if err != nil {
+		return err
+	}
+	lex, err := exec.LookPath("lex")
+	if err != nil {
+		return fmt.Errorf("lex header found, but lex was not found in PATH: %w", err)
+	}
+	paths := slices.Sorted(maps.Keys(codices))
+	var failures []error
+	refused := false
+	for _, codex := range paths {
+		args, argsErr := lexCheckArgs(codex, mainCheckout, r.Root)
+		if argsErr != nil {
+			return argsErr
+		}
+		cmd := exec.CommandContext(ctx, lex, args...)
+		cmd.Dir, cmd.Stdin = r.Root, strings.NewReader("")
+		gitVars, envErr := gitx.LocalEnvVars()
+		if envErr != nil {
+			return fmt.Errorf("listing git environment variables: %w", envErr)
+		}
+		cmd.Env = gitx.Without(os.Environ(), gitVars)
+		if output, runErr := cmd.CombinedOutput(); runErr != nil {
+			fmt.Fprint(r.Stdout, string(output))
+			failures = append(failures, fmt.Errorf("lex binary %s check for codex %s failed: %w", lex, codex, runErr))
+			var exitErr *exec.ExitError
+			refused = refused || errors.As(runErr, &exitErr) && exitErr.ExitCode() == 1
+		}
+	}
+	if len(failures) == 0 {
+		return nil
+	}
+	joined := errors.Join(failures...)
+	if refused {
+		return fmt.Errorf("%w\n%s", joined, lexOutputsHint)
+	}
+	return joined
+}
+
+func lexMainCheckout(repo *gitx.Repo) (string, error) {
+	if repo == nil || repo.Root == "" || repo.GitDir == "" || repo.CommonDir == "" {
+		return "", errors.New("cannot determine the main checkout from git worktree list")
+	}
+	if filepath.Clean(repo.Root) == filepath.Clean(repo.GitDir) {
+		return "", errors.New("cannot determine the main checkout from a bare repository")
+	}
+	main, err := repo.MainWorktree()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine the main checkout: %w", err)
+	}
+	return main, nil
+}
+
+func lexCheckArgs(codex, mainCheckout, tree string) ([]string, error) {
+	mainAbs, err := filepath.Abs(mainCheckout)
+	if err != nil {
+		return nil, fmt.Errorf("resolving main checkout %s: %w", mainCheckout, err)
+	}
+	treeAbs, err := filepath.Abs(tree)
+	if err != nil {
+		return nil, fmt.Errorf("resolving current tree %s: %w", tree, err)
+	}
+	mainResolved, err := filepath.EvalSymlinks(mainAbs)
+	if err != nil {
+		return nil, fmt.Errorf("resolving main checkout symlinks %s: %w", mainCheckout, err)
+	}
+	treeResolved, err := filepath.EvalSymlinks(treeAbs)
+	if err != nil {
+		return nil, fmt.Errorf("resolving current tree symlinks %s: %w", tree, err)
+	}
+	args := []string{"check", "--codex", codex, "--outputs-under", filepath.Clean(mainAbs)}
+	if filepath.Clean(mainResolved) != filepath.Clean(treeResolved) {
+		args = append(args, "--tree", filepath.Clean(treeAbs))
+	}
+	return args, nil
+}
+
+const lexHeaderReadLimit = 8 << 10
+
+func readLexHeader(reader io.Reader) (string, bool, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, lexHeaderReadLimit+1))
+	if err != nil {
+		return "", false, fmt.Errorf("reading lex header: %w", err)
+	}
+	truncated := len(data) > lexHeaderReadLimit
+	if truncated {
+		data = data[:lexHeaderReadLimit]
+	}
+	codex, found, err := lexCodexFromHeader(lexHeaderLineReader(data, truncated))
+	if errors.Is(err, io.EOF) {
+		return "", false, nil
+	}
+	return codex, found, err
+}
+
+func lexHeaderForFile(file string, reader io.Reader) (string, bool, error) {
+	codex, found, err := readLexHeader(reader)
+	if err != nil {
+		return "", false, fmt.Errorf("Markdown file %s: %w", file, err)
+	}
+	return codex, found, nil
+}
+
+func (r *Runner) lexOutputCodices(ctx context.Context) (map[string]bool, error) {
+	repo, err := r.repo()
+	if err != nil {
+		return nil, fmt.Errorf("listing Markdown files: %w", err)
+	}
+	out, err := repo.Git("ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.md")
+	if err != nil {
+		return nil, fmt.Errorf("listing Markdown files: %w", err)
+	}
+	codices := map[string]bool{}
+	for file := range strings.SplitSeq(out, "\x00") {
+		if file == "" {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("checking lex outputs: %w", err)
+		}
+		filePath := filepath.Join(r.Root, filepath.FromSlash(file))
+		info, err := os.Stat(filePath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("checking Markdown file %s: %w", file, err)
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		f, err := os.Open(filePath)
+		if err != nil {
+			if info, statErr := os.Stat(filePath); statErr == nil && info.IsDir() {
+				continue
+			}
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("reading Markdown file %s: %w", file, err)
+		}
+		codex, found, readErr := lexHeaderForFile(file, f)
+		closeErr := f.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("closing Markdown file %s: %w", file, closeErr)
+		}
+		if !found {
+			continue
+		}
+		codices[codex] = true
+	}
+	return codices, nil
+}
+
+func lexHeaderLineReader(data []byte, truncated bool) func() (string, error) {
+	position := 0
+	return func() (string, error) {
+		if position >= len(data) {
+			return "", io.EOF
+		}
+		if newline := bytes.IndexByte(data[position:], '\n'); newline >= 0 {
+			line := string(data[position : position+newline])
+			position += newline + 1
+			return line, nil
+		}
+		if truncated {
+			position = len(data)
+			return "", io.EOF
+		}
+		line := string(data[position:])
+		position = len(data)
+		return line, nil
+	}
 }
 
 // configSteps are steps with the gate steps of the config after them.
@@ -1014,7 +1262,7 @@ func (r *Runner) Gate(ctx context.Context) (err error) {
 // GateWithAdvisory runs the configured gate in order, reporting failures of
 // steps selected by advisory.
 func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) bool, onAdvisory func(string, error)) (err error) {
-	steps, err := r.gateSteps()
+	steps, err := r.gateSteps(ctx)
 	if err != nil {
 		return err
 	}
