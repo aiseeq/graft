@@ -37,33 +37,33 @@ var commands = []command{
 	{name: "version", syntax: fixed("graft version [--describe]", "graft version bump [--minor|--major]"), summary: text("print the project version; --describe: the build identity, for stamping binaries; bump: raise it in the files without committing (version mode file)")},
 	{name: "init", syntax: fixed("graft init", "graft init --global"), summary: text("install the git hooks and pinned tools; --global: install the leak pre-push hook for all repositories")},
 	{name: "check", syntax: fixed("graft check"), summary: text("scan the staged changes for secrets, binaries, large files, version drift")},
-	{name: "leaks", syntax: fixed("graft leaks <revision>…"), summary: text("scan commits for the private names and terms of the user config (leaks)")},
+	{name: "leaks", syntax: fixed("graft leaks (--all | <revision>…)"), summary: text("scan commits for the private names and terms of the user config (leaks)")},
 	{name: "gate", syntax: fixed("graft gate"), summary: text("run the gate (go vet ./... in every Go module first; go_vet.enabled: false or go_vet.exclude, with a reason, skips it)")},
 	{name: "hook", syntax: fixed("graft hook (pre-commit|post-merge)", "graft hook pre-push <remote> <url>"), summary: text("entry point of the installed hooks")},
 	{name: "flags", syntax: fixed(
-		"graft flags [status] [--env E]",
-		"graft flags show <id> [--env E]",
+		"graft flags [status] [--env E] [--reason R]",
+		"graft flags show <id> [--env E] [--reason R]",
 		"graft flags ack <id> --reason R [--env E]",
 		"graft flags mute <id> --reason R [--match S] [--in subject|body|key] [--all-envs] [--env E]",
 	), summary: text("review the project's event journal: status, show, ack, mute"),
 		applies: func(c *config.Config) bool { return c.Flags != nil }},
 	{name: "deploy", syntax: fixed(
-		"graft deploy [--redeploy] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] <target> [-- script args]",
-		"graft deploy freeze <target> [Jira version]",
-		"graft deploy thaw <target> --reason REASON",
-		"graft deploy status <target> [-- args]",
-		"graft deploy logs <target> [--lines N] [--grep RE] [-- args]",
-		"graft deploy check <target>",
-		"graft deploy versions",
-		"graft deploy cutoff <target>",
-		"graft deploy sweep <target> [--apply]",
-		"graft deploy handover <target> [--glint-ticket KEY]",
-		"graft deploy check-head",
-		"graft deploy check-integrations [build]",
+		"graft deploy [--no-cache] [--redeploy] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] <target> [-- script args]",
+		"graft deploy freeze <target> [Jira version] [--no-cache]",
+		"graft deploy thaw <target> --reason REASON [--no-cache]",
+		"graft deploy status <target> [--no-cache] [-- args]",
+		"graft deploy logs <target> [--lines N] [--grep RE] [--no-cache] [-- args]",
+		"graft deploy check <target> [--no-cache]",
+		"graft deploy versions [--no-cache]",
+		"graft deploy cutoff <target> [--no-cache]",
+		"graft deploy sweep <target> [--apply] [--no-cache]",
+		"graft deploy handover <target> [--glint-ticket KEY] [--no-cache]",
+		"graft deploy check-head [--no-cache]",
+		"graft deploy check-integrations [build] [--no-cache]",
 	), summary: text("run the project's deploy script between graft's checks; status, logs, what a deploy would refuse, the versions the targets run, the release cutoff, the items git and the target contradict, the items held for their comment"),
 		details: "freeze <target> <Jira version> cuts the configured release branch and records the active freeze; without a version it shows the freeze. The required target accepts that branch and items in the frozen version; --past-freeze REASON records an exceptional deploy, and hotfix deploys are journaled. freeze.advisory tasks warn and are recorded on the frozen branch during deploy and the graft commit gate. A successful deploy of the frozen branch to the release target ends the freeze; thaw <target> --reason REASON ends it manually.",
 		applies: func(c *config.Config) bool { return c.Deploy != nil }},
-	{name: "run", syntax: fixed("graft <task> [-- args]", "graft run <task> [-- args]"), summary: text("run a task with its deps"),
+	{name: "run", syntax: fixed("graft <task> [-- args]", "graft run <task> [--no-cache] [-- args]"), summary: text("run a task with its deps"),
 		applies: func(c *config.Config) bool { return len(c.Tasks) > 0 }},
 	{name: "tasks", syntax: fixed("graft tasks"), summary: text("list every task, building blocks included"),
 		applies: func(c *config.Config) bool { return len(c.Tasks) > 0 }},
@@ -102,19 +102,19 @@ var commands = []command{
 		summary: text("a worktree under the user's cache, with go.work's neighbours linked; remove the worktrees and branches whose work is in the trunk by content; move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted")},
 	{name: "gocache", syntax: fixed("graft gocache trim [--older 25h] [--apply] [--max-wait 2h]"),
 		summary: text("remove the entries of the Go build cache unused for longer than --older, where go keeps them five days; without --apply only report; --max-wait limits waiting for a calm machine")},
-	{name: "help", syntax: fixed("graft help [<command>]", "graft <command> -h", "graft --version"), summary: text("this text; one command's part of it; the version of graft itself")},
+	{name: "guide", syntax: fixed("graft guide [section]"), summary: text("print the agent guide or one section")},
+	{name: "help", syntax: fixed("graft help [--json|<command>]", "graft <command> -h", "graft --version"), summary: text("this text; one command's part of it; the version of graft itself")},
 }
 
-func releaseSyntax(c *config.Config) []string {
-	if c != nil && c.Version.Mode == config.ModeFile {
-		return []string{"graft release"}
-	}
-	return []string{"graft release [--minor|--major|--version X.Y.Z]"}
+func releaseSyntax(_ *config.Config) []string {
+	return []string{"graft release [--patch|--minor|--major|--version X.Y.Z]"}
 }
 
 // helpCmd prints graft help, or with a command's name its section.
 func helpCmd(a *app.App, args []string) error {
 	switch {
+	case len(args) == 1 && args[0] == "--json":
+		return helpJSON(a)
 	case len(args) == 0:
 		return help(a)
 	case len(args) == 1 && !strings.HasPrefix(args[0], "-"):

@@ -363,6 +363,8 @@ func projectCmd(ctx context.Context, a *app.App, cmd string, rest []string) erro
 		return testDBCmd(ctx, a, rest)
 	case "tools":
 		return toolsCmd(ctx, a, rest)
+	case "guide":
+		return guideCmd(a, rest)
 	case "help", "-h", "--help":
 		return helpCmd(a, rest)
 	case "tasks":
@@ -873,6 +875,9 @@ func parseError(fs *flag.FlagSet, err error) error {
 }
 
 func parse(fs *flag.FlagSet, args []string) error {
+	if recordFlags(fs) {
+		return errFlagRecorded
+	}
 	if err := fs.Parse(args); err != nil {
 		return parseError(fs, err)
 	}
@@ -1020,6 +1025,9 @@ func toolVersion() string {
 // parseInterspersed parses flags wherever they appear among positional
 // arguments, which the flag package alone stops at.
 func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	if recordFlags(fs) {
+		return nil, errFlagRecorded
+	}
 	var positional []string
 	for {
 		if err := fs.Parse(args); err != nil {

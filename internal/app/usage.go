@@ -35,9 +35,9 @@ func bumps(cfg *config.Config) bool {
 // CommitSyntax is the graft commit command line the project allows.
 func CommitSyntax(cfg *config.Config) string {
 	if bumps(cfg) {
-		return "graft commit [--minor|--major] (-m <msg>... | -F <file> | -F -)"
+		return "graft commit [--minor|--major] (-m <msg>... | -F <file> | -F -) [--no-cache]"
 	}
-	return "graft commit (-m <msg>... | -F <file> | -F -)"
+	return "graft commit (-m <msg>... | -F <file> | -F -) [--no-cache]"
 }
 
 // CommitSummary says what graft commit does in the project.
