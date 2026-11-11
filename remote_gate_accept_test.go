@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/tasks"
 )
@@ -19,6 +21,231 @@ const splitGateConfig = "schema: 1\nversion: {mode: none}\n" +
 	"tasks:\n" +
 	"  unit:\n    heavy: true\n    remote: true\n    run: [[go, test, -count=1, ./...]]\n" +
 	"  script:\n    run: [[sh, -c, 'echo here >> out']]\n"
+
+func startNestedGate(t *testing.T, f *fixture, state, nested string) (*exec.Cmd, *syncBuffer) {
+	t.Helper()
+	ready := filepath.Join(state, "parent-ready")
+	trigger := filepath.Join(state, "start-nested")
+	script := "echo ready > " + yamlQuote(ready) + "; while [ ! -e " + yamlQuote(trigger) + " ]; do sleep 0.01; done; " + nested
+	cmd, out := f.start(f.work, "exec", "--heavy", "--", "sh", "-c", script)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			t.Fatalf("outer heavy command did not start its child:\n%s", out.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	loaded(t, state)
+	writeFile(t, trigger, "")
+	return cmd, out
+}
+
+func nestedGateFixture(t *testing.T) (*fixture, string, string) {
+	t.Helper()
+	f, state := userRemoteRepo(t, "")
+	cfg := "schema: 1\nversion: {mode: none}\ngo_fix: {enabled: false}\ngo_fmt: {enabled: false, reason: disabled in this test}\ngo_vet: {enabled: false, reason: disabled in this test}\n" +
+		"gate:\n  - task: unit\n  - task: script\ntasks:\n" +
+		"  unit:\n    heavy: true\n    remote: true\n    run: [[go, test, -count=1, ./...]]\n" +
+		"  script:\n    run: [[sh, -c, 'echo here >> out']]\n"
+	f.write(".graft.yaml", cfg)
+	return f, state, filepath.Join(state, "cache", "graft", "stats.jsonl")
+}
+
+func waitNestedCommand(cmd *exec.Cmd) error {
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(20 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+		return os.ErrDeadlineExceeded
+	}
+}
+
+func TestNestedBusyGateSplits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state, statsFile := nestedGateFixture(t)
+	cmd, out := startNestedGate(t, f, state, graftBin+" gate")
+	err := waitNestedCommand(cmd)
+	text := out.String()
+	calls := callsOf(t, state)
+	if err != nil || !strings.Contains(calls, "go test -count=1 ./...") || readFile(t, f.path("out")) != "here\n" {
+		t.Fatalf("nested gate did not split go and shell steps (exit %v):\n%s\ncalls: %q", err, text, calls)
+	}
+	if !strings.Contains(text, "the rest runs under the admitted task") || strings.Contains(text, "starting after") || strings.Contains(text, "waiting in the load.lock queue") {
+		t.Errorf("nested split message or admission is wrong:\n%s", text)
+	}
+	found := false
+	for _, rec := range readStats(t, statsFile) {
+		if rec.Kind == "task" && rec.Task == "gate" && rec.Here == tasks.WhyGateSplit {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("nested gate stats lack WhyGateSplit: %+v", readStats(t, statsFile))
+	}
+}
+
+func TestNestedCalmGateStaysHere(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state, statsFile := nestedGateFixture(t)
+	ready := filepath.Join(state, "parent-ready")
+	script := "echo ready > " + yamlQuote(ready) + "; while [ ! -e " + yamlQuote(filepath.Join(state, "start-nested")) + "; do sleep 0.01; done; " + graftBin + " gate"
+	cmd, out := f.start(f.work, "exec", "--heavy", "--", "sh", "-c", script)
+	waitFor(t, func() bool { _, err := os.Stat(ready); return err == nil })
+	reserveData, err := json.Marshal(struct {
+		Cores    int    `json:"cores"`
+		Admitted string `json:"admitted"`
+		Task     string `json:"task"`
+	}{22, time.Now().Format(time.RFC3339Nano), "projectA"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseReserve, err := lock.Reserve(filepath.Join(state, "cache", "graft"), "load.lock.*.reserve", reserveData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := releaseReserve(); err != nil {
+			t.Error(err)
+		}
+	}()
+	writeFile(t, filepath.Join(state, "start-nested"), "")
+	if err := waitNestedCommand(cmd); err != nil {
+		t.Fatalf("nested calm gate: %v\n%s", err, out.String())
+	}
+	if callsOf(t, state) != "" {
+		t.Errorf("calm nested gate called remote run: %q", callsOf(t, state))
+	}
+	parentReserved := false
+	for _, rec := range readStats(t, statsFile) {
+		if rec.Kind == "task" && rec.Task == "exec" && rec.ReserveCores > 0 {
+			parentReserved = true
+		}
+	}
+	if !parentReserved {
+		t.Errorf("outer admitted task did not retain a live reservation: %+v", readStats(t, statsFile))
+	}
+	found := false
+	for _, rec := range readStats(t, statsFile) {
+		if rec.Kind == "task" && rec.Task == "gate" && rec.Here == tasks.WhyInsideHeavy {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("calm nested gate lacks WhyInsideHeavy: %+v", readStats(t, statsFile))
+	}
+}
+
+func TestNestedGateHeavyLocal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state, _ := nestedGateFixture(t)
+	cmd, out := startNestedGate(t, f, state, "GRAFT_HEAVY=local "+graftBin+" gate")
+	if err := waitNestedCommand(cmd); err != nil {
+		t.Fatalf("nested local gate: %v\n%s", err, out.String())
+	}
+	if calls := callsOf(t, state); calls != "" {
+		t.Errorf("GRAFT_HEAVY=local called run: %q\n%s", calls, out.String())
+	}
+	if !strings.Contains(readFile(t, f.path("out")), "here") {
+		t.Errorf("local nested gate did not run shell step:\n%s", out.String())
+	}
+}
+
+func TestNestedGateHostFailureStaysAdmitted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	for _, mode := range []string{"up unavailable", "broken exit"} {
+		t.Run(mode, func(t *testing.T) {
+			f, state, _ := nestedGateFixture(t)
+			nested := graftBin + " gate"
+			if mode == "broken exit" {
+				writeFile(t, filepath.Join(state, "broken"), "")
+			}
+			if mode == "up unavailable" {
+				if err := os.Remove(filepath.Join(state, "up")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd, out := startNestedGate(t, f, state, nested)
+			if err := waitNestedCommand(cmd); err != nil {
+				t.Fatalf("nested gate %s: %v\n%s", mode, err, out.String())
+			}
+			if strings.Contains(out.String(), "starting after") || strings.Contains(out.String(), "waiting in the load.lock queue") {
+				t.Errorf("nested gate queued again:\n%s", out.String())
+			}
+			if mode == "up unavailable" && (strings.Contains(out.String(), "waits for this machine") || !strings.Contains(out.String(), "runs here whole under the admitted task")) {
+				t.Errorf("nested gate with the host down says it waits for this machine:\n%s", out.String())
+			}
+			if !strings.Contains(readFile(t, f.path("out")), "here") {
+				t.Errorf("gate rest did not run under parent admission:\n%s", out.String())
+			}
+		})
+	}
+}
+
+// TestNestedGateWhenAlways: with when: always a nested gate is not split and
+// says it runs inside the admitted task, not that when: always placed it.
+func TestNestedGateWhenAlways(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state, statsFile := nestedGateFixture(t)
+	// userRemoteRepo's user config, with when: always.
+	for _, kv := range f.env {
+		if dir, ok := strings.CutPrefix(kv, "XDG_CONFIG_HOME="); ok {
+			writeFile(t, filepath.Join(dir, "graft", "config.yaml"), "load: {threads: 6, poll: 20ms, settle: 10ms}\nremote_heavy: {host: pc, up: [sh, "+yamlQuote(filepath.Join(state, "up.sh"))+"], run: [sh, "+yamlQuote(filepath.Join(state, "run.sh"))+"], threads: 8, when: always}\n")
+			writeTestPressure(t, dir)
+		}
+	}
+	cmd, out := startNestedGate(t, f, state, graftBin+" gate")
+	if err := waitNestedCommand(cmd); err != nil {
+		t.Fatalf("nested gate with when: always: %v\n%s", err, out.String())
+	}
+	found := false
+	for _, rec := range readStats(t, statsFile) {
+		if rec.Kind == "task" && rec.Task == "gate" && rec.Here == tasks.WhyInsideHeavy {
+			found = true
+		}
+	}
+	if !found || strings.Contains(out.String(), "the rest runs under the admitted task") {
+		t.Errorf("nested gate with when: always was split or lacks WhyInsideHeavy:\n%s\n%+v", out.String(), readStats(t, statsFile))
+	}
+}
+
+func TestNestedNonGateTaskStaysInsideHeavy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh")
+	}
+	f, state := userRemoteRepo(t, "  unit:\n    heavy: true\n    remote: true\n    run: [[go, vet, ./...]]\n")
+	cmd, out := startNestedGate(t, f, state, graftBin+" unit")
+	if err := waitNestedCommand(cmd); err != nil {
+		t.Fatalf("nested task: %v\n%s", err, out.String())
+	}
+	found := false
+	for _, rec := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+		if rec.Kind == "task" && rec.Task == "unit" && rec.Here == tasks.WhyInsideHeavy {
+			found = true
+		}
+	}
+	if callsOf(t, state) != "" || !found {
+		t.Errorf("nested task behavior changed (inside reason recorded=%v):\n%s\ncalls: %q", found, out.String(), callsOf(t, state))
+	}
+}
 
 // TestBusyGateSendsItsGoStepsToTheHost: a gate that would wait for this
 // machine sends the go test and go vet steps that write no file of its

@@ -344,7 +344,10 @@ send any other heavy work. Output flags such as `-o`, `-coverprofile` and `-trac
 `go test -v {args} ./...` task goes with `-run TestX` and stays with
 `-coverprofile=c.out`. A heavy task that would not queue here (a graft a step
 of an admitted heavy task starts, a heavy task inside another) does not
-overflow under `when: busy`. Project configuration keeps its existing rule: every
+overflow under `when: busy`. A gate started inside an admitted heavy task is an
+exception: under `when: busy` it checks machine load without queueing or
+counting reservations, then splits eligible steps to the host; the rest runs
+under the admitted task. Project configuration keeps its existing rule: every
 heavy task can go to its host except tasks that need local files or data.
 The host's command gets the task's `env`, `GRAFT_HEAVY=local`, the threads
 (as `-p` after `GOFLAGS` too, unless the task's `GOFLAGS` names one; a

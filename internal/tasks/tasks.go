@@ -617,16 +617,20 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, stri
 		return false, "", nil
 	case os.Getenv(HeavyEnv) == "local":
 		return false, HeavyEnv + "=local", nil
-	case r.heavy > 0 || os.Getenv(AdmittedEnv) != "":
+	case (r.heavy > 0 || os.Getenv(AdmittedEnv) != "") && rh.When != "busy":
 		return false, WhyInsideHeavy, nil
 	case rh.When != "busy":
 		return false, WhyGateAlways, nil
 	}
-	busy, err := r.wouldWait(ctx, stats.GateTask)
+	nestedAdmitted := r.heavy > 0 || os.Getenv(AdmittedEnv) != ""
+	busy, err := r.gateBusyNow(ctx, stats.GateTask, nestedAdmitted)
 	if err != nil {
 		return false, "", err
 	}
 	if !busy {
+		if nestedAdmitted {
+			return false, WhyInsideHeavy, nil
+		}
 		return false, WhyNotBusy, nil
 	}
 	rhCopy := *rh
@@ -663,11 +667,29 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, stri
 		r.gateCosts = nil
 		r.remoteAsked, r.remoteDown = true, down
 		why := fmt.Sprintf("%s did not answer (%s)", rh.Host, down)
-		fmt.Fprintf(r.Stderr, "graft: gate: busy here, waits for this machine whole: %s\n", why)
+		if nestedAdmitted {
+			// The parent holds the admission: nothing is waited for again.
+			fmt.Fprintf(r.Stderr, "graft: gate: busy here, runs here whole under the admitted task: %s\n", why)
+		} else {
+			fmt.Fprintf(r.Stderr, "graft: gate: busy here, waits for this machine whole: %s\n", why)
+		}
 		return false, why, nil
 	}
 	r.userRemote, r.remoteAsked = true, true
 	return true, WhyGateSplit, nil
+}
+
+// gateBusyNow checks only machine load for a gate inside an admitted task;
+// the parent owns the queue admission and its reservation must not count.
+func (r *Runner) gateBusyNow(ctx context.Context, name string, nestedAdmitted bool) (bool, error) {
+	if !nestedAdmitted {
+		return r.wouldWait(ctx, name)
+	}
+	l, err := r.Load()
+	if err != nil {
+		return false, err
+	}
+	return loadgate.BusyNow(ctx, name, r.kind(name), l, "", r.Stderr)
 }
 
 const gateStatsTailBytes = 8 << 20
@@ -1276,6 +1298,7 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 	}
 	f := r.begin(stats.GateTask)
 	defer func() { r.end(f, err) }()
+	nestedAdmitted := r.heavy > 0 || os.Getenv(AdmittedEnv) != ""
 	light := r.lightGate(ctx)
 	splitGate, why := false, ""
 	if !light {
@@ -1306,7 +1329,11 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(r.Stderr, "graft: gate: busy here: %s on %s, the rest waits for this machine once\n", description, r.remoteHeavy.Host)
+		if nestedAdmitted {
+			fmt.Fprintf(r.Stderr, "graft: gate: busy here: %s on %s, the rest runs under the admitted task\n", description, r.remoteHeavy.Host)
+		} else {
+			fmt.Fprintf(r.Stderr, "graft: gate: busy here: %s on %s, the rest waits for this machine once\n", description, r.remoteHeavy.Host)
+		}
 	} else {
 		// The gate builds and tests: it is heavy as a whole, its heavy tasks
 		// admitted with it.
