@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/aiseeq/graft/v2/internal/hooks"
 )
 
 func TestVersionDescribeAndTaskVersion(t *testing.T) {
@@ -52,6 +54,53 @@ func TestVersionDescribeAndTaskVersion(t *testing.T) {
 	f.git("tag", "-a", "v0.3.0", "-m", "v0.3.0")
 	if got := strings.TrimSpace(f.mustGraft("version", "--describe")); got != "v0.3.0" {
 		t.Errorf("tagged describe = %q", got)
+	}
+}
+
+func TestGlobalPreCommit(t *testing.T) {
+	runs, version, err := hooks.GitRunsConfigHooks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runs {
+		t.Skipf("git %s predates global config hooks", version)
+	}
+	f := tasksRepo(t, "", map[string]string{"file.txt": "contents\n"})
+	global := filepath.Join(f.base, "global.gitconfig")
+	if err := os.WriteFile(global, []byte("[user]\n\tname = Test\n\temail = test@example.com\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setFixtureEnv(f, "GIT_CONFIG_GLOBAL="+global)
+	if out, code := f.graft("", "init", "--global"); code != 0 {
+		t.Fatalf("init --global: exit %d\n%s", code, out)
+	}
+	if out, code := f.graft("", "init", "--global"); code != 0 || !strings.Contains(out, "nothing changed") {
+		t.Fatalf("second init --global: exit %d\n%s", code, out)
+	}
+	f.git("add", "-A")
+	if out, code := f.tryGit("commit", "-m", "raw"); code == 0 || !strings.Contains(out, "plain git commit is not used") {
+		t.Fatalf("raw commit: exit %d\n%s", code, out)
+	}
+	if out, code := f.graft("", "commit", "-m", "fix: gated"); code != 0 {
+		t.Fatalf("graft commit: exit %d\n%s", code, out)
+	}
+
+	plain := newRepo(t, map[string]string{"file.txt": "contents\n"})
+	setFixtureEnv(plain, "GIT_CONFIG_GLOBAL="+global)
+	plain.git("add", "-A")
+	if out, code := plain.tryGit("commit", "-m", "plain"); code != 0 {
+		t.Fatalf("commit outside a graft project: exit %d\n%s", code, out)
+	}
+
+	local := tasksRepo(t, "", map[string]string{"file.txt": "contents\n"})
+	setFixtureEnv(local, "GIT_CONFIG_GLOBAL="+global)
+	if out, code := local.graft("", "init"); code != 0 {
+		t.Fatalf("local init: exit %d\n%s", code, out)
+	}
+	local.git("add", "-A")
+	out, code := local.tryGit("commit", "-m", "raw")
+	if code == 0 || !strings.Contains(out, "plain git commit is not used") || strings.Count(out, "plain git commit is not used") != 1 {
+		t.Fatalf("local shim refusal: exit %d\n%s", code, out)
 	}
 }
 

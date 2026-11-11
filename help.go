@@ -39,7 +39,7 @@ var commands = []command{
 	{name: "check", syntax: fixed("graft check"), summary: text("scan the staged changes for secrets, binaries, large files, version drift")},
 	{name: "leaks", syntax: fixed("graft leaks (--all | <revision>…)"), summary: text("scan commits for the private names and terms of the user config (leaks)")},
 	{name: "gate", syntax: fixed("graft gate"), summary: text("run the gate (go vet ./... in every Go module first; go_vet.enabled: false or go_vet.exclude, with a reason, skips it)")},
-	{name: "hook", syntax: fixed("graft hook (pre-commit|post-merge)", "graft hook pre-push <remote> <url>"), summary: text("entry point of the installed hooks")},
+	{name: "hook", syntax: fixed("graft hook (pre-commit|global-pre-commit|post-merge)", "graft hook pre-push <remote> <url>"), summary: text("entry point of the installed hooks")},
 	{name: "flags", syntax: fixed(
 		"graft flags [status] [--env E]",
 		"graft flags show <id> [--env E]",

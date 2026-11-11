@@ -200,59 +200,60 @@ func runsConfigHooks(out string) (bool, string, error) {
 	return major > GlobalHooksSince[0] || major == GlobalHooksSince[0] && minor >= GlobalHooksSince[1], fields[2], nil
 }
 
-// InstallGlobal registers the pre-push hook with Git's global hook config.
+// InstallGlobal registers graft's hooks with Git's global hook config: the
+// leak check before a push, and the pre-commit of projects that have not run
+// graft init.
 func InstallGlobal() ([]Change, error) {
-	get := func(key string) (string, error) {
-		cmd := exec.Command("git", "config", "--global", "--get", key)
-		out, err := cmd.Output()
-		if err != nil {
-			var exit *exec.ExitError
-			if errors.As(err, &exit) && exit.ExitCode() == 1 {
-				return "", nil
-			}
-			return "", fmt.Errorf("git config --global --get %s: %w", key, err)
-		}
-		return strings.TrimSpace(string(out)), nil
-	}
-	const key = "hook.graft-leaks.command"
-	const command = "graft hook pre-push"
 	var changes []Change
-	old, err := get(key)
-	if err != nil {
+	if err := installConfigHook("hook.graft-leaks", "graft hook pre-push", "pre-push", &changes); err != nil {
 		return nil, err
 	}
-	if old != command {
-		cmd := exec.Command("git", "config", "--global", "--replace-all", key, command)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("git config --global %s: %w: %s", key, err, strings.TrimSpace(string(out)))
-		}
-		if old == "" {
-			changes = append(changes, Change{What: "set " + key + " to " + command})
-		} else {
-			changes = append(changes, Change{What: fmt.Sprintf("rewrote %s from %q to %q", key, old, command)})
-		}
+	if err := installConfigHook("hook.graft-commit", "graft hook global-pre-commit", "pre-commit", &changes); err != nil {
+		return nil, err
 	}
-	events, err := exec.Command("git", "config", "--global", "--get-all", "hook.graft-leaks.event").Output()
+	return changes, nil
+}
+
+func installConfigHook(name, command, event string, changes *[]Change) error {
+	key := name + ".command"
+	old, err := exec.Command("git", "config", "--global", "--get", key).Output()
 	if err != nil {
 		var exit *exec.ExitError
 		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
-			return nil, fmt.Errorf("git config --global --get-all hook.graft-leaks.event: %w", err)
+			return fmt.Errorf("git config --global --get %s: %w", key, err)
 		}
 	}
-	found := false
-	for event := range strings.FieldsSeq(string(events)) {
-		if event == "pre-push" {
-			found = true
-		}
-	}
-	if !found {
-		cmd := exec.Command("git", "config", "--global", "--add", "hook.graft-leaks.event", "pre-push")
+	previous := strings.TrimSpace(string(old))
+	if previous != command {
+		cmd := exec.Command("git", "config", "--global", "--replace-all", key, command)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("git config --global hook.graft-leaks.event: %w: %s", err, strings.TrimSpace(string(out)))
+			return fmt.Errorf("git config --global %s: %w: %s", key, err, strings.TrimSpace(string(out)))
 		}
-		changes = append(changes, Change{What: "added pre-push to hook.graft-leaks.event"})
+		if previous == "" {
+			*changes = append(*changes, Change{What: "set " + key + " to " + command})
+		} else {
+			*changes = append(*changes, Change{What: fmt.Sprintf("rewrote %s from %q to %q", key, previous, command)})
+		}
 	}
-	return changes, nil
+	eventKey := name + ".event"
+	events, err := exec.Command("git", "config", "--global", "--get-all", eventKey).Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			return fmt.Errorf("git config --global --get-all %s: %w", eventKey, err)
+		}
+	}
+	for existing := range strings.FieldsSeq(string(events)) {
+		if existing == event {
+			return nil
+		}
+	}
+	cmd := exec.Command("git", "config", "--global", "--add", eventKey, event)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git config --global %s: %w: %s", eventKey, err, strings.TrimSpace(string(out)))
+	}
+	*changes = append(*changes, Change{What: "added " + event + " to " + eventKey})
+	return nil
 }
 
 // checkHooksPath refuses to repoint core.hooksPath away from another hooks
@@ -346,6 +347,27 @@ func activeDefaultHooks(repo *gitx.Repo) ([]string, error) {
 		active = append(active, filepath.Join(dir, e.Name()))
 	}
 	return active, nil
+}
+
+// LocalShimActive reports whether git runs graft's shim for the hook name
+// from the repository's core.hooksPath, which graft init points at its
+// hooks directory.
+func LocalShimActive(repo *gitx.Repo, name string) (bool, error) {
+	dir, err := hooksPath(repo)
+	if err != nil || dir == "" {
+		return false, err
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(repo.Root, filepath.FromSlash(dir))
+	}
+	content, err := os.ReadFile(filepath.Join(dir, name))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return isShim(content, name), nil
 }
 
 func hooksPath(repo *gitx.Repo) (string, error) {

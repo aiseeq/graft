@@ -995,6 +995,8 @@ func hookCmd(ctx context.Context, a *app.App, args []string) error {
 	switch args[0] {
 	case hooks.PreCommit:
 		return a.HookPreCommit(ctx)
+	case "global-pre-commit":
+		return a.HookGlobalPreCommit(ctx)
 	case hooks.PrepareCommitMsg:
 		if len(args) < 2 {
 			return fmt.Errorf("%w: hook %s needs the message file git passes", errUsage, hooks.PrepareCommitMsg)

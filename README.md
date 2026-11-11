@@ -2381,8 +2381,10 @@ up to date and release again.
   `graft leaks` stops with an error naming it. Pass any `git rev-list`
   revisions as separate arguments; for example, `graft leaks --all` scans all
   branches and tags. `graft init --global` installs Git's global `pre-push`
-  hook, which checks outgoing commits made outside `graft commit`; Git 2.54
-  or newer is required. It checks the push URL and objects currently at that
+  leak check and `pre-commit` hook. The pre-commit hook refuses raw commits in
+  repositories with `.graft.yaml`, unless `graft init` has already installed
+  the local hook there. Git 2.54 or newer is required. The leak check checks
+  the push URL and objects currently at that
   destination. Findings stop the push. `git push --no-verify` knowingly skips
   hooks. Set `leaks.github_visibility: true` in the user config to ask `gh`
   for GitHub repository visibility. Private and internal repositories are

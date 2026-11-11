@@ -112,6 +112,7 @@ var registrySpecs = []registrySpec{
 	{path: "gate", rest: "none"}, {path: "hook", rest: "none"},
 	{path: "hook pre-commit", rest: "args"}, {path: "hook prepare-commit-msg", rest: "args"},
 	{path: "hook post-merge", rest: "args"}, {path: "hook pre-push", rest: "args"},
+	{path: "hook global-pre-commit", rest: "args"},
 	{path: "flags", rest: "none", source: "flags", selectFlags: "env"},
 	{path: "flags status", rest: "none", source: "flags", selectFlags: "env"},
 	{path: "flags show", rest: "args", source: "flags", selectFlags: "env"},

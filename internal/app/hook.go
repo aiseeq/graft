@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -63,6 +64,29 @@ func (a *App) HookPreCommit(ctx context.Context) error {
 		return fmt.Errorf("%w\nresolve the %s so that the gate passes, then continue", err, kind)
 	}
 	return nil
+}
+
+// HookGlobalPreCommit applies the project pre-commit hook to projects that
+// have not installed the local graft shim.
+func (a *App) HookGlobalPreCommit(ctx context.Context) error {
+	repo, err := gitx.Open(".")
+	if errors.Is(err, gitx.ErrNotRepo) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(repo.Root, ".graft.yaml")); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	// graft init's shim already ran: git runs the config hooks and the
+	// hooks directory's both.
+	if local, err := hooks.LocalShimActive(repo, hooks.PreCommit); err != nil || local {
+		return err
+	}
+	return a.HookPreCommit(ctx)
 }
 
 // recordRefusedCommit logs a raw git commit for graft stats --refused: one the

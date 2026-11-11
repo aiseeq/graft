@@ -22,6 +22,7 @@ var notForAgents = map[string]string{
 	"hook prepare-commit-msg":   "called by git",
 	"hook post-merge":           "called by git",
 	"hook pre-push":             "called by git",
+	"hook global-pre-commit":    "called by git",
 	"flags":                     "event journal operation is project-specific",
 	"flags status":              "event journal operation is project-specific",
 	"flags show":                "event journal operation is project-specific",

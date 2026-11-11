@@ -23,7 +23,7 @@ func TestInstallGlobalIsIdempotentAndKeepsEvents(t *testing.T) {
 	config := filepath.Join(t.TempDir(), "gitconfig")
 	t.Setenv("GIT_CONFIG_GLOBAL", config)
 	first, err := InstallGlobal()
-	if err != nil || len(first) != 2 {
+	if err != nil || len(first) != 4 {
 		t.Fatalf("first install: changes=%v err=%v", first, err)
 	}
 	second, err := InstallGlobal()
@@ -57,6 +57,12 @@ func TestInstallGlobalIsIdempotentAndKeepsEvents(t *testing.T) {
 	out, err = list.Output()
 	if err != nil || !strings.Contains(string(out), "graft-leaks") {
 		t.Fatalf("git hook list pre-push = %q, err=%v", out, err)
+	}
+	list = exec.Command("git", "hook", "list", "pre-commit")
+	list.Dir = repo
+	out, err = list.Output()
+	if err != nil || !strings.Contains(string(out), "graft-commit") {
+		t.Fatalf("git hook list pre-commit = %q, err=%v", out, err)
 	}
 	if _, err := os.Stat(config); err != nil {
 		t.Fatal(err)
