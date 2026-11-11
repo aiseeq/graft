@@ -14,6 +14,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/gomods"
 	"github.com/aiseeq/graft/v2/internal/hooks"
 	commitmessage "github.com/aiseeq/graft/v2/internal/message"
+	"github.com/aiseeq/graft/v2/internal/npmmods"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 	"github.com/aiseeq/graft/v2/internal/version"
 )
@@ -908,7 +909,10 @@ func (a *App) raiseOwnModules(ctx context.Context, repo *gitx.Repo, cfg *config.
 		a.printf("modules.latest: %s keeps its module versions (%s); the trunk raises them", branch, held)
 		return nil
 	}
-	return gomods.Raise(ctx, repo, settings.IsLatest, a.Stderr, a.warn)
+	if err := gomods.Raise(ctx, repo, settings.IsLatest, a.Stderr, a.warn); err != nil {
+		return err
+	}
+	return npmmods.Raise(ctx, repo, settings.IsLatest, a.Stderr, a.warn)
 }
 
 // modulesHeldBy names the setting that makes branch a hotfix or release

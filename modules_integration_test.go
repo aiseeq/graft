@@ -324,3 +324,80 @@ func TestReleaseBranchKeepsItsModules(t *testing.T) {
 		t.Errorf("go.mod after the gate: %q", line)
 	}
 }
+
+func TestCommitRaisesPinnedNPMGitDependency(t *testing.T) {
+	skipNPMInShort(t)
+	f := newRepo(t, map[string]string{
+		".graft.yaml": `schema: 1
+version: {mode: none}
+gate: []
+`,
+		"package.json": `{
+  "name": "consumer",
+  "dependencies": {
+    "@scope/shared": "git+ssh://git@example.org/projectA/dep.git#v0.1.0",
+    "outside": "git+ssh://git@example.org/other/dep.git#v0.1.0",
+    "branch": "git+ssh://git@example.org/projectA/dep.git#main"
+  }
+}
+`,
+	})
+	dep, source := filepath.Join(f.base, "dep.git"), filepath.Join(f.base, "dep-source")
+	f.run(f.base, "git", "init", "--bare", "-q", dep)
+	f.run(f.base, "git", "init", "-q", source)
+	f.run(source, "git", "config", "user.name", "Test")
+	f.run(source, "git", "config", "user.email", "test@example.org")
+	writeFile(t, filepath.Join(source, "package.json"), `{"name":"dep","version":"0.1.0"}`)
+	f.run(source, "git", "add", "package.json")
+	f.run(source, "git", "commit", "-q", "-m", "first")
+	f.run(source, "git", "tag", "v0.1.0")
+	writeFile(t, filepath.Join(source, "package.json"), `{"name":"dep","version":"0.2.0"}`)
+	f.run(source, "git", "commit", "-qam", "second")
+	f.run(source, "git", "tag", "v0.2.0")
+
+	f.run(f.base, "git", "--git-dir="+dep, "fetch", "-q", source, "+refs/*:refs/*")
+	config := filepath.Join(f.base, "gitconfig")
+	writeFile(t, config, fmt.Sprintf("[user]\n\tname = Test\n\temail = test@example.org\n[url %q]\n\tinsteadOf = ssh://git@example.org/projectA/dep.git\n[url %q]\n\tinsteadOf = ssh://git@example.org/other/dep.git\n", filepath.ToSlash(dep), filepath.ToSlash(dep)))
+	userDir := filepath.Join(f.base, "userconfig")
+	writeUserConfig(t, userDir, "modules: {latest: [example.org/projectA/]}\n")
+	f.env = append(f.env, "GIT_CONFIG_GLOBAL="+config, "GIT_CONFIG_NOSYSTEM=1", "XDG_CONFIG_HOME="+userDir, "APPDATA="+userDir)
+	if out, code := f.exec(f.work, "", "npm", "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"); code != 0 {
+		t.Fatalf("initial npm lock: exit %d\\n%s", code, out)
+	}
+	oldLock := f.read("package-lock.json")
+	originalPackage := f.read("package.json")
+	newCommit := strings.TrimSpace(f.run(f.base, "git", "--git-dir="+dep, "rev-parse", "refs/tags/v0.2.0^{commit}"))
+	if oldLock == "" {
+		t.Fatalf("initial lock does not pin the old release: %s", oldLock)
+	}
+	out, code := f.graft("", "commit", "-m", "feat: raise dependency")
+	if code != 0 {
+		t.Fatalf("commit: exit %d\\n%s", code, out)
+	}
+	if got, want := f.read("package.json"), strings.Replace(originalPackage, "#v0.1.0", "#v0.2.0", 1); got != want {
+		t.Errorf("package.json changed beyond the raised tag:\\n%s", got)
+	}
+	if !strings.Contains(out, "graft: package.json: @scope/shared v0.1.0 -> v0.2.0") {
+		t.Errorf("raise was not logged:\\n%s", out)
+	}
+	lock := f.read("package-lock.json")
+	if !strings.Contains(lock, newCommit) {
+		t.Errorf("lock does not resolve the new commit %s:\\n%s", newCommit, lock)
+	}
+	for _, unchanged := range []string{"git+ssh://git@example.org/other/dep.git#v0.1.0", "git+ssh://git@example.org/projectA/dep.git#main"} {
+		if !strings.Contains(f.read("package.json"), unchanged) {
+			t.Errorf("unexpectedly changed %q:\\n%s", unchanged, f.read("package.json"))
+		}
+	}
+	f.write(".graft.yaml", `schema: 1
+version: {mode: file, build_branches: ['hotfix/*']}
+gate: []
+`)
+	f.write("VERSION", "1.0.0\n")
+	f.git("checkout", "-q", "-b", "hotfix/1")
+	f.write("package.json", strings.Replace(f.read("package.json"), "#v0.2.0", "#v0.1.0", 1))
+	out, code = f.graft("", "gate")
+	if code != 0 || !strings.Contains(f.read("package.json"), "#v0.1.0") {
+		t.Errorf("hotfix gate raised the dependency: exit %d\\n%s\\n%s", code, out, f.read("package.json"))
+	}
+}

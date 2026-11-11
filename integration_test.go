@@ -278,6 +278,15 @@ func skipWaitInShort(t *testing.T) {
 	}
 }
 
+// skipNPMInShort skips, under -short, a test that spends seconds invoking npm;
+// test-race in all runs it before install and release.
+func skipNPMInShort(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("runs npm; test-race in all runs it")
+	}
+}
+
 // gateStep is a YAML list entry that runs the helper with args.
 func gateStep(args ...string) string {
 	parts := []string{yamlQuote(helperBin)}

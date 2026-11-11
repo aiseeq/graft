@@ -2,15 +2,14 @@ package version
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/jsonspan"
 )
 
 // Target is a file that holds the version: the version file itself or one of
@@ -110,187 +109,22 @@ func locateRegex(content []byte, s config.SyncFile) ([]span, error) {
 	return spans, nil
 }
 
-// locateJSON finds the string value at the object key path without re-encoding
-// the document, so formatting and key order survive a bump. It scans the bytes
-// itself: encoding/json's Decoder.InputOffset drifts after escaped strings and
-// cannot be trusted to locate anything.
+// locateJSON preserves the version target's rule that escaped string values
+// are not writable, while jsonspan supplies trustworthy byte offsets.
 func locateJSON(content []byte, key []string) ([]span, error) {
-	s := &jsonScanner{data: content, key: key}
-	s.skipSpace()
-	if err := s.value([]string{}, true); err != nil {
-		return nil, fmt.Errorf("invalid JSON: %w", err)
-	}
-	s.skipSpace()
-	if s.pos != len(s.data) {
-		return nil, fmt.Errorf("invalid JSON: trailing data at byte %d", s.pos)
-	}
-	name := strings.Join(key, ".")
-	switch len(s.found) {
-	case 0:
-		return nil, fmt.Errorf("key %q not found", name)
-	case 1:
-		return s.found, nil
-	default:
-		return nil, fmt.Errorf("key %q occurs %d times", name, len(s.found))
-	}
-}
-
-type jsonScanner struct {
-	data  []byte
-	pos   int
-	key   []string
-	found []span
-}
-
-func (s *jsonScanner) skipSpace() {
-	for s.pos < len(s.data) && strings.IndexByte(" \t\r\n", s.data[s.pos]) >= 0 {
-		s.pos++
-	}
-}
-
-func (s *jsonScanner) expect(b byte) error {
-	s.skipSpace()
-	if s.pos >= len(s.data) || s.data[s.pos] != b {
-		return fmt.Errorf("expected %q at byte %d", b, s.pos)
-	}
-	s.pos++
-	return nil
-}
-
-// value consumes one JSON value. onPath is true while the value sits on the
-// key path being searched; everything off the path is skipped whole, so a
-// nested object with a same-named key is never mistaken for the target.
-func (s *jsonScanner) value(path []string, onPath bool) error {
-	s.skipSpace()
-	if s.pos >= len(s.data) {
-		return errors.New("unexpected end of input")
-	}
-	switch c := s.data[s.pos]; {
-	case c == '{':
-		s.pos++
-		return s.object(path, onPath)
-	case c == '[':
-		s.pos++
-		return s.array()
-	case c == '"':
-		_, _, err := s.str()
-		return err
-	default:
-		return s.scalar()
-	}
-}
-
-func (s *jsonScanner) object(path []string, onPath bool) error {
-	s.skipSpace()
-	if s.pos < len(s.data) && s.data[s.pos] == '}' {
-		s.pos++
-		return nil
-	}
-	for {
-		s.skipSpace()
-		name, _, err := s.str()
-		if err != nil {
-			return err
-		}
-		if err := s.expect(':'); err != nil {
-			return err
-		}
-		child := append(slices.Clone(path), name)
-		switch {
-		case onPath && slices.Equal(child, s.key):
-			err = s.target()
-		case onPath && isPrefix(child, s.key):
-			err = s.value(child, true)
-		default:
-			err = s.value(nil, false)
-		}
-		if err != nil {
-			return err
-		}
-		s.skipSpace()
-		if s.pos < len(s.data) && s.data[s.pos] == ',' {
-			s.pos++
-			continue
-		}
-		return s.expect('}')
-	}
-}
-
-func (s *jsonScanner) array() error {
-	s.skipSpace()
-	if s.pos < len(s.data) && s.data[s.pos] == ']' {
-		s.pos++
-		return nil
-	}
-	for {
-		if err := s.value(nil, false); err != nil {
-			return err
-		}
-		s.skipSpace()
-		if s.pos < len(s.data) && s.data[s.pos] == ',' {
-			s.pos++
-			continue
-		}
-		return s.expect(']')
-	}
-}
-
-// target records the span of the string value the key path points at.
-func (s *jsonScanner) target() error {
-	s.skipSpace()
-	name := strings.Join(s.key, ".")
-	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
-		return fmt.Errorf("key %q does not hold a string", name)
-	}
-	_, raw, err := s.str()
+	found, err := jsonspan.Locate(content, key)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if strings.Contains(raw, "\\") {
-		return fmt.Errorf("key %q: escaped string %s is not supported", name, raw)
-	}
-	s.found = append(s.found, span{s.pos - len(raw) + 1, s.pos - 1})
-	return nil
-}
-
-// str consumes a string literal and returns its decoded value and raw text.
-func (s *jsonScanner) str() (string, string, error) {
-	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
-		return "", "", fmt.Errorf("expected a string at byte %d", s.pos)
-	}
-	start := s.pos
-	for s.pos++; s.pos < len(s.data); s.pos++ {
-		switch s.data[s.pos] {
-		case '\\':
-			s.pos++
-		case '"':
-			s.pos++
-			raw := string(s.data[start:s.pos])
-			var decoded string
-			if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
-				return "", "", fmt.Errorf("string at byte %d: %w", start, err)
-			}
-			return decoded, raw, nil
+	out := make([]span, len(found))
+	for i, item := range found {
+		value := content[item.Start:item.End]
+		if bytes.Contains(value, []byte(`\`)) {
+			return nil, fmt.Errorf("key %q: escaped string %s is not supported", strings.Join(key, "."), string(content[item.Start-1:item.End+1]))
 		}
+		out[i] = span{item.Start, item.End}
 	}
-	return "", "", fmt.Errorf("unterminated string at byte %d", start)
-}
-
-// scalar consumes a number, true, false or null.
-func (s *jsonScanner) scalar() error {
-	start := s.pos
-	for s.pos < len(s.data) && strings.IndexByte(",}] \t\r\n", s.data[s.pos]) < 0 {
-		s.pos++
-	}
-	var v any
-	if start == s.pos || json.Unmarshal(s.data[start:s.pos], &v) != nil {
-		return fmt.Errorf("invalid value at byte %d", start)
-	}
-	return nil
-}
-
-func isPrefix(prefix, full []string) bool {
-	return len(prefix) < len(full) && slices.Equal(prefix, full[:len(prefix)])
+	return out, nil
 }
 
 // Backup holds the original content of files a bump rewrote.

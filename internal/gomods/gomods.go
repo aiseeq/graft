@@ -3,7 +3,6 @@
 package gomods
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/semver"
@@ -125,20 +125,20 @@ func raiseFile(ctx context.Context, path, display, goPath string, env []string, 
 	if len(upgraded) == 0 {
 		return nil
 	}
-	out, stderr, err := runGo(ctx, filepath.Dir(path), goPath, env, args...)
+	out, stderr, err := execx.Run(ctx, filepath.Dir(path), goPath, env, args...)
 	if err != nil {
 		return goFailure(display, "go get", stderr, out, err)
 	}
 	for _, c := range upgraded {
 		fmt.Fprintf(log, "graft: %s: %s %s -> %s\n", display, c.path, c.version, latest[c.path].Version)
 	}
-	out, stderr, err = runGo(ctx, filepath.Dir(path), goPath, env, "mod", "tidy")
+	out, stderr, err = execx.Run(ctx, filepath.Dir(path), goPath, env, "mod", "tidy")
 	if err != nil {
 		return goFailure(display, "go mod tidy", stderr, out, err)
 	}
 	_, statErr := os.Stat(filepath.Join(filepath.Dir(path), "vendor", "modules.txt"))
 	if statErr == nil {
-		out, stderr, err = runGo(ctx, filepath.Dir(path), goPath, env, "mod", "vendor")
+		out, stderr, err = execx.Run(ctx, filepath.Dir(path), goPath, env, "mod", "vendor")
 		if err != nil {
 			return goFailure(display, "go mod vendor", stderr, out, err)
 		}
@@ -184,7 +184,7 @@ func latestVersions(ctx context.Context, dir, goPath string, env []string, candi
 	for _, c := range candidates {
 		args = append(args, c.path+"@latest")
 	}
-	out, stderr, err := runGo(ctx, dir, goPath, env, args...)
+	out, stderr, err := execx.Run(ctx, dir, goPath, env, args...)
 	latest := make(map[string]LatestModule, len(candidates))
 	if err != nil {
 		msg := joinOutput(stderr, out, err)
@@ -211,15 +211,6 @@ func latestVersions(ctx context.Context, dir, goPath string, env []string, candi
 		latest[m.Path] = lm
 	}
 	return latest, nil
-}
-
-func runGo(ctx context.Context, dir, goPath string, env []string, args ...string) (string, string, error) {
-	cmd := exec.CommandContext(ctx, goPath, args...)
-	cmd.Dir, cmd.Env = dir, env
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	return stdout.String(), stderr.String(), err
 }
 
 func joinOutput(stderr, stdout string, err error) string {

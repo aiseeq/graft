@@ -93,23 +93,31 @@ the project to look at: there a plain `git commit` passes the pre-commit hook
 after the checks (secrets, large files), without the gate and the version
 bump, and nothing is pushed. Merging the branch brings the gate (see Hooks).
 
-`modules.latest` lists Go module path prefixes. Before `graft commit` runs its
-gate and before a manual `graft gate`, graft raises matching requirements in
-tracked `go.mod` files to the latest versions visible through the user's Go
-proxy settings, then tidies the module and refreshes an existing vendor tree.
-A public proxy answers `@latest` from a cache that lags a push by up to half
-an hour, so list your own prefixes in `GONOPROXY` (`go env -w
+`modules.latest` lists Go module and npm git repository path prefixes. Before
+`graft commit` runs its gate and before a manual `graft gate`, graft raises
+matching requirements in tracked `go.mod` files to the latest versions visible
+through the user's Go proxy settings, then tidies the module and refreshes an
+existing vendor tree. It also raises npm dependencies in `package.json` whose
+git URL is under one of those prefixes and ends in a `#vX.Y.Z` semver tag; npm
+ranges, shorthand specs, branches, and commit hashes stay as they are. When a
+`package-lock.json` covers the package, graft refreshes its resolved commit
+with `npm install --package-lock-only` followed by
+`npm update <name> --package-lock-only`. npm must be installed when a matching
+dependency can be raised.
+
+A public Go proxy answers `@latest` from a cache that lags a push by up to half
+an hour, so list your own Go prefixes in `GONOPROXY` (`go env -w
 GONOPROXY=example.com/you/*`): their latest version then comes from the
 repository itself.
 A hotfix or release branch (`deploy.hotfix.branches`, `version.build_branches`)
-keeps its module versions, and graft says so: it carries a candidate someone
-approved, and a raise there would ship a change outside the approval
-(`approved_release` counts a changed `go.mod` as shipped); the trunk takes
-the raise.
+keeps its Go and npm dependency versions, and graft says so: it carries a
+candidate someone approved, and a raise there would ship a change outside the
+approval (`approved_release` counts a changed `go.mod` as shipped); the
+trunk takes the raise.
 Offline or otherwise unknown latest versions produce a warning and leave that
-module file alone. If a raised version makes the gate fail, the commit stops
+dependency alone. If a raised version makes the gate fail, the commit stops
 and the raised files stay in the work tree for repair. Without this setting,
-module versions are left alone.
+module and npm dependency versions are left alone.
 
 A gate whose last 5 runs that really ran their steps each stayed under 2 s CPU
 and 300 MB, since `.graft.yaml` last changed, does not wait for a busy machine:
