@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"go/ast"
 	"go/parser"
@@ -304,5 +305,27 @@ func TestRegistryDispatchPaths(t *testing.T) {
 			}
 			return true
 		})
+	}
+}
+
+// TestRegistryGroupRest checks that a command with subcommands says "none"
+// for its rest exactly when an unknown word after it is a usage error, so
+// a misspelt subcommand in the docs is not taken for an argument.
+func TestRegistryGroupRest(t *testing.T) {
+	entries := registryForTest(t)
+	for _, e := range entries {
+		hasChild := slices.ContainsFunc(entries, func(c registryCommand) bool {
+			return len(c.Path) > len(e.Path) && slices.Equal(c.Path[:len(e.Path)], e.Path)
+		})
+		if !hasChild {
+			continue
+		}
+		var out bytes.Buffer
+		a := &app.App{Stdout: &out, Stderr: &out}
+		err := dispatch(t.Context(), a, append(slices.Clone(e.Path), "no-such-subcommand"))
+		usage := errors.Is(err, errUsage)
+		if usage != (e.Rest == "none") {
+			t.Errorf("graft %s no-such-subcommand: usage error %v (%v), registry rest %q", strings.Join(e.Path, " "), usage, err, e.Rest)
+		}
 	}
 }
