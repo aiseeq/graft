@@ -1,4 +1,6 @@
 schema: 1
+# The gate runs the race-free short tests of a large tool: about 2 minutes by median.
+limits: {gate: 2m}
 version:
   mode: git-tag
 gate:
