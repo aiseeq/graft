@@ -85,6 +85,7 @@ type Config struct {
 
 	Deploy       *Deploy       `yaml:"deploy"`
 	ReleaseNotes *ReleaseNotes `yaml:"release_notes"`
+	Release      *Release      `yaml:"release"`
 
 	Tasks map[string]*Task `yaml:"tasks"`
 	// CacheExclude are globs left out of the tree a task cache keys on.
@@ -372,6 +373,7 @@ func (c *Config) validate() error {
 		c.validateFlags,
 		c.validateRemovedKeys,
 		c.validateDeploy,
+		c.validateReleaseAuthors,
 		c.validateTestDB,
 		c.validateTasks,
 		c.validateCache,

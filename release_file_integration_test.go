@@ -36,6 +36,30 @@ func ffFeature(t *testing.T, f *fixture) {
 	f.git("merge", "-q", "--ff-only", "feature/x")
 }
 
+func TestReleaseFileChecksAuthorsBeforeBump(t *testing.T) {
+	f := fileReleaseRepo(t, false, "release:\n  authors: [test@example.com]\ngate: []\n")
+	f.git("tag", "v0.7.0")
+	prior := f.env
+	f.env = append(f.env, "GIT_AUTHOR_EMAIL=test@example.com", "GIT_COMMITTER_EMAIL=test@example.com")
+	f.commitWithAuthor("other@example.com")
+	f.env = prior
+	before := f.git("rev-list", "--count", "HEAD")
+	version := f.read("VERSION")
+	out, code := f.graft("", "release", "--patch")
+	if code == 0 || !strings.Contains(out, "author other@example.com") {
+		t.Fatalf("file release with foreign author: exit %d\n%s", code, out)
+	}
+	if got := f.git("rev-list", "--count", "HEAD"); got != before {
+		t.Errorf("release created a commit: count %s, was %s", got, before)
+	}
+	if got := f.read("VERSION"); got != version {
+		t.Errorf("VERSION changed from %q to %q", version, got)
+	}
+	if _, code := f.tryGit("show-ref", "--verify", "--quiet", "refs/tags/v0.7.1"); code == 0 {
+		t.Error("release created tag v0.7.1 after author refusal")
+	}
+}
+
 func TestReleaseFileBumpsCommitsAndPushes(t *testing.T) {
 	for _, tc := range []struct {
 		name, flag, want string

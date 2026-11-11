@@ -7,6 +7,31 @@ import (
 	"time"
 )
 
+func TestReleaseAuthorsConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data string
+		want string
+	}{
+		{"missing", minimal, ""},
+		{"nonempty", minimal + "release:\n  authors: [dev@example.org]\n", ""},
+		{"empty", minimal + "release:\n  authors: []\n", "release.authors: must contain at least one e-mail address"},
+		{"null", minimal + "release:\n  authors:\n", "release.authors: must contain at least one e-mail address"},
+		{"unknown key", minimal + "release:\n  other: true\n", `field "other" not found in type config.Release`},
+		{"blank entry", minimal + "release:\n  authors: ['']\n", "release.authors[0]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.data))
+			if tc.want == "" && err != nil {
+				t.Fatal(err)
+			}
+			if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("Parse error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestSplitCommand(t *testing.T) {
 	cases := []struct {
 		in   string

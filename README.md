@@ -453,7 +453,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft commit --minor` / `--major` | same with a minor / major bump (version mode `file` only) |
 | `graft commit -F msg.txt` / `-F -` | message from a file / from stdin, byte for byte |
 | `graft amend` | lock, stage work before the gate, gate, stage paths changed since the amended commit's parent (including the amended commit's files), `ticket.required` on the whole amended commit, checks, `git commit --amend --no-edit`, no push; restores the original index if the gate or a later step fails or the gate leaves the amended commit as its parent has it, and refuses a commit that is already on a remote unless only on branches in `push.force_with_lease` |
-| `graft release` | refuse a HEAD no remote has yet; push the current branch to the remotes whose branch lacks HEAD (one fast-forwarded to pushed work), tag HEAD with the version, push the tag to every remote |
+| `graft release` | check authors and committers of commits not included in any reachable version tag against `release.authors` when set; refuse a HEAD no remote has yet; push the current branch to the remotes whose branch lacks HEAD (one fast-forwarded to pushed work), tag HEAD with the version, push the tag to every remote |
 | `graft release --patch` / `--minor` / `--major` | in version mode `file`, bump, commit and tag that version in one step: on a clean tree whose HEAD carries no version tag yet, the commit holds only the version files (no module raise) and needs no work item; in `git-tag` mode `--patch` is the default |
 | `graft release --version X.Y.Z` | choose the exact next tag (version mode `git-tag` only) |
 | `graft version` | print the project version |
@@ -725,6 +725,10 @@ ticket:                         # omit to never add a key
   pattern: '[A-Z][A-Z]+-[0-9]+' # first match in the branch name
   required: false               # true: a commit must name a work item
   skip_branches: ['agent/*']    # commits on these branches need no work item and take no key from the branch
+
+release:
+  authors: [dev@example.org]    # optional: e-mail addresses allowed for unreleased commits
+                                # an empty list or null value is invalid
 
 push:
   remotes: []                   # empty: every configured remote

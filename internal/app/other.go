@@ -241,56 +241,151 @@ func (a *App) Release(ctx context.Context, opts ReleaseOptions) error {
 		return err
 	}
 	return a.withLock(ctx, repoLock(repo), cfg, "graft release", func() error {
-		if cfg.Version.Mode == config.ModeFile && opts.Version != "" {
-			return errors.New("in version.mode file release takes no --version")
-		}
-		if cfg.Version.Mode == config.ModeFile && (opts.Level != version.Patch || opts.Patch) {
-			return a.releaseFileCommit(ctx, repo, cfg, opts)
-		}
-		next, err := releaseVersion(repo, cfg, opts)
-		if err != nil {
-			return err
-		}
-		tag := cfg.Version.TagPrefix + next.String()
-		exists, err := tagExists(repo, tag)
-		if err != nil {
-			return err
-		}
-		if exists {
-			if cfg.Version.Mode == config.ModeFile {
-				released, err := releasedAs(repo, cfg.Version.TagPrefix)
-				if err != nil {
-					return err
-				}
-				if released != "" {
-					return fmt.Errorf("HEAD is already released as %s: commit the change first", released)
-				}
-				return fmt.Errorf("tag %s already exists on an earlier commit: use graft release --patch, --minor or --major for the next version", tag)
-			}
-			return fmt.Errorf("tag %s already exists", tag)
-		}
-		remotes, err := pushRemotes(repo, cfg)
-		if err != nil {
-			return err
-		}
-		if err := requirePublished(repo, remotes); err != nil {
-			return err
-		}
-		branch, err := repo.Branch()
-		if err != nil && !errors.Is(err, gitx.ErrDetachedHead) {
-			return err
-		}
-		if err == nil {
-			if err := a.pushBehindBranch(repo, remotes, branch, hasConfiguredFreeze(cfg)); err != nil {
+		return releaseAuthorsThen(repo, cfg, func() error {
+			return a.releaseLocked(ctx, repo, cfg, opts)
+		})
+	})
+}
+
+func releaseAuthorsThen(repo *gitx.Repo, cfg *config.Config, run func() error) error {
+	if err := checkReleaseAuthors(repo, cfg); err != nil {
+		return err
+	}
+	return run()
+}
+
+func (a *App) releaseLocked(ctx context.Context, repo *gitx.Repo, cfg *config.Config, opts ReleaseOptions) error {
+	if cfg.Version.Mode == config.ModeFile && opts.Version != "" {
+		return errors.New("in version.mode file release takes no --version")
+	}
+	if cfg.Version.Mode == config.ModeFile && (opts.Level != version.Patch || opts.Patch) {
+		return a.releaseFileCommit(ctx, repo, cfg, opts)
+	}
+	next, err := releaseVersion(repo, cfg, opts)
+	if err != nil {
+		return err
+	}
+	tag := cfg.Version.TagPrefix + next.String()
+	exists, err := tagExists(repo, tag)
+	if err != nil {
+		return err
+	}
+	if exists {
+		if cfg.Version.Mode == config.ModeFile {
+			released, err := releasedAs(repo, cfg.Version.TagPrefix)
+			if err != nil {
 				return err
 			}
+			if released != "" {
+				return fmt.Errorf("HEAD is already released as %s: commit the change first", released)
+			}
+			return fmt.Errorf("tag %s already exists on an earlier commit: use graft release --patch, --minor or --major for the next version", tag)
 		}
-		if _, err := repo.Git("tag", "-a", tag, "-m", tag); err != nil {
+		return fmt.Errorf("tag %s already exists", tag)
+	}
+	remotes, err := pushRemotes(repo, cfg)
+	if err != nil {
+		return err
+	}
+	if err := requirePublished(repo, remotes); err != nil {
+		return err
+	}
+	branch, err := repo.Branch()
+	if err != nil && !errors.Is(err, gitx.ErrDetachedHead) {
+		return err
+	}
+	if err == nil {
+		if err := a.pushBehindBranch(repo, remotes, branch, hasConfiguredFreeze(cfg)); err != nil {
 			return err
 		}
-		a.printf("tagged %s", tag)
-		return a.push(repo, remotes, []string{"refs/tags/" + tag}, false, hasConfiguredFreeze(cfg))
-	})
+	}
+	if _, err := repo.Git("tag", "-a", tag, "-m", tag); err != nil {
+		return err
+	}
+	a.printf("tagged %s", tag)
+	return a.push(repo, remotes, []string{"refs/tags/" + tag}, false, hasConfiguredFreeze(cfg))
+}
+
+type releaseCommit struct {
+	sha       string
+	author    string
+	committer string
+}
+
+type releaseAuthorViolation struct {
+	sha     string
+	role    string
+	address string
+}
+
+func releaseAuthorViolations(commits []releaseCommit, allowed []string) []releaseAuthorViolation {
+	var violations []releaseAuthorViolation
+	for _, commit := range commits {
+		for _, candidate := range []struct{ role, address string }{
+			{"author", commit.author}, {"committer", commit.committer},
+		} {
+			permitted := false
+			for _, address := range allowed {
+				if strings.EqualFold(candidate.address, address) {
+					permitted = true
+					break
+				}
+			}
+			if !permitted {
+				violations = append(violations, releaseAuthorViolation{commit.sha, candidate.role, candidate.address})
+			}
+		}
+	}
+	return violations
+}
+
+// releaseAuthorLog is the git log of the commits no reachable version tag
+// holds: the tags go as ^refs/tags/<tag> lines on stdin, since a project
+// with thousands of them would pass the Windows command line limit as
+// arguments.
+func releaseAuthorLog(tags []string) (args []string, input string) {
+	var excluded strings.Builder
+	for _, tag := range tags {
+		excluded.WriteString("^refs/tags/" + tag + "\n")
+	}
+	return []string{"log", "--format=%H%x00%ae%x00%ce", "--stdin", "HEAD"}, excluded.String()
+}
+
+func checkReleaseAuthors(repo *gitx.Repo, cfg *config.Config) error {
+	if cfg.Release == nil || !cfg.Release.Authors.Set {
+		return nil
+	}
+	tags, _, _, err := versionTags(repo, cfg.Version.TagPrefix)
+	if err != nil {
+		return err
+	}
+	args, input := releaseAuthorLog(tags)
+	out, err := repo.GitInput(strings.NewReader(input), nil, args...)
+	if err != nil {
+		return fmt.Errorf("read commits for release.authors: %w", err)
+	}
+	var commits []releaseCommit
+	for line := range strings.SplitSeq(strings.TrimSuffix(out, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\x00")
+		if len(fields) != 3 {
+			return fmt.Errorf("read commits for release.authors: unexpected git log output")
+		}
+		commits = append(commits, releaseCommit{sha: fields[0], author: fields[1], committer: fields[2]})
+	}
+	violations := releaseAuthorViolations(commits, cfg.Release.Authors.Addresses)
+	if len(violations) == 0 {
+		return nil
+	}
+	var message strings.Builder
+	message.WriteString("release refused: unreleased commits have e-mail addresses outside release.authors:")
+	for _, violation := range violations {
+		fmt.Fprintf(&message, "\n  %s %s %s", gitx.Short(violation.sha), violation.role, violation.address)
+	}
+	message.WriteString("\nrewrite the author or add the address to release.authors")
+	return errors.New(message.String())
 }
 
 // pushBehindBranch pushes branch to the remotes whose copy of it lags behind
@@ -603,15 +698,21 @@ func releasedAs(repo *gitx.Repo, prefix string) (string, error) {
 // Tags that are not plain versions (v1.0.0-rc1, other prefixes) are ignored:
 // graft never creates them.
 func latestTag(repo *gitx.Repo, prefix string) (version.Semver, bool, error) {
+	_, best, found, err := versionTags(repo, prefix)
+	return best, found, err
+}
+
+func versionTags(repo *gitx.Repo, prefix string) ([]string, version.Semver, bool, error) {
 	hasHead, err := repo.HasHead()
 	if err != nil || !hasHead {
-		return version.Semver{}, false, err
+		return nil, version.Semver{}, false, err
 	}
 	out, err := repo.Git("tag", "--list", "--merged", "HEAD", prefix+"*")
 	if err != nil {
-		return version.Semver{}, false, err
+		return nil, version.Semver{}, false, err
 	}
 	var (
+		tags  []string
 		best  version.Semver
 		found bool
 	)
@@ -622,13 +723,14 @@ func latestTag(repo *gitx.Repo, prefix string) (version.Semver, bool, error) {
 		}
 		v, err := version.Parse(raw)
 		if err != nil {
-			return version.Semver{}, false, fmt.Errorf("tag %s: %w", tag, err)
+			return nil, version.Semver{}, false, fmt.Errorf("tag %s: %w", tag, err)
 		}
+		tags = append(tags, tag)
 		if !found || best.Less(v) {
 			best, found = v, true
 		}
 	}
-	return best, found, nil
+	return tags, best, found, nil
 }
 
 // BumpVersion raises the version in the version file and its synced files
