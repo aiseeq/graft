@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -124,6 +125,15 @@ func TestAdmissionJournalRefusesAtDeadline(t *testing.T) {
 	lines := readAdmissionLines(t, filepath.Join(os.Getenv("XDG_CACHE_HOME"), "graft", "admissions.jsonl"))
 	if len(lines) < 2 || lines[len(lines)-1].Verdict != "refused" || lines[len(lines)-1].Why == "" {
 		t.Fatalf("deadline refusal missing: %+v", lines)
+	}
+}
+
+func TestAdmissionRecordNamesFailingDiskSourceOnce(t *testing.T) {
+	fault := fmt.Errorf("%w: connect: refused", pressure.ErrIOSourceFailed)
+	m := &machine{haveView: true, lastView: pressure.Verdict{Load: pressure.Load{DiskFault: fault}}}
+	got := m.admissionRecord(false).ProfileNone
+	if got != "disk state source failed: connect: refused" {
+		t.Fatalf("profile_none = %q, want the source's own error once", got)
 	}
 }
 

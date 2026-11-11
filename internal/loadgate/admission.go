@@ -71,7 +71,7 @@ func (m *machine) admissionRecord(priority bool) admissionRecord {
 	case load.DiskFault == nil || errors.Is(load.DiskFault, pressure.ErrNoIOSource):
 		rec.ProfileNone = "no disk state source"
 	default:
-		rec.ProfileNone = "the disk state source failed: " + load.DiskFault.Error()
+		rec.ProfileNone = load.DiskFault.Error()
 	}
 	return rec
 }
