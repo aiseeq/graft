@@ -1150,6 +1150,41 @@ func TestBudgetParallelExhaustion(t *testing.T) {
 	}
 }
 
+// TestBudgetConcurrentSpendsKeepEveryWait: tasks of one deploy spending the
+// budget at the same moment do not lose each other's waits. Every task
+// waited from the same start to its own end, so whatever order they come in
+// the budget loses exactly the longest wait; a spend that read the budget
+// before another wrote it would leave more.
+func TestBudgetConcurrentSpendsKeepEveryWait(t *testing.T) {
+	const tasks = 32
+	base := time.Unix(1_800_000_000, 0)
+	for round := range 10 {
+		p := &Priority{For: "projectA deploy", Budget: newBudget(t, time.Hour)}
+		start := make(chan struct{})
+		errs := make(chan error, tasks)
+		var wg sync.WaitGroup
+		for i := 1; i <= tasks; i++ {
+			wg.Go(func() {
+				<-start
+				_, err := p.spend(base, base.Add(time.Duration(i)*time.Second))
+				errs <- err
+			})
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		left, err := p.spend(time.Time{}, time.Time{})
+		if err != nil || time.Hour-left != tasks*time.Second {
+			t.Fatalf("round %d: spent %s, %v; want %ds, the longest wait", round, time.Hour-left, err, tasks)
+		}
+	}
+}
+
 func TestBudgetInvalidWatermarkIsError(t *testing.T) {
 	p := &Priority{For: "projectA deploy", Budget: newBudget(t, time.Minute)}
 	if err := os.WriteFile(p.Budget+".until", []byte("invalid"), 0o644); err != nil {
