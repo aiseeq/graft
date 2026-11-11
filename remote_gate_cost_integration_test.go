@@ -157,6 +157,46 @@ func TestBusyGateLocalHistoryIsProfileSpecificAcrossProjects(t *testing.T) {
 	}
 }
 
+func TestBusyGateHeavyStepHereOverridesGateHere(t *testing.T) {
+	const cfg = "schema: 1\nversion: {mode: none}\ngo_fix: {enabled: false}\n" +
+		"gate:\n  - task: unit\n  - task: script\ntasks:\n" +
+		"  unit:\n    heavy: true\n    remote: true\n    run: [[go, test, -run, Nothing, ./...]]\n" +
+		"  script:\n    run: [[sh, -c, 'echo local >> out']]\n"
+	g := newGateCostFixture(t, cfg)
+	var sample stats.Record
+	for _, rec := range readStats(t, g.statsFile) {
+		if rec.Kind == stats.KindStep && rec.Task == "unit" && strings.HasPrefix(rec.Step, "go test -run Nothing") {
+			sample = stats.Record{Project: rec.Project, Profile: rec.Profile, Task: rec.Task, Step: rec.Step}
+			break
+		}
+	}
+	if sample.Profile == "" || sample.Step == "" {
+		t.Fatal("calm gate did not record the remote heavy task step")
+	}
+	locals, hosts := gateCostRows([]float64{0.01, 0.01}, "", 0), gateCostRows([]float64{40}, "pc", 0)
+	for i := range locals {
+		locals[i].Project, locals[i].Profile, locals[i].Task, locals[i].Step = sample.Project, sample.Profile, sample.Task, sample.Step
+	}
+	for i := range hosts {
+		hosts[i].Project, hosts[i].Profile, hosts[i].Task, hosts[i].Step = sample.Project, sample.Profile, sample.Task, sample.Step
+	}
+	g.writeHistory(t, locals, hosts)
+	_, calls := runBusyCostGate(t, g, false)
+	if strings.Contains(calls, "go test -run Nothing") {
+		t.Fatalf("cheaper local step was sent to host: %q; sample=%+v; history=%+v", calls, sample, readStats(t, g.statsFile))
+	}
+	var taskStep *statsLine
+	for _, rec := range readStats(t, g.statsFile) {
+		if rec.Kind == stats.KindStep && rec.Task == "unit" && rec.Step == sample.Step && rec.Run != "" {
+			copy := rec
+			taskStep = &copy
+		}
+	}
+	if taskStep == nil || !strings.HasPrefix(taskStep.Here, "cheaper here: 0.0s here,") || taskStep.Here == tasks.WhyGateSplit {
+		t.Errorf("heavy gate step here = %+v, want its cheaper-here reason rather than the task's split reason", taskStep)
+	}
+}
+
 func TestBusyGateHostCheaperHistory(t *testing.T) {
 	g := newGateCostFixture(t, gateCostVetConfig)
 	g.writeHistory(t, gateCostRows([]float64{60, 60}, "", 0), gateCostRows([]float64{10}, "pc", 0))
@@ -429,7 +469,7 @@ func TestGateLineSaysWhyItWasNotSplit(t *testing.T) {
 		set  func(f *fixture)
 		want string
 	}{
-		{"local", func(f *fixture) { f.env = append(f.env, tasks.HeavyEnv+"=local") }, tasks.HeavyEnv + "=local"},
+		{"local", func(f *fixture) { f.env = append(f.env, tasks.HeavyEnv+"=local") }, tasks.HeavyEnv + "=local (from the caller)"},
 		{"admitted", func(f *fixture) { f.env = append(f.env, tasks.AdmittedEnv+"=1") }, tasks.WhyInsideHeavy},
 		{"always", func(f *fixture) {
 			for _, kv := range f.env {

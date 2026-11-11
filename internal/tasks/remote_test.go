@@ -15,6 +15,25 @@ import (
 	"github.com/aiseeq/graft/v2/internal/stats"
 )
 
+func TestHeavyLocalReason(t *testing.T) {
+	t.Setenv(HeavyEnv, "local")
+	t.Setenv(stats.EnvRun, "run-child")
+	for _, tc := range []struct {
+		name, by, want string
+	}{
+		{"flag", "run-child", HeavyEnv + "=local (--local)"},
+		{"parent", "run-parent", HeavyEnv + "=local (from graft run-parent)"},
+		{"caller", "", HeavyEnv + "=local (from the caller)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(HeavyByEnv, tc.by)
+			if got := heavyLocalReason(); got != tc.want {
+				t.Errorf("heavyLocalReason() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTaskLoadKeepsOneMachineOnly(t *testing.T) {
 	local := stats.Usage{LoadStart: 30, LoadMax: 30, LoadKnown: true}
 	frame := &frame{

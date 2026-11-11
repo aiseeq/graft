@@ -318,8 +318,12 @@ The project's `run` carries the tree to the host and runs the command there;
 graft only decides where a step runs and appends `env GRAFT_HEAVY=local
 K=V… <argv>`: the variables it sets for the step (`env`, `GRAFT_VERSION`,
 `GRAFT_THREADS`), since the host does not get this machine's environment,
-and `GRAFT_HEAVY=local`, so that a graft the step starts there keeps its heavy
-work. `run` starts from the work tree root; when it names `{root}`, filled
+and `GRAFT_HEAVY=local GRAFT_HEAVY_BY=<run>`, which names the graft run
+that sent the command, so a graft the step starts there keeps its heavy work
+and can name its source in stats. If a caller clears `GRAFT_HEAVY`, it must
+clear `GRAFT_HEAVY_BY` too; clear both before setting `GRAFT_HEAVY=local`
+itself so an inherited run is not reported as the source. `run` starts from
+the work tree root; when it names `{root}`, filled
 with the work tree root, it starts from the step's directory instead (a
 task's `dir`, `graft exec` in a subdirectory), as a `run` that carries the
 whole tree and runs the command where it was started needs. A step
@@ -1106,7 +1110,11 @@ graft's version, pid and command line. A
 - `host`, on the lines of a task run on the host of `remote_heavy` and of
   its steps, names that host; absent for this machine. Their CPU time,
   memory and disk IO are those of the command that sent the step there, not
-  of the work.
+  of the work. `graft stats` says so when its report includes records with
+  a host.
+- `heavy`, on a step line, says the step ran on the same machine as its
+  nearest heavy task. Absent when the step ran elsewhere or has no heavy
+  task above it.
 - `here`, on the line of a heavy task that had a `remote_heavy` host and
   ran on this machine, is why: the reason its `heavy, on this machine:`
   line gave, the broken path, or, where graft says nothing, `this machine
@@ -1115,13 +1123,21 @@ graft's version, pid and command line. A
   step only for the user's `remote_heavy` with `when: busy`; the line of a
   gate with a host says how it went: `in a gate split by step, each step
   placed for itself` (also on the lines of its heavy tasks), or why it ran
-  here whole: `GRAFT_HEAVY=local`, `inside an admitted heavy task, …`,
+  here whole: `GRAFT_HEAVY=local (--local)` when this graft got `--local`,
+  `GRAFT_HEAVY=local (from graft <run>)` when `GRAFT_HEAVY_BY` names a
+  parent graft run, and `GRAFT_HEAVY=local (from the caller)` when that
+  marker is absent. A caller that replaces `GRAFT_HEAVY` must clear a stale
+  `GRAFT_HEAVY_BY` as well;
+  also `inside an admitted heavy task, …`,
   `this machine would not make it wait`, `<host> did not answer (…)`, `no
   step of the gate may go to the host`, `each step of the gate that may go
   to the host is cheaper here`, `when: always places the gate's heavy tasks,
   not its steps`, `the project's remote_heavy places the gate's heavy tasks,
   not its steps`. Absent for a task the host ran and without a host. On a
-  step line, it is set only for a step of a busy gate that could go to the
+  step line, a heavy task that stayed here gives its `here` to each step;
+  a gate step's own placement reason takes priority. A heavy task sent to
+  the host gives no `here` to its steps. For a busy gate it is set only for
+  a step that could go to the
   host and stayed here: `cheaper here: …` when its cost keeps it here (it
   would stay with the host up, so this wins over a broken path), else
   `<host> path broken: …` for the step run here after the path broke and

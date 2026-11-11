@@ -205,6 +205,21 @@ func (f Filter) rowKey(r *Record, label string) rowKey {
 	return rowKey{project: r.Project, label: label}
 }
 
+// HasHost reports whether the task report selects a record measured on a
+// remote_heavy host.
+func HasHost(recs []Record, f Filter) bool {
+	runs := f.taskRuns(recs)
+	for i := range recs {
+		r := &recs[i]
+		if r.Host != "" && f.selects(r) && f.ranIn(r, runs) && calm(r.LoadMax, f.MaxLoad) {
+			if _, ok := runLabel(r, f, runs); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Summarize groups the records f selects into rows, the heaviest in memory
 // first; a broken down task leads with its whole-task row. Saved sums the
 // cache hits, which also show on their task's row.

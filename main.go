@@ -792,6 +792,9 @@ func exportExecEnv(pass []string, local bool) error {
 		if err := os.Setenv(tasks.HeavyEnv, "local"); err != nil {
 			return fmt.Errorf("exec --local: %w", err)
 		}
+		if err := os.Setenv(tasks.HeavyByEnv, os.Getenv(stats.EnvRun)); err != nil {
+			return fmt.Errorf("exec --local: %w", err)
+		}
 	}
 	return nil
 }

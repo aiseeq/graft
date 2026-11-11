@@ -189,7 +189,7 @@ func isolatedEnv(gitconfig, userConfig, cache string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	drop := append(strings.Fields(string(out)), "GRAFT_COMMIT", "GRAFT_EXEC_HEAVY", "GRAFT_RUN_ID", "GRAFT_LOAD_PRIORITY", "GRAFT_LOAD_BUDGET", "GRAFT_LOAD_THEN", "GRAFT_LOADAVG", "GRAFT_PROC", "GRAFT_ADMITTED", "GRAFT_HEAVY", "GRAFT_THREADS", "GOMAXPROCS", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "PATH", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "APPDATA",
+	drop := append(strings.Fields(string(out)), "GRAFT_COMMIT", "GRAFT_EXEC_HEAVY", "GRAFT_RUN_ID", "GRAFT_HEAVY_BY", "GRAFT_LOAD_PRIORITY", "GRAFT_LOAD_BUDGET", "GRAFT_LOAD_THEN", "GRAFT_LOADAVG", "GRAFT_PROC", "GRAFT_ADMITTED", "GRAFT_HEAVY", "GRAFT_THREADS", "GOMAXPROCS", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "PATH", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "APPDATA",
 		"XDG_CACHE_HOME", "LOCALAPPDATA", "GOCACHE", "GOLANGCI_LINT_CACHE", "XDG_RUNTIME_DIR")
 	var env []string
 	for _, kv := range os.Environ() {
@@ -201,6 +201,7 @@ func isolatedEnv(gitconfig, userConfig, cache string) ([]string, error) {
 	return append(env,
 		"GIT_CONFIG_GLOBAL="+gitconfig,
 		"GIT_CONFIG_NOSYSTEM=1",
+		"GOTELEMETRY=off",
 		// The user's own graft config (Jira, tools.bin_dir) stays out.
 		"XDG_CONFIG_HOME="+userConfig,
 		"APPDATA="+userConfig,

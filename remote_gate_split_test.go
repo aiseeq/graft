@@ -99,9 +99,12 @@ func TestBusyGateStepsGetTheirThreads(t *testing.T) {
 	loaded(t, state)
 	out := runUntilMachineWait(t, f, state, "gate")
 	calls := callsOf(t, state)
+	if !strings.Contains(calls, "env GRAFT_HEAVY=local GRAFT_HEAVY_BY=") {
+		t.Errorf("remote command missing heavy source marker: %q", calls)
+	}
 	for _, want := range []string{
-		"env GRAFT_HEAVY=local GOFLAGS=-p=1 -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 go vet ./...",
-		"env GRAFT_HEAVY=local GOFLAGS=-p=1 -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 go test -count=1 ./...",
+		"GOFLAGS=-p=1 -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 go vet ./...",
+		"GOFLAGS=-p=1 -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 go test -count=1 ./...",
 	} {
 		if !strings.Contains(calls, want) {
 			t.Errorf("run got %q, want %q\n%s", calls, want, out)

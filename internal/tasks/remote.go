@@ -18,6 +18,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/dotenv"
 	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/proc"
+	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
@@ -25,6 +26,23 @@ import (
 // project has remote_heavy, for the graft that reads it and those it starts;
 // graft exec --heavy --local sets it.
 const HeavyEnv = "GRAFT_HEAVY"
+
+// HeavyByEnv names the graft run that set HeavyEnv=local for a child.
+const HeavyByEnv = "GRAFT_HEAVY_BY"
+
+func heavyLocalReason() string {
+	if os.Getenv(HeavyEnv) != "local" {
+		return ""
+	}
+	by := os.Getenv(HeavyByEnv)
+	if by == "" {
+		return HeavyEnv + "=local (from the caller)"
+	}
+	if by == os.Getenv(stats.EnvRun) {
+		return HeavyEnv + "=local (--local)"
+	}
+	return HeavyEnv + "=local (from graft " + by + ")"
+}
 
 // remoteUpTimeout bounds remote_heavy's up: a host that takes longer to say
 // it is there is not one to wait for.
@@ -288,7 +306,7 @@ func (r *Runner) stayHere(t *config.Task, dir string) (string, error) {
 	switch v := os.Getenv(HeavyEnv); v {
 	case "":
 	case "local":
-		return HeavyEnv + "=local", nil
+		return heavyLocalReason(), nil
 	default:
 		return "", fmt.Errorf("%s=%q: want local, or leave it unset", HeavyEnv, v)
 	}
@@ -481,7 +499,7 @@ func (r *Runner) remoteCmd(ctx context.Context, cmd *exec.Cmd, t *config.Task, v
 	for _, w := range r.remoteHeavy.Run {
 		words = append(words, strings.ReplaceAll(w, config.RootPlaceholder, r.Root))
 	}
-	words = append(words, "env", HeavyEnv+"=local")
+	words = append(words, "env", HeavyEnv+"=local", HeavyByEnv+"="+os.Getenv(stats.EnvRun))
 	// A heavy step's -p is the host's threads after the caller's GOFLAGS or
 	// the task's, unless the task names one (ownsP): the caller's is the
 	// default of a command run without graft's admission, left out when the

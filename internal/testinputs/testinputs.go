@@ -31,7 +31,7 @@ var newlySet = []string{
 // read, they would miss the cache every time, and a test whose result hangs
 // on them is the bug.
 var perRun = []string{
-	"GRAFT_RUN_ID", "GRAFT_TEST_REPORT", "GRAFT_COMMIT_MESSAGE_FILE", "GRAFT_ADMITTED", "GRAFT_NOW", "GRAFT_VERSION",
+	"GRAFT_RUN_ID", "GRAFT_HEAVY_BY", "GRAFT_TEST_REPORT", "GRAFT_COMMIT_MESSAGE_FILE", "GRAFT_ADMITTED", "GRAFT_NOW", "GRAFT_VERSION",
 	"GRAFT_LOAD_PRIORITY", "GRAFT_LOAD_BUDGET", "GRAFT_LOAD_THEN", "GRAFT_LOADAVG",
 	"GRAFT_THREADS", "GOMAXPROCS",
 }

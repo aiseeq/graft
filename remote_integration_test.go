@@ -290,7 +290,7 @@ func TestHeavyTaskRunsOnRemoteHost(t *testing.T) {
 		t.Errorf("the step on the host: %q", got)
 	}
 	calls := readFile(t, filepath.Join(state, "calls"))
-	if want := "env GRAFT_HEAVY=local MODE=fast GOFLAGS=-p=3 -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 sh -c echo threads=8"; !strings.HasPrefix(calls, want) {
+	if want := "env GRAFT_HEAVY=local GRAFT_HEAVY_BY="; !strings.HasPrefix(calls, want) || !strings.Contains(calls, " MODE=fast GOFLAGS=-p=3 -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 sh -c echo threads=8") {
 		t.Errorf("run got %q, want it to start %q", calls, want)
 	}
 	hosts := map[string]string{}
@@ -299,6 +299,36 @@ func TestHeavyTaskRunsOnRemoteHost(t *testing.T) {
 	}
 	if hosts["task"] != "pc" || hosts["step"] != "pc" {
 		t.Errorf("stats hosts: %v", hosts)
+	}
+}
+
+// TestHeavyTaskLocalChildIsNotMarkedHeavy: a light nested task runs here
+// inside a heavy task whose process steps run on the host.
+func TestHeavyTaskLocalChildIsNotMarkedHeavy(t *testing.T) {
+	f, state := remoteRepo(t, 8, `  outer:
+    heavy: true
+    remote: true
+    run: [{task: inner}]
+  inner:
+    run: [[sh, -c, 'echo inner >> out']]
+`)
+	f.mustGraft("outer")
+	var outerHost string
+	var localStep *statsLine
+	for _, line := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+		if line.Kind == "task" && line.Task == "outer" {
+			outerHost = line.Host
+		}
+		if line.Kind == "step" && line.Task == "inner" {
+			copy := line
+			localStep = &copy
+		}
+	}
+	if outerHost != "pc" || localStep == nil {
+		t.Fatalf("outer host=%q, inner step=%+v", outerHost, localStep)
+	}
+	if localStep.Host != "" || localStep.Heavy || localStep.Here != "" {
+		t.Errorf("local step of host heavy task has misplaced metadata: %+v", *localStep)
 	}
 }
 
@@ -313,8 +343,8 @@ func TestHeavyTaskOnHostThreads(t *testing.T) {
 		want    string
 	}{
 		{8, "    env: {GOFLAGS: '${GOFLAGS} -race'}\n", "GOFLAGS=-p=1 -race -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 sh"},
-		{0, "", "env GRAFT_HEAVY=local GOFLAGS=-tags=x sh"},
-		{0, "    env: {GOFLAGS: -p=3}\n", "env GRAFT_HEAVY=local GOFLAGS=-p=3 sh"},
+		{0, "", "GOFLAGS=-tags=x sh"},
+		{0, "    env: {GOFLAGS: -p=3}\n", "GOFLAGS=-p=3 sh"},
 	} {
 		f, state := remoteRepo(t, c.threads, "  build:\n    heavy: true\n"+c.env+"    run: [[sh, -c, 'echo ok']]\n")
 		flags := "-p=1"
@@ -323,8 +353,16 @@ func TestHeavyTaskOnHostThreads(t *testing.T) {
 		}
 		f.env = append(f.env, "GOMAXPROCS=1", "GOFLAGS="+flags)
 		f.mustGraft("build")
-		if calls := readFile(t, filepath.Join(state, "calls")); !strings.Contains(calls, c.want) {
-			t.Errorf("threads %d, %q: run got %q, want %q", c.threads, c.env, calls, c.want)
+		run := ""
+		for _, line := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+			if line.Kind == "task" && line.Task == "build" {
+				run = line.Run
+			}
+		}
+		// The marker names the graft run that sent the step, so a graft
+		// there reports (from graft <run>).
+		if calls := readFile(t, filepath.Join(state, "calls")); run == "" || !strings.Contains(calls, "GRAFT_HEAVY_BY="+run+" ") || !strings.Contains(calls, c.want) {
+			t.Errorf("threads %d, %q: run got %q, want GRAFT_HEAVY_BY=%s and %q", c.threads, c.env, calls, run, c.want)
 		}
 	}
 }
@@ -336,12 +374,25 @@ func TestHeavyTaskStaysHere(t *testing.T) {
 	f, state := remoteRepo(t, 8, remoteTasks)
 	calm(t, state)
 	f.env = append(f.env, "GRAFT_HEAVY=local")
-	if out := f.mustGraft("build"); !strings.Contains(out, "graft: build: heavy, on this machine: GRAFT_HEAVY=local") {
+	if out := f.mustGraft("build"); !strings.Contains(out, "graft: build: heavy, on this machine: GRAFT_HEAVY=local (from the caller)") {
 		t.Errorf("GRAFT_HEAVY=local:\n%s", out)
+	}
+	lines := readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl"))
+	for _, line := range lines {
+		if line.Kind == "step" && (!line.Heavy || line.Here != "GRAFT_HEAVY=local (from the caller)") {
+			t.Errorf("heavy local step stats: %+v", line)
+		}
 	}
 	f.env = f.env[:len(f.env)-1]
 	if out := f.mustGraft("here"); !strings.Contains(out, "on this machine: the task has remote: false") {
 		t.Errorf("remote: false:\n%s", out)
+	}
+	f.write(".graft.yaml", f.read(".graft.yaml")+"  light:\n    run: [[sh, -c, 'true']]\n")
+	f.mustGraft("light")
+	for _, line := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+		if line.Kind == "step" && line.Task == "light" && (line.Heavy || line.Here != "") {
+			t.Errorf("light step carries heavy or here metadata: %+v", line)
+		}
 	}
 	if err := os.Remove(filepath.Join(state, "up")); err != nil {
 		t.Fatal(err)
@@ -371,11 +422,34 @@ func TestExecHeavyRunsOnRemoteHost(t *testing.T) {
 		t.Errorf("exec --heavy: want the line that says the caller's variables stay here:\n%s", out)
 	}
 	calm(t, state)
-	if out := f.mustGraft(append([]string{"exec", "--heavy", "--local", "--"}, cmd...)...); !strings.Contains(out, "on this machine: GRAFT_HEAVY=local") {
+	if out := f.mustGraft(append([]string{"exec", "--heavy", "--local", "--"}, cmd...)...); !strings.Contains(out, "on this machine: GRAFT_HEAVY=local (--local)") {
 		t.Errorf("exec --heavy --local:\n%s", out)
+	}
+	lines := readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl"))
+	found := false
+	for _, line := range lines {
+		if line.Kind == "step" && line.Step != "" && line.Heavy && line.Here == "GRAFT_HEAVY=local (--local)" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("local heavy exec step missing heavy/here: %+v", lines)
 	}
 	if got := f.read("out"); got != "exec=8 heavy=local\nexec=6 heavy=local\n" {
 		t.Errorf("exec output: %q", got)
+	}
+	if out := f.mustGraft("exec", "--heavy", "--local", "--", graftBin, "exec", "--heavy", "--", "true"); !strings.Contains(out, "GRAFT_HEAVY=local (from graft ") {
+		t.Errorf("outer local exec: %s", out)
+	}
+	lines = readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl"))
+	foundParent := false
+	for _, line := range lines {
+		if line.Kind == "task" && line.Task == "exec" && line.Parent != "" && line.Here == "GRAFT_HEAVY=local (from graft "+line.Parent+")" {
+			foundParent = true
+		}
+	}
+	if !foundParent {
+		t.Errorf("nested graft did not record its parent as local source: %+v", lines)
 	}
 	// The shell's own ${w%|*} is no .env key: the command runs, on the host.
 	if out := f.mustGraft("exec", "--heavy", "--", "sh", "-c", `w="a|b"; echo ${w%|*} >> out`); !strings.Contains(out, "graft: exec: heavy, on pc") {

@@ -22,6 +22,7 @@ type statsLine struct {
 	Kind         string             `json:"kind"`
 	Project      string             `json:"project"`
 	Task         string             `json:"task"`
+	Profile      string             `json:"profile"`
 	CacheChanged []string           `json:"cache_changed"`
 	WaitedBehind string             `json:"waited_behind"`
 	ReserveCores float64            `json:"reserve_cores"`
@@ -42,6 +43,7 @@ type statsLine struct {
 	WaitWhy      map[string]float64 `json:"wait_why"`
 	Host         string             `json:"host"`
 	Here         string             `json:"here"`
+	Heavy        bool               `json:"heavy"`
 	Exit         int                `json:"exit"`
 	Run          string             `json:"run"`
 	Parent       string             `json:"parent"`
@@ -333,6 +335,12 @@ func TestStatsCommand(t *testing.T) {
 	line(5*time.Hour, root, "task", "test", "", 120, 50, 700, 0, 2600)
 	line(10*24*time.Hour, root, "task", "lint", "", 5, 1, 20000, 0)
 	line(time.Hour, other, "task", "build", "", 3, 2, 1000, 0)
+	hostLine, err := json.Marshal(map[string]any{"time": now.Add(-time.Hour), "kind": "task", "project": root, "task": "remote", "top": "remote", "host": "hostA", "wall_s": 1, "user_s": 1, "exit": 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Write(hostLine)
+	b.WriteByte('\n')
 	b.WriteString("{torn line\n")
 	if err := os.MkdirAll(filepath.Dir(statsFile), 0o755); err != nil {
 		t.Fatal(err)
@@ -349,10 +357,17 @@ func TestStatsCommand(t *testing.T) {
 		return rows
 	}
 	out := f.mustGraft("stats")
+	if !strings.Contains(out, "CPU, memory and IO for records with a host are from the sending command, not work on the host.") {
+		t.Errorf("host resource note missing:\n%s", out)
+	}
+	if strings.Contains(f.mustGraft("stats", "--project", other), "CPU, memory and IO for records with a host") {
+		t.Error("host resource note shown without a host record in the report")
+	}
 	want := []string{
 		"TASK RUNS WALL MED WALL MAX CPU MED TREE MEM MEM MAX FAILED SAVED",
 		"test 2 1m30s 2m0s 40s 2.5 GB 700 MB 0% -",
 		"lint 3 20s 30s 7s - 8.8 GB 33% -",
+		"remote 1 1s 1s 1s - - 0% -",
 	}
 	if got := rows(out); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("graft stats:\n%s", out)
@@ -361,7 +376,7 @@ func TestStatsCommand(t *testing.T) {
 		t.Errorf("the torn line is not reported:\n%s", out)
 	}
 	month := f.mustGraft("stats", "--since", "30d")
-	if got := rows(month); len(got) != 3 || got[2] != "lint 4 15s 30s 6s - 19.5 GB 25% -" {
+	if got := rows(month); len(got) != 4 || got[2] != "lint 4 15s 30s 6s - 19.5 GB 25% -" || got[3] != "remote 1 1s 1s 1s - - 0% -" {
 		t.Errorf("30 days: %q", got)
 	}
 	// The log starts 10 days ago: the header says so, not 30 days.
@@ -383,7 +398,7 @@ func TestStatsCommand(t *testing.T) {
 		t.Errorf("--project: %q", got)
 	}
 	got := rows(f.mustGraft("stats", "--all"))
-	if len(got) != 4 || !strings.HasPrefix(got[0], "PROJECT TASK") || got[1] != root+" test 2 1m30s 2m0s 40s 2.5 GB 700 MB 0% -" || got[2] != root+" lint 3 20s 30s 7s - 8.8 GB 33% -" {
+	if len(got) != 5 || !strings.HasPrefix(got[0], "PROJECT TASK") || got[1] != root+" test 2 1m30s 2m0s 40s 2.5 GB 700 MB 0% -" || got[2] != root+" lint 3 20s 30s 7s - 8.8 GB 33% -" || got[4] != root+" remote 1 1s 1s 1s - - 0% -" {
 		t.Errorf("--all: %q", got)
 	}
 	if out, code := f.graft("", "stats", "--all", "--project", other); code != 2 {

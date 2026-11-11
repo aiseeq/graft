@@ -62,8 +62,10 @@ type Record struct {
 	Project string `json:"project"`
 	// Here, on the line of a heavy task with a remote_heavy host that ran on
 	// this machine, is why it did not go to the host; on a step line, why a
-	// step of a busy gate stayed here: cheaper here, or the path broke.
+	// step stayed here, from its gate placement or its heavy task.
 	Here string `json:"here,omitempty"`
+	// Heavy says a step runs on the same machine as its nearest heavy task.
+	Heavy bool `json:"heavy,omitempty"`
 	// Profile is the kind of the run the admission of heavy tasks knows it
 	// by: <repository>:<task>, the repository named by its main work tree's
 	// folder for every worktree, and a graft exec <repository>:exec:<the

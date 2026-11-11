@@ -205,6 +205,7 @@ type frame struct {
 	// remote runs the steps of a heavy task on remote_heavy's host; here is
 	// why one with a host runs on this machine.
 	remote bool
+	heavy  bool
 	here   string
 	// stepHere is why the running step of a busy gate stays here though it
 	// could go to the host: cheaper here, or the path broke; only its step
@@ -616,7 +617,7 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, stri
 	case rh == nil:
 		return false, "", nil
 	case os.Getenv(HeavyEnv) == "local":
-		return false, HeavyEnv + "=local", nil
+		return false, heavyLocalReason(), nil
 	case (r.heavy > 0 || os.Getenv(AdmittedEnv) != "") && rh.When != "busy":
 		return false, WhyInsideHeavy, nil
 	case rh.When != "busy":
@@ -1177,6 +1178,21 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int, reason str
 	}
 	inner := r.frames[len(r.frames)-1]
 	stepHost := r.hostOf(inner)
+	var stepHere string
+	var heavyFrame *frame
+	for i := len(r.frames) - 1; i >= 0; i-- {
+		if r.frames[i].heavy {
+			heavyFrame = r.frames[i]
+			break
+		}
+	}
+	heavy := heavyFrame != nil && heavyFrame.remote == (stepHost != "")
+	if heavy && !heavyFrame.remote {
+		stepHere = heavyFrame.here
+	}
+	if inner.stepHere != "" {
+		stepHere = inner.stepHere
+	}
 	for _, f := range r.frames {
 		if f.loadMachineSet && f.loadMachine != stepHost {
 			f.mixedLoadMachine = true
@@ -1196,7 +1212,7 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int, reason str
 			f.reason = reason
 		}
 	}
-	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Profile: r.profile(inner), Step: stats.StepText(source), Exit: code, Reason: reason, Host: r.hostOf(inner), Here: inner.stepHere}, use, r.frames[0].task)
+	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Profile: r.profile(inner), Step: stats.StepText(source), Exit: code, Reason: reason, Host: r.hostOf(inner), Here: stepHere, Heavy: heavy}, use, r.frames[0].task)
 }
 
 // profile is the kind of a run the admission of heavy tasks knows it by:
@@ -1704,6 +1720,7 @@ func (r *Runner) placeTask(ctx context.Context, f *frame, name string, t *config
 	if !t.Heavy {
 		return none, nil
 	}
+	f.heavy = true
 	if r.gateSplit {
 		f.here = WhyGateSplit
 		return none, nil
@@ -2266,6 +2283,7 @@ func (r *Runner) prepareExec(ctx context.Context, f *frame, t *config.Task, dir 
 	if !heavy {
 		return nil, nil
 	}
+	f.heavy = true
 	remote, here, err := r.placeHeavy(ctx, ExecTask, t, dir, nil)
 	if err != nil {
 		return nil, err

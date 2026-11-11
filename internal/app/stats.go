@@ -144,6 +144,7 @@ func (a *App) statsTasks(recs []stats.Record, path string, f stats.Filter, o Sta
 	if err := stats.Render(a.Stdout, rows, label, o.All); err != nil {
 		return err
 	}
+	a.statsHostNote(recs, f)
 	if o.Task == "" {
 		reserveRecords := make([]stats.Record, 0, len(recs))
 		for i := range recs {
@@ -177,6 +178,12 @@ func (a *App) statsTasks(recs []stats.Record, path string, f stats.Filter, o Sta
 		a.printf("and %d more over their limits", more)
 	}
 	return nil
+}
+
+func (a *App) statsHostNote(recs []stats.Record, f stats.Filter) {
+	if stats.HasHost(recs, f) {
+		a.printf("CPU, memory and IO for records with a host are from the sending command, not work on the host.")
+	}
 }
 
 func (a *App) overLimits(rows []stats.Row, filter stats.Filter, o StatsOptions) ([]stats.OverLimit, error) {
