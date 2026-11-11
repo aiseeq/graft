@@ -249,13 +249,12 @@ func Wait(ctx context.Context, name, kind string, p *Priority, l userconfig.Mach
 // cores when positive, else the profile's estimate.
 func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath, settleLockPath string, settleDuration time.Duration, cores float64, log io.Writer) (admission Admission, release func() error, retErr error) {
 	m := newMachine(l, log, name, kind)
-	admissionStart := time.Now()
 	priority := p != nil
 	defer func() {
 		if retErr != nil {
-			m.recordRefused(retErr.Error(), admissionStart, priority)
+			m.recordRefused(retErr.Error(), admission, priority)
 		} else {
-			m.recordAdmitted(admissionStart, priority)
+			m.recordAdmitted(admission, priority)
 		}
 	}()
 	if p != nil && (settleLockPath == "" || settleDuration <= 0) {
@@ -400,7 +399,7 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 			}
 		}
 		// The measure or the reserves beside it: either keeps the task waiting.
-		m.recordWait(b, start, p != nil)
+		m.recordWait(b, p != nil)
 		if p != nil && !waited {
 			fmt.Fprintf(m.log, "graft: %s: %s, not queueing behind other heavy tasks: it runs for %s\n", m.name, b.text, p.For)
 		}
@@ -873,11 +872,13 @@ type machine struct {
 	lastView          pressure.Verdict
 	haveView          bool
 	lastLoggedMeasure string
-	procRoot          string
-	now               func() time.Time
-	sleep             func(context.Context, time.Duration) error
-	samples           kernelSamples
-	sampleReadWarned  bool
+	// admissionStart is when the admission began, the queue included.
+	admissionStart   time.Time
+	procRoot         string
+	now              func() time.Time
+	sleep            func(context.Context, time.Duration) error
+	samples          kernelSamples
+	sampleReadWarned bool
 	// runnable is the last count of the tasks ready to run.
 	runnable      float64
 	runnableLimit float64
@@ -896,7 +897,7 @@ func newMachine(l userconfig.MachineLoad, log io.Writer, name, kind string) *mac
 		proc = dir
 	}
 	limits, limitsErr := pressure.UserLimits()
-	return &machine{l: l, limits: limits, limitsErr: limitsErr, log: log, name: name, kind: kind, procRoot: proc, now: time.Now, sleep: sleep, meter: pressureMeterFactory(proc), waits: Waits{}}
+	return &machine{l: l, limits: limits, limitsErr: limitsErr, log: log, name: name, kind: kind, procRoot: proc, now: time.Now, sleep: sleep, meter: pressureMeterFactory(proc), waits: Waits{}, admissionStart: time.Now()}
 }
 
 func (m *machine) admission() Admission { return Admission{Waits: m.waits} }

@@ -62,8 +62,44 @@ func TestAdmissionJournalMeasureChangesThenAdmits(t *testing.T) {
 			t.Errorf("record identity/profile = %+v", rec)
 		}
 	}
-	if lines[0].DirtyMB != 200 || lines[0].DirtyLimitMB != 64 || lines[1].DirtyMB != 18 || lines[1].DirtyLimitMB != 64 {
+	if mb(lines[0].DirtyMB) != 200 || mb(lines[0].DirtyLimitMB) != 64 || mb(lines[1].DirtyMB) != 18 || mb(lines[1].DirtyLimitMB) != 64 {
 		t.Fatalf("dirty sample values = %+v", lines)
+	}
+	if w := lines[2].Waits; w[WhyWriteback] <= 0 || w[WhyIO] <= 0 {
+		t.Errorf("admitted line waits = %v, want writeback and io", w)
+	}
+}
+
+// refusingMeter fails the test if the machine is measured at all.
+type refusingMeter struct{ t *testing.T }
+
+func (m refusingMeter) Check(context.Context, pressure.Limits, string, bool) (pressure.Verdict, error) {
+	m.t.Error("measured after the queue refused")
+	return pressure.Verdict{}, nil
+}
+
+// mb reads a dirty field, -1 when the line has none.
+func mb(v *float64) float64 {
+	if v == nil {
+		return -1
+	}
+	return *v
+}
+
+func TestAdmissionJournalRefusedBeforeMeasure(t *testing.T) {
+	fakeMachine(t)
+	oldFactory := pressureMeterFactory
+	pressureMeterFactory = func(string) machineMeter { return refusingMeter{t} }
+	defer func() { pressureMeterFactory = oldFactory }()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := WaitWithSettle(ctx, "synthetic", "projectA:exec:go", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), "", 0, 0, io.Discard); err == nil {
+		t.Fatal("a cancelled wait was admitted")
+	}
+	lines := readAdmissionLines(t, filepath.Join(os.Getenv("XDG_CACHE_HOME"), "graft", "admissions.jsonl"))
+	last := lines[len(lines)-1]
+	if last.Verdict != "refused" || last.ProfileNone != notMeasured || last.DirtyMB != nil || last.DirtyLimitMB != nil || last.Profile != nil {
+		t.Fatalf("refusal before any measure = %+v", last)
 	}
 }
 
