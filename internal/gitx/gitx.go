@@ -58,6 +58,52 @@ func (r *Repo) Git(args ...string) (string, error) {
 	return run(r.Root, nil, nil, args...)
 }
 
+// MainWorktree returns the first worktree listed by git. Git lists the main
+// checkout first, regardless of where the repository's common directory is.
+func (r *Repo) MainWorktree() (string, error) {
+	out, err := r.Git("worktree", "list", "--porcelain")
+	if err != nil {
+		return "", fmt.Errorf("listing worktrees: %w", err)
+	}
+	if out == "" {
+		return "", errors.New("git worktree list returned no entries")
+	}
+	first := strings.SplitN(strings.TrimRight(out, "\n"), "\n\n", 2)[0]
+	var worktree string
+	for line := range strings.SplitSeq(first, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		switch {
+		case line == "bare":
+			return "", errors.New("first worktree entry is bare")
+		case strings.HasPrefix(line, "worktree "):
+			worktree = strings.TrimPrefix(line, "worktree ")
+		}
+	}
+	if worktree == "" {
+		return "", fmt.Errorf("unexpected first git worktree list entry: %q", first)
+	}
+	worktree = filepath.FromSlash(worktree)
+	if filepath.Clean(worktree) == filepath.Clean(r.CommonDir) {
+		// Older Git versions report the common git directory as the first
+		// worktree for repositories initialized with --separate-git-dir and
+		// for submodules. The main checkout is the current root when it owns
+		// the common directory; linked worktrees retain its path in config.
+		if filepath.Clean(r.GitDir) == filepath.Clean(r.CommonDir) {
+			return r.Root, nil
+		}
+		configured, configErr := r.Git("config", "--path", "--get", "core.worktree")
+		if configErr != nil || strings.TrimSpace(configured) == "" {
+			return "", fmt.Errorf("git worktree list reports the common directory %s and the main checkout is not configured", r.CommonDir)
+		}
+		configured = filepath.FromSlash(strings.TrimSpace(configured))
+		if !filepath.IsAbs(configured) {
+			configured = filepath.Join(r.CommonDir, configured)
+		}
+		return filepath.Clean(configured), nil
+	}
+	return worktree, nil
+}
+
 // GitEnv runs git with extra environment entries (KEY=VALUE).
 func (r *Repo) GitEnv(env []string, args ...string) (string, error) {
 	return run(r.Root, env, nil, args...)

@@ -761,6 +761,15 @@ lock:
                                 # not with version.tag_on_commit
 ```
 
+The gate checks generated Markdown files when the first body line begins
+`<!-- lex:`. It reads the codex path from the header and runs
+`lex check --codex <codex> --outputs-under <repository root>` once per codex,
+even when the project has all Go checks disabled. Files without such headers
+add no gate step. If lex reports an output edited by hand, follow its `lex
+absorb` suggestion and commit the result. In a linked git worktree, graft sets
+`--outputs-under` to the main checkout and adds `--tree` for the current tree,
+so lex checks each output against its worktree copy.
+
 With `version.mode: file`, merge a work branch by fast-forward and release the
 combined work in one step: the work branch skips version changes, then the
 trunk runs `graft release --minor`.
