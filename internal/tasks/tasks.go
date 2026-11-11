@@ -1927,12 +1927,16 @@ func (r *Runner) checkRunWords(report *testreport.GoTest, cmd *exec.Cmd, words [
 		return
 	}
 	goflags := strings.Fields(value)
-	// go takes each GOFLAGS field as a flag of its own; a field without =
-	// (a switch, or text a wrapper of go printed) could take the next one
-	// as its value here, so the step is not checked.
-	for _, field := range goflags {
-		if !strings.HasPrefix(field, "-") || !strings.Contains(field, "=") {
+	// go takes each GOFLAGS field as a flag of its own, and one without = as
+	// a switch set to true (-modcacherw): written so, it cannot take the next
+	// field as its value here. A field that is no flag (text a wrapper of go
+	// printed) leaves the step unchecked.
+	for i, field := range goflags {
+		if !strings.HasPrefix(field, "-") {
 			return
+		}
+		if !strings.Contains(field, "=") {
+			goflags[i] = field + "=true"
 		}
 	}
 	line := append([]string{"go", "test"}, goflags...)

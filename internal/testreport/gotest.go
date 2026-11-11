@@ -152,7 +152,7 @@ var goTestFlags = map[string]bool{
 	"covermode": true, "coverpkg": true, "vet": true, "mod": true,
 	"ldflags": true, "gcflags": true,
 	"json": false, "short": false, "race": false, "v": false, "failfast": false,
-	"trimpath": false, "cover": false,
+	"trimpath": false, "cover": false, "modcacherw": false,
 }
 
 // goTestRun is the -run and -skip values a go test command line applies, false

@@ -1022,6 +1022,11 @@ func TestGoTestPackagesFromArgs(t *testing.T) {
 	if out, code := f.graft("", "test", "--", "-run", "TestGone"); code != 0 {
 		t.Errorf("a -bench of GOFLAGS left the -run check on (exit %d):\n%s", code, out)
 	}
+	// A switch in GOFLAGS is a flag of its own, set to true: the check holds.
+	f.env = append(f.env[:len(f.env)-1], "GOFLAGS=-p=1 -modcacherw")
+	if out, code := f.graft("", "test", "--", "-run", "TestGone"); code == 0 || !strings.Contains(out, "-run names TestGone, which no package ran") {
+		t.Errorf("a switch of GOFLAGS passed a missing name (exit %d):\n%s", code, out)
+	}
 }
 
 // With the real go: a test -skip takes emits no run event, so asking for it by

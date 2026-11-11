@@ -143,6 +143,7 @@ func TestGoTestRunAlternatives(t *testing.T) {
 		{"packages before and after flags", []string{"go", "test", "-json", "-count", "1", "./a", "./b", "-run", "TestReal|TestGone"}, []string{"TestReal"}, []string{"TestGone"}},
 		{"GOFLAGS skip", []string{"go", "test", "-skip=TestA", "-json", "-run", "TestA", "./..."}, nil, []string{"TestA"}},
 		{"GOFLAGS run overridden", []string{"go", "test", "-run=TestGone", "-mod=mod", "-json", "-run", "TestReal", "./..."}, []string{"TestReal"}, nil},
+		{"GOFLAGS switch", []string{"go", "test", "-p=1", "-modcacherw=true", "-json", "-run", "TestGone", "./..."}, nil, []string{"TestGone"}},
 		{"unknown flag", []string{"go", "test", "-json", "-n", "-run", "TestGone", "./..."}, nil, nil},
 		{"known flags", []string{"go", "test", "-json", "-count=1", "-p", "4", "-short", "-race", "-v=true", "-run", "TestReal|TestGone", "./...", "example.com/m/pkg"}, []string{"TestReal"}, []string{"TestGone"}},
 	}
