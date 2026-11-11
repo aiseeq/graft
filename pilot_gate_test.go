@@ -179,6 +179,9 @@ func runGit(t *testing.T, dir string, args ...string) []byte {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	// The fixture's git config, not the machine's: a global graft pre-commit
+	// there would judge the synthetic pilot's raw commit.
+	cmd.Env = testEnv
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
