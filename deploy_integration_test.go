@@ -525,6 +525,17 @@ func newDeployFixture(t *testing.T, config func(state string, q func(string) str
 		"deploy.sh": `set -e
 STATE=` + state + `
 { echo "target=$GRAFT_DEPLOY_TARGET env=$GRAFT_DEPLOY_ENV version=$GRAFT_DEPLOY_VERSION"; echo "sha=$GRAFT_DEPLOY_SHA"; echo "prev=$GRAFT_DEPLOY_PREVIOUS_SHA"; echo "args=$*"; echo "priority=$GRAFT_LOAD_PRIORITY"; echo "budget=$(cat "$GRAFT_LOAD_BUDGET")"; echo "budget file=$GRAFT_LOAD_BUDGET"; } > "$STATE/$GRAFT_DEPLOY_TARGET-run"
+if [ -n "$GRAFT_TEST_DEPLOY_RELEASE" ]; then
+  echo ready > "$STATE/deploy-ready"
+  # A test that fails before it lets the script go must not leave it
+  # waiting: it gives up after about a minute.
+  n=0
+  while [ ! -e "$GRAFT_TEST_DEPLOY_RELEASE" ]; do
+    n=$((n + 1))
+    if [ "$n" -gt 1200 ]; then echo "deploy.sh: never let go" >&2; exit 3; fi
+    sleep 0.05
+  done
+fi
 graft deploy check-head
 if [ -n "$MOVE_HEAD" ]; then git -c core.hooksPath=/dev/null commit -q --allow-empty -m moved; fi
 echo "$GRAFT_DEPLOY_VERSION" > "$STATE/$GRAFT_DEPLOY_TARGET-version"

@@ -31,6 +31,7 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/atomicfile"
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/deploystate"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
 	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/gitx"
@@ -3830,6 +3831,11 @@ func (r *Runner) install(ctx context.Context, s config.Step, t *config.Task) err
 	default:
 		hosts = cfg.Install.Hosts
 	}
+	if err := deploystate.WaitForOthers(ctx, r.Config.Lock.Timeout, r.Stderr); err != nil {
+		return err
+	}
+	// A deploy that starts after this scan sees each local atomic replacement
+	// whole; host copies use rsync's atomic file replacement too.
 	// Every file is installed here before any host: a host down does not
 	// leave the rest of them old here.
 	for _, candidate := range candidates {

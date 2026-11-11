@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/aiseeq/graft/v2/internal/deploystate"
 )
 
 func TestCommitWarnsForStaleInstalledGoBinary(t *testing.T) {
@@ -80,10 +82,20 @@ tasks:
 }
 
 // installRepo is a committed Go module whose task build writes bin/tool;
-// the install tasks put it into dest.
+// the install tasks put it into dest. Its lock timeout is long enough for an
+// install waiting for a deploy under load.
 func installRepo(t *testing.T, dest string) *fixture {
 	t.Helper()
-	f := tasksRepo(t, `tasks:
+	return installRepoWaiting(t, dest, "1m")
+}
+
+// installRepoWaiting is installRepo with the lock timeout given, which
+// bounds how long its install waits for a deploy.
+func installRepoWaiting(t *testing.T, dest, timeout string) *fixture {
+	t.Helper()
+	f := tasksRepo(t, `lock:
+  timeout: `+timeout+`
+tasks:
   build:
     run:
       - [go, build, -o, bin/tool, .]
@@ -122,6 +134,177 @@ func readBytes(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func deployInstallFixture(t *testing.T, timeout string) (*fixture, string, string) {
+	t.Helper()
+	cache := shortCache(t)
+	t.Setenv("XDG_CACHE_HOME", cache)
+	dest := filepath.Join(t.TempDir(), "bin")
+	f := installRepoWaiting(t, dest, timeout)
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache)
+	f.mustGraft("build")
+	return f, filepath.Join(dest, "tool"), cache
+}
+
+// A held deployment keeps install from changing the binary until it ends.
+func TestInstallWaitsForDeploy(t *testing.T) {
+	skipWaitInShort(t)
+	f, installed, _ := deployInstallFixture(t, "1m")
+	release, err := deploystate.Register(f.work, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd, out := f.start(f.work, "install-only")
+	waitFor(t, func() bool { return strings.Contains(out.String(), "waiting for deploy") })
+	if _, err := os.Stat(installed); !os.IsNotExist(err) {
+		t.Fatalf("install wrote before deploy ended: %v", err)
+	}
+	if !strings.Contains(out.String(), "project "+f.work+" target test") {
+		t.Fatalf("wait output does not identify deployment:\n%s", out.String())
+	}
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("install: %v\n%s", err, out.String())
+	}
+	if !bytes.Equal(readBytes(t, installed), readBytes(t, f.path("bin/tool"))) {
+		t.Fatal("install did not write the built binary")
+	}
+}
+
+func TestInstallTimesOutForDeploy(t *testing.T) {
+	skipWaitInShort(t)
+	f, installed, _ := deployInstallFixture(t, "400ms")
+	before := []byte("old binary")
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(installed, before, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	release, err := deploystate.Register(f.work, "release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	out, code := f.graft("", "install-only")
+	if code == 0 || !strings.Contains(out, "project "+f.work+" target release") || !strings.Contains(out, "timed out") {
+		t.Fatalf("install did not refuse with deployment details: exit %d\n%s", code, out)
+	}
+	if !bytes.Equal(readBytes(t, installed), before) {
+		t.Fatal("timed out install changed the binary")
+	}
+}
+
+func TestInstallInsideDeploySkipsItsOwnMarker(t *testing.T) {
+	skipWaitInShort(t)
+	f, installed, _ := deployInstallFixture(t, "1m")
+	parentProject := filepath.Join(t.TempDir(), "projectA")
+	parentRelease, err := deploystate.Register(parentProject, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parentRelease()
+	identity := deploystate.ChildIdentity(deploystate.Identity(parentProject, "parent"), f.work, "test")
+	release, err := deploystate.Register(f.work, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	f.env = append(f.env, deploystate.Env+"="+identity)
+	out := f.mustGraft("install-only")
+	if !bytes.Equal(readBytes(t, installed), readBytes(t, f.path("bin/tool"))) {
+		t.Fatal("install inside deploy did not write the binary")
+	}
+	if strings.Contains(out, "waiting for deploy") {
+		t.Fatalf("install waited for its own deployment:\n%s", out)
+	}
+}
+
+// A running deploy publishes its machine-wide marker before running its script.
+func TestInstallWaitsForRealDeploy(t *testing.T) {
+	skipWaitInShort(t)
+	cache := shortCache(t)
+	t.Setenv("XDG_CACHE_HOME", cache)
+	releaseFile := filepath.Join(t.TempDir(), "release")
+	deployInstall := filepath.Join(t.TempDir(), "deploy-bin")
+	d := newDeployFixture(t, func(state string, q func(string) string) string {
+		cfg := deployConfig(state, q)
+		cfg = strings.Replace(cfg, "    test:\n      env: local\n      run:", "    test:\n      env: local\n      deps: [install-step]\n      run:", 1)
+		// A short lock timeout: a deploy waiting for its own marker fails in
+		// seconds instead of holding the test for the default 15 minutes.
+		return cfg + "\nlock:\n  timeout: 20s\ntasks:\n  install-step:\n    run:\n      - {install: deploy.sh, to: " + yamlQuote(deployInstall) + "}\n"
+	})
+	d.env = append(d.env, "XDG_CACHE_HOME="+cache, "GRAFT_TEST_DEPLOY_RELEASE="+releaseFile)
+	deploy := startGraft(t, d.fixture, "deploy", "test")
+	letGo := releaseDeployScript(t, releaseFile)
+	waitForFile(t, filepath.Join(d.state, "deploy-ready"))
+	if _, err := os.Stat(filepath.Join(deployInstall, "deploy.sh")); err != nil {
+		t.Fatalf("deploy's own install step did not finish before its script: %v\n%s", err, deploy.out.String())
+	}
+
+	dest := filepath.Join(t.TempDir(), "bin")
+	f := installRepo(t, dest)
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache)
+	f.mustGraft("build")
+	installed := filepath.Join(dest, "tool")
+	install := startGraft(t, f, "install-only")
+	waitFor(t, func() bool { return strings.Contains(install.out.String(), "waiting for deploy") })
+	if !strings.Contains(install.out.String(), "project "+d.work+" target test") {
+		t.Fatalf("install did not name the active deploy:\n%s", install.out.String())
+	}
+	if _, err := os.Stat(installed); !os.IsNotExist(err) {
+		t.Fatalf("install wrote while deploy was running: %v", err)
+	}
+	letGo()
+	deploy.end(t)
+	install.end(t)
+	if !bytes.Equal(readBytes(t, installed), readBytes(t, f.path("bin/tool"))) {
+		t.Fatal("install did not write the built binary after deploy")
+	}
+}
+
+func TestInstallIgnoresKilledDeployProcess(t *testing.T) {
+	skipWaitInShort(t)
+	cache := shortCache(t)
+	t.Setenv("XDG_CACHE_HOME", cache)
+	releaseFile := filepath.Join(t.TempDir(), "release")
+	d := newDeployFixture(t, deployConfig)
+	d.env = append(d.env, "XDG_CACHE_HOME="+cache, "GRAFT_TEST_DEPLOY_RELEASE="+releaseFile)
+	deploy := startGraft(t, d.fixture, "deploy", "test")
+	letGo := releaseDeployScript(t, releaseFile)
+	waitForFile(t, filepath.Join(d.state, "deploy-ready"))
+	if err := deploy.cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	// The deploy script outlives graft killed under it and holds its output
+	// open: install runs while it lives, and only then is it let go and
+	// graft waited for.
+	f := installRepo(t, filepath.Join(t.TempDir(), "bin"))
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache)
+	f.mustGraft("build")
+	out := f.mustGraft("install-only")
+	letGo()
+	deploy.kill()
+	if strings.Contains(out, "waiting for deploy") {
+		t.Fatalf("the marker of a killed deploy still blocks install:\n%s\ndeploy:\n%s", out, deploy.out.String())
+	}
+}
+
+// releaseDeployScript returns what lets the stand-in deploy script, waiting
+// for releaseFile, go on; it also lets it go when the test ends, so a test
+// that fails first leaves no script waiting.
+func releaseDeployScript(t *testing.T, releaseFile string) func() {
+	t.Helper()
+	letGo := func() {
+		if err := os.WriteFile(releaseFile, nil, 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(letGo)
+	return letGo
 }
 
 // The install step puts a binary built from HEAD into its directory

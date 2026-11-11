@@ -18,6 +18,7 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/deploy"
+	"github.com/aiseeq/graft/v2/internal/deploystate"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
 	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/fsx"
@@ -170,7 +171,17 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 	if err != nil {
 		return err
 	}
+	releaseDeploy, restoreDeploy, err := beginMachineDeployment(r.repo.Root, o.Target, lk)
+	if err != nil {
+		return err
+	}
 	err = a.deploy(ctx, r, o)
+	if releaseErr := releaseDeploy(); releaseErr != nil {
+		err = errors.Join(err, fmt.Errorf("releasing the machine deployment marker: %w", releaseErr))
+	}
+	if restoreErr := restoreDeploy(); restoreErr != nil {
+		err = errors.Join(err, restoreErr)
+	}
 	if releaseErr := lk.Release(); releaseErr != nil {
 		err = errors.Join(err, fmt.Errorf("releasing the deploy lock: %w", releaseErr))
 	}
@@ -179,6 +190,40 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 	}
 	a.dailyFlags(ctx, r.repo, r.cfg, r.env.Name)
 	return nil
+}
+
+func beginMachineDeployment(project, target string, lk *lock.Lock) (func() error, func() error, error) {
+	release, err := deploystate.Register(project, target)
+	if err != nil {
+		if releaseErr := lk.Release(); releaseErr != nil {
+			err = errors.Join(err, fmt.Errorf("releasing the deploy lock: %w", releaseErr))
+		}
+		return nil, nil, err
+	}
+	previous := os.Getenv(deploystate.Env)
+	if err := os.Setenv(deploystate.Env, deploystate.ChildIdentity(previous, project, target)); err != nil {
+		var releaseErrs []error
+		if releaseErr := release(); releaseErr != nil {
+			releaseErrs = append(releaseErrs, fmt.Errorf("releasing the machine deployment marker: %w", releaseErr))
+		}
+		if releaseErr := lk.Release(); releaseErr != nil {
+			releaseErrs = append(releaseErrs, fmt.Errorf("releasing the deploy lock: %w", releaseErr))
+		}
+		return nil, nil, errors.Join(append([]error{fmt.Errorf("setting %s: %w", deploystate.Env, err)}, releaseErrs...)...)
+	}
+	restore := func() error {
+		var err error
+		if previous == "" {
+			err = os.Unsetenv(deploystate.Env)
+		} else {
+			err = os.Setenv(deploystate.Env, previous)
+		}
+		if err != nil {
+			return fmt.Errorf("restoring %s: %w", deploystate.Env, err)
+		}
+		return nil
+	}
+	return release, restore, nil
 }
 
 func (a *App) deployTarget(name string) (*deployRun, error) {

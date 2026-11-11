@@ -64,6 +64,7 @@ var commands = []command{
 		details: "freeze <target> <Jira version> cuts the configured release branch and records the active freeze; without a version it shows the freeze. The required target accepts that branch and items in the frozen version; --past-freeze REASON records an exceptional deploy, and hotfix deploys are journaled. freeze.advisory tasks warn and are recorded on the frozen branch during deploy and the graft commit gate. A successful deploy of the frozen branch to the release target ends the freeze; thaw <target> --reason REASON ends it manually.",
 		applies: func(c *config.Config) bool { return c.Deploy != nil }},
 	{name: "run", syntax: fixed("graft <task> [-- args]", "graft run <task> [--no-cache] [-- args]"), summary: text("run a task with its deps"),
+		details: "An {install: paths} step waits up to lock.timeout for other graft deploys on this machine and names their project and target while waiting. An install step inside a deploy skips its own deploy and those it runs in, and waits only for deploys that started before them, so of two deploys installing at once the later one waits.",
 		applies: func(c *config.Config) bool { return len(c.Tasks) > 0 }},
 	{name: "tasks", syntax: fixed("graft tasks"), summary: text("list every task, building blocks included"),
 		applies: func(c *config.Config) bool { return len(c.Tasks) > 0 }},
