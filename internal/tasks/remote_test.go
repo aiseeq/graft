@@ -166,9 +166,12 @@ func TestRemoteLoadCancelIsNoFailure(t *testing.T) {
 	}
 	parent, cancel := context.WithCancel(context.Background())
 	w := watchRemoteLoad(parent, []string{"sleep", "5"})
-	time.Sleep(100 * time.Millisecond)
 	cancel()
-	<-w.done
+	select {
+	case <-w.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the load sampling did not stop after its step was cancelled")
+	}
 	sample := w.stopAndSample()
 	if sample.LoadErr != nil {
 		t.Errorf("cancelled step reports a load failure: %v", sample.LoadErr)

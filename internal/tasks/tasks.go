@@ -2264,7 +2264,7 @@ func (w *remoteLoadWatch) run(ctx context.Context, argv []string) {
 	defer w.cancel()
 	defer func() {
 		if p := recover(); p != nil {
-			w.fail(context.Background(), fmt.Errorf("sampling panicked: %v", p))
+			w.failed(fmt.Errorf("sampling panicked: %v", p), true)
 		}
 	}()
 	load, err := readRemoteLoad(ctx, argv)
@@ -2310,13 +2310,18 @@ func (w *remoteLoadWatch) record(load float64, first bool) {
 // task cancelled) stopped the sampling, the command did not fail: no error
 // to warn about.
 func (w *remoteLoadWatch) fail(ctx context.Context, err error) {
+	w.failed(err, ctx.Err() == nil)
+}
+
+// failed leaves the load unknown and keeps err to warn about when warn.
+func (w *remoteLoadWatch) failed(err error, warn bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.stopping {
 		return
 	}
 	w.sample.LoadKnown = false
-	if ctx.Err() == nil {
+	if warn {
 		w.err = err
 	}
 }
