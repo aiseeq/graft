@@ -22,6 +22,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/taskcache"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 	"github.com/aiseeq/graft/v2/internal/version"
 )
 
@@ -231,12 +232,8 @@ func (r *Runner) keyInputs(ctx context.Context, add func(...string), c *config.T
 // inputPath is a cache.files entry made absolute: ~/ is the home directory,
 // a relative path is under the work tree.
 func (r *Runner) inputPath(f string) (string, error) {
-	if rest, ok := strings.CutPrefix(f, "~/"); ok {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("input %s: %w", f, err)
-		}
-		return filepath.Join(home, rest), nil
+	if strings.HasPrefix(f, "~/") {
+		return userconfig.ExpandHome(f)
 	}
 	if filepath.IsAbs(f) {
 		return f, nil

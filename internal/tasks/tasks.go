@@ -400,7 +400,13 @@ func lexCodexFromHeader(firstLine func() (string, error)) (string, bool, error) 
 		if yaml < 0 {
 			continue
 		}
-		return token[:marker], true, nil
+		// lex writes a codex under the home directory as ~/…, which keeps
+		// home paths out of public repositories.
+		codex, err := userconfig.ExpandHome(token[:marker])
+		if err != nil {
+			return "", true, fmt.Errorf("lex header: %w", err)
+		}
+		return codex, true, nil
 	}
 	return "", true, errors.New("lex header has no <codex>/manifest/<name>.yaml path")
 }
@@ -3984,14 +3990,7 @@ func installDestination(ctx context.Context, to string) (string, error) {
 	if to == "" {
 		return tools.InstallDir(ctx)
 	}
-	if to == "~" || strings.HasPrefix(to, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("getting home directory: %w", err)
-		}
-		to = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(to, "~"), string(filepath.Separator)))
-	}
-	return to, nil
+	return userconfig.ExpandHome(to)
 }
 
 func shortRevision(rev string) string {

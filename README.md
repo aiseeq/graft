@@ -775,7 +775,9 @@ lock:
 ```
 
 The gate checks generated Markdown files when the first body line begins
-`<!-- lex:`. It reads the codex path from the header and runs
+`<!-- lex:`. It reads the codex path from the header (a path starting with `~/` is under
+the home directory, the form lex writes so public repositories carry no home
+path) and runs
 `lex check --codex <codex> --outputs-under <repository root>` once per codex,
 even when the project has all Go checks disabled. Files without such headers
 add no gate step. If lex reports an output edited by hand, follow its `lex

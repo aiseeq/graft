@@ -367,3 +367,35 @@ func TestLexOutputsResolvesMainCheckoutLayouts(t *testing.T) {
 		})
 	}
 }
+
+// TestLexOutputsExpandsHomeInHeader: lex writes a codex under the home
+// directory as ~/…, so public repositories carry no home path; the gate
+// checks it under HOME, once with a header naming the same codex in full.
+func TestLexOutputsExpandsHomeInHeader(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell lex stub")
+	}
+	home := t.TempDir()
+	codex := filepath.Join(home, ".claude", "codex")
+	if err := os.MkdirAll(filepath.Join(codex, "manifest"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none}\n",
+		"a.md":        "<!-- lex: built from ~/.claude/codex/manifest/projectA-CLAUDE.md.yaml -->\nbody\n",
+		"b.md":        "<!-- lex: built from " + filepath.ToSlash(codex) + "/manifest/projectA-AGENTS.md.yaml -->\nbody\n",
+	})
+	stubDir := t.TempDir()
+	argsFile := filepath.Join(t.TempDir(), "args")
+	if err := os.WriteFile(filepath.Join(stubDir, "lex"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$LEX_ARGS_FILE\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = []string{"PATH=" + stubDir + string(os.PathListSeparator) + os.Getenv("PATH"), "LEX_ARGS_FILE=" + argsFile, "HOME=" + home}
+	if out, code := f.graft("", "gate"); code != 0 {
+		t.Fatalf("gate exit %d:\n%s", code, out)
+	}
+	want := "check\n--codex\n" + codex + "\n--outputs-under\n" + f.work + "\n"
+	if got := readFile(t, argsFile); got != want {
+		t.Errorf("lex args:\n%s\nwant:\n%s", got, want)
+	}
+}

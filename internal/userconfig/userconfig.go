@@ -305,7 +305,7 @@ func Load() (*Config, string, error) {
 		return nil, path, fmt.Errorf("%s: %w", path, err)
 	}
 	if cfg.Tools.BinDir != "" {
-		if cfg.Tools.BinDir, err = expandHome(cfg.Tools.BinDir); err != nil {
+		if cfg.Tools.BinDir, err = ExpandHome(cfg.Tools.BinDir); err != nil {
 			return nil, path, err
 		}
 		if !filepath.IsAbs(cfg.Tools.BinDir) {
@@ -313,7 +313,7 @@ func Load() (*Config, string, error) {
 		}
 	}
 	if cfg.Jira.EnvFile != "" {
-		if cfg.Jira.EnvFile, err = expandHome(cfg.Jira.EnvFile); err != nil {
+		if cfg.Jira.EnvFile, err = ExpandHome(cfg.Jira.EnvFile); err != nil {
 			return nil, path, err
 		}
 	}
@@ -378,7 +378,7 @@ func (l *Leaks) normalize(path string) error {
 		return fmt.Errorf("%s: leaks: set private_sources, terms_file or both", path)
 	}
 	for i, src := range l.PrivateSources {
-		abs, err := expandHome(src)
+		abs, err := ExpandHome(src)
 		if err != nil {
 			return err
 		}
@@ -388,7 +388,7 @@ func (l *Leaks) normalize(path string) error {
 		l.PrivateSources[i] = abs
 	}
 	if l.TermsFile != "" {
-		abs, err := expandHome(l.TermsFile)
+		abs, err := ExpandHome(l.TermsFile)
 		if err != nil {
 			return err
 		}
@@ -467,7 +467,9 @@ func NormalizeRemote(url string) string {
 // ErrNotFound means the user has no graft config file.
 var ErrNotFound = errors.New("user config not found")
 
-func expandHome(p string) (string, error) {
+// ExpandHome makes ~ and a path starting with ~/ the home directory and a
+// path under it; any other path is returned as it is.
+func ExpandHome(p string) (string, error) {
 	if p != "~" && !strings.HasPrefix(p, "~/") {
 		return p, nil
 	}
