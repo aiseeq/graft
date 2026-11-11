@@ -367,7 +367,7 @@ func LocalShimActive(repo *gitx.Repo, name string) (bool, error) {
 		return false, nil
 	}
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("stat hook %s: %w", path, err)
 	}
 	// git skips a hook without the executable bit, outside Windows.
 	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
@@ -375,7 +375,7 @@ func LocalShimActive(repo *gitx.Repo, name string) (bool, error) {
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("read hook %s: %w", path, err)
 	}
 	return isShim(content, name), nil
 }
