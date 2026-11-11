@@ -1,7 +1,6 @@
 package userconfig
 
 import (
-	"github.com/aiseeq/graft/v2/internal/config"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aiseeq/akit/pressure"
+	"github.com/aiseeq/graft/v2/internal/config"
 )
 
 func TestUserconfigRemoteIsPublic(t *testing.T) {
@@ -160,6 +160,17 @@ func TestLimitSettingsForPrecedence(t *testing.T) {
 	}
 	if got.Values.Gate != 2*time.Minute || got.Values.Task != task || got.TaskSource != "project .graft.yaml limits.task" {
 		t.Fatalf("project task: %+v", got)
+	}
+	// A key the user config leaves out is the built-in one, and says so.
+	if err := os.WriteFile(path, []byte("limits: {gate: 2m}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = LimitSettingsFor(config.ProjectLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Values.Task != DefaultLimits.Task || got.TaskSource != "built-in limits.task" || got.GateSource != "user config limits.gate" {
+		t.Fatalf("user config without task: %+v", got)
 	}
 }
 

@@ -107,11 +107,16 @@ func (l *ProjectLimits) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind != yaml.MappingNode {
 		return fmt.Errorf("limits: must be a mapping")
 	}
+	seen := map[string]bool{}
 	for i := 0; i < len(node.Content); i += 2 {
 		key, value := node.Content[i].Value, node.Content[i+1]
 		if key != "gate" && key != "task" {
 			return fmt.Errorf("limits.%s: unknown key", key)
 		}
+		if seen[key] {
+			return fmt.Errorf("limits.%s: given twice", key)
+		}
+		seen[key] = true
 		if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
 			return fmt.Errorf("limits.%s: must be a duration string", key)
 		}
@@ -346,17 +351,12 @@ func Parse(data []byte) (*Config, error) {
 }
 
 func (c *Config) validate() error {
-	if c.Limits.Gate != nil && *c.Limits.Gate <= 0 {
-		return fmt.Errorf("limits.gate: must be positive")
-	}
-	if c.Limits.Task != nil && *c.Limits.Task <= 0 {
-		return fmt.Errorf("limits.task: must be positive")
-	}
 	if c.Schema != SchemaVersion {
 		return fmt.Errorf("schema: must be %d, got %d", SchemaVersion, c.Schema)
 	}
 	validators := []func() error{
 		c.validateGraft,
+		c.validateLimits,
 		c.validateVersion,
 		c.validateTicket,
 		c.validatePush,
@@ -399,6 +399,16 @@ func (c *Config) validateGoFmt() error {
 var flowOptionalKey = regexp.MustCompile(`[A-Za-z0-9_]\?\s*[,\]]`)
 
 var minGraftRe = regexp.MustCompile(`^>=\s*v?([0-9]+\.[0-9]+\.[0-9]+)$`)
+
+func (c *Config) validateLimits() error {
+	if c.Limits.Gate != nil && *c.Limits.Gate <= 0 {
+		return errors.New("limits.gate: must be positive")
+	}
+	if c.Limits.Task != nil && *c.Limits.Task <= 0 {
+		return errors.New("limits.task: must be positive")
+	}
+	return nil
+}
 
 func (c *Config) validateGraft() error {
 	if c.Graft == "" {

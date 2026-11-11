@@ -167,6 +167,7 @@ func TestParseErrors(t *testing.T) {
 		"negative timeout":          minimal + "lock:\n  timeout: -1s\n",
 		"invalid gate limit":        minimal + "limits: {gate: not-a-duration}\n",
 		"unknown limit key":         minimal + "limits: {other: 1m}\n",
+		"limit key given twice":     minimal + "limits: {gate: 1m, gate: 2m}\n",
 		"template is dotenv":        minimal + "dotenv_template: .env\n",
 		"template escapes tree":     minimal + "dotenv_template: ../.env.example\n",
 	}

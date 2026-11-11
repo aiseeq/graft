@@ -95,6 +95,16 @@ func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
 			if err := a.requireGraft(cfg); err != nil {
 				return err
 			}
+		} else {
+			// A light command keeps no project setting but its limits, so its
+			// over-limit line and graft stats judge the run alike.
+			project, err := config.Load(root)
+			switch {
+			case err == nil:
+				cfg.Limits = project.Limits
+			case !errors.Is(err, config.ErrNotFound):
+				fmt.Fprintf(a.Stderr, "graft: exec: %v; the run's limits are the user's\n", err)
+			}
 		}
 	case !errors.Is(err, gitx.ErrNotRepo):
 		return err

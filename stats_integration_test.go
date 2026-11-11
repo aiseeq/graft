@@ -470,6 +470,10 @@ func TestProjectLimitsOverrideUserConfig(t *testing.T) {
 	if out := f.mustGraft("slow"); !strings.Contains(out, "above 400ms (project .graft.yaml limits.task)") {
 		t.Errorf("task run:\n%s", out)
 	}
+	// A light exec is held to the project's limits as graft stats is.
+	if out := f.mustGraft("exec", "--", "sh", "-c", "sleep 0.5"); !strings.Contains(out, "above 400ms (project .graft.yaml limits.task)") {
+		t.Errorf("light exec:\n%s", out)
+	}
 	out := f.mustGraft("stats")
 	if !strings.Contains(out, "above 200ms (project .graft.yaml limits.gate)") || !strings.Contains(out, "above 400ms (project .graft.yaml limits.task)") {
 		t.Errorf("stats:\n%s", out)

@@ -116,6 +116,8 @@ func CommitSettings() (Commit, error) {
 type Limits struct {
 	Gate time.Duration `yaml:"gate"`
 	Task time.Duration `yaml:"task"`
+	// gateSet and taskSet say the user config gave the key, not the default.
+	gateSet, taskSet bool
 }
 
 // DefaultLimits keep the gate of a commit under a minute and a test run
@@ -126,6 +128,7 @@ func (l *Limits) normalize(path string) error {
 	if l.Gate < 0 || l.Task < 0 {
 		return fmt.Errorf("%s: limits: gate and task must be positive", path)
 	}
+	l.gateSet, l.taskSet = l.Gate != 0, l.Task != 0
 	if l.Gate == 0 {
 		l.Gate = DefaultLimits.Gate
 	}
@@ -146,14 +149,18 @@ type LimitSelection struct {
 func LimitSettingsFor(project config.ProjectLimits) (LimitSelection, error) {
 	cfg, _, err := Load()
 	selection := LimitSelection{Values: DefaultLimits, GateSource: "built-in limits.gate", TaskSource: "built-in limits.task"}
-	if errors.Is(err, ErrNotFound) {
-		err = nil
-	} else if err == nil {
-		selection.Values = cfg.Limits
-		selection.GateSource, selection.TaskSource = "user config limits.gate", "user config limits.task"
-	}
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrNotFound):
+	case err != nil:
 		return LimitSelection{}, err
+	default:
+		selection.Values = cfg.Limits
+		if cfg.Limits.gateSet {
+			selection.GateSource = "user config limits.gate"
+		}
+		if cfg.Limits.taskSet {
+			selection.TaskSource = "user config limits.task"
+		}
 	}
 	// config.Parse has refused a project limit that is not positive.
 	if project.Gate != nil {
