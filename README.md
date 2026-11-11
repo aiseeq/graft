@@ -282,6 +282,8 @@ or, when the scope's own ceiling was not reached, a limit above it (the
 slice's) or the machine's lack of memory. The same text is the step's reason in
 stats. Other systems accept `memory_max` and `--memory-max` and set nothing.
 
+Before creating a Linux heavy scope, graft atomically writes its task kind to `$XDG_RUNTIME_DIR/graft/heavy/<scope-name>`. A cgroup monitor that profiles finished work can read it to know the task kind of a `graft-heavy-*.scope`; files stay after the scope ends, for such a reader, and are pruned after a day on a later write.
+
 `graft exec --heavy -- graft <task>` takes no queue slot itself: it starts the
 inner graft with `GRAFT_EXEC_HEAVY=1`, by which that graft runs its top-level
 task, or the command of its `graft exec`, as heavy (placed on the host or
@@ -1229,6 +1231,8 @@ rebase and a `commit.local_branches` branch are not one; one given up after
 that hook, by an empty message, still shows). Lines are in
 `refused-commits.jsonl` next to `stats.jsonl`, one JSON object each, kept like
 it. `--since`, `--project` and `--all` work as below.
+
+`admissions.jsonl` beside `stats.jsonl` records each heavy-task admission decision. A `wait` line is written on the first busy measure and whenever that measure changes, not on each poll. An `admitted` line marks the single admission; `refused` records a deadline, priority-budget, measurement or context failure. Each line has `time`, `run`, `kind`, `verdict`, `measure`, `why`, `waited_s`, `dirty_mb`, `dirty_limit_mb`, `profile` (the disk source profile as JSON, when present), `profile_none` (why the profile is absent), and `priority`. The file rotates like `stats.jsonl`; a write failure warns on stderr and does not stop the task.
 
 `graft stats --failures` lists recent failed steps and task failures that
 happened before a step ran, newest first. Each row shows the time, project

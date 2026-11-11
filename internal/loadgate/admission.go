@@ -1,0 +1,89 @@
+package loadgate
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync/atomic"
+	"time"
+
+	"github.com/aiseeq/akit/pressure"
+	"github.com/aiseeq/graft/v2/internal/stats"
+)
+
+// admissionRecord records the decision and the exact disk and writeback
+// sample that informed it.
+type admissionRecord struct {
+	Time         time.Time       `json:"time"`
+	Run          string          `json:"run"`
+	Kind         string          `json:"kind"`
+	Verdict      string          `json:"verdict"`
+	Measure      string          `json:"measure"`
+	Why          string          `json:"why"`
+	WaitedS      float64         `json:"waited_s"`
+	DirtyMB      float64         `json:"dirty_mb"`
+	DirtyLimitMB float64         `json:"dirty_limit_mb"`
+	Profile      json.RawMessage `json:"profile,omitempty"`
+	ProfileNone  string          `json:"profile_none,omitempty"`
+	Priority     bool            `json:"priority"`
+}
+
+var admissionWriteWarning atomic.Bool
+
+func writeAdmission(rec admissionRecord) error {
+	path, err := stats.Path()
+	if err != nil {
+		return err
+	}
+	return stats.Append(filepath.Join(filepath.Dir(path), "admissions.jsonl"), rec, stats.MaxSize)
+}
+
+func (m *machine) appendAdmission(rec admissionRecord) {
+	if err := writeAdmission(rec); err != nil && admissionWriteWarning.CompareAndSwap(false, true) {
+		fmt.Fprintf(os.Stderr, "graft: admissions not recorded (the task goes on): %v\n", err)
+	}
+}
+
+func (m *machine) admissionRecord(start time.Time, priority bool) admissionRecord {
+	rec := admissionRecord{Time: time.Now(), Run: os.Getenv(stats.EnvRun), Kind: m.kind,
+		WaitedS: max(0, time.Since(start).Seconds()), Priority: priority}
+	if m.haveView {
+		rec.DirtyMB = m.lastView.Load.DirtyMB
+		rec.DirtyLimitMB = m.lastView.Load.DirtyLimitMB
+		if m.lastView.Load.Disk != nil && len(m.lastView.Load.Disk.Profile) > 0 {
+			rec.Profile = m.lastView.Load.Disk.Profile
+		} else if m.lastView.Load.Disk == nil && errors.Is(m.lastView.Load.DiskFault, pressure.ErrNoIOSource) {
+			rec.ProfileNone = "no disk state source"
+		} else {
+			rec.ProfileNone = "disk state source did not provide a profile"
+		}
+	}
+	return rec
+}
+
+func (m *machine) recordAdmitted(start time.Time, priority bool) {
+	rec := m.admissionRecord(start, priority)
+	rec.Verdict = "admitted"
+	m.appendAdmission(rec)
+}
+
+func (m *machine) recordRefused(why string, start time.Time, priority bool) {
+	rec := m.admissionRecord(start, priority)
+	rec.Verdict, rec.Why = "refused", why
+	if m.haveView && m.lastView.Busy() {
+		rec.Measure = m.lastView.Measure
+	}
+	m.appendAdmission(rec)
+}
+
+func (m *machine) recordWait(b busyness, start time.Time, priority bool) {
+	if b.why == "" || b.why == m.lastLoggedMeasure {
+		return
+	}
+	rec := m.admissionRecord(start, priority)
+	rec.Verdict, rec.Measure, rec.Why = "wait", b.why, b.text
+	m.appendAdmission(rec)
+	m.lastLoggedMeasure = b.why
+}

@@ -27,6 +27,7 @@ type Request struct {
 	Value, Source      string
 	Outer, OuterSource string
 	Held               string
+	Kind               string
 }
 
 // explicit says the request names a ceiling, not the default.

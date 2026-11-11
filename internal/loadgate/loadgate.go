@@ -86,6 +86,7 @@ type reserveData struct {
 var reservePollInterval = 250 * time.Millisecond
 var reserveWindow = 2 * time.Second
 var reserveCPUReader = treeCPU
+var pressureMeterFactory = func(root string) machineMeter { return pressure.NewMeter(root) }
 
 // Total is the whole wait.
 func (w Waits) Total() time.Duration {
@@ -246,8 +247,17 @@ func Wait(ctx context.Context, name, kind string, p *Priority, l userconfig.Mach
 // serializes tasks that requested their own settling period on that lock.
 // The ordinary queue writes a live reservation before releasing its lock:
 // cores when positive, else the profile's estimate.
-func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath, settleLockPath string, settleDuration time.Duration, cores float64, log io.Writer) (Admission, func() error, error) {
+func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath, settleLockPath string, settleDuration time.Duration, cores float64, log io.Writer) (admission Admission, release func() error, retErr error) {
 	m := newMachine(l, log, name, kind)
+	admissionStart := time.Now()
+	priority := p != nil
+	defer func() {
+		if retErr != nil {
+			m.recordRefused(retErr.Error(), admissionStart, priority)
+		} else {
+			m.recordAdmitted(admissionStart, priority)
+		}
+	}()
 	if p != nil && (settleLockPath == "" || settleDuration <= 0) {
 		return reservePriority(ctx, m, name, kind, p, l, lockPath, cores, log)
 	}
@@ -389,6 +399,8 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 				return nil
 			}
 		}
+		// The measure or the reserves beside it: either keeps the task waiting.
+		m.recordWait(b, start, p != nil)
 		if p != nil && !waited {
 			fmt.Fprintf(m.log, "graft: %s: %s, not queueing behind other heavy tasks: it runs for %s\n", m.name, b.text, p.For)
 		}
@@ -844,19 +856,28 @@ func (m *machine) warnKernelSampleError(err error) {
 	m.sampleReadWarned = true
 }
 
+// machineMeter is the machine reading loadgate needs; tests replace it with a
+// fixed sequence of decisions.
+type machineMeter interface {
+	Check(context.Context, pressure.Limits, string, bool) (pressure.Verdict, error)
+}
+
 // machine reads what makes the machine busy for one task.
 type machine struct {
-	l                userconfig.MachineLoad
-	limits           pressure.Limits
-	limitsErr        error
-	log              io.Writer
-	name, kind       string
-	meter            *pressure.Meter
-	procRoot         string
-	now              func() time.Time
-	sleep            func(context.Context, time.Duration) error
-	samples          kernelSamples
-	sampleReadWarned bool
+	l                 userconfig.MachineLoad
+	limits            pressure.Limits
+	limitsErr         error
+	log               io.Writer
+	name, kind        string
+	meter             machineMeter
+	lastView          pressure.Verdict
+	haveView          bool
+	lastLoggedMeasure string
+	procRoot          string
+	now               func() time.Time
+	sleep             func(context.Context, time.Duration) error
+	samples           kernelSamples
+	sampleReadWarned  bool
 	// runnable is the last count of the tasks ready to run.
 	runnable      float64
 	runnableLimit float64
@@ -875,7 +896,7 @@ func newMachine(l userconfig.MachineLoad, log io.Writer, name, kind string) *mac
 		proc = dir
 	}
 	limits, limitsErr := pressure.UserLimits()
-	return &machine{l: l, limits: limits, limitsErr: limitsErr, log: log, name: name, kind: kind, procRoot: proc, now: time.Now, sleep: sleep, meter: pressure.NewMeter(proc), waits: Waits{}}
+	return &machine{l: l, limits: limits, limitsErr: limitsErr, log: log, name: name, kind: kind, procRoot: proc, now: time.Now, sleep: sleep, meter: pressureMeterFactory(proc), waits: Waits{}}
 }
 
 func (m *machine) admission() Admission { return Admission{Waits: m.waits} }
@@ -1001,6 +1022,7 @@ func (m *machine) busy(ctx context.Context, fresh, priority bool) (busyness, err
 			v = pressure.Rule(v.Load, m.limits, v.Skipped)
 		}
 	}
+	m.lastView, m.haveView = v, true
 	var b busyness
 	if v.Busy() {
 		// A measure graft does not know yet still makes the machine busy.

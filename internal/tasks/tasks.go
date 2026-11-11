@@ -2892,7 +2892,7 @@ func (r *Runner) enterHeavy(ctx context.Context, name, memoryMax string) (leave 
 // memoryMax asks for ("" for the default), raising the one graft already
 // holds it under when that is lower.
 func (r *Runner) holdCeiling(ctx context.Context, name, memoryMax string) error {
-	req := iosched.Request{Value: memoryMax, Source: "memory_max of task " + name, Held: os.Getenv(HeldScopeEnv)}
+	req := iosched.Request{Value: memoryMax, Source: "memory_max of task " + name, Held: os.Getenv(HeldScopeEnv), Kind: r.kind(name)}
 	if name == ExecTask {
 		req.Source = "--memory-max"
 	}

@@ -256,7 +256,7 @@ func configure(ctx context.Context, pid int, procRoot string, req Request) (Plac
 			}
 			return noUserManager(os.Getuid(), held, req.explicit(), source), nil
 		}
-		return place(ctx, self, move, session, pid, total, source)
+		return place(ctx, self, move, session, pid, total, source, req.Kind)
 	}
 	switch holds(cg, limits, sole, ownScope, req.Held) {
 	case heavyHeld:
@@ -268,14 +268,15 @@ func configure(ctx context.Context, pid int, procRoot string, req Request) (Plac
 	if !ok {
 		return unplaced(procRoot, cg, move.limited, req.explicit(), source)
 	}
-	return place(ctx, self, move, move.source, pid, total, source)
+	return place(ctx, self, move, move.source, pid, total, source, req.Kind)
 }
 
-func place(ctx context.Context, self string, move plan, from string, pid int, total int64, source string) (Placement, error) {
+func place(ctx context.Context, self string, move plan, from string, pid int, total int64, source, kind string) (Placement, error) {
 	sliceMax := sliceCeiling(total)
 	if err := ensureSlice(ctx, move.slice, sliceMax); err != nil {
 		return Placement{}, err
 	}
+	recordScopeKind(move.scope, kind)
 	if err := transient(ctx, move.scope, "fail", scopeProperties(move, pid)...); err != nil {
 		return Placement{}, fmt.Errorf("create heavy scope %s: %w", move.scope, err)
 	}
