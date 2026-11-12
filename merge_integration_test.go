@@ -980,3 +980,18 @@ func TestMergeRefusesGraftsFile(t *testing.T) {
 		t.Errorf("remote trunk moved to %s", got)
 	}
 }
+
+// The tasks read refs/replace/ whatever GIT_REPLACE_REF_BASE graft runs
+// with: a replace ref there is refused under another base too.
+func TestMergeRefusesDefaultReplaceRefsUnderOtherBase(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.git("replace", "-f", f.git("rev-parse", "feature/PROJ-42"), f.git("rev-parse", "main"))
+	f.env = append(f.env, "GIT_REPLACE_REF_BASE=refs/alternate/")
+	trunk := f.gitIn(f.remote("origin"), "rev-parse", "main")
+	if out, code := f.graft("", "merge", "feature/PROJ-42"); code == 0 || !strings.Contains(out, "replace refs") {
+		t.Errorf("merge did not refuse replace refs under another base: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != trunk {
+		t.Errorf("remote trunk moved to %s", got)
+	}
+}

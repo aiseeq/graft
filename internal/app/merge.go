@@ -388,16 +388,20 @@ func writeMergeOwner(root string, repo *gitx.Repo, pid int) error {
 // substitute commits: the gate's git would read the substitutes while the
 // push sends the originals.
 func refuseSubstitutedObjects(repo *gitx.Repo) error {
-	base := os.Getenv("GIT_REPLACE_REF_BASE")
-	if base == "" {
-		base = "refs/replace/"
+	// Both bases: graft's git may read GIT_REPLACE_REF_BASE, while the
+	// tasks run without it and read refs/replace/.
+	bases := []string{"refs/replace/"}
+	if base := os.Getenv("GIT_REPLACE_REF_BASE"); base != "" {
+		bases = append(bases, base)
 	}
-	refs, err := repo.Git("for-each-ref", "--count=1", "--format=%(refname)", base)
-	if err != nil {
-		return err
-	}
-	if ref := strings.TrimSpace(refs); ref != "" {
-		return fmt.Errorf("the repo has replace refs (%s): the checks would read the replacements while the push sends the originals; merge without them (git replace -d) or by hand", ref)
+	for _, base := range bases {
+		refs, err := repo.Git("for-each-ref", "--count=1", "--format=%(refname)", base)
+		if err != nil {
+			return err
+		}
+		if ref := strings.TrimSpace(refs); ref != "" {
+			return fmt.Errorf("the repo has replace refs (%s): the checks would read the replacements while the push sends the originals; merge without them (git replace -d) or by hand", ref)
+		}
 	}
 	grafts, err := repo.Git("rev-parse", "--path-format=absolute", "--git-path", "info/grafts")
 	if err != nil {
