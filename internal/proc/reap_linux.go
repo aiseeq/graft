@@ -16,6 +16,7 @@ import (
 	"time"
 	"unsafe"
 
+	akitproc "github.com/aiseeq/akit/proc"
 	"golang.org/x/sys/unix"
 )
 
@@ -104,7 +105,7 @@ const ExitReaper = 125
 func RunReaper(path string, argv []string) int {
 	// The command's Pdeathsig follows the thread that started it.
 	runtime.LockOSThread()
-	if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0); err != nil {
+	if err := akitproc.BecomeChildSubreaper(); err != nil {
 		fmt.Fprintf(os.Stderr, "graft: reaper: becoming a subreaper: %v\n", err)
 		return ExitReaper
 	}
@@ -136,7 +137,7 @@ func RunReaper(path string, argv []string) int {
 	for !r.done {
 		if sig, ok := (<-sigs).(unix.Signal); ok && r.note(sig) {
 			// The command is not reaped yet: its pid is still its own.
-			if err := unix.Kill(pid, sig); err != nil && !errors.Is(err, unix.ESRCH) {
+			if err := akitproc.SignalChild(pid, sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
 				fmt.Fprintf(os.Stderr, "graft: reaper: passing %v to %d: %v\n", sig, pid, err)
 			}
 		}
@@ -313,6 +314,20 @@ func (r *reaper) settle(d time.Duration, sigs <-chan os.Signal) ([]int, error) {
 
 func signalAll(pids []int, sig unix.Signal) {
 	for _, pid := range pids {
+		stat, err := akitproc.ReadStat("/proc", pid)
+		if err != nil {
+			if !akitproc.Gone(err) {
+				fmt.Fprintf(os.Stderr, "graft: reaper: reading %d: %v\n", pid, err)
+			}
+			continue
+		}
+		if stat.Ppid == os.Getpid() {
+			if err := akitproc.SignalChild(pid, sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				fmt.Fprintf(os.Stderr, "graft: reaper: sending %v to %d: %v\n", sig, pid, err)
+			}
+			continue
+		}
+		// akit cannot signal a verified descendant that is not a direct child.
 		if err := unix.Kill(pid, sig); err != nil && !errors.Is(err, unix.ESRCH) {
 			fmt.Fprintf(os.Stderr, "graft: reaper: sending %v to %d: %v\n", sig, pid, err)
 		}

@@ -2,6 +2,7 @@ package proc
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,6 +48,61 @@ func TestStopOnCancelKillsTheTreeAfterGrace(t *testing.T) {
 	case err := <-warned:
 		t.Errorf("warned: %v", err)
 	default:
+	}
+}
+
+// A cooperative command receives SIGTERM and can finish its cleanup before
+// the grace expires.
+func TestStopOnCancelRequestsSIGTERM(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dir := t.TempDir()
+	cmd := exec.CommandContext(ctx, "sh", "-c", `trap 'echo term > "$1/term"; exit 0' TERM
+echo ready > "$1/ready"
+while :; do sleep 0.02; done`, "sh", dir)
+	warned := make(chan error, 1)
+	StopOnCancel(cmd, 2*time.Second, func(err error) { warned <- err })
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitFile(t, filepath.Join(dir, "ready"))
+	cancel()
+	if err := cmd.Wait(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cooperative command: got %v, want context cancellation", err)
+	}
+	if got := waitFile(t, filepath.Join(dir, "term")); got != "term" {
+		t.Fatalf("signal marker = %q, want term", got)
+	}
+	select {
+	case err := <-warned:
+		t.Errorf("warned: %v", err)
+	default:
+	}
+}
+
+// Once the command has exited, cancellation must not kill the daemon it
+// deliberately detached before the grace elapsed.
+func TestStopOnCancelKeepsDetachedAfterCommandExit(t *testing.T) {
+	adoptOrphans(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dir := t.TempDir()
+	cmd := exec.CommandContext(ctx, "sh", "-c", `trap 'exit 0' TERM
+setsid sleep 30 & echo $! > "$1/daemon"
+while :; do sleep 0.02; done`, "sh", dir)
+	StopOnCancel(cmd, 300*time.Millisecond, func(err error) { t.Error(err) })
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := pidIn(t, filepath.Join(dir, "daemon"))
+	stopAfter(t, pid)
+	cancel()
+	if err := cmd.Wait(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("command: got %v, want context cancellation", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if !running(pid) {
+		t.Fatal("detached daemon was killed after its command exited")
 	}
 }
 
