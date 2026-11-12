@@ -13,6 +13,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/deploy"
 	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/proc"
 )
 
 // DeployCheck is graft deploy check: the checks graft deploy runs before the
@@ -25,12 +26,23 @@ func (a *App) DeployCheck(ctx context.Context, target string) error {
 	}
 	r.dryRun = true
 	var refusals []error
+	sudoRefused := false
 	refuse := func(err error) {
-		if err != nil {
-			refusals = append(refusals, err)
+		if err == nil {
+			return
 		}
+		// Sudo refused once is refused for every record read under it.
+		if refused := (*proc.RefusedError)(nil); errors.As(err, &refused) && refused.Path == "sudo" {
+			if sudoRefused {
+				return
+			}
+			sudoRefused = true
+		}
+		refusals = append(refusals, err)
 	}
 	refuse(deploy.CheckTree(r.repo, r.cfg.Deploy))
+	sudoRefusal := refusedSudo(r.target, r.env)
+	refuse(sudoRefusal)
 	if r.head, err = deploy.PublishedHead(r.repo, r.cfg.Deploy); err != nil {
 		refuse(err)
 		head, err := r.repo.Git("rev-parse", "HEAD")
@@ -60,18 +72,8 @@ func (a *App) DeployCheck(ctx context.Context, target string) error {
 		refuse(a.checkWindow(r))
 	}
 	refuse(a.requireDeployed(ctx, r))
-	if r.target.DeployedSHA == nil {
-		if err := a.showDeployed(ctx, r); err != nil {
-			return err
-		}
-	} else if r.prev, err = r.readSHA(ctx, r.env, r.target.DeployedSHA); err != nil {
-		refuse(err)
-	} else if err := a.showDeployed(ctx, r); err != nil {
+	if err := a.checkDeployed(ctx, r, sudoRefusal, refuse); err != nil {
 		return err
-	} else if r.prev == r.head {
-		refuse(fmt.Errorf("%s already runs %s; graft deploy --redeploy %s deploys it again", r.name, gitx.Short(r.head), r.name))
-	} else {
-		refuse(a.checkReleaseFlow(ctx, r, false))
 	}
 	// Freeze refusals are useful even when an earlier check already failed.
 	refuse(a.checkFreeze(ctx, r, DeployOptions{}))
@@ -84,6 +86,30 @@ func (a *App) DeployCheck(ctx context.Context, target string) error {
 		fmt.Fprintf(a.Stdout, "- %s\n", strings.ReplaceAll(err.Error(), "\n", "\n  "))
 	}
 	return fmt.Errorf("graft deploy %s would refuse, see above", r.name)
+}
+
+func (a *App) checkDeployed(ctx context.Context, r *deployRun, sudoRefusal error, refuse func(error)) error {
+	if r.target.DeployedSHA == nil {
+		return a.showDeployed(ctx, r)
+	}
+	if sudoRefusal != nil && recordUsesSudo(r.target.DeployedSHA, r.env) {
+		return nil
+	}
+	prev, err := r.readSHA(ctx, r.env, r.target.DeployedSHA)
+	if err != nil {
+		refuse(err)
+		return nil
+	}
+	r.prev = prev
+	if err := a.showDeployed(ctx, r); err != nil {
+		return err
+	}
+	if r.prev == r.head {
+		refuse(fmt.Errorf("%s already runs %s; graft deploy --redeploy %s deploys it again", r.name, gitx.Short(r.head), r.name))
+		return nil
+	}
+	refuse(a.checkReleaseFlow(ctx, r, false))
+	return nil
 }
 
 // DeployVersions is graft deploy versions: the version and the commit each

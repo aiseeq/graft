@@ -85,7 +85,7 @@ func (a *App) checkHotfix(ctx context.Context, r *deployRun) error {
 	}
 	baseSHA, err := hotfixBase(ctx, r)
 	if err != nil {
-		return refuse("%v", err)
+		return refuse("%w", err)
 	}
 	commits, err := deliveredCommits(r.repo, baseSHA, r.head)
 	if err != nil {
@@ -232,7 +232,7 @@ func (a *App) checkHeldFor(ctx context.Context, r *deployRun, wname string) erro
 	}
 	released, err := r.readSHA(ctx, wenv, wt.DeployedSHA)
 	if err != nil {
-		return refuse("%v", err)
+		return refuse("%w", err)
 	}
 	candidate, err := r.heldCandidate(ctx, r.env, r.target.DeployedSHA, r.prev, occ)
 	if err != nil {
@@ -487,7 +487,7 @@ func (a *App) cutoffCandidate(ctx context.Context, r *deployRun) (cutoff, error)
 	}
 	c.occ = occ
 	var err error
-	if r.prev, err = deploy.ReadDeployedSHA(ctx, r.env, r.target.DeployedSHA); err != nil {
+	if r.prev, err = r.readSHA(ctx, r.env, r.target.DeployedSHA); err != nil {
 		return c, err
 	}
 	if r.prev == "" {
@@ -498,7 +498,7 @@ func (a *App) cutoffCandidate(ctx context.Context, r *deployRun) (cutoff, error)
 	if err != nil {
 		return c, err
 	}
-	if c.candidate, err = deploy.ReadDeployedSHA(ctx, henv, ht.DeployedSHA); err != nil {
+	if c.candidate, err = r.readSHA(ctx, henv, ht.DeployedSHA); err != nil {
 		return c, err
 	}
 	when := "the cutoff is " + occ.Cutoff.Format("Mon 02.01 15:04") + ": until then the candidate is whatever " + c.held + " runs"

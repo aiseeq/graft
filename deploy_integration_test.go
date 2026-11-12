@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -17,6 +18,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/aiseeq/graft/v2/internal/testsudo"
 )
 
 // fakeJira records comments, transitions and fix version edits. The token
@@ -1374,6 +1377,19 @@ func (d *deployFixture) fakeSudoScript(t *testing.T, script string) string {
 	return calls
 }
 
+// prependSetuidSudo makes the real setuid sudo visible through PATH, following
+// the symlink just as RefusedSudo does when it inspects the binary.
+func prependSetuidSudo(t *testing.T, d *deployFixture) string {
+	t.Helper()
+	real := testsudo.Setuid(t)
+	dir := t.TempDir()
+	if err := os.Symlink(real, filepath.Join(dir, "sudo")); err != nil {
+		t.Fatal(err)
+	}
+	d.env = append(d.env, "PATH="+dir+string(os.PathListSeparator)+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return dir
+}
+
 // Without a terminal sudo can still confirm without typing (a fingerprint,
 // cached credentials): the deploy goes on.
 func TestDeployConfirmWithoutTerminalBySudo(t *testing.T) {
@@ -2295,5 +2311,281 @@ func TestDeployReleaseNotesMergeOfDeployedBranch(t *testing.T) {
 	out := d.mustGraft("deploy", "test")
 	if comments, _ := d.jira.snapshot(); len(comments["PROJ-10"]) != 1 {
 		t.Errorf("comments = %v\n%s", comments, out)
+	}
+}
+
+func TestDeployNoNewPrivsAllowsFakeSudo(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("no_new_privs is checked on Linux")
+	}
+	if _, err := exec.LookPath("setpriv"); err != nil {
+		t.Skipf("setpriv is unavailable: %v", err)
+	}
+	d := newDeployFixture(t, func(string, func(string) string) string {
+		return `schema: 1
+version: {mode: none}
+envs:
+  local: {}
+deploy:
+  remote: origin
+  targets:
+    target:
+      env: local
+      run: [sh, deploy.sh]
+      confirm: sudo
+`
+	})
+	calls := d.fakeSudoScript(t, "exit 0")
+	out, code := d.exec(d.work, "", "timeout", "25s", "setpriv", "--no-new-privs", graftBin, "deploy", "target")
+	if code != 0 {
+		t.Fatalf("deploy with a non-setuid sudo stand-in should run, exit %d:\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(d.state, "target-run")); err != nil {
+		t.Errorf("deploy did not reach the target script: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(calls); err != nil {
+		t.Errorf("sudo stand-in was not called: %v\n%s", err, out)
+	}
+}
+
+func TestDeployCheckNoNewPrivsSkipsSudoSHA(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("no_new_privs is checked on Linux")
+	}
+	if _, err := exec.LookPath("setpriv"); err != nil {
+		t.Skipf("setpriv is unavailable: %v", err)
+	}
+	d := newDeployFixture(t, func(state string, q func(string) string) string {
+		return `schema: 1
+version: {mode: none}
+envs:
+  local: {}
+deploy:
+  remote: origin
+  targets:
+    target:
+      env: local
+      run: [sh, deploy.sh]
+      deployed_sha: {path: ` + q("target-sha") + `, sudo: true}
+`
+	})
+	prependSetuidSudo(t, d)
+	out, code := d.exec(d.work, "", "timeout", "25s", "setpriv", "--no-new-privs", graftBin, "deploy", "check", "target")
+	if code == 0 || code == 124 {
+		t.Fatalf("expected no_new_privs refusal, exit %d:\n%s", code, out)
+	}
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, "outside the sandbox") {
+		t.Errorf("missing outside-the-sandbox hint:\n%s", out)
+	}
+	if strings.Contains(lower, "no new privileges\" flag") {
+		t.Errorf("deploy check invoked sudo after refusing:\n%s", out)
+	}
+	if strings.Count(lower, "outside the sandbox") != 1 {
+		t.Errorf("expected one outside-the-sandbox hint:\n%s", out)
+	}
+}
+
+func TestDeployCheckNoNewPrivsSudo(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("no_new_privs is checked on Linux")
+	}
+	if _, err := exec.LookPath("setpriv"); err != nil {
+		t.Skipf("setpriv is unavailable: %v", err)
+	}
+
+	d := newDeployFixture(t, func(string, func(string) string) string {
+		return `schema: 1
+version: {mode: none}
+envs:
+  local: {}
+deploy:
+  remote: origin
+  targets:
+    target:
+      env: local
+      run: [sh, deploy.sh]
+      confirm: sudo
+`
+	})
+	prependSetuidSudo(t, d)
+	status, err := os.ReadFile("/proc/thread-self/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(status), "NoNewPrivs:\t1") {
+		out, code := d.graft("", "deploy", "check", "target")
+		if code != 0 || !strings.Contains(out, "passes its checks now") {
+			t.Fatalf("deploy check without no_new_privs should pass, exit %d:\n%s", code, out)
+		}
+
+	}
+
+	out, code := d.exec(d.work, "", "timeout", "25s", "setpriv", "--no-new-privs", graftBin, "deploy", "check", "target")
+	if code == 0 || code == 124 {
+		t.Errorf("expected deploy check refusal, exit %d:\n%s", code, out)
+	}
+	if n := strings.Count(out, "outside the sandbox"); n != 1 {
+		t.Errorf("want the hint to run outside the sandbox once, got %d:\n%s", n, out)
+	}
+	if strings.Contains(out, sudoNoNewPrivsMessage) {
+		t.Errorf("deploy check ran sudo after refusing it:\n%s", out)
+	}
+}
+
+// sudoNoNewPrivsMessage is what sudo itself prints when no_new_privs stops
+// it: graft refuses before that.
+const sudoNoNewPrivsMessage = `"no new privileges" flag`
+
+// TestDeployNoNewPrivsSudo checks local confirmation before sudo and leaves
+// remote deployed_sha sudo to run on the remote host.
+func TestDeployNoNewPrivsSudo(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("no_new_privs is checked on Linux")
+	}
+	if _, err := exec.LookPath("setpriv"); err != nil {
+		t.Skipf("setpriv is unavailable: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name, env, sudoSetting string
+		remote, hotfixBase     bool
+	}{
+		{name: "confirm", env: "local", sudoSetting: "confirm: sudo"},
+		{name: "deployed_sha_local", env: "local", sudoSetting: "deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}"},
+		{name: "deployed_sha_remote", env: "remote", sudoSetting: "deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}", remote: true},
+		{name: "hotfix_local_base", env: "remote", sudoSetting: "deployed_sha: {path: /opt/app/TARGET_SHA}", remote: true, hotfixBase: true},
+		{name: "hotfix_local_base_confirm", env: "remote", sudoSetting: "confirm: sudo\n      deployed_sha: {path: /opt/app/TARGET_SHA}", remote: true, hotfixBase: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDeployFixture(t, func(state string, q func(string) string) string {
+				envs := "  local: {}\n"
+				if tc.remote {
+					envs += "  remote: {ssh: {host: example.invalid, user: deploy}}\n"
+				}
+				hotfix := ""
+				base := ""
+
+				if tc.hotfixBase {
+					hotfix = "  hotfix: {branches: ['hotfix/*'], label: hotfix, base: base}\n"
+					base = "    base:\n      env: local\n      run: [sh, deploy.sh]\n      deployed_sha: {path: /opt/app/BASE_SHA, sudo: true}\n"
+				}
+				return "schema: 1\nversion: {mode: file}\nenvs:\n" + envs +
+					"release_notes: {jira: {project_keys: [PROJ]}}\n" + "deploy:\n  remote: origin\n" + hotfix + "  targets:\n" + base +
+					"    target:\n      env: " + tc.env + "\n      run: [sh, deploy.sh]\n      " + tc.sudoSetting + "\n"
+			})
+			if tc.hotfixBase {
+				d.git("switch", "-q", "-c", "hotfix/PROJ-123")
+				d.git("push", "-q", "-u", "origin", "HEAD")
+			}
+			// The real setuid sudo in every case: a stand-in is never refused,
+			// so a case passing with one would not show why.
+			sudoDir := prependSetuidSudo(t, d)
+			sshCalls := filepath.Join(d.state, "ssh-calls")
+			if tc.remote {
+				ssh := filepath.Join(sudoDir, "ssh")
+				writeFile(t, ssh, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> "+yamlQuote(sshCalls)+"\nexit 0\n")
+				if err := os.Chmod(ssh, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.hotfixBase {
+				// deploy check reads the base's record too: refused once,
+				// without running sudo.
+				out, _ := d.exec(d.work, "", "timeout", "25s", "setpriv", "--no-new-privs", graftBin, "deploy", "check", "target")
+				if n := strings.Count(out, "outside the sandbox"); n != 1 {
+					t.Errorf("deploy check: want the hint once, got %d:\n%s", n, out)
+				}
+				if strings.Contains(out, sudoNoNewPrivsMessage) {
+					t.Errorf("deploy check ran sudo:\n%s", out)
+				}
+			}
+			out, code := d.exec(d.work, "", "timeout", "25s", "setpriv", "--no-new-privs", graftBin, "deploy", "target")
+			if strings.Contains(out, sudoNoNewPrivsMessage) {
+				t.Errorf("local sudo ran under no_new_privs:\n%s", out)
+			}
+			if tc.remote && !tc.hotfixBase {
+				if strings.Contains(out, "outside the sandbox") {
+					t.Errorf("remote sudo was refused due to local no_new_privs, exit %d:\n%s", code, out)
+				}
+				if got := readFile(t, sshCalls); !strings.Contains(got, "sudo") {
+					t.Errorf("expected a remote sudo command, got %q\n%s", got, out)
+				}
+				return
+			}
+			if code == 0 || code == 124 {
+				t.Errorf("expected refusal before sudo, exit %d:\n%s", code, out)
+			}
+			if _, err := os.Stat(filepath.Join(d.state, "target-run")); err == nil {
+				t.Errorf("deploy script ran:\n%s", out)
+			} else if !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if !strings.Contains(strings.ToLower(out), "outside the sandbox") {
+				t.Errorf("missing outside-the-sandbox hint:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestDeployNoNewPrivsHoldWindow: a window that holds the target reads the
+// holding target's record, here under a local sudo; under no_new_privs deploy
+// check and deploy name the sandbox once and run no sudo, with or without
+// the target's own confirm: sudo.
+func TestDeployNoNewPrivsHoldWindow(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("no_new_privs is checked on Linux")
+	}
+	if _, err := exec.LookPath("setpriv"); err != nil {
+		t.Skipf("setpriv is unavailable: %v", err)
+	}
+	for _, tc := range []struct{ name, extra string }{
+		{"plain", ""},
+		{"confirm", "      confirm: sudo\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDeployFixture(t, func(state string, q func(string) string) string {
+				return `schema: 1
+version: {mode: file, build_branches: ['hotfix/*', 'release/*']}
+envs:
+  local: {}
+deploy:
+  remote: origin
+  targets:
+    test:
+      env: local
+      run: [sh, deploy.sh]
+      version: 'echo 0.0.1'
+      deployed_sha: {path: ` + q("test-sha") + `}
+` + tc.extra + `    prod:
+      env: local
+      run: [sh, deploy.sh]
+      version: 'echo 0.0.1'
+      requires: test
+      deployed_sha: {path: /opt/app/PROD_SHA, sudo: true}
+      window: {days: [mon, thu], at: "15:00", until: "19:00", tz: Etc/GMT-3, cutoff: {days_before: 1, at: "18:00"}}
+      approved_release: {statuses: [Ready for release, Done]}
+release_notes:
+  jira:
+    project_keys: [PROJ]
+`
+			})
+			d.at("2026-10-21 18:30")
+			prependSetuidSudo(t, d)
+			for _, cmd := range [][]string{{"deploy", "check", "test"}, {"deploy", "test"}} {
+				out, code := d.exec(d.work, "", "timeout", append([]string{"25s", "setpriv", "--no-new-privs", graftBin}, cmd...)...)
+				if n := strings.Count(out, "outside the sandbox"); n != 1 {
+					t.Errorf("%v: want the hint once, got %d, exit %d:\n%s", cmd, n, code, out)
+				}
+				if strings.Contains(out, sudoNoNewPrivsMessage) {
+					t.Errorf("%v ran sudo:\n%s", cmd, out)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(d.state, "target-run")); err == nil {
+				t.Errorf("deploy script ran")
+			} else if !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+		})
 	}
 }

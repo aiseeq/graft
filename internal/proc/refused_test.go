@@ -2,6 +2,7 @@ package proc
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -25,6 +26,36 @@ func TestRefusal(t *testing.T) {
 		if (r != nil) != c.refused || c.refused && !strings.Contains(r.Error(), "/usr/bin/docker cannot start here: this process runs with no_new_privs") {
 			t.Errorf("refusal(%q, %q) = %v", c.status, c.label, r)
 		}
+	}
+}
+
+// TestRefusedSudoDecision: sudo is refused only under no_new_privs, for a
+// non-root process, when it is a setuid file.
+func TestRefusedSudoDecision(t *testing.T) {
+	setuid := os.ModeSetuid | 0o4755
+	for _, tc := range []struct {
+		name       string
+		noNewPrivs bool
+		euid       int
+		path       string
+		mode       os.FileMode
+		refused    bool
+	}{
+		{name: "setuid sudo with no_new_privs", noNewPrivs: true, euid: 1000, path: "/usr/bin/sudo", mode: setuid, refused: true},
+		{name: "sudo without setuid", noNewPrivs: true, euid: 1000, path: "/tmp/sudo", mode: 0o755},
+		{name: "no_new_privs is clear", euid: 1000, path: "/usr/bin/sudo", mode: setuid},
+		{name: "root does not need sudo", noNewPrivs: true, euid: 0, path: "/usr/bin/sudo", mode: setuid},
+		{name: "sudo is not found", noNewPrivs: true, euid: 1000, mode: setuid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := sudoRefusal(tc.noNewPrivs, tc.euid, tc.path, tc.mode)
+			if (err != nil) != tc.refused {
+				t.Fatalf("sudoRefusal() = %v, refused = %t", err, tc.refused)
+			}
+			if tc.refused && err.Error() != "sudo cannot raise privileges here (no_new_privs); run graft outside the sandbox" {
+				t.Errorf("sudoRefusal() message = %q", err)
+			}
+		})
 	}
 }
 

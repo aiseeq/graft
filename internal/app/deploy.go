@@ -27,6 +27,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/message"
+	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/tasks"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
@@ -114,8 +115,14 @@ type deployRun struct {
 }
 
 // readSHA reads a commit record of an environment, without a sudo prompt
-// in a dry run.
+// in a dry run; a record that needs sudo where sudo cannot work is refused
+// before sudo runs, in a dry run too.
 func (r *deployRun) readSHA(ctx context.Context, env *envs.Env, rec *config.DeployedSHA) (string, error) {
+	if recordUsesSudo(rec, env) {
+		if err := proc.RefusedSudo(); err != nil {
+			return "", err
+		}
+	}
 	if r.dryRun {
 		return deploy.PeekDeployedSHA(ctx, env, rec)
 	}
@@ -128,6 +135,9 @@ func (r *deployRun) readSHA(ctx context.Context, env *envs.Env, rec *config.Depl
 func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 	r, err := a.deployTarget(o.Target)
 	if err != nil {
+		return err
+	}
+	if err := refusedSudo(r.target, r.env); err != nil {
 		return err
 	}
 	if err := deployPreflight(r); err != nil {
@@ -224,6 +234,23 @@ func beginMachineDeployment(project, target string, lk *lock.Lock) (func() error
 		return nil
 	}
 	return release, restore, nil
+}
+
+func targetUsesSudo(target *config.DeployTarget, env *envs.Env) bool {
+	return target.Confirm == "sudo" || recordUsesSudo(target.DeployedSHA, env)
+}
+
+// recordUsesSudo says whether reading or writing rec runs sudo here: a local
+// record kept under sudo.
+func recordUsesSudo(rec *config.DeployedSHA, env *envs.Env) bool {
+	return rec != nil && rec.Sudo && !env.IsRemote()
+}
+
+func refusedSudo(target *config.DeployTarget, env *envs.Env) error {
+	if targetUsesSudo(target, env) {
+		return proc.RefusedSudo()
+	}
+	return nil
 }
 
 func (a *App) deployTarget(name string) (*deployRun, error) {
