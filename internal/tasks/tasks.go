@@ -282,11 +282,13 @@ const goFmtHint = "run gofmt -w <files> and commit them"
 // gateStep is a step of the gate with the task that sets its directory,
 // and what to do when it fails.
 type gateStep struct {
-	step    config.Step
-	task    *config.Task
-	hint    string
-	run     func(context.Context) error
-	builtin bool
+	step        config.Step
+	task        *config.Task
+	hint        string
+	run         func(context.Context) error
+	measured    bool
+	builtinCost bool
+	builtin     bool
 }
 
 func isBuiltinGoVet(s config.Step) bool {
@@ -320,7 +322,7 @@ func (r *Runner) gateSteps(ctx context.Context) ([]gateStep, error) {
 	if len(lexCodices) > 0 {
 		steps = append(steps, gateStep{
 			step: config.Step{Source: LexOutputsSource}, task: &config.Task{},
-			run: func(ctx context.Context) error { return r.checkLexOutputs(ctx, lexCodices) },
+			run: func(ctx context.Context) error { return r.checkLexOutputs(ctx, lexCodices) }, measured: true,
 		})
 	}
 	if !r.Config.GoVet.IsEnabled() && !r.Config.GoFix.Enabled && !r.Config.GoFmt.IsEnabled() {
@@ -357,7 +359,7 @@ func (r *Runner) gateSteps(ctx context.Context) ([]gateStep, error) {
 	if r.Config.GoFmt.IsEnabled() && len(mods) > 0 {
 		steps = append(steps, gateStep{
 			step: config.Step{Source: GoFmtSource}, task: &config.Task{}, hint: goFmtHint,
-			run: func(ctx context.Context) error { return r.checkGoFmt(ctx, mods) },
+			run: func(ctx context.Context) error { return r.checkGoFmt(ctx, mods) }, builtinCost: true,
 		})
 	}
 	return r.configSteps(steps), nil
@@ -439,13 +441,15 @@ func (r *Runner) checkLexOutputs(ctx context.Context, codices map[string]bool) e
 		}
 		cmd := exec.CommandContext(ctx, lex, args...)
 		cmd.Dir, cmd.Stdin = r.Root, strings.NewReader("")
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		gitVars, envErr := gitx.LocalEnvVars()
 		if envErr != nil {
 			return fmt.Errorf("listing git environment variables: %w", envErr)
 		}
 		cmd.Env = gitx.Without(os.Environ(), gitVars)
-		if output, runErr := cmd.CombinedOutput(); runErr != nil {
-			fmt.Fprint(r.Stdout, string(output))
+		if _, runErr := r.measure(ctx, cmd, LexOutputsSource); runErr != nil {
+			fmt.Fprint(r.Stdout, stdout.String(), stderr.String())
 			failures = append(failures, fmt.Errorf("lex binary %s check for codex %s failed: %w", lex, codex, runErr))
 			var exitErr *exec.ExitError
 			refused = refused || errors.As(runErr, &exitErr) && exitErr.ExitCode() == 1
@@ -1146,14 +1150,14 @@ func goFmtInModule(file string, dirs, selected map[string]bool) bool {
 
 // measureFunc runs a gate step done in graft's process and records it as
 // measure records a command's step, its error the reason of a failure.
-func (r *Runner) measureFunc(source string, run func() error) error {
+func (r *Runner) measureFunc(source string, run func() error, builtin ...bool) error {
 	start := time.Now()
 	err := run()
 	reason := ""
 	if err != nil {
 		reason = err.Error()
 	}
-	r.recordStep(source, stats.Usage{Wall: time.Since(start)}, stepExit(err), reason)
+	r.recordStep(source, stats.Usage{Wall: time.Since(start)}, stepExit(err), reason, len(builtin) > 0 && builtin[0])
 	return err
 }
 
@@ -1176,7 +1180,7 @@ func (r *Runner) warnRemoteLoad(err error) {
 
 // recordStep adds a step's usage and exit to the open frames and writes its
 // stats record.
-func (r *Runner) recordStep(source string, use stats.Usage, code int, reason string) {
+func (r *Runner) recordStep(source string, use stats.Usage, code int, reason string, builtin ...bool) {
 	if len(r.frames) == 0 {
 		return
 	}
@@ -1219,7 +1223,8 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int, reason str
 			f.reason = reason
 		}
 	}
-	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Profile: r.profile(inner), Step: stats.StepText(source), Exit: code, Reason: reason, Host: r.hostOf(inner), Here: stepHere, Heavy: heavy}, use, r.frames[0].task)
+	isBuiltin := len(builtin) > 0 && builtin[0]
+	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Profile: r.profile(inner), Step: stats.StepText(source), Exit: code, Reason: reason, Host: r.hostOf(inner), Here: stepHere, Heavy: heavy, Builtin: isBuiltin}, use, r.frames[0].task)
 }
 
 // profile is the kind of a run the admission of heavy tasks knows it by:
@@ -1352,7 +1357,23 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 		if err != nil {
 			return err
 		}
-		if nestedAdmitted {
+		restLight := false
+		if !nestedAdmitted {
+			localSteps, stepErr := r.splitLocalStepNames(steps)
+			if stepErr != nil {
+				fmt.Fprintf(r.Stderr, "graft: gate: not checked for a light remainder, it waits for this machine: %v\n", stepErr)
+			} else {
+				restLight = r.lightSplitRemainder(ctx, localSteps)
+			}
+		}
+		if restLight {
+			leave, enterErr := r.enterLightRemainder(ctx)
+			if enterErr != nil {
+				return enterErr
+			}
+			defer func() { err = errors.Join(err, leave()) }()
+			fmt.Fprintf(r.Stderr, "graft: gate: busy here: %s on %s, the rest is light (its last %d local runs under %g s CPU and %g MB), not waiting for the machine\n", description, r.remoteHeavy.Host, stats.LightGateRuns, stats.LightGateCPUSec, stats.LightGateTreeMemMB)
+		} else if nestedAdmitted {
 			fmt.Fprintf(r.Stderr, "graft: gate: busy here: %s on %s, the rest runs under the admitted task\n", description, r.remoteHeavy.Host)
 		} else {
 			fmt.Fprintf(r.Stderr, "graft: gate: busy here: %s on %s, the rest waits for this machine once\n", description, r.remoteHeavy.Host)
@@ -1375,6 +1396,96 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 		}
 	}
 	return nil
+}
+
+func (r *Runner) splitLocalStepNames(gate []gateStep) ([]string, error) {
+	var names []string
+	seen := map[string]bool{}
+	var task func(string) error
+	task = func(name string) error {
+		if seen[name] {
+			return nil
+		}
+		seen[name] = true
+		t := r.Config.Tasks[name]
+		if t == nil {
+			return nil
+		}
+		for _, dep := range t.Deps {
+			if err := task(dep); err != nil {
+				return err
+			}
+		}
+		for _, step := range t.Run {
+			if step.Task != "" {
+				if err := task(step.Task); err != nil {
+					return err
+				}
+				continue
+			}
+			remote, _, err := r.gateStepPlacement(step, t, name, false)
+			if err != nil {
+				return err
+			}
+			if !remote {
+				names = append(names, stats.StepText(step.Source))
+			}
+		}
+		return nil
+	}
+	for _, gs := range gate {
+		if gs.run != nil {
+			names = append(names, stats.StepText(gs.step.Source))
+		} else if gs.step.Task != "" {
+			if err := task(gs.step.Task); err != nil {
+				return nil, err
+			}
+		} else {
+			remote, _, err := r.gateStepPlacement(gs.step, gs.task, stats.GateTask, gs.builtin)
+			if err != nil {
+				return nil, err
+			}
+			if !remote {
+				names = append(names, stats.StepText(gs.step.Source))
+			}
+		}
+	}
+	return names, nil
+}
+
+func (r *Runner) lightSplitRemainder(ctx context.Context, localSteps []string) bool {
+	note := func(err error) bool {
+		fmt.Fprintf(r.Stderr, "graft: gate: not checked for a light remainder, it waits for this machine: %v\n", err)
+		return false
+	}
+	since := time.Now().Add(-lightGateWindow)
+	info, err := os.Stat(filepath.Join(r.Root, ".graft.yaml"))
+	if err != nil {
+		return note(err)
+	}
+	if info.ModTime().After(since) {
+		since = info.ModTime()
+	}
+	path, err := stats.Path()
+	if err != nil {
+		return note(err)
+	}
+	recs, _, err := stats.Load(path, since)
+	if err != nil {
+		return note(err)
+	}
+	return stats.SplitLightGate(recs, filepath.Clean(r.Root), since, localSteps)
+}
+
+func (r *Runner) enterLightRemainder(ctx context.Context) (func() error, error) {
+	if err := r.holdCeiling(ctx, stats.GateTask, ""); err != nil {
+		return nil, err
+	}
+	r.heavy++
+	return func() error {
+		r.heavy--
+		return nil
+	}, nil
 }
 
 func (r *Runner) splitGateDescription(gate []gateStep) (string, error) {
@@ -1460,7 +1571,11 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 				return err
 			}
 		}
-		stepErr = r.measureFunc(s.Source, run)
+		if gs.measured {
+			stepErr = run()
+		} else {
+			stepErr = r.measureFunc(s.Source, run, gs.builtinCost)
+		}
 	} else if r.gateSplit {
 		// Where the step runs is decided in step, and its threads with it.
 		stepErr = r.step(ctx, gs.step, gs.task, nil, "", gs.builtin)

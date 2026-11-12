@@ -10,8 +10,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/stats"
 )
 
 func TestLexCodexFromHeader(t *testing.T) {
@@ -94,6 +96,68 @@ func TestLexMainCheckout(t *testing.T) {
 	common := filepath.Join(main, ".git")
 	if _, err := lexMainCheckout(&gitx.Repo{Root: common, GitDir: common, CommonDir: common}); err == nil || !strings.Contains(err.Error(), "bare repository") {
 		t.Fatalf("bare repository error = %v", err)
+	}
+}
+
+func TestLexCheckRecordsProcessUsage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test lex executable is a shell script")
+	}
+	root, bin := t.TempDir(), t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", root).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GRAFT_TEST_EXECUTABLE", executable)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	lex := filepath.Join(bin, "lex")
+	if err := os.WriteFile(lex, []byte("#!/bin/sh\nGRAFT_LEX_USAGE_HELPER=1 exec \"$GRAFT_TEST_EXECUTABLE\" -test.run '^TestLexUsageHelper$'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	r := &Runner{
+		Root: root, Stdout: io.Discard, Stderr: io.Discard,
+		Stats: stats.NewRecorder(io.Discard), frames: []*frame{{task: stats.GateTask}}, noRepoName: true,
+	}
+	if err := r.checkLexOutputs(t.Context(), map[string]bool{"codex": true}); err != nil {
+		t.Fatal(err)
+	}
+	path, err := stats.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, _, err := stats.Load(path, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range records {
+		if record.Kind == stats.KindStep && record.Step == LexOutputsSource {
+			if record.TreeMemMB == nil {
+				t.Fatal("lex step has no process-tree memory sample")
+			}
+			if record.UserS+record.SysS <= 0 {
+				t.Fatalf("lex step CPU = %g, want a measured process cost", record.UserS+record.SysS)
+			}
+			return
+		}
+	}
+	t.Fatal("lex process did not write a step record")
+}
+
+func TestLexUsageHelper(t *testing.T) {
+	if os.Getenv("GRAFT_LEX_USAGE_HELPER") != "1" {
+		return
+	}
+	deadline := time.Now().Add(300 * time.Millisecond)
+	var n uint64
+	for time.Now().Before(deadline) {
+		n++
+	}
+	if n == 0 {
+		os.Exit(1)
 	}
 }
 

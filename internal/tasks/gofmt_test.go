@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/stats"
 )
 
 func TestCheckGoFmt(t *testing.T) {
@@ -126,5 +129,27 @@ func TestBuiltinStepFailureHasReason(t *testing.T) {
 	err := r.measureFunc(GoFmtSource, func() error { return errors.New("Go files need formatting: a.go") })
 	if err == nil || f.reason != "Go files need formatting: a.go" || f.exit != 1 {
 		t.Fatalf("err %v, frame reason %q exit %d", err, f.reason, f.exit)
+	}
+}
+
+func TestBuiltinGofmtStepIsMarkedInStats(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	r := &Runner{
+		Root:       t.TempDir(),
+		Stats:      stats.NewRecorder(io.Discard),
+		frames:     []*frame{{task: stats.GateTask}},
+		noRepoName: true,
+	}
+	r.recordStep(GoFmtSource, stats.Usage{Wall: time.Second}, 0, "", true)
+	path, err := stats.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, _, err := stats.Load(path, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || !records[0].Builtin || records[0].Step != GoFmtSource {
+		t.Fatalf("records = %+v, want one marked built-in gofmt step", records)
 	}
 }

@@ -122,7 +122,10 @@ module and npm dependency versions are left alone.
 
 A gate whose last 5 runs that really ran their steps each stayed under 2 s CPU
 and 300 MB, since `.graft.yaml` last changed, does not wait for a busy machine:
-it says so, its heavy tasks run with it, under the same memory ceiling. A heavy
+it says so, its heavy tasks run with it, under the same memory ceiling. When a
+busy gate splits steps between this machine and its host, the local remainder
+can also skip the queue after five matching runs whose local steps stay under
+those limits. A heavy
 task, and any other gate as a whole, starts when the machine is not busy,
 by the rule of `github.com/aiseeq/akit/pressure`: both the tasks ready to run
 at this moment (`procs_running` of `/proc/stat`, one reading) and the
@@ -1163,6 +1166,8 @@ graft's version, pid and command line. A
 - `heavy`, on a step line, says the step ran on the same machine as its
   nearest heavy task. Absent when the step ran elsewhere or has no heavy
   task above it.
+- `builtin`, on a step line, marks work done in graft's own process; its
+  light split gate estimate uses the enclosing graft task's cost.
 - `here`, on the line of a heavy task that had a `remote_heavy` host and
   ran on this machine, is why: the reason its `heavy, on this machine:`
   line gave (`this machine would not make it wait` for `when: busy` on a

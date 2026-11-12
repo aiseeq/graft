@@ -72,3 +72,92 @@ func TestLightGate(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitLightGate(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 0, 0, 0, time.UTC)
+	mem := func(v float64) *float64 { return &v }
+	makeRuns := func() []Record {
+		var records []Record
+		for i := range LightGateRuns {
+			run := string(rune('a' + i))
+			when := base.Add(time.Duration(i) * time.Minute)
+			records = append(records,
+				Record{Kind: KindStep, Run: run, Step: "lex check", Time: when, UserS: .1, TreeMemMB: mem(12), Exit: 0},
+				Record{Kind: KindStep, Run: run, Step: "glint", Time: when, UserS: 99, TreeMemMB: mem(900), Host: "remote", Exit: 0},
+				Record{Kind: KindTask, Run: run, Task: GateTask, Project: "/p", Steps: 2, UserS: 99, TreeMemMB: mem(900), Exit: 0, Time: when.Add(time.Second)},
+			)
+		}
+		return records
+	}
+	t.Run("local prices exclude host steps", func(t *testing.T) {
+		if !SplitLightGate(makeRuns(), "/p", time.Time{}, []string{"lex check"}) {
+			t.Fatal("five light local remainders should pass despite expensive host steps")
+		}
+	})
+	t.Run("different local step set is skipped", func(t *testing.T) {
+		if SplitLightGate(makeRuns(), "/p", time.Time{}, []string{"different"}) {
+			t.Fatal("runs with a different local step set counted")
+		}
+	})
+	t.Run("an old lex row without memory keeps the remainder queued", func(t *testing.T) {
+		records := makeRuns()
+		for i := range records {
+			if records[i].Kind == KindStep && records[i].Run == "c" && records[i].Host == "" {
+				records[i].TreeMemMB = nil
+			}
+		}
+		if SplitLightGate(records, "/p", time.Time{}, []string{"lex check"}) {
+			t.Fatal("unread local memory passed")
+		}
+	})
+	t.Run("builtin step uses its graft run cost", func(t *testing.T) {
+		var records []Record
+		for i := range LightGateRuns {
+			run := string(rune('a' + i))
+			when := base.Add(time.Duration(i) * time.Minute)
+			records = append(records,
+				Record{Kind: KindStep, Run: run, Step: "gofmt -l", Builtin: true, Time: when, Exit: 0},
+				Record{Kind: KindTask, Run: run, Task: GateTask, Project: "/p", Steps: 1, UserS: .2, TreeMemMB: mem(24), Exit: 0, Time: when.Add(time.Second)},
+			)
+		}
+		if !SplitLightGate(records, "/p", time.Time{}, []string{"gofmt -l"}) {
+			t.Fatal("built-in step without its own sample did not use the graft run cost")
+		}
+	})
+	t.Run("nested graft step is not counted twice", func(t *testing.T) {
+		records := makeRuns()
+		records = append(records, Record{Kind: KindStep, Run: "child", Parent: "c", Step: "lex check", UserS: 90, TreeMemMB: mem(900), Exit: 0})
+		if !SplitLightGate(records, "/p", time.Time{}, []string{"lex check"}) {
+			t.Fatal("nested graft step was counted twice")
+		}
+	})
+	t.Run("local CPU over the limit keeps the remainder queued", func(t *testing.T) {
+		records := makeRuns()
+		for i := range records {
+			if records[i].Kind == KindStep && records[i].Run == "c" && records[i].Host == "" {
+				records[i].UserS = LightGateCPUSec + 1
+			}
+		}
+		if SplitLightGate(records, "/p", time.Time{}, []string{"lex check"}) {
+			t.Fatal("expensive local remainder passed")
+		}
+	})
+	t.Run("cache hit run does not count", func(t *testing.T) {
+		records := makeRuns()
+		records = append(records, Record{Kind: KindCacheHit, Run: "c"})
+		if SplitLightGate(records, "/p", time.Time{}, []string{"lex check"}) {
+			t.Fatal("cache hit run counted")
+		}
+	})
+	t.Run("host only run does not count", func(t *testing.T) {
+		records := makeRuns()
+		for i := range records {
+			if records[i].Kind == KindStep && records[i].Run == "c" && records[i].Host == "" {
+				records[i].Host = "remote"
+			}
+		}
+		if SplitLightGate(records, "/p", time.Time{}, []string{"lex check"}) {
+			t.Fatal("host-only run counted")
+		}
+	})
+}
