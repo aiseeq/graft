@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,7 +22,11 @@ import (
 
 const ioWeight = 10
 
-var limitFiles = []string{"memory.max", "memory.high", "cpu.max"}
+var limitFiles = []string{"memory.max", "memory.high", "memory.swap.max", "cpu.max"}
+
+// agentSessionUnit is the unit name of an agent's session scope,
+// agent-<name>-<pid>[-r<n>].scope.
+var agentSessionUnit = regexp.MustCompile(`^agent-.+-[0-9]+(-r[0-9]+)?\.scope$`)
 
 // ownScope is the scope this process found itself alone in and gave a
 // ceiling: a later heavy task of the process may raise it as a heavy scope's.
@@ -87,7 +92,7 @@ func decide(cgroup string, limits map[string]string, sole bool, pid int, ceiling
 // session's, and graft takes heavy work out from under it into a heavy scope
 // with a ceiling of its own. A cpu.max on it still keeps the work there.
 func agentSession(unit, parent string) bool {
-	return parent == "agents.slice" && strings.HasPrefix(unit, "agent-") && len(unit) > len("agent-.scope")
+	return parent == "agents.slice" && agentSessionUnit.MatchString(unit)
 }
 
 // sessionScope recognizes a logind session scope belonging to uid.
