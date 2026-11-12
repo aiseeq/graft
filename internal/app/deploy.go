@@ -1064,7 +1064,6 @@ type subtaskRun struct {
 	run        *deployRun
 	targetHead func(context.Context) (string, error)
 	commits    map[string][]loggedCommit
-	onTarget   map[string]bool
 	landed     map[string]bool
 	loaded     bool
 }
@@ -1117,13 +1116,13 @@ func (s *subtaskRun) move(ctx context.Context, key, parent string, t *config.Not
 		return
 	}
 	if s.run != nil {
-		total, missing, err := s.commitsOnTarget(ctx, key)
+		missing, err := s.commitsOffTarget(ctx, key)
 		if err != nil {
 			app.warn("%s not moved after its parent %s: checking its commits: %v", key, parent, err)
 			return
 		}
-		if total > 0 && missing > 0 {
-			app.printf("%s stays %s after its parent %s: %d of %d of its commits are not on %s", key, issue.Status, parent, missing, total, s.mover.target)
+		if len(missing) > 0 {
+			app.printf("%s stays %s after its parent %s: its commits not on %s: %s", key, issue.Status, parent, s.mover.target, strings.Join(missing, ", "))
 			return
 		}
 	}
@@ -1132,42 +1131,37 @@ func (s *subtaskRun) move(ctx context.Context, key, parent string, t *config.Not
 	}
 }
 
-// commitsOnTarget lazily loads remote and deployed commits, then checks only
-// this subtask's commits for content-equivalent work on the target.
-func (s *subtaskRun) commitsOnTarget(ctx context.Context, key string) (total, missing int, err error) {
+// commitsOffTarget lazily loads the remote commits the deployed head lacks,
+// then names, by short hash, those of this subtask whose change is not on the
+// target by content either: a commit on the target is, whatever its hash.
+func (s *subtaskRun) commitsOffTarget(ctx context.Context, key string) ([]string, error) {
 	if err := s.loadCommits(ctx); err != nil {
-		return 0, 0, err
+		return nil, err
 	}
 	head, err := s.targetHead(ctx)
 	if err != nil {
-		return 0, 0, err
+		return nil, err
 	}
+	var missing []string
 	for _, c := range s.commits[key] {
-		total++
-		if s.onTarget[c.sha] {
-			continue
-		}
 		content, ok := s.landed[c.sha]
-		if !ok {
-			if c.parent == "" {
-				content = false
-			} else {
-				content, err = landed(s.run, head, c.sha, c.parent, s.run.target.ApprovedRelease)
-				if err != nil {
-					return total, missing, fmt.Errorf("checking %s: %w", c.sha, err)
-				}
+		if !ok && c.parent != "" {
+			content, err = landed(s.run, head, c.sha, c.parent, s.run.target.ApprovedRelease)
+			if err != nil {
+				return nil, fmt.Errorf("checking %s: %w", c.sha, err)
 			}
-			s.landed[c.sha] = content
 		}
+		s.landed[c.sha] = content
 		if !content {
-			missing++
+			missing = append(missing, c.sha[:12])
 		}
 	}
-	return total, missing, nil
+	return missing, nil
 }
 
-// loadCommits reads the target ancestry and all non-merge commits on remotes
-// and the deployed head once, on the first eligible subtask.
+// loadCommits reads, once, on the first eligible subtask, the non-merge
+// commits on remotes that the deployed head lacks: only they can keep a
+// subtask back, so a long history on the target costs nothing.
 func (s *subtaskRun) loadCommits(ctx context.Context) error {
 	if s.loaded {
 		return nil
@@ -1176,21 +1170,12 @@ func (s *subtaskRun) loadCommits(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	out, err := s.run.repo.Git("rev-list", head)
-	if err != nil {
-		return fmt.Errorf("reading target history: %w", err)
-	}
-	onTarget := map[string]bool{}
-	for sha := range strings.FieldsSeq(out) {
-		onTarget[sha] = true
-	}
-	commits, err := sweepLog(s.run, head, time.Time{})
+	commits, err := sweepLog(s.run, time.Time{}, "--remotes", "--not", head)
 	if err != nil {
 		return fmt.Errorf("reading remote commit history: %w", err)
 	}
 	keyRe := projectKeyRe(s.run.cfg)
 	s.commits = map[string][]loggedCommit{}
-	s.onTarget = onTarget
 	s.landed = map[string]bool{}
 	for _, c := range commits {
 		for _, key := range commitKeys(keyRe, s.run.target.ApprovedRelease, c.deliveredCommit) {

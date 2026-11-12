@@ -2023,9 +2023,12 @@ release_notes:
    With `subtasks: true` (it needs `transitions`), subtasks follow their
    parent: when a delivered item is in, or has just reached, the `to` of a
    transition, its subtasks in that transition's `from` move there by it,
-   if a subtask has commits of its own, it follows only when all are on the
-   target.
-   `assign` included. A subtask further on, Ready for release when its
+   `assign` included. A subtask with commits of its own on remote branches
+   (its key in their message, or an `approved_release.attribute` to it, which
+   overrides the message) follows only when each is on the target, by hash
+   or by content; otherwise it stays and names them: `PROJ-12 stays In
+   Progress after its parent PROJ-10: its commits not on prod: <hash>`.
+   A subtask further on, Ready for release when its
    parent comes to Testing, say, stays, and so do subtasks that are not
    yours, as above. The single `transition` and `from` of graft 1.x are replaced by
    `transitions`; the old keys are a config error that shows the rewrite.

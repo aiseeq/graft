@@ -350,7 +350,7 @@ func (s *sweepRun) judge(ctx context.Context, items map[string][]sweptCommit) {
 // Commits withheld from the target are not on it, though its history has
 // them.
 func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.Time) (map[string][]sweptCommit, error) {
-	commits, err := sweepLog(r, head, since)
+	commits, err := sweepLog(r, since, "--remotes", head)
 	if err != nil {
 		return nil, err
 	}
@@ -447,12 +447,12 @@ type loggedCommit struct {
 
 // sweepLog lists the commits of the window on any remote branch or on head,
 // merges left out.
-func sweepLog(r *deployRun, head string, since time.Time) ([]loggedCommit, error) {
+func sweepLog(r *deployRun, since time.Time, revs ...string) ([]loggedCommit, error) {
 	args := []string{"log", "--no-merges", "--format=%H%x1f%ct%x1f%P%x1f%s%x1f%b%x1e"}
 	if !since.IsZero() {
 		args = append(args, "--since="+since.Format(time.RFC3339))
 	}
-	args = append(args, "--remotes", head)
+	args = append(args, revs...)
 	out, err := r.repo.Git(args...)
 	if err != nil {
 		return nil, err

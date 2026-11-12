@@ -1369,7 +1369,7 @@ func checkSubtasksFollowed(t *testing.T, d *deployFixture, out string) {
 	if !maps.Equal(statuses, want) {
 		t.Errorf("statuses = %v, want %v\n%s", statuses, want, out)
 	}
-	if !strings.Contains(out, "PROJ-12 stays In Progress after its parent PROJ-10: 1 of 2 of its commits are not on sub") {
+	if !strings.Contains(out, "PROJ-12 stays In Progress after its parent PROJ-10: its commits not on sub: "+strings.TrimSpace(d.git("rev-parse", "subtask-work"))[:12]+"\n") {
 		t.Errorf("missing subtask commit diagnostic:\n%s", out)
 	}
 }
