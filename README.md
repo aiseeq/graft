@@ -486,7 +486,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft deploy thaw <target> --reason REASON` | end the active freeze and remove its freeze and journal tags from every remote |
 | `graft deploy check <target>` | what `graft deploy <target>` would refuse now, read only: unpublished work, the window, `requires`, the hold, `approved_release` with the items of the commits outside it (summary, status, fix versions); exit 1 when it would refuse |
 | `graft deploy versions` | the version and the commit each target runs, with the remote branches at it, required targets first |
-| `graft deploy cutoff <target>` | the release candidate of the target's window: its unchecked commits and the commands that revert them on a release branch; with `test_db.migrations`, it flags reverts that remove or change a migration below the highest migration left in the candidate |
+| `graft deploy cutoff <target>` | the release candidate of the target's window: its unchecked commits and the commands that revert them on a release branch; with `test_db.migrations`, it compares migration numbers and file contents in the candidate and the tree after planned reverts |
 | `graft deploy status <target>` / `logs <target> [--lines N] [--grep RE]` | the target's status and logs commands |
 | `graft deploy check-head` | for deploy scripts: HEAD is still the commit being deployed |
 | `graft deploy check-integrations [build]` | for deploy scripts: the uploaded build configures every integration the target from `requires` runs (see Integrations) |
@@ -2178,21 +2178,22 @@ deploy:
   reverts commit <sha>.'` per item; then the deploys, and after the release
   `git merge -s ours` of the release branch into the trunk. With nothing to
   revert it prints the branch and the deploy alone.
-- When `test_db.migrations` is set, cutoff checks numbered migration files
-  directly in that directory. If an unchecked commit adds or changes a
-  migration below the highest numbered migration left after the planned
-  reverts, cutoff explains that the migrator will skip it on the next release
-  and prints a reverse command that excludes the affected file. Keep the
-  migration, renumber it above the remaining versions, or keep the whole
-  task by skipping its item: its `git diff` lines and its `graft commit`.
-  Reverting an edit of the highest migration that stays is flagged too: prod
-  runs the old one and never the edit. The option to keep a task whole is
-  listed once, before any revert: its own migrations then stay and may raise
-  the highest number, and cutoff names the other items' migrations, by every
-  path their revert touches, that would then fall below it and must be
-  excluded from their reverts as well. A commit that deletes a
-  migration is not flagged: its revert restores the file prod already ran.
-  Without `test_db.migrations`, cutoff keeps its usual output.
+- When `test_db.migrations` is set, cutoff compares migration files directly
+  in that directory in the candidate with the files left after simulating the
+  planned reverts. It groups files by their leading number and compares each
+  number's blob set. Files containing `.down.` are excluded because the up
+  migrator does not apply them. If the candidate has files for a number at or
+  below the highest remaining number and that number's files differ or are
+  missing after the reverts, cutoff identifies the commits whose changes
+  touch that number and excludes all their affected migration paths from the
+  reverse patch. You can keep the migration, renumber it above the remaining
+  numbers, or keep the whole task by skipping its item: its `git diff` lines
+  and its `graft commit`. If excluding those paths leaves nothing in a
+  commit's patch, cutoff says “nothing left to revert” and omits that commit
+  from the item's graft commit. The option to keep a task whole is listed
+  before any revert and names paths touched by other items that would be lost
+  only in that case. Without `test_db.migrations`, cutoff keeps its usual
+  output.
 - A deploy from a `build_branches` branch withholds the commits a revert in
   it names: they pass now, the trunk keeps them, and graft records them
   beside `deployed_sha` (`.withheld`). Every later release checks them with
