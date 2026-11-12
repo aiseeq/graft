@@ -1454,6 +1454,19 @@ func (r *Runner) enterSplitGateMode(ctx context.Context, steps []gateStep, neste
 
 func (r *Runner) splitLocalStepNames(gate []gateStep) ([]string, error) {
 	var names []string
+	// A step here is recorded with its {threads} filled for this machine,
+	// so its name is compared filled too.
+	local := func(s config.Step, t *config.Task) error {
+		if t == nil {
+			t = &config.Task{}
+		}
+		filled, _, err := r.threads(s, t)
+		if err != nil {
+			return err
+		}
+		names = append(names, stats.StepText(filled.Source))
+		return nil
+	}
 	seen := map[string]bool{}
 	var task func(string) error
 	task = func(name string) error {
@@ -1482,7 +1495,9 @@ func (r *Runner) splitLocalStepNames(gate []gateStep) ([]string, error) {
 				return err
 			}
 			if !remote {
-				names = append(names, stats.StepText(step.Source))
+				if err := local(step, t); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -1490,7 +1505,9 @@ func (r *Runner) splitLocalStepNames(gate []gateStep) ([]string, error) {
 	for i := range gate {
 		gs := &gate[i]
 		if gs.run != nil {
-			names = append(names, stats.StepText(gs.step.Source))
+			if err := local(gs.step, gs.task); err != nil {
+				return nil, err
+			}
 		} else if gs.step.Task != "" {
 			if err := task(gs.step.Task); err != nil {
 				return nil, err
@@ -1501,7 +1518,9 @@ func (r *Runner) splitLocalStepNames(gate []gateStep) ([]string, error) {
 				return nil, err
 			}
 			if !remote {
-				names = append(names, stats.StepText(gs.step.Source))
+				if err := local(gs.step, gs.task); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}

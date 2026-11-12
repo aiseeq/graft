@@ -3,15 +3,19 @@ package tasks
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/iosched"
 	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/stats"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
 func TestLightSplitRemainderUsesLocalHistory(t *testing.T) {
@@ -189,5 +193,23 @@ func TestLightRemainderLocalStepsDoNotRequestAdmission(t *testing.T) {
 				t.Fatalf("heavy after leave = %d", r.heavy)
 			}
 		})
+	}
+}
+
+func TestSplitLocalStepNamesFillThreads(t *testing.T) {
+	cfg, err := config.Parse([]byte("schema: 1\nversion: {mode: none}\ntasks:\n  work:\n    run: [\"echo -p {threads}\"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{
+		Root: t.TempDir(), Config: cfg, Stderr: io.Discard, Stdout: io.Discard, noRepoName: true,
+		Load: func() (userconfig.MachineLoad, error) { return userconfig.MachineLoad{Threads: 4}, nil },
+	}
+	names, err := r.splitLocalStepNames([]gateStep{{step: config.Step{Task: "work"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"echo -p 4"}; !slices.Equal(names, want) {
+		t.Fatalf("local step names %q, want %q as the journal records them", names, want)
 	}
 }
