@@ -123,7 +123,7 @@ func TestRemoteFallbackUpgradesLightRemainderToAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.enterSplit(context.Background(), stats.GateTask, ""); err != nil {
+	if err := r.enterSplit(context.Background(), stats.GateTask, "", true); err != nil {
 		t.Fatal(err)
 	}
 	if admitted != 1 || r.heavy != 1 || r.lightRemainder {
@@ -139,5 +139,55 @@ func TestRemoteFallbackUpgradesLightRemainderToAdmission(t *testing.T) {
 	}
 	if r.heavy != 0 {
 		t.Fatalf("heavy after release = %d", r.heavy)
+	}
+}
+
+func TestLightRemainderLocalStepsDoNotRequestAdmission(t *testing.T) {
+	orig := configureHeavy
+	t.Cleanup(func() { configureHeavy = orig })
+	configureHeavy = func(_ context.Context, _ int, _ string, _ iosched.Request) (iosched.Placement, error) {
+		return iosched.Placement{}, nil
+	}
+	for _, step := range []string{"lex check", GoFmtSource} {
+		t.Run(step, func(t *testing.T) {
+			mem := 16.0
+			var history []stats.Record
+			since := time.Now().Add(-time.Hour)
+			for i := range stats.LightGateRuns {
+				run := string(rune('a' + i))
+				local := stats.Record{Kind: stats.KindStep, Run: run, Step: step, UserS: .1, TreeMemMB: &mem}
+				if step == GoFmtSource {
+					local.Builtin, local.BuiltinCostKnown = true, true
+				}
+				history = append(history, local,
+					stats.Record{Kind: stats.KindStep, Run: run, Step: "glint", Host: "remote", UserS: 90, TreeMemMB: new(900.0)},
+					stats.Record{Kind: stats.KindTask, Run: run, Task: stats.GateTask, Project: "/project", Steps: 2, Time: time.Now(), Exit: 0},
+				)
+			}
+			if !stats.SplitLightGate(history, "/project", since, []string{step}) {
+				t.Fatal("light split-gate history was rejected")
+			}
+			admitted := 0
+			r := &Runner{Stderr: &strings.Builder{}, admitTask: func(context.Context, string) (loadgate.Admission, func() error, error) {
+				admitted++
+				return loadgate.Admission{}, func() error { return nil }, nil
+			}}
+			lightLeave, err := r.enterLightRemainder(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r.enterSplit(context.Background(), stats.GateTask, ""); err != nil {
+				t.Fatal(err)
+			}
+			if admitted != 0 || r.heavy != 1 || !r.lightRemainder {
+				t.Fatalf("local step %q: admissions=%d heavy=%d lightRemainder=%v", step, admitted, r.heavy, r.lightRemainder)
+			}
+			if err := lightLeave(); err != nil {
+				t.Fatal(err)
+			}
+			if r.heavy != 0 {
+				t.Fatalf("heavy after leave = %d", r.heavy)
+			}
+		})
 	}
 }

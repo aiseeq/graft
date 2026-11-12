@@ -435,6 +435,8 @@ func (r *Runner) checkLexOutputs(ctx context.Context, codices map[string]bool) e
 	paths := slices.Sorted(maps.Keys(codices))
 	var failures []error
 	refused := false
+	var use stats.Usage
+	measured := false
 	for _, codex := range paths {
 		args, argsErr := lexCheckArgs(codex, mainCheckout, r.Root)
 		if argsErr != nil {
@@ -449,17 +451,30 @@ func (r *Runner) checkLexOutputs(ctx context.Context, codices map[string]bool) e
 			return fmt.Errorf("listing git environment variables: %w", envErr)
 		}
 		cmd.Env = gitx.Without(os.Environ(), gitVars)
-		if _, runErr := r.measure(ctx, cmd, LexOutputsSource); runErr != nil {
+		stepUse, runErr := r.measureUnrecorded(ctx, cmd, LexOutputsSource)
+		if cmd.Process != nil {
+			measured = true
+			use.Wall += stepUse.Wall
+			use.Add(stepUse)
+		}
+		if runErr != nil {
 			fmt.Fprint(r.Stdout, stdout.String(), stderr.String())
 			failures = append(failures, fmt.Errorf("lex binary %s check for codex %s failed: %w", lex, codex, runErr))
 			var exitErr *exec.ExitError
 			refused = refused || errors.As(runErr, &exitErr) && exitErr.ExitCode() == 1
 		}
 	}
+	joined := errors.Join(failures...)
+	if measured {
+		reason := ""
+		if joined != nil {
+			reason = joined.Error()
+		}
+		r.recordStep(LexOutputsSource, use, stepExit(joined), reason)
+	}
 	if len(failures) == 0 {
 		return nil
 	}
-	joined := errors.Join(failures...)
 	if refused {
 		return fmt.Errorf("%w\n%s", joined, lexOutputsHint)
 	}
@@ -1947,13 +1962,17 @@ func (r *Runner) steps(ctx context.Context, name string, t *config.Task, args []
 // waits for this machine, the rest run under its admission to the gate's
 // end, so that a busy machine does not queue each cheap step again. Its
 // lock on the queue goes after load.settle as any admission's.
-func (r *Runner) enterSplit(ctx context.Context, name, memoryMax string) error {
+func (r *Runner) enterSplit(ctx context.Context, name, memoryMax string, fallback ...bool) error {
 	if r.splitLeave != nil {
 		// Admitted already: a task of the gate asking for more raises the
 		// ceiling.
 		return r.holdCeiling(ctx, name, memoryMax)
 	}
-	if r.lightRemainder {
+	remoteFallback := len(fallback) > 0 && fallback[0]
+	if r.lightRemainder && !remoteFallback {
+		return r.holdCeiling(ctx, name, memoryMax)
+	}
+	if r.lightRemainder && remoteFallback {
 		// A remote failure can move expensive host steps here. Drop the
 		// light remainder's local slot before asking admission for the
 		// heavier fallback; the deferred light leave then becomes a no-op.
@@ -2026,7 +2045,7 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 				stepErr = errors.Join(stepErr, err)
 			} else {
 				frame.remote, frame.stepHere = false, r.remoteHeavy.Host+" path broken: "+reason
-				if err := r.enterSplit(ctx, frame.task, taskMemoryMax(t)); err != nil {
+				if err := r.enterSplit(ctx, frame.task, taskMemoryMax(t), true); err != nil {
 					stepErr = err
 				} else {
 					split := r.gateSplit
@@ -2637,6 +2656,10 @@ func (r *Runner) measure(ctx context.Context, cmd *exec.Cmd, source string) (sta
 	return r.measureWithCapture(ctx, cmd, source, true, nil)
 }
 
+func (r *Runner) measureUnrecorded(ctx context.Context, cmd *exec.Cmd, source string) (stats.Usage, error) {
+	return r.measureWithReason(ctx, cmd, source, true, true, nil, nil, nil, false)
+}
+
 // goTestStep runs a step of a tests: go task: its stdout is go test -json,
 // parsed into the tests journal and the reason of its stats line.
 func (r *Runner) goTestStep(ctx context.Context, cmd *exec.Cmd, source, runner string, words []string, directGoTest bool, remoteStderr *bytes.Buffer) error {
@@ -2862,7 +2885,7 @@ func (r *Runner) measureWithCapture(ctx context.Context, cmd *exec.Cmd, source s
 
 // measureWithReason runs and records cmd; the reason of a failed step is the
 // first useful cleaned reason from reasonSource, stderr, or stdout.
-func (r *Runner) measureWithReason(ctx context.Context, cmd *exec.Cmd, source string, captureStderr, captureStdout bool, remoteStderr *bytes.Buffer, reasonSource func() string, missingRunNames func() bool) (stats.Usage, error) {
+func (r *Runner) measureWithReason(ctx context.Context, cmd *exec.Cmd, source string, captureStderr, captureStdout bool, remoteStderr *bytes.Buffer, reasonSource func() string, missingRunNames func() bool, record ...bool) (stats.Usage, error) {
 	stdout, stderr, piped := captureStepOutput(cmd, captureStderr, captureStdout)
 	if piped && cmd.WaitDelay == 0 {
 		cmd.WaitDelay = backgroundPipeWait
@@ -2917,7 +2940,9 @@ func (r *Runner) measureWithReason(ctx context.Context, cmd *exec.Cmd, source st
 			code = 1
 		}
 	}
-	r.recordStep(source, use, code, reason)
+	if len(record) == 0 || record[0] {
+		r.recordStep(source, use, code, reason)
+	}
 	return use, err
 }
 

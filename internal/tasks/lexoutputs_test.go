@@ -122,7 +122,7 @@ func TestLexCheckRecordsProcessUsage(t *testing.T) {
 		Root: root, Stdout: io.Discard, Stderr: io.Discard,
 		Stats: stats.NewRecorder(io.Discard), frames: []*frame{{task: stats.GateTask}}, noRepoName: true,
 	}
-	if err := r.checkLexOutputs(t.Context(), map[string]bool{"codex": true}); err != nil {
+	if err := r.checkLexOutputs(t.Context(), map[string]bool{"codex": true, "codex-two": true}); err != nil {
 		t.Fatal(err)
 	}
 	path, err := stats.Path()
@@ -133,18 +133,21 @@ func TestLexCheckRecordsProcessUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var lexRecords []stats.Record
 	for _, record := range records {
 		if record.Kind == stats.KindStep && record.Step == LexOutputsSource {
-			if record.TreeMemMB == nil {
-				t.Fatal("lex step has no process-tree memory sample")
-			}
-			if record.UserS+record.SysS <= 0 {
-				t.Fatalf("lex step CPU = %g, want a measured process cost", record.UserS+record.SysS)
-			}
-			return
+			lexRecords = append(lexRecords, record)
 		}
 	}
-	t.Fatal("lex process did not write a step record")
+	if len(lexRecords) != 1 {
+		t.Fatalf("lex wrote %d step records for two codices, want one logical step", len(lexRecords))
+	}
+	if lexRecords[0].TreeMemMB == nil {
+		t.Fatal("lex step has no process-tree memory sample")
+	}
+	if lexRecords[0].UserS+lexRecords[0].SysS <= 0 {
+		t.Fatalf("lex step CPU = %g, want a measured process cost", lexRecords[0].UserS+lexRecords[0].SysS)
+	}
 }
 
 func TestLexUsageHelper(t *testing.T) {
