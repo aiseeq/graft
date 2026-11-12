@@ -1320,6 +1320,60 @@ func TestDeploySubtasksFollowParents(t *testing.T) {
 	}
 }
 
+// TestDeploySubtasksFollowOnlyWhenTheirCommitsAreOnTarget checks that an
+// empty subtask follows its parent, while worked subtasks follow only when
+// their commits are present in the deployed history.
+func TestDeploySubtasksFollowOnlyWhenTheirCommitsAreOnTarget(t *testing.T) {
+	d := deployRepo(t)
+	subtaskWork(d)
+	checkSubtasksFollowed(t, d, d.mustGraft("deploy", "sub"))
+}
+
+// subtaskWork gives the parent PROJ-10 three subtasks, all In Progress, and
+// deploys them once to sub; then PROJ-11 has no commit, PROJ-12 one on a
+// branch of its own besides one in the trunk, and PROJ-13 one in the trunk.
+func subtaskWork(d *deployFixture) {
+	d.t.Helper()
+	d.jira.mu.Lock()
+	maps.Copy(d.jira.statuses, map[string]string{"PROJ-10": "In Progress", "PROJ-11": "In Progress", "PROJ-12": "In Progress", "PROJ-13": "In Progress"})
+	d.jira.parents = map[string]string{"PROJ-11": "PROJ-10", "PROJ-12": "PROJ-10", "PROJ-13": "PROJ-10"}
+	d.jira.mu.Unlock()
+	d.mustGraft("deploy", "sub")
+
+	branch := strings.TrimSpace(d.git("branch", "--show-current"))
+	d.git("checkout", "-b", "subtask-work")
+	d.write("b.txt", "subtask work\n")
+	d.mustFixtureCommit("feat: PROJ-12 work")
+	d.git("push", "-q", "origin", "HEAD:refs/heads/subtask-work")
+	d.git("checkout", branch)
+	d.write("a.txt", "parent and landed subtask\n")
+	d.mustFixtureCommit("feat: PROJ-10 parent, PROJ-12 and PROJ-13")
+}
+
+// checkSubtasksFollowed checks what subtaskWork leads to once PROJ-10 is
+// delivered: PROJ-11 and PROJ-13 follow it, PROJ-12 stays and says why.
+func checkSubtasksFollowed(t *testing.T, d *deployFixture, out string) {
+	t.Helper()
+	_, moved := d.jira.snapshot()
+	slices.Sort(moved)
+	if !slices.Equal(moved, []string{"PROJ-10", "PROJ-11", "PROJ-13"}) {
+		t.Errorf("moved = %v, want parent, empty subtask and landed subtask\n%s", moved, out)
+	}
+	d.jira.mu.Lock()
+	statuses := map[string]string{}
+	for _, key := range []string{"PROJ-10", "PROJ-11", "PROJ-12", "PROJ-13"} {
+		statuses[key] = d.jira.statuses[key]
+	}
+	d.jira.mu.Unlock()
+	want := map[string]string{"PROJ-10": "Testing", "PROJ-11": "Testing", "PROJ-12": "In Progress", "PROJ-13": "Testing"}
+	if !maps.Equal(statuses, want) {
+		t.Errorf("statuses = %v, want %v\n%s", statuses, want, out)
+	}
+	if !strings.Contains(out, "PROJ-12 stays In Progress after its parent PROJ-10: 1 of 2 of its commits are not on sub") {
+		t.Errorf("missing subtask commit diagnostic:\n%s", out)
+	}
+}
+
 // TestDeployAssignFailureFailsTheDeploy: an item moved but left on its
 // developer is reported, and the deploy exits non-zero.
 func TestDeployAssignFailureFailsTheDeploy(t *testing.T) {

@@ -104,9 +104,17 @@ func (a *App) DeployHandover(ctx context.Context, target, ticket string) error {
 	if n == nil || n.Glint == "" && !slices.ContainsFunc(n.Transitions, func(t config.NoteTransition) bool { return t.RequireComment != "" }) {
 		return fmt.Errorf("deploy.targets.%s.release_notes: neither glint nor a transition with require_comment holds items", target)
 	}
-	if r.glint, err = newGlintCheck(r, ticket, func(ctx context.Context) (string, error) {
-		return r.readSHA(ctx, r.env, r.target.DeployedSHA)
-	}); err != nil {
+	var deployedSHA string
+	var deployedErr error
+	shaRead := false
+	deployedHead := func(ctx context.Context) (string, error) {
+		if !shaRead {
+			deployedSHA, deployedErr = r.readSHA(ctx, r.env, r.target.DeployedSHA)
+			shaRead = true
+		}
+		return deployedSHA, deployedErr
+	}
+	if r.glint, err = newGlintCheck(r, ticket, deployedHead); err != nil {
 		return err
 	}
 	held, err := readHeld(r)
@@ -126,7 +134,7 @@ func (a *App) DeployHandover(ctx context.Context, target, ticket string) error {
 		return err
 	}
 	mover := &noteMover{app: a, client: client, conf: n, me: me, target: r.name, glint: r.glint, standing: r.cfg.ReleaseNotes.Jira.SkipKeys}
-	sub := &subtaskRun{mover: mover, notes: r.cfg.ReleaseNotes.Jira, me: me, reached: map[string]string{}}
+	sub := &subtaskRun{mover: mover, notes: r.cfg.ReleaseNotes.Jira, me: me, reached: map[string]string{}, run: r, targetHead: deployedHead}
 	unread := a.retryHeld(ctx, sub, held, nil)
 	if r.target.ReleaseNotes.Subtasks {
 		sub.follow(ctx)

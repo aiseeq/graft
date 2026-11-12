@@ -8,6 +8,29 @@ import (
 	"time"
 )
 
+// TestDeployHandoverSubtasksWaitForTheirOwnCommits checks that handover
+// follows a parent only when each worked subtask's commits are on the target.
+func TestDeployHandoverSubtasksWaitForTheirOwnCommits(t *testing.T) {
+	d := newDeployFixture(t, func(state string, q func(string) string) string {
+		c := deployConfig(state, q)
+		return strings.Replace(c, "keep_assignee_labels: [internal]}", "keep_assignee_labels: [internal], require_comment: How to check}", 1)
+	})
+	d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+	began := time.Now().Add(-time.Hour)
+	d.jira.mu.Lock()
+	d.jira.entered = map[string]time.Time{"PROJ-10": began}
+	d.jira.mu.Unlock()
+	subtaskWork(d)
+	if out := d.mustGraft("deploy", "sub"); !strings.Contains(out, "PROJ-10: NOT MOVED to Testing") {
+		t.Errorf("parent was not held for its comment:\n%s", out)
+	}
+
+	d.jira.mu.Lock()
+	d.jira.written = map[string][]fakeComment{"PROJ-10": {{author: "me", created: time.Now(), text: "How to check: run the feature"}}}
+	d.jira.mu.Unlock()
+	checkSubtasksFollowed(t, d, d.mustGraft("deploy", "handover", "sub"))
+}
+
 // TestDeployRequireComment: an item handed over to the reviewer moves only
 // with a comment of the token owner that has require_comment in it, written
 // since the work came into In Progress; a subtask following its parent

@@ -448,7 +448,12 @@ type loggedCommit struct {
 // sweepLog lists the commits of the window on any remote branch or on head,
 // merges left out.
 func sweepLog(r *deployRun, head string, since time.Time) ([]loggedCommit, error) {
-	out, err := r.repo.Git("log", "--no-merges", "--format=%H%x1f%ct%x1f%P%x1f%s%x1f%b%x1e", "--since="+since.Format(time.RFC3339), "--remotes", head)
+	args := []string{"log", "--no-merges", "--format=%H%x1f%ct%x1f%P%x1f%s%x1f%b%x1e"}
+	if !since.IsZero() {
+		args = append(args, "--since="+since.Format(time.RFC3339))
+	}
+	args = append(args, "--remotes", head)
+	out, err := r.repo.Git(args...)
 	if err != nil {
 		return nil, err
 	}

@@ -2023,6 +2023,8 @@ release_notes:
    With `subtasks: true` (it needs `transitions`), subtasks follow their
    parent: when a delivered item is in, or has just reached, the `to` of a
    transition, its subtasks in that transition's `from` move there by it,
+   if a subtask has commits of its own, it follows only when all are on the
+   target.
    `assign` included. A subtask further on, Ready for release when its
    parent comes to Testing, say, stays, and so do subtasks that are not
    yours, as above. The single `transition` and `from` of graft 1.x are replaced by

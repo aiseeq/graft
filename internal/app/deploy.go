@@ -840,7 +840,8 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 		return skipAll("release notes skipped: whose items are whose is unknown: %v", err)
 	}
 	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name, glint: r.glint, standing: notes.SkipKeys}
-	sub := &subtaskRun{mover: mover, notes: notes, me: me, reached: map[string]string{}}
+	sub := &subtaskRun{mover: mover, notes: notes, me: me, reached: map[string]string{}, run: r,
+		targetHead: func(context.Context) (string, error) { return r.head, nil }}
 	items := &noteItems{app: a, run: r, client: client, me: me, text: text, fix: fix, mover: mover, sub: sub}
 	for _, key := range keys {
 		items.post(ctx, key)
@@ -1059,7 +1060,13 @@ type subtaskRun struct {
 	delivered []jira.Issue
 	// reached maps the keys of the delivered items to the status each is
 	// left in.
-	reached map[string]string
+	reached    map[string]string
+	run        *deployRun
+	targetHead func(context.Context) (string, error)
+	commits    map[string][]loggedCommit
+	onTarget   map[string]bool
+	landed     map[string]bool
+	loaded     bool
 }
 
 // follow moves the subtasks of the delivered items that are in a status a
@@ -1106,11 +1113,92 @@ func (s *subtaskRun) move(ctx context.Context, key, parent string, t *config.Not
 		app.warn("%s not moved after its parent %s: %v", key, parent, err)
 		return
 	}
-	if yours {
-		if err := s.mover.move(ctx, issue, t, parent); err != nil && !errors.Is(err, errHeld) {
-			app.warn("%v", err)
+	if !yours {
+		return
+	}
+	if s.run != nil {
+		total, missing, err := s.commitsOnTarget(ctx, key)
+		if err != nil {
+			app.warn("%s not moved after its parent %s: checking its commits: %v", key, parent, err)
+			return
+		}
+		if total > 0 && missing > 0 {
+			app.printf("%s stays %s after its parent %s: %d of %d of its commits are not on %s", key, issue.Status, parent, missing, total, s.mover.target)
+			return
 		}
 	}
+	if err := s.mover.move(ctx, issue, t, parent); err != nil && !errors.Is(err, errHeld) {
+		app.warn("%v", err)
+	}
+}
+
+// commitsOnTarget lazily loads remote and deployed commits, then checks only
+// this subtask's commits for content-equivalent work on the target.
+func (s *subtaskRun) commitsOnTarget(ctx context.Context, key string) (total, missing int, err error) {
+	if err := s.loadCommits(ctx); err != nil {
+		return 0, 0, err
+	}
+	head, err := s.targetHead(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, c := range s.commits[key] {
+		total++
+		if s.onTarget[c.sha] {
+			continue
+		}
+		content, ok := s.landed[c.sha]
+		if !ok {
+			if c.parent == "" {
+				content = false
+			} else {
+				content, err = landed(s.run, head, c.sha, c.parent, s.run.target.ApprovedRelease)
+				if err != nil {
+					return total, missing, fmt.Errorf("checking %s: %w", c.sha, err)
+				}
+			}
+			s.landed[c.sha] = content
+		}
+		if !content {
+			missing++
+		}
+	}
+	return total, missing, nil
+}
+
+// loadCommits reads the target ancestry and all non-merge commits on remotes
+// and the deployed head once, on the first eligible subtask.
+func (s *subtaskRun) loadCommits(ctx context.Context) error {
+	if s.loaded {
+		return nil
+	}
+	head, err := s.targetHead(ctx)
+	if err != nil {
+		return err
+	}
+	out, err := s.run.repo.Git("rev-list", head)
+	if err != nil {
+		return fmt.Errorf("reading target history: %w", err)
+	}
+	onTarget := map[string]bool{}
+	for sha := range strings.FieldsSeq(out) {
+		onTarget[sha] = true
+	}
+	commits, err := sweepLog(s.run, head, time.Time{})
+	if err != nil {
+		return fmt.Errorf("reading remote commit history: %w", err)
+	}
+	keyRe := projectKeyRe(s.run.cfg)
+	s.commits = map[string][]loggedCommit{}
+	s.onTarget = onTarget
+	s.landed = map[string]bool{}
+	for _, c := range commits {
+		for _, key := range commitKeys(keyRe, s.run.target.ApprovedRelease, c.deliveredCommit) {
+			s.commits[key] = append(s.commits[key], c)
+		}
+	}
+	s.loaded = true
+	return nil
 }
 
 // noteable tells whether an item gets a note, warning when it does not. A key
