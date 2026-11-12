@@ -71,7 +71,7 @@ func (a *App) mergeLocked(ctx context.Context, repo *gitx.Repo, cfg *config.Conf
 	// A replace ref would show the checks one tree and push another: the
 	// merge and its tasks see the objects the remote gets.
 	if err := os.Setenv("GIT_NO_REPLACE_OBJECTS", "1"); err != nil {
-		return err
+		return fmt.Errorf("setting GIT_NO_REPLACE_OBJECTS: %w", err)
 	}
 	st := &mergeState{a: a, ctx: ctx, repo: repo, cfg: cfg, opts: o}
 	if err := st.validateRequest(); err != nil {
@@ -343,7 +343,7 @@ func (s *mergeState) checkSnapshotHistory() error {
 // already holding the source, as after a push whose install did not run.
 func (s *mergeState) installMerged() error {
 	if err := s.checkoutUnchanged(); err != nil {
-		return fmt.Errorf("local %s is behind %s/%s at %s and the %v; on a clean %s install it with: git merge --ff-only %s", s.trunk, s.primary, s.trunk, gitx.Short(s.A), err, s.trunk, s.A)
+		return fmt.Errorf("local %s is behind %s/%s at %s and the %w; on a clean %s install it with: git merge --ff-only %s", s.trunk, s.primary, s.trunk, gitx.Short(s.A), err, s.trunk, s.A)
 	}
 	if _, err := s.repo.GitEnv(markerEnv, "merge", "--ff-only", s.A); err != nil {
 		return fmt.Errorf("local %s is behind %s/%s; install it with: git merge --ff-only %s: %w", s.trunk, s.primary, s.trunk, s.A, err)
@@ -949,7 +949,7 @@ func (s *mergeState) install() error {
 	// The push ran the user's pre-push hook, which may switch or move the
 	// checkout: fast-forward only the trunk the merge started from.
 	if err := s.checkoutUnchanged(); err != nil {
-		return fmt.Errorf("trunk on the remote is already %s, but the %v after the push, so the local %s is left as it was; on a clean %s install it with: git merge --ff-only %s", s.R, err, s.trunk, s.trunk, s.R)
+		return fmt.Errorf("trunk on the remote is already %s, but the %w after the push, so the local %s is left as it was; on a clean %s install it with: git merge --ff-only %s", s.R, err, s.trunk, s.trunk, s.R)
 	}
 	if _, err := s.repo.GitEnv(markerEnv, "merge", "--ff-only", s.R); err != nil {
 		return fmt.Errorf("trunk on the remote is already %s; install it with: git merge --ff-only %s: %w", s.R, s.R, err)

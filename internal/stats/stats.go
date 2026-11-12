@@ -253,6 +253,28 @@ func FromProcess(ps *os.ProcessState, wall time.Duration) Usage {
 	return Usage{Wall: wall, User: ps.UserTime(), Sys: ps.SystemTime(), MaxRSS: rss, RSSKnown: known, Read: read, Write: write, IOKnown: ioKnown}
 }
 
+// SequentialUsage combines processes that ran one after another.
+// Wall and CPU time add up; memory peaks take the largest value, known only
+// when every process has a reading.
+func SequentialUsage(parts []Usage) Usage {
+	var use Usage
+	rssKnown, treeKnown := len(parts) > 0, len(parts) > 0
+	for i := range parts {
+		part := &parts[i]
+		use.Wall += part.Wall
+		use.Add(*part)
+		rssKnown = rssKnown && part.RSSKnown
+		treeKnown = treeKnown && part.TreeKnown
+	}
+	if !rssKnown {
+		use.MaxRSS, use.RSSKnown = 0, false
+	}
+	if !treeKnown {
+		use.TreeMem, use.TreeKnown = 0, false
+	}
+	return use
+}
+
 // Add adds the CPU time of u and keeps the larger peak memory; wall time is
 // the caller's to measure.
 func (s *Usage) Add(u Usage) {

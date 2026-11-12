@@ -467,7 +467,7 @@ func (r *Runner) checkLexOutputs(ctx context.Context, codices map[string]bool) e
 		if joined != nil {
 			reason = joined.Error()
 		}
-		r.recordStep(LexOutputsSource, sequentialUsage(parts), stepExit(joined), reason)
+		r.recordStep(LexOutputsSource, stats.SequentialUsage(parts), stepExit(joined), reason)
 	}
 	if len(failures) == 0 {
 		return nil
@@ -1454,62 +1454,15 @@ func (r *Runner) enterSplitGateMode(ctx context.Context, steps []gateStep, neste
 
 func (r *Runner) splitLocalStepNames(gate []gateStep) ([]string, error) {
 	var names []string
-	// A step here is recorded with its {threads} filled for this machine,
-	// so its name is compared filled too.
-	local := func(s config.Step, t *config.Task) error {
-		if t == nil {
-			t = &config.Task{}
-		}
-		filled, _, err := r.threads(s, t)
-		if err != nil {
-			return err
-		}
-		names = append(names, stats.StepText(filled.Source))
-		return nil
-	}
 	seen := map[string]bool{}
-	var task func(string) error
-	task = func(name string) error {
-		if seen[name] {
-			return nil
-		}
-		seen[name] = true
-		t := r.Config.Tasks[name]
-		if t == nil {
-			return nil
-		}
-		for _, dep := range t.Deps {
-			if err := task(dep); err != nil {
-				return err
-			}
-		}
-		for _, step := range t.Run {
-			if step.Task != "" {
-				if err := task(step.Task); err != nil {
-					return err
-				}
-				continue
-			}
-			remote, _, err := r.gateStepPlacement(step, t, name, false)
-			if err != nil {
-				return err
-			}
-			if !remote {
-				if err := local(step, t); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}
 	for i := range gate {
 		gs := &gate[i]
 		if gs.run != nil {
-			if err := local(gs.step, gs.task); err != nil {
+			if err := r.appendLocalStepName(&names, gs.step, gs.task); err != nil {
 				return nil, err
 			}
 		} else if gs.step.Task != "" {
-			if err := task(gs.step.Task); err != nil {
+			if err := r.appendLocalTaskStepNames(&names, seen, gs.step.Task); err != nil {
 				return nil, err
 			}
 		} else {
@@ -1518,13 +1471,59 @@ func (r *Runner) splitLocalStepNames(gate []gateStep) ([]string, error) {
 				return nil, err
 			}
 			if !remote {
-				if err := local(gs.step, gs.task); err != nil {
+				if err := r.appendLocalStepName(&names, gs.step, gs.task); err != nil {
 					return nil, err
 				}
 			}
 		}
 	}
 	return names, nil
+}
+
+func (r *Runner) appendLocalStepName(names *[]string, step config.Step, task *config.Task) error {
+	if task == nil {
+		task = &config.Task{}
+	}
+	filled, _, err := r.threads(step, task)
+	if err != nil {
+		return err
+	}
+	*names = append(*names, stats.StepText(filled.Source))
+	return nil
+}
+
+func (r *Runner) appendLocalTaskStepNames(names *[]string, seen map[string]bool, name string) error {
+	if seen[name] {
+		return nil
+	}
+	seen[name] = true
+	task := r.Config.Tasks[name]
+	if task == nil {
+		return nil
+	}
+	for _, dep := range task.Deps {
+		if err := r.appendLocalTaskStepNames(names, seen, dep); err != nil {
+			return err
+		}
+	}
+	for _, step := range task.Run {
+		if step.Task != "" {
+			if err := r.appendLocalTaskStepNames(names, seen, step.Task); err != nil {
+				return err
+			}
+			continue
+		}
+		remote, _, err := r.gateStepPlacement(step, task, name, false)
+		if err != nil {
+			return err
+		}
+		if !remote {
+			if err := r.appendLocalStepName(names, step, task); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (r *Runner) lightSplitRemainder(localSteps []string) bool {
@@ -4446,27 +4445,4 @@ func goFlags(env []string, dir string) (string, error) {
 		return "", fmt.Errorf("go env GOFLAGS: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
-}
-
-// sequentialUsage is the usage of one logical step run as processes one after
-// another: wall and CPU time add up and the peak memory is the largest one.
-// A memory is known only when every process knows it: one unread process
-// leaves the step unread, so a light-gate check does not take the processes
-// that were read for the whole step.
-func sequentialUsage(parts []stats.Usage) stats.Usage {
-	var use stats.Usage
-	rssKnown, treeKnown := len(parts) > 0, len(parts) > 0
-	for _, part := range parts {
-		use.Wall += part.Wall
-		use.Add(part)
-		rssKnown = rssKnown && part.RSSKnown
-		treeKnown = treeKnown && part.TreeKnown
-	}
-	if !rssKnown {
-		use.MaxRSS, use.RSSKnown = 0, false
-	}
-	if !treeKnown {
-		use.TreeMem, use.TreeKnown = 0, false
-	}
-	return use
 }

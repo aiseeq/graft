@@ -54,7 +54,7 @@ func (g *gateRun) checkReleaseVersion(ctx context.Context, collect bool) []error
 func (v *releaseVersionCheck) readTops(ctx context.Context) bool {
 	for _, key := range slices.Sorted(maps.Keys(v.gate.activeKeys)) {
 		issue, err := v.gate.gate.issue(ctx, key)
-		if err != nil {
+		if err != nil { //nolint:silent-error-handling // err goes into the failure message below; glint ticket silent-error-call-in-if-cond
 			if v.fail("version-items", fmt.Sprintf("%s: read Jira issue: %v; retry", key, err)) {
 				return true
 			}
@@ -69,7 +69,7 @@ func (v *releaseVersionCheck) readTops(ctx context.Context) bool {
 		if issue.Parent != "" {
 			v.umbrellas[issue.Parent] = true
 			issue, err = v.gate.gate.issue(ctx, issue.Parent)
-			if err != nil {
+			if err != nil { //nolint:silent-error-handling // err goes into the failure message below; glint ticket silent-error-call-in-if-cond
 				if v.fail("version-items", fmt.Sprintf("%s: read parent: %v; retry", key, err)) {
 					return true
 				}
@@ -153,7 +153,7 @@ func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 	var bad, subtasks, missing []string
 	for _, key := range keys {
 		issue, err := v.gate.gate.issue(ctx, key)
-		if err != nil {
+		if err != nil { //nolint:silent-error-handling // err goes into the failure message below; glint ticket silent-error-call-in-if-cond
 			if v.fail("version-items", fmt.Sprintf("%s: read Jira issue: %v; retry", key, err)) {
 				return true
 			}
@@ -193,7 +193,7 @@ func (v *releaseVersionCheck) checkUmbrellas(ctx context.Context) bool {
 		var open []string
 		for _, subkey := range parent.Subtasks {
 			sub, err := v.gate.gate.issue(ctx, subkey)
-			if err != nil {
+			if err != nil { //nolint:silent-error-handling // err goes into the failure message below; glint ticket silent-error-call-in-if-cond
 				if v.fail("version-umbrella", fmt.Sprintf("%s: read subtask %s: %v; retry", key, subkey, err)) {
 					return true
 				}
