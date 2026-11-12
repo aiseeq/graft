@@ -618,6 +618,7 @@ func worktreeSyncCmd(a *app.App, args []string, usage error) error {
 	fs := newFlags(a, "worktree sync")
 	o := app.WorktreeSyncOptions{}
 	fs.StringVar(&o.Trunk, "trunk", "", "the ref to sync onto (default: the HEAD branch of the deploy remote or of the only remote)")
+	fs.BoolVar(&o.Push, "push", false, "push this branch to its upstream with force-with-lease after syncing")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err

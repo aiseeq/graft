@@ -499,7 +499,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft worktree add [--trunk <ref>] <branch> [<base>]` | a worktree under the user's cache, go.work's neighbours linked (see Worktrees) |
 | `graft worktree check [--trunk <ref>] [--json] <path>` | whether removing one linked worktree would lose data `git status` does not show; removes nothing (see Worktrees) |
 | `graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h] [--in <directory>]...` | remove the worktrees and branches whose work is in the trunk by content; list the rest |
-| `graft worktree sync [--trunk <ref>]` | move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted (see Worktrees) |
+| `graft worktree sync [--trunk <ref>] [--push]` | move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted; `--push` updates its upstream with a lease (see Worktrees) |
 | `graft tools [install]` | check the pinned tools; install the failing ones |
 | `graft gocache trim [--older 25h] [--apply] [--max-wait 2h]` | remove the Go build cache entries unused for longer than `--older` (see [Go build cache](#go-build-cache)) |
 | `graft help` | the commands the project's `.graft.yaml` uses, its tasks (those with `desc`, with their arguments) and services |
@@ -2662,12 +2662,23 @@ done, and the next one comes a day later. `OnStartupSec=15min` runs it again
 15 minutes after every start of the service manager; a second run in a day
 finds nothing left to do.
 
-`graft worktree sync [--trunk <ref>]`, run in a worktree, moves its work onto
+`graft worktree sync [--trunk <ref>] [--push]`, run in a worktree, moves its work onto
 the fresh trunk: it fetches every remote, rebases the branch's own commits
 onto the trunk (found as for clean) and brings the uncommitted changes back
 uncommitted, untracked files left where they are (`git rebase --autostash`).
-Nothing is committed or pushed, so a worktree is synced in the middle of its
-work without a temporary commit past the hooks. Uncommitted changes that
+Nothing is committed or pushed by default, so a worktree is synced in the
+middle of its work without a temporary commit past the hooks. Add `--push` to
+update the current branch's upstream after a successful sync, using
+`git push --force-with-lease`; with several remotes, only the upstream remote's
+copy of the branch is updated. The upstream must name the same branch as the
+worktree; make the first push with `git push -u <remote> <branch>`. Sync refuses
+if the upstream has commits absent from the branch and its reflog. With
+`--push` the trunk must be a branch (local or `<remote>/<branch>`), and sync
+refuses before rebasing when the worktree branch is the trunk or the branch
+the server's HEAD names (read with `git ls-remote --symref <remote> HEAD`),
+or when that HEAD cannot be read or names no existing branch. These checks
+use the remote's fetch URL; a `pushurl`, a second `url` or `pushInsteadOf`
+is not checked, and branch names are compared case-sensitively. Uncommitted changes that
 conflict with the trunk are left with their markers and kept in the stash
 too (resolve, then `git stash drop`); a commit of the branch that conflicts
 stops the rebase (`git rebase --continue` or `--abort`); an untracked file

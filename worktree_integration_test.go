@@ -914,6 +914,9 @@ func TestWorktreeSync(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "on origin/main (") {
 		t.Fatalf("sync: exit %d\n%s", code, out)
 	}
+	if !strings.Contains(out, "nothing committed or pushed") {
+		t.Errorf("sync without --push should say nothing was pushed:\n%s", out)
+	}
 	if got := f.gitIn(wt, "rev-parse", "HEAD~1"); got != trunk {
 		t.Errorf("the own commit is on %s, want the trunk %s", got, trunk)
 	}
@@ -942,6 +945,560 @@ func TestWorktreeSync(t *testing.T) {
 	}
 	if got := f.gitIn(wt, "stash", "list"); !strings.Contains(got, "autostash") {
 		t.Errorf("the changes are not kept in the stash: %q", got)
+	}
+}
+
+func worktreeSyncPushFixture(t *testing.T, setUpstream bool) (*fixture, string) {
+	t.Helper()
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none}\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
+	f.git("remote", "set-head", "origin", "main")
+	wt := filepath.Join(f.base, "wt-sync-push")
+	f.git("worktree", "add", "-q", "-b", "feature", wt, "main")
+	writeFile(t, filepath.Join(wt, "own.txt"), "own\n")
+	if out, code := f.exec(wt, "", "git", "add", "-A"); code != 0 {
+		t.Fatalf("stage branch commit: exit %d\n%s", code, out)
+	}
+	if out, code := f.exec(wt, "", "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "feat: own work"); code != 0 {
+		t.Fatalf("create branch commit: exit %d\n%s", code, out)
+	}
+	if setUpstream {
+		if out, code := f.exec(wt, "", "git", "push", "-q", "-u", "origin", "HEAD"); code != 0 {
+			t.Fatalf("publish branch: exit %d\n%s", code, out)
+		}
+	}
+	return f, wt
+}
+
+func advanceWorktreeSyncTrunk(t *testing.T, f *fixture) string {
+	t.Helper()
+	f.write("trunk.txt", "trunk\n")
+	f.mustPlainCommit("feat: trunk moves")
+	f.git("push", "-q", "origin", "HEAD")
+	return f.git("rev-parse", "HEAD")
+}
+
+func TestWorktreeSyncPushRebasesAndPushesBranch(t *testing.T) {
+	f, wt := worktreeSyncPushFixture(t, true)
+	trunk := advanceWorktreeSyncTrunk(t, f)
+	mainBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main")
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push")
+	if code != 0 || !strings.Contains(out, "force-with-lease") {
+		t.Fatalf("sync --push: exit %d\n%s", code, out)
+	}
+	head := f.gitIn(wt, "rev-parse", "HEAD")
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature"); got != head {
+		t.Errorf("remote feature = %s, want local HEAD %s", got, head)
+	}
+	if got := f.gitIn(wt, "rev-parse", "HEAD^"); got != trunk {
+		t.Errorf("HEAD^ = %s, want the new trunk %s", got, trunk)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main"); got != mainBefore || got != trunk {
+		t.Errorf("remote main = %s, want unchanged trunk %s", got, mainBefore)
+	}
+}
+
+func TestWorktreeSyncPushLeaseRejectsConcurrentPush(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the git shim is a shell script")
+	}
+	f, wt := worktreeSyncPushFixture(t, true)
+	rival := filepath.Join(f.base, "rival")
+	if out, code := f.exec(f.base, "", "git", "clone", "-q", "--branch", "feature", f.remote("origin"), rival); code != 0 {
+		t.Fatalf("clone rival: exit %d\n%s", code, out)
+	}
+	writeFile(t, filepath.Join(rival, "rival.txt"), "rival\n")
+	if out, code := f.exec(rival, "", "git", "add", "-A"); code != 0 {
+		t.Fatalf("stage rival commit: exit %d\n%s", code, out)
+	}
+	if out, code := f.exec(rival, "", "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "feat: rival work"); code != 0 {
+		t.Fatalf("create rival commit: exit %d\n%s", code, out)
+	}
+	rivalHead := f.gitIn(rival, "rev-parse", "HEAD")
+	trunk := advanceWorktreeSyncTrunk(t, f)
+	mainBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shimDir := t.TempDir()
+	marker := filepath.Join(shimDir, "pushed-rival")
+	shim := "#!/bin/sh\nif [ \"$1\" = push ] && [ ! -e \"$GRAFT_TEST_PUSH_MARKER\" ]; then\n : > \"$GRAFT_TEST_PUSH_MARKER\"\n \"$GRAFT_TEST_REAL_GIT\" -C \"$GRAFT_TEST_RIVAL\" push -q origin HEAD:refs/heads/feature || exit\nfi\nexec \"$GRAFT_TEST_REAL_GIT\" \"$@\"\n"
+	writeFile(t, filepath.Join(shimDir, "git"), shim)
+	if err := os.Chmod(filepath.Join(shimDir, "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env,
+		"PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"GRAFT_TEST_PUSH_MARKER="+marker,
+		"GRAFT_TEST_REAL_GIT="+realGit,
+		"GRAFT_TEST_RIVAL="+rival,
+	)
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push")
+	if code == 0 || !strings.Contains(out, "force-with-lease") {
+		t.Fatalf("sync should fail its lease: exit %d\n%s", code, out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("git shim did not publish the rival commit: %v", err)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature"); got != rivalHead {
+		t.Errorf("remote feature = %s, want rival commit %s", got, rivalHead)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main"); got != mainBefore || got != trunk {
+		t.Errorf("remote main = %s, want unchanged trunk %s", got, mainBefore)
+	}
+	if got := f.gitIn(wt, "rev-parse", "HEAD^"); got != trunk {
+		t.Errorf("rebased HEAD^ = %s, want trunk %s", got, trunk)
+	}
+}
+
+func TestWorktreeSyncPushRejectsUnincludedFetchedCommits(t *testing.T) {
+	f, wt := worktreeSyncPushFixture(t, true)
+	rival := filepath.Join(f.base, "rival")
+	if out, code := f.exec(f.base, "", "git", "clone", "-q", "--branch", "feature", f.remote("origin"), rival); code != 0 {
+		t.Fatalf("clone rival: exit %d\n%s", code, out)
+	}
+	writeFile(t, filepath.Join(rival, "rival.txt"), "rival\n")
+	if out, code := f.exec(rival, "", "git", "add", "-A"); code != 0 {
+		t.Fatalf("stage rival commit: exit %d\n%s", code, out)
+	}
+	if out, code := f.exec(rival, "", "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "feat: rival work"); code != 0 {
+		t.Fatalf("create rival commit: exit %d\n%s", code, out)
+	}
+	rivalHead := f.gitIn(rival, "rev-parse", "HEAD")
+	rivalShort := f.gitIn(rival, "rev-parse", "--short", "HEAD")
+	if out, code := f.exec(rival, "", "git", "push", "-q", "origin", "HEAD:refs/heads/feature"); code != 0 {
+		t.Fatalf("publish rival commit: exit %d\n%s", code, out)
+	}
+	advanceWorktreeSyncTrunk(t, f)
+	localBefore := f.gitIn(wt, "rev-parse", "HEAD")
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push")
+	if code == 0 || !strings.Contains(out, rivalShort) || strings.Contains(out, rivalHead) || !strings.Contains(out, "git rebase") || !strings.Contains(out, "sync --push") {
+		t.Fatalf("sync should identify the fetched rival commit with a short SHA and refuse before rebase: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(wt, "rev-parse", "HEAD"); got != localBefore {
+		t.Errorf("HEAD changed before refusal: got %s, want %s", got, localBefore)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature"); got != rivalHead {
+		t.Errorf("remote feature = %s, want rival commit %s", got, rivalHead)
+	}
+
+	// The tracking ref now contains the rival tip; a repeated invocation must
+	// still refuse to overwrite it after the pre-fetch lease moves.
+	out, code = f.exec(wt, "", graftBin, "worktree", "sync", "--push")
+	if code == 0 {
+		t.Fatalf("repeated sync unexpectedly pushed over the rival commit:\n%s", out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature"); got != rivalHead {
+		t.Errorf("repeated sync changed remote feature: got %s, want rival commit %s", got, rivalHead)
+	}
+}
+
+func TestWorktreeSyncPushLeaseUsesValueBeforeFetch(t *testing.T) {
+	f, wt := worktreeSyncPushFixture(t, true)
+	leaseBefore := f.gitIn(wt, "rev-parse", "refs/remotes/origin/feature")
+	rival := filepath.Join(f.base, "rival")
+	if out, code := f.exec(f.base, "", "git", "clone", "-q", "--branch", "feature", f.remote("origin"), rival); code != 0 {
+		t.Fatalf("clone rival: exit %d\n%s", code, out)
+	}
+	writeFile(t, filepath.Join(rival, "rival.txt"), "rival\n")
+	f.run(rival, "git", "add", "-A")
+	f.run(rival, "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "feat: rival work")
+	rivalHead := f.gitIn(rival, "rev-parse", "HEAD")
+	f.run(rival, "git", "push", "-q", "origin", "HEAD:refs/heads/feature")
+	// Bring the rival commit into the local branch without moving its tracking
+	// ref. Fetch inside sync will then see it, while the lease remains stale.
+	f.run(wt, "git", "fetch", "-q", f.remote("origin"), "refs/heads/feature:refs/tmp/rival")
+	f.run(wt, "git", "merge", "--ff-only", "refs/tmp/rival")
+	if got := f.gitIn(wt, "rev-parse", "refs/remotes/origin/feature"); got != leaseBefore {
+		t.Fatalf("setup moved tracking ref: got %s, want %s", got, leaseBefore)
+	}
+	advanceWorktreeSyncTrunk(t, f)
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push")
+	if code == 0 || !strings.Contains(out, "force-with-lease") {
+		t.Fatalf("sync should retain the pre-fetch lease: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature"); got != rivalHead {
+		t.Errorf("remote feature = %s, want rival commit %s", got, rivalHead)
+	}
+}
+
+func TestWorktreeSyncPushDoesNotPushAfterRebaseConflict(t *testing.T) {
+	f, wt := worktreeSyncPushFixture(t, true)
+	remoteBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature")
+	f.write("own.txt", "trunk\n")
+	f.mustPlainCommit("feat: trunk conflicts")
+	f.git("push", "-q", "origin", "HEAD")
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push")
+	if code == 0 || !strings.Contains(out, "conflicts") {
+		t.Fatalf("sync --push should fail the rebase conflict: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature"); got != remoteBefore {
+		t.Errorf("remote feature changed after rebase failure: got %s, want %s", got, remoteBefore)
+	}
+}
+
+func TestWorktreeSyncPushNeedsUpstream(t *testing.T) {
+	f, wt := worktreeSyncPushFixture(t, false)
+	mainBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main")
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push")
+	if code == 0 || !strings.Contains(out, "git push -u origin feature") {
+		t.Fatalf("sync without upstream: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main"); got != mainBefore {
+		t.Errorf("remote main changed: got %s, want %s", got, mainBefore)
+	}
+	if got, code := f.exec(wt, "", "git", "show-ref", "--verify", "refs/remotes/origin/feature"); code == 0 {
+		t.Errorf("sync pushed without an upstream: %s", got)
+	}
+}
+
+func TestWorktreeSyncPushRequiresSameUpstreamBranch(t *testing.T) {
+	for _, hasRemoteHead := range []bool{true, false} {
+		name := "remote HEAD present"
+		if !hasRemoteHead {
+			name = "remote HEAD absent"
+		}
+		t.Run(name, func(t *testing.T) {
+			f, wt := worktreeSyncPushFixture(t, true)
+			if !hasRemoteHead {
+				f.run(wt, "git", "remote", "set-head", "origin", "-d")
+			}
+			f.run(wt, "git", "branch", "--set-upstream-to=origin/main", "feature")
+			branchBefore := f.gitIn(wt, "rev-parse", "HEAD")
+			mainBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main")
+			out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push")
+			if code == 0 || !strings.Contains(out, "the upstream of feature is origin/main, not origin/feature") || !strings.Contains(out, "git push -u origin feature") {
+				t.Fatalf("sync with a differently named upstream: exit %d\n%s", code, out)
+			}
+			if got := f.gitIn(wt, "rev-parse", "HEAD"); got != branchBefore {
+				t.Errorf("HEAD changed before refusal: got %s, want %s", got, branchBefore)
+			}
+			if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main"); got != mainBefore {
+				t.Errorf("remote main changed: got %s, want %s", got, mainBefore)
+			}
+		})
+	}
+}
+
+func TestWorktreeSyncPushRejectsLocalUpstream(t *testing.T) {
+	f, wt := worktreeSyncPushFixture(t, true)
+	f.run(wt, "git", "config", "branch.feature.remote", ".")
+	f.run(wt, "git", "config", "branch.feature.merge", "refs/heads/feature")
+	mainBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main")
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push")
+	if code == 0 || !strings.Contains(out, "the upstream of feature is ./feature") || !strings.Contains(out, "git push -u origin feature") {
+		t.Fatalf("sync with a local upstream: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main"); got != mainBefore {
+		t.Errorf("remote main changed: got %s, want %s", got, mainBefore)
+	}
+}
+
+func worktreeSyncSlashRemoteFixture(t *testing.T) (*fixture, string) {
+	t.Helper()
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
+	f.git("remote", "set-head", "origin", "main")
+	f.addRemote("team/up", f.remote("origin"))
+	f.run(f.work, "git", "fetch", "-q", "team/up")
+	wt := filepath.Join(f.base, "wt-work")
+	f.git("worktree", "add", "-q", "-b", "work", wt, "main")
+	writeFile(t, filepath.Join(wt, "own.txt"), "own\n")
+	f.run(wt, "git", "add", "-A")
+	f.run(wt, "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "feat: own work")
+	f.run(wt, "git", "push", "-q", "-u", "team/up", "HEAD:work")
+	return f, wt
+}
+
+func TestWorktreeSyncPushSupportsRemoteNameWithSlash(t *testing.T) {
+	f, wt := worktreeSyncSlashRemoteFixture(t)
+	f.write("trunk.txt", "trunk\n")
+	f.mustPlainCommit("feat: trunk moves")
+	trunk := f.git("rev-parse", "HEAD")
+	f.git("push", "-q", "origin", "HEAD")
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push", "--trunk", "origin/main")
+	if code != 0 || !strings.Contains(out, "pushed to team/up/work") {
+		t.Fatalf("sync --push to slash-named remote: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/work"); got != f.gitIn(wt, "rev-parse", "HEAD") {
+		t.Errorf("remote work = %s, want local HEAD", got)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main"); got != trunk {
+		t.Errorf("remote main = %s, want %s", got, trunk)
+	}
+}
+
+func TestWorktreeSyncPushRejectsDifferentBranchOnSlashRemote(t *testing.T) {
+	f, wt := worktreeSyncSlashRemoteFixture(t)
+	f.run(wt, "git", "branch", "--set-upstream-to=team/up/main", "work")
+	mainBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main")
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push", "--trunk", "origin/main")
+	if code == 0 || !strings.Contains(out, "the upstream of work is team/up/main, not team/up/work") || !strings.Contains(out, "git push -u team/up work") {
+		t.Fatalf("sync with different branch on slash-named remote: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main"); got != mainBefore {
+		t.Errorf("remote main changed: got %s, want %s", got, mainBefore)
+	}
+}
+
+func TestWorktreeSyncPushRefusesLocalTrunkBranch(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
+	f.git("remote", "set-head", "origin", "main")
+	f.addRemote("mirror", f.remote("origin"))
+	f.run(f.work, "git", "config", "remote.mirror.followRemoteHEAD", "never")
+	f.run(f.work, "git", "fetch", "-q", "mirror")
+	f.run(f.work, "git", "remote", "set-head", "mirror", "-d")
+	f.run(f.work, "git", "branch", "--set-upstream-to=mirror/main", "main")
+	mainBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main")
+	out, code := f.graft("", "worktree", "sync", "--push", "--trunk", "origin/main")
+	if code == 0 || !strings.Contains(out, "trunk branch") {
+		t.Fatalf("sync from local trunk branch: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main"); got != mainBefore {
+		t.Errorf("remote main changed: got %s, want %s", got, mainBefore)
+	}
+}
+
+func TestWorktreeSyncPushRefusesRemoteDefaultBranch(t *testing.T) {
+	f, _ := worktreeSyncPushFixture(t, true)
+	f.git("push", "-q", "origin", "HEAD:develop")
+	f.run(f.work, "git", "fetch", "-q", "origin")
+	mainBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main")
+	out, code := f.graft("", "worktree", "sync", "--push", "--trunk", "origin/develop")
+	if code == 0 || !strings.Contains(out, "remote origin default branch") {
+		t.Fatalf("sync targeting the known remote default branch: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main"); got != mainBefore {
+		t.Errorf("remote main changed: got %s, want %s", got, mainBefore)
+	}
+}
+
+func TestWorktreeSyncPushRequiresBranchTrunkBeforeFetch(t *testing.T) {
+	for _, useTag := range []bool{true, false} {
+		name := "tag"
+		if !useTag {
+			name = "commit ID"
+		}
+		t.Run(name, func(t *testing.T) {
+			f, wt := worktreeSyncPushFixture(t, true)
+			trunkSHA := f.gitIn(wt, "rev-parse", "refs/remotes/origin/main")
+			if useTag {
+				f.run(wt, "git", "tag", "v1", trunkSHA)
+			}
+			advanceWorktreeSyncTrunk(t, f)
+			trackingBefore := f.gitIn(wt, "rev-parse", "refs/remotes/origin/main")
+			branchBefore := f.gitIn(wt, "rev-parse", "HEAD")
+			remoteBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature")
+			trunk := trunkSHA
+			if useTag {
+				trunk = "v1"
+			}
+			out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push", "--trunk", trunk)
+			if code == 0 || !strings.Contains(out, "--push needs the trunk to be a branch (got "+trunk+")") || !strings.Contains(out, "graft compares the worktree branch with it") {
+				t.Fatalf("sync with %s trunk: exit %d\n%s", name, code, out)
+			}
+			if got := f.gitIn(wt, "rev-parse", "refs/remotes/origin/main"); got != trackingBefore {
+				t.Errorf("fetch happened before trunk validation: tracking main = %s, want %s", got, trackingBefore)
+			}
+			if got := f.gitIn(wt, "rev-parse", "HEAD"); got != branchBefore {
+				t.Errorf("HEAD changed before trunk refusal: got %s, want %s", got, branchBefore)
+			}
+			if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature"); got != remoteBefore {
+				t.Errorf("remote feature changed: got %s, want %s", got, remoteBefore)
+			}
+		})
+	}
+}
+
+func TestWorktreeSyncWithoutPushStillAcceptsTrunkTag(t *testing.T) {
+	f, wt := worktreeSyncPushFixture(t, true)
+	f.run(wt, "git", "tag", "v1", "refs/remotes/origin/main")
+	advanceWorktreeSyncTrunk(t, f)
+	remoteBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature")
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--trunk", "v1")
+	if code != 0 || !strings.Contains(out, "nothing committed or pushed") {
+		t.Fatalf("sync without push and trunk tag: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature"); got != remoteBefore {
+		t.Errorf("remote feature changed: got %s, want %s", got, remoteBefore)
+	}
+}
+
+func TestWorktreeSyncPushUsesServerDefaultBranch(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
+	f.git("remote", "set-head", "origin", "main")
+	f.git("push", "-q", "origin", "HEAD:develop")
+	f.run(f.work, "git", "fetch", "-q", "origin")
+	f.git("remote", "set-head", "origin", "develop")
+	localHead := f.gitIn(f.work, "symbolic-ref", "refs/remotes/origin/HEAD")
+	serverHead := f.gitIn(f.remote("origin"), "symbolic-ref", "HEAD")
+	if localHead != "refs/remotes/origin/develop" || serverHead != "refs/heads/main" {
+		t.Fatalf("setup got local HEAD %s and server HEAD %s", localHead, serverHead)
+	}
+	mainBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main")
+	branchBefore := f.gitIn(f.work, "rev-parse", "HEAD")
+	out, code := f.graft("", "worktree", "sync", "--push")
+	if code == 0 || !strings.Contains(out, "remote origin default branch") {
+		t.Fatalf("sync with stale origin/HEAD: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.work, "rev-parse", "HEAD"); got != branchBefore {
+		t.Errorf("HEAD changed before refusal: got %s, want %s", got, branchBefore)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main"); got != mainBefore {
+		t.Errorf("remote main changed: got %s, want %s", got, mainBefore)
+	}
+}
+
+func TestWorktreeSyncPushRefusesNonBranchServerHead(t *testing.T) {
+	f, wt := worktreeSyncPushFixture(t, true)
+	f.run(wt, "git", "tag", "v1", "refs/remotes/origin/main")
+	f.run(wt, "git", "push", "-q", "origin", "refs/tags/v1")
+	f.run(f.remote("origin"), "git", "symbolic-ref", "HEAD", "refs/tags/v1")
+	remoteBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature")
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push", "--trunk", "origin/main")
+	if code == 0 || !strings.Contains(out, "remote origin HEAD points to refs/tags/v1, not a branch") {
+		t.Fatalf("sync when server HEAD names a tag: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature"); got != remoteBefore {
+		t.Errorf("remote feature changed: got %s, want %s", got, remoteBefore)
+	}
+}
+
+// TestWorktreeSyncPushRefusesUnbornServerHead: a server whose HEAD names a
+// branch it does not have (git init --bare gives master to a main project)
+// advertises no default branch, so --push cannot tell it from the worktree
+// branch and refuses.
+func TestWorktreeSyncPushRefusesUnbornServerHead(t *testing.T) {
+	f, wt := worktreeSyncPushFixture(t, true)
+	f.run(f.remote("origin"), "git", "symbolic-ref", "HEAD", "refs/heads/nosuch")
+	remoteBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature")
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push", "--trunk", "origin/main")
+	if code == 0 || !strings.Contains(out, "remote origin does not advertise a branch for HEAD") {
+		t.Fatalf("sync when server HEAD is unborn: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature"); got != remoteBefore {
+		t.Errorf("remote feature changed: got %s, want %s", got, remoteBefore)
+	}
+}
+
+func TestWorktreeSyncPushRefusesWhenServerHeadCannotBeRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the git shim is a shell script")
+	}
+	f, wt := worktreeSyncPushFixture(t, true)
+	remoteBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shimDir := t.TempDir()
+	writeFile(t, filepath.Join(shimDir, "git"), "#!/bin/sh\nif [ \"$1\" = ls-remote ]; then echo 'simulated lookup failure' >&2; exit 2; fi\nexec \"$GRAFT_TEST_REAL_GIT\" \"$@\"\n")
+	if err := os.Chmod(filepath.Join(shimDir, "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env,
+		"PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"GRAFT_TEST_REAL_GIT="+realGit,
+	)
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push", "--trunk", "origin/main")
+	if code == 0 || !strings.Contains(out, "git ls-remote --symref origin HEAD failed") {
+		t.Fatalf("sync when server HEAD lookup fails: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature"); got != remoteBefore {
+		t.Errorf("remote feature changed: got %s, want %s", got, remoteBefore)
+	}
+}
+
+func TestWorktreeSyncPushUsesFullBranchNameWithMatchingTag(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
+	f.git("remote", "set-head", "origin", "main")
+	f.git("push", "-q", "origin", "HEAD:refs/heads/x", "HEAD:refs/heads/heads/x")
+	f.run(f.work, "git", "fetch", "-q", "origin")
+	f.git("tag", "x", "refs/remotes/origin/main")
+	wt := filepath.Join(f.base, "wt-x")
+	f.git("worktree", "add", "-q", "-b", "x", wt, "refs/remotes/origin/x")
+	writeFile(t, filepath.Join(wt, "own.txt"), "own\n")
+	f.run(wt, "git", "add", "-A")
+	f.run(wt, "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "feat: own x")
+	f.run(wt, "git", "push", "-q", "-u", "origin", "HEAD:refs/heads/x")
+	advanceWorktreeSyncTrunk(t, f)
+	headsBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/heads/x")
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push", "--trunk", "origin/main")
+	if code != 0 || !strings.Contains(out, "pushed to origin/x") {
+		t.Fatalf("sync --push with matching branch and tag: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/x"); got != f.gitIn(wt, "rev-parse", "HEAD") {
+		t.Errorf("origin/x = %s, want local HEAD", got)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/heads/x"); got != headsBefore {
+		t.Errorf("origin/heads/x changed: got %s, want %s", got, headsBefore)
+	}
+}
+
+func TestWorktreeSyncPushNeedsExistingTrackingRef(t *testing.T) {
+	f, wt := worktreeSyncPushFixture(t, false)
+	f.run(wt, "git", "config", "branch.feature.remote", "origin")
+	f.run(wt, "git", "config", "branch.feature.merge", "refs/heads/feature")
+	if got, code := f.exec(wt, "", "git", "show-ref", "--verify", "refs/remotes/origin/feature"); code == 0 {
+		t.Fatalf("test setup unexpectedly has an upstream tracking ref: %s", got)
+	}
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push")
+	if code == 0 || !strings.Contains(out, "unavailable before fetch") {
+		t.Fatalf("sync without a pre-fetch tracking ref: exit %d\n%s", code, out)
+	}
+	if got, code := f.exec(wt, "", "git", "show-ref", "--verify", "refs/remotes/origin/feature"); code == 0 {
+		t.Errorf("graft fetched before refusing missing tracking ref: %s", got)
+	}
+}
+
+func TestWorktreeSyncPushAllowsUpstreamFromReflog(t *testing.T) {
+	f, wt := worktreeSyncPushFixture(t, true)
+	remoteBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature")
+	advanceWorktreeSyncTrunk(t, f)
+	if out, code := f.exec(wt, "", graftBin, "worktree", "sync"); code != 0 {
+		t.Fatalf("sync before push: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(wt, "rev-parse", "HEAD"); got == remoteBefore {
+		t.Fatalf("sync did not rewrite the branch tip %s", got)
+	}
+	if got := f.gitIn(wt, "reflog", "show", "--format=%H", "refs/heads/feature"); !strings.Contains(got, remoteBefore) {
+		t.Fatalf("old upstream tip %s is not in the branch reflog:\n%s", remoteBefore, got)
+	}
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync", "--push")
+	if code != 0 {
+		t.Fatalf("sync --push with upstream tip in reflog: exit %d\n%s", code, out)
+	}
+	if got, want := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature"), f.gitIn(wt, "rev-parse", "HEAD"); got != want {
+		t.Errorf("remote feature = %s, want local HEAD %s", got, want)
+	}
+}
+
+func TestWorktreeSyncWithoutPushLeavesRemoteBranch(t *testing.T) {
+	f, wt := worktreeSyncPushFixture(t, true)
+	branchBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature")
+	advanceWorktreeSyncTrunk(t, f)
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync")
+	if code != 0 || !strings.Contains(out, "nothing committed or pushed") {
+		t.Fatalf("sync without --push: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature"); got != branchBefore {
+		t.Errorf("remote feature changed: got %s, want %s", got, branchBefore)
 	}
 }
 
