@@ -172,10 +172,10 @@ func (m *Manager) start(ctx context.Context, name string) error {
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 	if err := writePID(m.path(s.PIDFile), pid); err != nil {
-		return errors.Join(fmt.Errorf("%s: %w", name, err), proc.StopStartedGroup(cmd))
+		return errors.Join(fmt.Errorf("%s: %w", name, err), proc.Kill(pid))
 	}
 	if err := m.waitStarted(ctx, s, addr, exited); err != nil {
-		stopErr := proc.StopStartedGroup(cmd)
+		stopErr := proc.Kill(pid)
 		return errors.Join(fmt.Errorf("%s: %w\n%s", name, err, tail(m.path(s.Log), 20)), stopErr, fsx.Remove(m.path(s.PIDFile)))
 	}
 	fmt.Fprintf(m.Log, "graft: started %s (pid %d), log %s\n", name, pid, s.Log)

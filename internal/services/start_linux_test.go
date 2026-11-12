@@ -15,6 +15,18 @@ import (
 )
 
 func TestFailedStartStopsServiceAndChild(t *testing.T) {
+	t.Run("not listening", func(t *testing.T) {
+		failedStartStopsChild(t, "echo $$ > leader\nsleep 30 &\necho $! > child\nwait\n", "not listening")
+	})
+	// The leader exits first: its child is reparented outside graft and is
+	// reached only through its process group.
+	t.Run("leader exited", func(t *testing.T) {
+		failedStartStopsChild(t, "echo $$ > leader\nsleep 30 &\necho $! > child\nexit 1\n", "exited before listening")
+	})
+}
+
+func failedStartStopsChild(t *testing.T, body, want string) {
+	t.Helper()
 	dir := t.TempDir()
 	// Cleanup also handles the mutant that leaves the service running.
 	t.Cleanup(func() {
@@ -34,7 +46,7 @@ func TestFailedStartStopsServiceAndChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := filepath.Join(dir, "service.sh")
-	if err := os.WriteFile(script, []byte("echo $$ > leader\nsleep 30 &\necho $! > child\nwait\n"), 0o600); err != nil {
+	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	s := &config.Service{Run: config.Command{Argv: []string{"sh", script}}, Log: "service.log", PIDFile: "service.pid", Addr: addr, StartTimeout: 2 * time.Second}
@@ -55,14 +67,20 @@ func TestFailedStartStopsServiceAndChild(t *testing.T) {
 				time.Sleep(10 * time.Millisecond)
 			}
 		}
+		if pid == 0 {
+			t.Fatalf("the service wrote no %s pid", name)
+		}
 		stat, err := akitproc.ReadStat("/proc", pid)
+		if akitproc.Gone(err) {
+			continue // already gone: the leader exited or graft stopped it
+		}
 		if err != nil {
 			t.Fatalf("reading %s process %d: %v", name, pid, err)
 		}
 		started[pid] = stat
 	}
-	if err := <-result; err == nil || !strings.Contains(err.Error(), "not listening") {
-		t.Fatalf("start error = %v, want not listening", err)
+	if err := <-result; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("start error = %v, want %s", err, want)
 	}
 	for pid, original := range started {
 		deadline := time.Now().Add(2 * time.Second)
