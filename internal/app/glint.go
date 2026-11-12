@@ -163,22 +163,31 @@ func (g *glintCheck) count(ctx context.Context) (sha string, found int, err erro
 	if _, err := g.repo.Git("worktree", "add", "--detach", dir, sha); err != nil {
 		return sha, 0, err
 	}
+	g.link(dir)
+	found, err = g.run(ctx, dir)
+	return sha, found, err
+}
+
+// link gives glint's work tree at dir the worktree.link links of the main
+// tree, setups left out. The links only help: glint runs without them when
+// they cannot be made, say at a deployed commit older than .graft.yaml, as it
+// did before.
+func (g *glintCheck) link(dir string) {
 	trees, err := listWorktrees(g.repo)
-	if err != nil {
-		return sha, 0, err
+	if err == nil && len(trees) == 0 {
+		err = errors.New("the main worktree is unknown")
 	}
-	if len(trees) == 0 {
-		return sha, 0, errors.New("the main worktree is unknown")
+	var setups []string
+	if err == nil {
+		setups, err = g.a.linkWorktree(trees[0].path, dir)
 	}
-	setups, err := g.a.linkWorktree(trees[0].path, dir)
 	if err != nil {
-		return sha, 0, fmt.Errorf("linking worktree.link for glint: %w", err)
+		g.a.warn("glint runs without worktree.link links: %v", err)
+		return
 	}
 	for _, setup := range setups {
 		g.a.warn("worktree.link group needing %s is not linked; glint's temporary copy does not run setup, so glint may fail", setup)
 	}
-	found, err = g.run(ctx, dir)
-	return sha, found, err
 }
 
 // run is glint check in dir. glint exits non-zero on findings from its own
