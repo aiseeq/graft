@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -144,7 +146,7 @@ func TestReleaseCutoffHoldAndWithheld(t *testing.T) {
 		"the cutoff was Wed 21.10 18:00, test holds the candidate",
 		"git switch -c release/22.10.26 " + candidate,
 		"# PROJ-1 is Testing, not Ready for release or Done",
-		"git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + unchecked + "^ " + unchecked + " -- . ':(exclude)VERSION' | git apply -R --3way --index",
+		"git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + unchecked + "^ " + unchecked + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index",
 		"graft commit -m 'revert: PROJ-1 not checked by the 22.10.26 cutoff' -m 'This reverts commit " + unchecked + ".'",
 		"git merge -s ours --no-edit release/22.10.26",
 	} {
@@ -291,11 +293,11 @@ func TestReleaseCutoffMigrationConflict(t *testing.T) {
 	if !strings.Contains(out, "migrator applies only versions above the last applied version") || !strings.Contains(out, "skipped on the next release") {
 		t.Errorf("cutoff omitted the migration risk:\n%s", out)
 	}
-	plainRevert2 := "git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude)VERSION' | git apply -R --3way --index"
+	plainRevert2 := "git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
 	if strings.Contains(out, plainRevert2) {
 		t.Errorf("cutoff printed an unexcluded reverse patch for migration 2:\n%s", out)
 	}
-	wantExclude := "git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude)VERSION' ':(exclude)migrations/000002_step.down.sql' ':(exclude)migrations/000002_step.up.sql' | git apply -R --3way --index"
+	wantExclude := "git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' ':(exclude,literal)migrations/000002_step.down.sql' ':(exclude,literal)migrations/000002_step.up.sql' | git apply -R --3way --index"
 	if !strings.Contains(out, wantExclude) {
 		t.Errorf("cutoff omitted the ready-to-run exclude command %q:\n%s", wantExclude, out)
 	}
@@ -513,7 +515,7 @@ func TestReleaseCutoffRevertingDeletedMigrationKeepsOldOutput(t *testing.T) {
 	d.mustFixtureCommit("feat: PROJ-1 remove old migration")
 	deleted := d.git("rev-parse", "HEAD")
 	out := cutoffOutput(t, d)
-	want := "git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + deleted + "^ " + deleted + " -- . ':(exclude)VERSION' | git apply -R --3way --index"
+	want := "git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + deleted + "^ " + deleted + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
 	if !strings.Contains(out, want) || strings.Contains(out, "Migration cutoff conflict") {
 		t.Fatalf("reverting a deleted migration changed cutoff output:\n%s", out)
 	}
@@ -573,7 +575,7 @@ func TestReleaseCutoffChangedRenameConflictsOnBothPaths(t *testing.T) {
 	out := cutoffOutput(t, d)
 	for _, want := range []string{
 		"migrations/000002_renamed.up.sql (number 2)",
-		"git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + sha + "^ " + sha + " -- . ':(exclude)VERSION' ':(exclude)migrations/000002_renamed.up.sql' ':(exclude)migrations/000002_step.up.sql' | git apply -R --3way --index",
+		"git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + sha + "^ " + sha + " -- . ':(exclude,literal)VERSION' ':(exclude,literal)migrations/000002_renamed.up.sql' ':(exclude,literal)migrations/000002_step.up.sql' | git apply -R --3way --index",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("cutoff: no %q\n%s", want, out)
@@ -591,8 +593,25 @@ func TestReleaseCutoffUnavailableWhenPlannedReversePatchDoesNotApply(t *testing.
 	d.write(filepath.Join("migrations", "000007_step.down.sql"), "feat: PROJ-8 revise down migration 7\n")
 	d.mustFixtureCommit("feat: PROJ-8 revise down migration 7")
 	out := cutoffOutput(t, d)
-	if !strings.Contains(out, "migrations/000007_step.down.sql stays in the release: its revert does not apply on the candidate, so number 7 runs on prod") || strings.Contains(out, "migration check unavailable") {
+	if !strings.Contains(out, "migrations/000007_step.down.sql stays in the release: its revert does not apply on the candidate") || strings.Contains(out, "migration check unavailable") {
 		t.Fatalf("cutoff did not explain the migration path that stays in the release:\n%s", out)
+	}
+}
+
+// A translated git still lets the cutoff tell a revert that does not apply.
+func TestReleaseCutoffUnappliedRevertUnderTranslatedGit(t *testing.T) {
+	d := cutoffMigrationRepo(t, true)
+	d.at("2026-10-20 10:00")
+	cutoffMigrationCommits(d, map[int]bool{}, 1, 2, 3, 4, 5, 6)
+	d.write(filepath.Join("migrations", "000007_step.up.sql"), "feat: PROJ-1 migration 7\n")
+	d.write(filepath.Join("migrations", "000007_step.down.sql"), "down migration 7\n")
+	d.mustFixtureCommit("feat: PROJ-1 add migration 7")
+	d.write(filepath.Join("migrations", "000007_step.down.sql"), "feat: PROJ-8 revise down migration 7\n")
+	d.mustFixtureCommit("feat: PROJ-8 revise down migration 7")
+	d.env = append(d.env, "LC_ALL=de_DE.UTF-8", "LANGUAGE=de")
+	out := cutoffOutput(t, d)
+	if !strings.Contains(out, "migrations/000007_step.down.sql stays in the release: its revert does not apply on the candidate") || strings.Contains(out, "migration check unavailable") {
+		t.Fatalf("cutoff under a translated git did not explain the migration path that stays in the release:\n%s", out)
 	}
 }
 
@@ -730,7 +749,7 @@ func TestReleaseCutoffWithoutMigrationConfigKeepsOutput(t *testing.T) {
 	d.at("2026-10-20 10:00")
 	commits := cutoffMigrationCommits(d, map[int]bool{2: true}, 1, 2, 3, 4)
 	out := cutoffOutput(t, d)
-	want := "git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude)VERSION' | git apply -R --3way --index"
+	want := "git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
 	if !strings.Contains(out, want) || strings.Contains(out, "Migration cutoff conflict") {
 		t.Fatalf("cutoff without test_db.migrations changed its output:\n%s", out)
 	}
@@ -741,7 +760,7 @@ func TestReleaseCutoffWithTestDBButNoMigrationsKeepsOutput(t *testing.T) {
 	d.at("2026-10-20 10:00")
 	commits := cutoffMigrationCommitsAt(d, "", map[int]bool{2: true}, 1, 2, 3, 4)
 	out := cutoffOutput(t, d)
-	want := "git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude)VERSION' | git apply -R --3way --index"
+	want := "git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
 	if !strings.Contains(out, want) || strings.Contains(out, "Migration cutoff conflict") {
 		t.Fatalf("cutoff with test_db but no migrations changed its output:\n%s", out)
 	}
@@ -1144,7 +1163,7 @@ func TestReleaseAttribute(t *testing.T) {
 	out := d.mustGraft("deploy", "cutoff", "prod")
 	for _, want := range []string{
 		"# PROJ-1 is In Progress, not Ready for release or Done",
-		"git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + keyless + "^ " + keyless + " -- . ':(exclude)VERSION' | git apply -R --3way --index",
+		"git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + keyless + "^ " + keyless + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index",
 		"graft commit -m 'revert: PROJ-1 not checked by the 22.10.26 cutoff' -m 'This reverts commit " + keyless + ".'",
 	} {
 		if !strings.Contains(out, want) {
@@ -1308,4 +1327,459 @@ deploy:
 		!strings.Contains(out, port[:12]+" fix: PROJ-7 ported from the trunk") {
 		t.Errorf("a port by its item:\n%s", out)
 	}
+}
+
+type rv2Tree map[uint64]map[string]bool
+
+func rv2Migrations(d *deployFixture, rev, dir string) rv2Tree {
+	d.t.Helper()
+	out := d.git("ls-tree", "-r", rev)
+	t := rv2Tree{}
+	for line := range strings.SplitSeq(out, "\n") {
+		meta, path, ok := strings.Cut(line, "\t")
+		if !ok || filepath.ToSlash(filepath.Dir(path)) != dir {
+			continue
+		}
+		base := filepath.Base(path)
+		if strings.Contains(base, ".down.") {
+			continue
+		}
+		i := 0
+		for i < len(base) && base[i] >= '0' && base[i] <= '9' {
+			i++
+		}
+		if i == 0 {
+			continue
+		}
+		n, _ := strconv.ParseUint(base[:i], 10, 64)
+		if t[n] == nil {
+			t[n] = map[string]bool{}
+		}
+		t[n][strings.Fields(meta)[2]] = true
+	}
+	return t
+}
+
+func rv2Max(t rv2Tree) uint64 {
+	var m uint64
+	for n := range t {
+		m = max(m, n)
+	}
+	return m
+}
+
+// rv2Losses: candidate numbers at or below the release's highest that the
+// release lacks or has different.
+func rv2Losses(cand, rel rv2Tree) []uint64 {
+	hi := rv2Max(rel)
+	var lost []uint64
+	for n, blobs := range cand {
+		if n > hi {
+			continue
+		}
+		r := rel[n]
+		same := len(r) == len(blobs)
+		for b := range blobs {
+			if !r[b] {
+				same = false
+			}
+		}
+		if !same {
+			lost = append(lost, n)
+		}
+	}
+	slices.Sort(lost)
+	return lost
+}
+
+// rv2Extra: release numbers the candidate does not have at all (a revert
+// brought back a migration the trunk renamed or removed).
+func rv2Extra(cand, rel rv2Tree) []uint64 {
+	var extra []uint64
+	for n := range rel {
+		if cand[n] == nil {
+			extra = append(extra, n)
+		}
+	}
+	slices.Sort(extra)
+	return extra
+}
+
+func rv2Commit(d *deployFixture, msg string, files map[string]string) string {
+	d.t.Helper()
+	for p, c := range files {
+		if c == "" {
+			if err := os.Remove(filepath.Join(d.work, filepath.FromSlash(p))); err != nil {
+				d.t.Fatal(err)
+			}
+			continue
+		}
+		d.write(p, c)
+	}
+	d.mustFixtureCommit(msg)
+	return d.git("rev-parse", "HEAD")
+}
+
+func rv2Repo(t *testing.T, dir string) *deployFixture {
+	d := cutoffMigrationRepoWithPath(t, dir, true)
+	d.at("2026-10-20 10:00")
+	return d
+}
+
+var rv2ItemRe = regexp.MustCompile(`PROJ-\d+`)
+var rv2DiffRe = regexp.MustCompile(`^git diff .* ([0-9a-f]{40})\^ ([0-9a-f]{40}) -- `)
+
+// rv2Exec runs the plan lines; keep names an item kept whole: its git diff
+// lines and graft commit are skipped, and the paths its "Decide first" line
+// names get excluded from the other items' git diff lines. It returns the
+// first failing command, or "".
+func rv2Exec(t *testing.T, d *deployFixture, out, keep string) string {
+	t.Helper()
+	extra := map[string][]string{} // item -> paths
+	empty := map[string]bool{}
+	if keep != "" {
+		for line := range strings.SplitSeq(out, "\n") {
+			if strings.HasPrefix(line, "#   if keeping "+keep+": nothing left to revert") {
+				if m := regexp.MustCompile(`commit ([0-9a-f]{12})`).FindStringSubmatch(line); m != nil {
+					empty[m[1]] = true
+				}
+			}
+			if !strings.HasPrefix(line, "#   "+keep+":") {
+				continue
+			}
+			_, list, ok := strings.Cut(line, "other items' reverts ")
+			if !ok {
+				continue
+			}
+			for _, m := range regexp.MustCompile(`(\S+) \(number \d+, (PROJ-\d+)\)`).FindAllStringSubmatch(list, -1) {
+				extra[m[2]] = append(extra[m[2]], m[1])
+			}
+		}
+		t.Logf("keep %s: extra excludes %v", keep, extra)
+	}
+	itemOf := func(sha string) string {
+		return rv2ItemRe.FindString(d.git("log", "-1", "--format=%s", sha))
+	}
+	on := false
+	for line := range strings.SplitSeq(out, "\n") {
+		switch {
+		case strings.Contains(line, "goes out from release/"):
+			on = true
+		case strings.Contains(line, "Then the candidate goes"):
+			on = false
+		}
+		cmd := strings.TrimSpace(line)
+		if !on || !(strings.HasPrefix(cmd, "git ") || strings.HasPrefix(cmd, "graft ")) {
+			continue
+		}
+		if keep != "" {
+			if m := rv2DiffRe.FindStringSubmatch(cmd); m != nil {
+				if empty[m[2][:12]] {
+					continue
+				}
+				item := itemOf(m[2])
+				if item == keep {
+					continue
+				}
+				for _, p := range extra[item] {
+					cmd = strings.Replace(cmd, " | git apply", " ':(exclude)"+p+"' | git apply", 1)
+				}
+			}
+			if strings.HasPrefix(cmd, "graft commit") && strings.Contains(cmd, "revert: "+keep+" ") {
+				continue
+			}
+			if strings.HasPrefix(cmd, "graft commit") {
+				for _, m := range regexp.MustCompile(`-m 'This reverts commit ([0-9a-f]{40})\.'`).FindAllStringSubmatch(cmd, -1) {
+					if empty[m[1][:12]] {
+						cmd = strings.Replace(cmd, m[0], "", 1)
+					}
+				}
+				if !strings.Contains(cmd, "This reverts commit ") {
+					continue
+				}
+			}
+		}
+		if got, code := d.exec(d.work, "", "sh", "-c", cmd); code != 0 {
+			t.Logf("FAILED: %s: exit %d\n%s", cmd, code, got)
+			return cmd
+		}
+	}
+	return ""
+}
+
+// rv2Check runs the plan (or the keep variant on a fresh branch) and reports
+// failing commands, losses and extras.
+func rv2Check(t *testing.T, d *deployFixture, out, dir, keep string) {
+	t.Helper()
+	cand := strings.TrimSpace(d.stateFile("test-sha"))
+	trunk := d.git("branch", "--show-current")
+	if failed := rv2Exec(t, d, out, keep); failed != "" {
+		t.Errorf("FINDING (keep=%q): a printed command fails: %s", keep, failed)
+	}
+	c, r := rv2Migrations(d, cand, dir), rv2Migrations(d, "HEAD", dir)
+	if lost := rv2Losses(c, r); len(lost) > 0 {
+		t.Errorf("FINDING (keep=%q): release lost migrations %v (release highest %d)", keep, lost, rv2Max(r))
+	}
+	if extra := rv2Extra(c, r); len(extra) > 0 {
+		t.Logf("NOTE (keep=%q): release ships numbers %v the candidate does not have", keep, extra)
+	}
+	// back to the trunk for a second variant
+	d.exec(d.work, "", "sh", "-c", "git reset -q --hard && git switch -q "+trunk+" && for b in $(git for-each-ref --format='%(refname:short)' refs/heads/release/); do git branch -D -q $b; git push -q origin --delete $b 2>/dev/null; done; true")
+}
+
+func rv2Plan(t *testing.T, d *deployFixture) string {
+	t.Helper()
+	out := cutoffOutput(t, d)
+	t.Logf("plan:\n%s", out)
+	assertCutoffShellSyntax(t, out)
+	if strings.Contains(out, "migration check unavailable") {
+		t.Errorf("FINDING: migration check unavailable")
+	}
+	return out
+}
+
+// 1. migrations: . with VERSION, a migration-only commit and a code commit.
+func TestReleaseCutoffRootMigrationOnlyCommit(t *testing.T) {
+	d := rv2Repo(t, ".")
+	cutoffMigrationCommitsAt(d, ".", map[int]bool{}, 1)
+	rv2Commit(d, "feat: PROJ-1 add 2", map[string]string{"000002_step.up.sql": "PROJ-1\n", "000002_step.down.sql": "down\n"})
+	rv2Commit(d, "feat: PROJ-1 code", map[string]string{"app1.txt": "1\n"})
+	cutoffMigrationCommitsAt(d, ".", map[int]bool{}, 3)
+	out := rv2Plan(t, d)
+	if !strings.Contains(out, "nothing left to revert") {
+		t.Errorf("want nothing left to revert for the migration-only commit")
+	}
+	rv2Check(t, d, out, ".", "")
+}
+
+// 2. Subdirectory with nested dir: three items edit one migration below the
+// highest in interleaved order.
+func TestReleaseCutoffThreeItemsInterleavedBelow(t *testing.T) {
+	d := rv2Repo(t, "db/migrations")
+	cutoffMigrationCommitsAt(d, "db/migrations", map[int]bool{}, 1)
+	rv2Commit(d, "feat: PROJ-3 add 2", map[string]string{"db/migrations/000002_x.up.sql": "v1\n", "app3.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-1 edit 2", map[string]string{"db/migrations/000002_x.up.sql": "v2\n", "app1.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-9 edit 2", map[string]string{"db/migrations/000002_x.up.sql": "v3\n", "app9.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-3 edit 2", map[string]string{"db/migrations/000002_x.up.sql": "v4\n", "app3.txt": "2\n"})
+	cutoffMigrationCommitsAt(d, "db/migrations", map[int]bool{}, 3)
+	out := rv2Plan(t, d)
+	rv2Check(t, d, out, "db/migrations", "")
+	for _, k := range []string{"PROJ-1", "PROJ-3", "PROJ-9"} {
+		rv2Check(t, d, out, "db/migrations", k)
+	}
+}
+
+// 3. Interleaved edits of a migration ABOVE every checked one: all reverts
+// are possible in history order, but the per-item order fails; the plan
+// should not ship unchecked migration 5 if it can be reverted.
+func TestReleaseCutoffInterleavedAboveHighest(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1, 2, 3, 4)
+	rv2Commit(d, "feat: PROJ-3 add 5", map[string]string{"migrations/000005_x.up.sql": "v1\n", "app3.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-1 edit 5", map[string]string{"migrations/000005_x.up.sql": "v2\n", "app1.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-3 edit 5", map[string]string{"migrations/000005_x.up.sql": "v3\n", "app3.txt": "2\n"})
+	out := rv2Plan(t, d)
+	if strings.Contains(out, "Migration cutoff conflict") {
+		t.Errorf("FINDING: conflict named for migration 5 above every checked migration; reverting it loses nothing")
+	}
+	rv2Check(t, d, out, "migrations", "")
+	r := rv2Migrations(d, "HEAD", "migrations")
+	_ = r
+}
+
+// 4. Revert does not apply because of a later edit: own item (applies),
+// other unchecked item, checked item; numbers above the highest.
+func TestReleaseCutoffLateEditAbove(t *testing.T) {
+	for _, later := range []string{"PROJ-1", "PROJ-9", "PROJ-8"} {
+		t.Run(later, func(t *testing.T) {
+			d := rv2Repo(t, "migrations")
+			cutoffMigrationCommits(d, map[int]bool{}, 1, 2, 3, 4)
+			rv2Commit(d, "feat: PROJ-1 add 5", map[string]string{"migrations/000005_x.up.sql": "v1\n", "migrations/000005_x.down.sql": "d1\n", "app1.txt": "1\n"})
+			rv2Commit(d, "feat: "+later+" edit 5", map[string]string{"migrations/000005_x.up.sql": "v2\n", "migrations/000005_x.down.sql": "d2\n", "app" + later + ".txt": "1\n"})
+			out := rv2Plan(t, d)
+			rv2Check(t, d, out, "migrations", "")
+		})
+	}
+}
+
+// 5. A non-conflicting commit whose only change is a migration path that
+// stays (its revert does not apply): the printed exclude leaves an empty
+// patch, and git apply refuses an empty patch.
+func TestReleaseCutoffStaysOnlyPathEmptyPatch(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1, 2, 3)
+	rv2Commit(d, "feat: PROJ-1 add 7", map[string]string{"migrations/000007_x.up.sql": "up\n", "migrations/000007_x.down.sql": "d1\n", "app1.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-1 down 7", map[string]string{"migrations/000007_x.down.sql": "d2\n"})
+	rv2Commit(d, "feat: PROJ-8 down 7", map[string]string{"migrations/000007_x.down.sql": "d3\n"})
+	out := rv2Plan(t, d)
+	rv2Check(t, d, out, "migrations", "")
+}
+
+// 6. Rename with edit of a checked migration to a higher number by an
+// unchecked item: the release gets the old number back, the trunk's new
+// number repeats it on the next release.
+func TestReleaseCutoffRenameSameNumberWithEdit(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1, 2, 3)
+	d.git("mv", "migrations/000002_step.up.sql", "migrations/000002_new name[1].up.sql")
+	rv2Commit(d, "feat: PROJ-1 rename 2", map[string]string{"migrations/000002_new name[1].up.sql": "feat: PROJ-8 migration 2\nedited\n", "app1.txt": "1\n"})
+	cutoffMigrationCommits(d, map[int]bool{}, 4)
+	out := rv2Plan(t, d)
+	if !strings.Contains(out, "Migration cutoff conflict") {
+		t.Errorf("FINDING: no conflict for renamed+edited 2")
+	}
+	rv2Check(t, d, out, "migrations", "")
+	rv2Check(t, d, out, "migrations", "PROJ-1")
+}
+
+// 8. .down. only below highest, and .down. with up below highest.
+func TestReleaseCutoffDownFiles(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1, 2)
+	rv2Commit(d, "feat: PROJ-1 down 1", map[string]string{"migrations/000001_step.down.sql": "d\n", "app1.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-9 add 3", map[string]string{"migrations/000003_x.up.sql": "u\n", "migrations/000003_x.down.sql": "d\n", "app9.txt": "1\n"})
+	cutoffMigrationCommits(d, map[int]bool{}, 4)
+	out := rv2Plan(t, d)
+	if strings.Contains(out, "000001_step.down.sql (number 1)") {
+		t.Errorf("FINDING: false conflict on a down-only change")
+	}
+	if !strings.Contains(out, "migrations/000003_x.down.sql") {
+		t.Errorf("FINDING: down 3 not excluded with up 3")
+	}
+	rv2Check(t, d, out, "migrations", "")
+}
+
+// 9. Keep whole: two other items touch the same path that keeping raises
+// below the highest; the Decide first line must name both.
+func TestReleaseCutoffKeepNamesEveryItemOfAPath(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1, 2, 4)
+	rv2Commit(d, "feat: PROJ-3 add 3", map[string]string{"migrations/000003_x.up.sql": "v1\n", "app3.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-9 edit 3", map[string]string{"migrations/000003_x.up.sql": "v2\n", "app9.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-1 edit 1 add 5", map[string]string{"migrations/000001_step.up.sql": "edited\n", "migrations/000005_x.up.sql": "p1\n", "app1.txt": "1\n"})
+	out := rv2Plan(t, d)
+	rv2Check(t, d, out, "migrations", "")
+	rv2Check(t, d, out, "migrations", "PROJ-1")
+	rv2Check(t, d, out, "migrations", "PROJ-9")
+	if !strings.Contains(out, "migrations/000003_x.up.sql (number 3, PROJ-3)") {
+		t.Errorf("keeping PROJ-9 must exclude PROJ-3's revert of the shared path:\n%s", out)
+	}
+}
+
+func TestReleaseCutoffIgnoresMigrationNamedGitlink(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1, 3)
+	linkPath := filepath.Join(d.work, "migrations", "000002_link.up.sql")
+	if err := os.MkdirAll(linkPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(linkPath, "placeholder"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := d.exec(linkPath, "", "git", "init", "-q"); code != 0 {
+		t.Fatalf("init migration path gitlink: exit %d\n%s", code, out)
+	}
+	for _, args := range [][]string{{"git", "add", "placeholder"}, {"git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "commit", "-q", "-m", "placeholder"}} {
+		if out, code := d.exec(linkPath, "", args[0], args[1:]...); code != 0 {
+			t.Fatalf("gitlink %s: exit %d\n%s", args[1], code, out)
+		}
+	}
+	shaOut, code := d.exec(linkPath, "", "git", "rev-parse", "HEAD")
+	if code != 0 {
+		t.Fatalf("read migration gitlink commit: exit %d\n%s", code, shaOut)
+	}
+	sha := strings.TrimSpace(shaOut)
+	rv2Commit(d, "feat: PROJ-1 link path", map[string]string{"app1.txt": "1\n"})
+	d.git("update-index", "--add", "--cacheinfo", "160000,"+sha+",migrations/000002_link.up.sql")
+	if out, code := d.exec(d.work, "", "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "--amend", "--no-edit"); code != 0 {
+		t.Fatalf("commit migration path gitlink: exit %d\n%s", code, out)
+	}
+	if entry := d.git("ls-tree", "HEAD", "--", "migrations/000002_link.up.sql"); !strings.HasPrefix(entry, "160000 commit ") {
+		t.Fatalf("fixture did not commit a gitlink migration path: %q", entry)
+	}
+	out := rv2Plan(t, d)
+	if strings.Contains(out, "Migration cutoff conflict") {
+		t.Fatalf("a gitlink is not a migration file:\n%s", out)
+	}
+	if failed := rv2Exec(t, d, out, ""); failed != "" {
+		t.Fatalf("printed command failed: %s", failed)
+	}
+}
+
+// 10. Keep whole: the kept item edited another item's migration above the
+// highest; the other item's printed revert no longer applies.
+func TestReleaseCutoffKeepMakesOtherRevertFail(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1, 2, 3)
+	rv2Commit(d, "feat: PROJ-9 add 6", map[string]string{"migrations/000006_x.up.sql": "v1\n", "app9.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-1 edit 2 and 6", map[string]string{"migrations/000002_step.up.sql": "edited\n", "migrations/000006_x.up.sql": "v2\n", "app1.txt": "1\n"})
+	out := rv2Plan(t, d)
+	if !strings.Contains(out, "and the revert of migrations/000006_x.up.sql (PROJ-9) does not apply then: it stays as in the candidate") {
+		t.Errorf("keep option omitted the other item's non-applying revert:\n%s", out)
+	}
+	rv2Check(t, d, out, "migrations", "")
+	rv2Check(t, d, out, "migrations", "PROJ-1")
+}
+
+func TestReleaseCutoffKeepNamesOtherPathAtSameNumber(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1, 2, 4)
+	rv2Commit(d, "feat: PROJ-9 add 3", map[string]string{"migrations/000003_a.up.sql": "a\n", "app9.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-1 add another 3", map[string]string{"migrations/000003_b.up.sql": "b\n", "migrations/000005_x.up.sql": "p1\n", "app1.txt": "1\n"})
+	out := rv2Plan(t, d)
+	if !strings.Contains(out, "migrations/000003_b.up.sql (number 3, PROJ-1)") {
+		t.Fatalf("keeping PROJ-9 must name PROJ-1's other file at the same migration number:\n%s", out)
+	}
+	rv2Check(t, d, out, "migrations", "PROJ-9")
+}
+
+// 11. Personal git config.
+func TestReleaseCutoffPersonalConfig(t *testing.T) {
+	d := rv2Repo(t, "db/my migrations")
+	cutoffMigrationCommitsAt(d, "db/my migrations", map[int]bool{}, 1)
+	rv2Commit(d, "feat: PROJ-1 add 2", map[string]string{"db/my migrations/000002_a[1].up.sql": "PROJ-1\n", "app1.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-9 add 5", map[string]string{"db/my migrations/000005_b.up.sql": "PROJ-9\n", "app9.txt": "1\n"})
+	cutoffMigrationCommitsAt(d, "db/my migrations", map[int]bool{}, 3, 4)
+	for _, kv := range [][2]string{{"diff.noprefix", "true"}, {"diff.renames", "copies"}, {"color.ui", "always"}, {"diff.relative", "true"}, {"diff.mnemonicPrefix", "true"}, {"diff.external", "false"}, {"core.quotePath", "true"}} {
+		d.git("config", kv[0], kv[1])
+	}
+	out := rv2Plan(t, d)
+	if !strings.Contains(out, "Migration cutoff conflict") {
+		t.Errorf("FINDING: no conflict with personal config")
+	}
+	rv2Check(t, d, out, "db/my migrations", "")
+}
+
+// 12. Keep whole of an item with a migration-only commit.
+func TestReleaseCutoffKeepWholeRun(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1, 2)
+	rv2Commit(d, "feat: PROJ-9 add 3", map[string]string{"migrations/000003_step.up.sql": "PROJ-9\n", "app9.txt": "1\n"})
+	cutoffMigrationCommits(d, map[int]bool{}, 4)
+	rv2Commit(d, "feat: PROJ-1 edit 1, add 5", map[string]string{"migrations/000001_step.up.sql": "edited\n", "migrations/000005_step.up.sql": "PROJ-1\n"})
+	rv2Commit(d, "feat: PROJ-3 add 6", map[string]string{"migrations/000006_step.up.sql": "PROJ-3\n", "app3.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-9 add 7 code", map[string]string{"migrations/000007_step.up.sql": "PROJ-9\n", "app9.txt": "2\n"})
+	out := rv2Plan(t, d)
+	rv2Check(t, d, out, "migrations", "")
+	rv2Check(t, d, out, "migrations", "PROJ-1")
+	rv2Check(t, d, out, "migrations", "PROJ-9")
+}
+
+// 13. Fixed point needs a second pass: a revert that does not apply keeps
+// migration 9 in the release only after it is excluded, which raises the
+// highest above 5, which PROJ-9 adds. (Kills the mutant that stops the loop
+// after the first pass with an exclusion.)
+func TestReleaseCutoffFixedPointSecondPass(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1, 2, 3, 4)
+	rv2Commit(d, "feat: PROJ-8 add 9", map[string]string{"migrations/000009_q.up.sql": "v0\n"})
+	rv2Commit(d, "feat: PROJ-1 drop 9", map[string]string{"migrations/000009_q.up.sql": "", "app1.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-9 add 5", map[string]string{"migrations/000005_x.up.sql": "p9\n", "app9.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-3 re-add 9", map[string]string{"migrations/000009_q.up.sql": "v5\n", "app3.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-1 code", map[string]string{"app1.txt": "2\n"})
+	out := rv2Plan(t, d)
+	if !strings.Contains(out, "migrations/000005_x.up.sql (number 5)") {
+		t.Errorf("FINDING: migration 5 not flagged although 9 stays")
+	}
+	rv2Check(t, d, out, "migrations", "")
 }
