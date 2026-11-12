@@ -57,12 +57,15 @@ func TestMergeNoDepsNeedsReason(t *testing.T) {
 	}
 }
 
-func TestMergeCleansDeadTemporaryWorktree(t *testing.T) {
+// A temporary tree left by a merge that is gone is named, not removed: a
+// task the dead merge started may still run in it.
+func TestMergeWarnsAboutDeadTemporaryWorktree(t *testing.T) {
 	f := mergeRepo(t, "origin")
 	root, err := os.MkdirTemp(os.TempDir(), "graft-merge-orphan-")
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { os.RemoveAll(root) })
 	worktree := filepath.Join(root, "tree")
 	f.git("worktree", "add", "--detach", "--quiet", worktree, "main")
 	commonDir := f.git("rev-parse", "--path-format=absolute", "--git-common-dir")
@@ -71,11 +74,36 @@ func TestMergeCleansDeadTemporaryWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := f.mustGraft("merge", "feature/PROJ-42")
-	if !strings.Contains(out, "removed orphaned temporary worktree") {
-		t.Errorf("missing stale worktree cleanup report:\n%s", out)
+	if !strings.Contains(out, "is left by a graft merge that is gone") || !strings.Contains(out, "git worktree remove --force "+worktree) {
+		t.Errorf("missing warning about the left temporary worktree:\n%s", out)
 	}
-	if _, err := os.Stat(root); !os.IsNotExist(err) {
-		t.Errorf("stale temporary directory remains: %v", err)
+	if _, err := os.Stat(filepath.Join(worktree, "base.txt")); err != nil {
+		t.Errorf("the left temporary worktree was touched: %v", err)
+	}
+}
+
+// A pre-push hook that switches the checkout leaves every local branch as
+// it was: the merge fast-forwards only the trunk it started from.
+func TestMergePrePushSwitchLeavesLocalBranches(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.git("branch", "other", "main")
+	before := f.git("rev-parse", "main")
+	hooks := f.git("rev-parse", "--path-format=absolute", "--git-path", "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooks, "pre-push"), []byte("#!/bin/sh\ngit switch -q other\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "checkout branch changed after the push") || !strings.Contains(out, "git merge --ff-only") {
+		t.Errorf("merge did not report the switched checkout: exit %d\n%s", code, out)
+	}
+	if got := f.git("rev-parse", "main"); got != before {
+		t.Errorf("local main moved to %s", got)
+	}
+	if got := f.git("rev-parse", "other"); got != before {
+		t.Errorf("branch other moved to %s", got)
 	}
 }
 

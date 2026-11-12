@@ -123,7 +123,7 @@ func (s *mergeState) validateRequest() error {
 }
 
 func (s *mergeState) checkBeforeStart() error {
-	if err := cleanupOrphanedMergeTrees(s.repo, s.a); err != nil {
+	if err := warnOrphanedMergeTrees(s.repo, s.a); err != nil {
 		return err
 	}
 	var err error
@@ -360,7 +360,10 @@ func writeMergeOwner(root string, repo *gitx.Repo, pid int) error {
 	return nil
 }
 
-func cleanupOrphanedMergeTrees(repo *gitx.Repo, a *App) error {
+// warnOrphanedMergeTrees names the temporary trees of this repo left by a
+// graft merge that is gone. It removes none: a task the dead merge started
+// may still run in the tree, and graft cannot tell when it ends.
+func warnOrphanedMergeTrees(repo *gitx.Repo, a *App) error {
 	entries, err := os.ReadDir(os.TempDir())
 	if err != nil {
 		return fmt.Errorf("listing merge temporary directories: %w", err)
@@ -387,20 +390,16 @@ func cleanupOrphanedMergeTrees(repo *gitx.Repo, a *App) error {
 			continue
 		}
 		wt := filepath.Join(root, "tree")
-		if registered, err := isRegisteredWorktree(repo, wt); err != nil {
+		registered, err := isRegisteredWorktree(repo, wt)
+		if err != nil {
 			a.warn("checking stale merge worktree %s: %v", wt, err)
 			continue
-		} else if registered {
-			if _, err := repo.Git("worktree", "remove", "--force", wt); err != nil {
-				a.warn("removing stale merge worktree %s: %v", wt, err)
-				continue
-			}
 		}
-		if err := os.RemoveAll(root); err != nil {
-			a.warn("removing stale merge temporary directory %s: %v", root, err)
-			continue
+		if registered {
+			a.printf("warning: temporary worktree %s is left by a graft merge that is gone (pid %d); once nothing runs in it, remove it with: git worktree remove --force %s, then delete %s", wt, pid, wt, root)
+		} else {
+			a.printf("warning: temporary directory %s is left by a graft merge that is gone (pid %d); once nothing runs in it, delete it", root, pid)
 		}
-		a.printf("merge: removed orphaned temporary worktree %s", wt)
 	}
 	return nil
 }
@@ -804,25 +803,34 @@ func (s *mergeState) runMergeDeps() error {
 }
 
 func (s *mergeState) recheckBeforePush() error {
+	if err := s.checkoutUnchanged(); err != nil {
+		return fmt.Errorf("%w during checks; nothing published", err)
+	}
+	return s.checkMirrorsCanAccept(s.R)
+}
+
+// checkoutUnchanged tells whether the checkout is still the clean trunk at
+// the commit the merge started from.
+func (s *mergeState) checkoutUnchanged() error {
 	branch, err := s.repo.Git("symbolic-ref", "--quiet", "HEAD")
 	if err != nil || strings.TrimSpace(branch) != "refs/heads/"+s.trunk {
-		return errors.New("checkout branch changed during checks; nothing published")
+		return errors.New("checkout branch changed")
 	}
 	cur, err := s.repo.Git("rev-parse", "HEAD")
 	if err != nil {
 		return err
 	}
 	if strings.TrimSpace(cur) != s.local {
-		return errors.New("local trunk moved during checks; nothing published")
+		return errors.New("local trunk moved")
 	}
 	clean, err := s.repo.IsClean()
 	if err != nil {
 		return err
 	}
 	if !clean {
-		return errors.New("local trunk became dirty during checks; nothing published")
+		return errors.New("local trunk became dirty")
 	}
-	return s.checkMirrorsCanAccept(s.R)
+	return nil
 }
 
 func (s *mergeState) checkMirrorsCanAccept(rev string) error {
@@ -884,6 +892,11 @@ func (s *mergeState) push() error {
 }
 
 func (s *mergeState) install() error {
+	// The push ran the user's pre-push hook, which may switch or move the
+	// checkout: fast-forward only the trunk the merge started from.
+	if err := s.checkoutUnchanged(); err != nil {
+		return fmt.Errorf("trunk on the remote is already %s, but the %v after the push, so the local %s is left as it was; on a clean %s install it with: git merge --ff-only %s", s.R, err, s.trunk, s.trunk, s.R)
+	}
 	if _, err := s.repo.GitEnv(markerEnv, "merge", "--ff-only", s.R); err != nil {
 		return fmt.Errorf("trunk on the remote is already %s; install it with: git merge --ff-only %s: %w", s.R, s.R, err)
 	}
