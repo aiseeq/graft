@@ -110,6 +110,7 @@ var registrySpecs = []registrySpec{
 	{path: "init", rest: "none", manual: "--global"},
 	{path: "check", rest: "none"}, {path: "leaks", rest: "args", manual: "--all"},
 	{path: "gate", rest: "none"}, {path: "hook", rest: "none"},
+	{path: "merge", rest: "args", manual: "--mode --no-deps --reason -m", values: "--mode --reason -m"},
 	{path: "hook pre-commit", rest: "args"}, {path: "hook prepare-commit-msg", rest: "args"},
 	{path: "hook post-merge", rest: "args"}, {path: "hook pre-push", rest: "args"},
 	{path: "hook global-pre-commit", rest: "args"},

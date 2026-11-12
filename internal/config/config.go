@@ -73,6 +73,7 @@ type Config struct {
 	Lock    Lock          `yaml:"lock"`
 	Limits  ProjectLimits `yaml:"limits"`
 	Commit  CommitPolicy  `yaml:"commit"`
+	Merge   Merge         `yaml:"merge"`
 
 	Envs   map[string]*Env `yaml:"envs"`
 	DotEnv string          `yaml:"dotenv"`
@@ -96,6 +97,11 @@ type Config struct {
 	Tools        map[string]*Tool    `yaml:"tools"`
 	Worktree     Worktree            `yaml:"worktree"`
 	RemoteHeavy  *RemoteHeavy        `yaml:"remote_heavy"`
+}
+
+// Merge configures tasks that run before graft merge publishes a trunk.
+type Merge struct {
+	Deps []string `yaml:"deps"`
 }
 
 // ProjectLimits override the user's run limits, one key at a time.

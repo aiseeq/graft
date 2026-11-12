@@ -509,6 +509,11 @@ var (
 )
 
 func (c *Config) validateTasks() error {
+	for _, d := range c.Merge.Deps {
+		if _, ok := c.Tasks[d]; !ok {
+			return fmt.Errorf("merge.deps: unknown task %q", d)
+		}
+	}
 	for _, name := range slices.Sorted(maps.Keys(c.Tasks)) {
 		if err := c.validateTask(name, c.Tasks[name]); err != nil {
 			return err

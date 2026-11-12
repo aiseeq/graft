@@ -19,6 +19,16 @@ It can add a ticket key from the branch, commit and push to every remote.
 Read a refusal and its hint, then fix the cause before trying again.
 graft commit has no flag to skip a check. Flags that relax a safeguard elsewhere (deploy --unapproved, --past-freeze) are for the user's explicit word only.
 
+## Merge
+
+Run `graft merge <branch>` on the trunk to build a checked candidate in a
+temporary worktree, push it to the primary remote and mirrors, then install
+it with a fast-forward. Rebase is the default; `--mode merge` preserves the
+source commits. Conflicts outside the configured version file stop the
+operation. `merge.deps` runs after the gate and content checks; skipping it
+requires `--no-deps --reason <text>`. The repository lock stays held through
+the checks, so `graft commit` waits. The source branch is not changed.
+
 ## Heavy
 
 Heavy work shares a machine queue. The queue supplies the thread count through

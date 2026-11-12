@@ -90,7 +90,7 @@ tasks:
     # GATE_SCENARIOS: the root package's scenarios a commit does not use, most
     # of its time (04.11, limit 60 s). test-scenarios runs them for install,
     # test-race for all. The gate's own tests, TestBusyGate, stay here.
-    env: &gate-scenarios {GATE_SCENARIOS: '^Test(Freeze|Frozen|Release|Deploy|Worktree|Remote|UserRemoteHeavy|Round|Withheld|Advisory)'}
+    env: &gate-scenarios {GATE_SCENARIOS: '^Test(Freeze|Frozen|Release|Deploy|Merge|Worktree|Remote|UserRemoteHeavy|Round|Withheld|Advisory)'}
     remote: true
     heavy: true
     tests: go

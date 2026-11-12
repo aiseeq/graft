@@ -320,11 +320,31 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		return a.Leaks(rest)
 	case "gate":
 		return noArgs(a, cmd, rest, func() error { return a.Gate(ctx) })
+	case "merge":
+		return mergeCmd(ctx, a, rest)
 	case "stats":
 		return statsCmd(a, rest)
 	default:
 		return projectCmd(ctx, a, cmd, rest)
 	}
+}
+
+func mergeCmd(ctx context.Context, a *app.App, args []string) error {
+	fs := newFlags(a, "merge")
+	o := app.MergeOptions{}
+	fs.StringVar(&o.Mode, "mode", "rebase", "rebase or merge")
+	fs.BoolVar(&o.NoDeps, "no-deps", false, "skip merge.deps")
+	fs.StringVar(&o.NoDepsReason, "reason", "", "reason for skipping merge.deps")
+	fs.StringVar(&o.Message, "m", "", "merge commit message (requires --mode merge)")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return usageOf("merge")
+	}
+	o.Branch = pos[0]
+	return a.Merge(ctx, o)
 }
 
 // readNoCacheEnv sets the app's no-cache switch from the environment, when

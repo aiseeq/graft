@@ -476,6 +476,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft check` | run the content checks on the index |
 | `graft leaks <revision>…` | scan commits, including merge resolutions and messages (Git 2.36 or newer for merges), for the private names and terms of the user config (`leaks`) |
 | `graft gate` | run the gate commands (`go vet ./...` in every Go module first, see `go_vet`, then `go fix -diff ./...` with `go_fix`, then `gofmt -l` with `go_fmt`) |
+| `graft merge [--mode rebase\|merge] [--no-deps --reason TEXT] [-m MESSAGE] <branch>` | build and check a trunk update in a temporary worktree, push it to every remote, then fast-forward the local trunk |
 | `graft hook pre-commit` / `prepare-commit-msg` / `post-merge` | what the installed hooks call |
 | `graft flags [status]` | is the flag raised: open journal events no exception mutes |
 | `graft flags show <id>` | one event in full; `<id>` is its id or a prefix only one open event has; a closed event takes its full UUID |
@@ -655,6 +656,32 @@ command line does not name the `id` counts as gone: another program took it.
 Without markers the message is left as it is.
 
 ## .graft.yaml
+
+### `graft merge`
+
+Run `graft merge <branch>` on the local trunk to fetch every remote, snapshot
+the trunk and source commits, create a candidate in a temporary worktree,
+run the commit gate and content checks, run `merge.deps`, push the candidate
+to the primary remote and mirrors, then install it with a fast-forward. The
+default `rebase` mode replays source commits onto the trunk and drops commits
+that are empty by content. `--mode merge` makes a merge commit and keeps the
+source commits. A conflict in `version.file` takes the trunk's copy, and a
+source commit left empty by that is dropped; a conflict anywhere else, the
+`version.sync` files included, stops without publishing, so a project whose
+branches bump synced files merges them by hand for now. When the result's
+version is not above the trunk's, a `chore: bump version after merge` commit
+raises the patch. A required ticket is checked only for a merge commit: the
+rebased commits keep their own messages. Dirty work, an unfinished Git
+operation, a moved trunk, unsupported version tagging or build branches, and
+failed checks or dependencies stop the operation. `--no-deps` requires
+`--reason TEXT`, which is printed with the result. The repository lock is held
+through the gate and dependencies, so `graft commit` in this repository waits
+for those checks. The command does not rebase or update the source branch.
+
+```yaml
+merge:
+  deps: [test, lint]            # tasks run after the gate and content checks
+```
 
 ```yaml
 schema: 1                       # required
