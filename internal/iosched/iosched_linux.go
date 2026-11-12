@@ -71,11 +71,23 @@ func decide(cgroup string, limits map[string]string, sole bool, pid int, ceiling
 	if sole {
 		return plan{}, false
 	}
-	if key := limitedBy(limits); key != "" {
+	if agentSession(unit, parent) {
+		if value, ok := limits["cpu.max"]; ok && firstField(value) != "max" {
+			return plan{limited: "cpu.max"}, false
+		}
+	} else if key := limitedBy(limits); key != "" {
 		return plan{limited: key}, false
 	}
 	newSlice := strings.TrimSuffix(parent, ".slice") + "-graft.slice"
 	return plan{source: unit, slice: newSlice, scope: fmt.Sprintf("graft-heavy-%d.scope", pid), ceiling: ceiling, linkSource: true}, true
+}
+
+// agentSession says whether a user scope is an agent's session,
+// agent-<name>-<pid>[-r<n>].scope in agents.slice: its memory ceiling is the
+// session's, and graft takes heavy work out from under it into a heavy scope
+// with a ceiling of its own. A cpu.max on it still keeps the work there.
+func agentSession(unit, parent string) bool {
+	return parent == "agents.slice" && strings.HasPrefix(unit, "agent-") && len(unit) > len("agent-.scope")
 }
 
 // sessionScope recognizes a logind session scope belonging to uid.

@@ -17,6 +17,7 @@ import (
 
 func TestDecide(t *testing.T) {
 	const scope = "/user.slice/user-1000.slice/user@1000.service/agents.slice/console.scope"
+	const session = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-probe-77-r2.scope"
 	tests := []struct {
 		name, cgroup string
 		limits       map[string]string
@@ -35,6 +36,10 @@ func TestDecide(t *testing.T) {
 		{name: "cpu.max file absent", cgroup: scope, limits: map[string]string{"memory.max": "max", "memory.high": "max"}, wantSlice: "agents-graft.slice", wantSource: "console.scope"},
 		{name: "alone in its scope", cgroup: scope, limits: map[string]string{}, sole: true},
 		{name: "nested slice", cgroup: "/user.slice/user@1000.service/agents-x.slice/console.scope", limits: map[string]string{}, wantSlice: "agents-x-graft.slice", wantSource: "console.scope"},
+		{name: "agent session with memory ceiling", cgroup: session, limits: map[string]string{"memory.max": "2G", "memory.high": "1800M"}, wantSlice: "agents-graft.slice", wantSource: "agent-probe-77-r2.scope"},
+		{name: "agent session with cpu limit", cgroup: session, limits: map[string]string{"memory.max": "2G", "cpu.max": "100000 100000"}, wantLimited: "cpu.max"},
+		{name: "agent-named scope outside agents.slice", cgroup: "/user.slice/user@1000.service/app.slice/agent-probe-77.scope", limits: map[string]string{"memory.max": "2G"}, wantLimited: "memory.max"},
+		{name: "other scope in agents.slice", cgroup: "/user.slice/user@1000.service/agents.slice/probe-77.scope", limits: map[string]string{"memory.max": "2G"}, wantLimited: "memory.max"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

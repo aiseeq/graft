@@ -249,7 +249,10 @@ If no user manager is running (neither linger nor an active login), graft says
 parent holds the work. Graft leaves services,
 scopes with memory or CPU limits, a scope graft is alone in
 (`systemd-run --scope graft …`: the move would empty it and take the caller's
-handle away), and systems without a user systemd manager in place. For other
+handle away), and systems without a user systemd manager in place. An agent's session scope,
+`agent-*.scope` in `agents.slice`, is moved out of even with a memory ceiling:
+its ceiling is the session's, and the heavy scope has its own; a `cpu.max` on
+it keeps the work there. For other
 user scopes, the heavy scope is `PartOf` its source: stopping the source scope
 stops the work, while the caller exiting first leaves it running.
 
