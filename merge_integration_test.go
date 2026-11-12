@@ -912,8 +912,8 @@ func TestMergeChecksReplacedObjects(t *testing.T) {
 	f.git("replace", unsafe, replacement)
 	f.git("switch", "-q", "main")
 	out, code := f.graft("", "merge", "feature/PROJ-42")
-	if code == 0 {
-		t.Fatalf("merge published a replaced commit its checks did not see:\n%s", out)
+	if code == 0 || !strings.Contains(out, "replace refs") {
+		t.Fatalf("merge did not refuse a replaced commit:\n%s", out)
 	}
 	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != trunk {
 		t.Errorf("remote trunk moved to %s", got)
@@ -959,5 +959,24 @@ func TestMergeAlreadyMergedInstallsBehindTrunk(t *testing.T) {
 	want := f.git("rev-parse", "feature/PROJ-42")
 	if got := f.git("rev-parse", "main"); got != want || !strings.Contains(out, "installed main") {
 		t.Errorf("local main = %s, want %s:\n%s", got, want, out)
+	}
+}
+
+// A grafts file rewrites history for the checks but not for the push.
+func TestMergeRefusesGraftsFile(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	grafts := f.git("rev-parse", "--path-format=absolute", "--git-path", "info/grafts")
+	if err := os.MkdirAll(filepath.Dir(grafts), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(grafts, []byte(f.git("rev-parse", "main")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	trunk := f.gitIn(f.remote("origin"), "rev-parse", "main")
+	if out, code := f.graft("", "merge", "feature/PROJ-42"); code == 0 || !strings.Contains(out, "grafts file") {
+		t.Errorf("merge did not refuse a grafts file: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != trunk {
+		t.Errorf("remote trunk moved to %s", got)
 	}
 }

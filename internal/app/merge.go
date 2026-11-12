@@ -131,6 +131,9 @@ func (s *mergeState) checkBeforeStart() error {
 	if err := warnOrphanedMergeTrees(s.repo, s.a); err != nil {
 		return err
 	}
+	if err := refuseSubstitutedObjects(s.repo); err != nil {
+		return err
+	}
 	var err error
 	s.allRemotes, err = s.repo.Remotes()
 	if err != nil {
@@ -377,6 +380,31 @@ func writeMergeOwner(root string, repo *gitx.Repo, pid int) error {
 	data := fmt.Sprintf("%d\n%s\n", pid, repo.CommonDir)
 	if err := os.WriteFile(filepath.Join(root, mergeOwnerFile), []byte(data), 0o600); err != nil {
 		return fmt.Errorf("recording merge worktree owner: %w", err)
+	}
+	return nil
+}
+
+// refuseSubstitutedObjects refuses a repo whose replace refs or grafts file
+// substitute commits: the gate's git would read the substitutes while the
+// push sends the originals.
+func refuseSubstitutedObjects(repo *gitx.Repo) error {
+	base := os.Getenv("GIT_REPLACE_REF_BASE")
+	if base == "" {
+		base = "refs/replace/"
+	}
+	refs, err := repo.Git("for-each-ref", "--count=1", "--format=%(refname)", base)
+	if err != nil {
+		return err
+	}
+	if ref := strings.TrimSpace(refs); ref != "" {
+		return fmt.Errorf("the repo has replace refs (%s): the checks would read the replacements while the push sends the originals; merge without them (git replace -d) or by hand", ref)
+	}
+	grafts, err := repo.Git("rev-parse", "--path-format=absolute", "--git-path", "info/grafts")
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(strings.TrimSpace(grafts)); err == nil {
+		return fmt.Errorf("the repo has a grafts file (%s): the checks would read grafted history while the push sends the real one; merge without it or by hand", strings.TrimSpace(grafts))
 	}
 	return nil
 }

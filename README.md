@@ -520,7 +520,8 @@ temporary worktree, runs the result config's gate and content checks, runs
 the accepted result with a fast-forward. A required primary remote must be in
 `push.remotes`; a refused primary push leaves mirrors and the local trunk
 untouched. A mirror refusal is reported after the accepted primary result is
-installed locally.
+installed locally. A repo with replace refs or a grafts file is refused: the
+checks would read the substitutes while the push sends the originals.
 
 The default `rebase` mode replays source commits onto the trunk; commits empty
 by content, including originally empty commits, are skipped. `--mode merge`
