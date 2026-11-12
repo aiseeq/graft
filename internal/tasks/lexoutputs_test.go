@@ -201,3 +201,22 @@ func TestReadLexHeaderBoundedStart(t *testing.T) {
 		})
 	}
 }
+
+func TestSequentialUsageUnreadMemoryOfOneProcessLeavesStepUnread(t *testing.T) {
+	read := stats.Usage{Wall: time.Second, User: time.Second, MaxRSS: 10 << 20, RSSKnown: true, TreeMem: 20 << 20, TreeKnown: true}
+	unread := stats.Usage{Wall: 2 * time.Second, User: 3 * time.Second}
+	use := sequentialUsage([]stats.Usage{read, unread})
+	if use.Wall != 3*time.Second || use.User != 4*time.Second {
+		t.Fatalf("wall %v user %v, want 3s and 4s summed over the processes", use.Wall, use.User)
+	}
+	if use.TreeKnown || use.TreeMem != 0 {
+		t.Fatalf("tree memory known=%v %d, want unread when one process was not read", use.TreeKnown, use.TreeMem)
+	}
+	if use.RSSKnown || use.MaxRSS != 0 {
+		t.Fatalf("rss known=%v %d, want unread when one process was not read", use.RSSKnown, use.MaxRSS)
+	}
+	both := sequentialUsage([]stats.Usage{read, {Wall: time.Second, MaxRSS: 30 << 20, RSSKnown: true, TreeMem: 5 << 20, TreeKnown: true}})
+	if !both.TreeKnown || both.TreeMem != 20<<20 || !both.RSSKnown || both.MaxRSS != 30<<20 {
+		t.Fatalf("both read: tree %v %d rss %v %d, want the larger peaks known", both.TreeKnown, both.TreeMem, both.RSSKnown, both.MaxRSS)
+	}
+}

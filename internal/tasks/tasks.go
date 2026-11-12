@@ -435,8 +435,7 @@ func (r *Runner) checkLexOutputs(ctx context.Context, codices map[string]bool) e
 	paths := slices.Sorted(maps.Keys(codices))
 	var failures []error
 	refused := false
-	var use stats.Usage
-	measured := false
+	var parts []stats.Usage
 	for _, codex := range paths {
 		args, argsErr := lexCheckArgs(codex, mainCheckout, r.Root)
 		if argsErr != nil {
@@ -453,9 +452,7 @@ func (r *Runner) checkLexOutputs(ctx context.Context, codices map[string]bool) e
 		cmd.Env = gitx.Without(os.Environ(), gitVars)
 		stepUse, runErr := r.measureUnrecorded(ctx, cmd, LexOutputsSource)
 		if cmd.Process != nil {
-			measured = true
-			use.Wall += stepUse.Wall
-			use.Add(stepUse)
+			parts = append(parts, stepUse)
 		}
 		if runErr != nil {
 			fmt.Fprint(r.Stdout, stdout.String(), stderr.String())
@@ -465,12 +462,12 @@ func (r *Runner) checkLexOutputs(ctx context.Context, codices map[string]bool) e
 		}
 	}
 	joined := errors.Join(failures...)
-	if measured {
+	if len(parts) > 0 {
 		reason := ""
 		if joined != nil {
 			reason = joined.Error()
 		}
-		r.recordStep(LexOutputsSource, use, stepExit(joined), reason)
+		r.recordStep(LexOutputsSource, sequentialUsage(parts), stepExit(joined), reason)
 	}
 	if len(failures) == 0 {
 		return nil
@@ -4430,4 +4427,27 @@ func goFlags(env []string, dir string) (string, error) {
 		return "", fmt.Errorf("go env GOFLAGS: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// sequentialUsage is the usage of one logical step run as processes one after
+// another: wall and CPU time add up and the peak memory is the largest one.
+// A memory is known only when every process knows it: one unread process
+// leaves the step unread, so a light-gate check does not take the processes
+// that were read for the whole step.
+func sequentialUsage(parts []stats.Usage) stats.Usage {
+	var use stats.Usage
+	rssKnown, treeKnown := len(parts) > 0, len(parts) > 0
+	for _, part := range parts {
+		use.Wall += part.Wall
+		use.Add(part)
+		rssKnown = rssKnown && part.RSSKnown
+		treeKnown = treeKnown && part.TreeKnown
+	}
+	if !rssKnown {
+		use.MaxRSS, use.RSSKnown = 0, false
+	}
+	if !treeKnown {
+		use.TreeMem, use.TreeKnown = 0, false
+	}
+	return use
 }
