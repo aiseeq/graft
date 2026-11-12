@@ -13,13 +13,16 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
+	akitproc "github.com/aiseeq/akit/proc"
 	"golang.org/x/sys/unix"
 )
 
 // reaped starts sh -c script under the reaper, with $1 the test's directory.
 func reaped(t *testing.T, dir, script string) *exec.Cmd {
 	t.Helper()
+	adoptOrphans(t)
 	cmd := exec.Command("sh", "-c", script, "sh", dir)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	Reap(cmd)
@@ -50,8 +53,25 @@ func pidIn(t *testing.T, path string) int {
 	return pid
 }
 
-// stopAfter kills the sleep 30 of pid when the test ends, should it still
-// run: a pid that another process took meanwhile is left alone.
+// adoptOrphans lets cleanup stop detached test processes as direct children.
+func adoptOrphans(t *testing.T) {
+	t.Helper()
+	var previous int32
+	if err := unix.Prctl(unix.PR_GET_CHILD_SUBREAPER, uintptr(unsafe.Pointer(&previous)), 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := akitproc.BecomeChildSubreaper(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, uintptr(previous), 0, 0, 0); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
+// stopAfter ends the sleep 30 of pid when the test ends, should it still
+// run: akit verifies it is our direct child before signalling it.
 func stopAfter(t *testing.T, pid int) {
 	t.Cleanup(func() {
 		argv, err := Cmdline(pid)
@@ -62,7 +82,14 @@ func stopAfter(t *testing.T, pid int) {
 			t.Error(err)
 			return
 		}
-		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		_, err = akitproc.StopChild(pid, time.Second, func() error {
+			return akitproc.SignalChild(pid, syscall.SIGTERM)
+		})
+		if err != nil && !akitproc.Gone(err) && !errors.Is(err, os.ErrProcessDone) {
+			t.Error(err)
+		}
+		var status unix.WaitStatus
+		if _, err := unix.Wait4(pid, &status, unix.WNOHANG, nil); err != nil && !errors.Is(err, unix.ECHILD) {
 			t.Error(err)
 		}
 	})
@@ -145,6 +172,24 @@ exit 0`)
 	}
 }
 
+func TestReapRequestsOrphanStopAfterCommandExit(t *testing.T) {
+	dir := t.TempDir()
+	cmd := reaped(t, dir, `sh -c 'trap '\''if [ -s "$1/command-done" ]; then echo term; else echo early; fi > "$1/term"; exit 0'\'' TERM
+echo ready > "$1/ready"
+while :; do sleep 0.02; done' sh "$1" &
+while [ ! -s "$1/ready" ]; do sleep 0.02; done
+echo done > "$1/command-done"`)
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitFile(t, filepath.Join(dir, "term")); got != "term" {
+		t.Fatalf("orphan signal marker = %q", got)
+	}
+	if got := waitFile(t, filepath.Join(dir, "command-done")); got != "done" {
+		t.Fatalf("command marker = %q", got)
+	}
+}
+
 func TestReapExitStatus(t *testing.T) {
 	if err := reaped(t, t.TempDir(), "exit 3").Wait(); err == nil || err.(*exec.ExitError).ExitCode() != 3 {
 		t.Fatalf("want exit 3, got %v", err)
@@ -203,10 +248,10 @@ func TestReapPassesSIGTERMNotSIGINT(t *testing.T) {
 	}
 	waitFile(t, filepath.Join(dir, "ready"))
 	// A SIGINT passed on would reach the command before the SIGTERM after it.
-	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+	if err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+	if err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	if err := cmd.Wait(); err == nil || err.(*exec.ExitError).ExitCode() != recorderExit {
@@ -255,7 +300,7 @@ func TestReapKilledTakesCommandAlong(t *testing.T) {
 	cmd := reaped(t, dir, `echo $$ > "$1/pid"; exec sleep 30`)
 	pid := pidIn(t, filepath.Join(dir, "pid"))
 	stopAfter(t, pid)
-	if err := cmd.Process.Kill(); err != nil {
+	if err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
 	if err := cmd.Wait(); signalOf(t, err) != syscall.SIGKILL {
@@ -378,7 +423,7 @@ while :; do sleep 0.05; done`)
 	orphan := pidIn(t, filepath.Join(dir, "orphan"))
 	stopAfter(t, orphan)
 	start := time.Now()
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+	if err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	err := cmd.Wait()

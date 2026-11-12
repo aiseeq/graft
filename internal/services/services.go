@@ -169,13 +169,13 @@ func (m *Manager) start(ctx context.Context, name string) error {
 		return fmt.Errorf("%s: starting %q: %w", name, s.Run.Source, err)
 	}
 	pid = cmd.Process.Pid
-	if err := writePID(m.path(s.PIDFile), pid); err != nil {
-		return errors.Join(fmt.Errorf("%s: %w", name, err), proc.Kill(pid))
-	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
+	if err := writePID(m.path(s.PIDFile), pid); err != nil {
+		return errors.Join(fmt.Errorf("%s: %w", name, err), proc.StopStartedGroup(cmd))
+	}
 	if err := m.waitStarted(ctx, s, addr, exited); err != nil {
-		stopErr := proc.Kill(pid)
+		stopErr := proc.StopStartedGroup(cmd)
 		return errors.Join(fmt.Errorf("%s: %w\n%s", name, err, tail(m.path(s.Log), 20)), stopErr, fsx.Remove(m.path(s.PIDFile)))
 	}
 	fmt.Fprintf(m.Log, "graft: started %s (pid %d), log %s\n", name, pid, s.Log)

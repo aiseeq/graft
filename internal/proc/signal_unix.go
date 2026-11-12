@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	akitproc "github.com/aiseeq/akit/proc"
 )
 
 // Detach makes cmd start in its own session, so it outlives graft and a
@@ -33,12 +35,21 @@ func StopOnCancel(cmd *exec.Cmd, grace time.Duration, warn func(error)) {
 		// it only to end the orphans sooner, and Wait keeps the command's
 		// own status, a success too.
 		ended := reaperEnded(cmd)
+		err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGTERM)
+		if errors.Is(err, errors.ErrUnsupported) {
+			return err
+		}
 		time.AfterFunc(grace, func() {
-			if err := killTree(cmd.Process); err != nil {
+			if err := cmd.Process.Signal(syscall.Signal(0)); errors.Is(err, os.ErrProcessDone) {
+				return
+			} else if err != nil {
+				warn(err)
+				return
+			}
+			if _, err := akitproc.StopChild(cmd.Process.Pid, 0, nil); err != nil && !akitproc.Gone(err) && !errors.Is(err, os.ErrProcessDone) {
 				warn(err)
 			}
 		})
-		err := cmd.Process.Signal(syscall.SIGTERM)
 		if ended && err == nil {
 			return os.ErrProcessDone
 		}
@@ -50,33 +61,14 @@ func StopOnCancel(cmd *exec.Cmd, grace time.Duration, warn func(error)) {
 // killSettle is how long Wait waits for the output of a killed tree.
 const killSettle = 5 * time.Second
 
-// killTree kills p and the processes it started, if p still runs: os.Process
-// signals through a pidfd, so a p already waited for is not taken for a new
-// process with its pid.
-func killTree(p *os.Process) error {
-	if err := p.Signal(syscall.Signal(0)); errors.Is(err, os.ErrProcessDone) {
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("probing process %d: %w", p.Pid, err)
-	}
-	kids, err := descendants(p.Pid)
-	for _, kid := range kids {
-		if kerr := syscall.Kill(kid, syscall.SIGKILL); kerr != nil && !errors.Is(kerr, syscall.ESRCH) {
-			err = errors.Join(err, fmt.Errorf("killing process %d: %w", kid, kerr))
-		}
-	}
-	if kerr := p.Kill(); kerr != nil && !errors.Is(kerr, os.ErrProcessDone) {
-		err = errors.Join(err, fmt.Errorf("killing process %d: %w", p.Pid, kerr))
-	}
-	return err
-}
-
 // Kill ends the process group a detached process leads (SIGKILL).
 func Kill(pid int) error {
 	return signalGroup(pid, syscall.SIGKILL)
 }
 
 func signalGroup(pid int, sig syscall.Signal) error {
+	// The service may have been started by another graft process. akit can
+	// stop a group only when its exec.Cmd was started by this process.
 	if err := syscall.Kill(-pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("sending %s to process group %d: %w", sig, pid, err)
 	}
