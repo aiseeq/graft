@@ -39,7 +39,7 @@ func (g *gateRun) checkReleaseVersion(ctx context.Context, collect bool) []error
 	if v.readTops(ctx) || v.selectVersion() {
 		return v.failures
 	}
-	if v.selected.ID != "" && (v.checkTops() || v.checkItems(ctx)) {
+	if v.checkTops() || (v.selected.ID != "" && v.checkItems(ctx)) {
 		return v.failures
 	}
 	if v.checkUmbrellas(ctx) {
@@ -120,7 +120,8 @@ func (v *releaseVersionCheck) selectVersion() bool {
 func (v *releaseVersionCheck) checkTops() bool {
 	for _, key := range slices.Sorted(maps.Keys(v.tops)) {
 		issue := v.tops[key]
-		if !slices.Contains(issue.FixVersionIDs([]string{v.selected.ID}), v.selected.ID) || !slices.Contains(v.gate.conf.Statuses, issue.Status) {
+		inVersion := v.selected.ID == "" || slices.Contains(issue.FixVersionIDs([]string{v.selected.ID}), v.selected.ID)
+		if !inVersion || !slices.Contains(v.gate.conf.Statuses, issue.Status) {
 			var names []string
 			for _, version := range issue.FixVersions {
 				names = append(names, version.Name)
@@ -128,7 +129,11 @@ func (v *releaseVersionCheck) checkTops() bool {
 			if len(names) == 0 {
 				names = append(names, "none")
 			}
-			if v.fail("version-top", fmt.Sprintf("%s is %s, fix versions %s: add it to %s and move it to %s", key, issue.Status, strings.Join(names, ", "), v.selected.Name, strings.Join(v.gate.conf.Statuses, " or "))) {
+			msg := fmt.Sprintf("%s is %s, fix versions %s: add it to %s and move it to %s", key, issue.Status, strings.Join(names, ", "), v.selected.Name, strings.Join(v.gate.conf.Statuses, " or "))
+			if v.selected.ID == "" {
+				msg = fmt.Sprintf("%s is %s: move it to %s", key, issue.Status, strings.Join(v.gate.conf.Statuses, " or "))
+			}
+			if v.fail("version-top", msg) {
 				return true
 			}
 		}
