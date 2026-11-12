@@ -16,6 +16,7 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/lock"
+	"github.com/aiseeq/graft/v2/internal/tasks"
 )
 
 func fakeGlint(t *testing.T, f *fixture) (string, string) {
@@ -885,9 +886,9 @@ func TestExecBrokenRemotePathRunsHere(t *testing.T) {
 }
 
 // TestHeavyTaskLineSaysWhyItStayedHere: the task line of a heavy task that
-// had a host and ran here says why, also when graft said nothing: a calm
-// machine, or inside an admitted heavy task; one sent to the host says
-// nothing.
+// had a host and ran here says why: a calm machine, which graft also says,
+// or inside an admitted heavy task, which it does not; one sent to the host
+// says nothing.
 func TestHeavyTaskLineSaysWhyItStayedHere(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the run script is sh")
@@ -897,9 +898,13 @@ func TestHeavyTaskLineSaysWhyItStayedHere(t *testing.T) {
     remote: false
     run: [[graft, vet]]
 `)
-	f.mustGraft("vet")
+	if out := f.mustGraft("vet"); !strings.Contains(out, "graft: vet: heavy, on this machine: "+tasks.WhyNotBusy+"\n") {
+		t.Errorf("a calm machine does not say the task stays here:\n%s", out)
+	}
 	f.mustGraft("build")
-	f.mustGraft("outer")
+	if out := f.mustGraft("outer"); strings.Contains(out, tasks.WhyInsideHeavy) {
+		t.Errorf("a task inside an admitted one says it stays here:\n%s", out)
+	}
 	loaded(t, state)
 	f.mustGraft("vet")
 	var got []string

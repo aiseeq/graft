@@ -92,7 +92,9 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 			return false, "", err
 		}
 		if !busy {
-			return false, WhyNotBusy, nil
+			// Said: a run that the machine slows after admission shows where
+			// it went and why.
+			return stay(WhyNotBusy)
 		}
 	}
 	if !r.remoteAsked {

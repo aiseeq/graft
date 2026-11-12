@@ -300,8 +300,12 @@ same fields may be set in the user config; a project's setting replaces the
 whole user setting. In user config, `when` defaults to `busy`: graft reads
 the load rule once, and whether another heavy task has a live CPU reservation,
 and sends eligible work to the host only when this machine's heavy queue would
-wait. On a calm machine it runs locally without
-a host line. Set `when: always` to send eligible work every time.
+wait. On a calm machine it runs locally and says so: `heavy, on this
+machine: this machine would not make it wait`, for a gate `heavy, on this
+machine whole, its heavy tasks with it: …`; the heavy tasks inside an
+admitted one run with it and say nothing. The choice is made once, at the
+start: a machine that gets loaded later does not move the work. Set
+`when: always` to send eligible work every time.
 
 ```yaml
 remote_heavy:
@@ -1127,9 +1131,9 @@ graft's version, pid and command line. A
   task above it.
 - `here`, on the line of a heavy task that had a `remote_heavy` host and
   ran on this machine, is why: the reason its `heavy, on this machine:`
-  line gave, the broken path, or, where graft says nothing, `this machine
-  would not make it wait` (`when: busy` on a calm machine) and `inside an
-  admitted heavy task, which waits for the machine`. A gate is placed by
+  line gave (`this machine would not make it wait` for `when: busy` on a
+  calm machine among them), the broken path, or, where graft says nothing,
+  `inside an admitted heavy task, which waits for the machine`. A gate is placed by
   step only for the user's `remote_heavy` with `when: busy`; the line of a
   gate with a host says how it went: `in a gate split by step, each step
   placed for itself` (also on the lines of its heavy tasks), or why it ran

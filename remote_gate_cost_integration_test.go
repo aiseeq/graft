@@ -438,6 +438,9 @@ func TestBusyGateLineSaysWhyItStayedWhole(t *testing.T) {
 		if got, want := gateHere(t, g), []string{tasks.WhyNotBusy}; !slices.Equal(got, want) {
 			t.Errorf("calm gate lines here = %q, want %q", got, want)
 		}
+		if out := g.f.mustGraft("gate"); !strings.Contains(out, "graft: gate: heavy, on this machine whole, its heavy tasks with it: "+tasks.WhyNotBusy+"\n") {
+			t.Errorf("a calm gate does not say it stays here whole:\n%s", out)
+		}
 		// The history replaces the stats file.
 		g.writeHistory(t, gateCostRows([]float64{0.1, 0.2, 0.3}, "", 0), gateCostRows([]float64{40, 41}, "pc", 0))
 		runBusyCostGate(t, g, false)

@@ -1360,6 +1360,9 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 	} else {
 		// The gate builds and tests: it is heavy as a whole, its heavy tasks
 		// admitted with it.
+		if why == WhyNotBusy {
+			fmt.Fprintf(r.Stderr, "graft: gate: heavy, on this machine whole, its heavy tasks with it: %s\n", why)
+		}
 		leave, err := r.enterHeavy(ctx, stats.GateTask, "")
 		if err != nil {
 			return err
