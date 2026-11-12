@@ -42,7 +42,7 @@ func TestDecide(t *testing.T) {
 		{name: "other scope in agents.slice", cgroup: "/user.slice/user@1000.service/agents.slice/probe-77.scope", limits: map[string]string{"memory.max": "2G"}, wantLimited: "memory.max"},
 		{name: "agent-named scope without a pid", cgroup: "/user.slice/user@1000.service/agents.slice/agent-foreign.scope", limits: map[string]string{"memory.max": "2G"}, wantLimited: "memory.max"},
 		{name: "agent session with swap ceiling only", cgroup: session, limits: map[string]string{"memory.swap.max": "1G"}, wantSlice: "agents-graft.slice", wantSource: "agent-probe-77-r2.scope"},
-		{name: "swap ceiling only", cgroup: scope, limits: map[string]string{"memory.max": "max", "memory.swap.max": "1G"}, wantLimited: "memory.swap.max"},
+		{name: "swap ceiling only", cgroup: scope, limits: map[string]string{"memory.max": "max", "memory.swap.max": "0"}, wantSlice: "agents-graft.slice", wantSource: "console.scope"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

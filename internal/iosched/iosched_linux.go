@@ -22,7 +22,9 @@ import (
 
 const ioWeight = 10
 
-var limitFiles = []string{"memory.max", "memory.high", "memory.swap.max", "cpu.max"}
+// memory.swap.max is not among them: the heavy scope has MemorySwapMax=0,
+// stricter than any swap ceiling of the scope the work leaves.
+var limitFiles = []string{"memory.max", "memory.high", "cpu.max"}
 
 // agentSessionUnit is the unit name of an agent's session scope,
 // agent-<name>-<pid>[-r<n>].scope.
