@@ -7,11 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/message"
+	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 	"github.com/aiseeq/graft/v2/internal/version"
 )
@@ -26,6 +28,7 @@ type mergeState struct {
 	ctx                 context.Context
 	repo                *gitx.Repo
 	cfg                 *config.Config
+	resultCfg           *config.Config
 	opts                MergeOptions
 	allRemotes, pushTo  []string
 	branch, trunk       string
@@ -42,7 +45,11 @@ type mergeState struct {
 	alreadyMerged       bool
 	primary             string
 	mirrorErr           error
+	frozen              *activeFreeze
+	advisoryFailed      []string
 }
+
+const mergeOwnerFile = ".graft-merge-owner"
 
 // Merge builds and checks a trunk update in a disposable worktree before publishing it.
 func (a *App) Merge(ctx context.Context, o MergeOptions) error {
@@ -116,6 +123,9 @@ func (s *mergeState) validateRequest() error {
 }
 
 func (s *mergeState) checkBeforeStart() error {
+	if err := cleanupOrphanedMergeTrees(s.repo, s.a); err != nil {
+		return err
+	}
 	var err error
 	s.allRemotes, err = s.repo.Remotes()
 	if err != nil {
@@ -247,7 +257,13 @@ func (s *mergeState) validateTrunk() error {
 
 func (s *mergeState) resolveSource() error {
 	var err error
-	s.sourceRef, err = resolveMergeSource(s.repo, s.opts.Branch, s.pushTo)
+	if remote := explicitMergeSourceRemote(s.opts.Branch, s.allRemotes); remote != "" {
+		if _, err = s.repo.Git("fetch", "--quiet", remote); err != nil {
+			return fmt.Errorf("git fetch %s for source: %w", remote, err)
+		}
+	}
+	name := strings.TrimPrefix(s.opts.Branch, "refs/remotes/")
+	s.sourceRef, err = resolveMergeSource(s.repo, name, s.allRemotes)
 	if err != nil {
 		return err
 	}
@@ -262,11 +278,21 @@ func (s *mergeState) resolveSource() error {
 	return nil
 }
 
+func explicitMergeSourceRemote(name string, remotes []string) string {
+	name = strings.TrimPrefix(name, "refs/remotes/")
+	for _, remote := range remotes {
+		if branch, ok := strings.CutPrefix(name, remote+"/"); ok && branch != "" {
+			return remote
+		}
+	}
+	return ""
+}
+
 func (s *mergeState) sourceIsTrunk() bool {
 	if s.sourceRef == "refs/heads/"+s.trunk {
 		return true
 	}
-	for _, remote := range s.pushTo {
+	for _, remote := range s.allRemotes {
 		if s.sourceRef == "refs/remotes/"+remote+"/"+s.trunk {
 			return true
 		}
@@ -293,6 +319,9 @@ func (s *mergeState) checkSnapshotHistory() error {
 		return err
 	}
 	if merged {
+		if err := s.reportMissingMirrors(s.A); err != nil {
+			return err
+		}
 		s.a.printf("already merged %s", gitx.Short(s.F))
 		s.alreadyMerged = true
 	}
@@ -305,6 +334,11 @@ func (s *mergeState) prepareWorktree() error {
 	if err != nil {
 		return fmt.Errorf("creating merge temporary directory: %w", err)
 	}
+	if err = writeMergeOwner(s.tmp, s.repo, os.Getpid()); err != nil {
+		removeErr := os.RemoveAll(s.tmp)
+		s.tmp = ""
+		return errors.Join(err, removeErr)
+	}
 	s.wt = filepath.Join(s.tmp, "tree")
 	if _, err = s.repo.Git("worktree", "add", "--detach", "--quiet", s.wt, s.A); err != nil {
 		if rmErr := os.RemoveAll(s.tmp); rmErr != nil {
@@ -316,6 +350,104 @@ func (s *mergeState) prepareWorktree() error {
 	s.cleanupCfg = s.cfg
 	s.w, err = gitx.Open(s.wt)
 	return err
+}
+
+func writeMergeOwner(root string, repo *gitx.Repo, pid int) error {
+	data := fmt.Sprintf("%d\n%s\n", pid, repo.CommonDir)
+	if err := os.WriteFile(filepath.Join(root, mergeOwnerFile), []byte(data), 0o600); err != nil {
+		return fmt.Errorf("recording merge worktree owner: %w", err)
+	}
+	return nil
+}
+
+func cleanupOrphanedMergeTrees(repo *gitx.Repo, a *App) error {
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		return fmt.Errorf("listing merge temporary directories: %w", err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "graft-merge-") {
+			continue
+		}
+		root := filepath.Join(os.TempDir(), entry.Name())
+		pid, commonDir, ok, ownerErr := readMergeOwner(root)
+		if ownerErr != nil {
+			a.printf("warning: cannot verify merge worktree owner in %s: %v; if orphaned, clean it with: git worktree remove --force %s/tree && rmdir %s", root, ownerErr, filepath.Join(root, "tree"), root)
+			continue
+		}
+		if !ok || filepath.Clean(commonDir) != filepath.Clean(repo.CommonDir) {
+			continue
+		}
+		alive, probeErr := proc.Alive(pid)
+		if probeErr != nil {
+			a.printf("warning: cannot tell whether merge worktree %s is still in use: %v; if orphaned, clean it with: git worktree remove --force %s/tree && rmdir %s", root, probeErr, filepath.Join(root, "tree"), root)
+			continue
+		}
+		if alive {
+			continue
+		}
+		wt := filepath.Join(root, "tree")
+		if registered, err := isRegisteredWorktree(repo, wt); err != nil {
+			a.warn("checking stale merge worktree %s: %v", wt, err)
+			continue
+		} else if registered {
+			if _, err := repo.Git("worktree", "remove", "--force", wt); err != nil {
+				a.warn("removing stale merge worktree %s: %v", wt, err)
+				continue
+			}
+		}
+		if err := os.RemoveAll(root); err != nil {
+			a.warn("removing stale merge temporary directory %s: %v", root, err)
+			continue
+		}
+		a.printf("merge: removed orphaned temporary worktree %s", wt)
+	}
+	return nil
+}
+
+func readMergeOwner(root string) (int, string, bool, error) {
+	data, err := os.ReadFile(filepath.Join(root, mergeOwnerFile))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, "", false, nil
+		}
+		return 0, "", false, fmt.Errorf("reading owner marker: %w", err)
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
+	if len(parts) != 2 {
+		return 0, "", false, errors.New("malformed owner marker")
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, "", false, fmt.Errorf("parsing owner pid: %w", err)
+	}
+	if pid < 1 {
+		return 0, "", false, fmt.Errorf("invalid owner pid %d", pid)
+	}
+	return pid, strings.TrimSpace(parts[1]), true, nil
+}
+
+func isRegisteredWorktree(repo *gitx.Repo, root string) (bool, error) {
+	out, err := repo.Git("worktree", "list", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	want, err := filepath.Abs(root)
+	if err != nil {
+		return false, fmt.Errorf("resolving worktree path: %w", err)
+	}
+	for line := range strings.SplitSeq(out, "\n") {
+		if candidate, ok := strings.CutPrefix(line, "worktree "); ok {
+			got, err := filepath.Abs(filepath.FromSlash(candidate))
+			if err != nil {
+				return false, fmt.Errorf("resolving listed worktree path: %w", err)
+			}
+			if filepath.Clean(got) == filepath.Clean(want) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func (s *mergeState) cleanup() {
@@ -564,6 +696,9 @@ func (s *mergeState) checkCandidate() error {
 	if err = s.a.requireGraft(cfgResult); err != nil {
 		return err
 	}
+	if err = s.validateResultPublishConfig(cfgResult); err != nil {
+		return err
+	}
 	s.cleanupCfg = cfgResult
 	linkSetups, err := s.a.linkWorktree(s.repo.Root, s.wt)
 	if err != nil {
@@ -572,8 +707,44 @@ func (s *mergeState) checkCandidate() error {
 	if err = s.a.prepareWorktree(s.ctx, s.repo.Root, s.wt, linkSetups); err != nil {
 		return err
 	}
-	s.cfg = cfgResult
+	s.resultCfg = cfgResult
 	return s.runResultChecks()
+}
+
+func (s *mergeState) validateResultPublishConfig(result *config.Config) error {
+	resultPush, err := pushRemotes(s.repo, result)
+	if err != nil {
+		return err
+	}
+	resultPrimary := primaryRemote(result, s.allRemotes, s.trunkRef)
+	if !sameRemoteSet(s.pushTo, resultPush) || s.primary != resultPrimary {
+		return fmt.Errorf("the branch changes where trunk is published (%s/%s); merge it by hand", resultPrimary, s.trunk)
+	}
+	resultTrunkRef, err := trunkRef(s.repo, result, "", s.allRemotes)
+	if err != nil {
+		return fmt.Errorf("the branch changes where trunk is published (%s); merge it by hand: %w", resultPrimary, err)
+	}
+	resultPrimary = primaryRemote(result, s.allRemotes, resultTrunkRef)
+	if s.trunkRef == resultTrunkRef && s.primary == resultPrimary {
+		return nil
+	}
+	target := resultPrimary + "/" + s.trunk
+	if resultTrunkRef != s.trunkRef {
+		target = resultTrunkRef
+	}
+	return fmt.Errorf("the branch changes where trunk is published (%s); merge it by hand", target)
+}
+
+func sameRemoteSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, remote := range a {
+		if !slices.Contains(b, remote) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *mergeState) runResultChecks() error {
@@ -585,10 +756,12 @@ func (s *mergeState) runResultChecks() error {
 	} else {
 		s.a.printf("merge mode: %s", s.mode)
 	}
-	if _, _, err := s.a.gateForMessage(s.ctx, s.w, s.cfg, s.trunk, s.message); err != nil {
+	frozen, failed, err := s.a.gateForMessage(s.ctx, s.w, s.resultCfg, s.trunk, s.message)
+	if err != nil {
 		return fmt.Errorf("merge gate failed; nothing published: %w", err)
 	}
-	if err := mergeTreeUnchanged(s.w, s.R, s.cfg, "gate"); err != nil {
+	s.frozen, s.advisoryFailed = frozen, failed
+	if err := mergeTreeUnchanged(s.w, s.R, s.resultCfg, "gate"); err != nil {
 		return err
 	}
 	s.a.printf("merge gate passed")
@@ -599,38 +772,42 @@ func (s *mergeState) runContentChecks() error {
 	if _, err := s.w.Git("reset", "--soft", s.A); err != nil {
 		return err
 	}
-	if err := runChecks(s.ctx, s.w, s.cfg, s.message, "", s.a.Stderr); err != nil {
+	if err := runChecks(s.ctx, s.w, s.resultCfg, s.message, "", s.a.Stderr); err != nil {
 		return fmt.Errorf("merge content checks failed: %w", err)
 	}
-	if s.cfg.Ticket != nil && s.mode == "merge" {
-		if err := requireTicket(s.w, s.cfg, s.message, ""); err != nil {
+	if s.resultCfg.Ticket != nil && s.mode == "merge" {
+		if err := requireTicket(s.w, s.resultCfg, s.message, ""); err != nil {
 			return err
 		}
 	}
 	if _, err := s.w.Git("reset", "--soft", s.R); err != nil {
 		return err
 	}
-	if err := mergeTreeUnchanged(s.w, s.R, s.cfg, "content checks"); err != nil {
+	if err := mergeTreeUnchanged(s.w, s.R, s.resultCfg, "content checks"); err != nil {
 		return err
 	}
 	return s.runMergeDeps()
 }
 
 func (s *mergeState) runMergeDeps() error {
-	if s.opts.NoDeps || len(s.cfg.Merge.Deps) == 0 {
+	if s.opts.NoDeps || len(s.resultCfg.Merge.Deps) == 0 {
 		if !s.opts.NoDeps {
 			s.a.printf("merge deps: skipped (none configured)")
 		}
 		return nil
 	}
-	s.a.printf("merge deps: %s", strings.Join(s.cfg.Merge.Deps, ", "))
-	if err := s.a.runner(s.w, s.cfg).RunDeps(s.ctx, s.cfg.Merge.Deps); err != nil {
+	s.a.printf("merge deps: %s", strings.Join(s.resultCfg.Merge.Deps, ", "))
+	if err := s.a.runner(s.w, s.resultCfg).RunDeps(s.ctx, s.resultCfg.Merge.Deps); err != nil {
 		return fmt.Errorf("merge deps failed; nothing published: %w", err)
 	}
-	return mergeTreeUnchanged(s.w, s.R, s.cfg, "merge.deps")
+	return mergeTreeUnchanged(s.w, s.R, s.resultCfg, "merge.deps")
 }
 
 func (s *mergeState) recheckBeforePush() error {
+	branch, err := s.repo.Git("symbolic-ref", "--quiet", "HEAD")
+	if err != nil || strings.TrimSpace(branch) != "refs/heads/"+s.trunk {
+		return errors.New("checkout branch changed during checks; nothing published")
+	}
 	cur, err := s.repo.Git("rev-parse", "HEAD")
 	if err != nil {
 		return err
@@ -645,11 +822,53 @@ func (s *mergeState) recheckBeforePush() error {
 	if !clean {
 		return errors.New("local trunk became dirty during checks; nothing published")
 	}
+	return s.checkMirrorsCanAccept(s.R)
+}
+
+func (s *mergeState) checkMirrorsCanAccept(rev string) error {
+	for _, remote := range s.pushTo {
+		if _, err := s.repo.Git("fetch", "--quiet", remote); err != nil {
+			return fmt.Errorf("cannot verify remote %s before publishing: %w", remote, err)
+		}
+		ref := "refs/remotes/" + remote + "/" + s.trunk
+		remoteHead, err := s.repo.Git("rev-parse", "--verify", ref+"^{commit}")
+		if err != nil {
+			return fmt.Errorf("remote %s has no trunk %s before publishing: %w", remote, s.trunk, err)
+		}
+		ancestor, err := s.repo.IsAncestor(strings.TrimSpace(remoteHead), rev)
+		if err != nil {
+			return err
+		}
+		if !ancestor {
+			return fmt.Errorf("remote %s trunk is not an ancestor of merge result %s; nothing published; if the remote moved ahead: git fetch, then graft merge again", remote, gitx.Short(rev))
+		}
+	}
+	return nil
+}
+
+func (s *mergeState) reportMissingMirrors(rev string) error {
+	for _, remote := range s.pushTo {
+		if remote == s.primary {
+			continue
+		}
+		ref := "refs/remotes/" + remote + "/" + s.trunk
+		remoteHead, err := s.repo.Git("rev-parse", "--verify", ref+"^{commit}")
+		if err != nil {
+			return fmt.Errorf("remote %s has no trunk %s: %w", remote, s.trunk, err)
+		}
+		contains, err := s.repo.IsAncestor(rev, strings.TrimSpace(remoteHead))
+		if err != nil {
+			return err
+		}
+		if !contains {
+			cmd := fmt.Sprintf("git push %s %s/%s:refs/heads/%s", remote, s.primary, s.trunk, s.trunk)
+			return fmt.Errorf("mirror %s is missing %s; catch it up with: %s", remote, gitx.Short(rev), cmd)
+		}
+	}
 	return nil
 }
 
 func (s *mergeState) push() error {
-	s.primary = primaryRemote(s.cfg, s.pushTo, s.trunkRef)
 	if _, err := s.repo.Git("push", s.primary, s.R+":refs/heads/"+s.trunk); err != nil {
 		return fmt.Errorf("push to %s refused, nothing published and the local trunk unchanged; if the remote moved ahead: git fetch, then graft merge again: %w", s.primary, err)
 	}
@@ -657,6 +876,9 @@ func (s *mergeState) push() error {
 	mirrors := slices.DeleteFunc(slices.Clone(s.pushTo), func(r string) bool { return r == s.primary })
 	if len(mirrors) > 0 {
 		s.mirrorErr = s.a.push(s.repo, mirrors, []string{s.R + ":refs/heads/" + s.trunk}, false, false)
+	}
+	if err := s.a.recordCommitAdvisoryAfterPush(s.w, s.resultCfg, s.frozen, s.advisoryFailed); err != nil {
+		s.mirrorErr = errors.Join(s.mirrorErr, err)
 	}
 	return nil
 }
@@ -968,6 +1190,13 @@ func removeMergeLinks(root string, cfg *config.Config) error {
 }
 
 func mergeTreeUnchanged(repo *gitx.Repo, rev string, cfg *config.Config, stage string) error {
+	head, err := repo.Git("rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(head) != rev {
+		return fmt.Errorf("merge %s moved temporary HEAD from %s to %s", stage, gitx.Short(rev), gitx.Short(strings.TrimSpace(head)))
+	}
 	paths, err := repo.ChangedFiles()
 	if err != nil {
 		return err

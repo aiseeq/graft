@@ -62,6 +62,23 @@ func TestAppFreezePolishAmendKeepsLocalRecordWhenRemoteCheckFails(t *testing.T) 
 	}
 }
 
+func TestAppMergeUsesCommitAdvisoryAfterPush(t *testing.T) {
+	repo, cfg, head, remote := freezePolishFixture(t, true)
+	var output bytes.Buffer
+	a := &App{Stdout: &output}
+	frozen := &activeFreeze{target: "projectA", version: "1.2.3", time: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)}
+	if err := a.recordCommitAdvisoryAfterPush(repo, cfg, frozen, []string{"lint"}); err != nil {
+		t.Fatalf("recording the merge advisory: %v", err)
+	}
+	if !strings.Contains(output.String(), "recorded freeze advisory") {
+		t.Fatalf("advisory report = %q", output.String())
+	}
+	tags := freezePolishGit(t, remote, "for-each-ref", "--format=%(refname)", "refs/tags/freeze-log/projectA/1.2.3/*-advisory")
+	if !strings.Contains(tags, gitx.Short(head)) {
+		t.Fatalf("remote advisory tag does not reference pushed commit %s: %s", gitx.Short(head), tags)
+	}
+}
+
 func TestAppFreezePolishThawReasonSurvives(t *testing.T) {
 	repo, cfg, _, remote := freezePolishFixture(t, true)
 	f := &activeFreeze{target: "projectA", name: "Product 1.2.3", version: "1.2.3"}

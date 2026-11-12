@@ -57,6 +57,28 @@ func TestMergeNoDepsNeedsReason(t *testing.T) {
 	}
 }
 
+func TestMergeCleansDeadTemporaryWorktree(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	root, err := os.MkdirTemp(os.TempDir(), "graft-merge-orphan-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(root, "tree")
+	f.git("worktree", "add", "--detach", "--quiet", worktree, "main")
+	commonDir := f.git("rev-parse", "--path-format=absolute", "--git-common-dir")
+	owner := filepath.Join(root, ".graft-merge-owner")
+	if err := os.WriteFile(owner, []byte("2147483647\n"+commonDir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := f.mustGraft("merge", "feature/PROJ-42")
+	if !strings.Contains(out, "removed orphaned temporary worktree") {
+		t.Errorf("missing stale worktree cleanup report:\n%s", out)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Errorf("stale temporary directory remains: %v", err)
+	}
+}
+
 func TestMergeModeMergeKeepsCommits(t *testing.T) {
 	f := mergeRepo(t, "origin")
 	f.mustGraft("merge", "--mode", "merge", "-m", "Merge source", "feature/PROJ-42")
@@ -260,15 +282,68 @@ func TestMergeRemoteAdvancedRefusesWithoutPublishingElsewhere(t *testing.T) {
 	}
 }
 
+func TestMergeRefusesDivergedMirrorBeforePublishing(t *testing.T) {
+	f := mergeRepo(t, "origin", "mirror")
+	other := filepath.Join(f.base, "mirror-writer")
+	f.run(f.base, "git", "clone", "--branch", "main", f.remote("mirror"), other)
+	f.gitIn(other, "config", "user.name", "Merge Test")
+	f.gitIn(other, "config", "user.email", "merge@example.invalid")
+	if err := os.WriteFile(filepath.Join(other, "mirror-only.txt"), []byte("mirror\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.gitIn(other, "add", "mirror-only.txt")
+	f.gitIn(other, "commit", "-m", "feat: mirror only")
+	f.gitIn(other, "push", "origin", "main")
+	mirrorHead := f.gitIn(f.remote("mirror"), "rev-parse", "main")
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "remote mirror") {
+		t.Fatalf("diverged mirror: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != f.git("rev-parse", "main") {
+		t.Errorf("primary published despite mirror preflight failure: remote=%s local=%s", got, f.git("rev-parse", "main"))
+	}
+	if got := f.gitIn(f.remote("mirror"), "rev-parse", "main"); got != mirrorHead {
+		t.Errorf("mirror changed: %s, want %s", got, mirrorHead)
+	}
+}
+
+func TestMergeAlreadyPublishedButMirrorMissingResultGivesCatchupCommand(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: test}\ngate: []\npush: {remotes: [origin]}\n",
+		"base.txt":    "base\n",
+	}, "origin", "mirror")
+	f.mustPlainCommit("chore: base")
+	f.git("branch", "-m", "main")
+	f.git("push", "-q", "origin", "main")
+	f.git("push", "-q", "mirror", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("fetch", "--quiet", "mirror")
+	f.git("branch", "--set-upstream-to", "origin/main", "main")
+	f.git("remote", "set-head", "origin", "main")
+	f.git("remote", "set-head", "mirror", "main")
+	f.git("switch", "-q", "-c", "feature")
+	f.write("feature.txt", "source\n")
+	f.mustPlainCommit("feat: source")
+	f.git("switch", "-q", "main")
+	f.mustGraft("merge", "feature")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none, reason: test}\ngate: []\npush: {remotes: [origin, mirror]}\n")
+	f.mustPlainCommit("chore: enable mirror")
+	f.git("push", "-q", "origin", "main")
+	out, code := f.graft("", "merge", "feature")
+	if code == 0 || !strings.Contains(out, "mirror is missing") || !strings.Contains(out, "git push mirror origin/main:refs/heads/main") {
+		t.Fatalf("mirror catch-up advice: exit %d\n%s", code, out)
+	}
+}
+
 func TestMergeMirrorRejectsReports(t *testing.T) {
 	f := mergeRepo(t, "origin", "mirror")
 	addMergeTask(f, `    run: [[sh, -c, 'rival=$(git commit-tree "$(git rev-parse HEAD^{tree})" -p "$(git rev-parse HEAD)" -m rival) && git push -q mirror "$rival:refs/heads/main"']]`)
-	if out, code := f.graft("", "merge", "feature/PROJ-42"); code == 0 || !strings.Contains(out, "push to mirror FAILED") {
+	local := f.git("rev-parse", "HEAD")
+	if out, code := f.graft("", "merge", "feature/PROJ-42"); code == 0 || !strings.Contains(out, "remote mirror trunk is not an ancestor") {
 		t.Fatalf("mirror refusal: exit %d\n%s", code, out)
 	}
-	local := f.git("rev-parse", "HEAD")
 	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != local {
-		t.Errorf("primary trunk = %s, local = %s", got, local)
+		t.Errorf("primary was published despite mirror refusal: got %s, want %s", got, local)
 	}
 	if got := f.gitIn(f.remote("mirror"), "rev-parse", "main"); got == local {
 		t.Errorf("mirror was overwritten after advancing: %s", got)
@@ -414,6 +489,59 @@ func TestMergeUsesOnlyPushRemotes(t *testing.T) {
 	}
 }
 
+func TestMergeResultCannotChangePublishRemote(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: test}\ngate: []\npush: {remotes: [origin]}\n",
+		"base.txt":    "base\n",
+	}, "origin", "upstream")
+	f.mustPlainCommit("chore: base")
+	f.git("branch", "-m", "main")
+	f.git("push", "-q", "origin", "main")
+	f.git("push", "-q", "upstream", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("fetch", "--quiet", "upstream")
+	f.git("branch", "--set-upstream-to", "origin/main", "main")
+	f.git("remote", "set-head", "origin", "main")
+	f.git("remote", "set-head", "upstream", "main")
+	f.git("switch", "-q", "-c", "feature")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none, reason: test}\ngate: []\npush: {remotes: [origin]}\nenvs: {local: {}}\ndeploy:\n  remote: upstream\n  targets:\n    test: {env: local, run: [\"true\"]}\n")
+	f.write("feature.txt", "source\n")
+	f.mustPlainCommit("feat: change publish remote")
+	f.git("switch", "-q", "main")
+	out, code := f.graft("", "merge", "feature")
+	if code == 0 || !strings.Contains(out, "the branch changes where trunk is published") {
+		t.Fatalf("result config changed trunk remote: exit %d\n%s", code, out)
+	}
+	for _, remote := range []string{"origin", "upstream"} {
+		if got, want := f.gitIn(f.remote(remote), "rev-parse", "main"), f.gitIn(f.remote("origin"), "rev-parse", "main"); got != want {
+			t.Errorf("%s was unexpectedly updated: %s (origin %s)", remote, got, want)
+		}
+	}
+}
+
+func TestMergeRequiresPrimaryInPushRemotes(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: test}\ngate: []\npush: {remotes: [origin]}\ndeploy: {remote: mirror, targets: {test: {env: local, run: [\"true\"]}}}\nenvs: {local: {}}\n",
+		"base.txt":    "base\n",
+	}, "origin", "mirror")
+	f.mustPlainCommit("chore: base")
+	f.git("branch", "-m", "main")
+	f.git("push", "-q", "origin", "main")
+	f.git("push", "-q", "mirror", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("fetch", "--quiet", "mirror")
+	f.git("branch", "--set-upstream-to", "origin/main", "main")
+	f.git("remote", "set-head", "origin", "main")
+	f.git("remote", "set-head", "mirror", "main")
+	f.git("switch", "-q", "-c", "feature")
+	f.write("feature.txt", "source\n")
+	f.mustPlainCommit("feat: source")
+	f.git("switch", "-q", "main")
+	if out, code := f.graft("", "merge", "feature"); code == 0 || !strings.Contains(out, "primary remote") {
+		t.Fatalf("primary missing from push.remotes: exit %d\n%s", code, out)
+	}
+}
+
 func TestMergeIgnoresUnavailableBootstrapRemoteOutsideTrunkPushSet(t *testing.T) {
 	f := mergeRepo(t, "origin")
 	f.write(".graft.yaml", "schema: 1\nversion: {mode: none, reason: 'no version'}\ngate: []\npush: {remotes: [origin, offline]}\n")
@@ -451,6 +579,46 @@ func TestMergeSourceLocalWithUpstream(t *testing.T) {
 	}
 }
 
+func TestMergeExplicitSourceFromNonPushRemote(t *testing.T) {
+	f := mergeRepo(t, "origin", "fork")
+	f.write(".graft.yaml", strings.TrimSuffix(f.read(".graft.yaml"), "\n")+"\npush: {remotes: [origin]}\n")
+	f.mustPlainCommit("chore: restrict publication")
+	f.git("push", "-q", "origin", "main")
+	f.git("push", "-q", "fork", "main")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.git("push", "-q", "fork", "feature/PROJ-42")
+	f.git("fetch", "--quiet", "fork")
+	f.git("switch", "-q", "main")
+	forkMain := f.gitIn(f.remote("fork"), "rev-parse", "main")
+	out := f.mustGraft("merge", "--mode", "merge", "fork/feature/PROJ-42")
+	if !strings.Contains(out, "pushed to origin") {
+		t.Errorf("merge from fork was not published to origin:\n%s", out)
+	}
+	if got := f.gitIn(f.remote("fork"), "rev-parse", "main"); got != forkMain {
+		t.Errorf("fork main changed: got %s, want %s", got, forkMain)
+	}
+}
+
+func TestMergeRefusesLocalSourceBehindUpstream(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.git("push", "-q", "-u", "origin", "feature/PROJ-42")
+	remoteWork := filepath.Join(f.base, "remote-source")
+	f.run(f.base, "git", "clone", "--branch", "feature/PROJ-42", f.remote("origin"), remoteWork)
+	f.gitIn(remoteWork, "config", "user.name", "Merge Test")
+	f.gitIn(remoteWork, "config", "user.email", "merge@example.invalid")
+	if err := os.WriteFile(filepath.Join(remoteWork, "upstream-only.txt"), []byte("remote source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.gitIn(remoteWork, "add", "upstream-only.txt")
+	f.gitIn(remoteWork, "commit", "-m", "feat: remote source")
+	f.gitIn(remoteWork, "push", "origin", "feature/PROJ-42")
+	f.git("switch", "-q", "main")
+	if out, code := f.graft("", "merge", "feature/PROJ-42"); code == 0 || !strings.Contains(out, "pull or push first") {
+		t.Fatalf("local source behind upstream: exit %d\n%s", code, out)
+	}
+}
+
 func TestMergeRefusesLocalTrunkAheadOfRemote(t *testing.T) {
 	f := mergeRepo(t, "origin")
 	f.write("local-trunk.txt", "unpublished\n")
@@ -484,6 +652,52 @@ func TestMergeRefusesCheckoutDirtiedByDeps(t *testing.T) {
 	}
 }
 
+func TestMergeRefusesCheckoutBranchChangedByDeps(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none, reason: test}\ngate: []\n", "base.txt": "base\n"}, "origin")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none, reason: test}\ngate: []\nmerge: {deps: [switch]}\ntasks:\n  switch:\n    run: [[git, -C, "+yamlQuote(f.work)+", switch, -q, -c, other]]\n")
+	f.mustPlainCommit("chore: base")
+	f.git("branch", "-m", "main")
+	f.git("push", "-q", "origin", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("branch", "--set-upstream-to", "origin/main", "main")
+	f.git("remote", "set-head", "origin", "main")
+	f.git("switch", "-q", "-c", "feature")
+	f.write("feature.txt", "source\n")
+	f.mustPlainCommit("feat: source")
+	f.git("switch", "-q", "main")
+	out, code := f.graft("", "merge", "feature")
+	if code == 0 || !strings.Contains(out, "checkout branch changed") {
+		t.Fatalf("checkout branch changed during deps: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != f.git("rev-parse", "main") {
+		t.Errorf("checkout branch change was published: remote=%s local=%s", got, f.git("rev-parse", "main"))
+	}
+}
+
+func TestMergeRefusesDepsMovingTemporaryHead(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: test}\ngate: []\nmerge: {deps: [verify]}\ntasks:\n  move:\n    run: [[git, checkout, -q, --detach, HEAD~1]]\n  verify:\n    deps: [move]\n    run: [[sh, -c, 'echo a.txt-present=$(test -f a.txt && echo yes || echo no)']]\n",
+		"base.txt":    "base\n",
+	}, "origin")
+	f.mustPlainCommit("chore: base")
+	f.git("branch", "-m", "main")
+	f.git("push", "-q", "origin", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("branch", "--set-upstream-to", "origin/main", "main")
+	f.git("remote", "set-head", "origin", "main")
+	f.git("switch", "-q", "-c", "feature")
+	f.write("a.txt", "source\n")
+	f.mustPlainCommit("feat: source")
+	f.git("switch", "-q", "main")
+	out, code := f.graft("", "merge", "feature")
+	if code == 0 || !strings.Contains(out, "moved temporary HEAD") {
+		t.Fatalf("deps moved temporary HEAD: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != f.git("rev-parse", "main") {
+		t.Errorf("temporary HEAD change was published: remote=%s local=%s", got, f.git("rev-parse", "main"))
+	}
+}
+
 func TestMergeRequiredTicketForMergeAndBump(t *testing.T) {
 	for _, branch := range []string{"PROJ-8-x", "feature/PROJ-9"} {
 		t.Run(branch, func(t *testing.T) {
@@ -514,6 +728,45 @@ func TestMergeRequiredTicketForMergeAndBump(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMergeModeRequiresTicketOnMergeMessage(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none, reason: test}\ngate: []\nticket: {pattern: 'PROJ-[0-9]+', required: true}\n")
+	f.mustPlainCommit("chore: require ticket")
+	f.git("push", "-q", "origin", "main")
+	f.git("switch", "-q", "-c", "topic-without-key")
+	f.write("source.txt", "source\n")
+	f.mustPlainCommit("PROJ-42 feat: required source")
+	f.git("switch", "-q", "main")
+	f.write("trunk.txt", "trunk\n")
+	f.mustPlainCommit("PROJ-43 feat: trunk")
+	f.git("push", "-q", "origin", "main")
+	if out, code := f.graft("", "merge", "--mode", "merge", "topic-without-key"); code == 0 || !strings.Contains(out, "ticket") {
+		t.Fatalf("merge without ticket: exit %d\n%s", code, out)
+	}
+}
+
+func TestMergeRefusesMissingTicketOnMergeCommit(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none, reason: test}\ngate: []\nticket: {pattern: 'PROJ-[0-9]+', required: true}\n")
+	f.mustPlainCommit("chore: require ticket")
+	f.git("push", "-q", "origin", "main")
+	f.git("switch", "-q", "-c", "topic-without-key")
+	f.write("source.txt", "source\n")
+	f.mustPlainCommit("PROJ-42 feat: source")
+	f.git("switch", "-q", "main")
+	f.write("trunk.txt", "trunk\n")
+	f.mustPlainCommit("PROJ-43 feat: trunk")
+	f.git("push", "-q", "origin", "main")
+	remoteHead := f.gitIn(f.remote("origin"), "rev-parse", "main")
+	out, code := f.graft("", "merge", "--mode", "merge", "topic-without-key")
+	if code == 0 || !strings.Contains(strings.ToLower(out), "ticket") {
+		t.Fatalf("merge message without ticket: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != remoteHead {
+		t.Errorf("ticket refusal published: got %s want %s", got, remoteHead)
 	}
 }
 
