@@ -68,7 +68,7 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 	if err != nil {
 		return err
 	}
-	section, err := buildSection(ctx, client, p, r, shipped, moved)
+	section, err := buildSection(ctx, client, p, r, shipped, moved, a.warn)
 	if err != nil {
 		return err
 	}
@@ -283,7 +283,7 @@ func buildHeading(p *config.ReleasePage, r *deployRun) string {
 
 // buildSection lists the items of one build: changes, fixes and the items
 // that wait for the next release.
-func buildSection(ctx context.Context, client *jira.Client, p *config.ReleasePage, r *deployRun, shipped, moved []string) (string, error) {
+func buildSection(ctx context.Context, client *jira.Client, p *config.ReleasePage, r *deployRun, shipped, moved []string, warn func(string, ...any)) (string, error) {
 	read := func(keys []string) ([]jira.Issue, error) {
 		var out []jira.Issue
 		for _, k := range keys {
@@ -308,15 +308,9 @@ func buildSection(ctx context.Context, client *jira.Client, p *config.ReleasePag
 	rows := items
 	var technical []jira.Issue
 	if p.Subtasks == "parent" {
-		rows, technical, err = groupSubtasks(ctx, client, p, items)
-		if err != nil {
-			return "", err
-		}
+		rows, technical = groupSubtasks(ctx, client, p, items, warn)
 		var technicalMoved []jira.Issue
-		waiting, technicalMoved, err = groupSubtasks(ctx, client, p, waiting)
-		if err != nil {
-			return "", err
-		}
+		waiting, technicalMoved = groupSubtasks(ctx, client, p, waiting, warn)
 		waiting = append(waiting, technicalMoved...)
 	}
 	var changes, fixes []jira.Issue
@@ -347,8 +341,9 @@ func buildSection(ctx context.Context, client *jira.Client, p *config.ReleasePag
 }
 
 // groupSubtasks hides subtasks and inserts one technical row for each parent
-// that is not already listed in this section.
-func groupSubtasks(ctx context.Context, client *jira.Client, p *config.ReleasePage, issues []jira.Issue) ([]jira.Issue, []jira.Issue, error) {
+// that is not already listed in this section. A parent Jira does not give
+// keeps its row, without a type, and a warning says why.
+func groupSubtasks(ctx context.Context, client *jira.Client, p *config.ReleasePage, issues []jira.Issue, warn func(string, ...any)) ([]jira.Issue, []jira.Issue) {
 	listed := make(map[string]bool, len(issues))
 	for _, issue := range issues {
 		listed[issue.Key] = true
@@ -369,13 +364,14 @@ func groupSubtasks(ctx context.Context, client *jira.Client, p *config.ReleasePa
 		}
 		parent, err := client.Issue(ctx, issue.Parent)
 		if err != nil {
-			return nil, nil, err
+			warn("release page: %s, the parent of %s, is listed without its type: %v", issue.Parent, issue.Key, err)
+			parent = jira.Issue{Key: issue.Parent}
 		}
 		parent.Summary = p.Label("technical")
 		parents[issue.Parent] = parent
 		technical = append(technical, parent)
 	}
-	return grouped, technical, nil
+	return grouped, technical
 }
 
 func issueTable(client *jira.Client, p *config.ReleasePage, issues []jira.Issue) string {
