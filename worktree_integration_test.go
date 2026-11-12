@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	akitproc "github.com/aiseeq/akit/proc"
+
 	"github.com/aiseeq/graft/v2/internal/app"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/lock"
@@ -92,7 +94,7 @@ func TestWorktreeClean(t *testing.T) {
 	if err := sleep.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = sleep.Process.Kill(); _ = sleep.Wait() })
+	t.Cleanup(func() { stopTestChild(sleep); _ = sleep.Wait() })
 	writeFile(t, filepath.Join(held, "notes.txt"), "n\n")
 	f.git("-C", held, "add", "notes.txt")
 	f.git("-C", held, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "feat: notes")
@@ -102,7 +104,7 @@ func TestWorktreeClean(t *testing.T) {
 	if err := reader.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = reader.Process.Kill(); _ = reader.Wait() })
+	t.Cleanup(func() { stopTestChild(reader); _ = reader.Wait() })
 
 	// Fresh worktrees wait an hour by default, and so do fresh changes in
 	// one whose HEAD is old.
@@ -1806,7 +1808,7 @@ func TestWorktreeCleanStopsOnSIGTERM(t *testing.T) {
 	cmd, out := first.start(parent, "worktree", "clean", "--in", parent)
 	t.Cleanup(func() {
 		if cmd.ProcessState == nil {
-			_ = cmd.Process.Kill()
+			stopTestChild(cmd)
 			_ = cmd.Wait()
 		}
 	})
@@ -1820,7 +1822,7 @@ func TestWorktreeCleanStopsOnSIGTERM(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+	if err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -1831,7 +1833,7 @@ func TestWorktreeCleanStopsOnSIGTERM(t *testing.T) {
 			t.Fatalf("exit %v, output:\n%s", err, out.String())
 		}
 	case <-time.After(3 * time.Second):
-		_ = cmd.Process.Kill()
+		stopTestChild(cmd)
 		t.Fatalf("graft did not stop within 3 seconds:\n%s", out.String())
 	}
 }

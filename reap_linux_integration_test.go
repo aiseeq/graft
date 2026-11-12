@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	akitproc "github.com/aiseeq/akit/proc"
 	"github.com/aiseeq/graft/v2/internal/proc"
 )
 
@@ -113,7 +114,7 @@ tasks:
 			_ = syscall.Kill(orphan, syscall.SIGKILL)
 		}
 	})
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+	if err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -121,7 +122,7 @@ tasks:
 	select {
 	case <-done:
 	case <-time.After(20 * time.Second):
-		_ = cmd.Process.Kill()
+		stopTestChild(cmd)
 		t.Fatalf("graft did not stop\n%s", out.String())
 	}
 	if sleeping() {

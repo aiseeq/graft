@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
+	akitproc "github.com/aiseeq/akit/proc"
 	"github.com/aiseeq/graft/v2/internal/deploystate"
 )
 
@@ -267,6 +269,9 @@ func TestInstallWaitsForRealDeploy(t *testing.T) {
 }
 
 func TestInstallIgnoresKilledDeployProcess(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("uses Linux child signaling")
+	}
 	skipWaitInShort(t)
 	cache := shortCache(t)
 	t.Setenv("XDG_CACHE_HOME", cache)
@@ -276,7 +281,7 @@ func TestInstallIgnoresKilledDeployProcess(t *testing.T) {
 	deploy := startGraft(t, d.fixture, "deploy", "test")
 	letGo := releaseDeployScript(t, releaseFile)
 	waitForFile(t, filepath.Join(d.state, "deploy-ready"))
-	if err := deploy.cmd.Process.Kill(); err != nil {
+	if err := akitproc.SignalChild(deploy.cmd.Process.Pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
 	// The deploy script outlives graft killed under it and holds its output

@@ -12,9 +12,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	akitproc "github.com/aiseeq/akit/proc"
 	"github.com/aiseeq/graft/v2/internal/testinputs"
 	"github.com/aiseeq/graft/v2/internal/version"
 )
@@ -457,8 +459,20 @@ func startGraft(t *testing.T, f *fixture, args ...string) *runningGraft {
 	cmd, out := f.start(f.work, args...)
 	g := &runningGraft{args: args, out: out, cmd: cmd, done: make(chan error, 1)}
 	go func() { g.done <- cmd.Wait() }()
-	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	t.Cleanup(func() { stopTestChild(cmd) })
 	return g
+}
+
+// stopTestChild stops a test-owned subprocess and its tree on Linux.
+func stopTestChild(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil || cmd.ProcessState != nil {
+		return
+	}
+	if runtime.GOOS == "linux" {
+		_, _ = akitproc.StopChild(cmd.Process.Pid, 0, nil)
+		return
+	}
+	_, _ = akitproc.StopChildGroup(cmd, 0, syscall.SIGKILL)
 }
 
 func (g *runningGraft) name() string { return "graft " + strings.Join(g.args, " ") }
@@ -466,7 +480,7 @@ func (g *runningGraft) name() string { return "graft " + strings.Join(g.args, " 
 // kill ends the graft and waits for it, at most ten seconds: the output is
 // whole once it is reaped.
 func (g *runningGraft) kill() {
-	_ = g.cmd.Process.Kill()
+	stopTestChild(g.cmd)
 	select {
 	case <-g.done:
 	case <-time.After(10 * time.Second):

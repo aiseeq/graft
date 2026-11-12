@@ -90,7 +90,7 @@ func startExecSettle(t *testing.T, f *fixture, settle string, ms int) *exec.Cmd 
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	t.Cleanup(func() { stopTestChild(cmd); _ = cmd.Wait() })
 	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 		if data, _ := os.ReadFile(logFile); strings.HasPrefix(string(data), "start") {
 			return cmd
