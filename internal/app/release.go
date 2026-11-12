@@ -768,12 +768,13 @@ func cutoffMigrationConflicts(repo *gitx.Repo, cfg *config.Config, candidate str
 	plan.highest = highest
 	plan.staysByCommit = cutoffStaysByCommit(ordered, paths, excluded, highest)
 	conflicts, emptyByCommit, err := cutoffBuildConflicts(repo, cfg, ordered, paths, excluded, unapplied, highest)
+	// The commits checked before a git error keep their empty-patch answer.
+	plan.emptyByCommit = emptyByCommit
 	if err != nil {
 		plan.unavailable = err.Error()
 		return plan, nil
 	}
 	plan.conflicts = conflicts
-	plan.emptyByCommit = emptyByCommit
 	itemBySHA := map[string]string{}
 	for _, g := range groups {
 		for _, f := range g.failures {
@@ -799,7 +800,8 @@ func cutoffStaysByCommit(ordered []gateFailure, paths map[string]map[uint64][]st
 	return stays
 }
 
-// cutoffBuildConflicts lists excluded migration paths that cannot be reverted safely.
+// cutoffBuildConflicts lists excluded migration paths that cannot be reverted
+// safely; on a git error it still returns the empty-patch answers it has.
 func cutoffBuildConflicts(repo *gitx.Repo, cfg *config.Config, ordered []gateFailure, paths map[string]map[uint64][]string, excluded, unapplied map[string]bool, highest uint64) (map[string][]cutoffMigration, map[string]bool, error) {
 	conflicts := map[string][]cutoffMigration{}
 	emptyByCommit := map[string]bool{}
@@ -823,7 +825,7 @@ func cutoffBuildConflicts(repo *gitx.Repo, cfg *config.Config, ordered []gateFai
 		if len(omitted) > 0 {
 			empty, err := cutoffEmptyPatch(repo, failure.commit.sha, omitted, cfg)
 			if err != nil {
-				return nil, nil, err
+				return nil, emptyByCommit, err
 			}
 			emptyByCommit[failure.commit.sha] = empty
 		}
