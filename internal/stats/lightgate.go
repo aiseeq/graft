@@ -57,67 +57,13 @@ func SplitLightGate(recs []Record, project string, since time.Time, localSteps [
 	}
 	want := slices.Clone(localSteps)
 	slices.Sort(want)
-	want = slices.Compact(want)
-	cached := runsWithCacheHit(recs)
-	type runCost struct {
-		gate  *Record
-		steps []Record
-	}
-	byRun := map[string]*runCost{}
-	for i := range recs {
-		r := &recs[i]
-		if r.Kind == KindTask && r.Task == GateTask && r.Parent == "" && r.Project == project && r.Run != "" &&
-			r.Steps > 0 && r.Time.After(since) && !cached[r.Run] {
-			byRun[r.Run] = &runCost{gate: r}
-		}
-	}
-	for i := range recs {
-		r := &recs[i]
-		if r.Kind == KindStep && r.Host == "" {
-			if run := byRun[r.Run]; run != nil {
-				run.steps = append(run.steps, *r)
-			}
-		}
-	}
-	var runs []*runCost
-	for _, run := range byRun {
-		runs = append(runs, run)
-	}
-	slices.SortFunc(runs, func(a, b *runCost) int {
-		return cmp.Compare(b.gate.Time.UnixNano(), a.gate.Time.UnixNano())
-	})
+	runs := splitGateRuns(recs, project, since)
 	passed := 0
 	for _, run := range runs {
-		got := make([]string, len(run.steps))
-		for i, step := range run.steps {
-			got[i] = step.Step
-		}
-		slices.Sort(got)
-		got = slices.Compact(got)
-		if !slices.Equal(got, want) {
+		if !splitGateRunMatches(run, want) {
 			continue
 		}
-		var cpu, memory float64
-		builtin := false
-		for _, step := range run.steps {
-			if step.Builtin {
-				builtin = true
-				continue
-			}
-			if step.TreeMemMB == nil || *step.TreeMemMB > LightGateTreeMemMB {
-				return false
-			}
-			cpu += step.UserS + step.SysS
-			memory = max(memory, *step.TreeMemMB)
-		}
-		if builtin {
-			if run.gate.TreeMemMB == nil || *run.gate.TreeMemMB > LightGateTreeMemMB {
-				return false
-			}
-			cpu = run.gate.UserS + run.gate.SysS
-			memory = max(memory, *run.gate.TreeMemMB)
-		}
-		if cpu > LightGateCPUSec || memory > LightGateTreeMemMB {
+		if !splitGateRunIsLight(run) {
 			return false
 		}
 		if run.gate.Exit == 0 {
@@ -128,6 +74,66 @@ func SplitLightGate(recs []Record, project string, since time.Time, localSteps [
 		}
 	}
 	return false
+}
+
+type splitGateRun struct {
+	gate  *Record
+	steps []*Record
+}
+
+func splitGateRuns(recs []Record, project string, since time.Time) []*splitGateRun {
+	cached := runsWithCacheHit(recs)
+	byRun := make(map[string]*splitGateRun)
+	for i := range recs {
+		r := &recs[i]
+		if r.Kind == KindTask && r.Task == GateTask && r.Parent == "" && r.Project == project && r.Run != "" &&
+			r.Steps > 0 && r.Time.After(since) && !cached[r.Run] {
+			byRun[r.Run] = &splitGateRun{gate: r}
+		}
+	}
+	for i := range recs {
+		r := &recs[i]
+		if r.Kind == KindStep && r.Host == "" {
+			if run := byRun[r.Run]; run != nil {
+				run.steps = append(run.steps, r)
+			}
+		}
+	}
+	var runs []*splitGateRun
+	for _, run := range byRun {
+		runs = append(runs, run)
+	}
+	slices.SortFunc(runs, func(a, b *splitGateRun) int {
+		if order := cmp.Compare(b.gate.Time.UnixNano(), a.gate.Time.UnixNano()); order != 0 {
+			return order
+		}
+		return cmp.Compare(a.gate.Run, b.gate.Run)
+	})
+	return runs
+}
+
+func splitGateRunMatches(run *splitGateRun, want []string) bool {
+	got := make([]string, len(run.steps))
+	for i, step := range run.steps {
+		got[i] = step.Step
+	}
+	slices.Sort(got)
+	return slices.Equal(got, want)
+}
+
+func splitGateRunIsLight(run *splitGateRun) bool {
+	var cpu, memory float64
+	for _, step := range run.steps {
+		if step.Builtin && !step.BuiltinCostKnown {
+			return false
+		}
+		if step.TreeMemMB == nil || *step.TreeMemMB > LightGateTreeMemMB {
+			return false
+		}
+		cpu += step.UserS + step.SysS
+		memory = max(memory, *step.TreeMemMB)
+	}
+	return cpu <= LightGateCPUSec && memory <= LightGateTreeMemMB
 }
 
 func runsWithCacheHit(recs []Record) map[string]bool {

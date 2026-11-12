@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -140,7 +141,16 @@ func TestBuiltinGofmtStepIsMarkedInStats(t *testing.T) {
 		frames:     []*frame{{task: stats.GateTask}},
 		noRepoName: true,
 	}
-	r.recordStep(GoFmtSource, stats.Usage{Wall: time.Second}, 0, "", true)
+	err := r.measureFunc(GoFmtSource, func() error {
+		until := time.Now().Add(30 * time.Millisecond)
+		for time.Now().Before(until) {
+			runtime.Gosched()
+		}
+		return nil
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	path, err := stats.Path()
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +159,7 @@ func TestBuiltinGofmtStepIsMarkedInStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 1 || !records[0].Builtin || records[0].Step != GoFmtSource {
+	if len(records) != 1 || !records[0].Builtin || !records[0].BuiltinCostKnown || records[0].TreeMemMB == nil || records[0].UserS == 0 || records[0].Step != GoFmtSource {
 		t.Fatalf("records = %+v, want one marked built-in gofmt step", records)
 	}
 }

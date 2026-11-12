@@ -145,7 +145,8 @@ type Runner struct {
 	// heavy counts the heavy tasks running, admitted by the outermost.
 	heavy int
 	// gateSplit runs a busy user's gate one process step at a time.
-	gateSplit bool
+	gateSplit      bool
+	lightRemainder bool
 	// splitLeave releases the admission the steps a split gate keeps here
 	// share, nil until the first of them takes it.
 	splitLeave func() error
@@ -1152,12 +1153,35 @@ func goFmtInModule(file string, dirs, selected map[string]bool) bool {
 // measure records a command's step, its error the reason of a failure.
 func (r *Runner) measureFunc(source string, run func() error, builtin ...bool) error {
 	start := time.Now()
+	isBuiltin := len(builtin) > 0 && builtin[0]
+	var cpuStart float64
+	var cpuKnown bool
+	var watch *stats.Watch
+	if isBuiltin {
+		var cpuErr error
+		cpuStart, cpuErr = stats.ProcessCPU()
+		cpuKnown = cpuErr == nil
+		watch = stats.WatchProcess(os.Getpid())
+	}
 	err := run()
 	reason := ""
 	if err != nil {
 		reason = err.Error()
 	}
-	r.recordStep(source, stats.Usage{Wall: time.Since(start)}, stepExit(err), reason, len(builtin) > 0 && builtin[0])
+	use := stats.Usage{Wall: time.Since(start)}
+	if isBuiltin {
+		if watch != nil {
+			if werr := use.Watched(watch.Stop()); werr != nil && r.Stats != nil {
+				r.Stats.Warn(werr)
+			}
+		}
+		if cpuEnd, cpuErr := stats.ProcessCPU(); cpuKnown && cpuErr == nil && cpuEnd >= cpuStart {
+			use.User = time.Duration((cpuEnd - cpuStart) * float64(time.Second))
+		} else {
+			cpuKnown = false
+		}
+	}
+	r.recordStep(source, use, stepExit(err), reason, isBuiltin, cpuKnown)
 	return err
 }
 
@@ -1224,7 +1248,8 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int, reason str
 		}
 	}
 	isBuiltin := len(builtin) > 0 && builtin[0]
-	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Profile: r.profile(inner), Step: stats.StepText(source), Exit: code, Reason: reason, Host: r.hostOf(inner), Here: stepHere, Heavy: heavy, Builtin: isBuiltin}, use, r.frames[0].task)
+	builtinCostKnown := len(builtin) > 1 && builtin[1]
+	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Profile: r.profile(inner), Step: stats.StepText(source), Exit: code, Reason: reason, Host: r.hostOf(inner), Here: stepHere, Heavy: heavy, Builtin: isBuiltin, BuiltinCostKnown: builtinCostKnown}, use, r.frames[0].task)
 }
 
 // profile is the kind of a run the admission of heavy tasks knows it by:
@@ -1338,56 +1363,11 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 	}
 	f.here = why
 	defer func() { r.gateCosts = nil }()
-	if light {
-		leave, enterErr := r.enterLightGate(ctx)
-		if enterErr != nil {
-			return enterErr
-		}
-		defer func() { err = errors.Join(err, leave()) }()
-	} else if splitGate {
-		r.gateSplit = true
-		defer func() {
-			r.gateSplit = false
-			if r.splitLeave != nil {
-				err = errors.Join(err, r.splitLeave())
-				r.splitLeave = nil
-			}
-		}()
-		description, err := r.splitGateDescription(steps)
-		if err != nil {
-			return err
-		}
-		restLight := false
-		if !nestedAdmitted {
-			localSteps, stepErr := r.splitLocalStepNames(steps)
-			if stepErr != nil {
-				fmt.Fprintf(r.Stderr, "graft: gate: not checked for a light remainder, it waits for this machine: %v\n", stepErr)
-			} else {
-				restLight = r.lightSplitRemainder(ctx, localSteps)
-			}
-		}
-		if restLight {
-			leave, enterErr := r.enterLightRemainder(ctx)
-			if enterErr != nil {
-				return enterErr
-			}
-			defer func() { err = errors.Join(err, leave()) }()
-			fmt.Fprintf(r.Stderr, "graft: gate: busy here: %s on %s, the rest is light (its last %d local runs under %g s CPU and %g MB), not waiting for the machine\n", description, r.remoteHeavy.Host, stats.LightGateRuns, stats.LightGateCPUSec, stats.LightGateTreeMemMB)
-		} else if nestedAdmitted {
-			fmt.Fprintf(r.Stderr, "graft: gate: busy here: %s on %s, the rest runs under the admitted task\n", description, r.remoteHeavy.Host)
-		} else {
-			fmt.Fprintf(r.Stderr, "graft: gate: busy here: %s on %s, the rest waits for this machine once\n", description, r.remoteHeavy.Host)
-		}
-	} else {
-		// The gate builds and tests: it is heavy as a whole, its heavy tasks
-		// admitted with it.
-		if why == WhyNotBusy {
-			fmt.Fprintf(r.Stderr, "graft: gate: heavy, on this machine whole, its heavy tasks with it: %s\n", why)
-		}
-		leave, err := r.enterHeavy(ctx, stats.GateTask, "")
-		if err != nil {
-			return err
-		}
+	leave, err := r.enterGateMode(ctx, steps, light, splitGate, why, nestedAdmitted)
+	if err != nil {
+		return err
+	}
+	if leave != nil {
 		defer func() { err = errors.Join(err, leave()) }()
 	}
 	for i := range steps {
@@ -1396,6 +1376,68 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 		}
 	}
 	return nil
+}
+
+func (r *Runner) enterGateMode(ctx context.Context, steps []gateStep, light, splitGate bool, why string, nestedAdmitted bool) (leave func() error, err error) {
+	if light {
+		return r.enterLightGate(ctx)
+	}
+	if splitGate {
+		return r.enterSplitGateMode(ctx, steps, nestedAdmitted)
+	}
+	if why == WhyNotBusy {
+		fmt.Fprintf(r.Stderr, "graft: gate: heavy, on this machine whole, its heavy tasks with it: %s\n", why)
+	}
+	return r.enterHeavy(ctx, stats.GateTask, "")
+}
+
+func (r *Runner) enterSplitGateMode(ctx context.Context, steps []gateStep, nestedAdmitted bool) (leave func() error, err error) {
+	r.gateSplit = true
+	var remainderLeave func() error
+	cleanup := func() error {
+		r.gateSplit = false
+		var errs error
+		if remainderLeave != nil {
+			errs = errors.Join(errs, remainderLeave())
+		}
+		if r.splitLeave != nil {
+			errs = errors.Join(errs, r.splitLeave())
+			r.splitLeave = nil
+		}
+		return errs
+	}
+	ready := false
+	defer func() {
+		if !ready {
+			err = errors.Join(err, cleanup())
+		}
+	}()
+	description, err := r.splitGateDescription(steps)
+	if err != nil {
+		return nil, err
+	}
+	restLight := false
+	if !nestedAdmitted {
+		localSteps, stepErr := r.splitLocalStepNames(steps)
+		if stepErr != nil {
+			fmt.Fprintf(r.Stderr, "graft: gate: not checked for a light remainder, it waits for this machine: %v\n", stepErr)
+		} else {
+			restLight = r.lightSplitRemainder(localSteps)
+		}
+	}
+	if restLight {
+		remainderLeave, err = r.enterLightRemainder(ctx)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(r.Stderr, "graft: gate: busy here: %s on %s, the rest is light (its last %d local runs under %g s CPU and %g MB), not waiting for the machine\n", description, r.remoteHeavy.Host, stats.LightGateRuns, stats.LightGateCPUSec, stats.LightGateTreeMemMB)
+	} else if nestedAdmitted {
+		fmt.Fprintf(r.Stderr, "graft: gate: busy here: %s on %s, the rest runs under the admitted task\n", description, r.remoteHeavy.Host)
+	} else {
+		fmt.Fprintf(r.Stderr, "graft: gate: busy here: %s on %s, the rest waits for this machine once\n", description, r.remoteHeavy.Host)
+	}
+	ready = true
+	return cleanup, nil
 }
 
 func (r *Runner) splitLocalStepNames(gate []gateStep) ([]string, error) {
@@ -1433,7 +1475,8 @@ func (r *Runner) splitLocalStepNames(gate []gateStep) ([]string, error) {
 		}
 		return nil
 	}
-	for _, gs := range gate {
+	for i := range gate {
+		gs := &gate[i]
 		if gs.run != nil {
 			names = append(names, stats.StepText(gs.step.Source))
 		} else if gs.step.Task != "" {
@@ -1453,7 +1496,7 @@ func (r *Runner) splitLocalStepNames(gate []gateStep) ([]string, error) {
 	return names, nil
 }
 
-func (r *Runner) lightSplitRemainder(ctx context.Context, localSteps []string) bool {
+func (r *Runner) lightSplitRemainder(localSteps []string) bool {
 	note := func(err error) bool {
 		fmt.Fprintf(r.Stderr, "graft: gate: not checked for a light remainder, it waits for this machine: %v\n", err)
 		return false
@@ -1482,8 +1525,12 @@ func (r *Runner) enterLightRemainder(ctx context.Context) (func() error, error) 
 		return nil, err
 	}
 	r.heavy++
+	r.lightRemainder = true
 	return func() error {
-		r.heavy--
+		if r.lightRemainder {
+			r.heavy--
+			r.lightRemainder = false
+		}
 		return nil
 	}, nil
 }
@@ -1905,6 +1952,13 @@ func (r *Runner) enterSplit(ctx context.Context, name, memoryMax string) error {
 		// Admitted already: a task of the gate asking for more raises the
 		// ceiling.
 		return r.holdCeiling(ctx, name, memoryMax)
+	}
+	if r.lightRemainder {
+		// A remote failure can move expensive host steps here. Drop the
+		// light remainder's local slot before asking admission for the
+		// heavier fallback; the deferred light leave then becomes a no-op.
+		r.heavy--
+		r.lightRemainder = false
 	}
 	leave, err := r.enterHeavy(ctx, name, memoryMax)
 	if err != nil {

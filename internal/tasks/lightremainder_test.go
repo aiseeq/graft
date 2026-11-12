@@ -59,7 +59,7 @@ func TestLightSplitRemainderUsesLocalHistory(t *testing.T) {
 	}
 	var stderr strings.Builder
 	r := &Runner{Root: root, Stderr: &stderr}
-	if !r.lightSplitRemainder(context.Background(), []string{"lex check"}) {
+	if !r.lightSplitRemainder([]string{"lex check"}) {
 		t.Fatalf("local history was not accepted: %s", stderr.String())
 	}
 	records[6].UserS = stats.LightGateCPUSec + 1
@@ -75,7 +75,7 @@ func TestLightSplitRemainderUsesLocalHistory(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if r.lightSplitRemainder(context.Background(), []string{"lex check"}) {
+	if r.lightSplitRemainder([]string{"lex check"}) {
 		t.Fatal("a heavy local history was accepted")
 	}
 }
@@ -105,5 +105,39 @@ func TestEnterLightRemainderSkipsAdmissionAndReleases(t *testing.T) {
 	}
 	if r.heavy != 0 {
 		t.Fatalf("heavy after leave = %d", r.heavy)
+	}
+}
+
+func TestRemoteFallbackUpgradesLightRemainderToAdmission(t *testing.T) {
+	orig := configureHeavy
+	t.Cleanup(func() { configureHeavy = orig })
+	configureHeavy = func(_ context.Context, _ int, _ string, _ iosched.Request) (iosched.Placement, error) {
+		return iosched.Placement{}, nil
+	}
+	admitted := 0
+	r := &Runner{Stderr: &strings.Builder{}, admitTask: func(context.Context, string) (loadgate.Admission, func() error, error) {
+		admitted++
+		return loadgate.Admission{}, func() error { return nil }, nil
+	}}
+	lightLeave, err := r.enterLightRemainder(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.enterSplit(context.Background(), stats.GateTask, ""); err != nil {
+		t.Fatal(err)
+	}
+	if admitted != 1 || r.heavy != 1 || r.lightRemainder {
+		t.Fatalf("admissions=%d heavy=%d lightRemainder=%v", admitted, r.heavy, r.lightRemainder)
+	}
+	if err := lightLeave(); err != nil {
+		t.Fatal(err)
+	}
+	if r.splitLeave != nil {
+		if err := r.splitLeave(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r.heavy != 0 {
+		t.Fatalf("heavy after release = %d", r.heavy)
 	}
 }

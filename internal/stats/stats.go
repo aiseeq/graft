@@ -66,9 +66,11 @@ type Record struct {
 	Here string `json:"here,omitempty"`
 	// Heavy says a step runs on the same machine as its nearest heavy task.
 	Heavy bool `json:"heavy,omitempty"`
-	// Builtin marks a step run in graft's process. Its cost is represented by
-	// the task record for the graft run rather than a separate process sample.
+	// Builtin marks a step run in graft's process. Its process cost is sampled
+	// around the step rather than read from a child process exit status.
 	Builtin bool `json:"builtin,omitempty"`
+	// BuiltinCostKnown says the built-in step has a complete CPU sample.
+	BuiltinCostKnown bool `json:"builtin_cost_known,omitempty"`
 	// Profile is the kind of the run the admission of heavy tasks knows it
 	// by: <repository>:<task>, the repository named by its main work tree's
 	// folder for every worktree, and a graft exec <repository>:exec:<the

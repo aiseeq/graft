@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -99,6 +100,22 @@ func TestSplitLightGate(t *testing.T) {
 			t.Fatal("runs with a different local step set counted")
 		}
 	})
+	t.Run("duplicate local commands keep their count", func(t *testing.T) {
+		records := makeRuns()
+		for i := range LightGateRuns {
+			run := string(rune('a' + i))
+			records = append(records, Record{Kind: KindStep, Run: run, Step: "lex check", Time: base, UserS: .15, TreeMemMB: mem(12), Exit: 0})
+		}
+		if !SplitLightGate(records, "/p", time.Time{}, []string{"lex check", "lex check"}) {
+			t.Fatal("two matching local command occurrences were not accepted")
+		}
+		records = slices.DeleteFunc(records, func(r Record) bool {
+			return r.Run == "c" && r.Kind == KindStep && r.Step == "lex check" && r.UserS == .15
+		})
+		if SplitLightGate(records, "/p", time.Time{}, []string{"lex check", "lex check"}) {
+			t.Fatal("one recorded occurrence matched two configured commands")
+		}
+	})
 	t.Run("an old lex row without memory keeps the remainder queued", func(t *testing.T) {
 		records := makeRuns()
 		for i := range records {
@@ -116,7 +133,7 @@ func TestSplitLightGate(t *testing.T) {
 			run := string(rune('a' + i))
 			when := base.Add(time.Duration(i) * time.Minute)
 			records = append(records,
-				Record{Kind: KindStep, Run: run, Step: "gofmt -l", Builtin: true, Time: when, Exit: 0},
+				Record{Kind: KindStep, Run: run, Step: "gofmt -l", Builtin: true, BuiltinCostKnown: true, UserS: .2, TreeMemMB: mem(24), Time: when, Exit: 0},
 				Record{Kind: KindTask, Run: run, Task: GateTask, Project: "/p", Steps: 1, UserS: .2, TreeMemMB: mem(24), Exit: 0, Time: when.Add(time.Second)},
 			)
 		}
