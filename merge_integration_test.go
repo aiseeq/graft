@@ -414,6 +414,30 @@ func TestMergeUsesOnlyPushRemotes(t *testing.T) {
 	}
 }
 
+func TestMergeIgnoresUnavailableBootstrapRemoteOutsideTrunkPushSet(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none, reason: 'no version'}\ngate: []\npush: {remotes: [origin, offline]}\n")
+	f.mustPlainCommit("chore: configure push remotes")
+	f.git("push", "-q", "origin", "main")
+	f.git("remote", "add", "offline", filepath.Join(f.base, "missing.git"))
+
+	remoteWork := filepath.Join(f.base, "remote-work")
+	f.run(f.base, "git", "clone", "--branch", "main", f.remote("origin"), remoteWork)
+	f.gitIn(remoteWork, "config", "user.name", "Merge Test")
+	f.gitIn(remoteWork, "config", "user.email", "merge@example.invalid")
+	if err := os.WriteFile(filepath.Join(remoteWork, ".graft.yaml"), []byte("schema: 1\nversion: {mode: none, reason: 'no version'}\ngate: []\npush: {remotes: [origin]}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.gitIn(remoteWork, "add", ".graft.yaml")
+	f.gitIn(remoteWork, "commit", "-m", "chore: narrow push remotes")
+	f.gitIn(remoteWork, "push", "origin", "main")
+
+	out := f.mustGraft("merge", "feature/PROJ-42")
+	if !strings.Contains(out, "initial fetch offline failed") || !strings.Contains(out, "installed main") {
+		t.Errorf("unavailable bootstrap remote was not warned about or merge did not finish:\n%s", out)
+	}
+}
+
 func TestMergeSourceLocalWithUpstream(t *testing.T) {
 	f := mergeRepo(t, "origin")
 	f.git("switch", "-q", "feature/PROJ-42")

@@ -21,6 +21,29 @@ type MergeOptions struct {
 	NoDeps                              bool
 }
 
+type mergeState struct {
+	a                   *App
+	ctx                 context.Context
+	repo                *gitx.Repo
+	cfg                 *config.Config
+	opts                MergeOptions
+	allRemotes, pushTo  []string
+	branch, trunk       string
+	trunkRef, sourceRef string
+	A, F, local, R      string
+	tmp, wt             string
+	cleanupCfg          *config.Config
+	w                   *gitx.Repo
+	message, ticketKey  string
+	sourceVersion       string
+	trunkVersion        string
+	mode                string
+	fastForward         bool
+	alreadyMerged       bool
+	primary             string
+	mirrorErr           error
+}
+
 // Merge builds and checks a trunk update in a disposable worktree before publishing it.
 func (a *App) Merge(ctx context.Context, o MergeOptions) error {
 	repo, err := gitx.Open(a.Dir)
@@ -38,520 +61,732 @@ func (a *App) Merge(ctx context.Context, o MergeOptions) error {
 }
 
 func (a *App) mergeLocked(ctx context.Context, repo *gitx.Repo, cfg *config.Config, o MergeOptions) error {
-	if o.Mode == "" {
-		o.Mode = "rebase"
+	st := &mergeState{a: a, ctx: ctx, repo: repo, cfg: cfg, opts: o}
+	if err := st.validateRequest(); err != nil {
+		return err
 	}
-	if o.Mode != "rebase" && o.Mode != "merge" {
+	if err := st.checkBeforeStart(); err != nil {
+		return err
+	}
+	if err := st.takeSnapshot(); err != nil {
+		return err
+	}
+	if st.alreadyMerged {
+		return nil
+	}
+	defer st.cleanup()
+	if err := st.prepareWorktree(); err != nil {
+		return err
+	}
+	if err := st.buildCandidate(); err != nil {
+		return err
+	}
+	if st.alreadyMerged {
+		return nil
+	}
+	if err := st.checkCandidate(); err != nil {
+		return err
+	}
+	if err := st.recheckBeforePush(); err != nil {
+		return err
+	}
+	if err := st.push(); err != nil {
+		return err
+	}
+	if err := st.install(); err != nil {
+		return err
+	}
+	return st.mirrorErr
+}
+
+func (s *mergeState) validateRequest() error {
+	if s.opts.Mode == "" {
+		s.opts.Mode = "rebase"
+	}
+	if s.opts.Mode != "rebase" && s.opts.Mode != "merge" {
 		return fmt.Errorf("--mode must be rebase or merge")
 	}
-	if o.Message != "" && o.Mode != "merge" {
+	if s.opts.Message != "" && s.opts.Mode != "merge" {
 		return fmt.Errorf("-m requires --mode merge")
 	}
-	if o.NoDeps && strings.TrimSpace(o.NoDepsReason) == "" {
+	if s.opts.NoDeps && strings.TrimSpace(s.opts.NoDepsReason) == "" {
 		return fmt.Errorf("--no-deps requires --reason <text>")
 	}
-	allRemotes, err := repo.Remotes()
+	return nil
+}
+
+func (s *mergeState) checkBeforeStart() error {
+	var err error
+	s.allRemotes, err = s.repo.Remotes()
 	if err != nil {
 		return err
 	}
-	if len(allRemotes) == 0 {
+	if len(s.allRemotes) == 0 {
 		return errors.New("graft merge requires at least one remote")
 	}
-	pushTo, err := pushRemotes(repo, cfg)
+	s.pushTo, err = pushRemotes(s.repo, s.cfg)
 	if err != nil {
 		return err
 	}
-	if len(pushTo) == 0 {
+	if len(s.pushTo) == 0 {
 		return errors.New("graft merge requires at least one push remote")
 	}
-	branch, err := repo.Branch()
+	s.branch, err = s.repo.Branch()
 	if err != nil {
 		return err
 	}
-	clean, err := repo.IsClean()
+	clean, err := s.repo.IsClean()
 	if err != nil {
 		return err
 	}
 	if !clean {
 		return errors.New("graft merge requires a clean index and work tree, including untracked files")
 	}
-	trunkRefName, err := trunkRef(repo, cfg, "", allRemotes)
+	s.trunkRef, err = trunkRef(s.repo, s.cfg, "", s.allRemotes)
 	if err != nil {
 		return err
 	}
-	for _, r := range pushTo {
-		if _, err := repo.Git("fetch", "--quiet", r); err != nil {
+	for _, r := range s.pushTo {
+		if _, fetchErr := s.repo.Git("fetch", "--quiet", r); fetchErr != nil {
+			s.a.warn("initial fetch %s failed while resolving trunk: %v", r, fetchErr)
+		}
+	}
+	return nil
+}
+
+func (s *mergeState) takeSnapshot() error {
+	stable, err := s.resolveTrunkSnapshot()
+	if err != nil {
+		return err
+	}
+	if !stable {
+		return errors.New("trunk config or ref kept changing while resolving it; retry graft merge")
+	}
+	if err := s.validateTrunk(); err != nil {
+		return err
+	}
+	if err := s.resolveSource(); err != nil {
+		return err
+	}
+	return s.checkSnapshotHistory()
+}
+
+func (s *mergeState) resolveTrunkSnapshot() (bool, error) {
+	for range 3 {
+		A, err := s.repo.Git("rev-parse", "--verify", s.trunkRef+"^{commit}")
+		if err != nil {
+			return false, err
+		}
+		s.A = strings.TrimSpace(A)
+		if err = s.loadTrunkConfig(); err != nil {
+			return false, err
+		}
+		if err = s.fetchConfiguredRemotes(); err != nil {
+			return false, err
+		}
+		newRef, err := trunkRef(s.repo, s.cfg, "", s.allRemotes)
+		if err != nil {
+			return false, err
+		}
+		newA, err := s.repo.Git("rev-parse", "--verify", newRef+"^{commit}")
+		if err != nil {
+			return false, err
+		}
+		if newRef == s.trunkRef && strings.TrimSpace(newA) == s.A {
+			return true, nil
+		}
+		s.trunkRef = newRef
+	}
+	return false, nil
+}
+
+func (s *mergeState) loadTrunkConfig() error {
+	data, err := s.repo.Git("show", s.A+":"+config.FileName)
+	if err != nil {
+		return fmt.Errorf("reading %s from trunk %s: %w", config.FileName, gitx.Short(s.A), err)
+	}
+	s.cfg, err = config.Parse([]byte(data))
+	if err != nil {
+		return fmt.Errorf("trunk %s %s: %w", gitx.Short(s.A), config.FileName, err)
+	}
+	return s.a.requireGraft(s.cfg)
+}
+
+func (s *mergeState) fetchConfiguredRemotes() error {
+	var err error
+	s.pushTo, err = pushRemotes(s.repo, s.cfg)
+	if err != nil {
+		return err
+	}
+	s.primary = primaryRemote(s.cfg, s.allRemotes, s.trunkRef)
+	if !slices.Contains(s.pushTo, s.primary) {
+		return fmt.Errorf("deploy remote %q, the trunk's primary remote, is absent from push.remotes", s.primary)
+	}
+	for _, r := range s.pushTo {
+		if _, err = s.repo.Git("fetch", "--quiet", r); err != nil {
 			return fmt.Errorf("git fetch %s: %w", r, err)
 		}
 	}
-	// The fetched trunk's config governs the entire operation. If its config
-	// selects another remote, fetch that configured push set and resolve again.
-	var A string
-	stableConfig := false
-	for range 3 {
-		A, err = repo.Git("rev-parse", "--verify", trunkRefName+"^{commit}")
-		if err != nil {
-			return err
-		}
-		A = strings.TrimSpace(A)
-		data, e := repo.Git("show", A+":"+config.FileName)
-		if e != nil {
-			return fmt.Errorf("reading %s from trunk %s: %w", config.FileName, gitx.Short(A), e)
-		}
-		cfg, e = config.Parse([]byte(data))
-		if e != nil {
-			return fmt.Errorf("trunk %s %s: %w", gitx.Short(A), config.FileName, e)
-		}
-		if e = a.requireGraft(cfg); e != nil {
-			return e
-		}
-		pushTo, e = pushRemotes(repo, cfg)
-		if e != nil {
-			return e
-		}
-		primary := primaryRemote(cfg, allRemotes, trunkRefName)
-		if !slices.Contains(pushTo, primary) {
-			return fmt.Errorf("deploy remote %q, the trunk's primary remote, is absent from push.remotes", primary)
-		}
-		for _, r := range pushTo {
-			if _, e = repo.Git("fetch", "--quiet", r); e != nil {
-				return fmt.Errorf("git fetch %s: %w", r, e)
-			}
-		}
-		newRef, e := trunkRef(repo, cfg, "", allRemotes)
-		if e != nil {
-			return e
-		}
-		newA, e := repo.Git("rev-parse", "--verify", newRef+"^{commit}")
-		if e != nil {
-			return e
-		}
-		newA = strings.TrimSpace(newA)
-		if newRef == trunkRefName && newA == A {
-			stableConfig = true
-			break
-		}
-		trunkRefName = newRef
-	}
-	if !stableConfig {
-		return errors.New("trunk config or ref kept changing while resolving it; retry graft merge")
-	}
-	trunk, ok, err := worktreeSyncResolvedTrunkBranch(repo, trunkRefName, allRemotes)
+	return nil
+}
+
+func (s *mergeState) validateTrunk() error {
+	trunk, ok, err := worktreeSyncResolvedTrunkBranch(s.repo, s.trunkRef, s.allRemotes)
 	if err != nil {
 		return err
 	}
-	if !ok || branch != trunk {
-		return fmt.Errorf("graft merge must run on the local trunk branch %s", trunk)
+	s.trunk = trunk
+	if !ok || s.branch != s.trunk {
+		return fmt.Errorf("graft merge must run on the local trunk branch %s", s.trunk)
 	}
-	if cfg.Version.TagOnCommit || config.BranchMatches(cfg.Version.Build, trunk) {
+	if s.cfg.Version.TagOnCommit || config.BranchMatches(s.cfg.Version.Build, s.trunk) {
 		return errors.New("graft merge: version.tag_on_commit and version.build_branches are not supported in v1")
 	}
-	// Resolve source only after fetch, using immutable refs selected below.
-	src, err := resolveMergeSource(repo, o.Branch, pushTo)
+	return nil
+}
+
+func (s *mergeState) resolveSource() error {
+	var err error
+	s.sourceRef, err = resolveMergeSource(s.repo, s.opts.Branch, s.pushTo)
 	if err != nil {
 		return err
 	}
-	F, err := repo.Git("rev-parse", "--verify", src+"^{commit}")
+	F, err := s.repo.Git("rev-parse", "--verify", s.sourceRef+"^{commit}")
 	if err != nil {
-		return fmt.Errorf("source %q is not a branch", o.Branch)
+		return fmt.Errorf("source %q is not a branch", s.opts.Branch)
 	}
-	F = strings.TrimSpace(F)
-	sourceIsTrunk := src == "refs/heads/"+trunk
-	for _, remote := range pushTo {
-		if src == "refs/remotes/"+remote+"/"+trunk {
-			sourceIsTrunk = true
-		}
-	}
-	if sourceIsTrunk {
+	s.F = strings.TrimSpace(F)
+	if s.sourceIsTrunk() {
 		return errors.New("source is the trunk")
 	}
-	if primary := primaryRemote(cfg, allRemotes, trunkRefName); !slices.Contains(pushTo, primary) {
-		return fmt.Errorf("trunk primary remote %q is not in push.remotes", primary)
+	return nil
+}
+
+func (s *mergeState) sourceIsTrunk() bool {
+	if s.sourceRef == "refs/heads/"+s.trunk {
+		return true
 	}
-	a.printf("merge snapshot: A %s, F %s", gitx.Short(A), gitx.Short(F))
-	local, err := repo.Git("rev-parse", "refs/heads/"+trunk)
+	for _, remote := range s.pushTo {
+		if s.sourceRef == "refs/remotes/"+remote+"/"+s.trunk {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *mergeState) checkSnapshotHistory() error {
+	s.a.printf("merge snapshot: A %s, F %s", gitx.Short(s.A), gitx.Short(s.F))
+	local, err := s.repo.Git("rev-parse", "refs/heads/"+s.trunk)
 	if err != nil {
 		return err
 	}
-	local = strings.TrimSpace(local)
-	isAncestor, err := repo.IsAncestor(local, A)
+	s.local = strings.TrimSpace(local)
+	isAncestor, err := s.repo.IsAncestor(s.local, s.A)
 	if err != nil {
 		return err
 	}
 	if !isAncestor {
 		return errors.New("local trunk has commits absent from its remote; send or remove them before retrying")
 	}
-	merged, err := repo.IsAncestor(F, A)
+	merged, err := s.repo.IsAncestor(s.F, s.A)
 	if err != nil {
 		return err
 	}
 	if merged {
-		a.printf("already merged %s", gitx.Short(F))
-		return nil
+		s.a.printf("already merged %s", gitx.Short(s.F))
+		s.alreadyMerged = true
 	}
-	if o.NoDeps && len(cfg.Merge.Deps) == 0 {
-		a.printf("merge deps skipped: %s", strings.TrimSpace(o.NoDepsReason))
-	}
-	tmp, err := os.MkdirTemp("", "graft-merge-*")
+	return nil
+}
+
+func (s *mergeState) prepareWorktree() error {
+	var err error
+	s.tmp, err = os.MkdirTemp("", "graft-merge-*")
 	if err != nil {
+		return fmt.Errorf("creating merge temporary directory: %w", err)
+	}
+	s.wt = filepath.Join(s.tmp, "tree")
+	if _, err = s.repo.Git("worktree", "add", "--detach", "--quiet", s.wt, s.A); err != nil {
+		if rmErr := os.RemoveAll(s.tmp); rmErr != nil {
+			s.a.warn("removing merge temporary directory %s: %v", s.tmp, rmErr)
+		}
+		s.tmp, s.wt = "", ""
 		return err
 	}
-	wt := filepath.Join(tmp, "tree")
-	if _, err = repo.Git("worktree", "add", "--detach", "--quiet", wt, A); err != nil {
-		if rmErr := os.RemoveAll(tmp); rmErr != nil {
-			a.warn("removing merge temporary directory %s: %v", tmp, rmErr)
-		}
+	s.cleanupCfg = s.cfg
+	s.w, err = gitx.Open(s.wt)
+	return err
+}
+
+func (s *mergeState) cleanup() {
+	if s.wt == "" {
+		return
+	}
+	if err := removeMergeLinks(s.wt, s.cleanupCfg); err != nil {
+		s.a.warn("removing temporary worktree links: %v", err)
+	}
+	if _, err := s.repo.Git("worktree", "remove", "--force", s.wt); err != nil {
+		s.a.warn("removing merge worktree %s: %v", s.wt, err)
+	}
+	if err := os.RemoveAll(s.tmp); err != nil {
+		s.a.warn("removing merge temporary directory %s: %v", s.tmp, err)
+	}
+}
+
+func (s *mergeState) buildCandidate() error {
+	if err := s.prepareMergeMessage(); err != nil {
 		return err
 	}
-	cleanupCfg := cfg
-	defer func() {
-		if err := removeMergeLinks(wt, cleanupCfg); err != nil {
-			a.warn("removing temporary worktree links: %v", err)
-		}
-		if _, err := repo.Git("worktree", "remove", "--force", wt); err != nil {
-			a.warn("removing merge worktree %s: %v", wt, err)
-		}
-		if err := os.RemoveAll(tmp); err != nil {
-			a.warn("removing merge temporary directory %s: %v", tmp, err)
-		}
-	}()
-	w, err := gitx.Open(wt)
-	if err != nil {
+	if err := s.captureVersions(); err != nil {
 		return err
 	}
-	msg := o.Message
-	if msg == "" {
-		msg = fmt.Sprintf("Merge %s into %s", o.Branch, trunk)
+	if err := s.checkConventionalMessage(); err != nil {
+		return err
 	}
-	ticketKey := ""
-	if cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, o.Branch) {
-		ticketKey = message.BranchKey(o.Branch, cfg.Ticket.Regexp)
-		msg = message.WithKey(msg, ticketKey)
-		if cfg.Ticket.Required && ticketKey != "" && !hasTicketKey(cfg, msg) {
-			msg += "\n\n" + ticketKey
-		}
-	}
-	sourceVersion, trunkVersion := "", ""
-	if cfg.Version.Mode == config.ModeFile {
-		sourceVersion, err = mergeVersionAt(repo, F, cfg)
-		if err != nil {
+	s.mode = s.opts.Mode
+	if s.mode == "rebase" {
+		if err := s.buildRebaseCandidate(); err != nil {
 			return err
 		}
-		trunkVersion, err = mergeVersionAt(repo, A, cfg)
-		if err != nil {
-			return err
-		}
+	} else if err := s.buildMergeCandidate(); err != nil {
+		return err
 	}
-	if o.Message != "" {
-		uc, e := userconfig.CommitSettings()
-		if e != nil {
-			return e
-		}
-		conventional, source := uc.Conventional, "user config commit.conventional"
-		if cfg.Commit.Conventional != nil {
-			conventional, source = *cfg.Commit.Conventional, ".graft.yaml commit.conventional"
-		}
-		if conventional {
-			if e := message.CheckConventionalSource(msg, source); e != nil {
-				return e
-			}
-		}
+	return s.finishCandidate()
+}
+
+func (s *mergeState) prepareMergeMessage() error {
+	s.message = s.opts.Message
+	if s.message == "" {
+		s.message = fmt.Sprintf("Merge %s into %s", s.opts.Branch, s.trunk)
 	}
-	mode := o.Mode
-	fastForward := false
-	if mode == "rebase" {
-		ancestral, e := repo.IsAncestor(A, F)
-		if e != nil {
-			return e
-		}
-		if ancestral {
-			fastForward = true
-			if _, e = w.Git("reset", "--hard", F); e != nil {
-				return e
-			}
-		} else {
-			list, e := repo.Git("rev-list", "--reverse", A+".."+F)
-			if e != nil {
-				return e
-			}
-			commits := strings.FieldsSeq(list)
-			for c := range commits {
-				parents, e := repo.Git("rev-list", "--parents", "-n", "1", c)
-				if e != nil {
-					return e
-				}
-				if len(strings.Fields(parents)) > 2 {
-					return errors.New("source contains a merge commit; retry with --mode merge")
-				}
-				// Git before 2.45 has no --empty=drop. Skip source commits
-				// that were empty at their original parent before cherry-picking.
-				if empty, er := mergeCommitEmpty(repo, c); er != nil {
-					return er
-				} else if empty {
-					a.printf("merge: skipped empty commit %s", gitx.Short(c))
-					continue
-				}
-				if _, e = w.GitEnv(markerEnv, "cherry-pick", c); e != nil {
-					paths, pe := mergeUnmergedPaths(w)
-					if pe != nil {
-						return pe
-					}
-					if len(paths) == 0 {
-						if same, se := mergeIndexEqualsHead(w); se != nil {
-							return se
-						} else if same {
-							a.printf("merge: skipped empty commit %s", gitx.Short(c))
-							if _, e = w.GitEnv(markerEnv, "cherry-pick", "--skip"); e != nil {
-								return fmt.Errorf("skipping empty cherry-pick: %w", e)
-							}
-							continue
-						}
-						return fmt.Errorf("cherry-pick failed without conflicts: %w", e)
-					}
-					if err := mergeResolveVersion(w, cfg); err != nil {
-						return err
-					}
-					step := "--continue"
-					if same, se := mergeIndexEqualsHead(w); se != nil {
-						return se
-					} else if same {
-						step = "--skip"
-					}
-					if _, e = w.GitEnv(markerEnv, "cherry-pick", step); e != nil {
-						return fmt.Errorf("cherry-pick failed; trunk and source are unchanged: %w", e)
-					}
-				}
-			}
-		}
-	} else {
-		args := []string{"merge", "--no-ff", "--no-edit", "-m", msg, F}
-		if _, e := w.GitEnv(markerEnv, args...); e != nil {
-			paths, _ := w.Git("diff", "--name-only", "--diff-filter=U")
-			if strings.TrimSpace(paths) != "" {
-				if er := mergeResolveVersion(w, cfg); er != nil {
-					return er
-				}
-				if _, e = w.GitEnv(markerEnv, "commit", "--no-edit"); e != nil {
-					return e
-				}
-			} else {
-				return fmt.Errorf("merge failed: %w", e)
-			}
-		}
+	if s.cfg.Ticket == nil || config.BranchMatches(s.cfg.Ticket.Skip, s.opts.Branch) {
+		return nil
 	}
-	R, err := w.Git("rev-parse", "HEAD")
+	s.ticketKey = message.BranchKey(s.opts.Branch, s.cfg.Ticket.Regexp)
+	s.message = message.WithKey(s.message, s.ticketKey)
+	if s.cfg.Ticket.Required && s.ticketKey != "" && !hasTicketKey(s.cfg, s.message) {
+		s.message += "\n\n" + s.ticketKey
+	}
+	return nil
+}
+
+func (s *mergeState) captureVersions() error {
+	if s.cfg.Version.Mode != config.ModeFile {
+		return nil
+	}
+	var err error
+	s.sourceVersion, err = mergeVersionAt(s.repo, s.F, s.cfg)
 	if err != nil {
 		return err
 	}
-	R = strings.TrimSpace(R)
-	if R == A {
-		a.printf("already merged by content")
+	s.trunkVersion, err = mergeVersionAt(s.repo, s.A, s.cfg)
+	return err
+}
+
+func (s *mergeState) checkConventionalMessage() error {
+	if s.opts.Message == "" {
 		return nil
 	}
-	if mode == "merge" {
-		same, e := mergeTreesEqual(w, A, R)
-		if e != nil {
-			return e
+	uc, err := userconfig.CommitSettings()
+	if err != nil {
+		return err
+	}
+	conventional, source := uc.Conventional, "user config commit.conventional"
+	if s.cfg.Commit.Conventional != nil {
+		conventional, source = *s.cfg.Commit.Conventional, ".graft.yaml commit.conventional"
+	}
+	if conventional {
+		return message.CheckConventionalSource(s.message, source)
+	}
+	return nil
+}
+
+func (s *mergeState) buildRebaseCandidate() error {
+	ancestral, err := s.repo.IsAncestor(s.A, s.F)
+	if err != nil {
+		return err
+	}
+	if ancestral {
+		s.fastForward = true
+		_, err = s.w.Git("reset", "--hard", s.F)
+		return err
+	}
+	list, err := s.repo.Git("rev-list", "--reverse", s.A+".."+s.F)
+	if err != nil {
+		return err
+	}
+	for c := range strings.FieldsSeq(list) {
+		if err := s.cherryPickSourceCommit(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *mergeState) cherryPickSourceCommit(commit string) error {
+	parents, err := s.repo.Git("rev-list", "--parents", "-n", "1", commit)
+	if err != nil {
+		return err
+	}
+	if len(strings.Fields(parents)) > 2 {
+		return errors.New("source contains a merge commit; retry with --mode merge")
+	}
+	empty, err := mergeCommitEmpty(s.repo, commit)
+	if err != nil {
+		return err
+	}
+	if empty {
+		s.a.printf("merge: skipped empty commit %s", gitx.Short(commit))
+		return nil
+	}
+	_, err = s.w.GitEnv(markerEnv, "cherry-pick", commit)
+	if err == nil {
+		return nil
+	}
+	return s.resolveCherryPickFailure(commit, err)
+}
+
+func (s *mergeState) resolveCherryPickFailure(commit string, cherryErr error) error {
+	paths, err := mergeUnmergedPaths(s.w)
+	if err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		same, err := mergeIndexEqualsHead(s.w)
+		if err != nil {
+			return err
 		}
 		if same {
-			a.printf("already merged by content")
+			s.a.printf("merge: skipped empty commit %s", gitx.Short(commit))
+			if _, err = s.w.GitEnv(markerEnv, "cherry-pick", "--skip"); err != nil {
+				return fmt.Errorf("skipping empty cherry-pick: %w", err)
+			}
 			return nil
 		}
+		return fmt.Errorf("cherry-pick failed without conflicts: %w", cherryErr)
 	}
-	if err = mergeBump(w, cfg, trunk, A, ticketKey); err != nil {
+	if err = mergeResolveVersion(s.w, s.cfg); err != nil {
 		return err
 	}
-	if cfg.Version.Mode == config.ModeFile {
-		v, e := version.Current(w.Root, cfg.Version)
-		if e != nil {
-			return e
-		}
-		a.printf("merge version: %s (source %s, trunk %s)", v, sourceVersion, trunkVersion)
+	return s.continueCherryPick()
+}
+
+func (s *mergeState) continueCherryPick() error {
+	step := "--continue"
+	same, err := mergeIndexEqualsHead(s.w)
+	if err != nil {
+		return err
+	}
+	if same {
+		step = "--skip"
+	}
+	if _, err = s.w.GitEnv(markerEnv, "cherry-pick", step); err != nil {
+		return fmt.Errorf("cherry-pick failed; trunk and source are unchanged: %w", err)
+	}
+	return nil
+}
+
+func (s *mergeState) buildMergeCandidate() error {
+	args := []string{"merge", "--no-ff", "--no-edit", "-m", s.message, s.F}
+	_, err := s.w.GitEnv(markerEnv, args...)
+	if err == nil {
+		return nil
+	}
+	paths, diffErr := s.w.Git("diff", "--name-only", "--diff-filter=U")
+	if diffErr != nil {
+		return fmt.Errorf("reading merge conflict paths: %w", diffErr)
+	}
+	if strings.TrimSpace(paths) == "" {
+		return fmt.Errorf("merge failed: %w", err)
+	}
+	if err = mergeResolveVersion(s.w, s.cfg); err != nil {
+		return err
+	}
+	_, err = s.w.GitEnv(markerEnv, "commit", "--no-edit")
+	return err
+}
+
+func (s *mergeState) finishCandidate() error {
+	R, err := s.w.Git("rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	s.R = strings.TrimSpace(R)
+	hasChanges, err := s.candidateHasChanges()
+	if err != nil {
+		return err
+	}
+	if !hasChanges {
+		s.a.printf("already merged by content")
+		s.alreadyMerged = true
+		return nil
+	}
+	if err = mergeBump(s.w, s.cfg, s.trunk, s.A, s.ticketKey); err != nil {
+		return err
+	}
+	return s.reportVersion()
+}
+
+func (s *mergeState) candidateHasChanges() (bool, error) {
+	if s.R == s.A {
+		return false, nil
+	}
+	if s.mode != "merge" {
+		return true, nil
+	}
+	same, err := mergeTreesEqual(s.w, s.A, s.R)
+	return !same, err
+}
+
+func (s *mergeState) reportVersion() error {
+	if s.cfg.Version.Mode != config.ModeFile {
+		s.a.printf("merge version: %s", s.cfg.Version.Mode)
+		return nil
+	}
+	v, err := version.Current(s.w.Root, s.cfg.Version)
+	if err != nil {
+		return err
+	}
+	s.a.printf("merge version: %s (source %s, trunk %s)", v, s.sourceVersion, s.trunkVersion)
+	return nil
+}
+
+func (s *mergeState) checkCandidate() error {
+	R, err := s.w.Git("rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	s.R = strings.TrimSpace(R)
+	cfgResult, err := config.Load(s.w.Root)
+	if err != nil {
+		return fmt.Errorf("loading result config from %s: %w", gitx.Short(s.R), err)
+	}
+	if err = s.a.requireGraft(cfgResult); err != nil {
+		return err
+	}
+	s.cleanupCfg = cfgResult
+	linkSetups, err := s.a.linkWorktree(s.repo.Root, s.wt)
+	if err != nil {
+		return err
+	}
+	if err = s.a.prepareWorktree(s.ctx, s.repo.Root, s.wt, linkSetups); err != nil {
+		return err
+	}
+	s.cfg = cfgResult
+	return s.runResultChecks()
+}
+
+func (s *mergeState) runResultChecks() error {
+	if s.opts.NoDeps {
+		s.a.printf("merge deps skipped: %s", strings.TrimSpace(s.opts.NoDepsReason))
+	}
+	if s.fastForward {
+		s.a.printf("merge mode: fast-forward")
 	} else {
-		a.printf("merge version: %s", cfg.Version.Mode)
+		s.a.printf("merge mode: %s", s.mode)
 	}
-	R, err = w.Git("rev-parse", "HEAD")
-	if err != nil {
-		return err
-	}
-	R = strings.TrimSpace(R)
-	cfgResult, err := config.Load(w.Root)
-	if err != nil {
-		return fmt.Errorf("loading result config from %s: %w", gitx.Short(R), err)
-	}
-	if err = a.requireGraft(cfgResult); err != nil {
-		return err
-	}
-	cleanupCfg = cfgResult
-	linkSetups, err := a.linkWorktree(repo.Root, wt)
-	if err != nil {
-		return err
-	}
-	if err = a.prepareWorktree(ctx, repo.Root, wt, linkSetups); err != nil {
-		return err
-	}
-	cfg = cfgResult
-	if o.NoDeps && len(cfg.Merge.Deps) > 0 {
-		a.printf("merge deps skipped: %s", strings.TrimSpace(o.NoDepsReason))
-	}
-	if fastForward {
-		a.printf("merge mode: fast-forward")
-	} else {
-		a.printf("merge mode: %s", mode)
-	}
-	if _, _, err = a.gateForMessage(ctx, w, cfg, trunk, msg); err != nil {
+	if _, _, err := s.a.gateForMessage(s.ctx, s.w, s.cfg, s.trunk, s.message); err != nil {
 		return fmt.Errorf("merge gate failed; nothing published: %w", err)
 	}
-	if err = mergeTreeUnchanged(w, R, cfg, "gate"); err != nil {
+	if err := mergeTreeUnchanged(s.w, s.R, s.cfg, "gate"); err != nil {
 		return err
 	}
-	a.printf("merge gate passed")
-	if _, err = w.Git("reset", "--soft", A); err != nil {
+	s.a.printf("merge gate passed")
+	return s.runContentChecks()
+}
+
+func (s *mergeState) runContentChecks() error {
+	if _, err := s.w.Git("reset", "--soft", s.A); err != nil {
 		return err
 	}
-	if err = runChecks(ctx, w, cfg, msg, "", a.Stderr); err != nil {
+	if err := runChecks(s.ctx, s.w, s.cfg, s.message, "", s.a.Stderr); err != nil {
 		return fmt.Errorf("merge content checks failed: %w", err)
 	}
-	// Rebased and fast-forwarded commits carry their own checked messages;
-	// only a merge commit is new.
-	if cfg.Ticket != nil && mode == "merge" {
-		if err = requireTicket(w, cfg, msg, ""); err != nil {
+	if s.cfg.Ticket != nil && s.mode == "merge" {
+		if err := requireTicket(s.w, s.cfg, s.message, ""); err != nil {
 			return err
 		}
 	}
-	if _, err = w.Git("reset", "--soft", R); err != nil {
+	if _, err := s.w.Git("reset", "--soft", s.R); err != nil {
 		return err
 	}
-	if err = mergeTreeUnchanged(w, R, cfg, "content checks"); err != nil {
+	if err := mergeTreeUnchanged(s.w, s.R, s.cfg, "content checks"); err != nil {
 		return err
 	}
-	if !o.NoDeps && len(cfg.Merge.Deps) > 0 {
-		a.printf("merge deps: %s", strings.Join(cfg.Merge.Deps, ", "))
-		if err = a.runner(w, cfg).RunDeps(ctx, cfg.Merge.Deps); err != nil {
-			return fmt.Errorf("merge deps failed; nothing published: %w", err)
+	return s.runMergeDeps()
+}
+
+func (s *mergeState) runMergeDeps() error {
+	if s.opts.NoDeps || len(s.cfg.Merge.Deps) == 0 {
+		if !s.opts.NoDeps {
+			s.a.printf("merge deps: skipped (none configured)")
 		}
-		if err = mergeTreeUnchanged(w, R, cfg, "merge.deps"); err != nil {
-			return err
-		}
-	} else if !o.NoDeps {
-		a.printf("merge deps: skipped (none configured)")
+		return nil
 	}
-	// Final lease-like local checks happen under the same repository lock.
-	cur, err := repo.Git("rev-parse", "HEAD")
+	s.a.printf("merge deps: %s", strings.Join(s.cfg.Merge.Deps, ", "))
+	if err := s.a.runner(s.w, s.cfg).RunDeps(s.ctx, s.cfg.Merge.Deps); err != nil {
+		return fmt.Errorf("merge deps failed; nothing published: %w", err)
+	}
+	return mergeTreeUnchanged(s.w, s.R, s.cfg, "merge.deps")
+}
+
+func (s *mergeState) recheckBeforePush() error {
+	cur, err := s.repo.Git("rev-parse", "HEAD")
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(cur) != local {
+	if strings.TrimSpace(cur) != s.local {
 		return errors.New("local trunk moved during checks; nothing published")
 	}
-	clean, err = repo.IsClean()
+	clean, err := s.repo.IsClean()
 	if err != nil {
 		return err
 	}
 	if !clean {
 		return errors.New("local trunk became dirty during checks; nothing published")
 	}
-	primary := primaryRemote(cfg, pushTo, trunkRefName)
-	if _, err = repo.Git("push", primary, R+":refs/heads/"+trunk); err != nil {
-		return fmt.Errorf("push to %s refused, nothing published and the local trunk unchanged; if the remote moved ahead: git fetch, then graft merge again: %w", primary, err)
+	return nil
+}
+
+func (s *mergeState) push() error {
+	s.primary = primaryRemote(s.cfg, s.pushTo, s.trunkRef)
+	if _, err := s.repo.Git("push", s.primary, s.R+":refs/heads/"+s.trunk); err != nil {
+		return fmt.Errorf("push to %s refused, nothing published and the local trunk unchanged; if the remote moved ahead: git fetch, then graft merge again: %w", s.primary, err)
 	}
-	a.printf("pushed to %s", primary)
-	mirrors := slices.DeleteFunc(slices.Clone(pushTo), func(r string) bool { return r == primary })
-	var mirrorErr error
+	s.a.printf("pushed to %s", s.primary)
+	mirrors := slices.DeleteFunc(slices.Clone(s.pushTo), func(r string) bool { return r == s.primary })
 	if len(mirrors) > 0 {
-		mirrorErr = a.push(repo, mirrors, []string{R + ":refs/heads/" + trunk}, false, false)
+		s.mirrorErr = s.a.push(s.repo, mirrors, []string{s.R + ":refs/heads/" + s.trunk}, false, false)
 	}
-	if _, err = repo.GitEnv(markerEnv, "merge", "--ff-only", R); err != nil {
-		return fmt.Errorf("trunk on the remote is already %s; install it with: git merge --ff-only %s: %w", R, R, err)
+	return nil
+}
+
+func (s *mergeState) install() error {
+	if _, err := s.repo.GitEnv(markerEnv, "merge", "--ff-only", s.R); err != nil {
+		return fmt.Errorf("trunk on the remote is already %s; install it with: git merge --ff-only %s: %w", s.R, s.R, err)
 	}
-	a.printf("installed %s %s", trunk, gitx.Short(R))
-	a.printf("merged %s %s into %s as %s", o.Branch, gitx.Short(F), trunk, gitx.Short(R))
-	return mirrorErr
+	s.a.printf("installed %s %s", s.trunk, gitx.Short(s.R))
+	s.a.printf("merged %s %s into %s as %s", s.opts.Branch, gitx.Short(s.F), s.trunk, gitx.Short(s.R))
+	return nil
 }
 
 func resolveMergeSource(repo *gitx.Repo, name string, remotes []string) (string, error) {
+	name, forceLocal, err := normalizeMergeSourceName(name)
+	if err != nil {
+		return "", err
+	}
+	if !forceLocal {
+		if ref, ok, err := explicitMergeRemoteSource(repo, name, remotes); err != nil || ok {
+			return ref, err
+		}
+	}
+	if ref, ok, err := localMergeSource(repo, name); err != nil || ok {
+		return ref, err
+	}
+	return remoteMergeSource(repo, name, remotes)
+}
+
+func normalizeMergeSourceName(name string) (string, bool, error) {
 	forceLocal := strings.HasPrefix(name, "refs/heads/")
 	if forceLocal {
 		name = strings.TrimPrefix(name, "refs/heads/")
 		if name == "" {
-			return "", errors.New("source must name a branch")
+			return "", true, errors.New("source must name a branch")
 		}
 	}
 	if strings.HasPrefix(name, "refs/tags/") || strings.HasPrefix(name, "refs/remotes/") {
-		return "", fmt.Errorf("source %q must be a branch name", name)
+		return "", forceLocal, fmt.Errorf("source %q must be a branch name", name)
 	}
-	// A remote/name spelling is explicit and takes precedence over a local
-	// branch whose literal name happens to include the remote prefix.
-	for _, r := range remotes {
-		if branch, ok := strings.CutPrefix(name, r+"/"); ok && !forceLocal {
-			ref := "refs/remotes/" + r + "/" + branch
-			yes, e := repo.RefExists(ref)
-			if e != nil {
-				return "", e
-			}
-			if yes {
-				return ref, nil
-			}
+	return name, forceLocal, nil
+}
+
+func explicitMergeRemoteSource(repo *gitx.Repo, name string, remotes []string) (string, bool, error) {
+	for _, remote := range remotes {
+		branch, ok := strings.CutPrefix(name, remote+"/")
+		if !ok {
+			continue
+		}
+		ref := "refs/remotes/" + remote + "/" + branch
+		exists, err := repo.RefExists(ref)
+		if err != nil || exists {
+			return ref, exists, err
 		}
 	}
+	return "", false, nil
+}
+
+func localMergeSource(repo *gitx.Repo, name string) (string, bool, error) {
 	local := "refs/heads/" + name
-	exists, e := repo.RefExists(local)
-	if e != nil {
-		return "", e
+	exists, err := repo.RefExists(local)
+	if err != nil || !exists {
+		return "", false, err
 	}
-	if exists {
-		localOID, e := repo.Git("rev-parse", "--verify", local+"^{commit}")
-		if e != nil {
-			return "", e
-		}
-		upstream, e := repo.Git("for-each-ref", "--format=%(upstream)", local)
-		if e != nil {
-			return "", e
-		}
-		upstream = strings.TrimSpace(upstream)
-		if upstream != "" {
-			upstreamRef := upstream
-			if present, er := repo.RefExists(upstreamRef); er != nil {
-				return "", er
-			} else if present {
-				upstreamOID, er := repo.Git("rev-parse", "--verify", upstreamRef+"^{commit}")
-				if er != nil {
-					return "", er
-				}
-				contains, er := repo.IsAncestor(strings.TrimSpace(upstreamOID), strings.TrimSpace(localOID))
-				if er != nil {
-					return "", er
-				}
-				if !contains {
-					return "", fmt.Errorf("local source branch %s is behind or diverged from %s; pull or push first", name, upstream)
-				}
-			}
-		}
-		return local, nil
+	if err = validateLocalMergeUpstream(repo, name, local); err != nil {
+		return "", false, err
 	}
+	return local, true, nil
+}
+
+func validateLocalMergeUpstream(repo *gitx.Repo, name, local string) error {
+	localOID, err := repo.Git("rev-parse", "--verify", local+"^{commit}")
+	if err != nil {
+		return err
+	}
+	upstream, err := repo.Git("for-each-ref", "--format=%(upstream)", local)
+	if err != nil || strings.TrimSpace(upstream) == "" {
+		return err
+	}
+	upstream = strings.TrimSpace(upstream)
+	present, err := repo.RefExists(upstream)
+	if err != nil || !present {
+		return err
+	}
+	upstreamOID, err := repo.Git("rev-parse", "--verify", upstream+"^{commit}")
+	if err != nil {
+		return err
+	}
+	contains, err := repo.IsAncestor(strings.TrimSpace(upstreamOID), strings.TrimSpace(localOID))
+	if err != nil {
+		return err
+	}
+	if !contains {
+		return fmt.Errorf("local source branch %s is behind or diverged from %s; pull or push first", name, upstream)
+	}
+	return nil
+}
+
+func remoteMergeSource(repo *gitx.Repo, name string, remotes []string) (string, error) {
 	var candidates []string
-	for _, r := range remotes {
-		ref := "refs/remotes/" + r + "/" + name
-		yes, e := repo.RefExists(ref)
-		if e != nil {
-			return "", e
+	for _, remote := range remotes {
+		ref := "refs/remotes/" + remote + "/" + name
+		exists, err := repo.RefExists(ref)
+		if err != nil {
+			return "", err
 		}
-		if yes {
+		if exists {
 			candidates = append(candidates, ref)
 		}
 	}
-	if len(candidates) != 1 {
-		if len(candidates) == 0 {
-			if commit, e := repo.RevExists(name); e != nil {
-				return "", e
-			} else if commit {
-				return "", fmt.Errorf("source %q resolves to a commit, not a branch", name)
-			}
-		}
-		return "", fmt.Errorf("source %q is missing or ambiguous; name one branch uniquely", name)
+	if len(candidates) == 1 {
+		return candidates[0], nil
 	}
-	return candidates[0], nil
+	return "", missingMergeSource(repo, name, len(candidates))
 }
+
+func missingMergeSource(repo *gitx.Repo, name string, candidates int) error {
+	if candidates != 0 {
+		return fmt.Errorf("source %q is missing or ambiguous; name one branch uniquely", name)
+	}
+	commit, err := repo.RevExists(name)
+	if err != nil {
+		return err
+	}
+	if commit {
+		return fmt.Errorf("source %q resolves to a commit, not a branch", name)
+	}
+	return fmt.Errorf("source %q is missing or ambiguous; name one branch uniquely", name)
+}
+
 func primaryRemote(cfg *config.Config, remotes []string, trunkRef string) string {
 	if cfg.Deploy != nil && cfg.Deploy.Remote != "" {
 		return cfg.Deploy.Remote
@@ -598,7 +833,7 @@ func mergeResolveVersion(repo *gitx.Repo, cfg *config.Config) error {
 		return err
 	}
 	side := "--ours"
-	if mergeVersionGreater(theirs, ours) {
+	if ours.Less(theirs) {
 		side = "--theirs"
 	}
 	_, err = repo.Git("checkout", side, "--", allowed)
@@ -623,7 +858,7 @@ func mergeBump(repo *gitx.Repo, cfg *config.Config, branch, base, ticketKey stri
 	if err != nil {
 		return err
 	}
-	if mergeVersionGreater(current, baseVersion) {
+	if baseVersion.Less(current) {
 		return nil
 	}
 	p, err := planBump(repo, cfg, version.Patch, branch)
@@ -633,7 +868,7 @@ func mergeBump(repo *gitx.Repo, cfg *config.Config, branch, base, ticketKey stri
 	if p.next == nil {
 		return nil
 	}
-	if !mergeVersionGreater(*p.next, current) {
+	if !current.Less(*p.next) {
 		return nil
 	}
 	if _, err = p.apply(repo); err != nil {
@@ -732,18 +967,6 @@ func removeMergeLinks(root string, cfg *config.Config) error {
 	return errors.Join(errs...)
 }
 
-func mergeVersionGreater(a, b version.Semver) bool {
-	if a.Major != b.Major {
-		return a.Major > b.Major
-	}
-	if a.Minor != b.Minor {
-		return a.Minor > b.Minor
-	}
-	if a.Patch != b.Patch {
-		return a.Patch > b.Patch
-	}
-	return a.Build > b.Build
-}
 func mergeTreeUnchanged(repo *gitx.Repo, rev string, cfg *config.Config, stage string) error {
 	paths, err := repo.ChangedFiles()
 	if err != nil {
