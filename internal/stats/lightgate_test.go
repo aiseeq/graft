@@ -95,6 +95,34 @@ func TestSplitLightGate(t *testing.T) {
 			t.Fatal("five light local remainders should pass despite expensive host steps")
 		}
 	})
+	t.Run("an expensive remainder step of a failed partial run keeps the remainder queued", func(t *testing.T) {
+		records := makeRuns()
+		for i := range records {
+			if records[i].Kind == KindStep && records[i].Host == "" {
+				records = append(records, Record{Kind: KindStep, Run: records[i].Run, Step: "work-b", Time: records[i].Time, UserS: .1, TreeMemMB: mem(12), Exit: 0})
+			}
+		}
+		when := base.Add(time.Hour)
+		records = append(records,
+			Record{Kind: KindStep, Run: "failed", Step: "lex check", Time: when, UserS: 10, TreeMemMB: mem(12), Exit: 1},
+			Record{Kind: KindTask, Run: "failed", Task: GateTask, Project: "/p", Steps: 1, UserS: 10, TreeMemMB: mem(12), Exit: 1, Time: when.Add(time.Second)},
+		)
+		if SplitLightGate(records, "/p", time.Time{}, []string{"lex check", "work-b"}) {
+			t.Fatal("a failed run that stopped after an expensive remainder step was passed over")
+		}
+	})
+	t.Run("a step outside the remainder run here once does not bar it", func(t *testing.T) {
+		records := makeRuns()
+		when := base.Add(time.Hour)
+		records = append(records,
+			Record{Kind: KindStep, Run: "fallback", Step: "lex check", Time: when, UserS: .1, TreeMemMB: mem(12), Exit: 0},
+			Record{Kind: KindStep, Run: "fallback", Step: "glint", Time: when, UserS: 99, TreeMemMB: mem(900), Exit: 0},
+			Record{Kind: KindTask, Run: "fallback", Task: GateTask, Project: "/p", Steps: 2, UserS: 99, TreeMemMB: mem(900), Exit: 0, Time: when.Add(time.Second)},
+		)
+		if !SplitLightGate(records, "/p", time.Time{}, []string{"lex check"}) {
+			t.Fatal("a host step that once ran here barred the light remainder")
+		}
+	})
 	t.Run("different local step set is skipped", func(t *testing.T) {
 		if SplitLightGate(makeRuns(), "/p", time.Time{}, []string{"different"}) {
 			t.Fatal("runs with a different local step set counted")

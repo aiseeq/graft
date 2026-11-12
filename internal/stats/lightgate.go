@@ -50,7 +50,11 @@ func LightGate(recs []Record, project string, since time.Time) bool {
 
 // SplitLightGate says whether the local remainder of a split gate is light.
 // Its cost comes from the outer graft's local step records only: task records
-// include descendants and nested grafts have their own Run.
+// include descendants and nested grafts have their own Run. The steps of the
+// remainder in every recent run are a bar, as a failed gate is in LightGate:
+// a run that stopped early or ran another set still says what those steps
+// cost. Only a run that ran exactly the remainder here and passed counts
+// towards LightGateRuns.
 func SplitLightGate(recs []Record, project string, since time.Time, localSteps []string) bool {
 	if len(localSteps) == 0 {
 		return false
@@ -60,11 +64,11 @@ func SplitLightGate(recs []Record, project string, since time.Time, localSteps [
 	runs := splitGateRuns(recs, project, since)
 	passed := 0
 	for _, run := range runs {
+		if !splitGateStepsAreLight(run.steps, want) {
+			return false
+		}
 		if !splitGateRunMatches(run, want) {
 			continue
-		}
-		if !splitGateRunIsLight(run) {
-			return false
 		}
 		if run.gate.Exit == 0 {
 			passed++
@@ -121,9 +125,14 @@ func splitGateRunMatches(run *splitGateRun, want []string) bool {
 	return slices.Equal(got, want)
 }
 
-func splitGateRunIsLight(run *splitGateRun) bool {
+// splitGateStepsAreLight says whether the steps of a run that are in want
+// stayed under the limits here; a run with none of them passes.
+func splitGateStepsAreLight(steps []*Record, want []string) bool {
 	var cpu, memory float64
-	for _, step := range run.steps {
+	for _, step := range steps {
+		if _, ok := slices.BinarySearch(want, step.Step); !ok {
+			continue
+		}
 		if step.Builtin && !step.BuiltinCostKnown {
 			return false
 		}
