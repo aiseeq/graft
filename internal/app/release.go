@@ -632,7 +632,16 @@ func printCutoffMigrationConflict(w io.Writer, sha string, conflicts []cutoffMig
 type cutoffMigration struct {
 	path, excludePath string
 	number, highest   uint64
-	deleted           bool
+	deleted, modified bool
+}
+
+// skippedBelow says whether reverting this change while a migration numbered
+// h stays in the release loses it for good: the migrator applies only
+// versions above the last, so an added or changed migration below h, or a
+// change to the migration numbered h itself, never runs. A revert that
+// restores a deleted migration loses nothing.
+func (c cutoffMigration) skippedBelow(h uint64) bool {
+	return !c.deleted && (c.number < h || c.modified && c.number == h)
 }
 
 // cutoffMigrationConflicts finds reverted migrations whose number is below
@@ -683,7 +692,7 @@ func cutoffMigrationConflicts(repo *gitx.Repo, cfg *config.Config, candidate str
 	conflicts := make(map[string][]cutoffMigration)
 	for sha, changes := range changesByCommit {
 		for _, changed := range changes {
-			if !changed.deleted && changed.number < highest {
+			if changed.skippedBelow(highest) {
 				changed.highest = highest
 				conflicts[sha] = append(conflicts[sha], changed)
 			}
@@ -709,9 +718,18 @@ func cutoffKeepPlans(groups []failureGroup, conflicts, changesByCommit map[strin
 		if keep.highest <= highest {
 			continue
 		}
-		keep.others = slices.DeleteFunc(slices.Clone(above), func(o cutoffKeepOther) bool {
-			return o.item == grp.what || o.number >= keep.highest
-		})
+		seen := map[string]bool{}
+		for _, o := range above {
+			if o.item == grp.what || !o.change.skippedBelow(keep.highest) {
+				continue
+			}
+			for _, path := range []string{o.change.path, o.change.excludePath} {
+				if path != "" && !seen[path] {
+					seen[path] = true
+					keep.others = append(keep.others, cutoffKeepOther{path: path, item: o.item, number: o.change.number})
+				}
+			}
+		}
 		plans[grp.what] = keep
 	}
 	return plans
@@ -729,16 +747,20 @@ func withoutAddedBy(grp failureGroup, addedByCommit map[string]map[string]bool, 
 	return removed
 }
 
-// revertedAtOrAbove lists, in group order, the migrations the groups' reverts
-// change (not restore) numbered at or above highest: no conflict while every
-// item is reverted.
-func revertedAtOrAbove(groups []failureGroup, changesByCommit map[string][]cutoffMigration, highest uint64) []cutoffKeepOther {
-	var out []cutoffKeepOther
+type itemMigration struct {
+	item   string
+	change cutoffMigration
+}
+
+// revertedAtOrAbove lists, in group order, the migration changes the groups'
+// reverts make that are no conflict while every item is reverted.
+func revertedAtOrAbove(groups []failureGroup, changesByCommit map[string][]cutoffMigration, highest uint64) []itemMigration {
+	var out []itemMigration
 	for _, grp := range groups {
 		for _, f := range grp.failures {
 			for _, changed := range changesByCommit[f.commit.sha] {
-				if !changed.deleted && changed.number >= highest {
-					out = append(out, cutoffKeepOther{path: changed.path, item: grp.what, number: changed.number})
+				if !changed.skippedBelow(highest) {
+					out = append(out, itemMigration{item: grp.what, change: changed})
 				}
 			}
 		}
@@ -846,7 +868,7 @@ func cutoffMigrationChangesForCommit(out, migrationsDir string) ([]cutoffMigrati
 				migrations = append(migrations, cutoffMigration{path: change.path, number: change.number})
 			}
 		case 'M':
-			migrations = append(migrations, cutoffMigration{path: change.path, number: change.number})
+			migrations = append(migrations, cutoffMigration{path: change.path, number: change.number, modified: true})
 		case 'D':
 			if !pairedDeletes[i] {
 				migrations = append(migrations, cutoffMigration{path: change.path, number: change.number, deleted: true})

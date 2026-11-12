@@ -290,8 +290,14 @@ func TestReleaseCutoffMigrationConflict(t *testing.T) {
 	if !strings.Contains(out, wantExclude) {
 		t.Errorf("cutoff omitted the ready-to-run exclude command %q:\n%s", wantExclude, out)
 	}
-	if strings.Count(out, "Migration cutoff conflict:") != 1 {
-		t.Errorf("cutoff flagged the changed migration 4 or the removed migration 5 too:\n%s", out)
+	// The edit of migration 4, the highest staying, is lost the same way:
+	// prod runs the old 4 now and never the edited one. Removing migration
+	// 5 loses nothing.
+	if !strings.Contains(out, "migrations/000004_step.up.sql (number 4); highest remaining migration number 4") {
+		t.Errorf("cutoff did not flag reverting the edit of the highest migration 4:\n%s", out)
+	}
+	if strings.Count(out, "Migration cutoff conflict:") != 2 {
+		t.Errorf("cutoff flagged the removed migration 5 too, or missed one:\n%s", out)
 	}
 	for _, option := range []string{"Keep the migration", "revert and renumber", "can be kept whole instead of reverted; skip its item: its git diff lines and its graft commit.", "#   PROJ-1: the other items' reverts stay as below.\n", "  # A migration conflict below; keeping the whole task instead is weighed above.\n"} {
 		if !strings.Contains(out, option) {
@@ -320,6 +326,61 @@ func TestReleaseCutoffHigherMigrationHasNoConflict(t *testing.T) {
 	}
 	if strings.Contains(out, "kept whole") || strings.Contains(out, "keeping the whole task") {
 		t.Errorf("cutoff offered keeping a task without a migration conflict:\n%s", out)
+	}
+}
+
+// TestReleaseCutoffAddedFileAtTheHighestNumberHasNoConflict: removing a file
+// added at the highest number that stays (a down migration beside the up one
+// staying) loses no version: only an edit at that number is flagged.
+func TestReleaseCutoffAddedFileAtTheHighestNumberHasNoConflict(t *testing.T) {
+	d := cutoffMigrationRepo(t, true)
+	d.at("2026-10-20 10:00")
+	cutoffMigrationCommits(d, map[int]bool{}, 1, 2, 3, 4)
+	d.commitFile("migrations/000004_step.down.sql", "feat: PROJ-1 down migration 4")
+	out := cutoffOutput(t, d)
+	if strings.Contains(out, "Migration cutoff conflict") {
+		t.Fatalf("removing an added file at the highest number 4 was flagged:\n%s", out)
+	}
+}
+
+// TestReleaseCutoffKeepingATaskNamesRenamesAndPathsOnce: the migrations that
+// keeping PROJ-1 puts below its 7 are named by every path their revert
+// touches, a rename by both, each path once.
+func TestReleaseCutoffKeepingATaskNamesRenamesAndPathsOnce(t *testing.T) {
+	d := cutoffMigrationRepo(t, true)
+	d.at("2026-10-20 10:00")
+	cutoffMigrationCommits(d, map[int]bool{2: true, 7: true}, 1, 2, 3, 4, 7)
+	d.git("mv", "migrations/000004_step.up.sql", "migrations/000004_renamed.up.sql")
+	d.mustFixtureCommit("feat: PROJ-9 rename migration 4")
+	d.commitFile("migrations/000005_step.up.sql", "feat: PROJ-9 migration 5")
+	d.write(filepath.Join("migrations", "000005_step.up.sql"), "-- revised by PROJ-9\n")
+	d.mustFixtureCommit("feat: PROJ-9 revise migration 5")
+	out := cutoffOutput(t, d)
+	start := strings.Index(out, "#   PROJ-1: its migrations raise the highest remaining number to 7, so also exclude from the other items' reverts ")
+	if start < 0 {
+		t.Fatalf("no keep option for PROJ-1 raising to 7:\n%s", out)
+	}
+	line := out[start : start+strings.Index(out[start:], "\n")]
+	for _, path := range []string{"migrations/000004_step.up.sql (number 4, PROJ-9)", "migrations/000004_renamed.up.sql (number 4, PROJ-9)", "migrations/000005_step.up.sql (number 5, PROJ-9)"} {
+		if n := strings.Count(line, path); n != 1 {
+			t.Errorf("keep option names %q %d times: %s", path, n, line)
+		}
+	}
+}
+
+// TestReleaseCutoffKeepingATaskNamesAnEditOfItsHighest: kept whole, PROJ-1
+// keeps its migration 7 as the highest, so reverting PROJ-9's edit of 7 loses
+// that edit for good; the option names it.
+func TestReleaseCutoffKeepingATaskNamesAnEditOfItsHighest(t *testing.T) {
+	d := cutoffMigrationRepo(t, true)
+	d.at("2026-10-20 10:00")
+	cutoffMigrationCommits(d, map[int]bool{2: true, 7: true}, 1, 2, 3, 7)
+	d.write(filepath.Join("migrations", "000007_step.up.sql"), "-- revised by PROJ-9\n")
+	d.mustFixtureCommit("feat: PROJ-9 revise migration 7")
+	out := cutoffOutput(t, d)
+	want := "#   PROJ-1: its migrations raise the highest remaining number to 7, so also exclude from the other items' reverts migrations/000007_step.up.sql (number 7, PROJ-9).\n"
+	if !strings.Contains(out, want) {
+		t.Errorf("keeping PROJ-1 did not name PROJ-9's edit of 7 (want %q):\n%s", want, out)
 	}
 }
 
