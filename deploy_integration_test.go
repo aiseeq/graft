@@ -130,6 +130,15 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if j.versionsAPI(w, r) || j.confluenceAPI(w, r) {
 		return
 	}
+	if r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/user" {
+		id := r.URL.Query().Get("accountId")
+		if id == "approver0" {
+			http.Error(w, "no such user", http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"accountId": id, "displayName": "Name of " + id})
+		return
+	}
 	if id, ok := strings.CutPrefix(r.URL.Path, "/rest/api/3/version/"); ok && r.Method == http.MethodGet && r.URL.Query().Get("expand") == "approvers" {
 		approvers := []any{}
 		for i, status := range j.approvers[id] {

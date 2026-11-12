@@ -45,7 +45,11 @@ func TestDeployReleaseVersion(t *testing.T) {
 	t.Log("pass output:\n" + check(true, "passes its checks now"))
 	d.setStatus("PROJ-10", "Testing")
 	d.setStatus("PROJ-12", "To Do")
-	t.Log("refusal output:\n" + check(false, "version-top", "PROJ-10", "version-umbrella", "PROJ-12", "version-status"))
+	refusal := check(false, "version-top", "PROJ-10 is Testing, fix versions Product 05.11.26: move it to Ready for release or Done", "version-umbrella", "PROJ-12", "version-status")
+	if strings.Contains(refusal, "add it to") {
+		t.Errorf("a task already in the version is told to be added to it:\n%s", refusal)
+	}
+	t.Log("refusal output:\n" + refusal)
 	d.setStatus("PROJ-10", "Done")
 	check(false, "version-umbrella", "PROJ-12")
 	d.setStatus("PROJ-10", "Ready for release")
@@ -62,7 +66,12 @@ func TestDeployReleaseVersion(t *testing.T) {
 	delete(d.jira.fixVersions, "PROJ-20")
 	d.jira.mu.Unlock()
 	d.jira.setApprovers(map[string][]string{"1": {"APPROVED", "PENDING"}})
-	check(false, "version-approval", "approver1 (PENDING)")
+	check(false, "version-approval", "Name of approver1 (PENDING)")
+	// An approver whose name cannot be read is named by the account.
+	d.jira.setApprovers(map[string][]string{"1": {"PENDING", "APPROVED"}})
+	if out := check(false, "version-approval", "approver0 (PENDING)"); strings.Contains(out, "Name of approver0") {
+		t.Errorf("an unread name is shown:\n%s", out)
+	}
 	d.jira.setApprovers(map[string][]string{})
 	check(false, "version-approval", "no approvers")
 	d.jira.setApprovers(map[string][]string{"1": {"APPROVED", "APPROVED"}, "2": {"APPROVED"}})
@@ -91,7 +100,7 @@ func TestDeployReleaseVersion(t *testing.T) {
 	d.jira.fixVersions["PROJ-30"] = []string{"2"}
 	d.jira.mu.Unlock()
 	d.commitFile("other.txt", "feat: PROJ-30 work")
-	check(false, "version-top", "PROJ-10", "In Progress", "version-umbrella")
+	check(false, "version-top", "PROJ-10 is In Progress, fix versions none: add it to Product.12.11.26 and move it to Ready for release or Done", "version-umbrella")
 	out, code := d.graft("", "deploy", "--unapproved", "prod")
 	if code != 0 || !strings.Contains(out, "approved release not checked (--unapproved)") {
 		t.Errorf("bypass: exit %d\n%s", code, out)

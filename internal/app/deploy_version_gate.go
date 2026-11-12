@@ -129,10 +129,14 @@ func (v *releaseVersionCheck) checkTops() bool {
 			if len(names) == 0 {
 				names = append(names, "none")
 			}
-			msg := fmt.Sprintf("%s is %s, fix versions %s: add it to %s and move it to %s", key, issue.Status, strings.Join(names, ", "), v.selected.Name, strings.Join(v.gate.conf.Statuses, " or "))
-			if v.selected.ID == "" {
-				msg = fmt.Sprintf("%s is %s: move it to %s", key, issue.Status, strings.Join(v.gate.conf.Statuses, " or "))
+			var todo []string
+			if !inVersion {
+				todo = append(todo, "add it to "+v.selected.Name)
 			}
+			if !slices.Contains(v.gate.conf.Statuses, issue.Status) {
+				todo = append(todo, "move it to "+strings.Join(v.gate.conf.Statuses, " or "))
+			}
+			msg := fmt.Sprintf("%s is %s, fix versions %s: %s", key, issue.Status, strings.Join(names, ", "), strings.Join(todo, " and "))
 			if v.fail("version-top", msg) {
 				return true
 			}
@@ -216,7 +220,15 @@ func (v *releaseVersionCheck) checkApproval(ctx context.Context) {
 		var pending []string
 		for _, a := range approvers {
 			if a.Status != jira.ApprovedStatus {
-				pending = append(pending, a.AccountID+" ("+a.Status+")")
+				// The name reads at once; without it the account still says who.
+				who := a.AccountID
+				name, err := v.gate.gate.client.UserName(ctx, a.AccountID)
+				if err != nil {
+					v.gate.app.warn("approver %s: name not read, named by the account: %v", a.AccountID, err)
+				} else {
+					who = name
+				}
+				pending = append(pending, who+" ("+a.Status+")")
 			}
 		}
 		if len(pending) == 0 {

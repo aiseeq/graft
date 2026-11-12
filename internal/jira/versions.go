@@ -82,6 +82,25 @@ func (c *Client) VersionApprovers(ctx context.Context, id string) ([]Approver, e
 	return raw.Approvers, nil
 }
 
+// UserName returns the display name of an account, such as an approver's.
+func (c *Client) UserName(ctx context.Context, accountID string) (string, error) {
+	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/user?accountId="+url.QueryEscape(accountID), nil, http.StatusOK)
+	if err != nil {
+		return "", err
+	}
+	var raw struct {
+		AccountID   string `json:"accountId"`
+		DisplayName string `json:"displayName"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return "", fmt.Errorf("user %s: unexpected JSON: %w", accountID, err)
+	}
+	if raw.AccountID != accountID || raw.DisplayName == "" {
+		return "", fmt.Errorf("user %s: the answer names %q as %q", accountID, raw.AccountID, raw.DisplayName)
+	}
+	return raw.DisplayName, nil
+}
+
 // ProjectVersions lists every version of a project.
 func (c *Client) ProjectVersions(ctx context.Context, project string) ([]Version, error) {
 	data, err := c.do(ctx, http.MethodGet, "/rest/api/3/project/"+project+"/versions", nil, http.StatusOK)
