@@ -37,7 +37,9 @@ func StopOnCancel(cmd *exec.Cmd, grace time.Duration, warn func(error)) {
 		ended := reaperEnded(cmd)
 		err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGTERM)
 		if errors.Is(err, errors.ErrUnsupported) {
-			return err
+			// Outside Linux akit cannot verify the child; os.Process signals
+			// the child graft started and has not waited for yet.
+			err = cmd.Process.Signal(syscall.SIGTERM)
 		}
 		time.AfterFunc(grace, func() {
 			if err := cmd.Process.Signal(syscall.Signal(0)); errors.Is(err, os.ErrProcessDone) {
@@ -46,7 +48,12 @@ func StopOnCancel(cmd *exec.Cmd, grace time.Duration, warn func(error)) {
 				warn(err)
 				return
 			}
-			if _, err := akitproc.StopChild(cmd.Process.Pid, 0, nil); err != nil && !akitproc.Gone(err) && !errors.Is(err, os.ErrProcessDone) {
+			_, err := akitproc.StopChild(cmd.Process.Pid, 0, nil)
+			if errors.Is(err, errors.ErrUnsupported) {
+				// Outside Linux the tree cannot be walked: the child alone.
+				err = cmd.Process.Kill()
+			}
+			if err != nil && !akitproc.Gone(err) && !errors.Is(err, os.ErrProcessDone) {
 				warn(err)
 			}
 		})
