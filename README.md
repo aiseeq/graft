@@ -476,7 +476,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft check` | run the content checks on the index |
 | `graft leaks <revision>…` | scan commits, including merge resolutions and messages (Git 2.36 or newer for merges), for the private names and terms of the user config (`leaks`) |
 | `graft gate` | run the gate commands (`go vet ./...` in every Go module first, see `go_vet`, then `go fix -diff ./...` with `go_fix`, then `gofmt -l` with `go_fmt`) |
-| `graft merge [--mode rebase\|merge] [--no-deps --reason TEXT] [-m MESSAGE] <branch>` | build and check a trunk update in a temporary worktree, push it to every remote, then fast-forward the local trunk |
+| `graft merge [--mode rebase\|merge] [--no-deps --reason TEXT] [-m MESSAGE] <branch>` | build and check a trunk update in a temporary worktree, push it to configured remotes, then fast-forward the local trunk |
 | `graft hook pre-commit` / `prepare-commit-msg` / `post-merge` | what the installed hooks call |
 | `graft flags [status]` | is the flag raised: open journal events no exception mutes |
 | `graft flags show <id>` | one event in full; `<id>` is its id or a prefix only one open event has; a closed event takes its full UUID |
@@ -510,6 +510,37 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft help` | the commands the project's `.graft.yaml` uses, its tasks (those with `desc`, with their arguments) and services |
 | `graft help <command>`, `graft <command> -h` | one command's part of `graft help`, with details such as the exit codes of `exec`; a command with flags lists them after it |
 | `graft --version` | print graft's own version |
+
+### graft merge
+
+Run `graft merge <branch>` on the local trunk. It fetches the configured push
+remotes, snapshots the trunk and source commits, builds a candidate in a
+temporary worktree, runs the result config's gate and content checks, runs
+`merge.deps`, pushes to the trunk's primary remote and mirrors, then installs
+the accepted result with a fast-forward. A required primary remote must be in
+`push.remotes`; a refused primary push leaves mirrors and the local trunk
+untouched. A mirror refusal is reported after the accepted primary result is
+installed locally.
+
+The default `rebase` mode replays source commits onto the trunk; commits empty
+by content, including originally empty commits, are skipped. `--mode merge`
+preserves the source commits and creates a two-parent merge commit. Conflicts
+in `version.file` keep the larger semantic version from either side; other
+conflicts, including `version.sync` files, stop without publishing. When the
+result version is not above the trunk's, graft adds a patch bump. The result
+tree and `.graft.yaml` drive the gate and dependencies; `--no-deps` skips only
+`merge.deps` and requires a printed `--reason TEXT`.
+
+Dirty work, unfinished Git operations, local trunk commits absent from the
+remote, an unsupported version tag/build branch, failed checks and failed
+dependencies stop the operation. The source ref is resolved once and left
+alone. The repository lock stays held through the gate and dependencies, so
+`graft commit` in the same repository waits for those checks.
+
+```yaml
+merge:
+  deps: [test, lint]            # tasks run after the gate and content checks
+```
 
 Put `-C <directory>` before a command to run it as if graft had been started
 in that directory. Repeat `-C` to change directories in sequence; each relative
@@ -657,37 +688,12 @@ Without markers the message is left as it is.
 
 ## .graft.yaml
 
-### `graft merge`
-
-Run `graft merge <branch>` on the local trunk to fetch every remote, snapshot
-the trunk and source commits, create a candidate in a temporary worktree,
-run the commit gate and content checks, run `merge.deps`, push the candidate
-to the primary remote and mirrors, then install it with a fast-forward. The
-default `rebase` mode replays source commits onto the trunk and drops commits
-that are empty by content. `--mode merge` makes a merge commit and keeps the
-source commits. A conflict in `version.file` takes the trunk's copy, and a
-source commit left empty by that is dropped; a conflict anywhere else, the
-`version.sync` files included, stops without publishing, so a project whose
-branches bump synced files merges them by hand for now. When the result's
-version is not above the trunk's, a `chore: bump version after merge` commit
-raises the patch. A required ticket is checked only for a merge commit: the
-rebased commits keep their own messages. Dirty work, an unfinished Git
-operation, a moved trunk, unsupported version tagging or build branches, and
-failed checks or dependencies stop the operation. `--no-deps` requires
-`--reason TEXT`, which is printed with the result. The repository lock is held
-through the gate and dependencies, so `graft commit` in this repository waits
-for those checks. The command does not rebase or update the source branch.
-
-```yaml
-merge:
-  deps: [test, lint]            # tasks run after the gate and content checks
-```
-
 ```yaml
 schema: 1                       # required
 graft: '>=0.5.0'                # optional: the oldest graft this config works with
 limits: {gate: 30s, task: 8m}   # project overrides user config, then built-in defaults
 commit: {conventional: false}   # project override of user config
+merge: {deps: [test]}           # optional tasks after graft merge's checks
 
 # Commands run before every commit, in order, stopping at the first failure.
 # A string is split into words by shell quoting rules but is NOT run by a

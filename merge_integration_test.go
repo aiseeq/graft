@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -361,5 +363,228 @@ func TestMergeVersionSyncConflictRefuses(t *testing.T) {
 	}
 	if got := f.git("rev-parse", "HEAD"); got != trunk {
 		t.Errorf("trunk moved: %s", got)
+	}
+}
+
+func TestMergeUsesResultConfig(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none, reason: test}\ngate:\n  - sh: 'echo RESULT-GATE; exit 1'\ntasks:\n  fail: {run: [{sh: 'echo RESULT-DEP; exit 1'}]}\nmerge: {deps: [fail]}\n")
+	f.mustPlainCommit("chore: result config")
+	f.git("switch", "-q", "main")
+	remote := f.gitIn(f.remote("origin"), "rev-parse", "main")
+	if out, code := f.graft("", "merge", "feature/PROJ-42"); code == 0 || !strings.Contains(out, "RESULT-GATE") {
+		t.Fatalf("result gate not used: exit %d\n%s", code, out)
+	}
+	if strings.Contains(f.gitIn(f.remote("origin"), "show", "main:.graft.yaml"), "RESULT-GATE") {
+		t.Fatal("source config was published")
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != remote {
+		t.Errorf("remote trunk moved: %s", got)
+	}
+}
+
+func TestMergeGateChangeRefusesAtGateBoundary(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none, reason: test}\ngate:\n  - sh: 'printf changed > base.txt'\n")
+	f.mustPlainCommit("chore: change result gate")
+	f.git("switch", "-q", "main")
+	remote := f.gitIn(f.remote("origin"), "rev-parse", "main")
+	if out, code := f.graft("", "merge", "feature/PROJ-42"); code == 0 || !strings.Contains(out, "merge gate changed") || !strings.Contains(out, "base.txt") {
+		t.Fatalf("gate mutation: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != remote {
+		t.Errorf("gate mutation was published: %s", got)
+	}
+}
+
+func TestMergeUsesOnlyPushRemotes(t *testing.T) {
+	f := mergeRepo(t, "origin", "upstream")
+	f.write(".graft.yaml", strings.TrimSuffix(f.read(".graft.yaml"), "\n")+"\npush: {remotes: [origin]}\n")
+	f.mustPlainCommit("chore: select push remote")
+	f.git("push", "-q", "origin", "main")
+	upstream := f.gitIn(f.remote("upstream"), "rev-parse", "main")
+	out := f.mustGraft("merge", "feature/PROJ-42")
+	if !strings.Contains(out, "pushed to origin") {
+		t.Errorf("origin push missing:\n%s", out)
+	}
+	if got := f.gitIn(f.remote("upstream"), "rev-parse", "main"); got != upstream {
+		t.Errorf("unconfigured push remote was updated: %s", got)
+	}
+}
+
+func TestMergeSourceLocalWithUpstream(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.git("push", "-q", "-u", "origin", "feature/PROJ-42")
+	f.write("local-only.txt", "local source commit\n")
+	f.mustPlainCommit("feat: local source commit")
+	f.git("switch", "-q", "main")
+	f.mustGraft("merge", "feature/PROJ-42")
+	if got := f.read("local-only.txt"); got != "local source commit\n" {
+		t.Errorf("short branch name did not resolve to local source: %q", got)
+	}
+}
+
+func TestMergeRefusesLocalTrunkAheadOfRemote(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.write("local-trunk.txt", "unpublished\n")
+	f.mustPlainCommit("chore: unpublished trunk")
+	local := f.git("rev-parse", "HEAD")
+	if out, code := f.graft("", "merge", "feature/PROJ-42"); code == 0 || !strings.Contains(out, "local trunk has commits absent") {
+		t.Fatalf("unpublished trunk: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got == local {
+		t.Fatal("local-only trunk commit was published")
+	}
+}
+
+func TestMergeRefusesRemoteTrunkAsSource(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	if out, code := f.graft("", "merge", "origin/main"); code == 0 || !strings.Contains(out, "source is the trunk") {
+		t.Errorf("remote trunk source: exit %d\n%s", code, out)
+	}
+}
+
+func TestMergeRefusesCheckoutDirtiedByDeps(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	path := filepath.ToSlash(filepath.Join(f.work, "base.txt"))
+	addMergeTask(f, "    run: [[sh, -c, 'printf changed > "+path+"']]")
+	remote := f.gitIn(f.remote("origin"), "rev-parse", "main")
+	if out, code := f.graft("", "merge", "feature/PROJ-42"); code == 0 || !strings.Contains(out, "local trunk became dirty") {
+		t.Fatalf("checkout dirtied by deps: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != remote {
+		t.Errorf("dirty checkout was published: %s", got)
+	}
+}
+
+func TestMergeRequiredTicketForMergeAndBump(t *testing.T) {
+	for _, branch := range []string{"PROJ-8-x", "feature/PROJ-9"} {
+		t.Run(branch, func(t *testing.T) {
+			f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: file, file: VERSION}\nticket: {pattern: 'PROJ-[0-9]+', required: true}\ngate: []\n", "VERSION": "1.0.0\n", "base.txt": "base\n"}, "origin")
+			f.mustPlainCommit("chore: base PROJ-1")
+			f.git("branch", "-m", "main")
+			f.git("push", "-q", "origin", "main")
+			f.git("fetch", "--quiet", "origin")
+			f.git("branch", "--set-upstream-to", "origin/main", "main")
+			f.git("remote", "set-head", "origin", "main")
+			f.git("switch", "-q", "-c", branch)
+			f.write("source.txt", "source\n")
+			f.mustPlainCommit("feat: source PROJ-4")
+			f.git("push", "-q", "-u", "origin", branch)
+			f.git("switch", "-q", "main")
+			f.write("trunk.txt", "trunk\n")
+			f.mustPlainCommit("feat: trunk PROJ-5")
+			f.git("push", "-q", "origin", "main")
+			f.mustGraft("merge", "--mode", "merge", "origin/"+branch)
+			key := "PROJ-8"
+			if strings.Contains(branch, "PROJ-9") {
+				key = "PROJ-9"
+			}
+			for _, rev := range []string{"HEAD", "HEAD^"} {
+				mergeMsg := f.git("log", "-1", "--format=%B", rev)
+				if !strings.Contains(mergeMsg, key) {
+					t.Errorf("%s message does not name %s:\n%s", rev, key, mergeMsg)
+				}
+			}
+		})
+	}
+}
+
+func TestMergeWorktreeLinkPreparesGate(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: test}\ngate:\n  - sh: 'test -f deps/installed || { echo missing-linked-deps; exit 1; }'\ntasks:\n  install-deps: {run: [{sh: 'mkdir -p deps && touch deps/installed'}]}\nworktree:\n  link:\n    - key: [deps.lock]\n      paths: [deps]\n      setup: install-deps\n",
+		".gitignore":  "deps/\n", "deps.lock": "v1\n", "base.txt": "base\n",
+	}, "origin")
+	f.mustPlainCommit("chore: base")
+	f.git("branch", "-m", "main")
+	f.git("push", "-q", "origin", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("branch", "--set-upstream-to", "origin/main", "main")
+	f.git("remote", "set-head", "origin", "main")
+	f.mustGraft("install-deps")
+	f.git("switch", "-q", "-c", "feat")
+	f.write("feature.txt", "source\n")
+	f.mustPlainCommit("feat: source")
+	f.git("switch", "-q", "main")
+	out := f.mustGraft("merge", "feat")
+	if !strings.Contains(out, "linked deps") {
+		t.Errorf("worktree link missing:\n%s", out)
+	}
+	if got := f.git("worktree", "list", "--porcelain"); strings.Count(got, "worktree ") != 1 {
+		t.Errorf("temporary worktree/link remains:\n%s", got)
+	}
+}
+
+func TestMergePostMergeHookRunsGateOnce(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none, reason: test}\ngate: []\n"}, "origin")
+	logPath := filepath.Join(f.base, "gate.log")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none, reason: test}\ngate:\n  - ["+yamlQuote(helperBin)+", append, "+yamlQuote(logPath)+", gate]\n")
+	f.mustPlainCommit("chore: base")
+	f.git("branch", "-m", "main")
+	f.git("push", "-q", "origin", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("branch", "--set-upstream-to", "origin/main", "main")
+	f.git("remote", "set-head", "origin", "main")
+	f.mustGraft("init")
+	f.git("switch", "-q", "-c", "feat")
+	f.write("feature.txt", "source\n")
+	f.mustPlainCommit("feat: source")
+	f.git("push", "-q", "origin", "feat")
+	f.git("switch", "-q", "main")
+	f.write("trunk.txt", "trunk\n")
+	f.mustPlainCommit("feat: trunk")
+	f.git("push", "-q", "origin", "main")
+	f.mustGraft("merge", "--mode", "merge", "origin/feat")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(data), "gate\n"); got != 1 {
+		t.Errorf("gate ran %d times; log:\n%s", got, data)
+	}
+}
+
+func TestMergeRebaseSkipsOriginallyEmptyCommit(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.run(f.work, "git", "-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-q", "-m", "chore: empty marker")
+	f.write("after-empty.txt", "source\n")
+	f.mustPlainCommit("feat: after empty")
+	f.git("switch", "-q", "main")
+	f.write("trunk.txt", "trunk\n")
+	f.mustPlainCommit("feat: trunk")
+	f.git("push", "-q", "origin", "main")
+	out := f.mustGraft("merge", "feature/PROJ-42")
+	if !strings.Contains(out, "skipped empty commit") {
+		t.Errorf("empty source commit was not reported:\n%s", out)
+	}
+}
+
+func TestMergeVersionConflictKeepsGreaterSourceVersion(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: file, file: VERSION}\ngate: []\n", "VERSION": "1.0.0\n", "base.txt": "base\n"}, "origin")
+	f.mustPlainCommit("chore: base")
+	f.git("branch", "-m", "main")
+	f.git("push", "-q", "origin", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("branch", "--set-upstream-to", "origin/main", "main")
+	f.git("remote", "set-head", "origin", "main")
+	f.git("switch", "-q", "-c", "major")
+	f.write("VERSION", "2.0.0\n")
+	f.write("api.txt", "new api\n")
+	f.mustPlainCommit("feat!: major version")
+	f.git("switch", "-q", "main")
+	f.write("VERSION", "1.0.2\n")
+	f.write("trunk.txt", "trunk\n")
+	f.mustPlainCommit("feat: trunk version")
+	f.git("push", "-q", "origin", "main")
+	out := f.mustGraft("merge", "major")
+	if got := f.read("VERSION"); got != "2.0.0\n" {
+		t.Errorf("VERSION = %q, want larger source version", got)
+	}
+	if !strings.Contains(out, "merge version: 2.0.0 (source 2.0.0, trunk 1.0.2)") {
+		t.Errorf("version intent missing:\n%s", out)
 	}
 }

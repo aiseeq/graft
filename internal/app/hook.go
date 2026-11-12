@@ -220,6 +220,13 @@ func (a *App) withWorkers(repo *gitx.Repo, cfg *config.Config, msg string) (stri
 // no line overlaps and the tree stops compiling. The merge is already made, so
 // this can only report it, loudly, while the cause is still obvious.
 func (a *App) HookPostMerge(ctx context.Context) error {
+	own, err := graftsOwn()
+	if err != nil {
+		return err
+	}
+	if own {
+		return nil
+	}
 	repo, cfg, err := a.open()
 	if err != nil {
 		return err
