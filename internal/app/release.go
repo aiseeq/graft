@@ -577,6 +577,13 @@ func (a *App) printCutoff(r *deployRun, c cutoff, failures []gateFailure, migrat
 			fmt.Fprintf(a.Stdout, "  # %s\n", f.line())
 			conflicts := migrationConflicts[f.commit.sha]
 			includeCommit := true
+			added, moved, subErr := cutoffSubmodules(r.repo, f.commit.sha)
+			reverts := !(len(conflicts) == 0 && migrations.emptyByCommit[f.commit.sha]) && !(len(conflicts) > 0 && conflicts[0].empty)
+			if reverts && len(added) > 0 {
+				// Before the revert, while git still knows the path: after it
+				// the checked-out submodule would stay for graft commit to add.
+				fmt.Fprintf(a.Stdout, "  git submodule deinit -f -- %s\n", strings.Join(added, " "))
+			}
 			if len(conflicts) == 0 {
 				var omitted []string
 				omitted = append(omitted, migrations.staysByCommit[f.commit.sha]...)
@@ -590,7 +597,11 @@ func (a *App) printCutoff(r *deployRun, c cutoff, failures []gateFailure, migrat
 				includeCommit = printCutoffMigrationConflict(a.Stdout, f.commit.sha, conflicts, r.cfg)
 			}
 			if includeCommit {
-				printCutoffSubmoduleUpdate(a.Stdout, r.repo, f.commit.sha)
+				if subErr != nil {
+					fmt.Fprintf(a.Stdout, "  # submodule check unavailable: %v; if this commit adds or moves a submodule, check it out at the reverted commit before the graft commit\n", subErr)
+				} else if len(moved) > 0 {
+					fmt.Fprintf(a.Stdout, "  git submodule update --init --recursive -- %s\n", strings.Join(moved, " "))
+				}
 			}
 			if includeCommit {
 				body = append(body, "-m "+envs.Quote("This reverts commit "+f.commit.sha+"."))
@@ -1227,16 +1238,16 @@ func excludes(cfg *config.Config, paths []string) string {
 	return out.String()
 }
 
-// printCutoffSubmoduleUpdate checks out the reverted submodule pointers of a
-// commit: graft commit stages the whole tree, and a submodule still checked
-// out at the unchecked commit would put its pointer back.
-func printCutoffSubmoduleUpdate(w io.Writer, repo *gitx.Repo, sha string) {
+// cutoffSubmodules lists, shell-quoted, the submodules a commit adds and the
+// ones whose pointer it moves or removes. graft commit stages the whole tree,
+// so the plan deinits an added one before its revert and checks a moved one
+// out at the reverted pointer after it; else the checked-out submodule would
+// put the unchecked pointer back.
+func cutoffSubmodules(repo *gitx.Repo, sha string) (added, moved []string, err error) {
 	out, err := repo.Git("diff", "--raw", "-z", "--no-renames", "--ignore-submodules=none", sha+"^", sha)
 	if err != nil {
-		fmt.Fprintf(w, "  # submodule check unavailable: %v; if this commit moves a submodule, check it out at the reverted commit before the graft commit\n", err)
-		return
+		return nil, nil, err
 	}
-	var paths []string
 	fields := strings.Split(out, "\x00")
 	for i := 0; i+1 < len(fields); i += 2 {
 		modes := strings.Fields(strings.TrimPrefix(fields[i], ":"))
@@ -1244,16 +1255,12 @@ func printCutoffSubmoduleUpdate(w io.Writer, repo *gitx.Repo, sha string) {
 			continue
 		}
 		if modes[0] != "160000" {
-			// Added by the commit: the revert drops the pointer, but the
-			// checked-out directory stays for graft commit to stage again.
-			fmt.Fprintf(w, "  # the revert drops the submodule %q this commit added: run git submodule deinit -f on it and remove its directory before the graft commit\n", fields[i+1])
-			continue
+			added = append(added, envs.Quote(fields[i+1]))
+		} else {
+			moved = append(moved, envs.Quote(fields[i+1]))
 		}
-		paths = append(paths, envs.Quote(fields[i+1]))
 	}
-	if len(paths) > 0 {
-		fmt.Fprintf(w, "  git submodule update --init -- %s\n", strings.Join(paths, " "))
-	}
+	return added, moved, nil
 }
 
 func cutoffDiffFlags() []string {

@@ -1955,3 +1955,133 @@ func TestReleaseCutoffIgnoreSubmodulesConfig(t *testing.T) {
 		t.Errorf("unchecked submodule change remains in release: got %s, want %s", got, first)
 	}
 }
+
+func cutoffSubmoduleGit(t *testing.T, d *deployFixture, dir string, args ...string) string {
+	t.Helper()
+	out, code := d.exec(dir, "", "git", args...)
+	if code != 0 {
+		t.Fatalf("git %v in %s: %s", args, dir, out)
+	}
+	return strings.TrimSpace(out)
+}
+
+func cutoffSubmoduleSource(t *testing.T, d *deployFixture) string {
+	t.Helper()
+	p := t.TempDir()
+	cutoffSubmoduleGit(t, d, p, "init", "-q")
+	cutoffSubmoduleGit(t, d, p, "config", "user.email", "test@example.com")
+	cutoffSubmoduleGit(t, d, p, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(p, "file"), []byte("first\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cutoffSubmoduleGit(t, d, p, "add", "file")
+	cutoffSubmoduleGit(t, d, p, "commit", "-qm", "first")
+	return p
+}
+
+func TestReleaseCutoffSubmoduleRawDiffConfig(t *testing.T) {
+	for _, config := range [][2]string{{"diff.external", "true"}} {
+		t.Run(config[0], func(t *testing.T) {
+			d := rv2Repo(t, "migrations")
+			src := cutoffSubmoduleSource(t, d)
+			d.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", src, "vendor/module")
+			d.mustFixtureCommit("feat: PROJ-8 add submodule")
+			first := d.git("rev-parse", "HEAD:vendor/module")
+			module := filepath.Join(d.work, "vendor", "module")
+			cutoffSubmoduleGit(t, d, module, "config", "user.email", "test@example.com")
+			cutoffSubmoduleGit(t, d, module, "config", "user.name", "Test")
+			if err := os.WriteFile(filepath.Join(module, "file"), []byte("unchecked\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cutoffSubmoduleGit(t, d, module, "add", "file")
+			cutoffSubmoduleGit(t, d, module, "commit", "-qm", "unchecked")
+			rv2Commit(d, "feat: PROJ-1 update submodule", map[string]string{"app1.txt": "feature\n"})
+			d.git("config", config[0], config[1])
+			out := cutoffOutput(t, d)
+			t.Logf("plan:\n%s", out)
+			if failed := rv2Exec(t, d, out, ""); failed != "" {
+				t.Fatalf("plan failed: %s", failed)
+			}
+			if got := d.git("rev-parse", "HEAD:vendor/module"); got != first {
+				t.Errorf("unchecked pointer remains: %s, want %s", got, first)
+			}
+		})
+	}
+}
+
+func TestReleaseCutoffSubmoduleAdded(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	src := cutoffSubmoduleSource(t, d)
+	d.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", src, "vendor/module")
+	d.mustFixtureCommit("feat: PROJ-1 add submodule")
+	out := cutoffOutput(t, d)
+	t.Logf("plan:\n%s", out)
+	if failed := rv2Exec(t, d, out, ""); failed != "" {
+		t.Fatalf("plan failed: %s", failed)
+	}
+	if got := d.git("ls-files", "--stage", "--", "vendor/module"); got != "" {
+		t.Errorf("unchecked added submodule remains staged: %s", got)
+	}
+}
+
+func TestReleaseCutoffSubmoduleRemoved(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	src := cutoffSubmoduleSource(t, d)
+	d.git("config", "protocol.file.allow", "always")
+	d.git("submodule", "add", "-q", src, "vendor/module")
+	d.mustFixtureCommit("feat: PROJ-8 add submodule")
+	first := d.git("rev-parse", "HEAD:vendor/module")
+	d.git("rm", "-f", "vendor/module")
+	d.mustFixtureCommit("feat: PROJ-1 remove submodule")
+	out := cutoffOutput(t, d)
+	t.Logf("plan:\n%s", out)
+	if failed := rv2Exec(t, d, out, ""); failed != "" {
+		t.Fatalf("plan failed: %s", failed)
+	}
+	if got := d.git("rev-parse", "HEAD:vendor/module"); got != first {
+		t.Errorf("removed submodule not restored: %s != %s", got, first)
+	}
+}
+
+func TestReleaseCutoffSubmoduleNested(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	nested := cutoffSubmoduleSource(t, d)
+	first := cutoffSubmoduleGit(t, d, nested, "rev-parse", "HEAD")
+	outer := cutoffSubmoduleSource(t, d)
+	cutoffSubmoduleGit(t, d, outer, "-c", "protocol.file.allow=always", "submodule", "add", "-q", nested, "nested")
+	cutoffSubmoduleGit(t, d, outer, "commit", "-qm", "add nested")
+	d.git("config", "protocol.file.allow", "always")
+	d.git("submodule", "add", "-q", outer, "vendor/outer")
+	d.git("-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive")
+	d.mustFixtureCommit("feat: PROJ-8 add outer submodule")
+	if err := os.WriteFile(filepath.Join(nested, "file"), []byte("unchecked\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cutoffSubmoduleGit(t, d, nested, "add", "file")
+	cutoffSubmoduleGit(t, d, nested, "commit", "-qm", "unchecked")
+	second := cutoffSubmoduleGit(t, d, nested, "rev-parse", "HEAD")
+	outerWork := filepath.Join(d.work, "vendor", "outer")
+	nestedWork := filepath.Join(outerWork, "nested")
+	cutoffSubmoduleGit(t, d, nestedWork, "fetch", "-q", "origin")
+	cutoffSubmoduleGit(t, d, nestedWork, "-c", "advice.detachedHead=false", "switch", "-q", "--detach", second)
+	cutoffSubmoduleGit(t, d, outerWork, "config", "user.email", "test@example.com")
+	cutoffSubmoduleGit(t, d, outerWork, "config", "user.name", "Test")
+	cutoffSubmoduleGit(t, d, outerWork, "add", "nested")
+	cutoffSubmoduleGit(t, d, outerWork, "commit", "-qm", "update nested")
+	rv2Commit(d, "feat: PROJ-1 update nested", map[string]string{"app1.txt": "feature\n"})
+	d.git("config", "diff.ignoreSubmodules", "all")
+	out := cutoffOutput(t, d)
+	t.Logf("plan:\n%s", out)
+	if failed := rv2Exec(t, d, out, ""); failed != "" {
+		t.Fatalf("plan failed: %s", failed)
+	}
+	if status := d.git("status", "--porcelain"); status != "" {
+		t.Errorf("nested mismatch visible in status: %s", status)
+	}
+	if out, code := d.graft("", "deploy", "test"); code != 0 {
+		t.Errorf("deploy test refused nested mismatch: %s", out)
+	}
+	if got := cutoffSubmoduleGit(t, d, nestedWork, "rev-parse", "HEAD"); got != first {
+		t.Errorf("working tree still uses unchecked nested commit: %s, want %s", got, first)
+	}
+}
