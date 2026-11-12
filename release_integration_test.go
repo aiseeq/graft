@@ -293,14 +293,14 @@ func TestReleaseCutoffMigrationConflict(t *testing.T) {
 	if strings.Count(out, "Migration cutoff conflict:") != 1 {
 		t.Errorf("cutoff flagged the changed migration 4 or the removed migration 5 too:\n%s", out)
 	}
-	for _, option := range []string{"Keep the migration", "revert and renumber", "To keep the whole task instead, skip this item: its git diff lines and its graft commit."} {
+	for _, option := range []string{"Keep the migration", "revert and renumber", "can be kept whole instead of reverted; skip its item: its git diff lines and its graft commit.", "#   PROJ-1: the other items' reverts stay as below.\n", "  # A migration conflict below; keeping the whole task instead is weighed above.\n"} {
 		if !strings.Contains(out, option) {
 			t.Errorf("cutoff omitted option %q:\n%s", option, out)
 		}
 	}
 	// Keeping the task is said before any of its reverts: one applied
 	// already would have to be undone.
-	if keep, first := strings.Index(out, "To keep the whole task"), strings.Index(out, "| git apply -R"); keep < 0 || keep > first {
+	if keep, first := strings.Index(out, "can be kept whole"), strings.Index(out, "| git apply -R"); keep < 0 || keep > first {
 		t.Errorf("the option to keep the task comes after a revert of it:\n%s", out)
 	}
 	assertCutoffConflictBlockComments(t, out)
@@ -318,6 +318,40 @@ func TestReleaseCutoffHigherMigrationHasNoConflict(t *testing.T) {
 	if !strings.Contains(out, "git diff ") || !strings.Contains(out, "| git apply -R --3way --index") {
 		t.Fatalf("cutoff omitted the usual reverse patch:\n%s", out)
 	}
+	if strings.Contains(out, "kept whole") || strings.Contains(out, "keeping the whole task") {
+		t.Errorf("cutoff offered keeping a task without a migration conflict:\n%s", out)
+	}
+}
+
+// TestReleaseCutoffKeepingATaskNamesTheRevertsItPutsBelow: kept whole, a task
+// keeps its own higher migration, so another task's reverted migration below
+// it would be skipped too; the option says which, and only for that task.
+func TestReleaseCutoffKeepingATaskNamesTheRevertsItPutsBelow(t *testing.T) {
+	d := cutoffMigrationRepo(t, true)
+	d.at("2026-10-20 10:00")
+	// PROJ-1's own migration 5 is not another item's revert; PROJ-9's change
+	// of migration 1 is a conflict already, not one that keeping PROJ-1 makes.
+	cutoffMigrationCommits(d, map[int]bool{2: true, 5: true, 10: true}, 1, 2, 3, 5, 10)
+	d.commitFile("migrations/000008_step.up.sql", "feat: PROJ-9 migration 8")
+	d.write(filepath.Join("migrations", "000001_step.up.sql"), "-- edited by PROJ-9\n")
+	d.mustFixtureCommit("feat: PROJ-9 edit migration 1")
+	out := cutoffOutput(t, d)
+	if !strings.Contains(out, "migrations/000002_step.up.sql (number 2); highest remaining migration number 3") {
+		t.Fatalf("cutoff did not flag migration 2 below 3:\n%s", out)
+	}
+	for _, want := range []string{
+		"#   PROJ-1: its migrations raise the highest remaining number to 10, so also exclude from the other items' reverts migrations/000008_step.up.sql (number 8, PROJ-9).\n",
+		"#   PROJ-9: its migrations raise the highest remaining number to 8, so also exclude from the other items' reverts migrations/000005_step.up.sql (number 5, PROJ-1).\n",
+	} {
+		if strings.Count(out, want) != 1 {
+			t.Errorf("keep option missing or repeated (want %q):\n%s", want, out)
+		}
+		// Said before every revert: one applied already would be undone.
+		if keep, first := strings.Index(out, want), strings.Index(out, "| git apply -R"); keep > first {
+			t.Errorf("the consequence of keeping a task comes after a revert:\n%s", out)
+		}
+	}
+	assertCutoffConflictBlockComments(t, out)
 }
 
 func TestReleaseCutoffRevertingDeletedMigrationKeepsOldOutput(t *testing.T) {

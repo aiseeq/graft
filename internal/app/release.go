@@ -462,11 +462,11 @@ func (a *App) DeployCutoff(ctx context.Context, target string) error {
 	if err != nil {
 		return err
 	}
-	migrationConflicts, err := cutoffMigrationConflicts(r.repo, r.cfg, c.candidate, out.failures)
+	migrations, err := cutoffMigrationConflicts(r.repo, r.cfg, c.candidate, out.failures)
 	if err != nil {
 		return err
 	}
-	a.printCutoff(r, c, out.failures, migrationConflicts)
+	a.printCutoff(r, c, out.failures, migrations)
 	return nil
 }
 
@@ -538,7 +538,8 @@ func (a *App) cutoffCandidate(ctx context.Context, r *deployRun) (cutoff, error)
 
 // printCutoff prints the commands that take the failing commits out of the
 // candidate on a release branch, deploy it and record it on the trunk.
-func (a *App) printCutoff(r *deployRun, c cutoff, failures []gateFailure, migrationConflicts map[string][]cutoffMigration) {
+func (a *App) printCutoff(r *deployRun, c cutoff, failures []gateFailure, migrations cutoffMigrationPlan) {
+	migrationConflicts := migrations.conflicts
 	branch := "release/" + c.occ.Name()
 	remote := r.cfg.Deploy.Remote
 	fmt.Fprintf(a.Stdout, "\n# The release goes out from %s, cut from the candidate:\n  git fetch %s\n  git switch -c %s %s\n", branch, remote, branch, c.candidate)
@@ -547,12 +548,12 @@ func (a *App) printCutoff(r *deployRun, c cutoff, failures []gateFailure, migrat
 		return
 	}
 	fmt.Fprintf(a.Stdout, "# These commits are not checked: their reverts go onto %s, one commit per item (a conflict: resolve it, git add, go on):\n", branch)
-	for _, grp := range groupFailures(failures) {
+	groups := groupFailures(failures)
+	printCutoffKeepOptions(a.Stdout, groups, migrations)
+	for _, grp := range groups {
 		fmt.Fprintf(a.Stdout, "\n  # %s\n", grp.title)
-		if slices.ContainsFunc(grp.failures, func(f gateFailure) bool { return len(migrationConflicts[f.commit.sha]) > 0 }) {
-			// Said before the item's commands: once one is applied, keeping
-			// the task means undoing it.
-			fmt.Fprintln(a.Stdout, "  # A migration conflict below. To keep the whole task instead, skip this item: its git diff lines and its graft commit.")
+		if grp.hasMigrationConflict(migrationConflicts) {
+			fmt.Fprintln(a.Stdout, "  # A migration conflict below; keeping the whole task instead is weighed above.")
 		}
 		var body []string
 		for _, f := range grp.failures {
@@ -576,6 +577,36 @@ func (a *App) printCutoff(r *deployRun, c cutoff, failures []gateFailure, migrat
   git merge -s ours --no-edit %[4]s
   git push %[5]s %[3]s
 `, c.held, r.name, r.branch, branch, remote)
+}
+
+// printCutoffKeepOptions says, before any revert, that an item with a
+// migration conflict may be kept whole instead and what that does to the
+// other items' reverts: once one of them is applied, keeping the item means
+// undoing it.
+func printCutoffKeepOptions(w io.Writer, groups []failureGroup, migrations cutoffMigrationPlan) {
+	var lines []string
+	for _, grp := range groups {
+		if !grp.hasMigrationConflict(migrations.conflicts) {
+			continue
+		}
+		keep := migrations.keep[grp.what]
+		if len(keep.others) == 0 {
+			lines = append(lines, fmt.Sprintf("#   %s: the other items' reverts stay as below.", grp.what))
+			continue
+		}
+		var others []string
+		for _, o := range keep.others {
+			others = append(others, fmt.Sprintf("%s (number %d, %s)", o.path, o.number, o.item))
+		}
+		lines = append(lines, fmt.Sprintf("#   %s: its migrations raise the highest remaining number to %d, so also exclude from the other items' reverts %s.", grp.what, keep.highest, strings.Join(others, ", ")))
+	}
+	if len(lines) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "# Decide first: an item with a migration conflict can be kept whole instead of reverted; skip its item: its git diff lines and its graft commit. Kept:")
+	for _, line := range lines {
+		fmt.Fprintln(w, line)
+	}
 }
 
 func printCutoffMigrationConflict(w io.Writer, sha string, conflicts []cutoffMigration, cfg *config.Config) {
@@ -606,24 +637,48 @@ type cutoffMigration struct {
 // cutoffMigrationConflicts finds reverted migrations whose number is below
 // the highest migration that remains in the candidate after the planned
 // reverts remove migrations introduced by those commits.
-func cutoffMigrationConflicts(repo *gitx.Repo, cfg *config.Config, candidate string, failures []gateFailure) (map[string][]cutoffMigration, error) {
+// cutoffMigrationPlan holds the migration conflicts by commit and, for each
+// item with one, what keeping that item whole does to the other items'
+// reverts.
+type cutoffMigrationPlan struct {
+	conflicts map[string][]cutoffMigration
+	keep      map[string]cutoffKeep
+}
+
+// cutoffKeep: kept whole, an item's added migrations stay, so the highest
+// remaining number may rise to highest, and the other items' reverts of
+// migrations below it (not already conflicts) would skip them too.
+type cutoffKeep struct {
+	highest uint64
+	others  []cutoffKeepOther
+}
+
+type cutoffKeepOther struct {
+	path, item string
+	number     uint64
+}
+
+func cutoffMigrationConflicts(repo *gitx.Repo, cfg *config.Config, candidate string, failures []gateFailure) (cutoffMigrationPlan, error) {
 	if cfg.TestDB == nil || cfg.TestDB.Migrations == "" || len(failures) == 0 {
-		return nil, nil
+		return cutoffMigrationPlan{}, nil
 	}
 	migrationsDir := filepath.ToSlash(filepath.Clean(cfg.TestDB.Migrations))
 	pathspec := migrationPathspec(migrationsDir)
 	candidateFiles, err := candidateMigrationFiles(repo, candidate, pathspec, migrationsDir)
 	if err != nil {
-		return nil, err
+		return cutoffMigrationPlan{}, err
 	}
-	changesByCommit, removedOnRevert, err := cutoffMigrationChanges(repo, pathspec, migrationsDir, failures)
+	changesByCommit, addedByCommit, err := cutoffMigrationChanges(repo, pathspec, migrationsDir, failures)
 	if err != nil {
-		return nil, err
+		return cutoffMigrationPlan{}, err
+	}
+	removedOnRevert := map[string]bool{}
+	for _, added := range addedByCommit {
+		for path := range added {
+			removedOnRevert[path] = true
+		}
 	}
 	highest := highestRemainingMigration(candidateFiles, removedOnRevert)
-	if highest == 0 {
-		return nil, nil
-	}
 	conflicts := make(map[string][]cutoffMigration)
 	for sha, changes := range changesByCommit {
 		for _, changed := range changes {
@@ -633,7 +688,51 @@ func cutoffMigrationConflicts(repo *gitx.Repo, cfg *config.Config, candidate str
 			}
 		}
 	}
-	return conflicts, nil
+	plan := cutoffMigrationPlan{conflicts: conflicts, keep: map[string]cutoffKeep{}}
+	groups := groupFailures(failures)
+	for _, grp := range groups {
+		if !grp.hasMigrationConflict(conflicts) {
+			continue
+		}
+		kept := map[string]bool{}
+		for _, f := range grp.failures {
+			for path := range addedByCommit[f.commit.sha] {
+				kept[path] = true
+			}
+		}
+		removed := map[string]bool{}
+		for path := range removedOnRevert {
+			if !kept[path] {
+				removed[path] = true
+			}
+		}
+		keep := cutoffKeep{highest: highestRemainingMigration(candidateFiles, removed)}
+		if keep.highest <= highest {
+			continue
+		}
+		for _, other := range groups {
+			if other.what != grp.what {
+				keep.others = append(keep.others, newlyBelow(other, changesByCommit, highest, keep.highest)...)
+			}
+		}
+		plan.keep[grp.what] = keep
+	}
+	return plan, nil
+}
+
+// newlyBelow lists the migrations grp's reverts change whose number is in
+// [highest, keptHighest): no conflict with every item reverted, one once
+// another item is kept and its migrations keep the highest at keptHighest.
+func newlyBelow(grp failureGroup, changesByCommit map[string][]cutoffMigration, highest, keptHighest uint64) []cutoffKeepOther {
+	var out []cutoffKeepOther
+	for _, f := range grp.failures {
+		for _, changed := range changesByCommit[f.commit.sha] {
+			if !changed.deleted && changed.number >= highest && changed.number < keptHighest {
+				out = append(out, cutoffKeepOther{path: changed.path, item: grp.what, number: changed.number})
+			}
+		}
+	}
+	return out
 }
 
 func migrationPathspec(migrationsDir string) string {
@@ -661,9 +760,11 @@ func candidateMigrationFiles(repo *gitx.Repo, candidate, pathspec, migrationsDir
 	return files, nil
 }
 
-func cutoffMigrationChanges(repo *gitx.Repo, pathspec, migrationsDir string, failures []gateFailure) (map[string][]cutoffMigration, map[string]bool, error) {
+// cutoffMigrationChanges lists by commit the migrations its revert changes
+// and the migration files it added, which its revert removes.
+func cutoffMigrationChanges(repo *gitx.Repo, pathspec, migrationsDir string, failures []gateFailure) (map[string][]cutoffMigration, map[string]map[string]bool, error) {
 	changesByCommit := make(map[string][]cutoffMigration, len(failures))
-	added := map[string]bool{}
+	addedByCommit := make(map[string]map[string]bool, len(failures))
 	for _, f := range failures {
 		args := []string{"diff", "--name-status", "-z", "--no-renames", f.commit.sha + "^", f.commit.sha}
 		if pathspec != "" {
@@ -675,11 +776,9 @@ func cutoffMigrationChanges(repo *gitx.Repo, pathspec, migrationsDir string, fai
 		}
 		changes, add := cutoffMigrationChangesForCommit(out, migrationsDir)
 		changesByCommit[f.commit.sha] = changes
-		for path := range add {
-			added[path] = true
-		}
+		addedByCommit[f.commit.sha] = add
 	}
-	return changesByCommit, added, nil
+	return changesByCommit, addedByCommit, nil
 }
 
 type migrationFileChange struct {
@@ -781,6 +880,10 @@ func migrationNumber(name string) (uint64, bool) {
 type failureGroup struct {
 	title, what string
 	failures    []gateFailure
+}
+
+func (g failureGroup) hasMigrationConflict(conflicts map[string][]cutoffMigration) bool {
+	return slices.ContainsFunc(g.failures, func(f gateFailure) bool { return len(conflicts[f.commit.sha]) > 0 })
 }
 
 // groupFailures groups the failing commits by the first item each names, in

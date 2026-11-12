@@ -2179,8 +2179,12 @@ deploy:
   migration below the highest numbered migration left after the planned
   reverts, cutoff explains that the migrator will skip it on the next release
   and prints a reverse command that excludes the affected file. Keep the
-  migration, renumber it above the remaining versions, or leave the whole
-  task out of the `graft commit` revert entries. A commit that deletes a
+  migration, renumber it above the remaining versions, or keep the whole
+  task by skipping its item: its `git diff` lines and its `graft commit`.
+  These choices are listed before any revert, since keeping an item whose
+  own higher migration then stays in the release can put other items'
+  reverted migrations below it: cutoff names them, to be excluded from their
+  reverts too. A commit that deletes a
   migration is not flagged: its revert restores the file prod already ran.
   Without `test_db.migrations`, cutoff keeps its usual output.
 - A deploy from a `build_branches` branch withholds the commits a revert in
