@@ -893,3 +893,71 @@ func TestMergeVersionConflictKeepsGreaterSourceVersion(t *testing.T) {
 		t.Errorf("version intent missing:\n%s", out)
 	}
 }
+
+// A replace ref shows the checks one tree and pushes another: the merge
+// checks the objects the remote gets.
+func TestMergeChecksReplacedObjects(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	addMergeTask(f, "    run: [[sh, -c, '! grep -q unsafe feature.txt']]")
+	trunk := f.git("rev-parse", "HEAD")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.write("feature.txt", "unsafe\n")
+	f.mustPlainCommit("feat: PROJ-42 unsafe")
+	unsafe := f.git("rev-parse", "HEAD")
+	f.write("feature.txt", "safe\n")
+	f.git("add", "feature.txt")
+	tree := f.git("write-tree")
+	replacement := f.git("commit-tree", tree, "-p", unsafe+"^", "-m", "feat: PROJ-42 safe")
+	f.git("checkout", "-q", "--", ".")
+	f.git("replace", unsafe, replacement)
+	f.git("switch", "-q", "main")
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 {
+		t.Fatalf("merge published a replaced commit its checks did not see:\n%s", out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != trunk {
+		t.Errorf("remote trunk moved to %s", got)
+	}
+}
+
+// push.followTags does not publish tags beside trunk.
+func TestMergeDoesNotFollowTags(t *testing.T) {
+	f := mergeRepo(t, "origin", "mirror")
+	f.git("tag", "-a", "v0.1", "-m", "tag", "feature/PROJ-42")
+	f.git("config", "push.followTags", "true")
+	f.mustGraft("merge", "feature/PROJ-42")
+	for _, r := range []string{"origin", "mirror"} {
+		if tags := f.gitIn(f.remote(r), "tag", "-l"); tags != "" {
+			t.Errorf("%s got tags %q", r, tags)
+		}
+	}
+}
+
+// A push to a remote with several push URLs may land on some of them: the
+// failure does not say nothing was published.
+func TestMergePartialPushURLsSaysSo(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	refusing := filepath.Join(f.base, "refusing.git")
+	f.git("init", "-q", "--bare", refusing)
+	if err := os.WriteFile(filepath.Join(refusing, "hooks", "pre-receive"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.git("config", "--add", "remote.origin.pushurl", f.remote("origin"))
+	f.git("config", "--add", "remote.origin.pushurl", refusing)
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || strings.Contains(out, "nothing published") || !strings.Contains(out, "several push URLs") {
+		t.Errorf("partial push not reported: exit %d\n%s", code, out)
+	}
+}
+
+// A source already on the remote trunk while the local trunk lags behind
+// fast-forwards the local trunk.
+func TestMergeAlreadyMergedInstallsBehindTrunk(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.git("push", "-q", "origin", "feature/PROJ-42:main")
+	out := f.mustGraft("merge", "feature/PROJ-42")
+	want := f.git("rev-parse", "feature/PROJ-42")
+	if got := f.git("rev-parse", "main"); got != want || !strings.Contains(out, "installed main") {
+		t.Errorf("local main = %s, want %s:\n%s", got, want, out)
+	}
+}

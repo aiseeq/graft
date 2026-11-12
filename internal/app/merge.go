@@ -68,6 +68,11 @@ func (a *App) Merge(ctx context.Context, o MergeOptions) error {
 }
 
 func (a *App) mergeLocked(ctx context.Context, repo *gitx.Repo, cfg *config.Config, o MergeOptions) error {
+	// A replace ref would show the checks one tree and push another: the
+	// merge and its tasks see the objects the remote gets.
+	if err := os.Setenv("GIT_NO_REPLACE_OBJECTS", "1"); err != nil {
+		return err
+	}
 	st := &mergeState{a: a, ctx: ctx, repo: repo, cfg: cfg, opts: o}
 	if err := st.validateRequest(); err != nil {
 		return err
@@ -324,7 +329,23 @@ func (s *mergeState) checkSnapshotHistory() error {
 		}
 		s.a.printf("already merged %s", gitx.Short(s.F))
 		s.alreadyMerged = true
+		if s.local != s.A {
+			return s.installMerged()
+		}
 	}
+	return nil
+}
+
+// installMerged fast-forwards a local trunk that is behind the remote one
+// already holding the source, as after a push whose install did not run.
+func (s *mergeState) installMerged() error {
+	if err := s.checkoutUnchanged(); err != nil {
+		return fmt.Errorf("local %s is behind %s/%s at %s and the %v; on a clean %s install it with: git merge --ff-only %s", s.trunk, s.primary, s.trunk, gitx.Short(s.A), err, s.trunk, s.A)
+	}
+	if _, err := s.repo.GitEnv(markerEnv, "merge", "--ff-only", s.A); err != nil {
+		return fmt.Errorf("local %s is behind %s/%s; install it with: git merge --ff-only %s: %w", s.trunk, s.primary, s.trunk, s.A, err)
+	}
+	s.a.printf("installed %s %s", s.trunk, gitx.Short(s.A))
 	return nil
 }
 
@@ -877,13 +898,14 @@ func (s *mergeState) reportMissingMirrors(rev string) error {
 }
 
 func (s *mergeState) push() error {
-	if _, err := s.repo.Git("push", s.primary, s.R+":refs/heads/"+s.trunk); err != nil {
-		return fmt.Errorf("push to %s refused, nothing published and the local trunk unchanged; if the remote moved ahead: git fetch, then graft merge again: %w", s.primary, err)
+	// --no-follow-tags: push.followTags must not publish tags beside trunk.
+	if _, err := s.repo.Git(append(pushArgs(s.primary, false, true), s.R+":refs/heads/"+s.trunk)...); err != nil {
+		return fmt.Errorf("push to %s failed: nothing pushed to the mirrors and the local trunk unchanged, but a remote with several push URLs may hold %s on some of them, as git's output below says; if the remote moved ahead: git fetch, then graft merge again: %w", s.primary, gitx.Short(s.R), err)
 	}
 	s.a.printf("pushed to %s", s.primary)
 	mirrors := slices.DeleteFunc(slices.Clone(s.pushTo), func(r string) bool { return r == s.primary })
 	if len(mirrors) > 0 {
-		s.mirrorErr = s.a.push(s.repo, mirrors, []string{s.R + ":refs/heads/" + s.trunk}, false, false)
+		s.mirrorErr = s.a.push(s.repo, mirrors, []string{s.R + ":refs/heads/" + s.trunk}, false, true)
 	}
 	if err := s.a.recordCommitAdvisoryAfterPush(s.w, s.resultCfg, s.frozen, s.advisoryFailed); err != nil {
 		s.mirrorErr = errors.Join(s.mirrorErr, err)
