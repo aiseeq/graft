@@ -18,6 +18,7 @@ import (
 // asks about in the deployed commit: with any, the items do not move unless
 // ticket, graft deploy --glint-ticket, takes them.
 type glintCheck struct {
+	a    *App
 	repo *gitx.Repo
 	// severity is release_notes.glint, "" for no check; sha reads the
 	// deployed commit.
@@ -86,7 +87,7 @@ func (g *glintCheck) takenBy() string {
 // holds nothing without it; a ticket needs it and must be an item of the
 // project.
 func newGlintCheck(r *deployRun, ticket string, sha func(ctx context.Context) (string, error)) (*glintCheck, error) {
-	g := &glintCheck{repo: r.repo, sha: sha, ticket: ticket}
+	g := &glintCheck{a: r.a, repo: r.repo, sha: sha, ticket: ticket}
 	if n := r.target.ReleaseNotes; n != nil {
 		g.severity = n.Glint
 	}
@@ -161,6 +162,20 @@ func (g *glintCheck) count(ctx context.Context) (sha string, found int, err erro
 	}()
 	if _, err := g.repo.Git("worktree", "add", "--detach", dir, sha); err != nil {
 		return sha, 0, err
+	}
+	trees, err := listWorktrees(g.repo)
+	if err != nil {
+		return sha, 0, err
+	}
+	if len(trees) == 0 {
+		return sha, 0, errors.New("the main worktree is unknown")
+	}
+	setups, err := g.a.linkWorktree(trees[0].path, dir)
+	if err != nil {
+		return sha, 0, fmt.Errorf("linking worktree.link for glint: %w", err)
+	}
+	for _, setup := range setups {
+		g.a.warn("worktree.link group needing %s is not linked; glint's temporary copy does not run setup, so glint may fail", setup)
 	}
 	found, err = g.run(ctx, dir)
 	return sha, found, err

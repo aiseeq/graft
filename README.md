@@ -1990,7 +1990,8 @@ release_notes:
    reports anything in the deployed commit: an item is done only with the
    project clean, the commit gate failing on the high findings alone. graft
    runs glint once a deploy, in the work tree when it is at the deployed
-   commit and clean, else in a work tree of its own at that commit, and
+   commit and clean, else in a work tree of its own at that commit, which
+   receives the matching `worktree.link` links, and
    counts the report's findings whatever glint's exit status; a run without
    a report, or with rules that panicked, holds the items too. A held item
    keeps its status and assignee, the deploy prints `graft: KEY: NOT MOVED

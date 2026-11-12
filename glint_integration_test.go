@@ -144,3 +144,47 @@ func TestSweepGlintHoldsItems(t *testing.T) {
 		t.Errorf("moved %v:\n%s", d.moved(), out)
 	}
 }
+
+// TestSweepGlintLinksWorktreeDependencies checks glint in a temporary copy:
+// it needs the linked directory and cleanup must leave the main tree intact.
+func TestSweepGlintLinksWorktreeDependencies(t *testing.T) {
+	d := glintRepo(t)
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-123"] = "Ready for release"
+	d.jira.mu.Unlock()
+
+	config := strings.Replace(d.read(".graft.yaml"), "version: {mode: file}\n", "version: {mode: file}\ntasks:\n  install_project_a: {run: [{sh: 'echo setup'}]}\nworktree:\n  link:\n    - key: [projectA-lock.json]\n      paths: [node_modules]\n      setup: install_project_a\n", 1)
+	d.write(".graft.yaml", config)
+	d.write(".gitignore", "node_modules/\n")
+	d.write("projectA-lock.json", "synthetic\n")
+	if err := os.MkdirAll(filepath.Join(d.work, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(d.work, "node_modules", "synthetic-tsc"), "present\n")
+	d.mustFixtureCommit("feat: PROJ-123 add projectA dependencies")
+	d.mustGraft("deploy", "sub")
+	d.git("remote", "set-head", "origin", d.git("branch", "--show-current"))
+	// Make the current checkout differ from the deployed commit so count uses
+	// its temporary worktree.
+	d.write("later.txt", "later\n")
+	d.mustFixtureCommit("chore: later checkout")
+
+	bin := t.TempDir()
+	glint := `#!/bin/sh
+test -f "$PWD/node_modules/synthetic-tsc" || { echo 'no project tsc' >&2; exit 3; }
+echo '{"summary":{"total":0}}'
+`
+	writeFile(t, filepath.Join(bin, "glint"), glint)
+	if err := os.Chmod(filepath.Join(bin, "glint"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d.env = append(d.env, "PATH="+bin+string(os.PathListSeparator)+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out := d.mustGraft("deploy", "sweep", "sub", "--apply")
+	if !slices.Contains(d.moved(), "PROJ-123") || !strings.Contains(out, "PROJ-123 moved to Done") {
+		t.Errorf("sweep did not move PROJ-123 with linked dependencies: %v\n%s", d.moved(), out)
+	}
+	if got, err := os.ReadFile(filepath.Join(d.work, "node_modules", "synthetic-tsc")); err != nil || string(got) != "present\n" {
+		t.Errorf("main worktree dependency was removed or changed: %q, %v", got, err)
+	}
+}

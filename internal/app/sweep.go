@@ -121,7 +121,7 @@ func (a *App) dailySweep(ctx context.Context, repo *gitx.Repo, cfg *config.Confi
 		if t.ReleaseNotes == nil || t.ReleaseNotes.Sweep == nil {
 			continue
 		}
-		a.dailySweepTarget(ctx, &deployRun{repo: repo, cfg: cfg, name: name, target: t})
+		a.dailySweepTarget(ctx, &deployRun{a: a, repo: repo, cfg: cfg, name: name, target: t})
 	}
 }
 

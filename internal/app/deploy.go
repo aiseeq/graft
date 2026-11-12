@@ -70,6 +70,7 @@ type DeployOptions struct {
 }
 
 type deployRun struct {
+	a       *App
 	repo    *gitx.Repo
 	cfg     *config.Config
 	name    string
@@ -283,7 +284,7 @@ func (a *App) deployTarget(name string) (*deployRun, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &deployRun{repo: repo, cfg: cfg, name: name, target: t, env: env, tasks: a.runner(repo, cfg)}, nil
+	return &deployRun{a: a, repo: repo, cfg: cfg, name: name, target: t, env: env, tasks: a.runner(repo, cfg)}, nil
 }
 
 func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
