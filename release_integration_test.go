@@ -433,7 +433,7 @@ func TestReleaseCutoffKeepingATaskNamesRenamesAndPathsOnce(t *testing.T) {
 	d.write(filepath.Join("migrations", "000005_step.up.sql"), "-- revised by PROJ-9\n")
 	d.mustFixtureCommit("feat: PROJ-9 revise migration 5")
 	out := cutoffOutput(t, d)
-	start := strings.Index(out, "#   PROJ-1: its migrations raise the highest remaining number to 7, so also exclude from the other items' reverts ")
+	start := strings.Index(out, "#   PROJ-1: kept, it leaves the highest remaining number at 7, so also exclude from the other items' reverts ")
 	if start < 0 {
 		t.Fatalf("no keep option for PROJ-1 raising to 7:\n%s", out)
 	}
@@ -457,11 +457,11 @@ func TestReleaseCutoffKeepingATaskNamesAnEditOfItsHighest(t *testing.T) {
 	d.write(filepath.Join("migrations", "000007_step.up.sql"), "-- revised by PROJ-1\n")
 	d.mustFixtureCommit("feat: PROJ-1 revise migration 7")
 	out := cutoffOutput(t, d)
-	want := "#   PROJ-1: its migrations raise the highest remaining number to 7, so also exclude from the other items' reverts migrations/000007_extra.up.sql (number 7, PROJ-9).\n"
+	want := "#   PROJ-1: kept, it leaves the highest remaining number at 7, so also exclude from the other items' reverts migrations/000007_extra.up.sql (number 7, PROJ-9).\n"
 	if !strings.Contains(out, want) {
 		t.Errorf("keeping PROJ-1 did not name PROJ-9's edit of 7 (want %q):\n%s", want, out)
 	}
-	lineStart := strings.Index(out, "#   PROJ-1: its migrations raise")
+	lineStart := strings.Index(out, "#   PROJ-1: kept, it leaves")
 	line := out[lineStart : lineStart+strings.IndexByte(out[lineStart:], 10)]
 	if strings.Contains(line, "number 7, PROJ-1") {
 		t.Errorf("keep option lists the kept task's migration: %s", line)
@@ -486,8 +486,8 @@ func TestReleaseCutoffKeepingATaskNamesTheRevertsItPutsBelow(t *testing.T) {
 		t.Fatalf("cutoff did not flag migration 2 below 3:\n%s", out)
 	}
 	for _, want := range []string{
-		"#   PROJ-1: its migrations raise the highest remaining number to 10, so also exclude from the other items' reverts migrations/000008_step.up.sql (number 8, PROJ-9).\n",
-		"#   PROJ-9: its migrations raise the highest remaining number to 8, so also exclude from the other items' reverts migrations/000005_step.up.sql (number 5, PROJ-1).\n",
+		"#   PROJ-1: kept, it leaves the highest remaining number at 10, so also exclude from the other items' reverts migrations/000008_step.up.sql (number 8, PROJ-9).\n",
+		"#   PROJ-9: kept, it leaves the highest remaining number at 8, so also exclude from the other items' reverts migrations/000005_step.up.sql (number 5, PROJ-1).\n",
 	} {
 		if strings.Count(out, want) != 1 {
 			t.Errorf("keep option missing or repeated (want %q):\n%s", want, out)
@@ -1859,5 +1859,54 @@ func TestReleaseCutoffDuplicateMigrationBlobs(t *testing.T) {
 	paths := d.git("ls-tree", "-r", "--name-only", "HEAD", "--", "migrations")
 	if !strings.Contains(paths, "migrations/000002_b.up.sql") {
 		t.Errorf("plan silently deleted candidate migration 2b below remaining 3: %s", paths)
+	}
+}
+
+// An external diff that says "no changes" does not make cutoff drop a
+// commit's revert: the empty-patch check diffs as the printed command does.
+func TestReleaseCutoffTrustedExternalDiff(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1)
+	rv2Commit(d, "feat: PROJ-1 migration and code", map[string]string{"migrations/000002_new.up.sql": "select 2;\n", "app1.txt": "feature\n"})
+	cutoffMigrationCommits(d, map[int]bool{}, 3)
+	d.git("config", "diff.external", "true")
+	d.git("config", "diff.trustExitCode", "true")
+	out := cutoffOutput(t, d)
+	if strings.Contains(out, "nothing left to revert") {
+		t.Errorf("code revert was omitted:\n%s", out)
+	}
+	if failed := rv2Exec(t, d, out, ""); failed != "" {
+		t.Fatalf("plan failed: %s", failed)
+	}
+	if d.git("ls-files", "--", "app1.txt") != "" {
+		t.Errorf("unchecked code app1.txt remains in the release")
+	}
+}
+
+// A migration path with a line break would end a shell comment of the plan:
+// the check is unavailable and the plan stays valid shell.
+func TestReleaseCutoffControlCharacterPath(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1)
+	rv2Commit(d, "feat: PROJ-1 migration and code", map[string]string{"migrations/000002_a\ninvalid_command.up.sql": "select 2;\n", "app1.txt": "feature\n"})
+	cutoffMigrationCommits(d, map[int]bool{}, 3)
+	out := cutoffOutput(t, d)
+	if !strings.Contains(out, "migration check unavailable") || !strings.Contains(out, "control character") {
+		t.Errorf("missing unavailable migration check:\n%s", out)
+	}
+	assertCutoffShellSyntax(t, out)
+}
+
+// Keeping a task whole does not claim to raise a highest number that the
+// ordinary plan has already.
+func TestReleaseCutoffKeepDoesNotClaimRaise(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1)
+	rv2Commit(d, "feat: PROJ-9 add 2", map[string]string{"migrations/000002_x.up.sql": "first\n", "app9.txt": "1\n"})
+	rv2Commit(d, "feat: PROJ-1 edit 2", map[string]string{"migrations/000002_x.up.sql": "second\n", "app1.txt": "1\n"})
+	cutoffMigrationCommits(d, map[int]bool{}, 4)
+	out := cutoffOutput(t, d)
+	if strings.Contains(out, "raise the highest") || !strings.Contains(out, "PROJ-1: kept, it leaves the highest remaining number at 4") {
+		t.Errorf("keep line claims a raise:\n%s", out)
 	}
 }

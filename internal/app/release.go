@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/deploy"
@@ -634,7 +635,7 @@ func printCutoffKeepOptions(w io.Writer, groups []failureGroup, migrations cutof
 			}
 		}
 		var line strings.Builder
-		line.WriteString(fmt.Sprintf("#   %s: its migrations raise the highest remaining number to %d", grp.what, migrations.keepHighest[grp.what]))
+		line.WriteString(fmt.Sprintf("#   %s: kept, it leaves the highest remaining number at %d", grp.what, migrations.keepHighest[grp.what]))
 		if len(entries) > 0 {
 			line.WriteString(", so also exclude from the other items' reverts " + strings.Join(entries, ", "))
 		}
@@ -1124,6 +1125,11 @@ func cutoffTouched(repo *gitx.Repo, sha, spec, dir string) (map[uint64][]string,
 		if p == "" || !isTopLevelMigration(p, dir) {
 			continue
 		}
+		// The plan names migration paths in shell comments, where a line
+		// break would end the comment.
+		if strings.ContainsFunc(p, unicode.IsControl) {
+			return nil, fmt.Errorf("migration path %q holds a control character; check the reverts of %s by hand", p, gitx.Short(sha))
+		}
 		n, ok := migrationNumber(filepath.Base(filepath.FromSlash(p)))
 		if ok && !slices.Contains(m[n], p) {
 			m[n] = append(m[n], p)
@@ -1135,7 +1141,9 @@ func cutoffTouched(repo *gitx.Repo, sha, spec, dir string) (map[uint64][]string,
 	return m, nil
 }
 func cutoffEmptyPatch(repo *gitx.Repo, sha string, paths []string, cfg *config.Config) (bool, error) {
-	args := []string{"diff", "--quiet", sha + "^", sha, "--", "."}
+	// The flags of the printed command: an external diff must not tell an
+	// empty patch.
+	args := append(append([]string{"diff", "--quiet"}, cutoffDiffFlags()...), sha+"^", sha, "--", ".")
 	for _, p := range cfg.VersionFiles() {
 		args = append(args, ":(exclude,literal)"+p)
 	}
