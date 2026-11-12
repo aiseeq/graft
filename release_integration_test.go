@@ -146,7 +146,7 @@ func TestReleaseCutoffHoldAndWithheld(t *testing.T) {
 		"the cutoff was Wed 21.10 18:00, test holds the candidate",
 		"git switch -c release/22.10.26 " + candidate,
 		"# PROJ-1 is Testing, not Ready for release or Done",
-		"git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + unchecked + "^ " + unchecked + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index",
+		"git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + unchecked + "^ " + unchecked + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index",
 		"graft commit -m 'revert: PROJ-1 not checked by the 22.10.26 cutoff' -m 'This reverts commit " + unchecked + ".'",
 		"git merge -s ours --no-edit release/22.10.26",
 	} {
@@ -293,11 +293,11 @@ func TestReleaseCutoffMigrationConflict(t *testing.T) {
 	if !strings.Contains(out, "migrator applies only versions above the last applied version") || !strings.Contains(out, "skipped on the next release") {
 		t.Errorf("cutoff omitted the migration risk:\n%s", out)
 	}
-	plainRevert2 := "git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
+	plainRevert2 := "git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
 	if strings.Contains(out, plainRevert2) {
 		t.Errorf("cutoff printed an unexcluded reverse patch for migration 2:\n%s", out)
 	}
-	wantExclude := "git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' ':(exclude,literal)migrations/000002_step.down.sql' ':(exclude,literal)migrations/000002_step.up.sql' | git apply -R --3way --index"
+	wantExclude := "git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' ':(exclude,literal)migrations/000002_step.down.sql' ':(exclude,literal)migrations/000002_step.up.sql' | git apply -R --3way --index"
 	if !strings.Contains(out, wantExclude) {
 		t.Errorf("cutoff omitted the ready-to-run exclude command %q:\n%s", wantExclude, out)
 	}
@@ -515,7 +515,7 @@ func TestReleaseCutoffRevertingDeletedMigrationKeepsOldOutput(t *testing.T) {
 	d.mustFixtureCommit("feat: PROJ-1 remove old migration")
 	deleted := d.git("rev-parse", "HEAD")
 	out := cutoffOutput(t, d)
-	want := "git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + deleted + "^ " + deleted + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
+	want := "git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + deleted + "^ " + deleted + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
 	if !strings.Contains(out, want) || strings.Contains(out, "Migration cutoff conflict") {
 		t.Fatalf("reverting a deleted migration changed cutoff output:\n%s", out)
 	}
@@ -575,7 +575,7 @@ func TestReleaseCutoffChangedRenameConflictsOnBothPaths(t *testing.T) {
 	out := cutoffOutput(t, d)
 	for _, want := range []string{
 		"migrations/000002_renamed.up.sql (number 2)",
-		"git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + sha + "^ " + sha + " -- . ':(exclude,literal)VERSION' ':(exclude,literal)migrations/000002_renamed.up.sql' ':(exclude,literal)migrations/000002_step.up.sql' | git apply -R --3way --index",
+		"git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + sha + "^ " + sha + " -- . ':(exclude,literal)VERSION' ':(exclude,literal)migrations/000002_renamed.up.sql' ':(exclude,literal)migrations/000002_step.up.sql' | git apply -R --3way --index",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("cutoff: no %q\n%s", want, out)
@@ -749,7 +749,7 @@ func TestReleaseCutoffWithoutMigrationConfigKeepsOutput(t *testing.T) {
 	d.at("2026-10-20 10:00")
 	commits := cutoffMigrationCommits(d, map[int]bool{2: true}, 1, 2, 3, 4)
 	out := cutoffOutput(t, d)
-	want := "git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
+	want := "git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
 	if !strings.Contains(out, want) || strings.Contains(out, "Migration cutoff conflict") {
 		t.Fatalf("cutoff without test_db.migrations changed its output:\n%s", out)
 	}
@@ -760,7 +760,7 @@ func TestReleaseCutoffWithTestDBButNoMigrationsKeepsOutput(t *testing.T) {
 	d.at("2026-10-20 10:00")
 	commits := cutoffMigrationCommitsAt(d, "", map[int]bool{2: true}, 1, 2, 3, 4)
 	out := cutoffOutput(t, d)
-	want := "git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
+	want := "git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
 	if !strings.Contains(out, want) || strings.Contains(out, "Migration cutoff conflict") {
 		t.Fatalf("cutoff with test_db but no migrations changed its output:\n%s", out)
 	}
@@ -1163,7 +1163,7 @@ func TestReleaseAttribute(t *testing.T) {
 	out := d.mustGraft("deploy", "cutoff", "prod")
 	for _, want := range []string{
 		"# PROJ-1 is In Progress, not Ready for release or Done",
-		"git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + keyless + "^ " + keyless + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index",
+		"git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + keyless + "^ " + keyless + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index",
 		"graft commit -m 'revert: PROJ-1 not checked by the 22.10.26 cutoff' -m 'This reverts commit " + keyless + ".'",
 	} {
 		if !strings.Contains(out, want) {
@@ -1782,4 +1782,82 @@ func TestReleaseCutoffFixedPointSecondPass(t *testing.T) {
 		t.Errorf("FINDING: migration 5 not flagged although 9 stays")
 	}
 	rv2Check(t, d, out, "migrations", "")
+}
+
+func TestReleaseCutoffBinaryMigration(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1)
+	rv2Commit(d, "feat: PROJ-1 add binary migration", map[string]string{
+		"migrations/000002_binary.up.sql": "select 2;\x00\n",
+		"app1.txt":                        "feature\n",
+	})
+	cutoffMigrationCommits(d, map[int]bool{}, 3)
+	out := cutoffOutput(t, d)
+	t.Logf("plan:\n%s", out)
+	if strings.Contains(out, "migration check unavailable") || !strings.Contains(out, "Migration cutoff conflict") {
+		t.Errorf("binary migration below 3 was not protected")
+	}
+	rv2Check(t, d, out, "migrations", "")
+}
+
+func TestReleaseCutoffZeroContextConfig(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1, 2, 3)
+	rv2Commit(d, "feat: PROJ-1 edit migration", map[string]string{
+		"migrations/000002_step.up.sql": "different\n",
+		"app1.txt":                      "feature\n",
+	})
+	d.git("config", "diff.context", "0")
+	out := cutoffOutput(t, d)
+	t.Logf("plan:\n%s", out)
+	if strings.Contains(out, "migration check unavailable") {
+		t.Errorf("zero context made migration check unavailable")
+	}
+	rv2Check(t, d, out, "migrations", "")
+}
+
+func TestReleaseCutoffBinaryAssetInRevert(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1)
+	rv2Commit(d, "feat: PROJ-1 add migration and asset", map[string]string{
+		"migrations/000002_binary.up.sql": "select 2;\n",
+		"assets/icon.bin":                 "binary\x00content\n",
+	})
+	cutoffMigrationCommits(d, map[int]bool{}, 3)
+	out := cutoffOutput(t, d)
+	t.Logf("plan:\n%s", out)
+	rv2Check(t, d, out, "migrations", "")
+}
+
+func TestReleaseCutoffBinaryHighestStays(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1)
+	rv2Commit(d, "feat: PROJ-8 mark SQL binary", map[string]string{".gitattributes": "migrations/*.sql -diff\n"})
+	rv2Commit(d, "feat: PROJ-1 add migration", map[string]string{
+		"migrations/000002_binary.up.sql": "select 2;\n",
+		"app1.txt":                        "feature\n",
+	})
+	out := cutoffOutput(t, d)
+	t.Logf("plan:\n%s", out)
+	if strings.Contains(out, "stays in the release") {
+		t.Errorf("binary migration is unnecessarily shipped: no later commit touches it")
+	}
+	rv2Check(t, d, out, "migrations", "")
+}
+
+func TestReleaseCutoffDuplicateMigrationBlobs(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1)
+	rv2Commit(d, "feat: PROJ-8 add 2a", map[string]string{"migrations/000002_a.up.sql": "select 2;\n"})
+	rv2Commit(d, "feat: PROJ-1 add 2b", map[string]string{"migrations/000002_b.up.sql": "select 2;\n", "app1.txt": "feature\n"})
+	cutoffMigrationCommits(d, map[int]bool{}, 3)
+	out := cutoffOutput(t, d)
+	t.Logf("plan:\n%s", out)
+	if failed := rv2Exec(t, d, out, ""); failed != "" {
+		t.Fatalf("plan failed: %s", failed)
+	}
+	paths := d.git("ls-tree", "-r", "--name-only", "HEAD", "--", "migrations")
+	if !strings.Contains(paths, "migrations/000002_b.up.sql") {
+		t.Errorf("plan silently deleted candidate migration 2b below remaining 3: %s", paths)
+	}
 }

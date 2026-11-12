@@ -663,7 +663,7 @@ func printCutoffMigrationConflict(w io.Writer, sha string, conflicts []cutoffMig
 		names = append(names, fmt.Sprintf("%s (number %d)", c.path, c.number))
 		if c.unapplied {
 			allApplied = false
-			fmt.Fprintf(w, "  # the revert of %s does not apply on the candidate (a later commit edited it), so it stays as in the candidate\n", c.path)
+			fmt.Fprintf(w, "  # the revert of %s does not apply on the candidate, so it stays as in the candidate\n", c.path)
 		} else {
 			fmt.Fprintf(w, "  # The migrator applies only versions above the last applied version, so %s will be skipped on the next release.\n", c.path)
 		}
@@ -1086,23 +1086,17 @@ func cutoffLosses(target, remaining migrationTree) map[uint64]bool {
 	return loss
 }
 func sameCutoffBlobs(a, b map[string]string) bool {
-	blobs := func(files map[string]string) map[string]bool {
-		set := map[string]bool{}
+	// A multiset: two files of a number with the same content are two
+	// migrations, and losing one of them is a loss.
+	blobs := func(files map[string]string) []string {
+		list := make([]string, 0, len(files))
 		for _, hash := range files {
-			set[hash] = true
+			list = append(list, hash)
 		}
-		return set
+		sort.Strings(list)
+		return list
 	}
-	left, right := blobs(a), blobs(b)
-	if len(left) != len(right) {
-		return false
-	}
-	for hash := range left {
-		if !right[hash] {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(blobs(a), blobs(b))
 }
 func cutoffHighest(t migrationTree) uint64 {
 	var n uint64
@@ -1223,5 +1217,5 @@ func excludes(cfg *config.Config, paths []string) string {
 }
 
 func cutoffDiffFlags() []string {
-	return []string{"--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"}
+	return []string{"--binary", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"}
 }
