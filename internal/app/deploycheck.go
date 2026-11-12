@@ -71,6 +71,7 @@ func (a *App) DeployCheck(ctx context.Context, target string) error {
 	if r.hotfix = r.cfg.Deploy.IsHotfix(r.branch); !r.hotfix {
 		refuse(a.checkWindow(r))
 	}
+	defer a.printVersionManual(r)
 	refuse(a.requireDeployed(ctx, r))
 	if err := a.checkDeployed(ctx, r, sudoRefusal, refuse); err != nil {
 		return err
@@ -86,6 +87,20 @@ func (a *App) DeployCheck(ctx context.Context, target string) error {
 		fmt.Fprintf(a.Stdout, "- %s\n", strings.ReplaceAll(err.Error(), "\n", "\n  "))
 	}
 	return fmt.Errorf("graft deploy %s would refuse, see above", r.name)
+}
+
+func (a *App) printVersionManual(r *deployRun) {
+	if r.hotfix || r.target.ApprovedRelease == nil || r.target.ApprovedRelease.Version == nil {
+		return
+	}
+	manual := r.target.ApprovedRelease.Version.Manual
+	if len(manual) == 0 {
+		return
+	}
+	fmt.Fprintln(a.Stdout, "check by hand before the deploy:")
+	for _, line := range manual {
+		fmt.Fprintf(a.Stdout, "- %s\n", line)
+	}
 }
 
 func (a *App) checkDeployed(ctx context.Context, r *deployRun, sudoRefusal error, refuse func(error)) error {
@@ -108,7 +123,17 @@ func (a *App) checkDeployed(ctx context.Context, r *deployRun, sudoRefusal error
 		refuse(fmt.Errorf("%s already runs %s; graft deploy --redeploy %s deploys it again", r.name, gitx.Short(r.head), r.name))
 		return nil
 	}
-	refuse(a.checkReleaseFlow(ctx, r, false))
+	var listRefusals func(error)
+	listRefusals = func(err error) {
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, child := range joined.Unwrap() {
+				listRefusals(child)
+			}
+			return
+		}
+		refuse(err)
+	}
+	listRefusals(a.checkReleaseFlow(ctx, r, false))
 	return nil
 }
 

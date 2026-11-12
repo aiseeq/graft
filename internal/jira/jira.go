@@ -110,7 +110,8 @@ type Issue struct {
 	// FixVersions carry the id and name of each.
 	FixVersions []Version
 	// Parent is the key of the item a subtask belongs to, empty for others.
-	Parent string
+	Parent  string
+	Subtask bool
 	// Subtasks are the keys of the item's subtasks.
 	Subtasks []string
 	Labels   []string
@@ -187,7 +188,7 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 			return Issue{}, fmt.Errorf("%s: invalid created time %q: %w", key, raw.Fields.Created, err)
 		}
 	}
-	issue := Issue{Key: key, Summary: raw.Fields.Summary, Created: created, Type: raw.Fields.IssueType.Name, Status: raw.Fields.Status.Name, Done: raw.Fields.Status.Category.Key == "done", NotStarted: raw.Fields.Status.Category.Key == "new", FixVersions: raw.Fields.FixVersions, Labels: raw.Fields.Labels}
+	issue := Issue{Key: key, Summary: raw.Fields.Summary, Created: created, Type: raw.Fields.IssueType.Name, Subtask: raw.Fields.IssueType.Subtask, Status: raw.Fields.Status.Name, Done: raw.Fields.Status.Category.Key == "done", NotStarted: raw.Fields.Status.Category.Key == "new", FixVersions: raw.Fields.FixVersions, Labels: raw.Fields.Labels}
 	if a := raw.Fields.Assignee; a != nil {
 		if a.AccountID == "" {
 			return Issue{}, fmt.Errorf("%s: the assignee has no accountId", key)

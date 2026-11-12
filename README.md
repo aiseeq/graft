@@ -2102,7 +2102,8 @@ label, the freeze and the trunk merge check:
   before its parent came into the ready statuses: the reviewer checks the item,
   so accepting it takes such a subtask along, and one that came later nobody
   has seen. A parent or subtask in `skip_keys` does not count, and a subtask
-  ready itself passes whatever its parent's state;
+  ready itself passes whatever its parent's state (unless the version gate
+  below is enabled);
 - the sweep counts such a commit for every item of its work;
 - a subtask moved by a transition with `assign` stays with its assignee, named
   in a commit or following its parent, and so needs no `require_comment`: the
@@ -2113,6 +2114,41 @@ label, the freeze and the trunk merge check:
 
 graft cannot tell a key that opens the subject as a mention from work: give
 such a commit the key of its own item first, or an attribute.
+
+To check the complete Jira release version on a target, add `version` to
+`approved_release` (which then requires `statuses`):
+
+```yaml
+approved_release:
+  statuses: [Ready for release, Done]
+  ignore_paths: ["docs/**"]
+  version:
+    match: '^Product[ .]?\d\d\.\d\d\.\d\d$'
+    manual: ["QA smoke on TEST passed"]
+    refs: {version-subtasks: "2.2"}
+```
+
+The gate takes active commits since the deployed commit, including previously
+withheld work, excluding reverts, reverted work and commits changing only
+`ignore_paths`. For each commit's item it uses the parent if it is a subtask.
+The unreleased, unarchived fix versions of those top-level items must identify
+exactly one version matching `match`; an omitted `match` accepts any name.
+Every top-level item must be in that version and in `statuses`. Every item in
+the version must be in `statuses` and must not be a subtask. When a commit
+names a subtask, all of its parent's subtasks must be done-category or in
+`statuses`; `release_notes.jira.skip_keys` exempts the parent from this last
+check only. The version must have approvers and every one must have approved.
+Items in the version without code in the range are warnings. With no active
+commits the version checks are skipped. `prefix`, when set, still checks the
+items' approved versions independently.
+
+Refusals carry check IDs; `refs` optionally maps them to project rule numbers.
+`graft deploy check` lists the refusals and prints the `manual` reminders even
+when checks fail. `--unapproved` bypasses all of `approved_release`; hotfixes
+do not run it. The gate reads deploy rules from the branch being deployed. It
+does not restore the deployed commit or Jira statuses on rollback, check who
+moved an item to Ready for release or Done, or judge whether an umbrella's
+content is technical.
 
 The sweep takes the commits of the last `days` on any remote branch or on
 the target, merges left out, and groups them by the item each is the work

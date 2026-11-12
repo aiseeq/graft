@@ -722,3 +722,32 @@ func TestParseGoVet(t *testing.T) {
 		t.Error("go_vet.enabled: false must turn the step off")
 	}
 }
+
+func TestApprovedReleaseVersionConfig(t *testing.T) {
+	base := `schema: 1
+version: {mode: none}
+envs: {local: {}}
+deploy:
+  remote: origin
+  targets:
+    prod:
+      env: local
+      run: [sh, deploy.sh]
+      deployed_sha: {path: /tmp/deployed}
+      approved_release: REPLACE
+release_notes: {jira: {project_keys: [PROJ]}}
+`
+	for _, tc := range []struct{ config, want string }{
+		{`{statuses: [Done], version: {match: '['}}`, "approved_release.version.match"},
+		{`{prefix: Product, version: {}}`, "approved_release.version: needs statuses"},
+		{`{statuses: [Done], version: {match: '^Product'}}`, ""},
+	} {
+		_, err := Parse([]byte(strings.Replace(base, "REPLACE", tc.config, 1)))
+		if tc.want == "" && err != nil {
+			t.Errorf("%s: %v", tc.config, err)
+		}
+		if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+			t.Errorf("%s: %v, want %s", tc.config, err, tc.want)
+		}
+	}
+}

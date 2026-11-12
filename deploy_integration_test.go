@@ -40,6 +40,7 @@ type fakeJira struct {
 	versions        []map[string]any
 	otherVersions   []map[string]any // of project OTHER
 	versionRequests int
+	versionPageSize int
 	fixVersions     map[string][]string
 	edits           []string
 	failEdit        []string
@@ -347,7 +348,17 @@ func (j *fakeJira) versionsAPI(w http.ResponseWriter, r *http.Request) bool {
 				issues = append(issues, map[string]string{"key": key})
 			}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"issues": issues, "isLast": true})
+		if j.versionPageSize > 0 {
+			start, _ := strconv.Atoi(r.URL.Query().Get("nextPageToken"))
+			end := min(start+j.versionPageSize, len(issues))
+			page := map[string]any{"issues": issues[start:end], "isLast": end == len(issues)}
+			if end < len(issues) {
+				page["nextPageToken"] = strconv.Itoa(end)
+			}
+			_ = json.NewEncoder(w).Encode(page)
+		} else {
+			_ = json.NewEncoder(w).Encode(map[string]any{"issues": issues, "isLast": true})
+		}
 	default:
 		return false
 	}

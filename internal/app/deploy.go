@@ -1244,15 +1244,40 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 	}
 	out, g, err := a.approvalRun(ctx, r)
 	if err != nil {
+		if conf.Version != nil {
+			id := "commit-items"
+			if ref := conf.Version.Refs[id]; ref != "" {
+				id += " (rule " + ref + ")"
+			}
+			return refuse("%s: %v; fix the issue or retry", id, err)
+		}
 		return refuse("%v", err)
 	}
+	var failures []error
 	if len(out.failures) > 0 {
 		lines := make([]string, len(out.failures))
 		for i, f := range out.failures {
 			lines[i] = f.line()
 		}
-		return refuse("commits outside an approved release:\n  %s\nTheir items:\n  %s\n%s, revert them, or pass --unapproved",
-			strings.Join(lines, "\n  "), strings.Join(g.gate.describe(out.failures), "\n  "), g.gate.remedy())
+		id := ""
+		if conf.Version != nil {
+			id = "commit-items"
+			if ref := conf.Version.Refs[id]; ref != "" {
+				id += " (rule " + ref + ")"
+			}
+			id += ": "
+		}
+		failures = append(failures, refuse("%scommits outside an approved release:\n  %s\nTheir items:\n  %s\n%s, revert them, or pass --unapproved", id,
+			strings.Join(lines, "\n  "), strings.Join(g.gate.describe(out.failures), "\n  "), g.gate.remedy()))
+		if !r.dryRun {
+			return failures[0]
+		}
+	}
+	if conf.Version != nil {
+		failures = append(failures, g.checkReleaseVersion(ctx, r.dryRun)...)
+	}
+	if len(failures) > 0 {
+		return errors.Join(failures...)
 	}
 	a.passApproved(r, out)
 	return nil
@@ -1374,12 +1399,14 @@ func (a *App) passApproved(r *deployRun, out gateOutcome) {
 
 // gateRun is one pass of approved_release over the commits going out.
 type gateRun struct {
-	app   *App
-	repo  *gitx.Repo
-	cfg   *config.Config
-	conf  *config.ApprovedRelease
-	gate  *approvalGate
-	keyRe *regexp.Regexp
+	app           *App
+	repo          *gitx.Repo
+	cfg           *config.Config
+	conf          *config.ApprovedRelease
+	gate          *approvalGate
+	keyRe         *regexp.Regexp
+	activeKeys    map[string]bool
+	activeCommits int
 }
 
 func newGateRun(a *App, repo *gitx.Repo, cfg *config.Config, target *config.DeployTarget) (*gateRun, error) {
@@ -1389,8 +1416,9 @@ func newGateRun(a *App, repo *gitx.Repo, cfg *config.Config, target *config.Depl
 	}
 	return &gateRun{
 		app: a, repo: repo, cfg: cfg, conf: target.ApprovedRelease,
-		gate:  newApprovalGate(client, cfg, target, map[string]jira.Issue{}),
-		keyRe: projectKeyRe(cfg),
+		gate:       newApprovalGate(client, cfg, target, map[string]jira.Issue{}),
+		keyRe:      projectKeyRe(cfg),
+		activeKeys: map[string]bool{},
 	}, nil
 }
 
@@ -1517,6 +1545,20 @@ func (g *gateRun) withEarlier(commits []deliveredCommit, withheld []string) ([]d
 // as the failure.
 func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out *gateOutcome) (*gateFailure, error) {
 	fail := gateFailure{commit: c, why: "names no item"}
+	if g.conf.Version != nil {
+		ignored, err := shipsNothing(g.repo, g.cfg, g.conf, c.sha)
+		if err != nil {
+			return nil, err
+		}
+		if ignored {
+			g.app.printf("approved release: %s: changes only ignore_paths, passes", line)
+			return nil, nil
+		}
+		g.activeCommits++
+		for _, key := range itemKeys(g.keyRe, g.conf, c) {
+			g.activeKeys[key] = true
+		}
+	}
 	if at, ok := g.conf.Attributed[c.sha]; ok {
 		instead := ""
 		if named := slices.DeleteFunc(itemKeys(g.keyRe, nil, c), func(k string) bool { return k == at.Item }); len(named) > 0 {
@@ -1841,6 +1883,19 @@ func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 	issue, err := g.issue(ctx, key)
 	if err != nil {
 		return gatePass{}, err
+	}
+	if g.conf.Version != nil {
+		if g.conf.Prefix == "" {
+			return gatePass{ok: true, label: "release version"}, nil
+		}
+		version, err := g.approvedVersion(ctx, issue)
+		if err != nil {
+			return gatePass{}, err
+		}
+		if version == "" {
+			return gatePass{why: fmt.Sprintf("%s not in an approved %q version", key, g.conf.Prefix)}, nil
+		}
+		return gatePass{ok: true, label: version}, nil
 	}
 	why, err := g.openParent(ctx, issue)
 	if err != nil {

@@ -269,6 +269,7 @@ func (f *FixVersion) Matches(name string) bool {
 // ApprovedRelease lets out only the commits of checked items: items in one of
 // Statuses, items of an approved version of Prefix, or both when both are set.
 type ApprovedRelease struct {
+	Version *ApprovedReleaseVersion `yaml:"version"`
 	// Statuses are the item statuses that go out, such as Ready for release;
 	// a subtask also goes out when its parent is in one of them.
 	Statuses []string `yaml:"statuses"`
@@ -283,6 +284,13 @@ type ApprovedRelease struct {
 	Attribute []Attribution `yaml:"attribute"`
 	// Attributed maps the full commit hashes of Attribute to their entries.
 	Attributed map[string]Attribution `yaml:"-"`
+}
+
+// ApprovedReleaseVersion checks the complete Jira release version.
+type ApprovedReleaseVersion struct {
+	Match  string            `yaml:"match"`
+	Manual []string          `yaml:"manual"`
+	Refs   map[string]string `yaml:"refs"`
 }
 
 // Attribution ties a commit that names no item to the item it belongs to:
@@ -601,6 +609,14 @@ func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {
 		return fmt.Errorf("%s.approved_release: needs statuses (the item statuses that go out, such as [Ready for release]), prefix (how the names of the approved versions begin, such as \"Product v\"), or both", where)
 	case t.ApprovedRelease.Prefix != "" && strings.TrimSpace(t.ApprovedRelease.Prefix) == "":
 		return fmt.Errorf("%s.approved_release.prefix: blank", where)
+	}
+	if v := t.ApprovedRelease.Version; v != nil {
+		if len(t.ApprovedRelease.Statuses) == 0 {
+			return fmt.Errorf("%s.approved_release.version: needs statuses", where)
+		}
+		if _, err := regexp.Compile(v.Match); err != nil {
+			return fmt.Errorf("%s.approved_release.version.match: %w", where, err)
+		}
 	}
 	for i, st := range t.ApprovedRelease.Statuses {
 		if strings.TrimSpace(st) == "" {
