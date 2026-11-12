@@ -600,7 +600,7 @@ func (a *App) printCutoff(r *deployRun, c cutoff, failures []gateFailure, migrat
 				if subErr != nil {
 					fmt.Fprintf(a.Stdout, "  # submodule check unavailable: %v; if this commit adds or moves a submodule, check it out at the reverted commit before the graft commit\n", subErr)
 				} else if len(moved) > 0 {
-					fmt.Fprintf(a.Stdout, "  git submodule update --init --recursive -- %s\n", strings.Join(moved, " "))
+					fmt.Fprintf(a.Stdout, "  git submodule update --init --recursive --checkout -- %s\n", strings.Join(moved, " "))
 				}
 			}
 			if includeCommit {

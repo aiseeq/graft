@@ -2212,14 +2212,16 @@ deploy:
   reverts commit <sha>.'` per item; then the deploys, and after the release
   `git merge -s ours` of the release branch into the trunk. With nothing to
   revert it prints the branch and the deploy alone.
+- The printed diffs ignore `diff.ignoreSubmodules`. As `graft commit` stages
+  the whole work tree, a revert that moves or removes a submodule pointer is
+  followed by `git submodule update --init --recursive --checkout` (which also
+  overrides `submodule.<name>.update`), and the revert of a commit that adds a
+  submodule is preceded by `git submodule deinit -f`, so the submodule is
+  gone rather than staged again.
 - When `test_db.migrations` is set, cutoff compares migration files directly
   in that directory in the candidate with the files left after simulating the
   planned reverts. It groups files by their leading number and compares each
-  number's blobs, counting two files with the same content twice. The
-  diffs ignore diff.ignoreSubmodules, and a revert that moves a submodule
-  pointer is followed by `git submodule update --init --recursive`, and one of
-  a commit that adds a submodule is preceded by `git submodule deinit -f`, so
-  graft commit stages the reverted pointer. Files containing `.down.` are excluded because the up
+  number's blobs, counting two files with the same content twice. Files containing `.down.` are excluded because the up
   migrator does not apply them. If the candidate has files for a number at or
   below the highest remaining number and that number's files differ or are
   missing after the reverts, cutoff identifies the commits whose changes
