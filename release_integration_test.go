@@ -1744,6 +1744,11 @@ func TestReleaseCutoffIgnoresMigrationNamedGitlink(t *testing.T) {
 	if out, code := d.exec(d.work, "", "git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "--amend", "--no-edit"); code != 0 {
 		t.Fatalf("commit migration path gitlink: exit %d\n%s", code, out)
 	}
+	// The amend gets a new hash once the clock passes a second: the branch
+	// on origin must follow it, or graft deploy refuses a HEAD it lacks.
+	if out, code := d.exec(d.work, "", "git", "push", "-q", "-f", "origin", "HEAD"); code != 0 {
+		t.Fatalf("push the amended commit: exit %d\n%s", code, out)
+	}
 	if entry := d.git("ls-tree", "HEAD", "--", "migrations/000002_link.up.sql"); !strings.HasPrefix(entry, "160000 commit ") {
 		t.Fatalf("fixture did not commit a gitlink migration path: %q", entry)
 	}
