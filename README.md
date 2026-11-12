@@ -2181,7 +2181,9 @@ deploy:
 - When `test_db.migrations` is set, cutoff compares migration files directly
   in that directory in the candidate with the files left after simulating the
   planned reverts. It groups files by their leading number and compares each
-  number's blobs, counting two files with the same content twice. Files containing `.down.` are excluded because the up
+  number's blobs, counting two files with the same content twice. The
+  diffs ignore diff.ignoreSubmodules, and a revert that moves a submodule
+  pointer is followed by `git submodule update` so graft commit stages it. Files containing `.down.` are excluded because the up
   migrator does not apply them. If the candidate has files for a number at or
   below the highest remaining number and that number's files differ or are
   missing after the reverts, cutoff identifies the commits whose changes

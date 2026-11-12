@@ -590,6 +590,9 @@ func (a *App) printCutoff(r *deployRun, c cutoff, failures []gateFailure, migrat
 				includeCommit = printCutoffMigrationConflict(a.Stdout, f.commit.sha, conflicts, r.cfg)
 			}
 			if includeCommit {
+				printCutoffSubmoduleUpdate(a.Stdout, r.repo, f.commit.sha)
+			}
+			if includeCommit {
 				body = append(body, "-m "+envs.Quote("This reverts commit "+f.commit.sha+"."))
 			}
 		}
@@ -1224,6 +1227,35 @@ func excludes(cfg *config.Config, paths []string) string {
 	return out.String()
 }
 
+// printCutoffSubmoduleUpdate checks out the reverted submodule pointers of a
+// commit: graft commit stages the whole tree, and a submodule still checked
+// out at the unchecked commit would put its pointer back.
+func printCutoffSubmoduleUpdate(w io.Writer, repo *gitx.Repo, sha string) {
+	out, err := repo.Git("diff", "--raw", "-z", "--no-renames", "--ignore-submodules=none", sha+"^", sha)
+	if err != nil {
+		fmt.Fprintf(w, "  # submodule check unavailable: %v; if this commit moves a submodule, check it out at the reverted commit before the graft commit\n", err)
+		return
+	}
+	var paths []string
+	fields := strings.Split(out, "\x00")
+	for i := 0; i+1 < len(fields); i += 2 {
+		modes := strings.Fields(strings.TrimPrefix(fields[i], ":"))
+		if len(modes) < 2 || modes[1] != "160000" && modes[0] != "160000" {
+			continue
+		}
+		if modes[0] != "160000" {
+			// Added by the commit: the revert drops the pointer, but the
+			// checked-out directory stays for graft commit to stage again.
+			fmt.Fprintf(w, "  # the revert drops the submodule %q this commit added: run git submodule deinit -f on it and remove its directory before the graft commit\n", fields[i+1])
+			continue
+		}
+		paths = append(paths, envs.Quote(fields[i+1]))
+	}
+	if len(paths) > 0 {
+		fmt.Fprintf(w, "  git submodule update --init -- %s\n", strings.Join(paths, " "))
+	}
+}
+
 func cutoffDiffFlags() []string {
-	return []string{"--binary", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"}
+	return []string{"--binary", "--ignore-submodules=none", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"}
 }

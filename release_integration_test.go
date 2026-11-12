@@ -146,7 +146,7 @@ func TestReleaseCutoffHoldAndWithheld(t *testing.T) {
 		"the cutoff was Wed 21.10 18:00, test holds the candidate",
 		"git switch -c release/22.10.26 " + candidate,
 		"# PROJ-1 is Testing, not Ready for release or Done",
-		"git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + unchecked + "^ " + unchecked + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index",
+		"git diff --binary --ignore-submodules=none --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + unchecked + "^ " + unchecked + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index",
 		"graft commit -m 'revert: PROJ-1 not checked by the 22.10.26 cutoff' -m 'This reverts commit " + unchecked + ".'",
 		"git merge -s ours --no-edit release/22.10.26",
 	} {
@@ -293,11 +293,11 @@ func TestReleaseCutoffMigrationConflict(t *testing.T) {
 	if !strings.Contains(out, "migrator applies only versions above the last applied version") || !strings.Contains(out, "skipped on the next release") {
 		t.Errorf("cutoff omitted the migration risk:\n%s", out)
 	}
-	plainRevert2 := "git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
+	plainRevert2 := "git diff --binary --ignore-submodules=none --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
 	if strings.Contains(out, plainRevert2) {
 		t.Errorf("cutoff printed an unexcluded reverse patch for migration 2:\n%s", out)
 	}
-	wantExclude := "git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' ':(exclude,literal)migrations/000002_step.down.sql' ':(exclude,literal)migrations/000002_step.up.sql' | git apply -R --3way --index"
+	wantExclude := "git diff --binary --ignore-submodules=none --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' ':(exclude,literal)migrations/000002_step.down.sql' ':(exclude,literal)migrations/000002_step.up.sql' | git apply -R --3way --index"
 	if !strings.Contains(out, wantExclude) {
 		t.Errorf("cutoff omitted the ready-to-run exclude command %q:\n%s", wantExclude, out)
 	}
@@ -515,7 +515,7 @@ func TestReleaseCutoffRevertingDeletedMigrationKeepsOldOutput(t *testing.T) {
 	d.mustFixtureCommit("feat: PROJ-1 remove old migration")
 	deleted := d.git("rev-parse", "HEAD")
 	out := cutoffOutput(t, d)
-	want := "git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + deleted + "^ " + deleted + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
+	want := "git diff --binary --ignore-submodules=none --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + deleted + "^ " + deleted + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
 	if !strings.Contains(out, want) || strings.Contains(out, "Migration cutoff conflict") {
 		t.Fatalf("reverting a deleted migration changed cutoff output:\n%s", out)
 	}
@@ -575,7 +575,7 @@ func TestReleaseCutoffChangedRenameConflictsOnBothPaths(t *testing.T) {
 	out := cutoffOutput(t, d)
 	for _, want := range []string{
 		"migrations/000002_renamed.up.sql (number 2)",
-		"git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + sha + "^ " + sha + " -- . ':(exclude,literal)VERSION' ':(exclude,literal)migrations/000002_renamed.up.sql' ':(exclude,literal)migrations/000002_step.up.sql' | git apply -R --3way --index",
+		"git diff --binary --ignore-submodules=none --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + sha + "^ " + sha + " -- . ':(exclude,literal)VERSION' ':(exclude,literal)migrations/000002_renamed.up.sql' ':(exclude,literal)migrations/000002_step.up.sql' | git apply -R --3way --index",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("cutoff: no %q\n%s", want, out)
@@ -749,7 +749,7 @@ func TestReleaseCutoffWithoutMigrationConfigKeepsOutput(t *testing.T) {
 	d.at("2026-10-20 10:00")
 	commits := cutoffMigrationCommits(d, map[int]bool{2: true}, 1, 2, 3, 4)
 	out := cutoffOutput(t, d)
-	want := "git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
+	want := "git diff --binary --ignore-submodules=none --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
 	if !strings.Contains(out, want) || strings.Contains(out, "Migration cutoff conflict") {
 		t.Fatalf("cutoff without test_db.migrations changed its output:\n%s", out)
 	}
@@ -760,7 +760,7 @@ func TestReleaseCutoffWithTestDBButNoMigrationsKeepsOutput(t *testing.T) {
 	d.at("2026-10-20 10:00")
 	commits := cutoffMigrationCommitsAt(d, "", map[int]bool{2: true}, 1, 2, 3, 4)
 	out := cutoffOutput(t, d)
-	want := "git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
+	want := "git diff --binary --ignore-submodules=none --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + commits[2] + "^ " + commits[2] + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index"
 	if !strings.Contains(out, want) || strings.Contains(out, "Migration cutoff conflict") {
 		t.Fatalf("cutoff with test_db but no migrations changed its output:\n%s", out)
 	}
@@ -1163,7 +1163,7 @@ func TestReleaseAttribute(t *testing.T) {
 	out := d.mustGraft("deploy", "cutoff", "prod")
 	for _, want := range []string{
 		"# PROJ-1 is In Progress, not Ready for release or Done",
-		"git diff --binary --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + keyless + "^ " + keyless + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index",
+		"git diff --binary --ignore-submodules=none --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ " + keyless + "^ " + keyless + " -- . ':(exclude,literal)VERSION' | git apply -R --3way --index",
 		"graft commit -m 'revert: PROJ-1 not checked by the 22.10.26 cutoff' -m 'This reverts commit " + keyless + ".'",
 	} {
 		if !strings.Contains(out, want) {
@@ -1908,5 +1908,50 @@ func TestReleaseCutoffKeepDoesNotClaimRaise(t *testing.T) {
 	out := cutoffOutput(t, d)
 	if strings.Contains(out, "raise the highest") || !strings.Contains(out, "PROJ-1: kept, it leaves the highest remaining number at 4") {
 		t.Errorf("keep line claims a raise:\n%s", out)
+	}
+}
+
+// diff.ignoreSubmodules does not hide an unchecked submodule change from
+// the printed revert.
+func TestReleaseCutoffIgnoreSubmodulesConfig(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1)
+	subdir := t.TempDir()
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		out, code := d.exec(dir, "", "git", args...)
+		if code != 0 {
+			t.Fatalf("git %v: %s", args, out)
+		}
+		return strings.TrimSpace(out)
+	}
+	run(subdir, "init", "-q")
+	run(subdir, "config", "user.email", "test@example.com")
+	run(subdir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(subdir, "file"), []byte("first\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run(subdir, "add", "file")
+	run(subdir, "commit", "-qm", "first")
+	d.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", subdir, "vendor/module")
+	d.mustFixtureCommit("feat: PROJ-8 add module")
+	first := d.git("rev-parse", "HEAD:vendor/module")
+	module := filepath.Join(d.work, "vendor", "module")
+	run(module, "config", "user.email", "test@example.com")
+	run(module, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(module, "file"), []byte("second\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run(module, "add", "file")
+	run(module, "commit", "-qm", "second")
+	rv2Commit(d, "feat: PROJ-1 change module and migration", map[string]string{"migrations/000002_x.up.sql": "two\n", "app1.txt": "feature\n"})
+	cutoffMigrationCommits(d, map[int]bool{}, 3)
+	d.git("config", "diff.ignoreSubmodules", "all")
+	out := cutoffOutput(t, d)
+	if failed := rv2Exec(t, d, out, ""); failed != "" {
+		t.Fatalf("plan failed: %s", failed)
+	}
+	if got := d.git("rev-parse", "HEAD:vendor/module"); got != first {
+		t.Errorf("unchecked submodule change remains in release: got %s, want %s", got, first)
 	}
 }
