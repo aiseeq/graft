@@ -194,6 +194,18 @@ func TestSplitLightGate(t *testing.T) {
 			t.Fatal("cache hit run counted")
 		}
 	})
+	t.Run("an expensive remainder step of a run with a cache hit keeps the remainder queued", func(t *testing.T) {
+		records := makeRuns()
+		when := base.Add(time.Hour)
+		records = append(records,
+			Record{Kind: KindStep, Run: "cached", Step: "lex check", Time: when, UserS: 10, TreeMemMB: mem(12), Exit: 0},
+			Record{Kind: KindCacheHit, Run: "cached", Time: when},
+			Record{Kind: KindTask, Run: "cached", Task: GateTask, Project: "/p", Steps: 2, UserS: 10, TreeMemMB: mem(12), Exit: 0, Time: when.Add(time.Second)},
+		)
+		if SplitLightGate(records, "/p", time.Time{}, []string{"lex check"}) {
+			t.Fatal("a cache hit hid an expensive remainder step run here")
+		}
+	})
 	t.Run("host only run does not count", func(t *testing.T) {
 		records := makeRuns()
 		for i := range records {

@@ -53,8 +53,9 @@ func LightGate(recs []Record, project string, since time.Time) bool {
 // include descendants and nested grafts have their own Run. The steps of the
 // remainder in every recent run are a bar, as a failed gate is in LightGate:
 // a run that stopped early or ran another set still says what those steps
-// cost. Only a run that ran exactly the remainder here and passed counts
-// towards LightGateRuns.
+// cost, and so does a run that took a step from the cache. Only a run that
+// ran exactly the remainder here, none of it from the cache, and passed
+// counts towards LightGateRuns.
 func SplitLightGate(recs []Record, project string, since time.Time, localSteps []string) bool {
 	if len(localSteps) == 0 {
 		return false
@@ -67,7 +68,7 @@ func SplitLightGate(recs []Record, project string, since time.Time, localSteps [
 		if !splitGateStepsAreLight(run.steps, want) {
 			return false
 		}
-		if !splitGateRunMatches(run, want) {
+		if run.cached || !splitGateRunMatches(run, want) {
 			continue
 		}
 		if run.gate.Exit == 0 {
@@ -83,6 +84,9 @@ func SplitLightGate(recs []Record, project string, since time.Time, localSteps [
 type splitGateRun struct {
 	gate  *Record
 	steps []*Record
+	// cached is a run that took a step from the cache: the steps it ran
+	// still bar the remainder, but it does not count as a light run.
+	cached bool
 }
 
 func splitGateRuns(recs []Record, project string, since time.Time) []*splitGateRun {
@@ -91,8 +95,8 @@ func splitGateRuns(recs []Record, project string, since time.Time) []*splitGateR
 	for i := range recs {
 		r := &recs[i]
 		if r.Kind == KindTask && r.Task == GateTask && r.Parent == "" && r.Project == project && r.Run != "" &&
-			r.Steps > 0 && r.Time.After(since) && !cached[r.Run] {
-			byRun[r.Run] = &splitGateRun{gate: r}
+			r.Steps > 0 && r.Time.After(since) {
+			byRun[r.Run] = &splitGateRun{gate: r, cached: cached[r.Run]}
 		}
 	}
 	for i := range recs {
