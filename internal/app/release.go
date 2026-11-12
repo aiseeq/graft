@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -688,47 +689,57 @@ func cutoffMigrationConflicts(repo *gitx.Repo, cfg *config.Config, candidate str
 			}
 		}
 	}
-	plan := cutoffMigrationPlan{conflicts: conflicts, keep: map[string]cutoffKeep{}}
 	groups := groupFailures(failures)
+	keep := cutoffKeepPlans(groups, conflicts, changesByCommit, addedByCommit, candidateFiles, removedOnRevert, highest)
+	return cutoffMigrationPlan{conflicts: conflicts, keep: keep}, nil
+}
+
+// cutoffKeepPlans works out, for each item with a migration conflict, what
+// keeping it whole does: its added migrations stay, and the other items'
+// reverted migrations at or above highest but below the new highest would be
+// skipped too.
+func cutoffKeepPlans(groups []failureGroup, conflicts, changesByCommit map[string][]cutoffMigration, addedByCommit map[string]map[string]bool, candidateFiles, removedOnRevert map[string]bool, highest uint64) map[string]cutoffKeep {
+	above := revertedAtOrAbove(groups, changesByCommit, highest)
+	plans := map[string]cutoffKeep{}
 	for _, grp := range groups {
 		if !grp.hasMigrationConflict(conflicts) {
 			continue
 		}
-		kept := map[string]bool{}
-		for _, f := range grp.failures {
-			for path := range addedByCommit[f.commit.sha] {
-				kept[path] = true
-			}
-		}
-		removed := map[string]bool{}
-		for path := range removedOnRevert {
-			if !kept[path] {
-				removed[path] = true
-			}
-		}
-		keep := cutoffKeep{highest: highestRemainingMigration(candidateFiles, removed)}
+		keep := cutoffKeep{highest: highestRemainingMigration(candidateFiles, withoutAddedBy(grp, addedByCommit, removedOnRevert))}
 		if keep.highest <= highest {
 			continue
 		}
-		for _, other := range groups {
-			if other.what != grp.what {
-				keep.others = append(keep.others, newlyBelow(other, changesByCommit, highest, keep.highest)...)
-			}
-		}
-		plan.keep[grp.what] = keep
+		keep.others = slices.DeleteFunc(slices.Clone(above), func(o cutoffKeepOther) bool {
+			return o.item == grp.what || o.number >= keep.highest
+		})
+		plans[grp.what] = keep
 	}
-	return plan, nil
+	return plans
 }
 
-// newlyBelow lists the migrations grp's reverts change whose number is in
-// [highest, keptHighest): no conflict with every item reverted, one once
-// another item is kept and its migrations keep the highest at keptHighest.
-func newlyBelow(grp failureGroup, changesByCommit map[string][]cutoffMigration, highest, keptHighest uint64) []cutoffKeepOther {
-	var out []cutoffKeepOther
+// withoutAddedBy is removedOnRevert less the migration files grp's commits
+// add: what the reverts remove once grp is kept.
+func withoutAddedBy(grp failureGroup, addedByCommit map[string]map[string]bool, removedOnRevert map[string]bool) map[string]bool {
+	removed := maps.Clone(removedOnRevert)
 	for _, f := range grp.failures {
-		for _, changed := range changesByCommit[f.commit.sha] {
-			if !changed.deleted && changed.number >= highest && changed.number < keptHighest {
-				out = append(out, cutoffKeepOther{path: changed.path, item: grp.what, number: changed.number})
+		for path := range addedByCommit[f.commit.sha] {
+			delete(removed, path)
+		}
+	}
+	return removed
+}
+
+// revertedAtOrAbove lists, in group order, the migrations the groups' reverts
+// change (not restore) numbered at or above highest: no conflict while every
+// item is reverted.
+func revertedAtOrAbove(groups []failureGroup, changesByCommit map[string][]cutoffMigration, highest uint64) []cutoffKeepOther {
+	var out []cutoffKeepOther
+	for _, grp := range groups {
+		for _, f := range grp.failures {
+			for _, changed := range changesByCommit[f.commit.sha] {
+				if !changed.deleted && changed.number >= highest {
+					out = append(out, cutoffKeepOther{path: changed.path, item: grp.what, number: changed.number})
+				}
 			}
 		}
 	}
