@@ -345,15 +345,16 @@ func buildSection(ctx context.Context, client *jira.Client, p *config.ReleasePag
 // keeps its row, without a type, and a warning says why.
 func groupSubtasks(ctx context.Context, client *jira.Client, p *config.ReleasePage, issues []jira.Issue, warn func(string, ...any)) ([]jira.Issue, []jira.Issue) {
 	listed := make(map[string]bool, len(issues))
-	for _, issue := range issues {
-		listed[issue.Key] = true
+	for i := range issues {
+		listed[issues[i].Key] = true
 	}
 	parents := make(map[string]jira.Issue)
 	var grouped []jira.Issue
 	var technical []jira.Issue
-	for _, issue := range issues {
+	for i := range issues {
+		issue := &issues[i]
 		if !issue.Subtask || issue.Parent == "" {
-			grouped = append(grouped, issue)
+			grouped = append(grouped, *issue)
 			continue
 		}
 		if listed[issue.Parent] {
