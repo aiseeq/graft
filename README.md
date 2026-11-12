@@ -2186,7 +2186,11 @@ deploy:
   below the highest remaining number and that number's files differ or are
   missing after the reverts, cutoff identifies the commits whose changes
   touch that number and excludes all their affected migration paths from the
-  reverse patch. You can keep the migration, renumber it above the remaining
+  reverse patch. A path whose reverse patch does not apply on the candidate
+  stays in the release and is excluded from every planned revert. If its
+  number is above the highest remaining number, cutoff prints a `stays in the
+  release` line explaining that it runs on prod and how to keep it from
+  shipping. You can keep the migration, renumber it above the remaining
   numbers, or keep the whole task by skipping its item: its `git diff` lines
   and its `graft commit`. If excluding those paths leaves nothing in a
   commit's patch, cutoff says “nothing left to revert” and omits that commit

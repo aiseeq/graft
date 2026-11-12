@@ -478,8 +478,6 @@ type cutoff struct {
 	candidate string
 }
 
-// cutoffCandidate finds the window (the one holding, or the next), what the
-// windowed target runs (into r.prev) and the candidate.
 func (a *App) cutoffCandidate(ctx context.Context, r *deployRun) (cutoff, error) {
 	c := cutoff{held: r.target.Requires}
 	occ, held := deploy.Hold(r.target.Window, r.now)
@@ -537,8 +535,6 @@ func (a *App) cutoffCandidate(ctx context.Context, r *deployRun) (cutoff, error)
 	return c, nil
 }
 
-// printCutoff prints the commands that take the failing commits out of the
-// candidate on a release branch, deploy it and record it on the trunk.
 func (a *App) printCutoff(r *deployRun, c cutoff, failures []gateFailure, migrations cutoffMigrationPlan) {
 	migrationConflicts := migrations.conflicts
 	branch := "release/" + c.occ.Name()
@@ -559,13 +555,24 @@ func (a *App) printCutoff(r *deployRun, c cutoff, failures []gateFailure, migrat
 		if grp.hasMigrationConflict(migrationConflicts) {
 			fmt.Fprintln(a.Stdout, "  # A migration conflict below; keeping the whole task instead is weighed above.")
 		}
+		for _, f := range grp.failures {
+			for _, path := range migrations.staysByCommit[f.commit.sha] {
+				n, _ := migrationNumber(filepath.Base(path))
+				fmt.Fprintf(a.Stdout, "  # %s stays in the release: its revert does not apply on the candidate, so number %d runs on prod; if it must not ship, resolve the revert by hand and keep every number up to %d as in the candidate\n", path, n, migrations.highest)
+			}
+		}
 		var body []string
 		for _, f := range grp.failures {
 			fmt.Fprintf(a.Stdout, "  # %s\n", f.line())
 			conflicts := migrationConflicts[f.commit.sha]
 			includeCommit := true
 			if len(conflicts) == 0 {
-				fmt.Fprintf(a.Stdout, "  git diff %s^ %s -- .%s | git apply -R --3way --index\n", f.commit.sha, f.commit.sha, excludes(r.cfg))
+				var extra strings.Builder
+				extra.WriteString(excludes(r.cfg))
+				for _, p := range migrations.staysByCommit[f.commit.sha] {
+					extra.WriteString(" " + envs.Quote(":(exclude)"+p))
+				}
+				fmt.Fprintf(a.Stdout, "  git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ %s^ %s -- .%s | git apply -R --3way --index\n", f.commit.sha, f.commit.sha, extra.String())
 			} else {
 				includeCommit = printCutoffMigrationConflict(a.Stdout, f.commit.sha, conflicts, r.cfg)
 			}
@@ -588,10 +595,6 @@ func (a *App) printCutoff(r *deployRun, c cutoff, failures []gateFailure, migrat
 `, c.held, r.name, r.branch, branch, remote)
 }
 
-// printCutoffKeepOptions says, before any revert, that an item with a
-// migration conflict may be kept whole instead and what that does to the
-// other items' reverts: once one of them is applied, keeping the item means
-// undoing it.
 func printCutoffKeepOptions(w io.Writer, groups []failureGroup, migrations cutoffMigrationPlan) {
 	var lines []string
 	for _, grp := range groups {
@@ -632,6 +635,9 @@ func printCutoffMigrationConflict(w io.Writer, sha string, conflicts []cutoffMig
 		}
 	}
 	fmt.Fprintf(w, "  # Migration cutoff conflict: %s; highest remaining migration number %d.\n", strings.Join(names, ", "), conflicts[0].highest)
+	if conflicts[0].unapplied {
+		fmt.Fprintln(w, "  # its revert does not apply on the candidate (a later commit edited it)")
+	}
 	fmt.Fprintln(w, "  # The migrator applies only versions above the last applied version, so this migration will be skipped on the next release.")
 	if conflicts[0].empty {
 		fmt.Fprintln(w, "  # nothing left to revert in this commit; leave it out of the graft commit below")
@@ -643,7 +649,7 @@ func printCutoffMigrationConflict(w io.Writer, sha string, conflicts []cutoffMig
 	for _, p := range omitted {
 		ex.WriteString(" " + envs.Quote(":(exclude)"+p))
 	}
-	fmt.Fprintf(w, "  git diff %s^ %s -- .%s | git apply -R --3way --index\n", sha, sha, ex.String())
+	fmt.Fprintf(w, "  git diff --no-renames --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ %s^ %s -- .%s | git apply -R --3way --index\n", sha, sha, ex.String())
 	fmt.Fprintln(w, "  # Or revert and renumber it above the migrations that remain.")
 	return true
 }
@@ -653,6 +659,7 @@ type cutoffMigration struct {
 	number, highest uint64
 	excludes        []string
 	empty           bool
+	unapplied       bool
 }
 type cutoffKeepOther struct {
 	path, item      string
@@ -662,12 +669,14 @@ type cutoffMigrationPlan struct {
 	conflicts       map[string][]cutoffMigration
 	keep            map[string][]cutoffKeepOther
 	keepUnavailable map[string]string
+	staysByCommit   map[string][]string
+	highest         uint64
 	unavailable     string
 }
 type migrationTree map[uint64]map[string]string
 
 func cutoffMigrationConflicts(repo *gitx.Repo, cfg *config.Config, candidate string, failures []gateFailure) (cutoffMigrationPlan, error) {
-	plan := cutoffMigrationPlan{conflicts: map[string][]cutoffMigration{}, keep: map[string][]cutoffKeepOther{}, keepUnavailable: map[string]string{}}
+	plan := cutoffMigrationPlan{conflicts: map[string][]cutoffMigration{}, keep: map[string][]cutoffKeepOther{}, keepUnavailable: map[string]string{}, staysByCommit: map[string][]string{}}
 	if cfg.TestDB == nil || cfg.TestDB.Migrations == "" || len(failures) == 0 {
 		return plan, nil
 	}
@@ -675,21 +684,94 @@ func cutoffMigrationConflicts(repo *gitx.Repo, cfg *config.Config, candidate str
 	spec := migrationPathspec(dir)
 	groups := groupFailures(failures)
 	ordered := orderedCutoffFailures(groups)
-	target, err := cutoffTree(repo, candidate, spec, dir, nil)
+	target, _, err := cutoffTree(repo, candidate, spec, dir, nil, nil)
 	if err != nil {
 		plan.unavailable = err.Error()
 		return plan, nil
 	}
-	remaining, err := cutoffTree(repo, candidate, spec, dir, ordered)
-	if err != nil {
-		plan.unavailable = err.Error()
-		return plan, nil
+	paths := map[string]map[uint64][]string{}
+	for _, f := range ordered {
+		paths[f.commit.sha], err = cutoffTouched(repo, f.commit.sha, spec, dir)
+		if err != nil {
+			plan.unavailable = err.Error()
+			return plan, nil
+		}
 	}
-	lost := cutoffLosses(target, remaining)
-	paths, conflicts, err := cutoffCommitConflicts(repo, cfg, spec, dir, ordered, lost, cutoffHighest(remaining))
-	if err != nil {
-		plan.unavailable = err.Error()
-		return plan, nil
+	excluded := map[string]bool{}
+	unapplied := map[string]bool{}
+	var remaining migrationTree
+	var lost map[uint64]bool
+	for {
+		var failed []string
+		remaining, failed, err = cutoffTree(repo, candidate, spec, dir, ordered, excluded)
+		if err != nil {
+			plan.unavailable = err.Error()
+			return plan, nil
+		}
+		changed := false
+		for _, p := range failed {
+			unapplied[p] = true
+			if !excluded[p] {
+				excluded[p] = true
+				changed = true
+			}
+		}
+		lost = cutoffLosses(target, remaining)
+		for _, touched := range paths {
+			for n := range lost {
+				for _, p := range touched[n] {
+					if !excluded[p] {
+						excluded[p] = true
+						changed = true
+					}
+				}
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	highest := cutoffHighest(remaining)
+	plan.highest = highest
+	for _, f := range ordered {
+		for n, ps := range paths[f.commit.sha] {
+			for _, p := range ps {
+				if excluded[p] && n > highest {
+					plan.staysByCommit[f.commit.sha] = append(plan.staysByCommit[f.commit.sha], p)
+				}
+			}
+		}
+	}
+	conflicts := map[string][]cutoffMigration{}
+	for _, f := range ordered {
+		var nums []uint64
+		var omitted []string
+		for n, ps := range paths[f.commit.sha] {
+			for _, p := range ps {
+				if excluded[p] {
+					omitted = append(omitted, p)
+					if n <= highest {
+						nums = append(nums, n)
+					}
+				}
+			}
+		}
+		slices.Sort(nums)
+		nums = slices.Compact(nums)
+		sort.Strings(omitted)
+		omitted = slices.Compact(omitted)
+		empty, e := cutoffEmptyPatch(repo, f.commit.sha, omitted, cfg)
+		if e != nil {
+			plan.unavailable = e.Error()
+			return plan, nil
+		}
+		for _, n := range nums {
+			for _, p := range paths[f.commit.sha][n] {
+				if excluded[p] {
+					conflicts[f.commit.sha] = append(conflicts[f.commit.sha], cutoffMigration{path: p, number: n, highest: highest, excludes: omitted, empty: empty, unapplied: unapplied[p]})
+				}
+			}
+		}
 	}
 	plan.conflicts = conflicts
 	itemBySHA := map[string]string{}
@@ -698,65 +780,57 @@ func cutoffMigrationConflicts(repo *gitx.Repo, cfg *config.Config, candidate str
 			itemBySHA[f.commit.sha] = g.what
 		}
 	}
-	cutoffKeepPlans(repo, candidate, spec, dir, groups, ordered, target, lost, paths, itemBySHA, &plan)
+	cutoffKeepPlans(repo, candidate, spec, dir, groups, ordered, target, paths, itemBySHA, &plan)
 	return plan, nil
 }
 
-func cutoffCommitConflicts(repo *gitx.Repo, cfg *config.Config, spec, dir string, failures []gateFailure, lost map[uint64]bool, highest uint64) (map[string]map[uint64][]string, map[string][]cutoffMigration, error) {
-	paths := map[string]map[uint64][]string{}
-	conflicts := map[string][]cutoffMigration{}
-	for _, f := range failures {
-		touched, err := cutoffTouched(repo, f.commit.sha, spec, dir)
-		if err != nil {
-			return nil, nil, err
-		}
-		paths[f.commit.sha] = touched
-		conflicts[f.commit.sha], err = cutoffCommitConflict(repo, cfg, f.commit.sha, touched, lost, highest)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-	return paths, conflicts, nil
-}
-
-func cutoffCommitConflict(repo *gitx.Repo, cfg *config.Config, sha string, touched map[uint64][]string, lost map[uint64]bool, highest uint64) ([]cutoffMigration, error) {
-	var nums []uint64
-	var excluded []string
-	for n := range lost {
-		if len(touched[n]) > 0 {
-			nums = append(nums, n)
-			excluded = append(excluded, touched[n]...)
-		}
-	}
-	slices.Sort(nums)
-	sort.Strings(excluded)
-	empty, err := cutoffEmptyPatch(repo, sha, excluded, cfg)
-	if err != nil {
-		return nil, err
-	}
-	var conflicts []cutoffMigration
-	for _, n := range nums {
-		for _, path := range touched[n] {
-			conflicts = append(conflicts, cutoffMigration{path: path, number: n, highest: highest, excludes: excluded, empty: empty})
-		}
-	}
-	return conflicts, nil
-}
-
-func cutoffKeepPlans(repo *gitx.Repo, candidate, spec, dir string, groups []failureGroup, ordered []gateFailure, target migrationTree, lost map[uint64]bool, paths map[string]map[uint64][]string, itemBySHA map[string]string, plan *cutoffMigrationPlan) {
+func cutoffKeepPlans(repo *gitx.Repo, candidate, spec, dir string, groups []failureGroup, ordered []gateFailure, target migrationTree, paths map[string]map[uint64][]string, itemBySHA map[string]string, plan *cutoffMigrationPlan) {
 	for _, g := range groups {
 		if !g.hasMigrationConflict(plan.conflicts) {
 			continue
 		}
-		after, e := cutoffTree(repo, candidate, spec, dir, withoutCutoffGroup(ordered, g))
-		if e != nil {
-			plan.keepUnavailable[g.what] = e.Error()
+		keptFailures := withoutCutoffGroup(ordered, g)
+		excluded := map[string]bool{}
+		var after migrationTree
+		var newly map[uint64]bool
+		for {
+			var failed []string
+			var e error
+			after, failed, e = cutoffTree(repo, candidate, spec, dir, keptFailures, excluded)
+			if e != nil {
+				plan.keepUnavailable[g.what] = e.Error()
+				break
+			}
+			changed := false
+			for _, p := range failed {
+				if !excluded[p] {
+					excluded[p] = true
+					changed = true
+				}
+			}
+			newly = cutoffLosses(target, after)
+			if !changed {
+				break
+			}
+		}
+		if plan.keepUnavailable[g.what] != "" {
 			continue
 		}
-		newly := cutoffLosses(target, after)
+		keptNumbers := map[uint64]bool{}
+		for _, f := range g.failures {
+			for n := range paths[f.commit.sha] {
+				keptNumbers[n] = true
+			}
+		}
+		alreadyConflicted := map[uint64]bool{}
+		for _, cs := range plan.conflicts {
+			for _, c := range cs {
+				alreadyConflicted[c.number] = true
+			}
+		}
 		var ns []uint64
 		for n := range newly {
-			if !lost[n] {
+			if !alreadyConflicted[n] || keptNumbers[n] {
 				ns = append(ns, n)
 			}
 		}
@@ -802,36 +876,47 @@ func withoutCutoffGroup(fs []gateFailure, g failureGroup) []gateFailure {
 	}
 	return out
 }
-func cutoffTree(repo *gitx.Repo, base, spec, dir string, fs []gateFailure) (migrationTree, error) {
+
+func cutoffTree(repo *gitx.Repo, base, spec, dir string, fs []gateFailure, excluded map[string]bool) (migrationTree, []string, error) {
 	tmp, e := os.MkdirTemp("", "graft-cutoff-")
 	if e != nil {
-		return nil, e
+		return nil, nil, e
 	}
 	defer os.RemoveAll(tmp)
 	env := []string{"GIT_INDEX_FILE=" + filepath.Join(tmp, "index")}
 	if _, e = repo.GitEnv(env, "read-tree", base); e != nil {
-		return nil, e
+		return nil, nil, e
 	}
+	var failed []string
 	for _, f := range fs {
-		args := []string{"diff", f.commit.sha + "^", f.commit.sha}
-		if spec == "" {
-			args = append(args, "--", ".")
-		} else {
-			args = append(args, "--", spec)
-		}
-		d, x := repo.Git(args...)
+		touched, x := cutoffTouched(repo, f.commit.sha, spec, dir)
 		if x != nil {
-			return nil, x
+			return nil, nil, x
 		}
-		if d != "" {
-			if _, x = repo.GitInput(strings.NewReader(d), env, "apply", "-R", "--cached"); x != nil {
-				return nil, fmt.Errorf("reverse patch %s: %w", f.commit.sha, x)
+		var paths []string
+		for _, ps := range touched {
+			paths = append(paths, ps...)
+		}
+		sort.Strings(paths)
+		for _, p := range paths {
+			if excluded[p] {
+				continue
+			}
+			args := []string{"diff", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", f.commit.sha + "^", f.commit.sha, "--", ":(top,literal)" + p}
+			d, x := repo.Git(args...)
+			if x != nil {
+				return nil, nil, x
+			}
+			if d != "" {
+				if _, x = repo.GitInput(strings.NewReader(d), env, "apply", "-R", "--cached"); x != nil {
+					failed = append(failed, p)
+				}
 			}
 		}
 	}
 	out, e := repo.GitEnv(env, "ls-files", "-s", "-z")
 	if e != nil {
-		return nil, e
+		return nil, nil, e
 	}
 	tree := migrationTree{}
 	for entry := range strings.SplitSeq(out, "\x00") {
@@ -852,16 +937,16 @@ func cutoffTree(repo *gitx.Repo, base, spec, dir string, fs []gateFailure) (migr
 		}
 		tree[n][path] = fields[1]
 	}
-	return tree, nil
+	return tree, slices.Compact(failed), nil
 }
 func cutoffLosses(target, remaining migrationTree) map[uint64]bool {
 	loss := map[uint64]bool{}
 	if len(remaining) == 0 {
 		return loss
 	}
-	max := cutoffHighest(remaining)
+	highest := cutoffHighest(remaining)
 	for n, files := range target {
-		if n <= max && !sameCutoffBlobs(files, remaining[n]) {
+		if n <= highest && !sameCutoffBlobs(files, remaining[n]) {
 			loss[n] = true
 		}
 	}
@@ -896,7 +981,7 @@ func cutoffHighest(t migrationTree) uint64 {
 	return n
 }
 func cutoffTouched(repo *gitx.Repo, sha, spec, dir string) (map[uint64][]string, error) {
-	args := []string{"diff", "--name-only", "-z", "--no-renames", sha + "^", sha}
+	args := []string{"diff", "--name-only", "-z", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv", sha + "^", sha}
 	if spec == "" {
 		args = append(args, "--", ".")
 	} else {
