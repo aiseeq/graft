@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -459,7 +462,11 @@ func (a *App) DeployCutoff(ctx context.Context, target string) error {
 	if err != nil {
 		return err
 	}
-	a.printCutoff(r, c, out.failures)
+	migrationConflicts, err := cutoffMigrationConflicts(r.repo, r.cfg, c.candidate, out.failures)
+	if err != nil {
+		return err
+	}
+	a.printCutoff(r, c, out.failures, migrationConflicts)
 	return nil
 }
 
@@ -531,34 +538,243 @@ func (a *App) cutoffCandidate(ctx context.Context, r *deployRun) (cutoff, error)
 
 // printCutoff prints the commands that take the failing commits out of the
 // candidate on a release branch, deploy it and record it on the trunk.
-func (a *App) printCutoff(r *deployRun, c cutoff, failures []gateFailure) {
+func (a *App) printCutoff(r *deployRun, c cutoff, failures []gateFailure, migrationConflicts map[string][]cutoffMigration) {
 	branch := "release/" + c.occ.Name()
 	remote := r.cfg.Deploy.Remote
-	fmt.Fprintf(a.Stdout, "\nThe release goes out from %s, cut from the candidate:\n  git fetch %s\n  git switch -c %s %s\n", branch, remote, branch, c.candidate)
+	fmt.Fprintf(a.Stdout, "\n# The release goes out from %s, cut from the candidate:\n  git fetch %s\n  git switch -c %s %s\n", branch, remote, branch, c.candidate)
 	if len(failures) == 0 {
-		fmt.Fprintf(a.Stdout, "  git push -u %s %s\nEvery commit of the candidate passes. In the window:\n  graft deploy %s\n", remote, branch, r.name)
+		fmt.Fprintf(a.Stdout, "  git push -u %s %s\n# Every commit of the candidate passes. In the window:\n  graft deploy %s\n", remote, branch, r.name)
 		return
 	}
-	fmt.Fprintf(a.Stdout, "These commits are not checked: their reverts go onto %s, one commit per item (a conflict: resolve it, git add, go on):\n", branch)
+	fmt.Fprintf(a.Stdout, "# These commits are not checked: their reverts go onto %s, one commit per item (a conflict: resolve it, git add, go on):\n", branch)
 	for _, grp := range groupFailures(failures) {
 		fmt.Fprintf(a.Stdout, "\n  # %s\n", grp.title)
+		if slices.ContainsFunc(grp.failures, func(f gateFailure) bool { return len(migrationConflicts[f.commit.sha]) > 0 }) {
+			// Said before the item's commands: once one is applied, keeping
+			// the task means undoing it.
+			fmt.Fprintln(a.Stdout, "  # A migration conflict below. To keep the whole task instead, skip this item: its git diff lines and its graft commit.")
+		}
 		var body []string
 		for _, f := range grp.failures {
 			fmt.Fprintf(a.Stdout, "  # %s\n", f.line())
-			fmt.Fprintf(a.Stdout, "  git diff %s^ %s -- .%s | git apply -R --3way --index\n", f.commit.sha, f.commit.sha, excludes(r.cfg))
+			conflicts := migrationConflicts[f.commit.sha]
+			if len(conflicts) == 0 {
+				fmt.Fprintf(a.Stdout, "  git diff %s^ %s -- .%s | git apply -R --3way --index\n", f.commit.sha, f.commit.sha, excludes(r.cfg))
+			} else {
+				printCutoffMigrationConflict(a.Stdout, f.commit.sha, conflicts, r.cfg)
+			}
 			body = append(body, "-m "+envs.Quote("This reverts commit "+f.commit.sha+"."))
 		}
 		fmt.Fprintf(a.Stdout, "  graft commit -m %s %s\n", envs.Quote("revert: "+grp.what+" not checked by the "+c.occ.Name()+" cutoff"), strings.Join(body, " "))
 	}
 	fmt.Fprintf(a.Stdout, `
-Then the candidate goes to %[1]s again (the hold takes reverts) and out in the window:
+# Then the candidate goes to %[1]s again (the hold takes reverts) and out in the window:
   graft deploy %[1]s
   graft deploy %[2]s
-After the release, %[3]s records it without taking the reverts: it keeps the work, and the next release checks the withheld commits again:
+# After the release, %[3]s records it without taking the reverts: it keeps the work, and the next release checks the withheld commits again:
   git switch %[3]s && git pull --ff-only %[5]s %[3]s
   git merge -s ours --no-edit %[4]s
   git push %[5]s %[3]s
 `, c.held, r.name, r.branch, branch, remote)
+}
+
+func printCutoffMigrationConflict(w io.Writer, sha string, conflicts []cutoffMigration, cfg *config.Config) {
+	var migrations []string
+	var excluded strings.Builder
+	excluded.WriteString(excludes(cfg))
+	for _, conflict := range conflicts {
+		migrations = append(migrations, fmt.Sprintf("%s (number %d)", conflict.path, conflict.number))
+		excluded.WriteString(" " + envs.Quote(":(exclude)"+conflict.path))
+		if conflict.excludePath != "" {
+			excluded.WriteString(" " + envs.Quote(":(exclude)"+conflict.excludePath))
+		}
+	}
+	highest := conflicts[0].highest
+	fmt.Fprintf(w, "  # Migration cutoff conflict: %s; highest remaining migration number %d.\n", strings.Join(migrations, ", "), highest)
+	fmt.Fprintln(w, "  # The migrator applies only versions above the last applied version, so this migration will be skipped on the next release.")
+	fmt.Fprintln(w, "  # Keep the migration with this ready-to-run revert, which excludes the listed migration file(s):")
+	fmt.Fprintf(w, "  git diff %s^ %s -- .%s | git apply -R --3way --index\n", sha, sha, excluded.String())
+	fmt.Fprintln(w, "  # Or revert and renumber it above the migrations that remain.")
+}
+
+type cutoffMigration struct {
+	path, excludePath string
+	number, highest   uint64
+	deleted           bool
+}
+
+// cutoffMigrationConflicts finds reverted migrations whose number is below
+// the highest migration that remains in the candidate after the planned
+// reverts remove migrations introduced by those commits.
+func cutoffMigrationConflicts(repo *gitx.Repo, cfg *config.Config, candidate string, failures []gateFailure) (map[string][]cutoffMigration, error) {
+	if cfg.TestDB == nil || cfg.TestDB.Migrations == "" || len(failures) == 0 {
+		return nil, nil
+	}
+	migrationsDir := filepath.ToSlash(filepath.Clean(cfg.TestDB.Migrations))
+	pathspec := migrationPathspec(migrationsDir)
+	candidateFiles, err := candidateMigrationFiles(repo, candidate, pathspec, migrationsDir)
+	if err != nil {
+		return nil, err
+	}
+	changesByCommit, removedOnRevert, err := cutoffMigrationChanges(repo, pathspec, migrationsDir, failures)
+	if err != nil {
+		return nil, err
+	}
+	highest := highestRemainingMigration(candidateFiles, removedOnRevert)
+	if highest == 0 {
+		return nil, nil
+	}
+	conflicts := make(map[string][]cutoffMigration)
+	for sha, changes := range changesByCommit {
+		for _, changed := range changes {
+			if !changed.deleted && changed.number < highest {
+				changed.highest = highest
+				conflicts[sha] = append(conflicts[sha], changed)
+			}
+		}
+	}
+	return conflicts, nil
+}
+
+func migrationPathspec(migrationsDir string) string {
+	if migrationsDir == "." {
+		return ""
+	}
+	return ":(top,literal)" + migrationsDir
+}
+
+func candidateMigrationFiles(repo *gitx.Repo, candidate, pathspec, migrationsDir string) (map[string]bool, error) {
+	args := []string{"ls-tree", "-r", "--name-only", "-z", candidate}
+	if pathspec != "" {
+		args = append(args, "--", pathspec)
+	}
+	tree, err := repo.Git(args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing candidate migrations: %w", err)
+	}
+	files := map[string]bool{}
+	for path := range strings.SplitSeq(tree, "\x00") {
+		if path != "" && isTopLevelMigration(path, migrationsDir) {
+			files[path] = true
+		}
+	}
+	return files, nil
+}
+
+func cutoffMigrationChanges(repo *gitx.Repo, pathspec, migrationsDir string, failures []gateFailure) (map[string][]cutoffMigration, map[string]bool, error) {
+	changesByCommit := make(map[string][]cutoffMigration, len(failures))
+	added := map[string]bool{}
+	for _, f := range failures {
+		args := []string{"diff", "--name-status", "-z", "--no-renames", f.commit.sha + "^", f.commit.sha}
+		if pathspec != "" {
+			args = append(args, "--", pathspec)
+		}
+		out, err := repo.Git(args...)
+		if err != nil {
+			return nil, nil, fmt.Errorf("listing migrations changed by %s: %w", f.commit.sha, err)
+		}
+		changes, add := cutoffMigrationChangesForCommit(out, migrationsDir)
+		changesByCommit[f.commit.sha] = changes
+		for path := range add {
+			added[path] = true
+		}
+	}
+	return changesByCommit, added, nil
+}
+
+type migrationFileChange struct {
+	status byte
+	path   string
+	number uint64
+}
+
+func cutoffMigrationChangesForCommit(out, migrationsDir string) ([]cutoffMigration, map[string]bool) {
+	fields := strings.Split(out, "\x00")
+	var changes []migrationFileChange
+	for i := 0; i+1 < len(fields); {
+		status, path := fields[i], fields[i+1]
+		i += 2
+		if status == "" || path == "" || (status[0] != 'A' && status[0] != 'M' && status[0] != 'D') || !isTopLevelMigration(path, migrationsDir) {
+			continue
+		}
+		number, ok := migrationNumber(filepath.Base(filepath.FromSlash(path)))
+		if ok {
+			changes = append(changes, migrationFileChange{status: status[0], path: path, number: number})
+		}
+	}
+	var migrations []cutoffMigration
+	added := map[string]bool{}
+	pairedAdds := map[int]bool{}
+	pairedDeletes := map[int]bool{}
+	addedByNumber := map[uint64][]int{}
+	for i, change := range changes {
+		if change.status == 'A' {
+			addedByNumber[change.number] = append(addedByNumber[change.number], i)
+		}
+	}
+	nextAdded := map[uint64]int{}
+	for i, change := range changes {
+		if change.status != 'D' {
+			continue
+		}
+		indices := addedByNumber[change.number]
+		next := nextAdded[change.number]
+		if next >= len(indices) {
+			continue
+		}
+		j := indices[next]
+		nextAdded[change.number] = next + 1
+		migrations = append(migrations, cutoffMigration{path: change.path, excludePath: changes[j].path, number: change.number})
+		pairedAdds[j] = true
+		pairedDeletes[i] = true
+	}
+	for i, change := range changes {
+		switch change.status {
+		case 'A':
+			added[change.path] = true
+			if !pairedAdds[i] {
+				migrations = append(migrations, cutoffMigration{path: change.path, number: change.number})
+			}
+		case 'M':
+			migrations = append(migrations, cutoffMigration{path: change.path, number: change.number})
+		case 'D':
+			if !pairedDeletes[i] {
+				migrations = append(migrations, cutoffMigration{path: change.path, number: change.number, deleted: true})
+			}
+		}
+	}
+	return migrations, added
+}
+
+func isTopLevelMigration(path, migrationsDir string) bool {
+	return filepath.ToSlash(filepath.Dir(filepath.FromSlash(path))) == migrationsDir
+}
+
+func highestRemainingMigration(candidateFiles, removedOnRevert map[string]bool) uint64 {
+	var highest uint64
+	for path := range candidateFiles {
+		if removedOnRevert[path] {
+			continue
+		}
+		number, ok := migrationNumber(filepath.Base(filepath.FromSlash(path)))
+		if ok && number > highest {
+			highest = number
+		}
+	}
+	return highest
+}
+
+// migrationNumber reads the leading decimal digits of a migration filename.
+func migrationNumber(name string) (uint64, bool) {
+	i := 0
+	for i < len(name) && name[i] >= '0' && name[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(name[:i], 10, 64)
+	return n, err == nil
 }
 
 // failureGroup is the failing commits of one item, or of no item.
