@@ -37,7 +37,7 @@ func liveJob(t *testing.T, id string) int {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	t.Cleanup(func() { stopTestChild(cmd); _ = cmd.Wait() })
 	return cmd.Process.Pid
 }
 

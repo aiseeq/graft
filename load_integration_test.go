@@ -335,7 +335,7 @@ func TestDeployPrioritySkipsTheQueue(t *testing.T) {
 	if err := queued.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = queued.Process.Kill(); _ = queued.Wait() })
+	t.Cleanup(func() { stopTestChild(queued); _ = queued.Wait() })
 	waitFor(t, func() bool {
 		notes, _ := filepath.Glob(filepath.Join(cache, "graft", "load.lock.*.lholder"))
 		return len(notes) > 0

@@ -11,8 +11,11 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	akitproc "github.com/aiseeq/akit/proc"
 
 	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/lock"
@@ -675,8 +678,8 @@ func TestUserRemoteHeavyRunsATaskInItsDirectoryWithRoot(t *testing.T) {
 // asks remote_heavy's run to stop (SIGTERM), so it can take its work off the
 // host, rather than killing it.
 func TestUserRemoteHeavyStopsACancelledStepWithSIGTERM(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh, and Windows has no SIGTERM")
+	if runtime.GOOS != "linux" {
+		t.Skip("uses Linux child signaling and a shell run script")
 	}
 	state := t.TempDir()
 	writeFile(t, filepath.Join(state, "run.sh"), `trap 'echo term > "`+filepath.Join(state, "term")+`"; kill $pid; exit 143' TERM`+"\n"+
@@ -689,7 +692,7 @@ func TestUserRemoteHeavyStopsACancelledStepWithSIGTERM(t *testing.T) {
 			t.Fatalf("run did not start:\n%s", out.String())
 		}
 	}
-	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+	if err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
 	_ = cmd.Wait()
@@ -865,7 +868,7 @@ func TestExecBrokenRemotePathRunsHere(t *testing.T) {
 	cmd, out := f.start(f.work, "exec", "--heavy", "--", "go", "vet", "./...")
 	for deadline := time.Now().Add(10 * time.Second); !strings.Contains(out.String(), "graft: exec: pc path broken: "); time.Sleep(50 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
+			stopTestChild(cmd)
 			t.Fatalf("no broken path line:\n%s", out.String())
 		}
 	}

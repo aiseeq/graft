@@ -34,7 +34,7 @@ func startNestedGate(t *testing.T, f *fixture, state, nested string) (*exec.Cmd,
 			break
 		}
 		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
+			stopTestChild(cmd)
 			_ = cmd.Wait()
 			t.Fatalf("outer heavy command did not start its child:\n%s", out.String())
 		}
@@ -63,7 +63,7 @@ func waitNestedCommand(cmd *exec.Cmd) error {
 	case err := <-done:
 		return err
 	case <-time.After(20 * time.Second):
-		_ = cmd.Process.Kill()
+		stopTestChild(cmd)
 		<-done
 		return os.ErrDeadlineExceeded
 	}

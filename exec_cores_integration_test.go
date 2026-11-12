@@ -33,7 +33,7 @@ func TestExecCoresReservesGivenCores(t *testing.T) {
 	cmd, out := f.start(f.work, "exec", "--heavy", "--cores", "1.5", "--", helperBin, "log", logPath, "5000")
 	t.Cleanup(func() {
 		if cmd.ProcessState == nil {
-			_ = cmd.Process.Kill()
+			stopTestChild(cmd)
 			_ = cmd.Wait()
 		}
 	})
@@ -57,7 +57,7 @@ func TestExecCoresReservesGivenCores(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if reserved != 1.5 {
-		_ = cmd.Process.Kill()
+		stopTestChild(cmd)
 		_ = cmd.Wait()
 		t.Fatalf("live reserve cores = %v, want 1.5; log: %q; output:\n%s", reserved, logPath, out.String())
 	}
