@@ -108,6 +108,8 @@ func TestUserName(t *testing.T) {
 			http.Error(w, "unexpected", http.StatusNotFound)
 		case id == "a:1":
 			_ = json.NewEncoder(w).Encode(map[string]string{"accountId": id, "displayName": "Ann Example"})
+		case id == "blank":
+			_ = json.NewEncoder(w).Encode(map[string]string{"accountId": id, "displayName": "   "})
 		case id == "other":
 			_ = json.NewEncoder(w).Encode(map[string]string{"accountId": "a:1", "displayName": "Ann Example"})
 		default:
@@ -119,7 +121,7 @@ func TestUserName(t *testing.T) {
 	if got, err := c.UserName(context.Background(), "a:1"); err != nil || got != "Ann Example" {
 		t.Errorf("UserName = %q, %v", got, err)
 	}
-	for _, id := range []string{"other", "missing"} {
+	for _, id := range []string{"other", "missing", "blank"} {
 		if got, err := c.UserName(context.Background(), id); err == nil {
 			t.Errorf("UserName(%s) = %q without an error", id, got)
 		}

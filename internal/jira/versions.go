@@ -95,7 +95,7 @@ func (c *Client) UserName(ctx context.Context, accountID string) (string, error)
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return "", fmt.Errorf("user %s: unexpected JSON: %w", accountID, err)
 	}
-	if raw.AccountID != accountID || raw.DisplayName == "" {
+	if raw.AccountID != accountID || strings.TrimSpace(raw.DisplayName) == "" {
 		return "", fmt.Errorf("user %s: the answer names %q as %q", accountID, raw.AccountID, raw.DisplayName)
 	}
 	return raw.DisplayName, nil
