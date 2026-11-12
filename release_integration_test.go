@@ -1776,6 +1776,36 @@ func TestReleaseCutoffKeepMakesOtherRevertFail(t *testing.T) {
 	rv2Check(t, d, out, "migrations", "PROJ-1")
 }
 
+// TestReleaseCutoffKeepRevertFailuresAreOrdered: the paths a kept item makes
+// another revert fail on are listed in commit and migration-number order, the
+// same on every run, not in map order.
+func TestReleaseCutoffKeepRevertFailuresAreOrdered(t *testing.T) {
+	d := rv2Repo(t, "migrations")
+	cutoffMigrationCommits(d, map[int]bool{}, 1, 2, 3)
+	rv2Commit(d, "feat: PROJ-9 add migrations", map[string]string{
+		"migrations/000006_z.up.sql": "z1\n",
+		"migrations/000004_a.up.sql": "a1\n",
+		"app9.txt":                   "1\n",
+	})
+	rv2Commit(d, "feat: PROJ-1 edit migrations", map[string]string{
+		"migrations/000002_step.up.sql": "edited\n",
+		"migrations/000006_z.up.sql":    "z2\n",
+		"migrations/000004_a.up.sql":    "a2\n",
+		"app1.txt":                      "1\n",
+	})
+	out := rv2Plan(t, d)
+	lineStart := strings.Index(out, "#   PROJ-1: kept")
+	if lineStart < 0 {
+		t.Fatalf("missing keep option:\n%s", out)
+	}
+	line := out[lineStart : lineStart+strings.IndexByte(out[lineStart:], '\n')]
+	first := strings.Index(line, "migrations/000004_a.up.sql")
+	second := strings.Index(line, "migrations/000006_z.up.sql")
+	if first < 0 || second < 0 || first >= second {
+		t.Fatalf("keep revert failures are not in commit and migration order: %s", line)
+	}
+}
+
 func TestReleaseCutoffKeepNamesOtherPathAtSameNumber(t *testing.T) {
 	d := rv2Repo(t, "migrations")
 	cutoffMigrationCommits(d, map[int]bool{}, 1, 2, 4)
