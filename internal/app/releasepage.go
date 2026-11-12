@@ -303,14 +303,31 @@ func buildSection(ctx context.Context, client *jira.Client, p *config.ReleasePag
 	if err != nil {
 		return "", err
 	}
+	// Subtasks are grouped before fixes are told from changes: a subtask of a
+	// fix type folds into its parent too, and the parent's row is a change.
+	rows := items
+	var technical []jira.Issue
+	if p.Subtasks == "parent" {
+		rows, technical, err = groupSubtasks(ctx, client, p, items)
+		if err != nil {
+			return "", err
+		}
+		var technicalMoved []jira.Issue
+		waiting, technicalMoved, err = groupSubtasks(ctx, client, p, waiting)
+		if err != nil {
+			return "", err
+		}
+		waiting = append(waiting, technicalMoved...)
+	}
 	var changes, fixes []jira.Issue
-	for k := range items {
-		if slices.Contains(p.FixTypes, items[k].Type) {
-			fixes = append(fixes, items[k])
+	for k := range rows {
+		if slices.Contains(p.FixTypes, rows[k].Type) {
+			fixes = append(fixes, rows[k])
 		} else {
-			changes = append(changes, items[k])
+			changes = append(changes, rows[k])
 		}
 	}
+	changes = append(changes, technical...)
 	var b strings.Builder
 	b.WriteString(buildHeading(p, r))
 	for _, part := range []struct {
@@ -327,6 +344,38 @@ func buildSection(ctx context.Context, client *jira.Client, p *config.ReleasePag
 		b.WriteString("<p>" + html.EscapeString(p.Label("none")) + "</p>")
 	}
 	return b.String(), nil
+}
+
+// groupSubtasks hides subtasks and inserts one technical row for each parent
+// that is not already listed in this section.
+func groupSubtasks(ctx context.Context, client *jira.Client, p *config.ReleasePage, issues []jira.Issue) ([]jira.Issue, []jira.Issue, error) {
+	listed := make(map[string]bool, len(issues))
+	for _, issue := range issues {
+		listed[issue.Key] = true
+	}
+	parents := make(map[string]jira.Issue)
+	var grouped []jira.Issue
+	var technical []jira.Issue
+	for _, issue := range issues {
+		if !issue.Subtask || issue.Parent == "" {
+			grouped = append(grouped, issue)
+			continue
+		}
+		if listed[issue.Parent] {
+			continue
+		}
+		if _, seen := parents[issue.Parent]; seen {
+			continue
+		}
+		parent, err := client.Issue(ctx, issue.Parent)
+		if err != nil {
+			return nil, nil, err
+		}
+		parent.Summary = p.Label("technical")
+		parents[issue.Parent] = parent
+		technical = append(technical, parent)
+	}
+	return grouped, technical, nil
 }
 
 func issueTable(client *jira.Client, p *config.ReleasePage, issues []jira.Issue) string {

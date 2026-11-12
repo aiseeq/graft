@@ -1097,6 +1097,56 @@ func TestReleasePageApprovedVersions(t *testing.T) {
 	}
 }
 
+func TestReleasePageGroupsTechnicalSubtasks(t *testing.T) {
+	for _, parentIsListed := range []bool{false, true} {
+		name := "parent absent"
+		if parentIsListed {
+			name = "parent listed"
+		}
+		t.Run(name, func(t *testing.T) {
+			d := newDeployFixture(t, func(state string, q func(string) string) string {
+				cfg := deployConfig(state, q)
+				return strings.Replace(cfg, `approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}`,
+					`approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}
+      release_page: {parent: "500", subtasks: parent, fix_types: [Bug], labels: {technical: "Internal work"}}`, 1)
+			})
+			versionItems := map[string][]string{"PROJ-20": {"10010"}, "PROJ-11": {"10010"}, "PROJ-12": {"10010"}, "PROJ-13": {"10010"}}
+			if parentIsListed {
+				versionItems["PROJ-10"] = []string{"10010"}
+			}
+			d.jira.setVersions(productVersions(), versionItems)
+			d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "APPROVED"}})
+			d.jira.mu.Lock()
+			d.jira.parents = map[string]string{"PROJ-11": "PROJ-10", "PROJ-12": "PROJ-10", "PROJ-13": "PROJ-10"}
+			d.jira.types = map[string]string{"PROJ-10": "Task", "PROJ-11": "Sub-task", "PROJ-12": "Sub-task", "PROJ-13": "Bug"} // a subtask of a fix type folds into its parent too
+			d.jira.mu.Unlock()
+			if out, code := d.graft("", "deploy", "--unapproved", "live"); code != 1 || !strings.Contains(out, "no approved version names the release") {
+				t.Fatalf("baseline deploy: exit %d\n%s", code, out)
+			}
+			for _, key := range []string{"PROJ-20", "PROJ-11", "PROJ-12", "PROJ-13"} {
+				d.write(key+".txt", key+" change\n")
+				d.mustFixtureCommit("feat: " + key + " change")
+			}
+			if parentIsListed {
+				d.write("PROJ-10.txt", "parent work\n")
+				d.mustFixtureCommit("feat: PROJ-10 parent work")
+			}
+			d.mustGraft("deploy", "live")
+			body := d.jira.page("Product v1.2.10: release notes")
+			if !strings.Contains(body, `>PROJ-20</a>`) || strings.Contains(body, `>PROJ-11</a>`) || strings.Contains(body, `>PROJ-12</a>`) || strings.Contains(body, `>PROJ-13</a>`) {
+				t.Errorf("product and subtask rows:\n%s", body)
+			}
+			if parentIsListed {
+				if strings.Count(body, `>PROJ-10</a>`) != 1 || strings.Contains(body, "Internal work") {
+					t.Errorf("listed parent should have one ordinary row:\n%s", body)
+				}
+			} else if strings.Count(body, `>PROJ-10</a>`) != 1 || !strings.Contains(body, "Internal work") {
+				t.Errorf("unlisted parent should have one technical row:\n%s", body)
+			}
+		})
+	}
+}
+
 // TestReleaseNameWithoutVersions: release_version with enabled false names
 // the release by its window for the release page and the notes, and leaves
 // the Jira versions alone: no permission is needed.

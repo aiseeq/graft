@@ -101,6 +101,9 @@ type ReleasePage struct {
 	Title string `yaml:"title"`
 	// FixTypes are the issue types listed as fixes; the rest are changes.
 	FixTypes []string `yaml:"fix_types"`
+	// Subtasks controls whether subtasks are listed individually or grouped
+	// under their parent.
+	Subtasks string `yaml:"subtasks"`
 	// Labels are the page's words, by PageLabels key.
 	Labels map[string]string `yaml:"labels"`
 }
@@ -120,6 +123,7 @@ var PageLabels = map[string]string{
 	"issue":          "Issue",
 	"summary":        "Summary",
 	"type":           "Type",
+	"technical":      "Technical changes",
 }
 
 // Label is the page's word for the key.
@@ -277,6 +281,12 @@ func (c *Config) validateReleasePage(where string, t *DeployTarget) error {
 		return nil
 	}
 	where += ".release_page"
+	if p.Subtasks == "" {
+		p.Subtasks = "list"
+	}
+	if p.Subtasks != "list" && p.Subtasks != "parent" {
+		return fmt.Errorf("%s.subtasks: %q must be one of list, parent", where, p.Subtasks)
+	}
 	switch {
 	case !pageIDRe.MatchString(p.Parent):
 		return fmt.Errorf("%s.parent: required, the numeric id of the page release pages go under", where)

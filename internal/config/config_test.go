@@ -646,7 +646,7 @@ deploy:
 		t.Fatalf("base must parse: %v", err)
 	}
 	p := cfg.Deploy.Targets["prod"].ReleasePage
-	if p.Title != "{release}: release notes" || !slices.Equal(p.FixTypes, []string{"Bug"}) || p.Label("fixes") != "Fixed" || p.Label("changes") != "Changes" {
+	if p.Title != "{release}: release notes" || p.Subtasks != "list" || !slices.Equal(p.FixTypes, []string{"Bug"}) || p.Label("fixes") != "Fixed" || p.Label("changes") != "Changes" || p.Label("technical") != "Technical changes" {
 		t.Errorf("release page = %+v", p)
 	}
 	for name, yaml := range map[string]string{
@@ -655,9 +655,12 @@ deploy:
 		"no release":    strings.Replace(base, `approved_release: {prefix: "Product v"}`, `approved_release: {statuses: [Done]}`, 1),
 		"fixed title":   strings.Replace(base, `parent: "500"`, `parent: "500", title: "Release notes"`, 1),
 		"unknown label": strings.Replace(base, "fixes: Fixed", "bugs: Fixed", 1),
+		"bad subtasks":  strings.Replace(base, `parent: "500", `, `parent: "500", subtasks: bogus, `, 1),
 	} {
 		if _, err := Parse([]byte(yaml)); err == nil {
 			t.Errorf("%s: want an error", name)
+		} else if name == "bad subtasks" && (!strings.Contains(err.Error(), "list, parent") || !strings.Contains(err.Error(), "subtasks")) {
+			t.Errorf("bad subtasks error = %v", err)
 		}
 	}
 }

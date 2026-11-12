@@ -2398,7 +2398,8 @@ deploy:
         parent: "123456"                 # the id of the page release pages go under
         title: "{release}: release notes" # the default; {release} is required
         fix_types: [Bug]                  # the default: these are fixes, the rest changes
-        labels: {changes: Changes, fixes: Fixes, moved: Moved to the next release}
+        subtasks: parent                  # list (default) or group under one parent row
+        labels: {changes: Changes, fixes: Fixes, moved: Moved to the next release, technical: Technical changes}
 ```
 
 - After a release graft publishes a Confluence page of what went out, with
@@ -2412,6 +2413,8 @@ deploy:
   the items the release took out (the ones `approved_release` passed, or a
   hotfix's labelled items) by issue type, with links, summaries and types,
   and the items of withheld commits, which wait for the next release.
+- `subtasks: parent` groups technical subtasks under one parent row; the
+  `labels.technical` text (default `Technical changes`) is its summary.
 - A title is unique in a space: a second release with the same name, such as
   a second deploy in one window, adds its build section to the page; a
   build the page lists already is left alone.
