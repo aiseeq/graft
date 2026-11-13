@@ -274,20 +274,11 @@ func (r *reaper) endOrphans(sigs <-chan os.Signal) error {
 	if err != nil || len(left) == 0 {
 		return err
 	}
-	if r.hurried {
+	signalAll(left, unix.SIGTERM)
+	left, err = r.settle(orphanGrace, sigs)
+	if err == nil && len(left) > 0 {
 		signalAll(left, unix.SIGKILL)
-		left, err = r.settle(orphanKill, sigs)
-	} else {
-		bulk := signalAll(left, unix.SIGTERM)
-		wait := orphanGrace
-		if bulk {
-			wait = orphanKill
-		}
-		left, err = r.settle(wait, sigs)
-		if err == nil && len(left) > 0 && !bulk {
-			signalAll(left, unix.SIGKILL)
-			left, err = r.settle(orphanKill, sigs)
-		}
+		left, err = r.settleAfterSignal(orphanKill, sigs)
 	}
 	if err != nil || len(left) == 0 {
 		return err
@@ -298,6 +289,14 @@ func (r *reaper) endOrphans(sigs <-chan os.Signal) error {
 // settle reaps for up to d, until no orphan is left or a signal other than
 // SIGCHLD hurries the reaper, and returns those left.
 func (r *reaper) settle(d time.Duration, sigs <-chan os.Signal) ([]int, error) {
+	return r.settleUntil(d, sigs, true)
+}
+
+func (r *reaper) settleAfterSignal(d time.Duration, sigs <-chan os.Signal) ([]int, error) {
+	return r.settleUntil(d, sigs, false)
+}
+
+func (r *reaper) settleUntil(d time.Duration, sigs <-chan os.Signal, stopOnHurry bool) ([]int, error) {
 	deadline := time.Now().Add(d)
 	for {
 		if err := r.reapAll(); err != nil {
@@ -309,7 +308,7 @@ func (r *reaper) settle(d time.Duration, sigs <-chan os.Signal) ([]int, error) {
 			return nil, nil
 		}
 		left, err := orphans()
-		if err != nil || len(left) == 0 || r.hurried || !time.Now().Before(deadline) {
+		if err != nil || len(left) == 0 || stopOnHurry && r.hurried || !time.Now().Before(deadline) {
 			return left, err
 		}
 		select {
@@ -324,35 +323,9 @@ func signalAll(pids []int, sig unix.Signal) bool {
 	if len(pids) == 0 {
 		return false
 	}
-	all, err := descendants(os.Getpid())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "graft: reaper: listing descendants: %v\n", err)
-		return false
-	}
-	wanted := make(map[int]struct{}, len(pids))
-	for _, pid := range pids {
-		wanted[pid] = struct{}{}
-	}
-	if len(wanted) == len(all) {
-		for _, pid := range all {
-			if _, ok := wanted[pid]; !ok {
-				return signalSelected(pids, sig)
-			}
-		}
-		grace := time.Duration(0)
-		if sig == unix.SIGTERM {
-			grace = orphanGrace
-		}
-		_, err := akitproc.StopDescendants(grace, sig)
-		if err != nil {
-			if errors.Is(err, akitproc.ErrPidfdUnavailable) {
-				fmt.Fprintf(os.Stderr, "graft: reaper: descendants %v were not stopped because pidfd_open is unavailable\n", pids)
-			} else {
-				fmt.Fprintf(os.Stderr, "graft: reaper: stopping descendants %v: %v\n", pids, err)
-			}
-		}
-		return true
-	}
+
+	// Signal only the pids selected by the initial session comparison. A
+	// descendant that leaves the session during grace must remain untouched.
 	return signalSelected(pids, sig)
 }
 

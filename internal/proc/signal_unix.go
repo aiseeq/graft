@@ -3,7 +3,6 @@
 package proc
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -25,12 +24,6 @@ func Detach(cmd *exec.Cmd) {
 // with the processes it started (a child it did not stop would run on with
 // the work), what fails then goes to warn, and Wait returns soon after.
 func StopOnCancel(cmd *exec.Cmd, grace time.Duration, warn func(error)) {
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	} else if !cmd.SysProcAttr.Setsid {
-		cmd.SysProcAttr.Setpgid = true
-	}
-
 	cmd.Cancel = func() error {
 		ended := reaperEnded(cmd)
 		result, err := akitproc.SignalCmdWithResult(cmd, syscall.SIGTERM)
@@ -44,16 +37,15 @@ func StopOnCancel(cmd *exec.Cmd, grace time.Duration, warn func(error)) {
 		if ended && err == nil {
 			return os.ErrProcessDone
 		}
-		return context.Canceled
+		return err
 	}
 	cmd.WaitDelay = grace + killSettle
 }
 
 func stopOnCancelAfterGrace(cmd *exec.Cmd, warn func(error)) {
-	stopped, err := akitproc.StopCmd(cmd, 0, syscall.SIGKILL)
-	if stopped.Degraded {
-		warn(fmt.Errorf("command %d descendants were not stopped because pidfd_open is unavailable", cmd.Process.Pid))
-	}
+	_, err := akitproc.StopChild(cmd.Process.Pid, 0, func() error {
+		return akitproc.SignalCmd(cmd, syscall.SIGKILL)
+	})
 	if err != nil && !akitproc.Gone(err) && !errors.Is(err, os.ErrProcessDone) {
 		warn(err)
 	}

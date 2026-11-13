@@ -157,6 +157,22 @@ exit 0`)
 	}
 }
 
+func TestReapKeepsDaemonThatLeavesDuringGrace(t *testing.T) {
+	dir := t.TempDir()
+	cmd := reaped(t, dir, `sh -c 'trap '\''setsid sh -c "echo \$\$ > \"$1/daemon\"; exec sleep 30" & exit 0'\'' TERM
+while :; do sleep 0.02; done' sh "$1" &
+echo $! > "$1/worker"
+exit 0`)
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	daemon := pidIn(t, filepath.Join(dir, "daemon"))
+	stopAfter(t, daemon)
+	if !running(daemon) {
+		t.Fatalf("daemon %d that left the session during grace was stopped", daemon)
+	}
+}
+
 func TestReapRequestsOrphanStopAfterCommandExit(t *testing.T) {
 	dir := t.TempDir()
 	cmd := reaped(t, dir, `sh -c 'trap '\''if [ -s "$1/command-done" ]; then echo term; else echo early; fi > "$1/term"; exit 0'\'' TERM
@@ -403,7 +419,7 @@ func TestReapKeepsIgnoredSignals(t *testing.T) {
 // orphans after it at once: a caller that stops it waits no grace for them.
 func TestReapSIGTERMHurriesOrphans(t *testing.T) {
 	dir := t.TempDir()
-	cmd := reaped(t, dir, `sh -c 'trap "" TERM; exec sleep 30' & echo $! > "$1/orphan"
+	cmd := reaped(t, dir, `sh -c 'trap "echo term > $1/term" TERM; while :; do sleep 30; done' sh "$1" & echo $! > "$1/orphan"
 while :; do sleep 0.05; done`)
 	orphan := pidIn(t, filepath.Join(dir, "orphan"))
 	stopAfter(t, orphan)
@@ -415,6 +431,9 @@ while :; do sleep 0.05; done`)
 	took := time.Since(start)
 	if sig := signalOf(t, err); sig != syscall.SIGTERM {
 		t.Fatalf("the command ended with %v, want SIGTERM", sig)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "term")); err != nil {
+		t.Fatalf("orphan did not receive SIGTERM before SIGKILL: %v", err)
 	}
 	if running(orphan) {
 		t.Errorf("the orphan %d outlived the reaper", orphan)

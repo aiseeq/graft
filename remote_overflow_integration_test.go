@@ -678,8 +678,8 @@ func TestUserRemoteHeavyRunsATaskInItsDirectoryWithRoot(t *testing.T) {
 // asks remote_heavy's run to stop (SIGTERM), so it can take its work off the
 // host, rather than killing it.
 func TestUserRemoteHeavyStopsACancelledStepWithSIGTERM(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("uses Linux child signaling and a shell run script")
+	if runtime.GOOS == "windows" {
+		t.Skip("the run script is sh, and Windows has no SIGTERM")
 	}
 	state := t.TempDir()
 	writeFile(t, filepath.Join(state, "run.sh"), `trap 'echo term > "`+filepath.Join(state, "term")+`"; kill $pid; exit 143' TERM`+"\n"+

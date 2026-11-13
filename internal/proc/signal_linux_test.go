@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // TestStopOnCancelKillsTheTreeAfterGrace: a command that ignores SIGTERM is
@@ -102,6 +104,49 @@ while :; do sleep 0.02; done`, "sh", dir)
 	time.Sleep(500 * time.Millisecond) //nolint:test-fixed-sleep-before-assert // observe after the 300ms stop grace
 	if !running(pid) {
 		t.Fatal("detached daemon was killed after its command exited")
+	}
+}
+
+func TestStopOnCancelKeepsCallerProcessGroup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", "sleep 30")
+	StopOnCancel(cmd, time.Second, func(err error) { t.Error(err) })
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cancel(); _ = cmd.Wait() }()
+	got, err := unix.Getpgid(cmd.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := unix.Getpgid(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("command process group = %d, caller group = %d", got, want)
+	}
+}
+
+func TestStopOnCancelReturnsProcessDoneAfterWait(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "true")
+	StopOnCancel(cmd, time.Second, func(err error) { t.Error(err) })
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("completed command: %v", err)
+	}
+	if err := cmd.Cancel(); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("Cancel after successful Wait = %v, want os.ErrProcessDone", err)
+	}
+}
+
+func TestStopOnCancelPreservesDeadlineError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", `trap 'exit 0' TERM; while :; do sleep 0.02; done`)
+	StopOnCancel(cmd, time.Second, func(err error) { t.Error(err) })
+	if err := cmd.Run(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Wait error = %v, want context.DeadlineExceeded", err)
 	}
 }
 

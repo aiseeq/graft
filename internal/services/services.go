@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -27,6 +28,8 @@ import (
 	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/tasks"
 )
+
+var readServiceStat = akitproc.ReadStat
 
 // Manager runs the services of one project.
 type Manager struct {
@@ -174,13 +177,15 @@ func (m *Manager) start(ctx context.Context, name string) error {
 		return fmt.Errorf("%s: starting %q: %w", name, s.Run.Source, err)
 	}
 	pid = cmd.Process.Pid
-	stat, statErr := akitproc.ReadStat("/proc", pid)
-	if statErr != nil {
-		_, stopErr := akitproc.StopCmd(cmd, time.Second, syscall.SIGTERM)
-		waitErr := cmd.Wait()
-		return errors.Join(fmt.Errorf("%s: reading process start time: %w", name, statErr), stopErr, waitErr)
+	stat, statErr := readServiceStat("/proc", pid)
+	if statErr != nil && !errors.Is(statErr, errors.ErrUnsupported) {
+		fmt.Fprintf(m.Log, "graft: %s: warning: cannot read process start time: %v; recording PID only\n", name, statErr)
 	}
-	if err := writePID(m.path(s.PIDFile), pid, stat.Start); err != nil {
+	start := ""
+	if statErr == nil {
+		start = stat.Start
+	}
+	if err := writePID(m.path(s.PIDFile), pid, start); err != nil {
 		_, stopErr := akitproc.StopCmd(cmd, time.Second, syscall.SIGTERM)
 		waitErr := cmd.Wait()
 		return errors.Join(fmt.Errorf("%s: %w", name, err), stopErr, waitErr)
@@ -274,15 +279,14 @@ func (m *Manager) waitStarted(ctx context.Context, s *config.Service, addr strin
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-tick.C:
-			stat, err := akitproc.ReadStat("/proc", pid)
-			if akitproc.Gone(err) || err == nil && (stat.Start != start || stat.State == "Z" || stat.State == "X") {
-				if addr == "" {
-					return fmt.Errorf("exited at start")
+			if start != "" {
+				exited, err := serviceExited(pid, start)
+				if err != nil {
+					return err
 				}
-				return fmt.Errorf("exited before listening on %s", addr)
-			}
-			if err != nil {
-				return fmt.Errorf("checking process %d: %w", pid, err)
+				if exited {
+					return serviceStartExitError(addr)
+				}
 			}
 			if addr != "" {
 				up, err := listening(addr)
@@ -297,10 +301,31 @@ func (m *Manager) waitStarted(ctx context.Context, s *config.Service, addr strin
 	}
 }
 
+func serviceStartExitError(addr string) error {
+	if addr == "" {
+		return fmt.Errorf("exited at start")
+	}
+	return fmt.Errorf("exited before listening on %s", addr)
+}
+
+func serviceExited(pid int, start string) (bool, error) {
+	stat, err := readServiceStat("/proc", pid)
+	if akitproc.Gone(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking process %d: %w", pid, err)
+	}
+	return stat.Start != start || stat.State == "Z" || stat.State == "X", nil
+}
+
 func (m *Manager) stop(ctx context.Context, name string) error {
 	s := m.Config.Services[name]
 	if s.SystemdUnit != "" {
 		return m.stopUnit(ctx, name, s)
+	}
+	if handled, err := m.removeGoneLeader(name, s); handled {
+		return err
 	}
 	pid, err := m.running(name)
 	if err != nil {
@@ -310,30 +335,16 @@ func (m *Manager) stop(ctx context.Context, name string) error {
 		fmt.Fprintf(m.Log, "graft: %s is not running\n", name)
 		return nil
 	}
-	data, err := os.ReadFile(m.path(s.PIDFile) + ".start")
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("graft: %s was not stopped: this OS cannot verify its process; stop it manually (PID %d)", name, pid)
+	}
+	start, err := m.serviceStartRecord(name, s)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("%s: pid file has no process start time; stop the service manually, then remove %s", name, m.path(s.PIDFile))
-		}
-		return fmt.Errorf("%s: reading the process start time: %w", name, err)
+		return err
 	}
-	start := strings.TrimSpace(string(data))
-	if start == "" {
-		return fmt.Errorf("%s: pid file has no process start time; stop the service manually, then remove %s", name, m.path(s.PIDFile))
-	}
-	result, err := akitproc.StopSession(akitproc.SessionRecord{Pid: pid, Start: start}, s.StopTimeout, syscall.SIGTERM)
-	if errors.Is(err, akitproc.ErrNoStartRecord) {
-		return fmt.Errorf("%s: pid file has no valid process start time; stop the service manually, then remove %s", name, m.path(s.PIDFile))
-	}
-	if errors.Is(err, akitproc.ErrSessionLeaderGone) {
-		fmt.Fprintf(m.Log, "graft: %s: session leader %d is gone or changed (%v); its orphans were not stopped; inspect processes with SID %d using `ps -eo pid,ppid,sid,stat,command` and stop remaining service processes manually\n", name, pid, err, pid)
-		err = nil
-	}
-	if errors.Is(err, akitproc.ErrPidfdUnavailable) {
-		fmt.Fprintf(m.Log, "graft: %s: session processes were not stopped because pidfd_open is unavailable\n", name)
-	}
+	result, err := m.stopSession(ctx, name, pid, start, s)
 	if err != nil {
-		return fmt.Errorf("%s: stopping session: %w", name, err)
+		return err
 	}
 	if result.Degraded {
 		fmt.Fprintf(m.Log, "graft: %s: session processes were not stopped because pidfd_open is unavailable\n", name)
@@ -352,6 +363,91 @@ func (m *Manager) stop(ctx context.Context, name string) error {
 		return err
 	}
 	return m.stopped(ctx, name, s)
+}
+
+func (m *Manager) removeGoneLeader(name string, s *config.Service) (bool, error) {
+	if runtime.GOOS != "linux" {
+		return false, nil
+	}
+	data, err := os.ReadFile(m.path(s.PIDFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading the pid file: %w", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return false, fmt.Errorf("%s: not a pid: %q", s.PIDFile, strings.TrimSpace(string(data)))
+	}
+	startData, err := os.ReadFile(m.path(s.PIDFile) + ".start")
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading the process start time: %w", err)
+	}
+	start := strings.TrimSpace(string(startData))
+	if start == "" {
+		return false, nil
+	}
+	exited, err := serviceExited(pid, start)
+	if err != nil {
+		return false, err
+	}
+	if !exited {
+		return false, nil
+	}
+	fmt.Fprintf(m.Log, "graft: %s: session leader %d is gone; remaining session processes were not stopped; inspect SID %d and stop them manually\n", name, pid, pid)
+	removeErr := errors.Join(fsx.Remove(m.path(s.PIDFile)), fsx.Remove(m.path(s.PIDFile)+".start"))
+	return true, errors.Join(fmt.Errorf("%s: session leader %d is gone; remaining session processes were not stopped", name, pid), removeErr)
+}
+
+func (m *Manager) serviceStartRecord(name string, s *config.Service) (string, error) {
+	data, err := os.ReadFile(m.path(s.PIDFile) + ".start")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%s: pid file has no process start time; stop the service manually, then remove %s", name, m.path(s.PIDFile))
+		}
+		return "", fmt.Errorf("%s: reading the process start time: %w", name, err)
+	}
+	start := strings.TrimSpace(string(data))
+	if start == "" {
+		return "", fmt.Errorf("%s: pid file has no process start time; stop the service manually, then remove %s", name, m.path(s.PIDFile))
+	}
+	return start, nil
+}
+
+func (m *Manager) stopSession(ctx context.Context, name string, pid int, start string, s *config.Service) (akitproc.StopResult, error) {
+	result, err := akitproc.StopSession(akitproc.SessionRecord{Pid: pid, Start: start}, s.StopTimeout, syscall.SIGTERM)
+	if errors.Is(err, akitproc.ErrNoStartRecord) {
+		return result, fmt.Errorf("%s: pid file has no valid process start time; stop the service manually, then remove %s", name, m.path(s.PIDFile))
+	}
+	if errors.Is(err, akitproc.ErrSessionLeaderGone) {
+		gone, waitErr := waitFor(ctx, s.StopTimeout, func() (bool, error) {
+			members, scanErr := sessionMembers(pid)
+			return len(members) == 0, scanErr
+		})
+		if waitErr != nil {
+			return result, fmt.Errorf("%s: checking remaining session processes: %w", name, waitErr)
+		}
+		if !gone {
+			members, scanErr := sessionMembers(pid)
+			if scanErr != nil {
+				return result, scanErr
+			}
+			fmt.Fprintf(m.Log, "graft: %s: session leader %d is gone; remaining session processes were not stopped: %v; inspect SID %d and stop them manually\n", name, pid, members, pid)
+			return result, fmt.Errorf("%s: session leader %d is gone; remaining session processes were not stopped: %v; stop them manually", name, pid, members)
+		}
+		err = nil
+	}
+	if errors.Is(err, akitproc.ErrPidfdUnavailable) {
+		fmt.Fprintf(m.Log, "graft: %s: session processes were not stopped because pidfd_open is unavailable\n", name)
+	}
+	if err != nil {
+		return result, fmt.Errorf("%s: stopping session: %w", name, err)
+	}
+	return result, nil
 }
 
 // stopped waits for the service's address to be released and reports.
@@ -509,8 +605,35 @@ func (m *Manager) isService(s *config.Service, pid int) (bool, error) {
 	return slices.Contains(cmdline[:min(3, len(cmdline))], argv0), nil
 }
 
+func sessionMembers(sid int) ([]int, error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, fmt.Errorf("reading /proc: %w", err)
+	}
+	var members []int
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid == sid {
+			continue
+		}
+		stat, err := readServiceStat("/proc", pid)
+		if akitproc.Gone(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading process %d: %w", pid, err)
+		}
+		if stat.Sid != sid || stat.State == "Z" || stat.State == "X" {
+			continue
+		}
+		members = append(members, pid)
+	}
+	slices.Sort(members)
+	return members, nil
+}
+
 func dead(pid int) (bool, error) {
-	stat, err := akitproc.ReadStat("/proc", pid)
+	stat, err := readServiceStat("/proc", pid)
 	if akitproc.Gone(err) {
 		return true, nil
 	}
@@ -612,8 +735,14 @@ func writePID(path string, pid int, start string) error {
 	if err := atomicfile.Write(path, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
 		return fmt.Errorf("writing the pid file: %w", err)
 	}
-	if err := atomicfile.Write(path+".start", []byte(start+"\n"), 0o644); err != nil {
-		return errors.Join(fmt.Errorf("writing the process start time: %w", err), fsx.Remove(path))
+	if start != "" {
+		if err := atomicfile.Write(path+".start", []byte(start+"\n"), 0o644); err != nil {
+			return errors.Join(fmt.Errorf("writing the process start time: %w", err), fsx.Remove(path))
+		}
+	} else {
+		if err := fsx.Remove(path + ".start"); err != nil {
+			return err
+		}
 	}
 	return nil
 }
