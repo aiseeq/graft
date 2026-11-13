@@ -2026,7 +2026,9 @@ func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 		if version == "" {
 			why := fmt.Sprintf("%s not in an approved %q version", key, g.conf.Prefix)
 			if issue.Parent != "" {
-				why += ", nor is its parent " + issue.Parent
+				// A subtask's own version does not count: only its parent's can
+				// let it out.
+				why = fmt.Sprintf("%s goes out with its parent %s, which is not in an approved %q version", key, issue.Parent, g.conf.Prefix)
 			}
 			return gatePass{why: why}, nil
 		}

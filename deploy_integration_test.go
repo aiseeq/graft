@@ -1012,7 +1012,7 @@ func TestDeployApprovedReleaseSubtaskByParentVersion(t *testing.T) {
 	d.mustGraft("deploy", "--unapproved", "live")
 	d.write("a.txt", "a\n")
 	d.mustFixtureCommit("feat: PROJ-31 part of the whole")
-	if out, code := d.graft("", "deploy", "live"); code == 0 || !strings.Contains(out, `PROJ-31 not in an approved "Product v" version, nor is its parent PROJ-30`) {
+	if out, code := d.graft("", "deploy", "live"); code == 0 || !strings.Contains(out, `PROJ-31 goes out with its parent PROJ-30, which is not in an approved "Product v" version`) {
 		t.Fatalf("the parent's version is not approved yet: exit %d\n%s", code, out)
 	}
 	d.jira.setApprovers(map[string][]string{"10030": {"APPROVED", "APPROVED"}})
