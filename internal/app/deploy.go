@@ -1989,7 +1989,7 @@ func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 			return gatePass{}, err
 		}
 		if version == "" {
-			return gatePass{why: fmt.Sprintf("%s not in an approved %q version", key, g.conf.Prefix)}, nil
+			return gatePass{why: g.notInApprovedVersion(issue)}, nil
 		}
 		return gatePass{ok: true, label: version}, nil
 	}
@@ -2024,13 +2024,7 @@ func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 			return gatePass{}, err
 		}
 		if version == "" {
-			why := fmt.Sprintf("%s not in an approved %q version", key, g.conf.Prefix)
-			if issue.Parent != "" {
-				// A subtask's own version does not count: only its parent's can
-				// let it out.
-				why = fmt.Sprintf("%s goes out with its parent %s, which is not in an approved %q version", key, issue.Parent, g.conf.Prefix)
-			}
-			return gatePass{why: why}, nil
+			return gatePass{why: g.notInApprovedVersion(issue)}, nil
 		}
 		pass.ok, pass.label = true, version
 	}
@@ -2126,12 +2120,35 @@ func (g *approvalGate) describe(failures []gateFailure) []string {
 			}
 			line := key + " " + issue.Summary + ": " + issue.Status
 			if g.conf.Prefix != "" {
-				line += "; " + g.fixVersions(issue)
+				line += "; " + g.versionsOfRelease(issue)
 			}
 			lines = append(lines, line)
 		}
 	}
 	return lines
+}
+
+// notInApprovedVersion says why an item is not in an approved version of the
+// prefix. A subtask's own version does not count: only its parent's can let
+// it out, so for a subtask the refusal names the parent.
+func (g *approvalGate) notInApprovedVersion(issue jira.Issue) string {
+	if issue.Parent != "" {
+		return fmt.Sprintf("%s goes out with its parent %s, which is not in an approved %q version", issue.Key, issue.Parent, g.conf.Prefix)
+	}
+	return fmt.Sprintf("%s not in an approved %q version", issue.Key, g.conf.Prefix)
+}
+
+// versionsOfRelease lists the fix versions that decide the item's release:
+// its own, or its parent's for a subtask.
+func (g *approvalGate) versionsOfRelease(issue jira.Issue) string {
+	if issue.Parent == "" {
+		return g.fixVersions(issue)
+	}
+	parent, ok := g.issues[issue.Parent]
+	if !ok {
+		return "goes out with its parent " + issue.Parent
+	}
+	return "goes out with its parent " + issue.Parent + ": " + g.fixVersions(parent)
 }
 
 // fixVersions lists the item's fix versions of the prefix and whether every
@@ -2165,7 +2182,7 @@ func (g *approvalGate) remedy() string {
 		ways = append(ways, strings.Join(parts, ", "))
 	}
 	if g.conf.Prefix != "" {
-		ways = append(ways, "put their items into the approved version")
+		ways = append(ways, "put their items (a subtask's parent for a subtask) into the approved version")
 	}
 	ways = append(ways, "finish any subtasks called open")
 	return strings.Join(ways, " and ")

@@ -209,3 +209,29 @@ func TestApprovedSubtaskIgnoresOwnVersion(t *testing.T) {
 		t.Fatalf("subtask passed by its own approved version: %+v", pass)
 	}
 }
+
+// A subtask's prefix refusal and description name its parent's versions, not
+// its own approved one, with and without approved_release.version.
+func TestApprovedSubtaskPrefixRefusalNamesItsParent(t *testing.T) {
+	for _, version := range []*config.ApprovedReleaseVersion{nil, {}} {
+		gate := &approvalGate{
+			conf:     &config.ApprovedRelease{Prefix: "Product", Version: version},
+			versions: map[string]bool{"2": true},
+			issues: map[string]jira.Issue{
+				"PROJ-1": {Key: "PROJ-1", Status: "Ready for release", Subtasks: []string{"PROJ-2"}},
+				"PROJ-2": {Key: "PROJ-2", Status: "Done", Done: true, Parent: "PROJ-1", FixVersions: []jira.Version{{ID: "2", Name: "Product 2"}}},
+			},
+		}
+		pass, err := gate.item(t.Context(), "PROJ-2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `PROJ-2 goes out with its parent PROJ-1, which is not in an approved "Product" version`
+		if pass.ok || pass.why != want {
+			t.Errorf("version %v: pass %+v, want refusal %q", version != nil, pass, want)
+		}
+		if got, want := gate.versionsOfRelease(gate.issues["PROJ-2"]), `goes out with its parent PROJ-1: in no "Product" version`; got != want {
+			t.Errorf("description %q, want %q", got, want)
+		}
+	}
+}
