@@ -1054,7 +1054,7 @@ func checkFreezeCommit(ctx context.Context, r *deployRun, f *activeFreeze, gate 
 	}
 	keys := itemKeys(keyRe, f.config.ApprovedRelease, commit)
 	if len(keys) == 0 {
-		ignored, err := shipsNothing(r.repo, r.cfg, f.config.ApprovedRelease, commit.sha)
+		ignored, _, err := shipsNothing(r.repo, r.cfg, f.config.ApprovedRelease, commit.sha)
 		if err != nil || ignored {
 			return err
 		}
@@ -1076,7 +1076,7 @@ func checkFreezeCommit(ctx context.Context, r *deployRun, f *activeFreeze, gate 
 	if refusal == nil && !outside {
 		return nil
 	}
-	ignored, err := shipsNothing(r.repo, r.cfg, f.config.ApprovedRelease, commit.sha)
+	ignored, _, err := shipsNothing(r.repo, r.cfg, f.config.ApprovedRelease, commit.sha)
 	if err != nil {
 		return err
 	}

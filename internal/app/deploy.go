@@ -6,15 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/mod/modfile"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/deploy"
@@ -1634,12 +1639,18 @@ func (g *gateRun) withEarlier(commits []deliveredCommit, withheld []string) ([]d
 func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out *gateOutcome) (*gateFailure, error) {
 	fail := gateFailure{commit: c, why: "names no item"}
 	if g.conf.Version != nil {
-		ignored, err := shipsNothing(g.repo, g.cfg, g.conf, c.sha)
+		ignored, why, err := shipsNothing(g.repo, g.cfg, g.conf, c.sha)
 		if err != nil {
 			return nil, err
 		}
+		if why != "" && !ignored {
+			g.app.printf("approved release: %s: %s", line, why)
+		}
 		if ignored {
-			g.app.printf("approved release: %s: changes only ignore_paths, passes", line)
+			if why == "" {
+				why = "changes only ignore_paths, passes"
+			}
+			g.app.printf("approved release: %s: %s", line, why)
 			return nil, nil
 		}
 		g.activeCommits++
@@ -1671,12 +1682,15 @@ func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out
 		}
 		fail.why, fail.keys = pass.why, pass.failed
 	}
-	ignored, err := shipsNothing(g.repo, g.cfg, g.conf, c.sha)
+	ignored, why, err := shipsNothing(g.repo, g.cfg, g.conf, c.sha)
 	if err != nil {
 		return nil, err
 	}
 	if ignored {
-		g.app.printf("approved release: %s: changes only ignore_paths, passes", line)
+		if why == "" {
+			why = "changes only ignore_paths, passes"
+		}
+		g.app.printf("approved release: %s: %s", line, why)
 		return nil, nil
 	}
 	return &fail, nil
@@ -1786,25 +1800,324 @@ const (
 	sha256CommitHashLength = 64
 )
 
-// shipsNothing tells whether a commit changes only approved_release's
-// ignore_paths, besides the version bump graft commit puts into every commit.
-func shipsNothing(repo *gitx.Repo, cfg *config.Config, conf *config.ApprovedRelease, sha string) (bool, error) {
+// shipsNothing recognizes ignore_paths commits, including go.mod/go.sum changes
+// that do not affect any shipped main package.
+func shipsNothing(repo *gitx.Repo, cfg *config.Config, conf *config.ApprovedRelease, sha string) (bool, string, error) {
 	if len(conf.Ignore) == 0 {
-		return false, nil
+		return false, "", nil
 	}
 	out, err := repo.Git("diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "-z", sha)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
-	bumped := cfg.VersionFiles()
-	var files []string
-	for f := range strings.SplitSeq(out, "\x00") {
-		if f = strings.TrimSpace(f); f != "" && !slices.Contains(bumped, f) {
-			files = append(files, f)
+	files, modules, ignored := classifyShipChanges(out, cfg.VersionFiles(), conf)
+	if len(files) == 0 {
+		return len(ignored) > 0, "", nil
+	}
+	if !onlyModuleFiles(files) {
+		return false, "", nil
+	}
+	ok, why := moduleBumpIsUnshipped(repo, sha, slices.Compact(modules), files, conf)
+	if !ok && why != "" {
+		slog.Error("approved release check", "reason", oneLine(why))
+		if strings.HasPrefix(why, "go list failed") || why == "no main packages outside ignore_paths" {
+			return false, "", fmt.Errorf("%s", oneLine(why))
 		}
 	}
-	return conf.Ignored(files), nil
+	return ok, why, nil
 }
+
+func classifyShipChanges(out string, bumped []string, conf *config.ApprovedRelease) (files, modules, ignored []string) {
+	for f := range strings.SplitSeq(out, "\x00") {
+		f = strings.TrimSpace(f)
+		if f == "" || slices.Contains(bumped, f) {
+			continue
+		}
+		if conf.Ignored([]string{f}) {
+			ignored = append(ignored, f)
+			continue
+		}
+		files = append(files, f)
+		if f == "go.mod" || strings.HasSuffix(f, "/go.mod") || f == "go.sum" || strings.HasSuffix(f, "/go.sum") {
+			modules = append(modules, strings.TrimSuffix(strings.TrimSuffix(f, "go.mod"), "go.sum"))
+		}
+	}
+	return files, modules, ignored
+}
+
+func onlyModuleFiles(files []string) bool {
+	for _, f := range files {
+		if f != "go.mod" && f != "go.sum" && !strings.HasSuffix(f, "/go.mod") && !strings.HasSuffix(f, "/go.sum") {
+			return false
+		}
+	}
+	return true
+}
+
+type shipsNothingResult struct {
+	ok  bool
+	why string
+}
+
+var shipsNothingMemo = struct {
+	sync.Mutex
+	entries map[string]shipsNothingResult
+}{entries: map[string]shipsNothingResult{}}
+
+func moduleBumpIsUnshipped(repo *gitx.Repo, sha string, modPaths, files []string, conf *config.ApprovedRelease) (bool, string) {
+	var keyBuilder strings.Builder
+	keyBuilder.WriteString(repo.CommonDir)
+	keyBuilder.WriteByte(0)
+	keyBuilder.WriteString(sha)
+	for _, path := range modPaths {
+		keyBuilder.WriteByte(0)
+		keyBuilder.WriteString(path)
+	}
+	for _, re := range conf.Ignore {
+		keyBuilder.WriteByte(0)
+		keyBuilder.WriteString(re.String())
+	}
+	key := keyBuilder.String()
+	shipsNothingMemo.Lock()
+	cached, ok := shipsNothingMemo.entries[key]
+	shipsNothingMemo.Unlock()
+	if ok {
+		return cached.ok, cached.why
+	}
+	passed, why := inspectModuleBump(repo, sha, modPaths, files, conf)
+	shipsNothingMemo.Lock()
+	if len(shipsNothingMemo.entries) >= 128 {
+		clear(shipsNothingMemo.entries)
+	}
+	shipsNothingMemo.entries[key] = shipsNothingResult{passed, why}
+	shipsNothingMemo.Unlock()
+	return passed, why
+}
+
+// inspectModuleBump checks the commit out into a temporary worktree, the
+// repository's hooks off, so go list reads the tree the commit ships; the
+// worktree and its directory are removed after the check.
+func inspectModuleBump(repo *gitx.Repo, sha string, modPaths, files []string, conf *config.ApprovedRelease) (bool, string) {
+	tmp, err := os.MkdirTemp("", "graft-approved-")
+	if err != nil {
+		slog.Error("approved release check: create temporary tree", "error", err)
+		return false, "cannot create temporary commit tree: " + oneLine(err.Error())
+	}
+	defer func() {
+		if err := os.RemoveAll(tmp); err != nil {
+			slog.Error("approved release check: remove temporary tree directory", "error", err)
+		}
+	}()
+	hooks, work := filepath.Join(tmp, "hooks"), filepath.Join(tmp, "tree")
+	if err := os.Mkdir(hooks, 0o700); err != nil {
+		slog.Error("approved release check: prepare temporary tree", "error", err)
+		return false, "cannot prepare temporary commit tree: " + oneLine(err.Error())
+	}
+	noHooks := "core.hooksPath=" + hooks
+	if _, err := repo.Git("-c", noHooks, "worktree", "add", "--detach", work, sha); err != nil {
+		if _, pruneErr := repo.Git("worktree", "prune"); pruneErr != nil {
+			slog.Error("approved release check: prune failed worktree", "error", pruneErr)
+		}
+		slog.Error("approved release check: add commit worktree", "error", err)
+		return false, "cannot inspect commit tree: " + oneLine(err.Error())
+	}
+	passed, why := inspectModuleWorktree(repo, work, sha, modPaths, files, conf)
+	if _, err := repo.Git("-c", noHooks, "worktree", "remove", "--force", work); err != nil {
+		slog.Error("approved release check: remove temporary worktree", "error", err)
+		return false, "cannot remove temporary worktree: " + oneLine(err.Error())
+	}
+	return passed, why
+}
+
+func inspectModuleWorktree(repo *gitx.Repo, work, sha string, modPaths, files []string, conf *config.ApprovedRelease) (bool, string) {
+	parentLine, err := repo.Git("rev-list", "--parents", "-n", "1", sha)
+	if err != nil {
+		slog.Error("approved release check: find commit parent", "error", err)
+		return false, "cannot find commit parent"
+	}
+	parents := strings.Fields(parentLine)
+	parent := ""
+	if len(parents) > 1 {
+		parent = parents[1]
+	}
+	changed, why := changedModules(repo, sha, parent, modPaths, files)
+	if why != "" {
+		return false, why
+	}
+	if len(changed) == 0 {
+		return false, "go.mod/go.sum change has no identifiable module"
+	}
+	hit, why := shippedModuleChanges(work, modPaths, changed, conf)
+	if why != "" {
+		return false, why
+	}
+	if len(hit) > 0 {
+		return false, "changed module is imported by shipped binary: " + strings.Join(slices.Compact(hit), ", ")
+	}
+	mods := slices.Sorted(maps.Keys(changed))
+	return true, "changes only ignore_paths and modules no shipped binary imports (" + strings.Join(mods, ", ") + "), passes"
+}
+
+func changedModules(repo *gitx.Repo, sha, parent string, modPaths, files []string) (map[string]bool, string) {
+	changed := map[string]bool{}
+	for _, moduleDir := range modPaths {
+		path := moduleDir + "go.mod"
+		newText, err := repo.Git("show", sha+":"+path)
+		if err != nil {
+			slog.Error("approved release check: read go.mod", "path", path, "error", err)
+			return nil, "cannot read " + path
+		}
+		oldText := ""
+		if parent != "" {
+			oldText, err = repo.Git("show", parent+":"+path)
+			if err != nil {
+				slog.Error("approved release check: read parent go.mod", "path", path, "error", err)
+				return nil, "cannot read parent " + path
+			}
+		}
+		now, err := modfile.Parse(path, []byte(newText), nil)
+		if err != nil {
+			slog.Error("approved release check: parse go.mod", "path", path, "error", err)
+			return nil, "cannot parse " + path
+		}
+		var before *modfile.File
+		if oldText != "" {
+			before, err = modfile.Parse(path, []byte(oldText), nil)
+			if err != nil {
+				slog.Error("approved release check: parse parent go.mod", "path", path, "error", err)
+				return nil, "cannot parse parent " + path
+			}
+		}
+		if err := changedRequirements(before, now, changed, path); err != nil {
+			return nil, err.Error()
+		}
+	}
+	for _, path := range files {
+		if strings.HasSuffix(path, "go.sum") {
+			if err := changedSumModules(repo, sha, parent, path, changed); err != nil {
+				slog.Error("approved release check: compare go.sum", "path", path, "error", err)
+				return nil, err.Error()
+			}
+		}
+	}
+	return changed, ""
+}
+
+func changedRequirements(before, now *modfile.File, changed map[string]bool, path string) error {
+	if before == nil {
+		for _, req := range now.Require {
+			changed[req.Mod.Path] = true
+		}
+		return nil
+	}
+	newFile, oldFile := *now, *before
+	newFile.Require, oldFile.Require = nil, nil
+	newFile.Syntax, oldFile.Syntax = nil, nil
+	if !reflect.DeepEqual(newFile, oldFile) {
+		return fmt.Errorf("%s changes directives other than require", path)
+	}
+	oldReq := map[string]string{}
+	for _, req := range before.Require {
+		oldReq[req.Mod.Path] = req.Mod.Version
+	}
+	for _, req := range now.Require {
+		if oldReq[req.Mod.Path] != req.Mod.Version {
+			changed[req.Mod.Path] = true
+		}
+		delete(oldReq, req.Mod.Path)
+	}
+	for path := range oldReq {
+		changed[path] = true
+	}
+	return nil
+}
+
+func changedSumModules(repo *gitx.Repo, sha, parent, path string, changed map[string]bool) error {
+	args := []string{"diff", "--no-ext-diff", "--unified=0"}
+	if parent == "" {
+		args = append(args, "--root", sha, "--", path)
+	} else {
+		args = append(args, parent, sha, "--", path)
+	}
+	diff, err := repo.Git(args...)
+	if err != nil {
+		return fmt.Errorf("cannot compare %s", path)
+	}
+	for line := range strings.SplitSeq(diff, "\n") {
+		if len(line) < 2 || (line[0] != '+' && line[0] != '-') || strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
+			continue
+		}
+		fields := strings.Fields(line[1:])
+		if len(fields) > 0 {
+			changed[strings.TrimSuffix(fields[0], "/go.mod")] = true
+		}
+	}
+	return nil
+}
+
+func shippedModuleChanges(work string, modPaths []string, changed map[string]bool, conf *config.ApprovedRelease) ([]string, string) {
+	var hit []string
+	for _, moduleDir := range modPaths {
+		root := filepath.Join(work, filepath.FromSlash(strings.TrimSuffix(moduleDir, "/")))
+		mains, err := shippedMainPackages(work, root, conf)
+		if err != nil {
+			slog.Error("approved release check: list main packages", "error", err)
+			return nil, err.Error()
+		}
+		if len(mains) == 0 {
+			return nil, "no main packages outside ignore_paths"
+		}
+		mods, err := packageModules(root, mains)
+		if err != nil {
+			slog.Error("approved release check: list dependencies", "error", err)
+			return nil, "go list failed (dependencies): " + oneLine(err.Error())
+		}
+		for _, mod := range mods {
+			if changed[mod] {
+				hit = append(hit, mod)
+			}
+		}
+	}
+	return hit, ""
+}
+
+func shippedMainPackages(work, root string, conf *config.ApprovedRelease) ([]string, error) {
+	cmd := exec.Command("go", "list", "-f", "{{if eq .Name \"main\"}}{{.Dir}}\t{{.ImportPath}}{{end}}", "./...")
+	cmd.Dir, cmd.Env = root, append(os.Environ(), "GOWORK=off")
+	data, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("go list failed: %s", oneLine(string(data)))
+	}
+	var mains []string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		fields := strings.SplitN(line, "\t", 2)
+		if len(fields) != 2 || fields[0] == "" {
+			continue
+		}
+		rel, err := filepath.Rel(work, fields[0])
+		if err != nil {
+			return nil, fmt.Errorf("cannot locate main package: %s", oneLine(err.Error()))
+		}
+		rel = filepath.ToSlash(rel)
+		if !conf.Ignored([]string{rel + "/main.go"}) {
+			mains = append(mains, fields[1])
+		}
+	}
+	return mains, nil
+}
+
+func packageModules(root string, mains []string) ([]string, error) {
+	args := append([]string{"list", "-deps", "-f", "{{with .Module}}{{.Path}}{{end}}"}, mains...)
+	cmd := exec.Command("go", args...)
+	cmd.Dir, cmd.Env = root, append(os.Environ(), "GOWORK=off")
+	data, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("%s", oneLine(string(data)))
+	}
+	return strings.Fields(string(data)), nil
+}
+
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // approvalGate reads each item and each version once per deploy.
 type approvalGate struct {

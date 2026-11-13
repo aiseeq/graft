@@ -2202,7 +2202,10 @@ the target is not on it, though its history has it.
 
 A commit of the trunk the target does not run by history is on it by
 content when, put onto the commit the target runs, it changes no file but
-the version files and those `approved_release.ignore_paths` names: a
+the version files and those `approved_release.ignore_paths` names. Changes
+left only in `go.mod` or `go.sum` pass too when their modules are absent from
+the dependency graph of every main package outside `ignore_paths`; other
+`go.mod` directives and dependency graph changes still need approval: a
 cherry-pick to a release branch, two commits taken in one, a commit of docs
 alone. An item whose commits change nothing but `ignore_paths` moves saying
 its work `ships nothing to <target>`: it needs no deploy. A commit that also
