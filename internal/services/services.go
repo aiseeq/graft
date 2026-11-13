@@ -190,13 +190,25 @@ func (m *Manager) start(ctx context.Context, name string) error {
 		waitErr := cmd.Wait()
 		return errors.Join(fmt.Errorf("%s: %w", name, err), stopErr, waitErr)
 	}
-	if err := m.waitStarted(ctx, s, addr, pid, stat.Start); err != nil {
+	waitResult := make(chan error, 1)
+	if start == "" {
+		go func() { waitResult <- cmd.Wait() }()
+	}
+	if err := m.waitStarted(ctx, s, addr, pid, start, waitResult); err != nil {
 		_, stopErr := akitproc.StopCmd(cmd, time.Second, syscall.SIGTERM)
-		waitErr := cmd.Wait()
+		var waitErr error
+		if start == "" {
+			waitErr = <-waitResult
+		} else {
+			waitErr = cmd.Wait()
+		}
 		return errors.Join(fmt.Errorf("%s: %w\n%s", name, err, tail(m.path(s.Log), 20)), stopErr, waitErr, fsx.Remove(m.path(s.PIDFile)), fsx.Remove(m.path(s.PIDFile)+".start"))
 	}
+	if start != "" {
+		go func() { waitResult <- cmd.Wait() }()
+	}
 	go func() {
-		if waitErr := cmd.Wait(); waitErr != nil {
+		if waitErr := <-waitResult; waitErr != nil {
 			fmt.Fprintf(m.Log, "graft: service %s exited: %v\n", name, waitErr)
 		}
 	}()
@@ -260,7 +272,7 @@ func (m *Manager) command(name string, s *config.Service) (*exec.Cmd, *os.File, 
 // considered started: bad config usually kills a process sooner.
 const aliveGrace = time.Second
 
-func (m *Manager) waitStarted(ctx context.Context, s *config.Service, addr string, pid int, start string) error {
+func (m *Manager) waitStarted(ctx context.Context, s *config.Service, addr string, pid int, start string, waitResult chan error) error {
 	deadline := time.NewTimer(min(aliveGrace, s.StartTimeout))
 	if addr != "" {
 		deadline.Stop()
@@ -286,6 +298,13 @@ func (m *Manager) waitStarted(ctx context.Context, s *config.Service, addr strin
 				}
 				if exited {
 					return serviceStartExitError(addr)
+				}
+			} else {
+				select {
+				case waitErr := <-waitResult:
+					waitResult <- waitErr
+					return fmt.Errorf("%w: %v", serviceStartExitError(addr), waitErr)
+				default:
 				}
 			}
 			if addr != "" {
@@ -382,6 +401,14 @@ func (m *Manager) removeGoneLeader(name string, s *config.Service) (bool, error)
 	}
 	startData, err := os.ReadFile(m.path(s.PIDFile) + ".start")
 	if errors.Is(err, os.ErrNotExist) {
+		if runtime.GOOS != "linux" {
+			return false, nil
+		}
+		members, scanErr := sessionMembers(pid)
+		if scanErr != nil || len(members) == 0 {
+			return false, scanErr
+		}
+		fmt.Fprintf(m.Log, "graft: %s: session leader %d is gone; remaining session processes were not stopped: %v; inspect SID %d and stop them manually\n", name, pid, members, pid)
 		return false, nil
 	}
 	if err != nil {

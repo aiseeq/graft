@@ -42,10 +42,23 @@ func StopOnCancel(cmd *exec.Cmd, grace time.Duration, warn func(error)) {
 	cmd.WaitDelay = grace + killSettle
 }
 
+var stopChild = akitproc.StopChild
+var stopCmd = akitproc.StopCmd
+
 func stopOnCancelAfterGrace(cmd *exec.Cmd, warn func(error)) {
-	_, err := akitproc.StopChild(cmd.Process.Pid, 0, func() error {
+	result, err := stopChild(cmd.Process.Pid, 0, func() error {
 		return akitproc.SignalCmd(cmd, syscall.SIGKILL)
 	})
+	if errors.Is(err, errors.ErrUnsupported) {
+		if cmd.ProcessState == nil {
+			result, err = stopCmd(cmd, 0, syscall.SIGKILL)
+		} else {
+			err = nil
+		}
+	}
+	if result.Degraded {
+		warn(fmt.Errorf("command %d was stopped directly because pidfd_open is unavailable", cmd.Process.Pid))
+	}
 	if err != nil && !akitproc.Gone(err) && !errors.Is(err, os.ErrProcessDone) {
 		warn(err)
 	}

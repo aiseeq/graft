@@ -255,6 +255,48 @@ func TestStartWithoutProcRecordsPIDOnly(t *testing.T) {
 	})
 }
 
+func TestStartWithoutProcReportsExitedService(t *testing.T) {
+	oldReadStat := readServiceStat
+	readServiceStat = func(string, int) (akitproc.Stat, error) { return akitproc.Stat{}, errors.ErrUnsupported }
+	t.Cleanup(func() { readServiceStat = oldReadStat })
+
+	dir := t.TempDir()
+	s := &config.Service{Run: config.Command{Argv: []string{"sh", "-c", "exit 42"}}, Log: "service.log", PIDFile: "service.pid", StartTimeout: time.Second}
+	cfg := &config.Config{Services: map[string]*config.Service{"svc": s}}
+	m := New(dir, cfg, nil, io.Discard)
+	if err := m.start(t.Context(), "svc"); err == nil || !strings.Contains(err.Error(), "exited at start") {
+		t.Fatalf("start error = %v, want exited-at-start error", err)
+	}
+}
+
+func TestOldPIDWithoutStartWarnsForRemainingSessionMembers(t *testing.T) {
+	dir := t.TempDir()
+	workerFile := filepath.Join(dir, "worker")
+	cmd := exec.Command("sh", "-c", `trap "" HUP; sh -c 'exec sleep 30' & echo $! > "$1"; exit 0`, "sh", workerFile)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	worker := serviceTestPID(t, workerFile)
+	stopServiceTestProcess(t, worker)
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{Services: map[string]*config.Service{"svc": {PIDFile: "service.pid"}}}
+	m := New(dir, cfg, nil, io.Discard)
+	if err := os.WriteFile(m.path("service.pid"), []byte(strconv.Itoa(cmd.Process.Pid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.Log = &strings.Builder{}
+	if err := m.stop(t.Context(), "svc"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(m.Log.(*strings.Builder).String(), "remaining session processes were not stopped") {
+		t.Fatalf("stop log lacks warning for old PID file: %s", m.Log.(*strings.Builder).String())
+	}
+}
+
 func TestWritePIDStoresLeaderStart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "service.pid")
 	if err := writePID(path, 123, "456"); err != nil {

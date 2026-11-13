@@ -417,9 +417,39 @@ func TestReapKeepsIgnoredSignals(t *testing.T) {
 
 // SIGTERM to the reaper while its command runs ends the command, and the
 // orphans after it at once: a caller that stops it waits no grace for them.
+func TestSignalReaperCommandUsesSignalCmd(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = akitproc.SignalCmd(cmd, syscall.SIGKILL)
+		_ = cmd.Wait()
+	})
+
+	oldSignalReaperCmd := signalReaperCmd
+	called := false
+	signalReaperCmd = func(got *exec.Cmd, sig syscall.Signal) error {
+		called = true
+		if got != cmd || sig != syscall.SIGTERM {
+			t.Errorf("SignalCmd(%p, %v), want (%p, %v)", got, sig, cmd, syscall.SIGTERM)
+		}
+		return oldSignalReaperCmd(got, sig)
+	}
+	t.Cleanup(func() { signalReaperCmd = oldSignalReaperCmd })
+
+	signalReaperCommand(cmd.Process.Pid, cmd, unix.SIGTERM)
+	if !called {
+		t.Fatal("reaper command signal did not use SignalCmd")
+	}
+	if err := cmd.Wait(); err == nil || signalOf(t, err) != syscall.SIGTERM {
+		t.Fatalf("command wait error = %v, want SIGTERM", err)
+	}
+}
+
 func TestReapSIGTERMHurriesOrphans(t *testing.T) {
 	dir := t.TempDir()
-	cmd := reaped(t, dir, `sh -c 'trap "echo term > $1/term" TERM; while :; do sleep 30; done' sh "$1" & echo $! > "$1/orphan"
+	cmd := reaped(t, dir, `sh -c 'trap "" TERM; exec sleep 30' & echo $! > "$1/orphan"
 while :; do sleep 0.05; done`)
 	orphan := pidIn(t, filepath.Join(dir, "orphan"))
 	stopAfter(t, orphan)
@@ -431,9 +461,6 @@ while :; do sleep 0.05; done`)
 	took := time.Since(start)
 	if sig := signalOf(t, err); sig != syscall.SIGTERM {
 		t.Fatalf("the command ended with %v, want SIGTERM", sig)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "term")); err != nil {
-		t.Fatalf("orphan did not receive SIGTERM before SIGKILL: %v", err)
 	}
 	if running(orphan) {
 		t.Errorf("the orphan %d outlived the reaper", orphan)

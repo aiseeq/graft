@@ -90,9 +90,11 @@ var (
 // ExitReaper is the reaper's own failure: it could not become a subreaper.
 const ExitReaper = 125
 
-func signalReaperCommand(pid int, sig unix.Signal) {
+var signalReaperCmd = akitproc.SignalCmd
+
+func signalReaperCommand(pid int, cmd *exec.Cmd, sig unix.Signal) {
 	// The command is not reaped yet: its pid is still its own.
-	if err := akitproc.SignalDescendant(pid, sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	if err := signalReaperCmd(cmd, syscall.Signal(sig)); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		if errors.Is(err, akitproc.ErrPidfdUnavailable) {
 			fmt.Fprintf(os.Stderr, "graft: reaper: command %d was not signaled because pidfd_open is unavailable\n", pid)
 		} else {
@@ -145,9 +147,10 @@ func RunReaper(path string, argv []string) int {
 		return ExitCannotRun
 	}
 	r := &reaper{child: pid}
+	cmd := &exec.Cmd{Process: &os.Process{Pid: pid}}
 	for !r.done {
 		if sig, ok := (<-sigs).(unix.Signal); ok && r.note(sig) {
-			signalReaperCommand(pid, sig)
+			signalReaperCommand(pid, cmd, sig)
 		}
 		if err := r.reapAll(); err != nil {
 			fmt.Fprintf(os.Stderr, "graft: reaper: %v\n", err)

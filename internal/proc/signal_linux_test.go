@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	akitproc "github.com/aiseeq/akit/proc"
 	"golang.org/x/sys/unix"
 )
 
@@ -53,8 +55,58 @@ func TestStopOnCancelKillsTheTreeAfterGrace(t *testing.T) {
 	}
 }
 
-// A cooperative command receives SIGTERM and can finish its cleanup before
-// the grace expires.
+// When StopChild is unsupported, StopCmd kills a command that ignores SIGTERM
+// after the grace period.
+func TestStopOnCancelUnsupportedStopChildKillsCommandAfterGrace(t *testing.T) {
+	oldStopChild, oldStopCmd := stopChild, stopCmd
+	stopChild = func(int, time.Duration, func() error) (akitproc.StopResult, error) {
+		return akitproc.StopResult{}, errors.ErrUnsupported
+	}
+	stopCalled := make(chan struct{}, 1)
+	stopCmd = func(cmd *exec.Cmd, grace time.Duration, sig syscall.Signal) (akitproc.StopResult, error) {
+		stopCalled <- struct{}{}
+		return oldStopCmd(cmd, grace, sig)
+	}
+	t.Cleanup(func() { stopChild, stopCmd = oldStopChild, oldStopCmd })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ready := filepath.Join(t.TempDir(), "ready")
+	cmd := exec.CommandContext(ctx, "sh", "-c", `trap '' TERM; echo ready > "$1"; exec sleep 30`, "sh", ready)
+	StopOnCancel(cmd, 100*time.Millisecond, func(error) {})
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = akitproc.SignalCmd(cmd, syscall.SIGKILL)
+			_ = cmd.Wait()
+		}
+	})
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+		if time.Now().After(deadline) {
+			t.Fatal("command did not install its SIGTERM handler")
+		}
+	}
+	cancel()
+	deadline := time.Now().Add(2 * time.Second)
+	for running(cmd.Process.Pid) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if running(cmd.Process.Pid) {
+		t.Fatalf("command %d survived the grace after StopChild was unsupported", cmd.Process.Pid)
+	}
+	select {
+	case <-stopCalled:
+	default:
+		t.Fatal("StopCmd fallback was not called")
+	}
+	_ = cmd.Wait()
+}
+
 func TestStopOnCancelRequestsSIGTERM(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
