@@ -1859,6 +1859,7 @@ release_notes:
     project: Product            # optional: the product's name for {project}; a comment with {project} requires it
     skip_statuses: [On Hold]    # leave these items alone: no note, no move
     skip_keys: [PROJ-100]       # these too, and no subtask follows them; a subtask named by its own key goes as any item
+    quiet: {subtasks: true, labels: [internal]} # suppress release note comments on subtasks and items with these labels; moves and other release work still run
 ```
 
 `graft deploy [--redeploy] [--unapproved] <target> [-- args]`:
@@ -2153,6 +2154,16 @@ label, the freeze and the trunk merge check:
   in a commit or following its parent, and so needs no `require_comment`: the
   reviewer checks the item. A subtask of an item in `skip_keys` is handed over
   as before, for nobody reviews a standing item.
+
+`release_notes.jira.quiet` leaves the release note out of a subtask when
+`subtasks` is true and out of an item carrying any label in `labels`; the
+deploy says so in one line per item. Everything else goes on as for an item
+with its note: the fix version, the move, the handover, the sweep and the
+gates. A quiet item's fix version is set with `notifyUsers=false`; Jira lets
+only those who administer the project silence it, so on a 400 or 403 the call
+goes again with notifications and the deploy says so. Jira has no such
+parameter for a transition: a quiet item's move notifies as any other. A label
+may not be empty.
 
 graft cannot tell a key that opens the subject as a mention from work: give
 such a commit the key of its own item first, or an attribute.

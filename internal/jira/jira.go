@@ -49,6 +49,18 @@ func LoadCredentials(envFile string) (Credentials, error) {
 	return c, nil
 }
 
+// APIError is a non-success response from Jira.
+type APIError struct {
+	Method     string
+	Path       string
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("%s %s: http %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
+}
+
 // Client talks to the Jira REST API v3.
 type Client struct {
 	creds Credentials
@@ -323,6 +335,13 @@ func (c *Client) Assign(ctx context.Context, key, accountID string) error {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any, want int) ([]byte, error) {
+	return c.doQuery(ctx, method, path, body, want, "")
+}
+
+func (c *Client) doQuery(ctx context.Context, method, path string, body any, want int, query string) ([]byte, error) {
+	if query != "" {
+		path += "?" + query
+	}
 	var reader io.Reader
 	if body != nil {
 		payload, err := json.Marshal(body)
@@ -350,7 +369,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, want int
 		return nil, fmt.Errorf("jira %s %s: reading the response: %w", method, path, err)
 	}
 	if resp.StatusCode != want {
-		return nil, fmt.Errorf("%s %s: http %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(data[:min(len(data), 300)])))
+		return nil, &APIError{Method: method, Path: path, StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(data[:min(len(data), 300)]))}
 	}
 	return data, nil
 }

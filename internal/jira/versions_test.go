@@ -1,6 +1,10 @@
 package jira
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -122,5 +126,25 @@ func TestApprovals(t *testing.T) {
 		if got := FullyApproved(c.approvers); got != c.fully {
 			t.Errorf("%s: FullyApproved = %v", c.name, got)
 		}
+	}
+}
+
+func TestAddFixVersionNotifyRetriesPermissionRejection(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.RawQuery)
+		if r.URL.RawQuery == "notifyUsers=false" {
+			http.Error(w, `{"errorMessages":["notifyUsers is not permitted"]}`, http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	retried, err := New(Credentials{BaseURL: srv.URL}).AddFixVersionNotify(context.Background(), "PROJ-123", "42", true)
+	if err != nil || !retried {
+		t.Fatalf("AddFixVersionNotify = %v, %v; want retry and success", retried, err)
+	}
+	if fmt.Sprint(queries) != "[notifyUsers=false ]" {
+		t.Fatalf("request queries = %q, want quiet request then retry without query", queries)
 	}
 }

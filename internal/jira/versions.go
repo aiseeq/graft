@@ -122,11 +122,40 @@ func (c *Client) ProjectVersions(ctx context.Context, project string) ([]Version
 // AddFixVersion adds a version to an item's fix versions and leaves the
 // others it has alone. Editing the item is all the permission it takes.
 func (c *Client) AddFixVersion(ctx context.Context, key, versionID string) error {
+	_, err := c.AddFixVersionNotify(ctx, key, versionID, false)
+	return err
+}
+
+// AddFixVersionNotify sets a fix version, optionally suppressing Jira notifications.
+// It retries without notifyUsers if Jira rejects that parameter.
+func (c *Client) AddFixVersionNotify(ctx context.Context, key, versionID string, quiet bool) (retried bool, retErr error) {
 	body := map[string]any{"update": map[string]any{
 		"fixVersions": []any{map[string]any{"add": map[string]string{"id": versionID}}},
 	}}
-	_, err := c.do(ctx, http.MethodPut, "/rest/api/3/issue/"+key, body, http.StatusNoContent)
-	return err
+	path := "/rest/api/3/issue/" + key
+	if quiet {
+		_, err := c.doQuery(ctx, http.MethodPut, path, body, http.StatusNoContent, "notifyUsers=false")
+		if err == nil {
+			return false, nil
+		}
+		if !notifyUsersRejected(err) {
+			return false, err
+		}
+		if _, err := c.do(ctx, http.MethodPut, path, body, http.StatusNoContent); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+	_, err := c.do(ctx, http.MethodPut, path, body, http.StatusNoContent)
+	return false, err
+}
+
+// notifyUsersRejected tells a refusal the call without notifyUsers may not
+// get: Jira answers 403 when the token may not silence notifications, and its
+// text need not name the parameter.
+func notifyUsersRejected(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusBadRequest || apiErr.StatusCode == http.StatusForbidden)
 }
 
 // NextVersion picks, among the versions of a project that are neither

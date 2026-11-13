@@ -877,7 +877,20 @@ type noteItems struct {
 	sub      *subtaskRun
 	// unsure are the keys this deploy could not read or post to: one held
 	// before stays held, moved when it may be.
-	unsure []string
+	unsure           []string
+	fallbackReported map[string]bool
+}
+
+// notifyFallback reports once per task that Jira refused notifyUsers=false.
+func (n *noteItems) notifyFallback(key string) {
+	if n.fallbackReported == nil {
+		n.fallbackReported = map[string]bool{}
+	}
+	if n.fallbackReported[key] {
+		return
+	}
+	n.fallbackReported[key] = true
+	n.app.printf("release note for %s: Jira rejected notifyUsers=false; retried with notifications enabled", key)
 }
 
 // post gives one delivered item its note, its fix version and its move.
@@ -917,19 +930,24 @@ func (n *noteItems) post(ctx context.Context, key string) {
 	if !yours {
 		return
 	}
-	posted := true
-	if err := n.client.Comment(ctx, key, n.text); err != nil {
-		a.warn("release note for %s not posted: %v", key, err)
-		posted = false
-		n.unsure = append(n.unsure, key)
+	quietReason := quietNoteReason(notes.Quiet, issue)
+	posted := quietReason == ""
+	if posted {
+		if err := n.client.Comment(ctx, key, n.text); err != nil {
+			a.warn("release note for %s not posted: %v", key, err)
+			posted = false
+			n.unsure = append(n.unsure, key)
+		} else {
+			a.printf("release note posted to %s", key)
+		}
 	} else {
-		a.printf("release note posted to %s", key)
+		a.printf("release note for %s not posted: release_notes.jira.quiet (%s)", key, quietReason)
 	}
 	if learns {
 		return
 	}
-	n.fix.add(ctx, issue)
-	if posted {
+	n.fix.add(ctx, issue, quietReason != "", func() { n.notifyFallback(key) })
+	if posted || quietReason != "" {
 		n.sub.reached[issue.Key] = n.mover.delivered(ctx, issue)
 	}
 }
@@ -961,6 +979,21 @@ type noteMover struct {
 var errHeld = errors.New("held")
 
 var errTypeNotAllowed = errors.New("transition does not allow this issue type")
+
+func quietNoteReason(q *config.QuietNotes, issue jira.Issue) string {
+	if q == nil {
+		return ""
+	}
+	if q.Subtasks && issue.Subtask {
+		return "subtask"
+	}
+	for _, label := range q.Labels {
+		if slices.Contains(issue.Labels, label) {
+			return "label " + label
+		}
+	}
+	return ""
+}
 
 // delivered moves a delivered item along only from the statuses a transition
 // names: a paused item stays paused whatever its commits say. It returns the
@@ -1251,7 +1284,7 @@ type fixChoice struct {
 }
 
 // add sets the fix version of a noted item, unless it has it already.
-func (f *fixVersionRun) add(ctx context.Context, issue jira.Issue) {
+func (f *fixVersionRun) add(ctx context.Context, issue jira.Issue, quiet bool, fallback func()) {
 	if f.conf == nil {
 		return
 	}
@@ -1284,7 +1317,11 @@ func (f *fixVersionRun) add(ctx context.Context, issue jira.Issue) {
 		f.app.printf("%s already has fix version %s", issue.Key, v.Name)
 		return
 	}
-	if err := f.client.AddFixVersion(ctx, issue.Key, v.ID); err != nil {
+	retried, err := f.client.AddFixVersionNotify(ctx, issue.Key, v.ID, quiet)
+	if retried && fallback != nil {
+		fallback()
+	}
+	if err != nil {
 		f.failed(issue.Key, err)
 		return
 	}

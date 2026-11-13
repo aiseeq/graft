@@ -395,7 +395,14 @@ type JiraNotes struct {
 	// SkipKeys leaves these items alone, a standing item that collects small
 	// work and that commits name, say: no subtask follows them, and a subtask
 	// a commit names by its own key goes as any item.
-	SkipKeys []string `yaml:"skip_keys"`
+	SkipKeys []string    `yaml:"skip_keys"`
+	Quiet    *QuietNotes `yaml:"quiet"`
+}
+
+// QuietNotes suppresses release note comments for subtasks and selected labels.
+type QuietNotes struct {
+	Subtasks bool     `yaml:"subtasks"`
+	Labels   []string `yaml:"labels"`
 }
 
 // DefaultNoteComment is the release note text; {target}, {version}, {short}
@@ -966,6 +973,13 @@ func (c *Config) validateReleaseNotes() error {
 	for _, k := range n.Jira.SkipKeys {
 		if !c.isProjectKey(k) {
 			return fmt.Errorf("release_notes.jira.skip_keys: %q is not an item of release_notes.jira.project_keys, such as PROJ-123", k)
+		}
+	}
+	if n.Jira.Quiet != nil {
+		for i, label := range n.Jira.Quiet.Labels {
+			if strings.TrimSpace(label) == "" {
+				return fmt.Errorf("release_notes.jira.quiet.labels[%d]: must not be empty", i)
+			}
 		}
 	}
 	if n.Jira.Comment == "" {

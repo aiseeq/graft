@@ -354,3 +354,72 @@ func TestVersionStatusOutputWithoutLabelStatuses(t *testing.T) {
 		t.Fatalf("version status failures = %v, want %q", check.failures, want)
 	}
 }
+
+func TestQuietReleaseNotesSkipCommentsButStillMoveItems(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		quiet *config.QuietNotes
+		want  int
+	}{
+		{name: "quiet", quiet: &config.QuietNotes{Subtasks: true, Labels: []string{"internal"}}, want: 1},
+		{name: "without quiet", want: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			comments, transitions := 0, 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/comment"):
+					comments++
+					w.WriteHeader(http.StatusCreated)
+				case strings.HasSuffix(r.URL.Path, "/transitions"):
+					transitions++
+					w.WriteHeader(http.StatusNoContent)
+				case strings.HasPrefix(r.URL.Path, "/rest/api/3/issue/"):
+					key := strings.TrimPrefix(r.URL.Path, "/rest/api/3/issue/")
+					subtask, label := key == "PROJ-1", []string{}
+					if key == "PROJ-2" {
+						label = []string{"internal"}
+					}
+					fmt.Fprintf(w, `{"fields":{"summary":"synthetic","status":{"name":"In Progress","statusCategory":{"key":"indeterminate"}},"assignee":{"accountId":"token-owner","displayName":"Synthetic"},"issuetype":{"name":"Task","subtask":%t},"parent":{"key":"PROJ-10"},"labels":%s},"transitions":[{"id":"1","to":{"name":"Done"}}]}`, subtask, mustJSONLabels(label))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			cfg := &config.Config{ReleaseNotes: &config.ReleaseNotes{Jira: &config.JiraNotes{ProjectKeys: []string{"PROJ"}, Quiet: tc.quiet}}}
+			notes := &config.JiraNotes{Quiet: tc.quiet}
+			transition := config.NoteTransition{From: []string{"In Progress"}, To: "Done"}
+			out := &bytes.Buffer{}
+			app := &App{Stdout: out, Stderr: &bytes.Buffer{}}
+			client := jira.New(jira.Credentials{BaseURL: srv.URL})
+			mover := &noteMover{app: app, client: client, conf: &config.TargetNotes{Transitions: []config.NoteTransition{transition}}, me: "token-owner", glint: &glintCheck{}}
+			sub := &subtaskRun{mover: mover, notes: notes, reached: map[string]string{}}
+			items := &noteItems{app: app, run: &deployRun{cfg: cfg}, client: client, me: "token-owner", text: "synthetic release note", fix: &fixVersionRun{}, mover: mover, sub: sub}
+			for _, key := range []string{"PROJ-1", "PROJ-2", "PROJ-3"} {
+				items.post(t.Context(), key)
+			}
+			if comments != tc.want || transitions != 3 {
+				t.Errorf("comments/transitions = %d/%d, want %d/3", comments, transitions, tc.want)
+			}
+			if tc.quiet != nil {
+				for _, message := range []string{
+					"release note for PROJ-1 not posted: release_notes.jira.quiet (subtask)",
+					"release note for PROJ-2 not posted: release_notes.jira.quiet (label internal)",
+				} {
+					if strings.Count(out.String(), message) != 1 {
+						t.Errorf("output has %d instances of %q", strings.Count(out.String(), message), message)
+					}
+				}
+			} else if strings.Contains(out.String(), "release_notes.jira.quiet") {
+				t.Errorf("unexpected quiet output: %s", out.String())
+			}
+		})
+	}
+}
+
+func mustJSONLabels(labels []string) string {
+	if len(labels) == 0 {
+		return "[]"
+	}
+	return `["` + strings.Join(labels, `","`) + `"]`
+}

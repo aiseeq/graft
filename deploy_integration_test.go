@@ -43,7 +43,10 @@ type fakeJira struct {
 	versionPageSize int
 	fixVersions     map[string][]string
 	edits           []string
+	editRequests    []fakeIssueEditRequest
 	failEdit        []string
+	failNotifyUsers bool
+	failComments    []string
 	// approvers maps a version id to the statuses of its approvers.
 	approvers map[string][]string
 	// parents maps a subtask's key to its parent's.
@@ -77,6 +80,10 @@ type fakeJira struct {
 }
 
 // fakeStatusMove is one status change in an item's history.
+type fakeIssueEditRequest struct {
+	key, notifyUsers string
+}
+
 type fakeStatusMove struct {
 	at       time.Time
 	from, to string
@@ -171,6 +178,10 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		j.assignees[key] = body.AccountID
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "comment":
+		if slices.Contains(j.failComments, key) {
+			http.Error(w, "comment unavailable", http.StatusInternalServerError)
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		var doc struct {
 			Body struct {
@@ -283,6 +294,12 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // edit takes only an update that adds one fix version by id.
 func (j *fakeJira) edit(w http.ResponseWriter, r *http.Request, key string) {
+	notifyUsers := r.URL.Query().Get("notifyUsers")
+	j.editRequests = append(j.editRequests, fakeIssueEditRequest{key: key, notifyUsers: notifyUsers})
+	if notifyUsers == "false" && j.failNotifyUsers {
+		http.Error(w, `{"errorMessages":["You do not have permission to edit this issue"]}`, http.StatusForbidden)
+		return
+	}
 	var body struct {
 		Fields map[string]any                            `json:"fields"`
 		Update map[string][]map[string]map[string]string `json:"update"`
@@ -861,6 +878,12 @@ func (j *fakeJira) editsSnapshot() ([]string, int) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return slices.Clone(j.edits), j.versionRequests
+}
+
+func (j *fakeJira) editRequestsSnapshot() []fakeIssueEditRequest {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return slices.Clone(j.editRequests)
 }
 
 func TestDeployAddsFixVersion(t *testing.T) {
