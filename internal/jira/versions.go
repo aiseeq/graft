@@ -127,7 +127,8 @@ func (c *Client) AddFixVersion(ctx context.Context, key, versionID string) error
 }
 
 // AddFixVersionNotify sets a fix version, optionally suppressing Jira notifications.
-// It retries without notifyUsers if Jira rejects that parameter.
+// It goes again without notifyUsers when Jira answers 400 or 403, and an
+// error then names both answers.
 func (c *Client) AddFixVersionNotify(ctx context.Context, key, versionID string, quiet bool) (retried bool, retErr error) {
 	body := map[string]any{"update": map[string]any{
 		"fixVersions": []any{map[string]any{"add": map[string]string{"id": versionID}}},
@@ -141,8 +142,8 @@ func (c *Client) AddFixVersionNotify(ctx context.Context, key, versionID string,
 		if !notifyUsersRejected(err) {
 			return false, err
 		}
-		if _, err := c.do(ctx, http.MethodPut, path, body, http.StatusNoContent); err != nil {
-			return true, err
+		if _, again := c.do(ctx, http.MethodPut, path, body, http.StatusNoContent); again != nil {
+			return true, fmt.Errorf("%w; with notifyUsers=false before: %v", again, err)
 		}
 		return true, nil
 	}
