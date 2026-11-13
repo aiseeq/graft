@@ -2041,7 +2041,9 @@ release_notes:
    the target runs: it lists the item instead.
    The release note itself must not contain the text, `{project}` and
    `{target}` filled in: a quiet item, with no note, would wait where one
-   with its note moves. A key mentioned in a
+   with its note moves. The values only a deploy knows (`{version}`,
+   `{short}`, `{sha}`, `{release}`) are not checked: a require_comment of
+   words, not a version or a hash, keeps clear of them. A key mentioned in a
    commit does not make the item yours, so only open items of the owner of
    the Jira token get notes: not in a done-category status (Done, Won't do),
    a to-do-category one (To Do, Backlog: work not started) or `skip_statuses`, and assigned to the owner now or at some point in
