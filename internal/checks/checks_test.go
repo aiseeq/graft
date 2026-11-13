@@ -12,15 +12,21 @@ import (
 // trip the very scan it tests.
 func fakeSecrets() map[string]string {
 	return map[string]string{
-		"pem":      "-----BEGIN " + "RSA PRIVATE KEY-----",
-		"re":       `key := "re_` + strings.Repeat("a", 24) + `"`,
-		"gocspx":   `secret: 'GOCSPX-` + strings.Repeat("b", 24) + `'`,
-		"pgpass":   "PGPASSWORD=" + strings.Repeat("c", 24),
-		"aws":      "id = AKIA" + strings.Repeat("D", 16),
-		"sk_live":  `"sk_live_` + strings.Repeat("e", 24) + `"`,
-		"jwt":      `"eyJ` + strings.Repeat("f", 20) + "." + strings.Repeat("g", 20) + "." + strings.Repeat("h", 20) + `"`,
-		"extra":    "token_abcdefghij",
-		"harmless": "re_used := compute() // AKIA",
+		"pem":       "-----BEGIN " + "RSA PRIVATE KEY-----",
+		"re":        `key := "re_` + strings.Repeat("a", 24) + `"`,
+		"gocspx":    `secret: 'GOCSPX-` + strings.Repeat("b", 24) + `'`,
+		"pgpass":    "PGPASSWORD=" + strings.Repeat("c", 24),
+		"aws":       "id = AKIA" + strings.Repeat("D", 16),
+		"sk_live":   `"sk_live_` + strings.Repeat("e", 24) + `"`,
+		"jwt":       `"eyJ` + strings.Repeat("f", 20) + "." + strings.Repeat("g", 20) + "." + strings.Repeat("h", 20) + `"`,
+		"extra":     "token_abcdefghij",
+		"github":    "token: gh" + "p_" + strings.Repeat("aB3", 12),
+		"ghpat":     "github_" + "pat_11" + strings.Repeat("Ab3", 25),
+		"anthropic": "ANTHROPIC_API_KEY=sk-" + "ant-api03-" + strings.Repeat("xY7", 30),
+		"openai":    "key sk-" + "proj-" + strings.Repeat("Qw9", 20),
+		"slack":     "xox" + "b-1234567890-" + strings.Repeat("zZ1", 8),
+		"harmless":  "re_used := compute() // AKIA",
+		"names":     "ghp_token sk-ant-example sk-proj-name xoxo-hugs-2026 github_pat_ prefix",
 	}
 }
 
@@ -54,9 +60,9 @@ func TestSecrets(t *testing.T) {
 	for name := range fakeSecrets() {
 		f, ok := found[name+".txt"]
 		switch {
-		case name == "harmless" && ok:
+		case (name == "harmless" || name == "names") && ok:
 			t.Errorf("false positive: %v", f)
-		case name != "harmless" && !ok:
+		case name != "harmless" && name != "names" && !ok:
 			t.Errorf("%s not detected", name)
 		case ok && f.Line != 2:
 			t.Errorf("%s: line %d, want 2", name, f.Line)

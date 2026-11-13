@@ -481,7 +481,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft version bump [--minor\|--major]` | raise the version in the version file and its synced files without committing, for a script that folds the bump into its own commit or `graft amend`; `graft commit` raises it again, so a merged work branch is released with `graft release --minor` |
 | `graft version --describe` | the build identity for stamping binaries: `v1.4.0-3-gabc1234[-dirty]`, `1.4.0[-dirty]` in mode `file`, `v0.0.0-<commits>-g<hash>` without a tag |
 | `graft init` | install the hooks and set `core.hooksPath`, create the `.env` file from `dotenv_template` when it is missing, install pinned tools that fail their check; safe to repeat |
-| `graft check` | run the content checks on the index |
+| `graft check [--secrets]` | run the content checks on the index; `--secrets`: the secrets check alone, which needs no `.graft.yaml` (with one, its `checks.secrets` applies), for the pre-commit hook of a repository graft does not manage |
 | `graft leaks <revision>…` | scan commits, including merge resolutions and messages (Git 2.36 or newer for merges), for the private names and terms of the user config (`leaks`) |
 | `graft gate` | run the gate commands (`go vet ./...` in every Go module first, see `go_vet`, then `go fix -diff ./...` with `go_fix`, then `gofmt -l` with `go_fmt`) |
 | `graft merge [--mode rebase\|merge] [--no-deps --reason TEXT] [-m MESSAGE] <branch>` | build and check a trunk update in a temporary worktree, push it to configured remotes, then fast-forward the local trunk |
@@ -2560,8 +2560,9 @@ up to date and release again.
 
 - **Secrets**: the staged content of added and modified files is scanned line
   by line for PEM private keys, AWS access key ids, `PGPASSWORD=` assignments,
-  quoted `sk_live_`, `re_`, `GOCSPX-` keys and quoted JWTs, plus
-  `extra_patterns`. Findings name the file, line and kind, never the secret.
+  quoted `sk_live_`, `re_`, `GOCSPX-` keys and quoted JWTs, GitHub
+  (`ghp_`, `github_pat_`), Anthropic (`sk-ant-`), OpenAI project (`sk-proj-`)
+  and Slack (`xoxb-`) tokens, plus `extra_patterns`. Findings name the file, line and kind, never the secret.
   Binary files are skipped. Files already committed are not rescanned.
 - **Large files**: a binary file (NUL byte in the first 8000 bytes, git's own
   test) is refused unless its extension is in `binary_extensions`; binary

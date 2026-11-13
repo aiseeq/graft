@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/aiseeq/graft/v2/internal/checks"
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/gomods"
@@ -1011,6 +1012,33 @@ func (a *App) Check(ctx context.Context) error {
 		return err
 	}
 	a.printf("checks passed")
+	return nil
+}
+
+// CheckSecrets scans the staged text for secrets alone. It needs no
+// .graft.yaml, so any repository's pre-commit hook can call it; a config, when
+// there is one, gives its exceptions and extra patterns.
+func (a *App) CheckSecrets() error {
+	repo, err := gitx.Open(a.Dir)
+	if err != nil {
+		return err
+	}
+	var secrets config.Secrets
+	cfg, err := config.Load(repo.Root)
+	switch {
+	case err == nil:
+		secrets = cfg.Checks.Secrets
+	case !errors.Is(err, config.ErrNotFound):
+		return err
+	}
+	staged, err := checks.Staged(repo)
+	if err != nil {
+		return err
+	}
+	if findings := checks.Secrets(staged, secrets); len(findings) > 0 {
+		return &ChecksError{Findings: findings}
+	}
+	a.printf("no secrets in the staged files")
 	return nil
 }
 

@@ -42,6 +42,13 @@ var builtinSecrets = []secretPattern{
 	{"AWS access key id", regexp.MustCompile(`AKIA[0-9A-Z]{16}`)},
 	{"live secret key (sk_live_...)", regexp.MustCompile(`['"]sk_live_[A-Za-z0-9]{20,}['"]`)},
 	{"JWT literal", regexp.MustCompile(`['"]eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}['"]`)},
+	// Tokens with a provider prefix stand out unquoted: the body's length
+	// keeps names like ghp_token or sk-ant-example out.
+	{"GitHub token (ghp_...)", regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{36,}\b`)},
+	{"GitHub token (github_pat_...)", regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{60,}`)},
+	{"Anthropic API key (sk-ant-...)", regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{40,}`)},
+	{"OpenAI project key (sk-proj-...)", regexp.MustCompile(`\bsk-proj-[A-Za-z0-9_-]{40,}`)},
+	{"Slack token (xox?-...)", regexp.MustCompile(`\bxox[abposr]-[0-9]{6,}-[A-Za-z0-9-]{10,}`)},
 }
 
 // Secrets scans staged text files for credentials. Findings name the file,

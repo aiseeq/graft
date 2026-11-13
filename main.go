@@ -312,7 +312,18 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		}
 		return noArgs(a, cmd, rest, func() error { return a.Init(ctx) })
 	case "check":
-		return noArgs(a, cmd, rest, func() error { return a.Check(ctx) })
+		fs := newFlags(a, cmd)
+		secrets := fs.Bool("secrets", false, "scan the staged text for secrets only; works without .graft.yaml")
+		if err := parse(fs, rest); err != nil {
+			return err
+		}
+		if fs.NArg() > 0 {
+			return usageOf(cmd)
+		}
+		if *secrets {
+			return a.CheckSecrets()
+		}
+		return a.Check(ctx)
 	case "leaks":
 		if len(rest) == 0 {
 			return usageOf("leaks")
