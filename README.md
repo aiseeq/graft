@@ -2202,7 +2202,9 @@ subtasks or a subtask, all subtasks of that top-level item must be in Done;
 either the parent's or the subtask's key in `release_notes.jira.skip_keys`
 exempts that subtask from this check. A subtask's own approved status does
 not close it. The version must have approvers and every one must have
-approved. Items in the version without code in the range also draw a warning.
+approved; when they have, check and deploy print `approved release: version
+<name> (<id>) approved by <names>`, an approver whose name does not read
+named by the account. Items in the version without code in the range also draw a warning.
 With no active
 commits the version checks are skipped. `prefix`, when set, still checks the
 items' approved versions independently.

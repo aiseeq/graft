@@ -42,7 +42,8 @@ func TestDeployReleaseVersion(t *testing.T) {
 		}
 		return out
 	}
-	t.Log("pass output:\n" + check(true, "passes its checks now"))
+	// A passed approval names every approver; an unread name gives the account.
+	t.Log("pass output:\n" + check(true, "passes its checks now", "approved release: version Product 05.11.26 (1) approved by approver0, Name of approver1"))
 	d.setStatus("PROJ-10", "Testing")
 	d.setStatus("PROJ-12", "To Do")
 	refusal := check(false, "version-top", "PROJ-10 is Testing, fix versions Product 05.11.26: move it to Ready for release or Done", "version-umbrella", "PROJ-12", "version-status")

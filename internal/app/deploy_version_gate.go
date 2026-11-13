@@ -240,24 +240,33 @@ func (v *releaseVersionCheck) checkApproval(ctx context.Context) {
 		v.fail("version-approval", fmt.Sprintf("%s: read approvers: %v; retry", v.selected.Name, err))
 		return
 	}
-	if !jira.FullyApproved(approvers) {
-		var pending []string
+	if jira.FullyApproved(approvers) {
+		// The pass names its source: who approved which version.
+		var who []string
 		for _, a := range approvers {
-			if a.Status != jira.ApprovedStatus {
-				// The name reads at once; without it the account still says who.
-				who := a.AccountID
-				name, err := v.gate.gate.client.UserName(ctx, a.AccountID)
-				if err != nil {
-					v.gate.app.warn("approver %s: name not read, named by the account: %v", a.AccountID, err)
-				} else {
-					who = name
-				}
-				pending = append(pending, who+" ("+a.Status+")")
-			}
+			who = append(who, v.approverName(ctx, a.AccountID))
 		}
-		if len(pending) == 0 {
-			pending = append(pending, "no approvers")
-		}
-		v.fail("version-approval", fmt.Sprintf("%s: %s; add approvers and obtain all approvals", v.selected.Name, strings.Join(pending, ", ")))
+		v.gate.app.printf("approved release: version %s (%s) approved by %s", v.selected.Name, v.selected.ID, strings.Join(who, ", "))
+		return
 	}
+	var pending []string
+	for _, a := range approvers {
+		if a.Status != jira.ApprovedStatus {
+			pending = append(pending, v.approverName(ctx, a.AccountID)+" ("+a.Status+")")
+		}
+	}
+	if len(pending) == 0 {
+		pending = append(pending, "no approvers")
+	}
+	v.fail("version-approval", fmt.Sprintf("%s: %s; add approvers and obtain all approvals", v.selected.Name, strings.Join(pending, ", ")))
+}
+
+// approverName reads the approver's name; without it the account still says who.
+func (v *releaseVersionCheck) approverName(ctx context.Context, accountID string) string {
+	name, err := v.gate.gate.client.UserName(ctx, accountID)
+	if err != nil {
+		v.gate.app.warn("approver %s: name not read, named by the account: %v", accountID, err)
+		return accountID
+	}
+	return name
 }
