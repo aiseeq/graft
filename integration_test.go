@@ -471,9 +471,11 @@ func startGraft(t *testing.T, f *fixture, args ...string) *runningGraft {
 
 // stopTestChild stops a test-owned command through akit.
 func stopTestChild(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil || cmd.ProcessState != nil {
+	if cmd == nil || cmd.Process == nil {
 		return
 	}
+	// Wait may run alongside: StopCmd tells a reaped command itself, so
+	// cmd.ProcessState is not read here.
 	_, _ = akitproc.StopCmd(cmd, 0, syscall.SIGKILL)
 }
 
