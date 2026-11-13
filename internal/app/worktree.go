@@ -1441,6 +1441,16 @@ func (c *cleaner) lastUse(dir string) (time.Time, error) {
 	return last, nil
 }
 
+// hasFileChanges reports whether a list of changed paths contains a file.
+func hasFileChanges(files []string) bool {
+	for _, file := range files {
+		if file != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // verdict is whether work is in the trunk.
 type verdict struct {
 	merged bool
@@ -1474,6 +1484,10 @@ func (c *cleaner) verdict(rev string) (verdict, error) {
 			conflicts = append(conflicts, f)
 		}
 	}
+	changed, err := c.repo.Git(append([]string{"diff", "--name-only", "--no-renames", "-z", c.trunk, tree, "--", "."}, c.exclude...)...)
+	if err != nil {
+		return verdict{}, err
+	}
 	stat, err := c.repo.Git(append([]string{"diff", "--numstat", c.trunk, tree, "--", "."}, c.exclude...)...)
 	if err != nil {
 		return verdict{}, err
@@ -1492,7 +1506,7 @@ func (c *cleaner) verdict(rev string) (verdict, error) {
 		}
 		added, deleted = added+a, deleted+d
 	}
-	if len(conflicts) == 0 && added == 0 && deleted == 0 {
+	if len(conflicts) == 0 && !hasFileChanges(strings.Split(strings.TrimSuffix(changed, "\x00"), "\x00")) {
 		return verdict{merged: true, tree: tree}, nil
 	}
 	why := fmt.Sprintf("adds +%d -%d lines to %s", added, deleted, c.trunk)

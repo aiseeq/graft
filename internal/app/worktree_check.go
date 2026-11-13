@@ -272,7 +272,7 @@ func newWorktreeCheckResult(root string, holds worktreeHolds) worktreeCheckResul
 		Changes: orEmpty(holds.changes), HiddenChanges: orEmpty(holds.hidden), NestedWorktrees: orEmpty(holds.nested),
 		Submodules: orEmpty(holds.submodules), Roots: []worktreeCheckRoot{},
 		MoreRoots: ignored.more, Files: ignored.count,
-		Clear: holds.operation == "" && holds.detachedCommits == 0 && len(holds.changes) == 0 && len(holds.hidden) == 0 &&
+		Clear: holds.operation == "" && holds.detachedCommits == 0 && !hasFileChanges(holds.changes) && len(holds.hidden) == 0 &&
 			len(holds.nested) == 0 && len(holds.submodules) == 0 && ignored.count == 0,
 	}
 	for _, r := range ignored.roots {
