@@ -105,8 +105,9 @@ func passOver(warn io.Writer, file string, err error) {
 //   - the markers of this worktree whose job runs or whose round is
 //     finished: the master commits its work after the job's process exits;
 //   - the markers of other worktrees whose round is finished and whose
-//     fighter_files list names staged files (or whose older markers have
-//     some files the commit stages as the job left them): the
+//     fighter_files list names staged files whose blob differs from the
+//     trunk's blob at that path (or whose older markers have some files the
+//     commit stages as the job left them, with the same trunk check): the
 //     master carried the job's diff over by hand; project version files and
 //     Go module and workspace files do not count as carried work;
 //   - the Worker trailers of the commits a merge or a squash brings in.
@@ -118,7 +119,10 @@ func passOver(warn io.Writer, file string, err error) {
 // finished marker has fighter_files; one of a round not finished whose
 // process is gone, the job killed and the marker left, is also reported to
 // warn and passed over.
-func Models(repo *gitx.Repo, warn io.Writer, excluded []string) ([]string, error) {
+//
+// trunk names the trunk ref, "" when unknown; it is asked only when another
+// worktree's finished marker is in question.
+func Models(repo *gitx.Repo, trunk func() string, warn io.Writer, excluded []string) ([]string, error) {
 	root, err := realPath(repo.Root)
 	if err != nil {
 		return nil, err
@@ -129,13 +133,17 @@ func Models(repo *gitx.Repo, warn io.Writer, excluded []string) ([]string, error
 		if err != nil {
 			return nil, err
 		}
+		trunkFiles, err := treeBlobs(repo, trunk(), staged, deleted)
+		if err != nil {
+			return nil, err
+		}
 		for i := range others {
 			m := others[i]
 			var n int
 			if m.FighterFiles != nil {
-				n = listedFiles(*m.FighterFiles, staged, deleted, excluded)
+				n = listedFiles(*m.FighterFiles, staged, deleted, trunkFiles, excluded)
 			} else {
-				n, err = carried(repo, m.Dir, m.written, staged, excluded)
+				n, err = carried(repo, m.Dir, m.written, staged, trunkFiles, excluded)
 			}
 			if err != nil {
 				passOver(warn, m.file, err)
@@ -265,7 +273,7 @@ func stagedBlobs(repo *gitx.Repo) (map[string]string, map[string]bool, error) {
 	return blobs, deleted, nil
 }
 
-func listedFiles(files map[string]string, staged map[string]string, deleted map[string]bool, excluded []string) int {
+func listedFiles(files map[string]string, staged map[string]string, deleted map[string]bool, trunk map[string]string, excluded []string) int {
 	n := 0
 	for p, oid := range files {
 		if slices.Contains(excluded, p) || slices.Contains(goModuleFiles, path.Base(p)) {
@@ -273,9 +281,11 @@ func listedFiles(files map[string]string, staged map[string]string, deleted map[
 		}
 		if oid == "" {
 			if deleted[p] {
-				n++
+				if _, inTrunk := trunk[p]; inTrunk {
+					n++
+				}
 			}
-		} else if staged[p] == oid {
+		} else if staged[p] == oid && differsFromTrunk(oid, trunk, p) {
 			n++
 		}
 	}
@@ -291,7 +301,7 @@ var goModuleFiles = []string{"go.mod", "go.sum", "go.work", "go.work.sum"}
 // from HEAD: the job's work, not a file it left as it found it, nor one
 // graft writes the same way in both trees, nor one changed there after
 // the round ended at ended.
-func carried(repo *gitx.Repo, dir string, ended time.Time, staged map[string]string, excluded []string) (int, error) {
+func carried(repo *gitx.Repo, dir string, ended time.Time, staged, trunk map[string]string, excluded []string) (int, error) {
 	var paths []string
 	for p := range staged {
 		if slices.Contains(excluded, p) || slices.Contains(goModuleFiles, path.Base(p)) {
@@ -324,7 +334,10 @@ func carried(repo *gitx.Repo, dir string, ended time.Time, staged map[string]str
 	}
 	var same []string
 	for i, p := range paths {
-		if hashes[i] == staged[p] {
+		if hashes[i] != staged[p] {
+			continue
+		}
+		if differsFromTrunk(staged[p], trunk, p) {
 			same = append(same, p)
 		}
 	}
@@ -343,6 +356,39 @@ func carried(repo *gitx.Repo, dir string, ended time.Time, staged map[string]str
 		}
 	}
 	return n, nil
+}
+
+// differsFromTrunk reports whether blob is absent from trunk at path or differs there.
+func differsFromTrunk(blob string, trunk map[string]string, path string) bool {
+	trunkBlob, exists := trunk[path]
+	return !exists || blob != trunkBlob
+}
+
+// treeBlobs are the blobs at the listed paths in trunk; absent paths have no
+// entry, including files deleted from trunk. An unknown trunk ("") has none.
+func treeBlobs(repo *gitx.Repo, trunk string, staged map[string]string, deleted map[string]bool) (map[string]string, error) {
+	paths := make([]string, 0, len(staged)+len(deleted))
+	for p := range staged {
+		paths = append(paths, p)
+	}
+	for p := range deleted {
+		paths = append(paths, p)
+	}
+	if len(paths) == 0 || trunk == "" {
+		return map[string]string{}, nil
+	}
+	out, err := repo.Git(append([]string{"ls-tree", "-z", "--full-tree", trunk, "--"}, paths...)...)
+	if err != nil {
+		return nil, err
+	}
+	blobs := map[string]string{}
+	for entry := range strings.SplitSeq(out, "\x00") {
+		meta, name, ok := strings.Cut(entry, "\t")
+		if fields := strings.Fields(meta); ok && len(fields) == 3 && fields[1] == "blob" {
+			blobs[name] = fields[2]
+		}
+	}
+	return blobs, nil
 }
 
 // forkBlobs are the blobs of paths where the worktree at dir forked from

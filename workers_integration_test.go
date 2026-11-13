@@ -226,6 +226,54 @@ func TestWorkerTrailersOfCarriedOverWork(t *testing.T) {
 	}
 }
 
+func TestWorkerTrailersIgnoreFinishedFileListsMatchingTrunk(t *testing.T) {
+	f := workerRepo(t, "none")
+	f.write("x.txt", "old trunk content\n")
+	f.mustPlainCommit("chore: add shared file")
+	jobA := filepath.Join(f.base, "job-a")
+	jobB := filepath.Join(f.base, "job-b")
+	f.git("worktree", "add", "-q", "-b", "w/job-a", jobA, "main")
+	f.git("worktree", "add", "-q", "-b", "w/job-b", jobB, "main")
+	f.write("x.txt", "shared trunk content\n")
+	f.mustPlainCommit("chore: update shared file")
+	blob := f.git("rev-parse", "main:x.txt")
+	for _, job := range []struct{ id, model, dir string }{
+		{"job-a", "vendor/model-a", jobA},
+		{"job-b", "vendor/model-b", jobB},
+	} {
+		writeMarkerJSON(t, f, map[string]any{"id": job.id, "models": []string{job.model}, "client": "cli", "dir": job.dir, "finished": true, "fighter_files": map[string]string{"x.txt": blob}})
+	}
+	writeFile(t, filepath.Join(jobA, "x.txt"), "shared trunk content\n")
+	writeFile(t, filepath.Join(jobA, "y.txt"), "work from A\n")
+	f.gitIn(jobA, "add", "x.txt", "y.txt")
+	out, code := f.exec(jobA, "", graftBin, "commit", "-m", "feat: local work")
+	if code != 0 {
+		t.Fatalf("graft commit: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(jobA, "log", "-1", "--format=%(trailers:key=Worker,valueonly,separator=%x2c)"); got != "vendor/model-a" {
+		t.Errorf("trunk blob produced trailers %q\n%s", got, out)
+	}
+}
+
+// TestWorkerTrailersWithUnknownTrunk: a remote without HEAD leaves the trunk
+// unknown; the commit goes on, says so, and a finished job's file list counts
+// by its files alone.
+func TestWorkerTrailersWithUnknownTrunk(t *testing.T) {
+	f := workerRepo(t, "none")
+	bare := filepath.Join(f.base, "origin.git")
+	f.git("init", "-q", "--bare", bare)
+	f.git("remote", "add", "origin", bare)
+	job := filepath.Join(f.base, "job")
+	f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
+	f.write("c.txt", "by the job\n")
+	f.git("add", "c.txt")
+	writeFile(t, filepath.Join(f.markers(), "job1"), "{\"id\":\"job1\",\"models\":[\"vendor/model-a\"],\"client\":\"cli\",\"dir\":\""+job+"\",\"finished\":true,\"fighter_files\":{\"c.txt\":\""+f.git("hash-object", "c.txt")+"\"}}")
+	out := f.mustGraft("commit", "-m", "feat: carry finished work")
+	if got := f.workers("HEAD"); got != "vendor/model-a" || !strings.Contains(out, "the trunk is unknown") {
+		t.Errorf("unknown trunk, trailers %q\n%s", got, out)
+	}
+}
+
 func TestWorkerTrailersFromFinishedFileList(t *testing.T) {
 	t.Run("matching blob without worktree", func(t *testing.T) {
 		f := workerRepo(t, "none")
