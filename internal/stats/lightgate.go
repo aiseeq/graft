@@ -28,17 +28,39 @@ func LightGate(recs []Record, project string, since time.Time) bool {
 	for i := range recs {
 		r := &recs[i]
 		if r.Kind == KindTask && r.Task == GateTask && r.Parent == "" && r.Project == project &&
-			r.Steps > 0 && r.Time.After(since) && !cached[r.Run] {
+			r.Steps > 0 && r.Time.After(since) {
 			runs = append(runs, r)
+		}
+	}
+	localSteps := make(map[string][]*Record)
+	for i := range recs {
+		r := &recs[i]
+		if r.Kind == KindStep && r.Host == "" {
+			localSteps[r.Run] = append(localSteps[r.Run], r)
 		}
 	}
 	slices.SortFunc(runs, func(a, b *Record) int { return cmp.Compare(b.Time.UnixNano(), a.Time.UnixNano()) })
 	passed := 0
 	for _, r := range runs {
-		if r.TreeMemMB == nil || r.UserS+r.SysS > LightGateCPUSec || *r.TreeMemMB > LightGateTreeMemMB {
+		cpu, memory, memoryKnown := r.UserS+r.SysS, r.TreeMemMB, r.TreeMemMB != nil
+		if cached[r.Run] {
+			if len(localSteps[r.Run]) == 0 {
+				continue
+			}
+			cpu, memory, memoryKnown = 0, nil, true
+			for _, step := range localSteps[r.Run] {
+				cpu += step.UserS + step.SysS
+				if step.TreeMemMB == nil {
+					memoryKnown = false
+				} else if memory == nil || *step.TreeMemMB > *memory {
+					memory = step.TreeMemMB
+				}
+			}
+		}
+		if !memoryKnown || cpu > LightGateCPUSec || memory == nil || *memory > LightGateTreeMemMB {
 			return false
 		}
-		if r.Exit == 0 {
+		if r.Exit == 0 && !cached[r.Run] {
 			passed++
 		}
 		if passed == LightGateRuns {

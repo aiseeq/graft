@@ -48,6 +48,27 @@ func TestLightGate(t *testing.T) {
 		{name: "a run with a step on a host does not count", edit: func(r []Record) []Record {
 			return append(r, Record{Kind: KindStep, Run: r[2].Run, Host: "pc"})
 		}},
+		{name: "a cache-hit run with an expensive local step keeps the gate queued", edit: func(r []Record) []Record {
+			run := gate(6, .1)
+			r = append(r, run, Record{Kind: KindStep, Run: run.Run, UserS: 10, TreeMemMB: mem(20)}, Record{Kind: KindCacheHit, Run: run.Run})
+			return r
+		}},
+		{name: "a cache-hit run with no local steps is skipped", edit: func(r []Record) []Record {
+			run := gate(6, .1)
+			return append(r, run, Record{Kind: KindCacheHit, Run: run.Run})
+		}, want: true},
+		{name: "a run with a host step prices its expensive local step", edit: func(r []Record) []Record {
+			run := gate(6, .1)
+			r = append(r, run,
+				Record{Kind: KindStep, Run: run.Run, UserS: 10, TreeMemMB: mem(20)},
+				Record{Kind: KindStep, Run: run.Run, Host: "pc"},
+			)
+			return r
+		}},
+		{name: "a host-only run is skipped", edit: func(r []Record) []Record {
+			run := gate(6, .1)
+			return append(r, run, Record{Kind: KindStep, Run: run.Run, Host: "pc"})
+		}, want: true},
 		{name: "a nested graft's cached step does not count", edit: func(r []Record) []Record {
 			return append(r, Record{Kind: KindCacheHit, Run: "child", Parent: r[2].Run})
 		}},
