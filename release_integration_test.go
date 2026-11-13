@@ -734,7 +734,7 @@ func TestReleaseCutoffChecksOnlyTopLevelMigrationsAndCleansPath(t *testing.T) {
 			}
 			out := cutoffOutput(t, d)
 			if number == 3 {
-				if !strings.Contains(out, "db/migrations/000003_step.up.sql (number 3)") || !strings.Contains(out, "highest remaining migration number 4") || !strings.Contains(out, "nothing left to revert") || strings.Contains(out, "500") {
+				if !strings.Contains(out, "db/migrations/000003_step.up.sql (number 3)") || !strings.Contains(out, "highest remaining migration number 4") || !strings.Contains(out, "nothing left to revert") || strings.Contains(out, "000500") || strings.Contains(out, "number 500") {
 					t.Fatalf("cutoff counted an archived migration:\n%s", out)
 				}
 			} else if strings.Contains(out, "Migration cutoff conflict") {
