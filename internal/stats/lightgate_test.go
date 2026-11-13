@@ -53,6 +53,13 @@ func TestLightGate(t *testing.T) {
 			r = append(r, run, Record{Kind: KindStep, Run: run.Run, UserS: 10, TreeMemMB: mem(20)}, Record{Kind: KindCacheHit, Run: run.Run})
 			return r
 		}},
+		{name: "a cache-hit run with a local step of unread memory keeps the gate queued", edit: func(r []Record) []Record {
+			run := gate(6, .1)
+			return append(r, run,
+				Record{Kind: KindStep, Run: run.Run, UserS: .1, TreeMemMB: mem(20)},
+				Record{Kind: KindStep, Run: run.Run, UserS: .1},
+				Record{Kind: KindCacheHit, Run: run.Run})
+		}},
 		{name: "a cache-hit run with no local steps is skipped", edit: func(r []Record) []Record {
 			run := gate(6, .1)
 			return append(r, run, Record{Kind: KindCacheHit, Run: run.Run})

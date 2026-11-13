@@ -17,11 +17,12 @@ const (
 )
 
 // LightGate says whether the gate of project is light by recs, counting runs
-// after since only. A run that ran no step, took any step from the cache or
-// sent any to a host says nothing about what the gate costs here and is
-// passed over; a failed run may have stopped early, so it counts towards
-// LightGateRuns only as a bar: one over the limits, or whose memory was not
-// read, keeps the gate in the queue.
+// after since only. A run that ran no step is passed over. A run that took
+// any step from the cache or sent any to a host is a bar by the steps it ran
+// here alone, and passed over when it ran none here; it never counts towards
+// LightGateRuns. A failed run may have stopped early, so it counts only as a
+// bar too: one over the limits, or whose memory was not read, keeps the gate
+// in the queue.
 func LightGate(recs []Record, project string, since time.Time) bool {
 	cached := runsNotCostedHere(recs)
 	var runs []*Record
@@ -32,32 +33,18 @@ func LightGate(recs []Record, project string, since time.Time) bool {
 			runs = append(runs, r)
 		}
 	}
-	localSteps := make(map[string][]*Record)
-	for i := range recs {
-		r := &recs[i]
-		if r.Kind == KindStep && r.Host == "" {
-			localSteps[r.Run] = append(localSteps[r.Run], r)
-		}
-	}
+	localSteps := localStepsByRun(recs)
 	slices.SortFunc(runs, func(a, b *Record) int { return cmp.Compare(b.Time.UnixNano(), a.Time.UnixNano()) })
 	passed := 0
 	for _, r := range runs {
-		cpu, memory, memoryKnown := r.UserS+r.SysS, r.TreeMemMB, r.TreeMemMB != nil
+		cost := Record{UserS: r.UserS, SysS: r.SysS, TreeMemMB: r.TreeMemMB}
 		if cached[r.Run] {
 			if len(localSteps[r.Run]) == 0 {
 				continue
 			}
-			cpu, memory, memoryKnown = 0, nil, true
-			for _, step := range localSteps[r.Run] {
-				cpu += step.UserS + step.SysS
-				if step.TreeMemMB == nil {
-					memoryKnown = false
-				} else if memory == nil || *step.TreeMemMB > *memory {
-					memory = step.TreeMemMB
-				}
-			}
+			cost = stepsCost(localSteps[r.Run])
 		}
-		if !memoryKnown || cpu > LightGateCPUSec || memory == nil || *memory > LightGateTreeMemMB {
+		if cost.TreeMemMB == nil || cost.UserS+cost.SysS > LightGateCPUSec || *cost.TreeMemMB > LightGateTreeMemMB {
 			return false
 		}
 		if r.Exit == 0 && !cached[r.Run] {
@@ -208,4 +195,33 @@ func runsNotCostedHere(recs []Record) map[string]bool {
 		}
 	}
 	return marked
+}
+
+// localStepsByRun groups the step records run on this machine by their Run.
+func localStepsByRun(recs []Record) map[string][]*Record {
+	steps := make(map[string][]*Record)
+	for i := range recs {
+		r := &recs[i]
+		if r.Kind == KindStep && r.Host == "" {
+			steps[r.Run] = append(steps[r.Run], r)
+		}
+	}
+	return steps
+}
+
+// stepsCost is what steps cost together: their CPU summed and the largest
+// tree memory, nil when any step's memory was not read.
+func stepsCost(steps []*Record) Record {
+	var cost Record
+	for _, step := range steps {
+		cost.UserS += step.UserS
+		cost.SysS += step.SysS
+		if step.TreeMemMB == nil {
+			return Record{UserS: cost.UserS, SysS: cost.SysS}
+		}
+		if cost.TreeMemMB == nil || *step.TreeMemMB > *cost.TreeMemMB {
+			cost.TreeMemMB = step.TreeMemMB
+		}
+	}
+	return cost
 }
