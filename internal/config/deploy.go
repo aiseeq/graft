@@ -302,7 +302,7 @@ func (r *ApprovedRelease) StatusesFor(labels []string) []string {
 	return statuses
 }
 
-// AllStatuses returns the statuses that any label can add to the base set.
+// AllStatuses returns every status when no item's labels are available.
 func (r *ApprovedRelease) AllStatuses() []string {
 	labels := slices.Sorted(maps.Keys(r.LabelStatuses))
 	return r.StatusesFor(labels)
@@ -746,17 +746,15 @@ func (c *Config) validateRequires(where, name string, t *DeployTarget) error {
 	return nil
 }
 
-// ReadyStatuses are the statuses of finished work waiting for the release:
-// those approved_release passes and those a transition takes to the sweep's
-// done status.
-func (t *DeployTarget) ReadyStatuses() []string {
+// ReadyStatusesFor returns statuses of finished work for an item carrying labels.
+func (t *DeployTarget) ReadyStatusesFor(labels []string, issueType ...string) []string {
 	var ready []string
 	if t.ApprovedRelease != nil {
-		ready = append(ready, t.ApprovedRelease.AllStatuses()...)
+		ready = append(ready, t.ApprovedRelease.StatusesFor(labels)...)
 	}
 	if n := t.ReleaseNotes; n != nil && n.Sweep != nil {
 		for _, tr := range n.Transitions {
-			if tr.To == n.Sweep.Done {
+			if tr.To == n.Sweep.Done && (len(issueType) == 0 || tr.AllowsType(issueType[0])) {
 				ready = append(ready, tr.From...)
 			}
 		}

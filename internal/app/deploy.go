@@ -975,6 +975,14 @@ func (m *noteMover) delivered(ctx context.Context, issue jira.Issue) string {
 	return issue.Status
 }
 
+func transitionTypeStayMessage(key, status, after string, t *config.NoteTransition) string {
+	how := ""
+	if after != "" {
+		how = " after its parent " + after
+	}
+	return fmt.Sprintf("%s stays %s%s: the transition to %s moves only %s", key, status, how, t.To, t.TypeNames())
+}
+
 // move takes the item by the transition and hands it over; after names the
 // parent a subtask follows. An item moved but not handed over is reported
 // and recorded, not returned: the move itself happened. An item to be handed
@@ -986,7 +994,7 @@ func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTr
 		how = " after its parent " + after
 	}
 	if !t.AllowsType(issue.Type) {
-		fmt.Fprintf(m.app.Stderr, "%s stays %s%s: the transition to %s moves only %s\n", issue.Key, issue.Status, how, t.To, t.TypeNames())
+		fmt.Fprintln(m.app.Stderr, transitionTypeStayMessage(issue.Key, issue.Status, after, t))
 		return errTypeNotAllowed
 	}
 	if why := m.glint.held(ctx, m.client); why != "" {
@@ -1806,16 +1814,16 @@ type approvalGate struct {
 	history map[string]fixVersionHistoryResult
 	// versions maps a version id to whether every approver approved it.
 	versions map[string]bool
-	// ready are the statuses of finished work waiting for the release;
-	// review, those work waits in for a reviewer; skipKeys, the standing
-	// items release_notes.jira.skip_keys names.
-	ready, review, skipKeys []string
+	// review are the statuses work waits in for a reviewer; skipKeys are the
+	// standing items release_notes.jira.skip_keys names.
+	review, skipKeys []string
+	target           *config.DeployTarget
 }
 
 func newApprovalGate(client *jira.Client, cfg *config.Config, target *config.DeployTarget, issues map[string]jira.Issue) *approvalGate {
 	return &approvalGate{
 		client: client, conf: target.ApprovedRelease, issues: issues, versions: map[string]bool{},
-		ready: target.ReadyStatuses(), review: cfg.ReviewStatuses(), skipKeys: cfg.ReleaseNotes.Jira.SkipKeys,
+		review: cfg.ReviewStatuses(), skipKeys: cfg.ReleaseNotes.Jira.SkipKeys, target: target,
 	}
 }
 
@@ -1883,16 +1891,26 @@ func (g *approvalGate) commit(ctx context.Context, keys []string) (commitPass, e
 	return out, nil
 }
 
+func (g *approvalGate) readyFor(issue jira.Issue) []string {
+	if g.target != nil {
+		return g.target.ReadyStatusesFor(issue.Labels, issue.Type)
+	}
+	if g.conf != nil {
+		return g.conf.StatusesFor(issue.Labels)
+	}
+	return nil
+}
+
 // openParent says why a parent keeps the item in: the item is ready with
 // subtasks still open, or it is not ready and its parent, ready or done, would
 // let it through. A subtask that is ready itself is not open: done comes only
-// after the release. It is "" when nothing keeps the item in.
+// after the release. It is "" when nothing keeps it in.
 func (g *approvalGate) openParent(ctx context.Context, issue jira.Issue) (string, error) {
 	holder := issue
 	switch {
 	case issue.Done:
 		return "", nil
-	case slices.Contains(g.ready, issue.Status):
+	case slices.Contains(g.readyFor(issue), issue.Status):
 	case issue.Parent == "":
 		return "", nil
 	default:
@@ -1900,7 +1918,7 @@ func (g *approvalGate) openParent(ctx context.Context, issue jira.Issue) (string
 		if err != nil {
 			return "", err
 		}
-		if !slices.Contains(g.ready, parent.Status) {
+		if !slices.Contains(g.readyFor(parent), parent.Status) {
 			// A done parent keeps a subtask in only where its version would
 			// let the subtask out.
 			if !parent.Done || g.conf.Prefix == "" {
@@ -1922,12 +1940,13 @@ func (g *approvalGate) openParent(ctx context.Context, issue jira.Issue) (string
 		if err != nil {
 			return "", err
 		}
+		stReady := g.readyFor(st)
 		switch {
-		case st.Done || slices.Contains(g.ready, st.Status) || slices.Contains(g.skipKeys, key):
+		case st.Done || slices.Contains(stReady, st.Status) || slices.Contains(g.skipKeys, key):
 		case !slices.Contains(g.review, st.Status):
 			open = append(open, key+" ("+st.Status+")")
 		default:
-			accepted, err := acceptedWith(ctx, g.client, st, holder, g.ready)
+			accepted, err := acceptedWith(ctx, g.client, st, holder, g.readyFor(holder))
 			if err != nil {
 				return "", err
 			}
@@ -2135,7 +2154,7 @@ func (g *approvalGate) fixVersions(issue jira.Issue) string {
 // remedy says how an item gets a commit out.
 func (g *approvalGate) remedy() string {
 	var ways []string
-	if statuses := g.conf.StatusesFor(nil); len(statuses) > 0 {
+	if statuses := g.conf.AllStatuses(); len(statuses) > 0 {
 		ways = append(ways, "move their items to "+orList(statuses))
 	}
 	if g.conf.Prefix != "" {

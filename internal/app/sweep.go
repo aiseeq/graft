@@ -642,6 +642,7 @@ func (s *sweepRun) item(ctx context.Context, issue jira.Issue, commits []sweptCo
 	allOn := !slices.ContainsFunc(commits, func(c sweptCommit) bool { return !c.onTarget })
 	inTrunk := slices.ContainsFunc(commits, func(c sweptCommit) bool { return c.inTrunk })
 	key, status := issue.Key, issue.Status
+	finishing, finishingAllowed := s.finishing(issue)
 	switch {
 	case issue.Done:
 		if i := slices.IndexFunc(commits, func(c sweptCommit) bool { return !c.inTrunk }); i >= 0 {
@@ -654,7 +655,11 @@ func (s *sweepRun) item(ctx context.Context, issue jira.Issue, commits []sweptCo
 		if inTrunk {
 			s.list(ctx, issue, "%s is %s, but its commits are in %s", key, status, s.trunk)
 		}
-	case s.finishing(status):
+	case finishing != nil:
+		if !finishingAllowed {
+			s.app.printf("%s", transitionTypeStayMessage(key, status, "", finishing))
+			break
+		}
 		s.finishingItem(ctx, issue, commits, allOn)
 	default:
 		// In work, whether a transition names the status or not.
@@ -760,7 +765,7 @@ func (s *sweepRun) finishParent(ctx context.Context, parent jira.Issue, allOn fu
 		}
 	}
 	why := fmt.Sprintf("its subtasks are all done (%d) and their work is on %s", len(parent.Subtasks), s.r.name)
-	if parent.NotStarted || !s.inFlow(parent.Status) {
+	if parent.NotStarted || !s.inFlow(parent) {
 		// A parent put aside by hand, Paused say, stays there.
 		s.judged[parent.Key] = true
 		s.list(ctx, parent, "%s is %s, but %s", parent.Key, parent.Status, why)
@@ -773,7 +778,7 @@ func (s *sweepRun) finishParent(ctx context.Context, parent jira.Issue, allOn fu
 // their parent, as acceptedWith tells, whose work the target runs: nobody else
 // moves them on, a reviewer checks the parent alone.
 func (s *sweepRun) acceptedSubtasks(ctx context.Context, parent jira.Issue, allOn func(string) bool) {
-	accepted := append(s.r.target.ReadyStatuses(), s.conf.Done)
+	accepted := append(s.r.target.ReadyStatusesFor(parent.Labels, parent.Type), s.conf.Done)
 	if !slices.Contains(accepted, parent.Status) {
 		return
 	}
@@ -794,21 +799,29 @@ func (s *sweepRun) acceptedSubtasks(ctx context.Context, parent jira.Issue, allO
 	}
 }
 
-// finishing tells whether the target's transition to the done status moves
-// an item in status.
-func (s *sweepRun) finishing(status string) bool {
-	t := s.r.target.ReleaseNotes.Moving(status)
-	return t != nil && t.To == s.conf.Done
+// finishing tells whether the target's transition to done moves this issue.
+func (s *sweepRun) finishing(issue jira.Issue) (*config.NoteTransition, bool) {
+	t := s.r.target.ReleaseNotes.Moving(issue.Status)
+	if t == nil || t.To != s.conf.Done {
+		return nil, false
+	}
+	return t, t.AllowsType(issue.Type)
 }
 
 // inFlow tells whether some target's transitions or approved_release name
 // status; an item elsewhere, Paused or Blocked, say, stays there by hand.
-func (s *sweepRun) inFlow(status string) bool {
+func (s *sweepRun) inFlow(issue jira.Issue) bool {
+	status := issue.Status
 	for _, t := range s.r.cfg.Deploy.Targets {
-		if n := t.ReleaseNotes; n != nil && (n.Moving(status) != nil || n.Leading(status) != nil) {
-			return true
+		if n := t.ReleaseNotes; n != nil {
+			for i := range n.Transitions {
+				tr := &n.Transitions[i]
+				if tr.AllowsType(issue.Type) && (slices.Contains(tr.From, status) || tr.To == status) {
+					return true
+				}
+			}
 		}
-		if ar := t.ApprovedRelease; ar != nil && slices.Contains(ar.AllStatuses(), status) {
+		if ar := t.ApprovedRelease; ar != nil && slices.Contains(ar.StatusesFor(issue.Labels), status) {
 			return true
 		}
 	}
@@ -821,6 +834,10 @@ func (s *sweepRun) inFlow(status string) bool {
 func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, checked bool) {
 	key := issue.Key
 	if slices.Contains(s.notes.SkipStatuses, issue.Status) {
+		return
+	}
+	if t := s.r.target.ReleaseNotes.Leading(s.conf.Done); t != nil && !t.AllowsType(issue.Type) {
+		s.app.printf("%s", transitionTypeStayMessage(issue.Key, issue.Status, "", t))
 		return
 	}
 	if !s.owned(ctx, issue) {
@@ -866,6 +883,9 @@ func (s *sweepRun) markDone(issue jira.Issue) {
 // reviewer would take it. Stopped between the two, it stays in that from: a
 // pass finishes it by its commits, one without any is listed by nobody.
 func (s *sweepRun) transitionDone(ctx context.Context, issue jira.Issue) error {
+	if t := s.r.target.ReleaseNotes.Leading(s.conf.Done); t != nil && !t.AllowsType(issue.Type) {
+		return errTypeNotAllowed
+	}
 	if t := s.r.target.ReleaseNotes.Leading(s.conf.Done); t != nil && len(t.From) > 0 && !slices.Contains(t.From, issue.Status) && issue.Parent != "" && slices.Contains(s.review, issue.Status) {
 		if err := s.client.Transition(ctx, issue, t.From[0]); err != nil {
 			return err

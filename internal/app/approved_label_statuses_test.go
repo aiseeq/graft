@@ -54,3 +54,24 @@ func TestApprovedLabelStatusesPassVersionGates(t *testing.T) {
 		})
 	}
 }
+
+func TestApprovedStatusesForSubtasksUseTheirLabels(t *testing.T) {
+	approved := &config.ApprovedRelease{
+		Statuses:      []string{"Ready for Release"},
+		LabelStatuses: map[string][]string{"internal": {"Internal Review"}},
+	}
+	parent := jira.Issue{Key: "PROJ-1", Status: "Ready for Release", Subtasks: []string{"PROJ-2"}}
+	subtask := jira.Issue{Key: "PROJ-2", Status: "Internal Review"}
+	gate := &approvalGate{
+		conf:   approved,
+		target: &config.DeployTarget{ApprovedRelease: approved},
+		issues: map[string]jira.Issue{"PROJ-2": subtask},
+	}
+	why, err := gate.openParent(t.Context(), parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(why, "PROJ-2 (Internal Review)") {
+		t.Fatalf("open parent reason = %q, want unlabelled subtask held", why)
+	}
+}

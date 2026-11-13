@@ -160,8 +160,12 @@ func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 			}
 			continue
 		}
-		if !slices.Contains(v.gate.conf.StatusesFor(issue.Labels), issue.Status) {
-			bad = append(bad, key+" ("+issue.Status+")")
+		if statuses := v.gate.conf.StatusesFor(issue.Labels); !slices.Contains(statuses, issue.Status) {
+			detail := key + " (" + issue.Status + ")"
+			if len(v.gate.conf.LabelStatuses) > 0 {
+				detail += "; move to " + strings.Join(statuses, " or ")
+			}
+			bad = append(bad, detail)
 		}
 		if issue.Subtask || issue.Parent != "" {
 			subtasks = append(subtasks, key+" ("+issue.Status+")")
@@ -170,8 +174,15 @@ func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 			missing = append(missing, key)
 		}
 	}
-	if len(bad) > 0 && v.fail("version-status", fmt.Sprintf("%s: %s; move to an approved status", v.selected.Name, strings.Join(bad, ", "))) {
-		return true
+	if len(bad) > 0 {
+		message := fmt.Sprintf("%s: %s", v.selected.Name, strings.Join(bad, ", "))
+		if len(v.gate.conf.LabelStatuses) == 0 {
+			// As before label_statuses: one remedy for the whole list.
+			message += "; move to " + strings.Join(v.gate.conf.Statuses, " or ")
+		}
+		if v.fail("version-status", message) {
+			return true
+		}
 	}
 	if len(subtasks) > 0 && v.fail("version-subtasks", fmt.Sprintf("%s: %s; remove subtasks from the version and add their parents", v.selected.Name, strings.Join(subtasks, ", "))) {
 		return true
