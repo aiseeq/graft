@@ -882,13 +882,14 @@ func (s *sweepRun) hops(issue jira.Issue, t *config.NoteTransition) bool {
 // doneRoute is the way transitionDone takes the item to done: by done, the
 // transition from its status when one leads to done, else the first one to
 // done; a subtask with the reviewer first goes into via, done's first from,
-// by hop, the transition naming that move. via is "" without that step.
+// by hop, the transition naming that move, unless Jira offers it the direct
+// move to done. via is "" without that step.
 func (s *sweepRun) doneRoute(issue jira.Issue) (done *config.NoteTransition, via string, hop *config.NoteTransition) {
 	notes := s.r.target.ReleaseNotes
-	if t := notes.Moving(issue.Status); t != nil && t.To == s.conf.Done {
+	done = notes.Leading(s.conf.Done)
+	if t := notes.Moving(issue.Status); t != nil && t.To == s.conf.Done && (!s.hops(issue, done) || issue.Offers(s.conf.Done)) {
 		return t, "", nil
 	}
-	done = notes.Leading(s.conf.Done)
 	if s.hops(issue, done) {
 		return done, done.From[0], transitionBetween(notes, issue.Status, done.From[0])
 	}

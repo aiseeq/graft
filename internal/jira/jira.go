@@ -304,6 +304,11 @@ func (c *Client) FixVersionHistoryAfter(ctx context.Context, key, versionID stri
 	return latest.After(at), hasAddition, err
 }
 
+// Offers tells whether Jira offers the item a move to the status.
+func (issue Issue) Offers(to string) bool {
+	return slices.ContainsFunc(issue.Transitions, func(t Transition) bool { return t.To == to })
+}
+
 // Transition moves an item to the status named to.
 func (c *Client) Transition(ctx context.Context, issue Issue, to string) error {
 	for _, t := range issue.Transitions {

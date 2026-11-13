@@ -171,6 +171,42 @@ func TestSweepTransitionDoneTakesTheCheckedRoute(t *testing.T) {
 	}
 }
 
+// Jira offering a reviewer's subtask no direct move to done, sweep takes it
+// through the done transition's from, as before types.
+func TestSweepTransitionDoneHopsWhenJiraOffersNoDirectMove(t *testing.T) {
+	var moves []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/transitions"):
+			body, _ := io.ReadAll(r.Body)
+			moves = append(moves, string(body))
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasPrefix(r.URL.Path, "/rest/api/3/issue/PROJ-2"):
+			fmt.Fprint(w, `{"fields":{"summary":"synthetic","status":{"name":"Ready for Release","statusCategory":{"key":"indeterminate"}},"issuetype":{"name":"Sub-task","subtask":true},"parent":{"key":"PROJ-1"},"labels":[]},"transitions":[{"id":"3","name":"Done","to":{"name":"Done"}}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	notes := &config.TargetNotes{Transitions: []config.NoteTransition{
+		{From: []string{"Ready for Release"}, To: "Done"},
+		{From: []string{"Testing"}, To: "Done"},
+	}, Sweep: &config.Sweep{Done: "Done"}}
+	run := &sweepRun{
+		app:    &App{Stdout: &strings.Builder{}, Stderr: &strings.Builder{}},
+		r:      &deployRun{name: "prod", target: &config.DeployTarget{ReleaseNotes: notes}},
+		client: jira.New(jira.Credentials{BaseURL: srv.URL}), conf: notes.Sweep, review: []string{"Testing"},
+	}
+	issue := jira.Issue{Key: "PROJ-2", Type: "Sub-task", Status: "Testing", Parent: "PROJ-1",
+		Transitions: []jira.Transition{{ID: "2", To: "Ready for Release"}}}
+	if err := run.transitionDone(t.Context(), issue); err != nil {
+		t.Fatal(err)
+	}
+	if len(moves) != 2 || !strings.Contains(moves[0], `"2"`) || !strings.Contains(moves[1], `"3"`) {
+		t.Fatalf("transition requests = %q, want Ready for Release, then Done", moves)
+	}
+}
+
 // A subtask with the reviewer reaches done through the from of the done
 // transition: the transition into that from must move its type too.
 func TestSweepTransitionTypesGuardTheHopBeforeDone(t *testing.T) {
