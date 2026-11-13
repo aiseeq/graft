@@ -25,8 +25,11 @@ func fakeSecrets() map[string]string {
 		"anthropic": "ANTHROPIC_API_KEY=sk-" + "ant-api03-" + strings.Repeat("xY7", 30),
 		"openai":    "key sk-" + "proj-" + strings.Repeat("Qw9", 20),
 		"slack":     "xox" + "b-1234567890-" + strings.Repeat("zZ1", 8),
+		"slackapp":  "xoxe.xa" + "pp-1-A12345678-1234567890-" + strings.Repeat("a1", 32),
+		"slackwf":   "xw" + "fp-1234567890-" + strings.Repeat("b2", 20),
+		"slackold":  "xox" + "p-111-222-333-d6bc76",
 		"harmless":  "re_used := compute() // AKIA",
-		"names":     "ghp_token sk-ant-example sk-proj-name xoxo-hugs-2026 github_pat_ prefix",
+		"names":     "ghp_token sk-ant-example sk-proj-name xoxo-hugs-and-kisses-2026 xapp-config github_pat_ prefix",
 	}
 }
 

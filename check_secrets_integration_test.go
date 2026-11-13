@@ -43,4 +43,13 @@ func TestCheckSecretsTakesConfig(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "a.txt:1") || strings.Contains(out, "testdata/key.txt") {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
+	// An extra pattern may be the secret itself: the finding does not show it.
+	if strings.Contains(out, "projectA_[0-9]{6}") || !strings.Contains(out, "extra pattern 1") {
+		t.Errorf("the finding shows the pattern, not its number:\n%s", out)
+	}
+	// A broken config is an error, not a scan without its exceptions.
+	f.write(".graft.yaml", "schema: 1\nchecks: [\n")
+	if out, code := f.graft("", "check", "--secrets"); code == 0 || !strings.Contains(out, ".graft.yaml") || strings.Contains(out, "failed the checks") {
+		t.Errorf("broken config: exit %d\n%s", code, out)
+	}
 }

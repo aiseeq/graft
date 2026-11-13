@@ -48,7 +48,10 @@ var builtinSecrets = []secretPattern{
 	{"GitHub token (github_pat_...)", regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{60,}`)},
 	{"Anthropic API key (sk-ant-...)", regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{40,}`)},
 	{"OpenAI project key (sk-proj-...)", regexp.MustCompile(`\bsk-proj-[A-Za-z0-9_-]{40,}`)},
-	{"Slack token (xox?-...)", regexp.MustCompile(`\bxox[abposr]-[0-9]{6,}-[A-Za-z0-9-]{10,}`)},
+	// Slack: bot, user, legacy (a three-digit first part), refresh (xoxe), app-level
+	// (xapp, rotated xoxe.xapp) and workflow (xwfp) tokens all start the body
+	// with digits, which xoxo-hugs-and-kisses-2026 and xapp-config do not.
+	{"Slack token (xox?-, xapp-, xwfp-...)", regexp.MustCompile(`\b(xox[abposre]|xapp|xwfp)-[0-9]+-[A-Za-z0-9-]{6,}`)},
 }
 
 // Secrets scans staged text files for credentials. Findings name the file,
@@ -56,8 +59,9 @@ var builtinSecrets = []secretPattern{
 // in terminals, logs and chat transcripts.
 func Secrets(files []StagedFile, cfg config.Secrets) []Finding {
 	patterns := slices.Clone(builtinSecrets)
-	for _, re := range cfg.Extra {
-		patterns = append(patterns, secretPattern{"extra pattern " + re.String(), re})
+	// A pattern is named by its number: written as a literal it is the secret.
+	for i, re := range cfg.Extra {
+		patterns = append(patterns, secretPattern{fmt.Sprintf("extra pattern %d of checks.secrets.extra_patterns", i+1), re})
 	}
 	var findings []Finding
 	for _, f := range files {
