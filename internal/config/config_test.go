@@ -777,3 +777,12 @@ release_notes: {jira: {project_keys: [PROJ]}}
 		}
 	}
 }
+
+// A broken extra pattern may be a literal secret: the error does not show it.
+func TestBrokenSecretPatternIsNotShown(t *testing.T) {
+	secret := "literal" + "SecretABC123"
+	_, err := Parse([]byte(minimal + "checks:\n  secrets:\n    extra_patterns: ['(" + secret + "']\n"))
+	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "extra_patterns[0]") || !strings.Contains(err.Error(), "missing closing )") {
+		t.Errorf("error: %v", err)
+	}
+}

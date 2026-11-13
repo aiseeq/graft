@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"regexp/syntax"
 	"slices"
 	"strings"
 	"time"
@@ -540,7 +541,13 @@ func (c *Config) validateSecrets() error {
 	for i, pattern := range s.ExtraPatterns {
 		re, err := regexp.Compile(pattern)
 		if err != nil {
-			return fmt.Errorf("checks.secrets.extra_patterns[%d]: %w", i, err)
+			// Go's error quotes the expression, and a literal one is the
+			// secret itself: name only what is wrong with it.
+			reason := "invalid regexp"
+			if syntaxErr, ok := errors.AsType[*syntax.Error](err); ok {
+				reason += ": " + string(syntaxErr.Code)
+			}
+			return fmt.Errorf("checks.secrets.extra_patterns[%d]: %s (the expression is not shown: it may hold a secret)", i, reason)
 		}
 		s.Extra = append(s.Extra, re)
 	}

@@ -48,10 +48,11 @@ var builtinSecrets = []secretPattern{
 	{"GitHub token (github_pat_...)", regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{60,}`)},
 	{"Anthropic API key (sk-ant-...)", regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{40,}`)},
 	{"OpenAI project key (sk-proj-...)", regexp.MustCompile(`\bsk-proj-[A-Za-z0-9_-]{40,}`)},
-	// Slack: bot, user, legacy (a three-digit first part), refresh (xoxe), app-level
-	// (xapp, rotated xoxe.xapp) and workflow (xwfp) tokens all start the body
-	// with digits, which xoxo-hugs-and-kisses-2026 and xapp-config do not.
-	{"Slack token (xox?-, xapp-, xwfp-...)", regexp.MustCompile(`\b(xox[abposre]|xapp|xwfp)-[0-9]+-[A-Za-z0-9-]{6,}`)},
+	// Slack: bot, user, refresh (xoxe), app-level (xapp, rotated xoxe.xapp)
+	// and workflow (xwfp) tokens start the body with digits and hold at least
+	// three dash-separated parts or a long random tail; names and build
+	// numbers after these prefixes have neither.
+	{"Slack token (xox?-, xapp-, xwfp-...)", regexp.MustCompile(`\b(xox[abcdeprs]|xapp|xwfp)-[0-9]+(-[A-Za-z0-9]+){2,}|\b(xox[abcdeprs]|xapp|xwfp)-[0-9]+-[A-Za-z0-9]{24,}`)},
 }
 
 // Secrets scans staged text files for credentials. Findings name the file,
