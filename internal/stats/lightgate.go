@@ -8,8 +8,8 @@ import (
 
 // What makes a gate light: its last LightGateRuns runs that really ran their
 // steps each stayed under these. Most gates of most projects cost a second
-// from the cache and tens of seconds when they run, so a cached run says
-// nothing and does not count.
+// from the cache and tens of seconds when they run, so a cached run does not
+// count; it is still a bar by the steps it ran here.
 const (
 	LightGateRuns      = 5
 	LightGateCPUSec    = 2.0
@@ -37,14 +37,14 @@ func LightGate(recs []Record, project string, since time.Time) bool {
 	slices.SortFunc(runs, func(a, b *Record) int { return cmp.Compare(b.Time.UnixNano(), a.Time.UnixNano()) })
 	passed := 0
 	for _, r := range runs {
-		cost := Record{UserS: r.UserS, SysS: r.SysS, TreeMemMB: r.TreeMemMB}
 		if cached[r.Run] {
 			if len(localSteps[r.Run]) == 0 {
 				continue
 			}
-			cost = stepsCost(localSteps[r.Run])
-		}
-		if cost.TreeMemMB == nil || cost.UserS+cost.SysS > LightGateCPUSec || *cost.TreeMemMB > LightGateTreeMemMB {
+			if !stepsAreLight(localSteps[r.Run]) {
+				return false
+			}
+		} else if r.TreeMemMB == nil || r.UserS+r.SysS > LightGateCPUSec || *r.TreeMemMB > LightGateTreeMemMB {
 			return false
 		}
 		if r.Exit == 0 && !cached[r.Run] {
@@ -141,15 +141,25 @@ func splitGateRunMatches(run *splitGateRun, want []string) bool {
 // splitGateStepsAreLight says whether the steps of a run that are in want
 // stayed under the limits here; a run with none of them passes.
 func splitGateStepsAreLight(steps []*Record, want []string) bool {
+	var in []*Record
+	for _, step := range steps {
+		if _, ok := slices.BinarySearch(want, step.Step); ok {
+			in = append(in, step)
+		}
+	}
+	return stepsAreLight(in)
+}
+
+// stepsAreLight says whether steps together stayed under the limits here: a
+// built-in step without a complete CPU sample, or any step whose memory was
+// not read, is not light.
+func stepsAreLight(steps []*Record) bool {
 	var cpu, memory float64
 	for _, step := range steps {
-		if _, ok := slices.BinarySearch(want, step.Step); !ok {
-			continue
-		}
 		if step.Builtin && !step.BuiltinCostKnown {
 			return false
 		}
-		if step.TreeMemMB == nil || *step.TreeMemMB > LightGateTreeMemMB {
+		if step.TreeMemMB == nil {
 			return false
 		}
 		cpu += step.UserS + step.SysS
@@ -207,21 +217,4 @@ func localStepsByRun(recs []Record) map[string][]*Record {
 		}
 	}
 	return steps
-}
-
-// stepsCost is what steps cost together: their CPU summed and the largest
-// tree memory, nil when any step's memory was not read.
-func stepsCost(steps []*Record) Record {
-	var cost Record
-	for _, step := range steps {
-		cost.UserS += step.UserS
-		cost.SysS += step.SysS
-		if step.TreeMemMB == nil {
-			return Record{UserS: cost.UserS, SysS: cost.SysS}
-		}
-		if cost.TreeMemMB == nil || *step.TreeMemMB > *cost.TreeMemMB {
-			cost.TreeMemMB = step.TreeMemMB
-		}
-	}
-	return cost
 }
