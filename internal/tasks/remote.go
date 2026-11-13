@@ -444,7 +444,7 @@ func (r *Runner) remoteUp(ctx context.Context) string {
 	up := r.remoteHeavy.Up
 	ctx, cancel := context.WithTimeout(ctx, remoteUpTimeout)
 	defer cancel()
-	cmd, err := execx.CommandContext(ctx, remoteStopGrace, up[0], up[1:]...)
+	cmd, err := execx.CommandContext(ctx, execx.ShortGrace, up[0], up[1:]...)
 	if err != nil {
 		return fmt.Sprintf("%s: %v", strings.Join(up, " "), err)
 	}

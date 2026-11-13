@@ -177,6 +177,44 @@ func TestGoCheckNoOutput(t *testing.T) {
 	}
 }
 
+// TestRemoteUpUsesShortStopGrace: remote up uses the short utility stop grace.
+func TestRemoteUpUsesShortStopGrace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell command")
+	}
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &Runner{
+		Root:        dir,
+		remoteHeavy: &config.RemoteHeavy{Up: []string{"sh", "-c", `trap '' TERM; : > "$1"; exec sleep 4`, "sh", ready}},
+	}
+	done := make(chan string, 1)
+	var started time.Time
+	go func() { done <- r.remoteUp(ctx) }()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("remote up command did not become ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	started = time.Now()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(8 * time.Second):
+		t.Fatal("remote up command did not stop")
+	}
+	if elapsed := time.Since(started); elapsed >= 3*time.Second {
+		t.Errorf("remote up took %s to stop; want short grace", elapsed)
+	}
+}
+
 // TestRemoteLoadCancelIsNoFailure: a step cancelled (Ctrl-C) while its load
 // command runs leaves the load unknown without a load failure to warn about.
 func TestRemoteLoadCancelIsNoFailure(t *testing.T) {
