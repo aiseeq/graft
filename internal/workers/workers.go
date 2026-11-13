@@ -105,11 +105,13 @@ func passOver(warn io.Writer, file string, err error) {
 //   - the markers of this worktree whose job runs or whose round is
 //     finished: the master commits its work after the job's process exits;
 //   - the markers of other worktrees whose round is finished and whose
-//     fighter_files list names staged files whose blob differs from the
-//     trunk's blob at that path (or whose older markers have some files the
-//     commit stages as the job left them, with the same trunk check): the
-//     master carried the job's diff over by hand; project version files and
-//     Go module and workspace files do not count as carried work;
+//     fighter_files list has files the commit stages with the listed blob,
+//     where that blob is not the trunk's at that path, or deletes where the
+//     trunk has the file (or whose older markers have some files the commit
+//     stages as the job left them, with the same trunk check): the master
+//     carried the job's diff over by hand; project version files and Go
+//     module and workspace files do not count as carried work. With the
+//     trunk unknown the trunk check is skipped;
 //   - the Worker trailers of the commits a merge or a squash brings in.
 //
 // The marker of another worktree whose job still runs names no model, nor
@@ -281,7 +283,7 @@ func listedFiles(files map[string]string, staged map[string]string, deleted map[
 		}
 		if oid == "" {
 			if deleted[p] {
-				if _, inTrunk := trunk[p]; inTrunk {
+				if _, inTrunk := trunk[p]; inTrunk || trunk == nil {
 					n++
 				}
 			}
@@ -365,7 +367,8 @@ func differsFromTrunk(blob string, trunk map[string]string, path string) bool {
 }
 
 // treeBlobs are the blobs at the listed paths in trunk; absent paths have no
-// entry, including files deleted from trunk. An unknown trunk ("") has none.
+// entry, including files deleted from trunk. An unknown trunk ("") gives
+// nil, which differsFromTrunk and listedFiles read as "no trunk to check".
 func treeBlobs(repo *gitx.Repo, trunk string, staged map[string]string, deleted map[string]bool) (map[string]string, error) {
 	paths := make([]string, 0, len(staged)+len(deleted))
 	for p := range staged {
@@ -374,7 +377,10 @@ func treeBlobs(repo *gitx.Repo, trunk string, staged map[string]string, deleted 
 	for p := range deleted {
 		paths = append(paths, p)
 	}
-	if len(paths) == 0 || trunk == "" {
+	if trunk == "" {
+		return nil, nil
+	}
+	if len(paths) == 0 {
 		return map[string]string{}, nil
 	}
 	out, err := repo.Git(append([]string{"ls-tree", "-z", "--full-tree", trunk, "--"}, paths...)...)

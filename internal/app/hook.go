@@ -212,10 +212,16 @@ func (a *App) workerTrunk(repo *gitx.Repo, cfg *config.Config) string {
 	if err == nil {
 		var trunk string
 		if trunk, err = trunkRef(repo, cfg, "", remotes); err == nil {
-			return trunk
+			var ok bool
+			if ok, err = repo.RevExists(trunk); ok {
+				return trunk
+			}
+			if err == nil {
+				err = fmt.Errorf("%s names no commit here", trunk)
+			}
 		}
 	}
-	fmt.Fprintf(a.Stderr, "graft: the trunk is unknown, a finished job of another worktree counts by its files alone: %v\n", err)
+	fmt.Fprintf(a.Stderr, "graft: no trunk to compare a finished job's files with, the job of another worktree counts by its files alone: %v\n", err)
 	return ""
 }
 

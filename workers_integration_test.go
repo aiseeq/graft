@@ -255,22 +255,35 @@ func TestWorkerTrailersIgnoreFinishedFileListsMatchingTrunk(t *testing.T) {
 	}
 }
 
-// TestWorkerTrailersWithUnknownTrunk: a remote without HEAD leaves the trunk
-// unknown; the commit goes on, says so, and a finished job's file list counts
-// by its files alone.
+// TestWorkerTrailersWithUnknownTrunk: a remote without HEAD, or with a HEAD
+// naming no commit, leaves the trunk unknown; the commit goes on, says so
+// once, and a finished job's file list counts by its files alone, a delete
+// too.
 func TestWorkerTrailersWithUnknownTrunk(t *testing.T) {
-	f := workerRepo(t, "none")
-	bare := filepath.Join(f.base, "origin.git")
-	f.git("init", "-q", "--bare", bare)
-	f.git("remote", "add", "origin", bare)
-	job := filepath.Join(f.base, "job")
-	f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
-	f.write("c.txt", "by the job\n")
-	f.git("add", "c.txt")
-	writeFile(t, filepath.Join(f.markers(), "job1"), "{\"id\":\"job1\",\"models\":[\"vendor/model-a\"],\"client\":\"cli\",\"dir\":\""+job+"\",\"finished\":true,\"fighter_files\":{\"c.txt\":\""+f.git("hash-object", "c.txt")+"\"}}")
-	out := f.mustGraft("commit", "-m", "feat: carry finished work")
-	if got := f.workers("HEAD"); got != "vendor/model-a" || !strings.Contains(out, "the trunk is unknown") {
-		t.Errorf("unknown trunk, trailers %q\n%s", got, out)
+	for _, c := range []struct {
+		name string
+		head bool
+	}{{"remote without HEAD", false}, {"remote HEAD naming no commit", true}} {
+		t.Run(c.name, func(t *testing.T) {
+			f := workerRepo(t, "none")
+			bare := filepath.Join(f.base, "origin.git")
+			f.git("init", "-q", "--bare", bare)
+			f.git("remote", "add", "origin", bare)
+			if c.head {
+				f.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+			}
+			job := filepath.Join(f.base, "job")
+			f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
+			f.write("c.txt", "by the job\n")
+			f.git("add", "c.txt")
+			f.git("rm", "-q", "a.txt")
+			writeFile(t, filepath.Join(f.markers(), "job1"), "{\"id\":\"job1\",\"models\":[\"vendor/model-a\"],\"client\":\"cli\",\"dir\":\""+job+"\",\"finished\":true,\"fighter_files\":{\"c.txt\":\""+f.git("hash-object", "c.txt")+"\"}}")
+			writeFile(t, filepath.Join(f.markers(), "job2"), "{\"id\":\"job2\",\"models\":[\"vendor/model-b\"],\"client\":\"cli\",\"dir\":\""+job+"\",\"finished\":true,\"fighter_files\":{\"a.txt\":\"\"}}")
+			out := f.mustGraft("commit", "-m", "feat: carry finished work")
+			if got := f.workers("HEAD"); got != "vendor/model-a,vendor/model-b" || strings.Count(out, "no trunk to compare") != 1 {
+				t.Errorf("unknown trunk, trailers %q\n%s", got, out)
+			}
+		})
 	}
 }
 
