@@ -692,7 +692,7 @@ func TestUserRemoteHeavyStopsACancelledStepWithSIGTERM(t *testing.T) {
 			t.Fatalf("run did not start:\n%s", out.String())
 		}
 	}
-	if err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGINT); err != nil {
+	if err := akitproc.SignalCmd(cmd, syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
 	_ = cmd.Wait()

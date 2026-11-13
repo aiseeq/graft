@@ -7,12 +7,20 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	akitproc "github.com/aiseeq/akit/proc"
 	"github.com/aiseeq/graft/v2/internal/config"
 )
+
+func TestMain(m *testing.M) {
+	if err := akitproc.BecomeChildSubreaper(); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
 
 func TestFailedStartStopsServiceAndChild(t *testing.T) {
 	t.Run("not listening", func(t *testing.T) {
@@ -33,7 +41,7 @@ func failedStartStopsChild(t *testing.T, body, want string) {
 		for _, name := range []string{"leader", "child"} {
 			data, _ := os.ReadFile(filepath.Join(dir, name))
 			if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
-				_, _ = akitproc.StopChild(pid, 0, nil)
+				_ = akitproc.SignalDescendant(pid, syscall.SIGKILL)
 			}
 		}
 	})
@@ -98,5 +106,26 @@ func failedStartStopsChild(t *testing.T, body, want string) {
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+}
+
+func TestWritePIDStoresLeaderStart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "service.pid")
+	if err := writePID(path, 123, "456"); err != nil {
+		t.Fatal(err)
+	}
+	pid, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(pid) != "123\n" {
+		t.Fatalf("pid file = %q, want PID only", pid)
+	}
+	start, err := os.ReadFile(path + ".start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(start) != "456\n" {
+		t.Fatalf("start record = %q, want leader start time", start)
 	}
 }

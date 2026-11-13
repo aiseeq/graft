@@ -23,8 +23,8 @@ import (
 
 func callerCommand(t *testing.T, args ...string) (*exec.Cmd, *os.File, *os.File) {
 	t.Helper()
-	if runtime.GOOS != "linux" {
-		t.Skip("uses Linux child signaling and Unix pipes")
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix signals and pipes")
 	}
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
@@ -69,8 +69,8 @@ func waitProcess(t *testing.T, cmd *exec.Cmd) error {
 }
 
 func TestSignalStopsTheCommand(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("uses Linux child signaling")
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix signals")
 	}
 	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
 		t.Run(sig.String(), func(t *testing.T) {
@@ -82,7 +82,7 @@ func TestSignalStopsTheCommand(t *testing.T) {
 					t.Fatalf("command did not start: %q, %v", ready, err)
 				}
 				time.Sleep(80 * time.Millisecond)
-				if err := akitproc.SignalChild(cmd.Process.Pid, sig); err != nil {
+				if err := akitproc.SignalCmd(cmd, sig); err != nil {
 					t.Fatal(err)
 				}
 				waitForEOF(t, out, errOut)
@@ -102,7 +102,7 @@ func TestSignalStopsTheCommand(t *testing.T) {
 				if err != nil || ready != "ready\n" {
 					t.Fatalf("task step did not start: %q, %v", ready, err)
 				}
-				if err := akitproc.SignalChild(cmd.Process.Pid, sig); err != nil {
+				if err := akitproc.SignalCmd(cmd, sig); err != nil {
 					t.Fatal(err)
 				}
 				if err := waitProcess(t, cmd); err == nil {
@@ -192,9 +192,6 @@ func TestCallerGoneIntervalRejectsInvalidValue(t *testing.T) {
 }
 
 func TestIgnoredHangupKeepsRunning(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("uses Linux child signaling")
-	}
 	marker := filepath.Join(t.TempDir(), "finished")
 	cmd := exec.Command("sh", "-c", "trap '' HUP; exec \"$1\" exec -- sh -c 'sleep 0.15; : > \"$1\"' sh \"$2\"", "sh", graftBin, marker)
 	cmd.Dir = t.TempDir()
@@ -205,7 +202,7 @@ func TestIgnoredHangupKeepsRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(40 * time.Millisecond)
-	if err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGHUP); err != nil {
+	if err := akitproc.SignalCmd(cmd, syscall.SIGHUP); err != nil {
 		t.Fatal(err)
 	}
 	if err := cmd.Wait(); err != nil {
@@ -299,8 +296,8 @@ func TestCallerGoneHeadWithStderrFile(t *testing.T) {
 // itself needs no check of graft's: exec.Cmd.Start of a cancelled context
 // starts nothing, and a started one StopOnCancel stops.
 func TestSigtermWhileWaitingDoesNotStart(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("uses Linux child signaling")
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix signals")
 	}
 	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"})
 	procDir, cfgDir := t.TempDir(), t.TempDir()
@@ -309,7 +306,7 @@ func TestSigtermWhileWaitingDoesNotStart(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "started")
 	cmd, out, errOut := startPiped(t, f.work, f.env, "exec", "--heavy", "--local", "--", "sh", "-c", ": > \"$1\"", "sh", marker)
 	waitForPipeText(t, "runnable", out, errOut)
-	if err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGTERM); err != nil {
+	if err := akitproc.SignalCmd(cmd, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	_ = out.Close()

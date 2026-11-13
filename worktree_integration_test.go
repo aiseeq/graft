@@ -1822,7 +1822,7 @@ func TestWorktreeCleanStopsOnSIGTERM(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGTERM); err != nil {
+	if err := akitproc.SignalCmd(cmd, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)

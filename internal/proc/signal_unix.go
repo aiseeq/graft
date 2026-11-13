@@ -3,6 +3,7 @@
 package proc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -19,68 +20,47 @@ func Detach(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
 
-// Terminate asks the process group a detached process leads to exit
-// (SIGTERM): a wrapper such as go run must not leave its child behind.
-func Terminate(pid int) error {
-	return signalGroup(pid, syscall.SIGTERM)
-}
-
 // StopOnCancel makes cmd get SIGTERM when its context ends, in place of
 // SIGKILL, so it can clean up. A cmd still running grace later is killed
 // with the processes it started (a child it did not stop would run on with
 // the work), what fails then goes to warn, and Wait returns soon after.
 func StopOnCancel(cmd *exec.Cmd, grace time.Duration, warn func(error)) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	} else if !cmd.SysProcAttr.Setsid {
+		cmd.SysProcAttr.Setpgid = true
+	}
+
 	cmd.Cancel = func() error {
-		// Asked before the signal: a reaper whose command ended alone gets
-		// it only to end the orphans sooner, and Wait keeps the command's
-		// own status, a success too.
 		ended := reaperEnded(cmd)
-		err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGTERM)
-		if errors.Is(err, errors.ErrUnsupported) {
-			// Outside Linux akit cannot verify the child; os.Process signals
-			// the child graft started and has not waited for yet.
-			err = cmd.Process.Signal(syscall.SIGTERM)
+		result, err := akitproc.SignalCmdWithResult(cmd, syscall.SIGTERM)
+		if result.Degraded || errors.Is(err, akitproc.ErrPidfdUnavailable) {
+			warn(fmt.Errorf("command %d was signaled directly because pidfd_open is unavailable", cmd.Process.Pid))
 		}
-		time.AfterFunc(grace, func() {
-			if err := cmd.Process.Signal(syscall.Signal(0)); errors.Is(err, os.ErrProcessDone) {
-				return
-			} else if err != nil {
-				warn(err)
-				return
-			}
-			_, err := akitproc.StopChild(cmd.Process.Pid, 0, nil)
-			if errors.Is(err, errors.ErrUnsupported) {
-				// Outside Linux the tree cannot be walked: the child alone.
-				err = cmd.Process.Kill()
-			}
-			if err != nil && !akitproc.Gone(err) && !errors.Is(err, os.ErrProcessDone) {
-				warn(err)
-			}
-		})
+		if err != nil && !errors.Is(err, os.ErrProcessDone) {
+			warn(err)
+		}
+		time.AfterFunc(grace, func() { stopOnCancelAfterGrace(cmd, warn) })
 		if ended && err == nil {
 			return os.ErrProcessDone
 		}
-		return err
+		return context.Canceled
 	}
 	cmd.WaitDelay = grace + killSettle
 }
 
+func stopOnCancelAfterGrace(cmd *exec.Cmd, warn func(error)) {
+	stopped, err := akitproc.StopCmd(cmd, 0, syscall.SIGKILL)
+	if stopped.Degraded {
+		warn(fmt.Errorf("command %d descendants were not stopped because pidfd_open is unavailable", cmd.Process.Pid))
+	}
+	if err != nil && !akitproc.Gone(err) && !errors.Is(err, os.ErrProcessDone) {
+		warn(err)
+	}
+}
+
 // killSettle is how long Wait waits for the output of a killed tree.
 const killSettle = 5 * time.Second
-
-// Kill ends the process group a detached process leads (SIGKILL).
-func Kill(pid int) error {
-	return signalGroup(pid, syscall.SIGKILL)
-}
-
-func signalGroup(pid int, sig syscall.Signal) error {
-	// The service may have been started by another graft process. akit can
-	// stop a group only when its exec.Cmd was started by this process.
-	if err := syscall.Kill(-pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Errorf("sending %s to process group %d: %w", sig, pid, err)
-	}
-	return nil
-}
 
 // ConnRefused reports whether a dial failed because nothing listens.
 func ConnRefused(err error) bool {

@@ -8,9 +8,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	akitproc "github.com/aiseeq/akit/proc"
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/stats"
 )
@@ -98,9 +100,7 @@ func TestReadRemoteLoadWaitDelay(t *testing.T) {
 	}
 	if data, readErr := os.ReadFile(pidFile); readErr == nil {
 		if pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil {
-			if process, findErr := os.FindProcess(pid); findErr == nil {
-				_ = process.Kill()
-			}
+			_ = akitproc.SignalDescendant(pid, syscall.SIGKILL)
 		}
 	}
 }

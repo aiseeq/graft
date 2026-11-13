@@ -111,10 +111,10 @@ tasks:
 	}
 	t.Cleanup(func() {
 		if sleeping() {
-			_ = syscall.Kill(orphan, syscall.SIGKILL)
+			_ = akitproc.SignalDescendant(orphan, syscall.SIGKILL)
 		}
 	})
-	if err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGTERM); err != nil {
+	if err := akitproc.SignalCmd(cmd, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -202,7 +202,7 @@ func TestCallerGoneAfterSignalledCommandIsStopped(t *testing.T) {
 	// The terminal's SIGINT to the group, graft left out: the reaper and the
 	// command, both started by this test's graft.
 	for _, pid := range []int{reaper, command} {
-		if err := syscall.Kill(pid, syscall.SIGINT); err != nil {
+		if err := akitproc.SignalDescendant(pid, syscall.SIGINT); err != nil {
 			t.Fatal(err)
 		}
 	}

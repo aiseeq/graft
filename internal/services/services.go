@@ -16,8 +16,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	akitproc "github.com/aiseeq/akit/proc"
 	"github.com/aiseeq/graft/v2/internal/atomicfile"
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
@@ -165,19 +167,34 @@ func (m *Manager) start(ctx context.Context, name string) error {
 		return err
 	}
 	defer logFile.Close()
+	if err := akitproc.BecomeChildSubreaper(); err != nil && !errors.Is(err, errors.ErrUnsupported) {
+		return fmt.Errorf("%s: becoming a child subreaper: %w", name, err)
+	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("%s: starting %q: %w", name, s.Run.Source, err)
 	}
 	pid = cmd.Process.Pid
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
-	if err := writePID(m.path(s.PIDFile), pid); err != nil {
-		return errors.Join(fmt.Errorf("%s: %w", name, err), proc.Kill(pid))
+	stat, statErr := akitproc.ReadStat("/proc", pid)
+	if statErr != nil {
+		_, stopErr := akitproc.StopCmd(cmd, time.Second, syscall.SIGTERM)
+		waitErr := cmd.Wait()
+		return errors.Join(fmt.Errorf("%s: reading process start time: %w", name, statErr), stopErr, waitErr)
 	}
-	if err := m.waitStarted(ctx, s, addr, exited); err != nil {
-		stopErr := proc.Kill(pid)
-		return errors.Join(fmt.Errorf("%s: %w\n%s", name, err, tail(m.path(s.Log), 20)), stopErr, fsx.Remove(m.path(s.PIDFile)))
+	if err := writePID(m.path(s.PIDFile), pid, stat.Start); err != nil {
+		_, stopErr := akitproc.StopCmd(cmd, time.Second, syscall.SIGTERM)
+		waitErr := cmd.Wait()
+		return errors.Join(fmt.Errorf("%s: %w", name, err), stopErr, waitErr)
 	}
+	if err := m.waitStarted(ctx, s, addr, pid, stat.Start); err != nil {
+		_, stopErr := akitproc.StopCmd(cmd, time.Second, syscall.SIGTERM)
+		waitErr := cmd.Wait()
+		return errors.Join(fmt.Errorf("%s: %w\n%s", name, err, tail(m.path(s.Log), 20)), stopErr, waitErr, fsx.Remove(m.path(s.PIDFile)), fsx.Remove(m.path(s.PIDFile)+".start"))
+	}
+	go func() {
+		if waitErr := cmd.Wait(); waitErr != nil {
+			fmt.Fprintf(m.Log, "graft: service %s exited: %v\n", name, waitErr)
+		}
+	}()
 	fmt.Fprintf(m.Log, "graft: started %s (pid %d), log %s\n", name, pid, s.Log)
 	return nil
 }
@@ -238,31 +255,43 @@ func (m *Manager) command(name string, s *config.Service) (*exec.Cmd, *os.File, 
 // considered started: bad config usually kills a process sooner.
 const aliveGrace = time.Second
 
-func (m *Manager) waitStarted(ctx context.Context, s *config.Service, addr string, exited <-chan error) error {
-	if addr == "" {
-		select {
-		case err := <-exited:
-			return fmt.Errorf("exited at start: %w", err)
-		case <-time.After(min(aliveGrace, s.StartTimeout)):
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+func (m *Manager) waitStarted(ctx context.Context, s *config.Service, addr string, pid int, start string) error {
+	deadline := time.NewTimer(min(aliveGrace, s.StartTimeout))
+	if addr != "" {
+		deadline.Stop()
+		deadline.Reset(s.StartTimeout)
 	}
-	deadline := time.After(s.StartTimeout)
+	defer deadline.Stop()
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		select {
-		case err := <-exited:
-			return fmt.Errorf("exited before listening on %s: %w", addr, err)
-		case <-deadline:
+		case <-deadline.C:
+			if addr == "" {
+				return nil
+			}
 			return fmt.Errorf("not listening on %s after %s", addr, s.StartTimeout)
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-tick.C:
-			if up, err := listening(addr); up || err != nil {
-				return err
+			stat, err := akitproc.ReadStat("/proc", pid)
+			if akitproc.Gone(err) || err == nil && (stat.Start != start || stat.State == "Z" || stat.State == "X") {
+				if addr == "" {
+					return fmt.Errorf("exited at start")
+				}
+				return fmt.Errorf("exited before listening on %s", addr)
+			}
+			if err != nil {
+				return fmt.Errorf("checking process %d: %w", pid, err)
+			}
+			if addr != "" {
+				up, err := listening(addr)
+				if err != nil {
+					return err
+				}
+				if up {
+					return nil
+				}
 			}
 		}
 	}
@@ -281,26 +310,45 @@ func (m *Manager) stop(ctx context.Context, name string) error {
 		fmt.Fprintf(m.Log, "graft: %s is not running\n", name)
 		return nil
 	}
-	if err := proc.Terminate(pid); err != nil {
-		return err
+	data, err := os.ReadFile(m.path(s.PIDFile) + ".start")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%s: pid file has no process start time; stop the service manually, then remove %s", name, m.path(s.PIDFile))
+		}
+		return fmt.Errorf("%s: reading the process start time: %w", name, err)
+	}
+	start := strings.TrimSpace(string(data))
+	if start == "" {
+		return fmt.Errorf("%s: pid file has no process start time; stop the service manually, then remove %s", name, m.path(s.PIDFile))
+	}
+	result, err := akitproc.StopSession(akitproc.SessionRecord{Pid: pid, Start: start}, s.StopTimeout, syscall.SIGTERM)
+	if errors.Is(err, akitproc.ErrNoStartRecord) {
+		return fmt.Errorf("%s: pid file has no valid process start time; stop the service manually, then remove %s", name, m.path(s.PIDFile))
+	}
+	if errors.Is(err, akitproc.ErrSessionLeaderGone) {
+		fmt.Fprintf(m.Log, "graft: %s: session leader %d is gone or changed (%v); its orphans were not stopped; inspect processes with SID %d using `ps -eo pid,ppid,sid,stat,command` and stop remaining service processes manually\n", name, pid, err, pid)
+		err = nil
+	}
+	if errors.Is(err, akitproc.ErrPidfdUnavailable) {
+		fmt.Fprintf(m.Log, "graft: %s: session processes were not stopped because pidfd_open is unavailable\n", name)
+	}
+	if err != nil {
+		return fmt.Errorf("%s: stopping session: %w", name, err)
+	}
+	if result.Degraded {
+		fmt.Fprintf(m.Log, "graft: %s: session processes were not stopped because pidfd_open is unavailable\n", name)
+	}
+	if result.Killed > 0 {
+		fmt.Fprintf(m.Log, "graft: %s did not stop in %s, killing it\n", name, s.StopTimeout)
 	}
 	gone, err := waitFor(ctx, s.StopTimeout, func() (bool, error) { return dead(pid) })
 	if err != nil {
 		return err
 	}
 	if !gone {
-		fmt.Fprintf(m.Log, "graft: %s did not stop in %s, killing it\n", name, s.StopTimeout)
-		if err := proc.Kill(pid); err != nil {
-			return err
-		}
-		if gone, err = waitFor(ctx, s.StopTimeout, func() (bool, error) { return dead(pid) }); err != nil {
-			return err
-		}
-		if !gone {
-			return fmt.Errorf("%s: process %d survived SIGKILL", name, pid)
-		}
+		return fmt.Errorf("%s: process %d survived session stop", name, pid)
 	}
-	if err := fsx.Remove(m.path(s.PIDFile)); err != nil {
+	if err := errors.Join(fsx.Remove(m.path(s.PIDFile)), fsx.Remove(m.path(s.PIDFile)+".start")); err != nil {
 		return err
 	}
 	return m.stopped(ctx, name, s)
@@ -414,6 +462,10 @@ func (m *Manager) running(name string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("%s: reading the pid file: %w", name, err)
 	}
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return 0, fmt.Errorf("%s: not a pid: %q", s.PIDFile, strings.TrimSpace(string(data)))
+	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil || pid <= 0 {
 		return 0, fmt.Errorf("%s: not a pid: %q", s.PIDFile, strings.TrimSpace(string(data)))
@@ -432,7 +484,7 @@ func (m *Manager) running(name string) (int, error) {
 		}
 	}
 	fmt.Fprintf(m.Log, "graft: %s: removing stale pid file (process %d is gone)\n", name, pid)
-	return 0, fsx.Remove(path)
+	return 0, errors.Join(fsx.Remove(path), fsx.Remove(path+".start"))
 }
 
 // isService guards against pid reuse where the platform can tell: the
@@ -458,8 +510,18 @@ func (m *Manager) isService(s *config.Service, pid int) (bool, error) {
 }
 
 func dead(pid int) (bool, error) {
-	alive, err := proc.Alive(pid)
-	return !alive, err
+	stat, err := akitproc.ReadStat("/proc", pid)
+	if akitproc.Gone(err) {
+		return true, nil
+	}
+	if err == nil {
+		return stat.State == "Z" || stat.State == "X", nil
+	}
+	if errors.Is(err, errors.ErrUnsupported) {
+		alive, aliveErr := proc.Alive(pid)
+		return !alive, aliveErr
+	}
+	return false, err
 }
 
 // env is the base environment plus the service's .env keys and variables.
@@ -546,9 +608,12 @@ func waitFor(ctx context.Context, timeout time.Duration, done func() (bool, erro
 	}
 }
 
-func writePID(path string, pid int) error {
+func writePID(path string, pid int, start string) error {
 	if err := atomicfile.Write(path, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
 		return fmt.Errorf("writing the pid file: %w", err)
+	}
+	if err := atomicfile.Write(path+".start", []byte(start+"\n"), 0o644); err != nil {
+		return errors.Join(fmt.Errorf("writing the process start time: %w", err), fsx.Remove(path))
 	}
 	return nil
 }

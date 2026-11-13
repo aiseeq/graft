@@ -37,6 +37,12 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	if runtime.GOOS == "linux" {
+		if err := akitproc.BecomeChildSubreaper(); err != nil {
+			fmt.Fprintln(os.Stderr, "integration subreaper:", err)
+			os.Exit(1)
+		}
+	}
 	code, err := setup(m)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "integration setup:", err)
@@ -463,16 +469,12 @@ func startGraft(t *testing.T, f *fixture, args ...string) *runningGraft {
 	return g
 }
 
-// stopTestChild stops a test-owned subprocess and its tree on Linux.
+// stopTestChild stops a test-owned command through akit.
 func stopTestChild(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil || cmd.ProcessState != nil {
 		return
 	}
-	if runtime.GOOS == "linux" {
-		_, _ = akitproc.StopChild(cmd.Process.Pid, 0, nil)
-		return
-	}
-	_, _ = akitproc.StopChildGroup(cmd, 0, syscall.SIGKILL)
+	_, _ = akitproc.StopCmd(cmd, 0, syscall.SIGKILL)
 }
 
 func (g *runningGraft) name() string { return "graft " + strings.Join(g.args, " ") }

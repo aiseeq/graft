@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -38,11 +37,7 @@ func TestLocalStopGraceCanBeShortenedForTest(t *testing.T) {
 			t.Fatal("cancelled command returned successfully")
 		}
 	case <-time.After(2 * time.Second):
-		if runtime.GOOS == "linux" {
-			_, _ = akitproc.StopChild(cmd.Process.Pid, 0, nil)
-		} else {
-			_, _ = akitproc.StopChildGroup(cmd, 0, syscall.SIGKILL)
-		}
+		_, _ = akitproc.StopCmd(cmd, 0, syscall.SIGKILL)
 		t.Fatal("cancelled command tree did not stop")
 	}
 	timer := time.NewTimer(500 * time.Millisecond)

@@ -90,6 +90,17 @@ var (
 // ExitReaper is the reaper's own failure: it could not become a subreaper.
 const ExitReaper = 125
 
+func signalReaperCommand(pid int, sig unix.Signal) {
+	// The command is not reaped yet: its pid is still its own.
+	if err := akitproc.SignalDescendant(pid, sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		if errors.Is(err, akitproc.ErrPidfdUnavailable) {
+			fmt.Fprintf(os.Stderr, "graft: reaper: command %d was not signaled because pidfd_open is unavailable\n", pid)
+		} else {
+			fmt.Fprintf(os.Stderr, "graft: reaper: passing %v to %d: %v\n", sig, pid, err)
+		}
+	}
+}
+
 // RunReaper runs path with argv as a subreaper (graft reap, Reap) and
 // returns the command's exit status; a command a signal ended ends the
 // reaper with the same signal, so the caller sees what it would have seen
@@ -136,10 +147,7 @@ func RunReaper(path string, argv []string) int {
 	r := &reaper{child: pid}
 	for !r.done {
 		if sig, ok := (<-sigs).(unix.Signal); ok && r.note(sig) {
-			// The command is not reaped yet: its pid is still its own.
-			if err := akitproc.SignalChild(pid, sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
-				fmt.Fprintf(os.Stderr, "graft: reaper: passing %v to %d: %v\n", sig, pid, err)
-			}
+			signalReaperCommand(pid, sig)
 		}
 		if err := r.reapAll(); err != nil {
 			fmt.Fprintf(os.Stderr, "graft: reaper: %v\n", err)
@@ -266,25 +274,25 @@ func (r *reaper) endOrphans(sigs <-chan os.Signal) error {
 	if err != nil || len(left) == 0 {
 		return err
 	}
-	signalAll(left, unix.SIGTERM)
-	if left, err = r.settle(orphanGrace, sigs); err != nil || len(left) == 0 {
+	if r.hurried {
+		signalAll(left, unix.SIGKILL)
+		left, err = r.settle(orphanKill, sigs)
+	} else {
+		bulk := signalAll(left, unix.SIGTERM)
+		wait := orphanGrace
+		if bulk {
+			wait = orphanKill
+		}
+		left, err = r.settle(wait, sigs)
+		if err == nil && len(left) > 0 && !bulk {
+			signalAll(left, unix.SIGKILL)
+			left, err = r.settle(orphanKill, sigs)
+		}
+	}
+	if err != nil || len(left) == 0 {
 		return err
 	}
-	deadline := time.Now().Add(orphanKill)
-	for len(left) > 0 && time.Now().Before(deadline) {
-		signalAll(left, unix.SIGKILL)
-		time.Sleep(orphanPoll)
-		if err := r.reapAll(); err != nil {
-			return err
-		}
-		if left, err = orphans(); err != nil {
-			return err
-		}
-	}
-	if len(left) > 0 {
-		return fmt.Errorf("processes %v outlived SIGKILL", left)
-	}
-	return nil
+	return fmt.Errorf("processes %v outlived SIGKILL", left)
 }
 
 // settle reaps for up to d, until no orphan is left or a signal other than
@@ -312,26 +320,53 @@ func (r *reaper) settle(d time.Duration, sigs <-chan os.Signal) ([]int, error) {
 	}
 }
 
-func signalAll(pids []int, sig unix.Signal) {
+func signalAll(pids []int, sig unix.Signal) bool {
+	if len(pids) == 0 {
+		return false
+	}
+	all, err := descendants(os.Getpid())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "graft: reaper: listing descendants: %v\n", err)
+		return false
+	}
+	wanted := make(map[int]struct{}, len(pids))
 	for _, pid := range pids {
-		stat, err := akitproc.ReadStat("/proc", pid)
-		if err != nil {
-			if !akitproc.Gone(err) {
-				fmt.Fprintf(os.Stderr, "graft: reaper: reading %d: %v\n", pid, err)
+		wanted[pid] = struct{}{}
+	}
+	if len(wanted) == len(all) {
+		for _, pid := range all {
+			if _, ok := wanted[pid]; !ok {
+				return signalSelected(pids, sig)
 			}
-			continue
 		}
-		if stat.Ppid == os.Getpid() {
-			if err := akitproc.SignalChild(pid, sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		grace := time.Duration(0)
+		if sig == unix.SIGTERM {
+			grace = orphanGrace
+		}
+		_, err := akitproc.StopDescendants(grace, sig)
+		if err != nil {
+			if errors.Is(err, akitproc.ErrPidfdUnavailable) {
+				fmt.Fprintf(os.Stderr, "graft: reaper: descendants %v were not stopped because pidfd_open is unavailable\n", pids)
+			} else {
+				fmt.Fprintf(os.Stderr, "graft: reaper: stopping descendants %v: %v\n", pids, err)
+			}
+		}
+		return true
+	}
+	return signalSelected(pids, sig)
+}
+
+func signalSelected(pids []int, sig unix.Signal) bool {
+	for _, pid := range pids {
+		if err := akitproc.SignalDescendant(pid, sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			if errors.Is(err, akitproc.ErrPidfdUnavailable) {
+				fmt.Fprintf(os.Stderr, "graft: reaper: process %d was not stopped because pidfd_open is unavailable\n", pid)
+			} else {
 				fmt.Fprintf(os.Stderr, "graft: reaper: sending %v to %d: %v\n", sig, pid, err)
 			}
-			continue
-		}
-		// akit cannot signal a verified descendant that is not a direct child.
-		if err := unix.Kill(pid, sig); err != nil && !errors.Is(err, unix.ESRCH) {
-			fmt.Fprintf(os.Stderr, "graft: reaper: sending %v to %d: %v\n", sig, pid, err)
 		}
 	}
+	return false
 }
 
 // orphans are this process's descendants still running in its session.

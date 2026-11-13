@@ -14,8 +14,16 @@ import (
 	"testing"
 	"time"
 
+	akitproc "github.com/aiseeq/akit/proc"
 	"github.com/aiseeq/graft/v2/internal/proc"
 )
+
+func TestMain(m *testing.M) {
+	if err := akitproc.BecomeChildSubreaper(); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
 
 // A local step that succeeded is not failed by a daemon it started that
 // left its session holding the step's output pipe: Wait gives up on the
@@ -41,7 +49,7 @@ func TestDaemonHoldingPipeDoesNotFailStep(t *testing.T) {
 		t.Fatal(perr)
 	}
 	if argv, cerr := proc.Cmdline(daemon); cerr == nil && strings.Join(argv, " ") == "sleep 30" {
-		if kerr := syscall.Kill(daemon, syscall.SIGKILL); kerr != nil && !errors.Is(kerr, syscall.ESRCH) {
+		if kerr := akitproc.SignalDescendant(daemon, syscall.SIGKILL); kerr != nil && !errors.Is(kerr, os.ErrProcessDone) {
 			t.Error(kerr)
 		}
 	}

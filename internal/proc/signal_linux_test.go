@@ -83,7 +83,6 @@ while :; do sleep 0.02; done`, "sh", dir)
 // Once the command has exited, cancellation must not kill the daemon it
 // deliberately detached before the grace elapsed.
 func TestStopOnCancelKeepsDetachedAfterCommandExit(t *testing.T) {
-	adoptOrphans(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	dir := t.TempDir()
@@ -100,7 +99,7 @@ while :; do sleep 0.02; done`, "sh", dir)
 	if err := cmd.Wait(); !errors.Is(err, context.Canceled) {
 		t.Fatalf("command: got %v, want context cancellation", err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond) //nolint:test-fixed-sleep-before-assert // observe after the 300ms stop grace
 	if !running(pid) {
 		t.Fatal("detached daemon was killed after its command exited")
 	}

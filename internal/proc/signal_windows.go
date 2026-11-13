@@ -5,10 +5,12 @@ package proc
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
 
+	akitproc "github.com/aiseeq/akit/proc"
 	"golang.org/x/sys/windows"
 )
 
@@ -18,31 +20,23 @@ func Detach(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS}
 }
 
-// Terminate ends the process. Windows has no signal a console-less process
-// can catch, so it is the same as Kill; children the process started are not
-// ended with it, so a service should be the program itself, not a wrapper.
-func Terminate(pid int) error {
-	return Kill(pid)
-}
+// killSettle is how long Wait waits for the output of a killed command.
+const killSettle = 5 * time.Second
 
-// StopOnCancel keeps the kill on a cancelled cmd: Windows has no signal a
-// process without a console can catch.
-func StopOnCancel(*exec.Cmd, time.Duration, func(error)) {}
-
-// Kill ends the process.
-func Kill(pid int) error {
-	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))
-	if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
-		return nil // already gone
+// StopOnCancel stops a cancelled command through akit on every platform.
+func StopOnCancel(cmd *exec.Cmd, grace time.Duration, warn func(error)) {
+	if err := akitproc.CancelByStopWithObserver(cmd, grace, syscall.SIGTERM, func(degraded bool, err error) {
+		if degraded || errors.Is(err, akitproc.ErrPidfdUnavailable) {
+			warn(fmt.Errorf("command %d was not stopped: %v", cmd.Process.Pid, err))
+			return
+		}
+		if err != nil && !errors.Is(err, os.ErrProcessDone) {
+			warn(err)
+		}
+	}); err != nil {
+		warn(err)
 	}
-	if err != nil {
-		return fmt.Errorf("opening process %d: %w", pid, err)
-	}
-	defer windows.CloseHandle(h)
-	if err := windows.TerminateProcess(h, 1); err != nil {
-		return fmt.Errorf("terminating process %d: %w", pid, err)
-	}
-	return nil
+	cmd.WaitDelay = grace + killSettle
 }
 
 // ConnRefused reports whether a dial failed because nothing listens.

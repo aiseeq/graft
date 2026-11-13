@@ -236,8 +236,8 @@ func TestServiceSteps(t *testing.T) {
 }
 
 func TestServiceLogsFollow(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("uses Linux child signaling")
+	if runtime.GOOS == "windows" {
+		t.Skip("stops graft with SIGINT")
 	}
 	f, _ := serviceRepo(t, "serve", "")
 	f.write("tmp/web.log", "old\n")
@@ -250,7 +250,7 @@ func TestServiceLogsFollow(t *testing.T) {
 	fmt.Fprintln(logFile, "new line")
 	logFile.Close()
 	waitFor(t, func() bool { return strings.Contains(out.String(), "new line") })
-	if err := akitproc.SignalChild(cmd.Process.Pid, syscall.SIGINT); err != nil {
+	if err := akitproc.SignalCmd(cmd, syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
 	if err := cmd.Wait(); err != nil {
