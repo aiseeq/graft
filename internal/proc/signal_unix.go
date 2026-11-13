@@ -51,12 +51,10 @@ func stopOnCancelAfterGrace(cmd *exec.Cmd, warn func(error)) {
 	})
 	// StopChild cannot hold the command (no pidfd here, or no Linux): akit
 	// stops it through its exec.Cmd instead.
+	// It runs while Wait may: cmd.ProcessState is not to be read here, and
+	// StopCmd answers os.ErrProcessDone for a command already reaped.
 	if errors.Is(err, errors.ErrUnsupported) || errors.Is(err, akitproc.ErrPidfdUnavailable) {
-		if cmd.ProcessState == nil {
-			result, err = stopCmd(cmd, 0, syscall.SIGKILL)
-		} else {
-			err = nil
-		}
+		result, err = stopCmd(cmd, 0, syscall.SIGKILL)
 	}
 	if result.Degraded {
 		warn(fmt.Errorf("command %d was stopped directly because pidfd_open is unavailable", cmd.Process.Pid))
