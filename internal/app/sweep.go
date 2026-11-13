@@ -879,21 +879,17 @@ func (s *sweepRun) hops(issue jira.Issue, t *config.NoteTransition) bool {
 	return t != nil && len(t.From) > 0 && !slices.Contains(t.From, issue.Status) && issue.Parent != "" && slices.Contains(s.review, issue.Status)
 }
 
-// doneRoute is the way transitionDone takes the item to done: by done, the
-// transition from its status when one leads to done, else the first one to
-// done; a subtask with the reviewer first goes into via, done's first from,
-// by hop, the transition naming that move, unless Jira offers it the direct
-// move to done. via is "" without that step.
+// doneRoute is the way transitionDone takes the item to done, with the
+// transitions naming each step: a subtask with the reviewer first goes into
+// via, the first from of the first transition to done, by hop, then on to
+// done; any other item goes to done directly. via is "" without that step.
 func (s *sweepRun) doneRoute(issue jira.Issue) (done *config.NoteTransition, via string, hop *config.NoteTransition) {
 	notes := s.r.target.ReleaseNotes
-	done = notes.Leading(s.conf.Done)
-	if t := notes.Moving(issue.Status); t != nil && t.To == s.conf.Done && (!s.hops(issue, done) || issue.Offers(s.conf.Done)) {
-		return t, "", nil
+	if lead := notes.Leading(s.conf.Done); s.hops(issue, lead) {
+		via = lead.From[0]
+		return lead, via, transitionBetween(notes, issue.Status, via)
 	}
-	if s.hops(issue, done) {
-		return done, done.From[0], transitionBetween(notes, issue.Status, done.From[0])
-	}
-	return done, "", nil
+	return transitionBetween(notes, issue.Status, s.conf.Done), "", nil
 }
 
 // typeStop says why transitionDone may not move the item, "" when it may:

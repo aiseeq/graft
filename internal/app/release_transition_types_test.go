@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -134,9 +135,9 @@ func TestSweepTransitionTypesUseTheTransitionFromTheStatus(t *testing.T) {
 	}
 }
 
-// The route sweep checks is the route it takes: a reviewer's subtask with a
-// transition of its own to done goes there directly, not through another
-// transition's from.
+// The route sweep checks is the route it takes, the one of origin/main: a
+// reviewer's subtask goes through the first done transition's from even with
+// a transition of its own to done, so that transition's types decide.
 func TestSweepTransitionDoneTakesTheCheckedRoute(t *testing.T) {
 	var moves []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -160,14 +161,12 @@ func TestSweepTransitionDoneTakesTheCheckedRoute(t *testing.T) {
 	}
 	issue := jira.Issue{Key: "PROJ-2", Type: "Sub-task", Status: "Testing", Parent: "PROJ-1",
 		Transitions: []jira.Transition{{ID: "1", To: "Done"}, {ID: "2", To: "Ready for Release"}}}
-	if stop := run.typeStop(issue); stop != "" {
-		t.Fatalf("typeStop = %q, want the direct transition allowed", stop)
+	want := "PROJ-2 stays Testing: the transition to Done moves only Task"
+	if stop := run.typeStop(issue); stop != want {
+		t.Fatalf("typeStop = %q, want %q", stop, want)
 	}
-	if err := run.transitionDone(t.Context(), issue); err != nil {
-		t.Fatal(err)
-	}
-	if len(moves) != 1 || !strings.Contains(moves[0], `"1"`) {
-		t.Fatalf("transition requests = %q, want the one to Done", moves)
+	if err := run.transitionDone(t.Context(), issue); !errors.Is(err, errTypeNotAllowed) || len(moves) != 0 {
+		t.Fatalf("transitionDone = %v, requests %q, want the type refusal and none", err, moves)
 	}
 }
 
