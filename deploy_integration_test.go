@@ -2306,6 +2306,52 @@ func TestDeploySweepByContent(t *testing.T) {
 	}
 }
 
+func TestDeploySweepStaleRebase(t *testing.T) {
+	d := newDeployFixture(t, sweepConfig)
+	trunk := d.git("branch", "--show-current")
+	d.git("remote", "set-head", "origin", trunk)
+	d.jira.mu.Lock()
+	maps.Copy(d.jira.statuses, map[string]string{"PROJ-1": "Ready for release", "PROJ-2": "Ready for release"})
+	d.jira.mu.Unlock()
+	base := d.git("rev-parse", "HEAD")
+
+	d.git("switch", "-q", "-c", "fix/PROJ-1-x", base)
+	d.write("conflict.txt", "old first version\n")
+	d.mustPlainCommit("feat: PROJ-1 first change")
+	d.write("conflict.txt", "old second version\n")
+	d.mustPlainCommit("fix: PROJ-1 second change")
+	oldSecond := d.git("rev-parse", "HEAD")
+	d.git("push", "-q", "-u", "origin", "HEAD")
+
+	d.git("switch", "-q", "-c", "release/swept", base)
+	d.write("conflict.txt", "rebased first version\n")
+	d.mustPlainCommit("feat: PROJ-1 first change")
+	d.write("conflict.txt", "rebased second version\n")
+	d.mustPlainCommit("fix: PROJ-1 second change")
+	d.git("push", "-q", "-u", "origin", "HEAD")
+	d.mustGraft("deploy", "swept")
+
+	d.git("switch", "-q", trunk)
+	d.write("trunk-only.txt", "trunk\n")
+	d.mustPlainCommit("feat: PROJ-2 trunk-only change")
+	trunkOnly := d.git("rev-parse", "HEAD")
+	d.git("push", "-q", "origin", trunk)
+	out := d.mustGraft("deploy", "sweep", "swept")
+	want := fmt.Sprintf("PROJ-1 is Ready for release, but 2 of its 4 commits are not on swept: %s is only on origin/fix/PROJ-1-x; a copy left from before a rebase? delete the branch or bring the work in", oldSecond[:12])
+	if !strings.Contains(out, want) {
+		t.Errorf("no stale branch report %q:\n%s", want, out)
+	}
+	if strings.Contains(out, "PROJ-2") || strings.Contains(out, trunkOnly[:12]) {
+		t.Errorf("trunk-only work listed for hand review:\n%s", out)
+	}
+	d.jira.mu.Lock()
+	statuses := map[string]string{"PROJ-1": d.jira.statuses["PROJ-1"], "PROJ-2": d.jira.statuses["PROJ-2"]}
+	d.jira.mu.Unlock()
+	if want := map[string]string{"PROJ-1": "Ready for release", "PROJ-2": "Ready for release"}; !maps.Equal(statuses, want) {
+		t.Errorf("statuses = %v, want %v", statuses, want)
+	}
+}
+
 // TestDeploySweepStatusesNoTransitionNames: with no transition from In
 // Progress or Testing, an item there is judged as one in work, listed only
 // when all its work is on the target and stale_days old; an item in

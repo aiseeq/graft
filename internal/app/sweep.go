@@ -655,9 +655,7 @@ func (s *sweepRun) item(ctx context.Context, issue jira.Issue, commits []sweptCo
 			s.list(ctx, issue, "%s is %s, but its commits are in %s", key, status, s.trunk)
 		}
 	case s.finishing(status):
-		if allOn {
-			s.move(ctx, issue, fmt.Sprintf("its work of the last %d days %s (commits: %d)", s.conf.Days, onTargetWords(s.r.name, commits), len(commits)), true)
-		}
+		s.finishingItem(ctx, issue, commits, allOn)
 	default:
 		// In work, whether a transition names the status or not.
 		newest := slices.MaxFunc(commits, func(a, b sweptCommit) int { return a.when.Compare(b.when) })
@@ -665,6 +663,51 @@ func (s *sweepRun) item(ctx context.Context, issue jira.Issue, commits []sweptCo
 			s.list(ctx, issue, "%s is %s, but all its work %s, the newest commit %d days old", key, status, onTargetWords(s.r.name, commits), days)
 		}
 	}
+}
+
+// finishingItem moves work the target runs in full and lists a partial
+// finishing item whose remaining commits are only on non-trunk branches.
+func (s *sweepRun) finishingItem(ctx context.Context, issue jira.Issue, commits []sweptCommit, allOn bool) {
+	if allOn {
+		s.move(ctx, issue, fmt.Sprintf("its work of the last %d days %s (commits: %d)", s.conf.Days, onTargetWords(s.r.name, commits), len(commits)), true)
+		return
+	}
+	s.listStaleFinishing(ctx, issue, commits)
+}
+
+// listStaleFinishing names a remote branch holding the first commit of a
+// finishing item that has some work on the target and none of its other work
+// in the trunk.
+func (s *sweepRun) listStaleFinishing(ctx context.Context, issue jira.Issue, commits []sweptCommit) {
+	onTarget, missingOffTrunk := 0, 0
+	for _, c := range commits {
+		if c.onTarget {
+			onTarget++
+		} else if !c.inTrunk {
+			missingOffTrunk++
+		}
+	}
+	if onTarget == 0 || missingOffTrunk != len(commits)-onTarget {
+		return
+	}
+
+	i := slices.IndexFunc(commits, func(c sweptCommit) bool { return !c.onTarget })
+	branch := ""
+	branches, err := s.r.repo.RemoteBranchesContaining(commits[i].sha)
+	if err != nil {
+		s.app.warn("sweep %s: checking remote branches containing %s: %v", s.r.name, gitx.Short(commits[i].sha), err)
+	} else {
+		names := make([]string, 0, len(branches))
+		for _, b := range branches {
+			names = append(names, b.Remote+"/"+b.Branch)
+		}
+		slices.Sort(names)
+		if len(names) > 0 {
+			branch = " is only on " + names[0]
+		}
+	}
+	s.list(ctx, issue, "%s is %s, but %d of its %d commits are not on %s: %s%s; a copy left from before a rebase? delete the branch or bring the work in",
+		issue.Key, issue.Status, len(commits)-onTarget, len(commits), s.r.name, gitx.Short(commits[i].sha), branch)
 }
 
 // parents moves to the done status a parent all of whose subtasks are done
