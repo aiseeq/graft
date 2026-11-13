@@ -590,3 +590,138 @@ func TestDeploySweepAcceptedSubtaskTakesReviewStep(t *testing.T) {
 		t.Errorf("PROJ-91 moved %d times, want through review to done: %v\n%s", len(steps), moved, out)
 	}
 }
+
+func TestDeployWorkKeysQuietNotes(t *testing.T) {
+	t.Run("quiet subtasks and labels", func(t *testing.T) {
+		d, out := runWorkKeysQuietDeploy(t, true, false, "")
+		assertQuietDeployResults(t, d, out, true, false, "")
+	})
+	t.Run("retry fix version after notifyUsers denial", func(t *testing.T) {
+		d, out := runWorkKeysQuietDeploy(t, true, true, "")
+		assertQuietDeployResults(t, d, out, true, true, "")
+	})
+	t.Run("comment failure keeps fix version but does not transition", func(t *testing.T) {
+		d, out := runWorkKeysQuietDeploy(t, false, false, "PROJ-3")
+		assertQuietDeployResults(t, d, out, false, false, "PROJ-3")
+	})
+	t.Run("without quiet all items get comments", func(t *testing.T) {
+		d, out := runWorkKeysQuietDeploy(t, false, false, "")
+		assertQuietDeployResults(t, d, out, false, false, "")
+	})
+}
+
+func runWorkKeysQuietDeploy(t *testing.T, quiet, denyNotifyUsers bool, failComment string) (*deployFixture, string) {
+	t.Helper()
+	d := workKeysRepo(t)
+	if quiet {
+		config := d.read(".graft.yaml")
+		old := "    skip_keys: [PROJ-40]\n"
+		newConfig := old + "    quiet: {subtasks: true, labels: [internal]}\n"
+		if !strings.Contains(config, old) {
+			t.Fatal("release_notes.jira config not found")
+		}
+		d.write(".graft.yaml", strings.Replace(config, old, newConfig, 1))
+		d.mustFixtureCommit("docs: enable quiet release notes")
+	}
+	d.jira.setVersions(productVersions(), map[string][]string{})
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-1"], d.jira.statuses["PROJ-2"], d.jira.statuses["PROJ-3"] = "In Progress", "In Progress", "In Progress"
+	d.jira.assignees["PROJ-3"] = "me"
+	d.jira.parents = map[string]string{"PROJ-1": "PROJ-20"}
+	d.jira.labels = map[string][]string{"PROJ-2": {"internal"}}
+	d.jira.failNotifyUsers = denyNotifyUsers
+	if failComment != "" {
+		d.jira.failComments = []string{failComment}
+	}
+	d.jira.mu.Unlock()
+
+	// Establish the deployed baseline before the three synthetic work items.
+	d.mustGraft("deploy", "--unapproved", "uat")
+	d.commits("feat: PROJ-1 subtask work", "feat: PROJ-2 internal work", "feat: PROJ-3 ordinary work")
+	out, code := d.graft("", "deploy", "uat")
+	if code != 0 {
+		t.Fatalf("deploy exited %d:\n%s", code, out)
+	}
+	return d, out
+}
+
+func assertQuietDeployResults(t *testing.T, d *deployFixture, out string, quiet, retried bool, failedComment string) {
+	t.Helper()
+	comments, moved := d.jira.snapshot()
+	requests := d.jira.editRequestsSnapshot()
+	queries := map[string][]string{}
+	for _, request := range requests {
+		queries[request.key] = append(queries[request.key], request.notifyUsers)
+	}
+	for _, key := range []string{"PROJ-1", "PROJ-2", "PROJ-3"} {
+		d.jira.mu.Lock()
+		versions := slices.Clone(d.jira.fixVersions[key])
+		status := d.jira.statuses[key]
+		d.jira.mu.Unlock()
+		if !slices.Contains(versions, "10010") {
+			t.Errorf("%s fix versions = %v, want 10010\n%s", key, versions, out)
+		}
+		if key == failedComment {
+			if status != "In Progress" || slices.Contains(moved, key) {
+				t.Errorf("failed-comment task %s status=%q moved=%v, want no transition\n%s", key, status, moved, out)
+			}
+			if !strings.Contains(out, "release note for "+key+" not posted") {
+				t.Errorf("missing comment failure output for %s:\n%s", key, out)
+			}
+			continue
+		}
+		if status != "Testing" || !slices.Contains(moved, key) {
+			t.Errorf("%s status=%q moved=%v, want transition to Testing\n%s", key, status, moved, out)
+		}
+	}
+	if failedComment != "" {
+		if len(comments["PROJ-3"]) != 0 {
+			t.Errorf("failed comment was recorded: %v", comments["PROJ-3"])
+		}
+		if got := queries["PROJ-3"]; !slices.Equal(got, []string{""}) {
+			t.Errorf("failed-comment fix-version requests = %v, want one ordinary PUT", got)
+		}
+		return
+	}
+	if quiet {
+		if len(comments["PROJ-1"]) != 0 || len(comments["PROJ-2"]) != 0 || len(comments["PROJ-3"]) != 1 {
+			t.Errorf("quiet comments = %v, want only PROJ-3", comments)
+		}
+		wantQuiet := map[string]string{"PROJ-1": "subtask", "PROJ-2": "label internal"}
+		for key, reason := range wantQuiet {
+			message := "release note for " + key + " not posted: release_notes.jira.quiet (" + reason + ")"
+			if strings.Count(out, message) != 1 {
+				t.Errorf("%s occurs %d times, want once\n%s", message, strings.Count(out, message), out)
+			}
+		}
+		for key, want := range map[string][]string{
+			"PROJ-1": {"false"}, "PROJ-2": {"false"}, "PROJ-3": {""},
+		} {
+			if retried {
+				if key == "PROJ-3" {
+					want = []string{""}
+				} else {
+					want = []string{"false", ""}
+				}
+				if key != "PROJ-3" {
+					line := "release note for " + key + ": Jira rejected notifyUsers=false; retried with notifications enabled"
+					if strings.Count(out, line) != 1 {
+						t.Errorf("%s occurs %d times, want once\n%s", line, strings.Count(out, line), out)
+					}
+				}
+			}
+			if !slices.Equal(queries[key], want) {
+				t.Errorf("%s fix-version query sequence = %v, want %v", key, queries[key], want)
+			}
+		}
+	} else {
+		for _, key := range []string{"PROJ-1", "PROJ-2", "PROJ-3"} {
+			if len(comments[key]) != 1 {
+				t.Errorf("%s comments = %v, want one", key, comments[key])
+			}
+			if got := queries[key]; !slices.Equal(got, []string{""}) {
+				t.Errorf("%s fix-version requests = %v, want PUT without notifyUsers", key, got)
+			}
+		}
+	}
+}

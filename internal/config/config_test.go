@@ -339,6 +339,16 @@ deploy:
 	if cfg.ReleaseNotes.Jira.Comment != DefaultNoteComment {
 		t.Errorf("default comment: %q", cfg.ReleaseNotes.Jira.Comment)
 	}
+	cfg, err = Parse([]byte(strings.Replace(base, "{project_keys: [PROJ]}", "{project_keys: [PROJ], quiet: {subtasks: true, labels: [internal]}}", 1)))
+	if err != nil {
+		t.Fatalf("quiet config: %v", err)
+	}
+	if q := cfg.ReleaseNotes.Jira.Quiet; q == nil || !q.Subtasks || !slices.Equal(q.Labels, []string{"internal"}) {
+		t.Fatalf("quiet config = %+v", q)
+	}
+	if _, err := Parse([]byte(strings.Replace(base, "{project_keys: [PROJ]}", "{project_keys: [PROJ], quiet: {labels: [' ']}}", 1))); err == nil || !strings.Contains(err.Error(), "release_notes.jira.quiet.labels[0]") {
+		t.Errorf("blank quiet label: %v", err)
+	}
 	notes := func(n string) string { return strings.Replace(base, "release_notes: {}}", "release_notes: "+n+"}", 1) }
 	cfg, err = Parse([]byte(notes("{transitions: [{from: [In Progress, To Do], to: Testing, types: [Story, Task, Bug], assign: qa-account}, {from: [Ready for release], to: Done}]}")))
 	if err != nil {
