@@ -238,6 +238,43 @@ func TestWorktreeCleanIgnoredData(t *testing.T) {
 	}
 }
 
+func TestWorktreeCleanKeepsEmptyUntrackedFile(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the process check reads /proc")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n",
+		"landed.txt":  "before\n",
+	})
+	empty := add("empty-untracked")
+	writeFile(t, filepath.Join(empty, "landed.txt"), "after\n")
+	f.gitIn(empty, "add", "landed.txt")
+	f.gitIn(empty, "-c", "core.hooksPath=/dev/null", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "-m", "feat: landed change")
+
+	writeFile(t, filepath.Join(f.work, "landed.txt"), "after\n")
+	f.git("add", "landed.txt")
+	f.git("-c", "core.hooksPath=/dev/null", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "-m", "feat: equivalent change")
+	f.git("push", "-q", "origin", "main")
+	writeFile(t, filepath.Join(empty, "empty.txt"), "")
+
+	check, checkCode := f.exec(f.work, "", graftBin, "worktree", "check", empty)
+	if checkCode != app.ExitWorktreeHolds || !strings.Contains(check, "1 uncommitted change") {
+		t.Fatalf("check does not hold the empty untracked file; exit %d:\n%s", checkCode, check)
+	}
+	cleanTree := add("no-own-files")
+	out, code := f.exec(f.work, "", graftBin, "worktree", "clean", "--min-age", "0s")
+	if code != 0 {
+		t.Fatalf("clean dry run failed; exit %d:\n%s", code, out)
+	}
+	if strings.Contains(out, "would remove "+empty) || !strings.Contains(out, "in work   "+empty+" (w/empty-untracked): 1 uncommitted change, not in origin/main: empty.txt") {
+		t.Errorf("clean disagrees with check about the empty untracked file:\n%s", out)
+	}
+	if !strings.Contains(out, "would remove "+cleanTree+" (w/no-own-files): clean, in origin/main") {
+		t.Errorf("clean no longer offers a tree with no own files:\n%s", out)
+	}
+}
+
 func newWorktreeCleanFixture(t *testing.T, files map[string]string) (*fixture, func(string) string) {
 	t.Helper()
 	f := newRepo(t, files, "origin")
