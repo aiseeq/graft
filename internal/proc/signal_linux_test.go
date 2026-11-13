@@ -58,9 +58,17 @@ func TestStopOnCancelKillsTheTreeAfterGrace(t *testing.T) {
 // When StopChild is unsupported, StopCmd kills a command that ignores SIGTERM
 // after the grace period.
 func TestStopOnCancelUnsupportedStopChildKillsCommandAfterGrace(t *testing.T) {
+	for _, refusal := range []error{errors.ErrUnsupported, akitproc.ErrPidfdUnavailable} {
+		t.Run(refusal.Error(), func(t *testing.T) { stopOnCancelFallsBackToStopCmd(t, refusal) })
+	}
+}
+
+// stopOnCancelFallsBackToStopCmd: StopChild refusing the command with
+// refusal, akit's StopCmd stops it after grace.
+func stopOnCancelFallsBackToStopCmd(t *testing.T, refusal error) {
 	oldStopChild, oldStopCmd := stopChild, stopCmd
 	stopChild = func(int, time.Duration, func() error) (akitproc.StopResult, error) {
-		return akitproc.StopResult{}, errors.ErrUnsupported
+		return akitproc.StopResult{}, refusal
 	}
 	stopCalled := make(chan struct{}, 1)
 	stopCmd = func(cmd *exec.Cmd, grace time.Duration, sig syscall.Signal) (akitproc.StopResult, error) {

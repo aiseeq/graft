@@ -49,7 +49,9 @@ func stopOnCancelAfterGrace(cmd *exec.Cmd, warn func(error)) {
 	result, err := stopChild(cmd.Process.Pid, 0, func() error {
 		return akitproc.SignalCmd(cmd, syscall.SIGKILL)
 	})
-	if errors.Is(err, errors.ErrUnsupported) {
+	// StopChild cannot hold the command (no pidfd here, or no Linux): akit
+	// stops it through its exec.Cmd instead.
+	if errors.Is(err, errors.ErrUnsupported) || errors.Is(err, akitproc.ErrPidfdUnavailable) {
 		if cmd.ProcessState == nil {
 			result, err = stopCmd(cmd, 0, syscall.SIGKILL)
 		} else {

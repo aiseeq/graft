@@ -269,6 +269,29 @@ func TestStartWithoutProcReportsExitedService(t *testing.T) {
 	}
 }
 
+// A start timeout shorter than the 100ms tick still sees a service that
+// exited at once, with the start time or without it.
+func TestStartWithShortTimeoutReportsExitedService(t *testing.T) {
+	for _, withProc := range []bool{true, false} {
+		t.Run(fmt.Sprint("proc=", withProc), func(t *testing.T) {
+			if !withProc {
+				oldReadStat := readServiceStat
+				readServiceStat = func(string, int) (akitproc.Stat, error) { return akitproc.Stat{}, errors.ErrUnsupported }
+				t.Cleanup(func() { readServiceStat = oldReadStat })
+			}
+			dir := t.TempDir()
+			// The service exits at once; the timeout is long enough for that
+			// and shorter than a tick.
+			s := &config.Service{Run: config.Command{Argv: []string{"sh", "-c", "exit 42"}}, Log: "service.log", PIDFile: "service.pid", StartTimeout: 50 * time.Millisecond}
+			cfg := &config.Config{Services: map[string]*config.Service{"svc": s}}
+			m := New(dir, cfg, nil, io.Discard)
+			if err := m.start(t.Context(), "svc"); err == nil || !strings.Contains(err.Error(), "exited at start") {
+				t.Fatalf("start error = %v, want exited-at-start error", err)
+			}
+		})
+	}
+}
+
 func TestOldPIDWithoutStartWarnsForRemainingSessionMembers(t *testing.T) {
 	dir := t.TempDir()
 	workerFile := filepath.Join(dir, "worker")

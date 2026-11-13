@@ -281,9 +281,36 @@ func (m *Manager) waitStarted(ctx context.Context, s *config.Service, addr strin
 	defer deadline.Stop()
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
+	// Without a start time Wait runs already: its end is the exit, seen at
+	// once, as before. With one the start time tells, checked on each tick
+	// and once more at the deadline, so a timeout shorter than a tick still
+	// sees an early exit.
+	var waited <-chan error
+	if start == "" {
+		waited = waitResult
+	}
+	gone := func() error {
+		if start == "" {
+			return nil
+		}
+		exited, err := serviceExited(pid, start)
+		if err != nil {
+			return err
+		}
+		if exited {
+			return serviceStartExitError(addr)
+		}
+		return nil
+	}
 	for {
 		select {
+		case waitErr := <-waited:
+			waitResult <- waitErr
+			return fmt.Errorf("%w: %v", serviceStartExitError(addr), waitErr)
 		case <-deadline.C:
+			if err := gone(); err != nil {
+				return err
+			}
 			if addr == "" {
 				return nil
 			}
@@ -291,21 +318,8 @@ func (m *Manager) waitStarted(ctx context.Context, s *config.Service, addr strin
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-tick.C:
-			if start != "" {
-				exited, err := serviceExited(pid, start)
-				if err != nil {
-					return err
-				}
-				if exited {
-					return serviceStartExitError(addr)
-				}
-			} else {
-				select {
-				case waitErr := <-waitResult:
-					waitResult <- waitErr
-					return fmt.Errorf("%w: %v", serviceStartExitError(addr), waitErr)
-				default:
-				}
+			if err := gone(); err != nil {
+				return err
 			}
 			if addr != "" {
 				up, err := listening(addr)
