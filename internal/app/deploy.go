@@ -1902,7 +1902,7 @@ func (g *approvalGate) readyFor(issue jira.Issue) []string {
 }
 
 // openParent says why a parent keeps the item in: the item is ready with
-// subtasks still open, or it is a subtask whose parent, ready or done, would
+// subtasks not done, or it is a subtask whose parent, ready or done, would
 // let it through. A subtask is judged by its parent alone: it is done once
 // its code is in the trunk, before the release. It is "" when nothing keeps
 // it in.
@@ -1928,14 +1928,10 @@ func (g *approvalGate) holder(ctx context.Context, issue jira.Issue) (jira.Issue
 	if slices.Contains(g.readyFor(parent), parent.Status) {
 		return parent, true, nil
 	}
-	// A done parent keeps a subtask in only where its version would let the
-	// subtask out.
+	// With a version prefix, a done parent still holds its subtask while any
+	// subtask remains open. The subtask's own version does not change this.
 	if !parent.Done || g.conf.Prefix == "" {
 		return jira.Issue{}, false, nil
-	}
-	own, err := g.ownApprovedVersion(ctx, issue)
-	if err != nil || own != "" {
-		return jira.Issue{}, false, err
 	}
 	return parent, true, nil
 }
@@ -1948,25 +1944,14 @@ func (g *approvalGate) openSubtasks(ctx context.Context, holder jira.Issue) (str
 		if err != nil {
 			return "", err
 		}
-		stReady := g.readyFor(st)
-		switch {
-		case st.Done || slices.Contains(stReady, st.Status) || slices.Contains(g.skipKeys, key):
-		case !slices.Contains(g.review, st.Status):
+		if !st.Done && !slices.Contains(g.skipKeys, key) {
 			open = append(open, key+" ("+st.Status+")")
-		default:
-			accepted, err := acceptedWith(ctx, g.client, st, holder, g.readyFor(holder))
-			if err != nil {
-				return "", err
-			}
-			if !accepted {
-				open = append(open, key+" ("+st.Status+", not accepted with "+holder.Key+")")
-			}
 		}
 	}
 	if len(open) == 0 {
 		return "", nil
 	}
-	return fmt.Sprintf("%s is %s with open subtasks %s: finish them or name %s in release_notes.jira.skip_keys", holder.Key, holder.Status, strings.Join(open, ", "), holder.Key), nil
+	return fmt.Sprintf("%s is %s with open subtasks %s: move them to Done or name %s in release_notes.jira.skip_keys", holder.Key, holder.Status, strings.Join(open, ", "), holder.Key), nil
 }
 
 // acceptedWith tells whether a subtask in a status of the reviewer's came there
@@ -2079,12 +2064,12 @@ func (g *approvalGate) issue(ctx context.Context, key string) (jira.Issue, error
 }
 
 // approvedVersion names the item's fix version of the prefix that every
-// approver approved, or else its parent's: a subtask goes out with the
-// item it is part of. It is "" when neither has one.
+// approver approved, or its parent's for a subtask. A subtask goes out with
+// the item it is part of; its own fix version does not count. It is "" when
+// neither has an approved version.
 func (g *approvalGate) approvedVersion(ctx context.Context, issue jira.Issue) (string, error) {
-	name, err := g.ownApprovedVersion(ctx, issue)
-	if err != nil || name != "" || issue.Parent == "" {
-		return name, err
+	if issue.Parent == "" {
+		return g.ownApprovedVersion(ctx, issue)
 	}
 	parent, err := g.issue(ctx, issue.Parent)
 	if err != nil {

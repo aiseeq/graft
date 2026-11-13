@@ -1894,11 +1894,12 @@ release_notes:
    with `statuses`, the item is in one of them, or in the statuses configured
    for one of its `label_statuses` labels. Without a matching label, only
    `statuses` apply. A subtask passes by its parent alone, by the parent's
-   status and labels: its own status and labels do not let its code out, since
-   a subtask is done once its code is in the trunk, before the release. With
+   status and labels: its own status and labels do not let its code out, and
+   the parent waits until the subtask is in Done. With
    `prefix`, the item has a fix version that begins with
    `prefix` and that has approvers, every one of whom approved it in Jira,
-   or it is a subtask whose parent has such a version; with both, both. Every
+   or it is a subtask whose parent has such a version; a subtask's own fix
+   version does not count. With both, both. Every
    item the commit names must pass. A commit let out by
    a done-category item gets a line of its own: it may only refer to old
    work. A revert (`Revert "…"`, `revert:`) passes, but a revert of a revert
@@ -2128,14 +2129,14 @@ label, the freeze and the trunk merge check:
   commits: another product's deploy may have closed it. `skip_statuses` naming
   the sweep's `done` is a config error, for it would take that note away;
 - `approved_release` refuses an item that is ready (in `statuses`, or in the
-  `from` of a transition to the sweep's `done`) with subtasks open, and any
-  subtask under such a parent, under a parent not ready, or under a done
-  parent whose version alone would let it out. A subtask is
-  open unless it is done or ready itself, or it waits in the `to` of a
-  transition with `assign` and came there
-  before its parent came into the ready statuses: the reviewer checks the item,
-  so accepting it takes such a subtask along, and one that came later nobody
-  has seen. A parent or subtask in `skip_keys` does not count;
+  `from` of a transition to the sweep's `done`) with subtasks not in Done, and
+  any subtask under such a parent, under a parent not ready, or under a done
+  parent while that parent has subtasks not in Done. A subtask is closed only
+  in Done; Ready for release and reviewer statuses remain open even when the
+  reviewer accepted the subtask with its parent. A subtask is judged by its
+  parent's status and labels, and under `prefix` by its parent's approved
+  version; its own fix version does not count. A parent or subtask in
+  `skip_keys` does not count;
 - the sweep counts such a commit for every item of its work;
 - a subtask moved by a transition with `assign` stays with its assignee, named
   in a commit or following its parent, and so needs no `require_comment`: the

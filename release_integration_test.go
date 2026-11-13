@@ -1110,10 +1110,7 @@ func TestReleasePageGroupsTechnicalSubtasks(t *testing.T) {
 					`approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}
       release_page: {parent: "500", subtasks: parent, fix_types: [Bug], labels: {technical: "Internal work"}}`, 1)
 			})
-			versionItems := map[string][]string{"PROJ-20": {"10010"}, "PROJ-11": {"10010"}, "PROJ-12": {"10010"}, "PROJ-13": {"10010"}}
-			if parentIsListed {
-				versionItems["PROJ-10"] = []string{"10010"}
-			}
+			versionItems := map[string][]string{"PROJ-10": {"10010"}, "PROJ-20": {"10010"}, "PROJ-11": {"10010"}, "PROJ-12": {"10010"}, "PROJ-13": {"10010"}}
 			d.jira.setVersions(productVersions(), versionItems)
 			d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "APPROVED"}})
 			d.jira.mu.Lock()

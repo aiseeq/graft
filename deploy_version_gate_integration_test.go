@@ -14,7 +14,7 @@ func versionGateConfig(state string, q func(string) string) string {
 
 func TestDeployReleaseVersion(t *testing.T) {
 	cfg := func(state string, q func(string) string) string {
-		return strings.Replace(versionGateConfig(state, q), "approved_release: {statuses: [Ready for release, Done]}", `approved_release: {statuses: [Ready for release, Done], ignore_paths: ["docs/**"], version: {match: '^Product[ .]?\d\d\.\d\d\.\d\d$', manual: ['QA smoke on TEST passed'], refs: {version-subtasks: '2.2'}}}`, 1)
+		return strings.Replace(versionGateConfig(state, q), "approved_release: {statuses: [Ready for release, Done]}", `approved_release: {statuses: [Ready for release, Done], label_statuses: {internal: [Ready for release]}, ignore_paths: ["docs/**"], version: {match: '^Product[ .]?\d\d\.\d\d\.\d\d$', manual: ['QA smoke on TEST passed'], refs: {version-subtasks: '2.2'}}}`, 1)
 	}
 	d := newDeployFixture(t, cfg)
 	writeFile(t, filepath.Join(d.state, "gate-sha"), d.git("rev-parse", "HEAD")+"\n")
@@ -22,8 +22,8 @@ func TestDeployReleaseVersion(t *testing.T) {
 	d.jira.mu.Lock()
 	d.jira.parents = map[string]string{"PROJ-11": "PROJ-10", "PROJ-12": "PROJ-10"}
 	d.jira.statuses["PROJ-10"] = "Ready for release"
-	d.jira.statuses["PROJ-11"] = "Ready for release"
-	d.jira.statuses["PROJ-12"] = "Ready for release"
+	d.jira.statuses["PROJ-11"] = "Done"
+	d.jira.statuses["PROJ-12"] = "Done"
 	d.jira.mu.Unlock()
 	d.jira.setApprovers(map[string][]string{"1": {"APPROVED", "APPROVED"}, "2": {"APPROVED"}})
 	d.commitFile("code.txt", "feat: PROJ-11 work")
@@ -55,6 +55,13 @@ func TestDeployReleaseVersion(t *testing.T) {
 	d.setStatus("PROJ-10", "Ready for release")
 	d.setStatus("PROJ-12", "Ready for release")
 	d.jira.mu.Lock()
+	if d.jira.labels == nil {
+		d.jira.labels = map[string][]string{}
+	}
+	d.jira.labels["PROJ-12"] = []string{"internal"}
+	d.jira.mu.Unlock()
+	check(false, "version-umbrella", "PROJ-10 is Ready for release with unfinished subtasks PROJ-12 (Ready for release); move them to Done")
+	d.jira.mu.Lock()
 	d.jira.fixVersions["PROJ-11"] = []string{"1"}
 	d.jira.statuses["PROJ-20"] = "Testing"
 	d.jira.fixVersions["PROJ-20"] = []string{"1"}
@@ -78,6 +85,7 @@ func TestDeployReleaseVersion(t *testing.T) {
 	d.jira.mu.Lock()
 	d.jira.fixVersions["PROJ-10"] = []string{"1", "3"}
 	d.jira.mu.Unlock()
+	d.setStatus("PROJ-12", "Done")
 	check(true)
 	d.jira.mu.Lock()
 	d.jira.fixVersions["PROJ-10"] = []string{"1", "2"}

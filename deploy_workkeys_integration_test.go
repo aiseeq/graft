@@ -138,14 +138,13 @@ func TestDeployProjectPlaceholderNeedsName(t *testing.T) {
 	}
 }
 
-// A parent ready with open subtasks keeps itself and them in, a ready subtask
-// too: a subtask goes out with its parent alone. A closed one does not count,
-// and a standing item is left alone.
+// A parent ready with any subtask not in Done keeps itself and those subtasks
+// in. A subtask goes out with its parent alone, and a standing item is left alone.
 func TestDeployWorkKeysOpenParent(t *testing.T) {
 	d := workKeysRepo(t)
 	d.statuses(map[string]string{
-		"PROJ-8": "Ready for release", "PROJ-9": "In Progress", "PROJ-10": "Ready for release",
-		"PROJ-11": "Ready for release", "PROJ-12": "Ready for release", "PROJ-13": "Won't do",
+		"PROJ-8": "Ready for release", "PROJ-9": "Done", "PROJ-10": "Ready for release",
+		"PROJ-11": "Ready for release", "PROJ-12": "Done", "PROJ-13": "Done",
 		"PROJ-40": "Ready for release", "PROJ-41": "In Progress",
 		"PROJ-43": "Done", "PROJ-44": "In Progress",
 		"PROJ-46": "In Progress", "PROJ-47": "Ready for release",
@@ -169,14 +168,14 @@ func TestDeployWorkKeysOpenParent(t *testing.T) {
 		t.Fatalf("exit 0:\n%s", out)
 	}
 	wantLines(t, out, []string{
-		"feat: PROJ-8 the parent: PROJ-8 is Ready for release with open subtasks PROJ-9 (In Progress)",
-		"feat: PROJ-9 the open subtask: PROJ-8 is Ready for release with open subtasks PROJ-9 (In Progress)",
+		"feat: PROJ-8 the parent: PROJ-8 is Ready for release with open subtasks PROJ-10 (Ready for release)",
+		"feat: PROJ-9 the open subtask: PROJ-8 is Ready for release with open subtasks PROJ-10 (Ready for release)",
 		"feat: PROJ-44 open under a done parent: PROJ-43 is Done with open subtasks PROJ-44 (In Progress)",
-		"feat: PROJ-10 the subtask that is ready: PROJ-8 is Ready for release with open subtasks PROJ-9 (In Progress)",
+		"feat: PROJ-10 the subtask that is ready: PROJ-8 is Ready for release with open subtasks PROJ-10 (Ready for release)",
 		"feat: PROJ-47 ready under a parent in work: PROJ-47 goes out with its parent PROJ-46, which is In Progress",
 	}, []string{"PROJ-11 the parent", "PROJ-12 ready under it:", "PROJ-41 under a standing item:"})
 
-	d.statuses(map[string]string{"PROJ-9": "Ready for release", "PROJ-44": "Done", "PROJ-46": "Ready for release"}, map[string]string{
+	d.statuses(map[string]string{"PROJ-9": "Done", "PROJ-10": "Done", "PROJ-44": "Done", "PROJ-46": "Ready for release", "PROJ-47": "Done"}, map[string]string{
 		"PROJ-9": "PROJ-8", "PROJ-10": "PROJ-8", "PROJ-12": "PROJ-11", "PROJ-13": "PROJ-11",
 		"PROJ-41": "PROJ-40", "PROJ-44": "PROJ-43", "PROJ-47": "PROJ-46",
 	})
@@ -261,8 +260,7 @@ func TestDeployDoneParentSubtasks(t *testing.T) {
 	}
 }
 
-// A target that goes by the version alone takes nothing from a done parent, so
-// a done parent keeps nothing out either.
+// A done parent with open subtasks keeps them out under an approved version.
 func TestDeployWorkKeysDoneParentOnVersionTarget(t *testing.T) {
 	d := workKeysRepo(t)
 	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-44": {"10010"}})
@@ -270,12 +268,15 @@ func TestDeployWorkKeysDoneParentOnVersionTarget(t *testing.T) {
 	d.statuses(map[string]string{"PROJ-43": "Done", "PROJ-44": "In Progress"}, map[string]string{"PROJ-44": "PROJ-43"})
 	d.mustGraft("deploy", "--unapproved", "live")
 	d.commits("feat: PROJ-44 in the approved version")
-	d.mustGraft("deploy", "live")
+	out, code := d.graft("", "deploy", "live")
+	if code == 0 || !strings.Contains(out, "PROJ-43 is Done with open subtasks PROJ-44 (In Progress)") {
+		t.Fatalf("an approved subtask version escaped its done parent: exit %d\n%s", code, out)
+	}
 
-	// By the version of the done parent alone it would go out unfinished.
+	// The parent's version also cannot release an unfinished subtask.
 	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-43": {"10010"}})
 	d.commits("feat: PROJ-44 only the parent is in the approved version")
-	out, code := d.graft("", "deploy", "live")
+	out, code = d.graft("", "deploy", "live")
 	if code == 0 {
 		t.Fatalf("exit 0:\n%s", out)
 	}
@@ -292,7 +293,7 @@ func TestDeployWorkKeysOpenParentWords(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("exit 0:\n%s", out)
 	}
-	wantLines(t, out, []string{"finish them or name PROJ-8 in release_notes.jira.skip_keys", "finish any subtasks called open"}, []string{"take PROJ-8 out of"})
+	wantLines(t, out, []string{"move them to Done or name PROJ-8 in release_notes.jira.skip_keys", "finish any subtasks called open"}, []string{"take PROJ-8 out of"})
 }
 
 // A subtask in the release by its parent is not named as outside it.
@@ -362,10 +363,8 @@ func into(status string, n int) []fakeStatusMove {
 	return []fakeStatusMove{{at: daysAgo(n), from: "In Progress", to: status}}
 }
 
-// Accepting an item takes along the subtasks that waited for the reviewer when
-// it was accepted; work unfinished, or come to the reviewer's status later,
-// keeps it out.
-func TestDeployWorkKeysSubtaskAcceptedWithParent(t *testing.T) {
+// Reviewer acceptance does not close a subtask; every subtask must reach Done.
+func TestDeployWorkKeysSubtasksMustBeDone(t *testing.T) {
 	d := workKeysRepo(t)
 	d.statuses(map[string]string{
 		"PROJ-8": "Ready for release", "PROJ-9": "Testing",
@@ -395,11 +394,12 @@ func TestDeployWorkKeysSubtaskAcceptedWithParent(t *testing.T) {
 		t.Fatalf("exit 0:\n%s", out)
 	}
 	wantLines(t, out, []string{
-		"PROJ-12 is Ready for release with open subtasks PROJ-13 (Testing, not accepted with PROJ-12)",
+		"PROJ-8 is Ready for release with open subtasks PROJ-9 (Testing)",
+		"PROJ-12 is Ready for release with open subtasks PROJ-13 (Testing)",
 		"PROJ-14 is Ready for release with open subtasks PROJ-15 (In Progress)",
-		"PROJ-16 is Ready for release with open subtasks PROJ-17 (Testing, not accepted with PROJ-16)",
+		"PROJ-16 is Ready for release with open subtasks PROJ-17 (Testing)",
 		"feat: PROJ-19 under a parent in work: PROJ-19 goes out with its parent PROJ-18, which is In Progress",
-	}, []string{"PROJ-9 accepted with its parent:"})
+	}, nil)
 }
 
 // The sweep takes a subtask accepted with its parent through ready to done,

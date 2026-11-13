@@ -13,7 +13,7 @@ func TestApprovedSubtaskPassesByItsParentAlone(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
 		subtask, parent jira.Issue
-		statuses        []string
+		statuses, skip  []string
 		want            bool
 	}{
 		{name: "done subtask with done approved, parent in progress",
@@ -33,6 +33,11 @@ func TestApprovedSubtaskPassesByItsParentAlone(t *testing.T) {
 		{name: "done subtask, parent ready with another subtask open",
 			subtask: jira.Issue{Key: "PROJ-2", Status: "Done", Done: true, Parent: "PROJ-1"},
 			parent:  jira.Issue{Key: "PROJ-1", Status: "Ready for release", Subtasks: []string{"PROJ-2", "PROJ-3"}}},
+		{name: "done subtask, parent ready with another subtask open but in skip_keys",
+			subtask: jira.Issue{Key: "PROJ-2", Status: "Done", Done: true, Parent: "PROJ-1"},
+			parent:  jira.Issue{Key: "PROJ-1", Status: "Ready for release", Subtasks: []string{"PROJ-2", "PROJ-3"}},
+			skip:    []string{"PROJ-3"},
+			want:    true},
 		{name: "subtask in progress, parent ready",
 			subtask: jira.Issue{Key: "PROJ-2", Status: "In Progress", Parent: "PROJ-1"},
 			parent:  jira.Issue{Key: "PROJ-1", Status: "Ready for release", Subtasks: []string{"PROJ-2"}}},
@@ -50,8 +55,9 @@ func TestApprovedSubtaskPassesByItsParentAlone(t *testing.T) {
 				approved.Statuses = tc.statuses
 			}
 			gate := &approvalGate{
-				conf:   approved,
-				target: &config.DeployTarget{ApprovedRelease: approved},
+				conf:     approved,
+				skipKeys: tc.skip,
+				target:   &config.DeployTarget{ApprovedRelease: approved},
 				issues: map[string]jira.Issue{"PROJ-1": tc.parent, "PROJ-2": tc.subtask,
 					"PROJ-3": {Key: "PROJ-3", Status: "In Progress", Parent: "PROJ-1"}},
 			}
@@ -63,5 +69,24 @@ func TestApprovedSubtaskPassesByItsParentAlone(t *testing.T) {
 				t.Fatalf("subtask passes = %t (%q), want %t", pass.ok, pass.why, tc.want)
 			}
 		})
+	}
+}
+
+// An approved subtask version cannot replace its parent's version.
+func TestApprovedSubtaskIgnoresOwnVersion(t *testing.T) {
+	gate := &approvalGate{
+		conf:     &config.ApprovedRelease{Prefix: "Product v", Version: &config.ApprovedReleaseVersion{}},
+		versions: map[string]bool{"2": true},
+		issues: map[string]jira.Issue{
+			"PROJ-1": {Key: "PROJ-1", Status: "In Progress"},
+			"PROJ-2": {Key: "PROJ-2", Status: "Ready for release", Parent: "PROJ-1", FixVersions: []jira.Version{{ID: "2", Name: "Product v1"}}},
+		},
+	}
+	pass, err := gate.item(t.Context(), "PROJ-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pass.ok {
+		t.Fatalf("subtask passed by its own approved version: %+v", pass)
 	}
 }

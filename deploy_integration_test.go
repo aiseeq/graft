@@ -1096,7 +1096,7 @@ func TestDeployApprovedReleaseByStatus(t *testing.T) {
 	d := deployRepo(t)
 	d.jira.mu.Lock()
 	d.jira.statuses["PROJ-8"] = "Ready for release"
-	d.jira.statuses["PROJ-9"] = "Ready for release"
+	d.jira.statuses["PROJ-9"] = "Done"
 	d.jira.parents = map[string]string{"PROJ-9": "PROJ-8"}
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "--unapproved", "gate")
@@ -1200,7 +1200,7 @@ func TestDeployApprovedReleaseAttribute(t *testing.T) {
 	// A subtask goes out by its parent, a version item by its approvals; the
 	// release note goes to the item.
 	d.jira.mu.Lock()
-	d.jira.statuses["PROJ-9"] = "Ready for release"
+	d.jira.statuses["PROJ-9"] = "Done"
 	d.jira.parents = map[string]string{"PROJ-9": "PROJ-8"}
 	d.jira.mu.Unlock()
 	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "APPROVED"}, "10030": {"APPROVED", "APPROVED"}})

@@ -211,11 +211,11 @@ func (v *releaseVersionCheck) checkUmbrellas(ctx context.Context) bool {
 				}
 				continue
 			}
-			if !sub.Done && !slices.Contains(v.gate.conf.StatusesFor(sub.Labels), sub.Status) {
+			if !sub.Done && !slices.Contains(v.gate.gate.skipKeys, subkey) {
 				open = append(open, subkey+" ("+sub.Status+")")
 			}
 		}
-		if len(open) > 0 && v.fail("version-umbrella", fmt.Sprintf("%s is %s with unfinished subtasks %s; finish or move them to an approved status", key, parent.Status, strings.Join(open, ", "))) {
+		if len(open) > 0 && v.fail("version-umbrella", fmt.Sprintf("%s is %s with unfinished subtasks %s; move them to Done", key, parent.Status, strings.Join(open, ", "))) {
 			return true
 		}
 	}
