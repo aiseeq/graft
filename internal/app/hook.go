@@ -204,10 +204,25 @@ func graftsOwn() (bool, error) {
 	return own, nil
 }
 
+// workerTrunk is the trunk a finished job's files are compared with, or ""
+// when it is unknown: the commit then goes on, and such a job counts by its
+// files alone, as before the trunk check.
+func (a *App) workerTrunk(repo *gitx.Repo, cfg *config.Config) string {
+	remotes, err := repo.Remotes()
+	if err == nil {
+		var trunk string
+		if trunk, err = trunkRef(repo, cfg, "", remotes); err == nil {
+			return trunk
+		}
+	}
+	fmt.Fprintf(a.Stderr, "graft: the trunk is unknown, a finished job of another worktree counts by its files alone: %v\n", err)
+	return ""
+}
+
 // withWorkers is msg with a Worker trailer per model whose work the commit
 // being made carries (workers.Models).
 func (a *App) withWorkers(repo *gitx.Repo, cfg *config.Config, msg string) (string, error) {
-	models, err := workers.Models(repo, a.Stderr, cfg.VersionFiles())
+	models, err := workers.Models(repo, func() string { return a.workerTrunk(repo, cfg) }, a.Stderr, cfg.VersionFiles())
 	if err != nil {
 		return "", err
 	}
