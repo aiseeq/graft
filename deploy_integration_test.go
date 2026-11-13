@@ -2336,8 +2336,11 @@ func TestDeploySweepStaleRebase(t *testing.T) {
 	d.mustPlainCommit("feat: PROJ-2 trunk-only change")
 	trunkOnly := d.git("rev-parse", "HEAD")
 	d.git("push", "-q", "origin", trunk)
+	// A live branch holding the commit too is named beside the stale copy,
+	// not left out: the line does not tell which one to delete.
+	d.git("push", "-q", "origin", strings.TrimSpace(oldSecond)+":refs/heads/release/next")
 	out := d.mustGraft("deploy", "sweep", "swept")
-	want := fmt.Sprintf("PROJ-1 is Ready for release, but 2 of its 4 commits are not on swept: %s is only on origin/fix/PROJ-1-x; a copy left from before a rebase? delete the branch or bring the work in", oldSecond[:12])
+	want := fmt.Sprintf("PROJ-1 is Ready for release, but 2 of its 4 commits are neither on swept nor in the trunk: %s is on origin/fix/PROJ-1-x, origin/release/next; a branch left from before a rebase is deleted, other work is deployed or brought in", oldSecond[:12])
 	if !strings.Contains(out, want) {
 		t.Errorf("no stale branch report %q:\n%s", want, out)
 	}

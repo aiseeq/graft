@@ -2209,7 +2209,7 @@ judged by its own key):
   the trunk; an item in any other status (In Progress, Testing, Paused
   unless `skip_statuses` names it), all its work on the target, whose
   newest commit is `stale_days` old; a finishing item partly on the target
-  with its other commits only on non-trunk branches names a branch for hand review.
+  with its other commits only on branches outside the trunk is listed for a look by hand with those branches.
 
 Without `apply` the sweep only prints the moves it would make: start that
 way and switch it on once the list reads right. `graft deploy sweep` moves

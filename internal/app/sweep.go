@@ -702,11 +702,14 @@ func (s *sweepRun) listStaleFinishing(ctx context.Context, issue jira.Issue, com
 			names = append(names, b.Remote+"/"+b.Branch)
 		}
 		slices.Sort(names)
+		if len(names) > 3 {
+			names = append(names[:3], fmt.Sprintf("%d more", len(names)-3))
+		}
 		if len(names) > 0 {
-			branch = " is only on " + names[0]
+			branch = " is on " + strings.Join(names, ", ")
 		}
 	}
-	s.list(ctx, issue, "%s is %s, but %d of its %d commits are not on %s: %s%s; a copy left from before a rebase? delete the branch or bring the work in",
+	s.list(ctx, issue, "%s is %s, but %d of its %d commits are neither on %s nor in the trunk: %s%s; a branch left from before a rebase is deleted, other work is deployed or brought in",
 		issue.Key, issue.Status, len(commits)-onTarget, len(commits), s.r.name, gitx.Short(commits[i].sha), branch)
 }
 
