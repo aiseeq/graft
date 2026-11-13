@@ -2562,7 +2562,7 @@ up to date and release again.
   by line for PEM private keys, AWS access key ids, `PGPASSWORD=` assignments,
   quoted `sk_live_`, `re_`, `GOCSPX-` keys and quoted JWTs, GitHub
   (`ghp_`, `github_pat_`), Anthropic (`sk-ant-`), OpenAI project (`sk-proj-`)
-  and Slack (`xoxb-`, `xoxp-`, `xapp-`, `xwfp-`) tokens, plus `extra_patterns`,
+  and Slack (`xoxb-`, `xoxp-`, `xapp-`, `xwfp-`, with a random part of 20 characters or more) tokens, plus `extra_patterns`,
   which a finding names by number (a literal pattern is the secret itself). Findings name the file, line and kind, never the secret.
   Binary files are skipped. Files already committed are not rescanned.
 - **Large files**: a binary file (NUL byte in the first 8000 bytes, git's own

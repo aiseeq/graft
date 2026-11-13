@@ -49,10 +49,11 @@ var builtinSecrets = []secretPattern{
 	{"Anthropic API key (sk-ant-...)", regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{40,}`)},
 	{"OpenAI project key (sk-proj-...)", regexp.MustCompile(`\bsk-proj-[A-Za-z0-9_-]{40,}`)},
 	// Slack: bot, user, refresh (xoxe), app-level (xapp, rotated xoxe.xapp)
-	// and workflow (xwfp) tokens start the body with digits and hold at least
-	// three dash-separated parts or a long random tail; names and build
-	// numbers after these prefixes have neither.
-	{"Slack token (xox?-, xapp-, xwfp-...)", regexp.MustCompile(`\b(xox[abcdeprs]|xapp|xwfp)-[0-9]+(-[A-Za-z0-9]+){2,}|\b(xox[abcdeprs]|xapp|xwfp)-[0-9]+-[A-Za-z0-9]{24,}`)},
+	// and workflow (xwfp) tokens start the body with digits and end in a
+	// random part of 24 to 64 characters; names and build numbers after these
+	// prefixes have no such part. A token whose secret part is short (an old
+	// user token) is not seen.
+	{"Slack token (xox?-, xapp-, xwfp-...)", regexp.MustCompile(`\b(xox[abcdeprs]|xapp|xwfp)-[0-9]+-([A-Za-z0-9]+-)*[A-Za-z0-9]{20,}`)},
 }
 
 // Secrets scans staged text files for credentials. Findings name the file,

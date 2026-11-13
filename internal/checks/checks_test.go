@@ -27,9 +27,9 @@ func fakeSecrets() map[string]string {
 		"slack":     "xox" + "b-1234567890-1234567890-" + strings.Repeat("zZ1", 8),
 		"slackapp":  "xoxe.xa" + "pp-1-A12345678-1234567890-" + strings.Repeat("a1", 32),
 		"slackwf":   "xw" + "fp-1234567890-" + strings.Repeat("b2", 20),
-		"slackold":  "xox" + "p-111-222-333-d6bc76",
+		"slack2":    "xox" + "b-1234567890-" + strings.Repeat("zZ1", 8),
 		"harmless":  "re_used := compute() // AKIA",
-		"names":     "ghp_token sk-ant-example sk-proj-name xoxo-hugs-and-kisses-2026 xapp-config github_pat_ prefix" + " xa" + "pp-1-config xo" + "xo-2026-hugs-and-kisses xa" + "pp-1-20261114 xo" + "xb-1-build",
+		"names":     "ghp_token sk-ant-example sk-proj-name xoxo-hugs-and-kisses-2026 xapp-config github_pat_ prefix" + " xa" + "pp-1-config xo" + "xo-2026-hugs-and-kisses xa" + "pp-1-20261114 xo" + "xb-1-build xa" + "pp-1-build-20261114 xo" + "xb-1-build-linux xw" + "fp-1-2026-11-14 xo" + "xp-1-release-candidate-build-2026",
 	}
 }
 
