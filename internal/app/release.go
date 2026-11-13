@@ -173,7 +173,7 @@ func unlabelled(ctx context.Context, r *deployRun, commits []deliveredCommit) (o
 			continue
 		}
 		if conf != nil {
-			ignored, err := shipsNothing(r.repo, r.cfg, conf, c.sha)
+			ignored, _, err := shipsNothing(r.repo, r.cfg, conf, c.sha)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -349,7 +349,7 @@ func (a *App) outsideHold(r *deployRun, wt *config.DeployTarget, candidate, rele
 			}
 		}
 		if conf := wt.ApprovedRelease; conf != nil {
-			ignored, err := shipsNothing(r.repo, r.cfg, conf, c.sha)
+			ignored, _, err := shipsNothing(r.repo, r.cfg, conf, c.sha)
 			if err != nil {
 				return nil, err
 			}
