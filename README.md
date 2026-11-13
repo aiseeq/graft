@@ -1906,7 +1906,14 @@ release_notes:
    (`Revert "Revert "…""`, `Reapply "…"`) brings the work back and is checked
    like any commit. A commit that changes only `ignore_paths` passes too
    (globs as in exceptions; the version file and `sync` files that graft
-   commit bumps do not count). Otherwise the deploy stops here, before deps
+   commit bumps do not count), and so does one that besides them changes
+   only `go.mod` requirements and `go.sum` while every module the main
+   packages outside `ignore_paths` build from keeps its version: graft writes
+   the commit's tree and its parent's to a temporary directory, no hook runs,
+   and compares their `go list -deps` modules at the versions of `go list -m
+   all`, for this machine's GOOS and GOARCH and no build tags. Another `go.mod`
+   directive (`go`, `toolchain`, `replace`) still needs approval; when `go
+   list` fails the check stops with its error. Otherwise the deploy stops here, before deps
    and the script, listing each commit outside the release: one naming no
    item, or naming items that do not pass, and why. With no deployed commit
    recorded, or Jira unreachable, it stops too. After the commits it lists
@@ -2202,10 +2209,7 @@ the target is not on it, though its history has it.
 
 A commit of the trunk the target does not run by history is on it by
 content when, put onto the commit the target runs, it changes no file but
-the version files and those `approved_release.ignore_paths` names. Changes
-left only in `go.mod` or `go.sum` pass too when their modules are absent from
-the dependency graph of every main package outside `ignore_paths`; other
-`go.mod` directives and dependency graph changes still need approval: a
+the version files and those `approved_release.ignore_paths` names: a
 cherry-pick to a release branch, two commits taken in one, a commit of docs
 alone. An item whose commits change nothing but `ignore_paths` moves saying
 its work `ships nothing to <target>`: it needs no deploy. A commit that also

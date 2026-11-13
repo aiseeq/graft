@@ -50,94 +50,131 @@ func TestBeginMachineDeploymentChainsTheIdentity(t *testing.T) {
 	}
 }
 
+// moduleBumpRepo is a repository of example.com/projectA whose modules a and
+// b come from local directories by replace: a v1.1.0 requires b v1.1.0.
+func moduleBumpRepo(t *testing.T, mainFile, mainSrc, goVersion, require string) (string, func(string, string)) {
+	t.Helper()
+	root := t.TempDir()
+	write := func(path, content string) {
+		t.Helper()
+		full := filepath.Join(root, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	freezePolishGit(t, root, "init", "-q")
+	freezePolishGit(t, root, "config", "user.name", "Test")
+	freezePolishGit(t, root, "config", "user.email", "test@example.invalid")
+	for dir, mod := range map[string]string{
+		"mods/a1": "module example.com/a\n\ngo 1.21\n",
+		"mods/a2": "module example.com/a\n\ngo 1.21\n\nrequire example.com/b v1.1.0\n",
+		"mods/b1": "module example.com/b\n\ngo 1.21\n",
+		"mods/b2": "module example.com/b\n\ngo 1.21\n",
+	} {
+		write(dir+"/go.mod", mod)
+		write(dir+"/x.go", "package "+mod[len("module example.com/"):len("module example.com/")+1]+"\n\nconst Dir = "+strconv.Quote(dir)+"\n")
+	}
+	write("go.mod", moduleBumpGoMod(goVersion, require, ""))
+	write("VERSION", "1.0.0\n")
+	write(mainFile, mainSrc)
+	write("cmd/app/main_test.go", "package main\n\nimport (\n\t\"testing\"\n\n\t\"example.com/a\"\n)\n\nfunc TestA(t *testing.T) { _ = a.Dir }\n")
+	freezePolishGit(t, root, "add", ".")
+	freezePolishGit(t, root, "commit", "-q", "-m", "base")
+	return root, write
+}
+
+func moduleBumpGoMod(goVersion, require, extra string) string {
+	return "module example.com/projectA\n\ngo " + goVersion + "\n\nrequire (\n" + require + ")\n\nreplace (\n" +
+		"\texample.com/a v1.0.0 => ./mods/a1\n\texample.com/a v1.1.0 => ./mods/a2\n" +
+		"\texample.com/b v1.0.0 => ./mods/b1\n\texample.com/b v1.1.0 => ./mods/b2\n)\n" + extra
+}
+
 func TestShipsNothingModuleBumpAgainstShippedGraph(t *testing.T) {
 	t.Setenv("GOPROXY", "off")
 	t.Setenv("GOSUMDB", "off")
 	t.Setenv("GOFLAGS", "-mod=mod")
+	const (
+		aOld   = "\texample.com/a v1.0.0\n"
+		aNew   = "\texample.com/a v1.1.0\n"
+		bOld   = "\texample.com/b v1.0.0\n"
+		noMain = "package main\n\nfunc main() {}\n"
+	)
+	imports := func(pkg string) string {
+		return "package main\n\nimport _ " + strconv.Quote(pkg) + "\n\nfunc main() {}\n"
+	}
 	for _, tc := range []struct {
-		name, mainImport        string
+		name, mainFile, mainSrc string
+		before, after           string // requirements
+		goAfter, extraAfter     string
+		noIgnore, wantErr       bool
 		want                    bool
 		reason                  string
-		changeGo, changeReplace bool
 	}{
-		{"test only", "", true, "modules no shipped binary imports", false, false},
-		{"shipped main", "golang.org/x/mod/semver", false, "imported by shipped binary", false, false},
-		{"go list failure", "example.com/missing/pkg", false, "go list failed", false, false},
-		{"go directive", "", false, "changes directives other than require", true, false},
-		{"replace directive", "", false, "changes directives other than require", false, true},
+		{name: "a module only tests import", mainSrc: noMain, before: aOld, after: aNew, want: true, reason: "stay as they were (example.com/a)"},
+		{name: "no ignore_paths", mainSrc: noMain, before: aOld, after: aNew, noIgnore: true, want: true, reason: "stay as they were"},
+		{name: "a module the shipped main imports", mainSrc: imports("example.com/a"), before: aOld, after: aNew, reason: "changes modules of a shipped binary: example.com/a"},
+		{name: "a module the shipped main gets through another", mainSrc: imports("example.com/b"), before: aOld + bOld, after: aNew + bOld, reason: "changes modules of a shipped binary: example.com/b"},
+		{name: "a main under ignore_paths", mainFile: "docs/tool/main.go", mainSrc: imports("example.com/a"), before: aOld, after: aNew, want: true, reason: "stay as they were"},
+		{name: "go list failure", mainSrc: imports("example.com/missing/pkg"), before: aOld, after: aNew, wantErr: true, reason: "go list failed"},
+		{name: "go directive", mainSrc: noMain, before: aOld, after: aOld, goAfter: "1.22", reason: "changes directives other than require"},
+		{name: "replace directive", mainSrc: noMain, before: aOld, after: aOld, extraAfter: "replace example.com/c => ./mods/b1\n", reason: "changes directives other than require"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			freezePolishGit(t, root, "init", "-q")
-			freezePolishGit(t, root, "config", "user.name", "Test")
-			freezePolishGit(t, root, "config", "user.email", "test@example.invalid")
-			write := func(path, content string) {
-				t.Helper()
-				full := filepath.Join(root, path)
-				if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(full, []byte(content), 0644); err != nil {
-					t.Fatal(err)
-				}
+			mainFile := tc.mainFile
+			if mainFile == "" {
+				mainFile = "cmd/app/main.go"
 			}
-			goVersion := "1.26.0"
-			if tc.changeGo {
-				goVersion = "1.25.0"
+			if mainFile != "cmd/app/main.go" {
+				tc.mainSrc, mainFile = noMain, "cmd/app/main.go"
 			}
-			write("go.mod", "module example.com/projectA\n\ngo "+goVersion+"\n")
-			write("VERSION", "1.0.0\n")
-			if tc.mainImport == "" {
-				write("cmd/app/main.go", "package main\nfunc main() {}\n")
-				if tc.name == "test only" {
-					write("cmd/app/main_test.go", "package main\nimport (\"testing\"; \"golang.org/x/mod/semver\")\nfunc TestDependencyIsTestOnly(t *testing.T) { _ = semver.IsValid(\"v1.0.0\") }\n")
-				}
-			} else {
-				write("cmd/app/main.go", "package main\nimport _ "+strconv.Quote(tc.mainImport)+"\nfunc main() {}\n")
+			root, write := moduleBumpRepo(t, mainFile, tc.mainSrc, "1.21", tc.before)
+			if tc.mainFile != "" {
+				write(tc.mainFile, imports("example.com/a"))
+				freezePolishGit(t, root, "add", ".")
+				freezePolishGit(t, root, "commit", "-q", "-m", "ignored tool")
 			}
-			freezePolishGit(t, root, "add", ".")
-			freezePolishGit(t, root, "commit", "-m", "base")
-			changedMod := "module example.com/projectA\n\ngo 1.26.0\n\nrequire golang.org/x/mod v0.42.0\n"
-			if tc.changeReplace {
-				changedMod += "replace golang.org/x/mod => golang.org/x/mod v0.42.0\n"
+			goAfter := tc.goAfter
+			if goAfter == "" {
+				goAfter = "1.21"
 			}
-			write("go.mod", changedMod)
+			write("go.mod", moduleBumpGoMod(goAfter, tc.after, tc.extraAfter))
 			write("VERSION", "1.0.1\n")
-			write("docs/ignored.md", "service change\n")
-			freezePolishGit(t, root, "add", ".")
-			freezePolishGit(t, root, "commit", "-m", "module bump")
-			repo, err := gitx.Open(root)
-			if err != nil {
-				t.Fatal(err)
+			conf := &config.ApprovedRelease{}
+			if !tc.noIgnore {
+				write("docs/ignored.md", "service change\n")
+				conf.Ignore = []*regexp.Regexp{regexp.MustCompile(`^docs/`)}
 			}
+			freezePolishGit(t, root, "add", ".")
+			freezePolishGit(t, root, "commit", "-q", "-m", "module bump")
 			hooks, hooked := t.TempDir(), filepath.Join(t.TempDir(), "hooked")
 			if err := os.WriteFile(filepath.Join(hooks, "post-checkout"), []byte("#!/bin/sh\ntouch "+strconv.Quote(hooked)+"\n"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			freezePolishGit(t, root, "config", "core.hooksPath", hooks)
-			defer func() {
-				if _, err := os.Stat(hooked); err == nil {
-					t.Error("the check ran the repository's post-checkout hook")
-				}
-				if list := freezePolishGit(t, root, "worktree", "list", "--porcelain"); strings.Count(list, "worktree ") != 1 {
-					t.Errorf("worktrees left after the check:\n%s", list)
-				}
-			}()
-			head := freezePolishGit(t, root, "rev-parse", "HEAD")
-			conf := &config.ApprovedRelease{Ignore: []*regexp.Regexp{regexp.MustCompile(`^docs/`)}}
-			cfg := &config.Config{Version: config.Version{Mode: config.ModeFile, File: "VERSION"}}
-			ok, why, err := shipsNothing(repo, cfg, conf, head)
-			if tc.reason == "go list failed" {
-				if err == nil || !strings.Contains(err.Error(), tc.reason) {
-					t.Fatalf("shipsNothing error = %v, want %q", err, tc.reason)
-				}
-				return
-			}
+			repo, err := gitx.Open(root)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if ok != tc.want || !strings.Contains(why, tc.reason) {
-				t.Fatalf("shipsNothing = (%t, %q), want (%t, reason containing %q)", ok, why, tc.want, tc.reason)
+			cfg := &config.Config{Version: config.Version{Mode: config.ModeFile, File: "VERSION"}}
+			ok, why, err := shipsNothing(repo, cfg, conf, freezePolishGit(t, root, "rev-parse", "HEAD"))
+			if tc.wantErr {
+				if err == nil || ok || !strings.Contains(err.Error(), tc.reason) {
+					t.Errorf("shipsNothing = (%t, %q, %v), want an error containing %q", ok, why, err, tc.reason)
+				}
+			} else if err != nil || ok != tc.want || !strings.Contains(why, tc.reason) {
+				t.Errorf("shipsNothing = (%t, %q, %v), want (%t, reason containing %q)", ok, why, err, tc.want, tc.reason)
+			}
+			if _, err := os.Stat(hooked); err == nil {
+				t.Error("the check ran the repository's post-checkout hook")
+			}
+			if list := freezePolishGit(t, root, "worktree", "list", "--porcelain"); strings.Count(list, "worktree ") != 1 {
+				t.Errorf("worktrees left after the check:\n%s", list)
+			}
+			if status := freezePolishGit(t, root, "status", "--porcelain"); status != "" {
+				t.Errorf("the check changed the repository's tree:\n%s", status)
 			}
 		})
 	}
