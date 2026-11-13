@@ -202,20 +202,38 @@ func transitionSummary(tr config.NoteTransition) string {
 	return strings.Join(parts, "; ")
 }
 
-// previewNotes uses the deploy's key selection and move decision without writes.
-func (a *App) previewNotes(ctx context.Context, r *deployRun) {
+// previewKeys are the keys of the commits the deploy brings, or why they are
+// unknown.
+func previewKeys(r *deployRun) ([]string, string) {
 	if r.prev == "" {
-		a.printf("- keys not checked: no previously deployed commit recorded")
-		return
+		return nil, "no previously deployed commit recorded"
 	}
 	known, err := r.repo.RevExists(r.prev)
-	if err != nil || !known {
-		a.printf("- keys not checked: previously deployed commit is unknown: %v", err)
-		return
+	switch {
+	case err != nil:
+		return nil, fmt.Sprintf("the previously deployed commit %s is unreadable: %v", gitx.Short(r.prev), err)
+	case !known:
+		return nil, fmt.Sprintf("the previously deployed commit %s is not in this repository", gitx.Short(r.prev))
 	}
 	keys, _, _, err := deliveredKeys(r)
 	if err != nil {
-		a.printf("- keys not checked: %v", err)
+		return nil, err.Error()
+	}
+	return keys, ""
+}
+
+// previewNotes uses the deploy's key selection and move decision without writes.
+func (a *App) previewNotes(ctx context.Context, r *deployRun) {
+	keys, why := previewKeys(r)
+	if why != "" {
+		a.printf("- keys of the new commits not checked: %s", why)
+	}
+	// The deploy tries again the items earlier deploys held, new commits or not.
+	held, err := readHeld(r)
+	if err != nil {
+		a.printf("- items held by earlier deploys not checked: %v", err)
+	}
+	if len(keys) == 0 && len(held) == 0 {
 		return
 	}
 	client, err := jiraClient()
@@ -268,6 +286,7 @@ func (a *App) previewNotes(ctx context.Context, r *deployRun) {
 			a.printf("- %s: %s → %s (stays)", key, issue.Status, status)
 		}
 	}
+	a.retryHeld(ctx, &subtaskRun{mover: m, reached: map[string]string{}}, held, keys)
 }
 
 // DeployVersions is graft deploy versions: the version and the commit each

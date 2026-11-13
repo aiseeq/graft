@@ -101,3 +101,41 @@ func TestDeployRequireComment(t *testing.T) {
 		t.Errorf("held after all moved:\n%s", out)
 	}
 }
+
+// TestDeployCheckNamesHeldItems: graft deploy check names an item an earlier
+// deploy held, which the deploy moves once its comment is written though no
+// new commit names it, and leaves it held: the check only reads.
+func TestDeployCheckNamesHeldItems(t *testing.T) {
+	d := newDeployFixture(t, func(state string, q func(string) string) string {
+		return strings.Replace(deployConfig(state, q), "keep_assignee_labels: [internal]}", "keep_assignee_labels: [internal], require_comment: How to check}", 1)
+	})
+	d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-80"] = "In Progress"
+	d.jira.mu.Unlock()
+	d.mustGraft("deploy", "sub")
+	d.write("a.txt", "a\n")
+	d.mustGraft("commit", "-m", "feat: the form\n\nPROJ-80")
+	if out := d.mustGraft("deploy", "sub"); !strings.Contains(out, "graft: PROJ-80: NOT MOVED to Testing") {
+		t.Fatalf("PROJ-80 not held:\n%s", out)
+	}
+	d.jira.mu.Lock()
+	d.jira.written = map[string][]fakeComment{"PROJ-80": {{author: "me", created: time.Now(), text: "How to check: open the form"}}}
+	d.jira.nonGET = nil
+	d.jira.mu.Unlock()
+	d.write("b.txt", "b\n")
+	d.mustGraft("commit", "-m", "chore: tidy")
+	out, _ := d.graft("", "deploy", "check", "sub")
+	if !strings.Contains(out, "- PROJ-80: In Progress → Testing; assign qa") {
+		t.Errorf("check does not name the held PROJ-80:\n%s", out)
+	}
+	d.jira.mu.Lock()
+	nonGET := slices.Clone(d.jira.nonGET)
+	d.jira.mu.Unlock()
+	if len(nonGET) != 0 {
+		t.Errorf("check sent %v", nonGET)
+	}
+	if out, _ := d.graft("", "deploy", "handover", "sub"); !strings.Contains(out, "PROJ-80 moved to Testing") {
+		t.Errorf("check let go of the held PROJ-80:\n%s", out)
+	}
+}
