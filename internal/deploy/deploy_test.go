@@ -36,6 +36,27 @@ func fakeSudoForConfirmation(t *testing.T, script string) string {
 	return filepath.Join(bin, "calls")
 }
 
+func TestConfirmTaskSudoNamesTask(t *testing.T) {
+	calls := fakeSudoForConfirmation(t, `echo "$*" >> "$CALLS"
+case "$*" in
+  -k) exit 0 ;;
+  "-n -v") exit 1 ;;
+  -v\ -p\ *) exit 0 ;;
+esac`)
+	t.Setenv("CALLS", calls)
+	var log bytes.Buffer
+	if err := ConfirmTaskSudo(context.Background(), "projectA", &log); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "confirm task projectA") || !strings.Contains(log.String(), "confirm task projectA") {
+		t.Fatalf("calls %q log %q", got, log.String())
+	}
+}
+
 func TestConfirmSudoInvalidatesCachedCredentialsBeforeChecking(t *testing.T) {
 	calls := fakeSudoForConfirmation(t, `echo "$*" >> "$CALLS"
 case "$*" in

@@ -145,6 +145,8 @@ type Task struct {
 	Desc string   `yaml:"desc"`
 	Deps []string `yaml:"deps"`
 	Run  []Step   `yaml:"run"`
+	// Confirm requires a human confirmation after deps and before run.
+	Confirm string `yaml:"confirm"`
 	// Dir is where the steps run, relative to the work tree root.
 	Dir string `yaml:"dir"`
 	// DotEnv lists .env keys passed to the steps; the rest of .env is not.
@@ -542,6 +544,9 @@ func (c *Config) validateTask(name string, t *Task) error {
 	}
 	if t == nil || (len(t.Run) == 0 && len(t.Deps) == 0) {
 		return fmt.Errorf("%s: needs run or deps", where)
+	}
+	if t.Confirm != "" && t.Confirm != "sudo" {
+		return fmt.Errorf("%s.confirm: only sudo is supported, got %q", where, t.Confirm)
 	}
 	if err := validateTaskMemoryMax(name, t); err != nil {
 		return err

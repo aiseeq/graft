@@ -31,6 +31,7 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/atomicfile"
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/deploy"
 	"github.com/aiseeq/graft/v2/internal/deploystate"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
 	"github.com/aiseeq/graft/v2/internal/envs"
@@ -136,8 +137,14 @@ type Runner struct {
 	goEnvRead  bool
 	version    *string
 	testDB     *TestDB
-	done       map[string]bool
-	held       map[string]lock.Mode
+	confirmed  bool
+	// ConfirmTask is replaceable by tests; nil uses sudo.
+	ConfirmTask func(context.Context, string, io.Writer) error
+	// ConfirmDeploy and RefuseSudo allow the same checks to be tested without sudo.
+	ConfirmDeploy func(context.Context, string, io.Writer) error
+	RefuseSudo    func() error
+	done          map[string]bool
+	held          map[string]lock.Mode
 	// Load reads this machine's load settings for heavy tasks.
 	Load func() (userconfig.MachineLoad, error)
 	// Limits are the user's limits, which the outermost task's run is
@@ -1894,6 +1901,11 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 	if err := r.RunDeps(ctx, t.Deps); err != nil {
 		return err
 	}
+	if t.Confirm == "sudo" {
+		if err := r.Confirm(ctx, name, false); err != nil {
+			return err
+		}
+	}
 	leave, err := r.placeTask(ctx, f, name, t, args)
 	if err != nil {
 		return err
@@ -1914,6 +1926,37 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 	}
 	r.done[name] = true
 	return errors.Join(err, release())
+}
+
+// Confirm asks once per runner, sharing confirmation between tasks and deploy.
+func (r *Runner) Confirm(ctx context.Context, name string, target bool) error {
+	if r.confirmed {
+		return nil
+	}
+	refuse := r.RefuseSudo
+	if refuse == nil {
+		refuse = proc.RefusedSudo
+	}
+	if err := refuse(); err != nil {
+		return err
+	}
+	confirm := r.ConfirmTask
+	if confirm == nil {
+		confirm = deploy.ConfirmTaskSudo
+	}
+	if target {
+		confirm = r.ConfirmDeploy
+		if confirm == nil {
+			confirm = deploy.ConfirmSudo
+		}
+	}
+	start := time.Now()
+	err := confirm(ctx, name, r.Stderr)
+	r.Waited(WhySudo, time.Since(start))
+	if err == nil {
+		r.confirmed = true
+	}
+	return err
 }
 
 // placeTask places a heavy task, on the host or admitted here, and returns

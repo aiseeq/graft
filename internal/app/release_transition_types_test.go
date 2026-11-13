@@ -18,6 +18,18 @@ import (
 	"github.com/aiseeq/graft/v2/internal/jira"
 )
 
+func TestProjectHelpMarksConfirmedTask(t *testing.T) {
+	var out bytes.Buffer
+	a := &App{Stdout: &out}
+	cfg := &config.Config{Tasks: map[string]*config.Task{"projectA": {Confirm: "sudo"}, "plain": {Desc: "plain task"}}}
+	if err := a.ProjectHelp(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "projectA") || !strings.Contains(out.String(), "changes prod; asks for confirmation") {
+		t.Fatalf("help: %s", out.String())
+	}
+}
+
 func TestDeploySummaryConfiguredEffects(t *testing.T) {
 	var out bytes.Buffer
 	a := &App{Stdout: &out, Stderr: io.Discard}

@@ -341,16 +341,25 @@ var fingerprintRefusals = []string{"Verification timed out", "Failed to match fi
 // reader refuses, for at most fingerprintWait, and any other refusal ends the
 // deploy, since nobody can type a password there.
 func ConfirmSudo(ctx context.Context, target string, log io.Writer) error {
-	if err := checkSudoConfirmation(ctx, target); err != nil {
+	return confirmSudo(ctx, "the deploy to "+target, "deploying to "+target, "graft deploy", log)
+}
+
+// ConfirmTaskSudo uses the same confirmation for a task.
+func ConfirmTaskSudo(ctx context.Context, name string, log io.Writer) error {
+	return confirmSudo(ctx, "task "+name, "task "+name, "graft "+name, log)
+}
+
+func confirmSudo(ctx context.Context, action, subject, command string, log io.Writer) error {
+	if err := checkSudoConfirmation(ctx, subject); err != nil {
 		return err
 	}
-	prompt := fmt.Sprintf("[sudo] password to confirm the deploy to %s: ", target)
+	prompt := fmt.Sprintf("[sudo] password to confirm %s: ", action)
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		return confirmInTerminal(ctx, prompt, log)
 	}
-	fmt.Fprintf(log, "graft: no terminal, touch the fingerprint reader to confirm the deploy to %s (waiting up to %s, Ctrl-C to stop)\n", target, fingerprintWait)
+	fmt.Fprintf(log, "graft: no terminal, touch the fingerprint reader to confirm %s (waiting up to %s, Ctrl-C to stop)\n", action, fingerprintWait)
 	limits := fingerprintLimits{wait: fingerprintWait, busyWait: fingerprintBusyWait, busyPause: fingerprintBusyPause, now: time.Now}
-	return confirmByFingerprint(ctx, target, limits, log, fingerprintEnrolled, func(ctx context.Context) (bool, []byte, error) {
+	return confirmFingerprint(ctx, subject, command, limits, log, fingerprintEnrolled, func(ctx context.Context) (bool, []byte, error) {
 		cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "sudo", "-v", "-p", prompt)
 		if err != nil {
 			return false, nil, err
@@ -371,17 +380,17 @@ func ConfirmSudo(ctx context.Context, target string, log io.Writer) error {
 // without a password or a finger (NOPASSWD, or a PAM stack that lets anyone
 // through), and so does any success where that option is on, whatever PAM
 // printed: a prompt for a finger does not tell that one was read.
-func checkSudoConfirmation(ctx context.Context, target string) error {
+func checkSudoConfirmation(ctx context.Context, subject string) error {
 	invalidate, err := execx.CommandContext(ctx, execx.ShortGrace, "sudo", "-k")
 	if err != nil {
-		return fmt.Errorf("deploying to %s was not confirmed: sudo -k: %w", target, err)
+		return fmt.Errorf("%s was not confirmed: sudo -k: %w", subject, err)
 	}
 	if err := invalidate.Run(); err != nil {
-		return fmt.Errorf("deploying to %s was not confirmed: sudo -k: %w", target, err)
+		return fmt.Errorf("%s was not confirmed: sudo -k: %w", subject, err)
 	}
 	check, err := execx.CommandContext(ctx, execx.ShortGrace, "sudo", "-n", "-v")
 	if err != nil {
-		return fmt.Errorf("deploying to %s was not confirmed: sudo -n -v: %w", target, err)
+		return fmt.Errorf("%s was not confirmed: sudo -n -v: %w", subject, err)
 	}
 	err = check.Run()
 	var exitErr *exec.ExitError
@@ -389,9 +398,9 @@ func checkSudoConfirmation(ctx context.Context, target string) error {
 	case errors.As(err, &exitErr):
 		return nil
 	case err != nil:
-		return fmt.Errorf("deploying to %s was not confirmed: sudo -n -v: %w", target, err)
+		return fmt.Errorf("%s was not confirmed: sudo -n -v: %w", subject, err)
 	}
-	return fmt.Errorf("deploying to %s was not confirmed: sudo on this host passes without asking for a password or a finger (NOPASSWD, a PAM stack that lets anyone through, or sudoers noninteractive_auth), so it cannot confirm a deploy; make sudo ask, or remove confirm from the target", target)
+	return fmt.Errorf("%s was not confirmed: sudo on this host passes without asking for a password or a finger (NOPASSWD, a PAM stack that lets anyone through, or sudoers noninteractive_auth), so it cannot confirm this action; make sudo ask, or remove confirm from its configuration", subject)
 }
 
 func confirmInTerminal(ctx context.Context, prompt string, log io.Writer) error {
@@ -439,6 +448,10 @@ type fingerprintLimits struct {
 // reader refusing or busy, until it passes, ctx ends or the limits run out.
 // enrolled says why this user cannot be asked for a finger, nil when they can.
 func confirmByFingerprint(ctx context.Context, target string, limits fingerprintLimits, log io.Writer, enrolled func(context.Context) error, attempt func(context.Context) (bool, []byte, error)) error {
+	return confirmFingerprint(ctx, "deploying to "+target, "graft deploy", limits, log, enrolled, attempt)
+}
+
+func confirmFingerprint(ctx context.Context, subject, command string, limits fingerprintLimits, log io.Writer, enrolled func(context.Context) error, attempt func(context.Context) (bool, []byte, error)) error {
 	waitCtx, cancel := context.WithTimeout(ctx, limits.wait)
 	defer cancel()
 	deadline, _ := waitCtx.Deadline()
@@ -447,12 +460,12 @@ func confirmByFingerprint(ctx context.Context, target string, limits fingerprint
 			return ctx.Err()
 		}
 		if waitCtx.Err() != nil {
-			return fmt.Errorf("deploying to %s was not confirmed: no fingerprint within %s", target, limits.wait)
+			return fmt.Errorf("%s was not confirmed: no fingerprint within %s", subject, limits.wait)
 		}
 		return nil
 	}
 	refuse := func(reason string) error {
-		return fmt.Errorf("deploying to %s was not confirmed: without a terminal sudo takes only a fingerprint, and the fingerprint reader did not answer%s; run graft deploy in a terminal to type the password", target, reason)
+		return fmt.Errorf("%s was not confirmed: without a terminal sudo takes only a fingerprint, and the fingerprint reader did not answer%s; run %s in a terminal to type the password", subject, reason, command)
 	}
 	var busySince time.Time
 	for n := 1; ; n++ {

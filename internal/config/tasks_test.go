@@ -81,6 +81,23 @@ func TestParseTasks(t *testing.T) {
 	}
 }
 
+func TestTaskConfirm(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		valid bool
+	}{{"sudo", true}, {"other", false}} {
+		data := strings.Replace(tasksBase, "    desc: lint\n", "    desc: lint\n    confirm: "+tc.value+"\n", 1)
+		cfg, err := Parse([]byte(data))
+		if tc.valid {
+			if err != nil || cfg.Tasks["lint"].Confirm != tc.value {
+				t.Fatalf("confirm %s: %v", tc.value, err)
+			}
+		} else if err == nil || !strings.Contains(err.Error(), "tasks.lint.confirm") {
+			t.Fatalf("confirm %s: %v", tc.value, err)
+		}
+	}
+}
+
 func TestTaskMemoryMax(t *testing.T) {
 	data := strings.Replace(tasksBase, "    desc: lint\n", "    desc: lint\n    heavy: true\n    memory_max: 12G\n", 1)
 	cfg, err := Parse([]byte(data))

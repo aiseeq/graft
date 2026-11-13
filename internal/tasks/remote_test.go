@@ -1,8 +1,11 @@
 package tasks
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,6 +19,95 @@ import (
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/stats"
 )
+
+func TestTaskConfirmationChain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	for _, refusal := range []bool{false, true} {
+		t.Run(fmt.Sprint(refusal), func(t *testing.T) {
+			root := t.TempDir()
+			cfg := &config.Config{Tasks: map[string]*config.Task{
+				"first":     {Run: []config.Step{{Shell: "echo dep >> order"}}},
+				"protected": {Deps: []string{"first"}, Confirm: "sudo", Run: []config.Step{{Shell: "echo run >> order"}}},
+				"second":    {Confirm: "sudo", Run: []config.Step{{Shell: "echo second >> order"}}},
+			}}
+			r := NewRunner(root, cfg, io.Discard, io.Discard)
+			calls := 0
+			r.RefuseSudo = func() error { return nil }
+			r.ConfirmTask = func(_ context.Context, name string, _ io.Writer) error {
+				calls++
+				got, err := os.ReadFile(filepath.Join(root, "order"))
+				if err != nil || string(got) != "dep\n" || name != "protected" {
+					t.Fatalf("order %q, name %q, err %v", got, name, err)
+				}
+				if refusal {
+					return errors.New("not confirmed")
+				}
+				return nil
+			}
+			r.ConfirmDeploy = func(context.Context, string, io.Writer) error { t.Fatal("deploy confirmed twice"); return nil }
+			err := r.RunDeps(context.Background(), []string{"protected", "second"})
+			if refusal {
+				if err == nil || !strings.Contains(err.Error(), "not confirmed") {
+					t.Fatalf("error: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := r.Confirm(context.Background(), "prod", true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := os.ReadFile(filepath.Join(root, "order"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "dep\nrun\nsecond\n"
+			if refusal {
+				want = "dep\n"
+			}
+			if string(got) != want || calls != 1 {
+				t.Fatalf("order %q calls %d", got, calls)
+			}
+		})
+	}
+}
+
+func TestTaskConfirmationRefusedBeforeSudo(t *testing.T) {
+	r := NewRunner(t.TempDir(), &config.Config{}, io.Discard, io.Discard)
+	r.RefuseSudo = func() error { return errors.New("no_new_privs; run graft outside the sandbox") }
+	r.ConfirmTask = func(context.Context, string, io.Writer) error { t.Fatal("sudo called"); return nil }
+	err := r.Confirm(context.Background(), "projectA", false)
+	if err == nil || !strings.Contains(err.Error(), "no_new_privs") {
+		t.Fatalf("error: %v", err)
+	}
+}
+
+func TestHeavyConfirmBeforeRemote(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	t.Setenv(HeavyEnv, "")
+	root := t.TempDir()
+	cfg := &config.Config{
+		RemoteHeavy: &config.RemoteHeavy{Host: "hostA", Up: []string{"sh", "-c", "test -f confirmed"}, Run: []string{"sh", "-c", "echo remote >> order; exec \"$@\"", "sh"}},
+		Tasks:       map[string]*config.Task{"projectA": {Heavy: true, Confirm: "sudo", Run: []config.Step{{Shell: "echo run >> order"}}}},
+	}
+	r := NewRunner(root, cfg, io.Discard, &bytes.Buffer{})
+	r.RefuseSudo = func() error { return nil }
+	r.ConfirmTask = func(context.Context, string, io.Writer) error {
+		return os.WriteFile(filepath.Join(root, "confirmed"), []byte("yes"), 0600)
+	}
+	if err := r.Run(context.Background(), "projectA", nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "order"))
+	if err != nil || string(got) != "remote\nrun\n" {
+		t.Fatalf("order %q: %v", got, err)
+	}
+}
 
 func TestHeavyLocalReason(t *testing.T) {
 	t.Setenv(HeavyEnv, "local")

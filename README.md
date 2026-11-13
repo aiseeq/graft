@@ -847,7 +847,7 @@ directories.
 
 Tasks replace Makefile targets. `graft smoke` runs the task `smoke` (a task
 cannot take the name of a graft command); `graft help` lists tasks that have
-a `desc`, the rest are building blocks.
+a `desc` or require confirmation, the rest are building blocks.
 
 ```yaml
 tasks:
@@ -868,6 +868,10 @@ tasks:
     env: {LOG_LEVEL: debug, API_URL: 'http://${HOST}:8080'}   # ${KEY}: environment, then .env
     run:
       - go test -json -p {threads} -count=1 {args} ./...   # graft test -- -run TestX; {threads}: user config load.threads
+  publish:
+    desc: publish projectA
+    confirm: sudo              # after deps, confirm with sudo before running this task
+    run: [sh, publish.sh]
   lint:
     keep_going: true           # run every step, fail at the end listing what failed
     lock: read                 # shared lock "work-tree": lints run side by side
@@ -896,6 +900,11 @@ dotenv_sets:                   # key lists several tasks and services share
   db: [DB_HOST, DB_NAME, 'DB_POOL?']
 ```
 
+- `confirm: sudo` asks for human confirmation after the task's deps and before
+  its run, with the same terminal, fingerprint and cache rules as a deploy
+  target (see below). A task chain and its deploy share one confirmation.
+  A heavy task confirms locally before it can run on a remote host. The same
+  script run outside graft does not ask for confirmation.
 - A step is a string (split into words, no shell; pipes, `$VAR` and
   redirects are errors), a list (argv as is), `{sh: "..."}`, `{task: name}`,
   `{service: action [name]}` or `{install: paths}` (below). A string with

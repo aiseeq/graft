@@ -1708,6 +1708,65 @@ deploy:
 	}
 }
 
+func TestDeploySharesTaskConfirmation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("deploy scripts use sh")
+	}
+	state := t.TempDir()
+	order := filepath.Join(state, "order")
+	bin := t.TempDir()
+	writeFile(t, filepath.Join(bin, "sudo"), `#!/bin/sh
+echo "$*" >> `+yamlQuote(filepath.Join(state, "calls"))+`
+case "$*" in
+ -k) exit 0 ;;
+ "-n -v") exit 1 ;;
+ -v\ -p\ *) echo confirm >> `+yamlQuote(order)+`; exit 0 ;;
+esac
+exit 1
+`)
+	if err := os.Chmod(filepath.Join(bin, "sudo"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	f := newRepo(t, map[string]string{
+		".graft.yaml": `schema: 1
+version: {mode: none}
+envs: {local: {}}
+tasks:
+  first:
+    run: [` + helperStep("append", order, "dep") + `]
+  protected:
+    deps: [first]
+    confirm: sudo
+    run: [` + helperStep("append", order, "task") + `]
+  next:
+    confirm: sudo
+    run: [` + helperStep("append", order, "next") + `]
+deploy:
+  remote: origin
+  targets:
+    prod:
+      env: local
+      deps: [protected, next]
+      confirm: sudo
+      run: [sh, deploy.sh]
+`,
+		"deploy.sh": "echo deploy >> " + yamlQuote(order) + "\n",
+	}, "origin")
+	f.env = append(f.env, "PATH="+bin+string(os.PathListSeparator)+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-u", "origin", "HEAD")
+	out := f.mustGraft("deploy", "prod")
+	if !strings.Contains(out, "confirm task protected") {
+		t.Fatalf("confirmation prompt: %s", out)
+	}
+	if got := readFile(t, order); got != "dep\nconfirm\ntask\nnext\ndeploy\n" {
+		t.Fatalf("order %q", got)
+	}
+	if got := readFile(t, filepath.Join(state, "calls")); strings.Count(got, "-k\n") != 1 || strings.Count(got, "-v -p ") != 1 {
+		t.Fatalf("sudo calls %q", got)
+	}
+}
+
 func TestDeployRunsDepsFirst(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("deploy scripts use sh")

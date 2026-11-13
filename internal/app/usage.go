@@ -80,15 +80,19 @@ func commitHowTo(cfg *config.Config) string {
 	return b.String()
 }
 
-// ProjectHelp lists the project's tasks that have a desc, and its services.
+// ProjectHelp lists described or confirmed tasks and the project's services.
 func (a *App) ProjectHelp(cfg *config.Config) error {
 	var b strings.Builder
 	if len(cfg.Tasks) > 0 {
 		var rows [][2]string
 		for _, name := range slices.Sorted(maps.Keys(cfg.Tasks)) {
-			// A task without desc is a building block of others.
-			if t := cfg.Tasks[name]; t.Desc != "" {
-				rows = append(rows, [2]string{taskSyntax(name, t), t.Desc})
+			// A confirmed task must be visible even without a description.
+			if t := cfg.Tasks[name]; t.Desc != "" || t.Confirm == "sudo" {
+				desc := t.Desc
+				if t.Confirm == "sudo" {
+					desc += " [changes prod; asks for confirmation]"
+				}
+				rows = append(rows, [2]string{taskSyntax(name, t), desc})
 			}
 		}
 		b.WriteString("\nTasks (graft <task> [-- args]; graft tasks lists all):\n")

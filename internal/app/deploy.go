@@ -341,10 +341,7 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 			return err
 		}
 		if r.target.Confirm == "sudo" {
-			start := time.Now()
-			err := deploy.ConfirmSudo(ctx, r.name, a.Stderr)
-			r.tasks.Waited(tasks.WhySudo, time.Since(start))
-			if err != nil {
+			if err := r.tasks.Confirm(ctx, r.name, true); err != nil {
 				return err
 			}
 		}
