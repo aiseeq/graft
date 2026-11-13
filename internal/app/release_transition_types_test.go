@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -130,6 +131,43 @@ func TestSweepTransitionTypesUseTheTransitionFromTheStatus(t *testing.T) {
 	run.r.target.ReleaseNotes, run.conf = notes, notes.Sweep
 	if got := run.typeStop(jira.Issue{Key: "PROJ-3", Type: "Sub-task", Status: "Testing", Parent: "PROJ-1"}); got != "PROJ-3 stays Testing: the transition to Ready for Release moves only Task" {
 		t.Errorf("hop transition: typeStop = %q", got)
+	}
+}
+
+// The route sweep checks is the route it takes: a reviewer's subtask with a
+// transition of its own to done goes there directly, not through another
+// transition's from.
+func TestSweepTransitionDoneTakesTheCheckedRoute(t *testing.T) {
+	var moves []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/transitions") {
+			body, _ := io.ReadAll(r.Body)
+			moves = append(moves, string(body))
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	notes := &config.TargetNotes{Transitions: []config.NoteTransition{
+		{From: []string{"Ready for Release"}, To: "Done", Types: []string{"Task"}},
+		{From: []string{"Testing"}, To: "Done", Types: []string{"Sub-task"}},
+	}, Sweep: &config.Sweep{Done: "Done"}}
+	run := &sweepRun{
+		app:    &App{Stdout: &strings.Builder{}, Stderr: &strings.Builder{}},
+		r:      &deployRun{name: "prod", target: &config.DeployTarget{ReleaseNotes: notes}},
+		client: jira.New(jira.Credentials{BaseURL: srv.URL}), conf: notes.Sweep, review: []string{"Testing"},
+	}
+	issue := jira.Issue{Key: "PROJ-2", Type: "Sub-task", Status: "Testing", Parent: "PROJ-1",
+		Transitions: []jira.Transition{{ID: "1", To: "Done"}, {ID: "2", To: "Ready for Release"}}}
+	if stop := run.typeStop(issue); stop != "" {
+		t.Fatalf("typeStop = %q, want the direct transition allowed", stop)
+	}
+	if err := run.transitionDone(t.Context(), issue); err != nil {
+		t.Fatal(err)
+	}
+	if len(moves) != 1 || !strings.Contains(moves[0], `"1"`) {
+		t.Fatalf("transition requests = %q, want the one to Done", moves)
 	}
 }
 

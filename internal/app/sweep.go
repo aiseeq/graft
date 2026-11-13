@@ -879,29 +879,29 @@ func (s *sweepRun) hops(issue jira.Issue, t *config.NoteTransition) bool {
 	return t != nil && len(t.From) > 0 && !slices.Contains(t.From, issue.Status) && issue.Parent != "" && slices.Contains(s.review, issue.Status)
 }
 
-// typeStop says why transitionDone may not move the item, "" when it may:
-// the transition to done, or the one into its from that a subtask with the
-// reviewer goes through first, does not move the item's type.
-func (s *sweepRun) typeStop(issue jira.Issue) string {
+// doneRoute is the way transitionDone takes the item to done: by done, the
+// transition from its status when one leads to done, else the first one to
+// done; a subtask with the reviewer first goes into via, done's first from,
+// by hop, the transition naming that move. via is "" without that step.
+func (s *sweepRun) doneRoute(issue jira.Issue) (done *config.NoteTransition, via string, hop *config.NoteTransition) {
 	notes := s.r.target.ReleaseNotes
 	if t := notes.Moving(issue.Status); t != nil && t.To == s.conf.Done {
-		// Several transitions may lead to done: the one from the item's
-		// status is the one that moves it.
-		if !t.AllowsType(issue.Type) {
+		return t, "", nil
+	}
+	done = notes.Leading(s.conf.Done)
+	if s.hops(issue, done) {
+		return done, done.From[0], transitionBetween(notes, issue.Status, done.From[0])
+	}
+	return done, "", nil
+}
+
+// typeStop says why transitionDone may not move the item, "" when it may:
+// a transition of its route does not move the item's type.
+func (s *sweepRun) typeStop(issue jira.Issue) string {
+	done, _, hop := s.doneRoute(issue)
+	for _, t := range []*config.NoteTransition{hop, done} {
+		if t != nil && !t.AllowsType(issue.Type) {
 			return transitionTypeStayMessage(issue.Key, issue.Status, "", t)
-		}
-		return ""
-	}
-	t := notes.Leading(s.conf.Done)
-	if t == nil {
-		return ""
-	}
-	if !t.AllowsType(issue.Type) {
-		return transitionTypeStayMessage(issue.Key, issue.Status, "", t)
-	}
-	if s.hops(issue, t) {
-		if hop := transitionBetween(notes, issue.Status, t.From[0]); hop != nil && !hop.AllowsType(issue.Type) {
-			return transitionTypeStayMessage(issue.Key, issue.Status, "", hop)
 		}
 	}
 	return ""
@@ -926,8 +926,8 @@ func (s *sweepRun) transitionDone(ctx context.Context, issue jira.Issue) error {
 	if s.typeStop(issue) != "" {
 		return errTypeNotAllowed
 	}
-	if t := s.r.target.ReleaseNotes.Leading(s.conf.Done); s.hops(issue, t) {
-		if err := s.client.Transition(ctx, issue, t.From[0]); err != nil {
+	if _, via, _ := s.doneRoute(issue); via != "" {
+		if err := s.client.Transition(ctx, issue, via); err != nil {
 			return err
 		}
 		fresh, err := s.client.Issue(ctx, issue.Key)
