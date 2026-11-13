@@ -1901,11 +1901,9 @@ func (g *approvalGate) readyFor(issue jira.Issue) []string {
 	return nil
 }
 
-// openParent says why a parent keeps the item in: the item is ready with
-// subtasks not done, or it is a subtask whose parent, ready or done, would
-// let it through. A subtask is judged by its parent alone: it is done once
-// its code is in the trunk, before the release. It is "" when nothing keeps
-// it in.
+// openParent says why an item or its parent is held by subtasks not in Done.
+// With a version prefix, every parent is checked; without one, only parents
+// whose approved status would let their work out are checked.
 func (g *approvalGate) openParent(ctx context.Context, issue jira.Issue) (string, error) {
 	holder, ok, err := g.holder(ctx, issue)
 	if err != nil || !ok || slices.Contains(g.skipKeys, holder.Key) {
@@ -1914,37 +1912,36 @@ func (g *approvalGate) openParent(ctx context.Context, issue jira.Issue) (string
 	return g.openSubtasks(ctx, holder)
 }
 
-// holder is the item whose subtasks openParent looks at: the item itself when
-// it is a ready top-level one, a subtask's parent when that is ready, or done
-// with a version that would let the subtask out; ok is false for none.
+// holder is the item whose subtasks openParent looks at: the item itself
+// when it is Done, ready, or checked by a version prefix; for subtasks, it is
+// the parent when ready or when a version prefix applies.
 func (g *approvalGate) holder(ctx context.Context, issue jira.Issue) (jira.Issue, bool, error) {
 	if issue.Parent == "" {
-		return issue, !issue.Done && slices.Contains(g.readyFor(issue), issue.Status), nil
+		ready := slices.Contains(g.readyFor(issue), issue.Status)
+		return issue, issue.Done || ready || g.conf.Prefix != "", nil
 	}
 	parent, err := g.issue(ctx, issue.Parent)
 	if err != nil {
 		return jira.Issue{}, false, err
 	}
-	if slices.Contains(g.readyFor(parent), parent.Status) {
+	if slices.Contains(g.readyFor(parent), parent.Status) || g.conf.Prefix != "" {
 		return parent, true, nil
 	}
-	// With a version prefix, a done parent still holds its subtask while any
-	// subtask remains open. The subtask's own version does not change this.
-	if !parent.Done || g.conf.Prefix == "" {
-		return jira.Issue{}, false, nil
-	}
-	return parent, true, nil
+	return jira.Issue{}, false, nil
 }
 
 // openSubtasks says which of holder's subtasks keep it in, "" when none does.
 func (g *approvalGate) openSubtasks(ctx context.Context, holder jira.Issue) (string, error) {
 	var open []string
 	for _, key := range holder.Subtasks {
+		if slices.Contains(g.skipKeys, key) {
+			continue
+		}
 		st, err := g.issue(ctx, key)
 		if err != nil {
 			return "", err
 		}
-		if !st.Done && !slices.Contains(g.skipKeys, key) {
+		if !st.Done {
 			open = append(open, key+" ("+st.Status+")")
 		}
 	}
@@ -1979,6 +1976,13 @@ func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 	if g.conf.Version != nil {
 		if g.conf.Prefix == "" {
 			return gatePass{ok: true, label: "release version"}, nil
+		}
+		why, err := g.openParent(ctx, issue)
+		if err != nil {
+			return gatePass{}, err
+		}
+		if why != "" {
+			return gatePass{why: why}, nil
 		}
 		version, err := g.approvedVersion(ctx, issue)
 		if err != nil {

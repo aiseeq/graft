@@ -75,6 +75,8 @@ func (v *releaseVersionCheck) readTops(ctx context.Context) bool {
 				}
 				continue
 			}
+		} else if len(issue.Subtasks) > 0 {
+			v.umbrellas[issue.Key] = true
 		}
 		v.tops[issue.Key] = issue
 	}
@@ -146,6 +148,17 @@ func (v *releaseVersionCheck) checkTops() bool {
 	return false
 }
 
+func versionStatusDetail(issue jira.Issue, statuses []string, labelStatuses bool) string {
+	if issue.Parent != "" || issue.Subtask || slices.Contains(statuses, issue.Status) {
+		return ""
+	}
+	detail := issue.Key + " (" + issue.Status + ")"
+	if labelStatuses {
+		detail += "; move to " + strings.Join(statuses, " or ")
+	}
+	return detail
+}
+
 func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 	keys, err := v.gate.gate.client.VersionItems(ctx, v.selected.ID)
 	if err != nil {
@@ -160,11 +173,7 @@ func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 			}
 			continue
 		}
-		if statuses := v.gate.conf.StatusesFor(issue.Labels); !slices.Contains(statuses, issue.Status) {
-			detail := key + " (" + issue.Status + ")"
-			if len(v.gate.conf.LabelStatuses) > 0 {
-				detail += "; move to " + strings.Join(statuses, " or ")
-			}
+		if detail := versionStatusDetail(issue, v.gate.conf.StatusesFor(issue.Labels), len(v.gate.conf.LabelStatuses) > 0); detail != "" {
 			bad = append(bad, detail)
 		}
 		if issue.Subtask || issue.Parent != "" {
@@ -204,6 +213,9 @@ func (v *releaseVersionCheck) checkUmbrellas(ctx context.Context) bool {
 		}
 		var open []string
 		for _, subkey := range parent.Subtasks {
+			if slices.Contains(v.gate.gate.skipKeys, subkey) {
+				continue
+			}
 			sub, err := v.gate.gate.issue(ctx, subkey)
 			if err != nil { //nolint:silent-error-handling // err goes into the failure message below; glint ticket silent-error-call-in-if-cond
 				if v.fail("version-umbrella", fmt.Sprintf("%s: read subtask %s: %v; retry", key, subkey, err)) {
@@ -211,7 +223,7 @@ func (v *releaseVersionCheck) checkUmbrellas(ctx context.Context) bool {
 				}
 				continue
 			}
-			if !sub.Done && !slices.Contains(v.gate.gate.skipKeys, subkey) {
+			if !sub.Done {
 				open = append(open, subkey+" ("+sub.Status+")")
 			}
 		}

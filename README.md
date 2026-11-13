@@ -2128,15 +2128,16 @@ label, the freeze and the trunk merge check:
   note and keeps its status and fix versions, and its subtasks go by their own
   commits: another product's deploy may have closed it. `skip_statuses` naming
   the sweep's `done` is a config error, for it would take that note away;
-- `approved_release` refuses an item that is ready (in `statuses`, or in the
-  `from` of a transition to the sweep's `done`) with subtasks not in Done, and
-  any subtask under such a parent, under a parent not ready, or under a done
-  parent while that parent has subtasks not in Done. A subtask is closed only
-  in Done; Ready for release and reviewer statuses remain open even when the
-  reviewer accepted the subtask with its parent. A subtask is judged by its
-  parent's status and labels, and under `prefix` by its parent's approved
-  version; its own fix version does not count. A parent or subtask in
-  `skip_keys` does not count;
+- `approved_release` refuses a ready item (in `statuses`, or in the `from` of
+  a transition to the sweep's `done`) while any subtask is not in Done. With
+  `prefix`, any parent status keeps its open subtasks and the parent's release
+  in; without `prefix`, a subtask of a parent that is not ready keeps the
+  existing parent-status refusal. A subtask is closed only in Done; Ready for
+  release and reviewer statuses remain open even when the reviewer accepted
+  the subtask with its parent. A subtask is judged by its parent's status and
+  labels, and under `prefix` by its parent's approved version; its own fix
+  version does not count. Either the parent or subtask key in `skip_keys`
+  exempts it;
 - the sweep counts such a commit for every item of its work;
 - a subtask moved by a transition with `assign` stays with its assignee, named
   in a commit or following its parent, and so needs no `require_comment`: the
@@ -2168,11 +2169,12 @@ withheld work, excluding reverts, reverted work and commits changing only
 The unreleased, unarchived fix versions of those top-level items must identify
 exactly one version matching `match`; an omitted `match` accepts any name.
 Every top-level item must be in that version and in its approved status
-(`statuses` plus any matching `label_statuses`). Every item in the version
-must be in its approved status and must not be a subtask. When a commit
-names a subtask, all of its parent's subtasks must be done-category or in
-their approved statuses; `release_notes.jira.skip_keys` exempts the parent from this last
-check only. The version must have approvers and every one must have approved.
+(`statuses` plus any matching `label_statuses`). A subtask in the version is
+refused by `version-subtasks`. When a commit
+names a subtask, all of its parent's subtasks must be in Done; either the
+parent's or the subtask's key in `release_notes.jira.skip_keys` exempts that
+subtask from this check. A subtask's own approved status does not close it.
+The version must have approvers and every one must have approved.
 Items in the version without code in the range are warnings. With no active
 commits the version checks are skipped. `prefix`, when set, still checks the
 items' approved versions independently.

@@ -1,11 +1,130 @@
 package app
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/jira"
 )
+
+func TestApprovedDoneParentWithOpenSubtaskIsHeld(t *testing.T) {
+	parent := jira.Issue{Key: "PROJ-1", Status: "Done", Done: true, Subtasks: []string{"PROJ-2"}}
+	gate := &approvalGate{
+		conf:   &config.ApprovedRelease{Statuses: []string{"Ready for release", "Done"}},
+		target: &config.DeployTarget{ApprovedRelease: &config.ApprovedRelease{Statuses: []string{"Ready for release", "Done"}}},
+		issues: map[string]jira.Issue{"PROJ-1": parent, "PROJ-2": {Key: "PROJ-2", Status: "Testing", Parent: "PROJ-1"}},
+	}
+	pass, err := gate.item(t.Context(), "PROJ-1")
+	if err != nil || pass.ok || !strings.Contains(pass.why, "open subtasks PROJ-2 (Testing)") {
+		t.Fatalf("parent gate = %+v, %v; want open subtask refusal", pass, err)
+	}
+}
+
+func TestApprovedPrefixHoldsOpenSubtasksRegardlessOfParentStatus(t *testing.T) {
+	gate := &approvalGate{
+		conf: &config.ApprovedRelease{Prefix: "Product v", Version: &config.ApprovedReleaseVersion{}},
+		issues: map[string]jira.Issue{
+			"PROJ-1": {Key: "PROJ-1", Status: "In Progress", Subtasks: []string{"PROJ-2"}},
+			"PROJ-2": {Key: "PROJ-2", Status: "Testing", Parent: "PROJ-1"},
+		},
+	}
+	pass, err := gate.item(t.Context(), "PROJ-1")
+	if err != nil || pass.ok || !strings.Contains(pass.why, "open subtasks PROJ-2 (Testing)") {
+		t.Fatalf("prefix parent gate = %+v, %v; want open subtask refusal", pass, err)
+	}
+	pass, err = gate.item(t.Context(), "PROJ-2")
+	if err != nil || pass.ok || !strings.Contains(pass.why, "open subtasks PROJ-2 (Testing)") {
+		t.Fatalf("prefix subtask gate = %+v, %v; want its parent to hold it", pass, err)
+	}
+}
+
+func TestSkippedUnreadableSubtaskIsNotRead(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	defer server.Close()
+	gate := &approvalGate{client: jira.New(jira.Credentials{BaseURL: server.URL}), skipKeys: []string{"PROJ-2"}, issues: map[string]jira.Issue{}}
+	got, err := gate.openSubtasks(t.Context(), jira.Issue{Key: "PROJ-1", Subtasks: []string{"PROJ-2"}})
+	if err != nil || got != "" {
+		t.Fatalf("openSubtasks = %q, %v; want no refusal and no Jira read", got, err)
+	}
+}
+
+func TestApprovedVersionReadTopsAddsNamedParentToUmbrellas(t *testing.T) {
+	conf := &config.ApprovedRelease{Version: &config.ApprovedReleaseVersion{}}
+	gate := &approvalGate{conf: conf, issues: map[string]jira.Issue{
+		"PROJ-1": {Key: "PROJ-1", Subtasks: []string{"PROJ-2"}},
+	}}
+	v := &releaseVersionCheck{gate: &gateRun{conf: conf, gate: gate, activeKeys: map[string]bool{"PROJ-1": true}}, tops: map[string]jira.Issue{}, umbrellas: map[string]bool{}}
+	if v.readTops(t.Context()) || !v.umbrellas["PROJ-1"] {
+		t.Fatalf("umbrellas = %v; want directly named parent", v.umbrellas)
+	}
+}
+
+func TestApprovedVersionStatusAdviceDoesNotTargetSubtask(t *testing.T) {
+	conf := &config.ApprovedRelease{Statuses: []string{"Ready for release", "Done"}, Version: &config.ApprovedReleaseVersion{}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"issues":[{"key":"PROJ-2"}],"isLast":true}`))
+	}))
+	defer server.Close()
+	v := &releaseVersionCheck{
+		gate:     &gateRun{conf: conf, gate: &approvalGate{conf: conf, client: jira.New(jira.Credentials{BaseURL: server.URL}), issues: map[string]jira.Issue{"PROJ-2": {Key: "PROJ-2", Parent: "PROJ-1", Status: "Testing"}}}},
+		collect:  true,
+		tops:     map[string]jira.Issue{"PROJ-2": {Key: "PROJ-2", Parent: "PROJ-1", Status: "Testing"}},
+		selected: jira.Version{ID: "v1", Name: "Product 1"},
+	}
+	if v.checkItems(t.Context()) || len(v.failures) != 1 || !strings.Contains(v.failures[0].Error(), "version-subtasks") || strings.Contains(v.failures[0].Error(), "version-status") {
+		t.Fatalf("checkItems failures = %v; want only version-subtasks", v.failures)
+	}
+}
+
+func TestFreezeIgnoresSubtaskOwnFixVersion(t *testing.T) {
+	at := time.Time{}
+	gate := &approvalGate{
+		issues: map[string]jira.Issue{
+			"PROJ-2": {Key: "PROJ-2", Parent: "PROJ-1", FixVersions: []jira.Version{{ID: "v1"}}},
+			"PROJ-1": {Key: "PROJ-1"},
+		},
+		history: map[string]fixVersionHistoryResult{
+			"PROJ-2\x00v1\x00" + at.Format(time.RFC3339Nano): {hasAddition: true},
+		},
+	}
+	var matched []string
+	if err := checkFreezeIssue(t.Context(), gate, &activeFreeze{versionIDs: []string{"v1"}}, "PROJ-2", &matched); err != nil {
+		t.Fatal(err)
+	}
+	if len(matched) != 0 {
+		t.Fatalf("freeze matched %v by the subtask's own version", matched)
+	}
+}
+
+func TestApprovedVersionUmbrellaAddsNamedTopLevelItem(t *testing.T) {
+	conf := &config.ApprovedRelease{Version: &config.ApprovedReleaseVersion{}}
+	v := &releaseVersionCheck{
+		gate:      &gateRun{conf: conf, gate: &approvalGate{conf: conf, issues: map[string]jira.Issue{"PROJ-2": {Key: "PROJ-2", Status: "Testing"}}}},
+		tops:      map[string]jira.Issue{"PROJ-1": {Key: "PROJ-1", Subtasks: []string{"PROJ-2"}}},
+		umbrellas: map[string]bool{"PROJ-1": true},
+	}
+	if !v.checkUmbrellas(t.Context()) || len(v.failures) != 1 || !strings.Contains(v.failures[0].Error(), "PROJ-2") {
+		t.Fatalf("umbrella failures = %v; want open subtask refusal", v.failures)
+	}
+}
+
+func TestApprovedVersionUmbrellaSkipsKeyBeforeJiraRead(t *testing.T) {
+	conf := &config.ApprovedRelease{Version: &config.ApprovedReleaseVersion{}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	defer server.Close()
+	v := &releaseVersionCheck{
+		gate:      &gateRun{conf: conf, gate: &approvalGate{conf: conf, client: jira.New(jira.Credentials{BaseURL: server.URL}), skipKeys: []string{"PROJ-2"}}},
+		tops:      map[string]jira.Issue{"PROJ-1": {Key: "PROJ-1", Subtasks: []string{"PROJ-2"}}},
+		umbrellas: map[string]bool{"PROJ-1": true},
+	}
+	if v.checkUmbrellas(t.Context()) || len(v.failures) != 0 {
+		t.Fatalf("umbrella failures = %v; want skipped unreadable subtask", v.failures)
+	}
+}
 
 // A subtask is done once its code is in the trunk, before the release: it
 // goes out by its parent's status and labels alone, never its own.

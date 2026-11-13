@@ -1096,7 +1096,7 @@ func checkFreezeIssue(ctx context.Context, gate *approvalGate, f *activeFreeze, 
 		return err
 	}
 	versionIDs := issue.FixVersionIDs(f.versionIDs)
-	if len(versionIDs) == 0 && issue.Parent != "" {
+	if issue.Parent != "" {
 		issue, err = gate.issue(ctx, issue.Parent)
 		if err != nil {
 			return err

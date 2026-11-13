@@ -1007,6 +1007,7 @@ func TestDeployApprovedReleaseSubtaskByParentVersion(t *testing.T) {
 	d.jira.setApprovers(map[string][]string{"10030": {"APPROVED", "PENDING"}})
 	d.jira.mu.Lock()
 	d.jira.parents = map[string]string{"PROJ-31": "PROJ-30"}
+	d.jira.statuses["PROJ-31"] = "Done"
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "--unapproved", "live")
 	d.write("a.txt", "a\n")

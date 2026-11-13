@@ -1115,6 +1115,7 @@ func TestReleasePageGroupsTechnicalSubtasks(t *testing.T) {
 			d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "APPROVED"}})
 			d.jira.mu.Lock()
 			d.jira.parents = map[string]string{"PROJ-11": "PROJ-10", "PROJ-12": "PROJ-10", "PROJ-13": "PROJ-10"}
+			d.jira.statuses = map[string]string{"PROJ-11": "Done", "PROJ-12": "Done", "PROJ-13": "Done"}
 			d.jira.types = map[string]string{"PROJ-10": "Task", "PROJ-11": "Sub-task", "PROJ-12": "Sub-task", "PROJ-13": "Bug"} // a subtask of a fix type folds into its parent too
 			d.jira.mu.Unlock()
 			if out, code := d.graft("", "deploy", "--unapproved", "live"); code != 1 || !strings.Contains(out, "no approved version names the release") {
