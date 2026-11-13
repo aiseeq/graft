@@ -348,7 +348,8 @@ func (s *mergeState) installMerged() error {
 	if _, err := s.repo.GitEnv(markerEnv, "merge", "--ff-only", s.A); err != nil {
 		return fmt.Errorf("local %s is behind %s/%s; install it with: git merge --ff-only %s: %w", s.trunk, s.primary, s.trunk, s.A, err)
 	}
-	s.a.printf("installed %s %s", s.trunk, gitx.Short(s.A))
+	s.a.printf("local %s moved to %s", s.trunk, gitx.Short(s.A))
+	s.a.warnInstallFreshness(s.ctx, s.repo, s.cfg)
 	return nil
 }
 
@@ -954,8 +955,11 @@ func (s *mergeState) install() error {
 	if _, err := s.repo.GitEnv(markerEnv, "merge", "--ff-only", s.R); err != nil {
 		return fmt.Errorf("trunk on the remote is already %s; install it with: git merge --ff-only %s: %w", s.R, s.R, err)
 	}
-	s.a.printf("installed %s %s", s.trunk, gitx.Short(s.R))
+	s.a.printf("local %s moved to %s", s.trunk, gitx.Short(s.R))
 	s.a.printf("merged %s %s into %s as %s", s.opts.Branch, gitx.Short(s.F), s.trunk, gitx.Short(s.R))
+	// The merge runs no install task: name an installed binary the new
+	// trunk left behind, as graft commit does.
+	s.a.warnInstallFreshness(s.ctx, s.repo, s.resultCfg)
 	return nil
 }
 

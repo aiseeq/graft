@@ -524,11 +524,14 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 Run `graft merge <branch>` on the local trunk. It fetches the configured push
 remotes, snapshots the trunk and source commits, builds a candidate in a
 temporary worktree, runs the result config's gate and content checks, runs
-`merge.deps`, pushes to the trunk's primary remote and mirrors, then installs
-the accepted result with a fast-forward. A required primary remote must be in
+`merge.deps`, pushes to the trunk's primary remote and mirrors, then
+fast-forwards the local trunk to the accepted result (`local main moved to
+<sha>`). It runs no install task: like `graft commit`, it warns when an
+installed Go binary is behind the new trunk and names the task that updates
+it. A required primary remote must be in
 `push.remotes`; a refused primary push leaves mirrors and the local trunk
-untouched. A mirror refusal is reported after the accepted primary result is
-installed locally. A repo with replace refs or a grafts file is refused: the
+untouched. A mirror refusal is reported after the local trunk has moved to
+the accepted primary result. A repo with replace refs or a grafts file is refused: the
 checks would read the substitutes while the push sends the originals.
 
 The default `rebase` mode replays source commits onto the trunk; commits empty
@@ -911,7 +914,7 @@ dotenv_sets:                   # key lists several tasks and services share
   executable, a running program keeps its old file, an identical file is
   left alone (a symlink there, say to the build output, is replaced with a
   file), and each file prints `graft: install: <name> <revision> ->
-  <path>`. After a successful `graft commit` or `graft release`, graft warns
+  <path>`. After a successful `graft commit`, `graft release` or `graft merge`, graft warns
   if an installed Go binary is behind the current commit or latest reachable
   version tag; run `graft <task>` to update it. With `install.hosts` in the
   user config, the same file is sent by

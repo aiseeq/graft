@@ -700,7 +700,7 @@ func releasedAs(repo *gitx.Repo, prefix string) (string, error) {
 }
 
 // warnInstallFreshness checks installed task binaries after a successful
-// commit or release. A failed advisory check must not change the command result.
+// commit, release or merge. A failed advisory check must not change the command result.
 func (a *App) warnInstallFreshness(ctx context.Context, repo *gitx.Repo, cfg *config.Config) {
 	reference, err := installFreshnessReference(repo, cfg)
 	if err != nil {

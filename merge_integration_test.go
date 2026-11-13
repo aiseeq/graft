@@ -37,7 +37,7 @@ func TestMergeFastForwardPushesAllRemotes(t *testing.T) {
 			t.Errorf("%s main = %s, want %s", r, got, head)
 		}
 	}
-	if !strings.Contains(out, "installed main") {
+	if !strings.Contains(out, "local main moved to") {
 		t.Errorf("missing install report:\n%s", out)
 	}
 }
@@ -589,7 +589,7 @@ func TestMergeIgnoresUnavailableBootstrapRemoteOutsideTrunkPushSet(t *testing.T)
 	f.gitIn(remoteWork, "push", "origin", "main")
 
 	out := f.mustGraft("merge", "feature/PROJ-42")
-	if !strings.Contains(out, "initial fetch offline failed") || !strings.Contains(out, "installed main") {
+	if !strings.Contains(out, "initial fetch offline failed") || !strings.Contains(out, "local main moved to") {
 		t.Errorf("unavailable bootstrap remote was not warned about or merge did not finish:\n%s", out)
 	}
 }
@@ -957,7 +957,7 @@ func TestMergeAlreadyMergedInstallsBehindTrunk(t *testing.T) {
 	f.git("push", "-q", "origin", "feature/PROJ-42:main")
 	out := f.mustGraft("merge", "feature/PROJ-42")
 	want := f.git("rev-parse", "feature/PROJ-42")
-	if got := f.git("rev-parse", "main"); got != want || !strings.Contains(out, "installed main") {
+	if got := f.git("rev-parse", "main"); got != want || !strings.Contains(out, "local main moved to") {
 		t.Errorf("local main = %s, want %s:\n%s", got, want, out)
 	}
 }
@@ -993,5 +993,38 @@ func TestMergeRefusesDefaultReplaceRefsUnderOtherBase(t *testing.T) {
 	}
 	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != trunk {
 		t.Errorf("remote trunk moved to %s", got)
+	}
+}
+
+// graft merge moves the local trunk but runs no install task: it says what
+// it moved and names an installed binary the new trunk left behind.
+func TestMergeWarnsForStaleInstalledGoBinary(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: 'no version'}\ngate: []\ntasks:\n  build:\n    run: [[go, build, -o, bin/tool, .]]\n  install:\n    run: [{install: bin/tool}]\n",
+		".gitignore":  "bin/\n",
+		"go.mod":      "module example.org/tool\n\ngo 1.22\n",
+		"main.go":     "package main\n\nfunc main() { println(\"one\") }\n",
+	}, "origin")
+	f.mustPlainCommit("chore: base")
+	f.git("branch", "-m", "main")
+	f.git("push", "-q", "origin", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("branch", "--set-upstream-to", "origin/main", "main")
+	f.git("remote", "set-head", "origin", "main")
+	userBin, cfgHome := filepath.Join(f.base, "user-bin"), filepath.Join(f.base, "user-config")
+	writeUserConfig(t, cfgHome, "tools:\n  bin_dir: "+yamlQuote(userBin)+"\n")
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgHome, "APPDATA="+cfgHome)
+	f.mustGraft("build")
+	f.mustGraft("install")
+	f.git("switch", "-q", "-c", "feature/PROJ-42")
+	f.write("main.go", "package main\n\nfunc main() { println(\"two\") }\n")
+	f.mustPlainCommit("feat: two")
+	f.git("switch", "-q", "main")
+	out := f.mustGraft("merge", "feature/PROJ-42")
+	if strings.Contains(out, "installed main") || !strings.Contains(out, "local main moved to") {
+		t.Errorf("merge reports the trunk move as an install:\n%s", out)
+	}
+	if !strings.Contains(out, "tool is from ") || !strings.Contains(out, "1 commit behind") || !strings.Contains(out, "run graft install") {
+		t.Errorf("merge did not name the stale install:\n%s", out)
 	}
 }
