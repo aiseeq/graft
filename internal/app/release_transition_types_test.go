@@ -17,6 +17,26 @@ import (
 	"github.com/aiseeq/graft/v2/internal/jira"
 )
 
+func TestDeploySummaryConfiguredEffects(t *testing.T) {
+	var out bytes.Buffer
+	a := &App{Stdout: &out, Stderr: io.Discard}
+	enabled := true
+	target := &config.DeployTarget{
+		Deps: []string{"build", "test"}, Confirm: "sudo", MergeIntoTrunk: true,
+		ReleaseVersion: &config.ReleaseVersion{Enabled: &enabled, Name: "Product {dd}.{mm}.{yy}"},
+		ReleasePage:    &config.ReleasePage{Parent: "500"},
+		ReleaseNotes: &config.TargetNotes{Transitions: []config.NoteTransition{{From: []string{"In Progress"}, To: "Testing", Assign: "reviewer"}},
+			FixVersion: &config.FixVersion{Prefix: "Product"}, Subtasks: true, Sweep: &config.Sweep{Done: "Done"}},
+	}
+	r := &deployRun{name: "prod", target: target, cfg: &config.Config{ReleaseNotes: &config.ReleaseNotes{Jira: &config.JiraNotes{}}}}
+	a.printDeploySummary(t.Context(), r)
+	for _, want := range []string{"build, test", "sudo", "In Progress → Testing", "reviewer", "keys not checked:", "fix_version:", "subtasks:", "sweep:", "merge_into_trunk:", "release_version:", "release_page:", "command: graft deploy prod"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q in %s", want, out.String())
+		}
+	}
+}
+
 func TestTransitionTypesKeepNamedAndFollowingSubtasks(t *testing.T) {
 	var moved []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

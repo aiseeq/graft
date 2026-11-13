@@ -972,6 +972,7 @@ type noteMover struct {
 	// release_notes.jira.skip_keys names: no reviewer gets those, so their
 	// subtasks are handed over.
 	standing []string
+	readOnly bool
 }
 
 // errHeld is a move withheld for want of the comment require_comment asks
@@ -1057,6 +1058,19 @@ func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTr
 			m.held = append(m.held, heldItem{key: issue.Key, after: after})
 			return errHeld
 		}
+	}
+	if m.readOnly {
+		if err := jira.TransitionAvailable(issue, t.To); err != nil {
+			return err
+		}
+		hand := ""
+		if handover && label == "" {
+			hand = "; assign " + t.Assign
+		} else if label != "" {
+			hand = "; keep assignee: " + label
+		}
+		m.app.printf("- %s: %s → %s%s", issue.Key, issue.Status, t.To, hand)
+		return nil
 	}
 	if err := m.client.Transition(ctx, issue, t.To); err != nil {
 		return fmt.Errorf("%s not moved to %s%s: %w", issue.Key, t.To, how, err)

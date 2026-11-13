@@ -63,6 +63,8 @@ read the task output when graft reports that it cannot set one.
 
 Read the target's configuration and `graft deploy -h` before deploying.
 `graft deploy check <target>` reports refusals without deploying.
+Build the user-facing summary from its output; add what was done and why, and
+risks the configuration cannot know.
 Deploy checks required environment, a clean and published tree, required
 versions, deployed state and configured release, window and integration rules.
 It then runs dependencies, obtains configured confirmation, runs the script,

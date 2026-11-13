@@ -37,6 +37,7 @@ type fakeJira struct {
 	handedOver      []string
 	failAll         bool
 	requests        int
+	nonGET          []string
 	versions        []map[string]any
 	otherVersions   []map[string]any // of project OTHER
 	versionRequests int
@@ -113,6 +114,9 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.requests++
+	if r.Method != http.MethodGet {
+		j.nonGET = append(j.nonGET, r.Method+" "+r.URL.Path)
+	}
 	if j.failAll {
 		http.Error(w, "down for maintenance", http.StatusInternalServerError)
 		return
@@ -1986,6 +1990,33 @@ func TestDeployCheck(t *testing.T) {
 	}
 	if after := readFile(t, filepath.Join(d.state, "live-run")); after != before {
 		t.Errorf("the deploy script ran:\n%s", after)
+	}
+}
+
+func TestDeployCheckSummaryReadOnly(t *testing.T) {
+	d := deployRepo(t)
+	d.mustGraft("deploy", "uat")
+	d.write("summary.txt", "synthetic\n")
+	d.mustFixtureCommit("feat: PROJ-1 synthetic change")
+	d.jira.mu.Lock()
+	d.jira.nonGET = nil
+	d.jira.mu.Unlock()
+	out, _ := d.graft("", "deploy", "check", "uat")
+	t.Logf("synthetic check output:\n%s", out)
+	for _, want := range []string{"what the deploy will do:", "release_notes:", "PROJ-1:", "In Progress → Testing", "fix_version:", "command: graft deploy uat"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	d.jira.mu.Lock()
+	if len(d.jira.nonGET) != 0 {
+		t.Errorf("check sent non-GET requests: %v", d.jira.nonGET)
+	}
+	d.jira.failAll = true
+	d.jira.mu.Unlock()
+	out, _ = d.graft("", "deploy", "check", "uat")
+	if !strings.Contains(out, "keys not checked:") || !strings.Contains(out, "In Progress → Testing") {
+		t.Errorf("offline check omitted the reason or configured rule:\n%s", out)
 	}
 }
 

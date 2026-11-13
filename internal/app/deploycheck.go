@@ -71,6 +71,7 @@ func (a *App) DeployCheck(ctx context.Context, target string) error {
 	if r.hotfix = r.cfg.Deploy.IsHotfix(r.branch); !r.hotfix {
 		refuse(a.checkWindow(r))
 	}
+	defer a.printDeploySummary(ctx, r)
 	defer a.printVersionManual(r)
 	refuse(a.requireDeployed(ctx, r))
 	if err := a.checkDeployed(ctx, r, sudoRefusal, refuse); err != nil {
@@ -79,7 +80,7 @@ func (a *App) DeployCheck(ctx context.Context, target string) error {
 	// Freeze refusals are useful even when an earlier check already failed.
 	refuse(a.checkFreeze(ctx, r, DeployOptions{}))
 	if len(refusals) == 0 {
-		a.printf("graft deploy %s passes its checks now; its deps, the integrations and the confirmation run only in the deploy", r.name)
+		a.printf("graft deploy %s passes its checks now; deps, integration checks and confirmation run during the deploy", r.name)
 		return nil
 	}
 	fmt.Fprintf(a.Stdout, "\ngraft deploy %s would refuse:\n", r.name)
@@ -135,6 +136,138 @@ func (a *App) checkDeployed(ctx context.Context, r *deployRun, sudoRefusal error
 	}
 	listRefusals(a.checkReleaseFlow(ctx, r, false))
 	return nil
+}
+
+// printDeploySummary describes configured effects even when a check refused.
+func (a *App) printDeploySummary(ctx context.Context, r *deployRun) {
+	t := r.target
+	fmt.Fprintln(a.Stdout, "\nwhat the deploy will do:")
+	if len(t.Deps) == 0 {
+		a.printf("- deps: none")
+	} else {
+		a.printf("- deps before the script: %s", strings.Join(t.Deps, ", "))
+	}
+	if t.Confirm == "" {
+		a.printf("- confirmation: none")
+	} else {
+		a.printf("- confirmation: %s", t.Confirm)
+	}
+	if n := t.ReleaseNotes; n != nil {
+		a.printf("- release_notes: Jira comment %q", r.cfg.NoteComment(t))
+		if n.Glint != "" {
+			a.printf("- release_notes: glint %s and above holds transitions", n.Glint)
+		}
+		for _, tr := range n.Transitions {
+			a.printf("- release_notes: %s", transitionSummary(tr))
+		}
+		if n.FixVersion != nil {
+			a.printf("- fix_version: prefix %q, name %q", n.FixVersion.Prefix, n.FixVersion.Name)
+		}
+		if n.Subtasks {
+			a.printf("- subtasks: follow their parent")
+		}
+		if n.Sweep != nil {
+			a.printf("- sweep: done %s, days %d, stale days %d, apply %t", n.Sweep.Done, n.Sweep.Days, n.Sweep.StaleDays, n.Sweep.Apply)
+		}
+		a.previewNotes(ctx, r)
+	}
+	if t.MergeIntoTrunk {
+		a.printf("- merge_into_trunk: record the release branch on the trunk")
+	}
+	if v := t.ReleaseVersion; v != nil && v.Enabled != nil && *v.Enabled {
+		a.printf("- release_version: %q; hotfix %q", v.Name, v.Hotfix)
+	}
+	if p := t.ReleasePage; p != nil {
+		a.printf("- release_page: Confluence parent %s; title %q", p.Parent, p.Title)
+	}
+	a.printf("- command: graft deploy %s", r.name)
+}
+
+// transitionSummary is a transition of release_notes in one line, naming
+// only the settings it has.
+func transitionSummary(tr config.NoteTransition) string {
+	parts := []string{strings.Join(tr.From, ", ") + " → " + tr.To}
+	if len(tr.Types) > 0 {
+		parts = append(parts, "types "+strings.Join(tr.Types, ", "))
+	}
+	if tr.Assign != "" {
+		parts = append(parts, "assign "+tr.Assign)
+	}
+	if len(tr.KeepAssigneeLabels) > 0 {
+		parts = append(parts, "keeps the assignee of "+strings.Join(tr.KeepAssigneeLabels, ", "))
+	}
+	if tr.RequireComment != "" {
+		parts = append(parts, fmt.Sprintf("needs a comment with %q", tr.RequireComment))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// previewNotes uses the deploy's key selection and move decision without writes.
+func (a *App) previewNotes(ctx context.Context, r *deployRun) {
+	if r.prev == "" {
+		a.printf("- keys not checked: no previously deployed commit recorded")
+		return
+	}
+	known, err := r.repo.RevExists(r.prev)
+	if err != nil || !known {
+		a.printf("- keys not checked: previously deployed commit is unknown: %v", err)
+		return
+	}
+	keys, _, _, err := deliveredKeys(r)
+	if err != nil {
+		a.printf("- keys not checked: %v", err)
+		return
+	}
+	client, err := jiraClient()
+	if err != nil {
+		a.printf("- keys not checked: %v", err)
+		return
+	}
+	me, err := client.Myself(ctx)
+	if err != nil {
+		a.printf("- keys not checked: %v", err)
+		return
+	}
+	glint, err := newGlintCheck(r, "", func(context.Context) (string, error) { return r.head, nil })
+	if err != nil {
+		a.printf("- keys not checked: %v", err)
+		return
+	}
+	if glint.severity != "" {
+		clean, cleanErr := r.repo.IsClean()
+		if cleanErr != nil || !clean {
+			glint.ran = true
+			glint.err = errors.New("findings cannot be checked on a dirty work tree")
+		}
+	}
+	m := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name, glint: glint, standing: r.cfg.ReleaseNotes.Jira.SkipKeys, readOnly: true}
+	for _, key := range keys {
+		if slices.Contains(r.cfg.ReleaseNotes.Jira.SkipKeys, key) || (r.moveOut != nil && slices.Contains(r.moveOut.keys, key)) {
+			a.printf("- %s: left alone", key)
+			continue
+		}
+		issue, err := client.Issue(ctx, key)
+		if err != nil {
+			a.printf("- %s: not checked: %v", key, err)
+			continue
+		}
+		yours, err := a.noteable(ctx, client, r.cfg.ReleaseNotes.Jira, me, issue)
+		if err != nil {
+			a.printf("- %s: not checked: %v", key, err)
+			continue
+		}
+		if !yours {
+			a.printf("- %s: %s → %s (left alone)", key, issue.Status, issue.Status)
+			continue
+		}
+		if issue.Done {
+			a.printf("- %s: %s → %s (note only, if not quiet)", key, issue.Status, issue.Status)
+			continue
+		}
+		if status := m.delivered(ctx, issue); status == issue.Status {
+			a.printf("- %s: %s → %s (stays)", key, issue.Status, status)
+		}
+	}
 }
 
 // DeployVersions is graft deploy versions: the version and the commit each

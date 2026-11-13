@@ -2206,7 +2206,11 @@ items' approved versions independently.
 
 Refusals carry check IDs; `refs` optionally maps them to project rule numbers.
 `graft deploy check` lists the refusals and prints the `manual` reminders even
-when checks fail. `--unapproved` bypasses all of `approved_release`; hotfixes
+when checks fail. Its final block describes dependencies, confirmation, release
+note rules and configured release effects, and ends with the deploy command.
+It reads Jira to preview the delivered items when possible; if it cannot read
+them, it says why. It does not write to Jira or deploy anything.
+`--unapproved` bypasses all of `approved_release`; hotfixes
 do not run it. The gate reads deploy rules from the branch being deployed. It
 does not restore the deployed commit or Jira statuses on rollback, check who
 moved an item to Ready for release or Done, or judge whether an umbrella's

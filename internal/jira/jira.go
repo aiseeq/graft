@@ -316,16 +316,31 @@ func (c *Client) FixVersionHistoryAfter(ctx context.Context, key, versionID stri
 	return latest.After(at), hasAddition, err
 }
 
-// Transition moves an item to the status named to.
-func (c *Client) Transition(ctx context.Context, issue Issue, to string) error {
+// transitionID finds the offered transition to a status.
+func transitionID(issue Issue, to string) (string, error) {
 	for _, t := range issue.Transitions {
 		if t.To == to {
-			body := map[string]any{"transition": map[string]string{"id": t.ID}}
-			_, err := c.do(ctx, http.MethodPost, "/rest/api/3/issue/"+issue.Key+"/transitions", body, http.StatusNoContent)
-			return err
+			return t.ID, nil
 		}
 	}
-	return fmt.Errorf("%s: no transition from %q to %q", issue.Key, issue.Status, to)
+	return "", fmt.Errorf("%s: no transition from %q to %q", issue.Key, issue.Status, to)
+}
+
+// TransitionAvailable checks whether Jira offers a transition without changing the issue.
+func TransitionAvailable(issue Issue, to string) error {
+	_, err := transitionID(issue, to)
+	return err
+}
+
+// Transition moves an item to the status named to.
+func (c *Client) Transition(ctx context.Context, issue Issue, to string) error {
+	id, err := transitionID(issue, to)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{"transition": map[string]string{"id": id}}
+	_, err = c.do(ctx, http.MethodPost, "/rest/api/3/issue/"+issue.Key+"/transitions", body, http.StatusNoContent)
+	return err
 }
 
 // Assign hands an item over to the account.
