@@ -143,6 +143,7 @@ func Models(repo *gitx.Repo, trunk func() string, warn io.Writer, excluded []str
 		for i := range others {
 			m := others[i]
 			var n int
+			var err error
 			if m.FighterFiles != nil {
 				n = listedFiles(*m.FighterFiles, staged, deleted, trunkFiles, excluded)
 			} else {

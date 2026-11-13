@@ -526,3 +526,21 @@ func TestWorkerTrailersNotFromFilesGraftWrites(t *testing.T) {
 		t.Errorf("the job's own work carried over, trailers %q\n%s", got, out)
 	}
 }
+
+func TestWorkerTrailersAfterAnUnreadableMarker(t *testing.T) {
+	f := workerRepo(t, "none")
+	f.write("x.txt", "old\n")
+	f.mustPlainCommit("chore: add a file")
+	job := filepath.Join(f.base, "job")
+	f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
+	notRepo := filepath.Join(f.base, "not-a-repo")
+	writeFile(t, filepath.Join(notRepo, "x.txt"), "by the job\n")
+	f.write("x.txt", "by the job\n")
+	f.git("add", "x.txt")
+	writeMarkerJSON(t, f, map[string]any{"id": "job0", "models": []string{"vendor/model-z"}, "client": "cli", "dir": notRepo, "finished": true})
+	writeMarkerJSON(t, f, map[string]any{"id": "job1", "models": []string{"vendor/model-a"}, "client": "cli", "dir": job, "finished": true, "fighter_files": map[string]string{"x.txt": f.git("hash-object", "x.txt")}})
+	out := f.mustGraft("commit", "-m", "feat: carry finished work")
+	if got := f.workers("HEAD"); got != "vendor/model-a" {
+		t.Errorf("a finished file list after an unreadable marker, trailers %q\n%s", got, out)
+	}
+}
