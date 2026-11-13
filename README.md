@@ -904,7 +904,8 @@ dotenv_sets:                   # key lists several tasks and services share
   its run, with the same terminal, fingerprint and cache rules as a deploy
   target (see below). A task chain and its deploy share one confirmation.
   A heavy task confirms locally before it can run on a remote host. The same
-  script run outside graft does not ask for confirmation.
+  script run outside graft does not ask for confirmation. A task with `confirm`
+  cannot also have `cache`: a hit skips the task and cache commands run before confirmation.
 - A step is a string (split into words, no shell; pipes, `$VAR` and
   redirects are errors), a list (argv as is), `{sh: "..."}`, `{task: name}`,
   `{service: action [name]}` or `{install: paths}` (below). A string with

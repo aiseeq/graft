@@ -545,8 +545,8 @@ func (c *Config) validateTask(name string, t *Task) error {
 	if t == nil || (len(t.Run) == 0 && len(t.Deps) == 0) {
 		return fmt.Errorf("%s: needs run or deps", where)
 	}
-	if t.Confirm != "" && t.Confirm != "sudo" {
-		return fmt.Errorf("%s.confirm: only sudo is supported, got %q", where, t.Confirm)
+	if err := t.validateConfirm(where); err != nil {
+		return err
 	}
 	if err := validateTaskMemoryMax(name, t); err != nil {
 		return err
@@ -577,6 +577,16 @@ func (c *Config) validateTask(name string, t *Task) error {
 		return err
 	}
 	return c.validateTaskRefs(where, t)
+}
+
+func (t *Task) validateConfirm(where string) error {
+	if t.Confirm != "" && t.Confirm != "sudo" {
+		return fmt.Errorf("%s.confirm: only sudo is supported, got %q", where, t.Confirm)
+	}
+	if t.Confirm != "" && t.Cache != nil {
+		return fmt.Errorf("%s: confirm cannot be combined with cache: cache hits skip the task and cache commands run before confirmation", where)
+	}
+	return nil
 }
 
 func validateInstallDestinations(where string, steps []Step) error {

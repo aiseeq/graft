@@ -5,6 +5,7 @@ package tasks
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	akitproc "github.com/aiseeq/akit/proc"
+	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/proc"
 )
 
@@ -23,6 +25,46 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	os.Exit(m.Run())
+}
+
+// TestTaskConfirmChecksNoNewPrivs tests the default refusal with a synthetic
+// setuid file. It never executes sudo and runs no_new_privs in a child only.
+func TestTaskConfirmChecksNoNewPrivs(t *testing.T) {
+	const child = "GRAFT_TEST_TASK_CONFIRM_NNP"
+	if os.Getenv(child) == "1" {
+		r := NewRunner(t.TempDir(), &config.Config{Tasks: map[string]*config.Task{
+			"projectA": {Confirm: "sudo", Run: []config.Step{{Argv: []string{"/bin/true"}}}},
+		}}, io.Discard, io.Discard)
+		r.ConfirmTask = func(context.Context, string, io.Writer) error {
+			t.Fatal("confirmation was called under no_new_privs")
+			return nil
+		}
+		err := r.Run(context.Background(), "projectA", nil)
+		if err == nil || !strings.Contains(err.Error(), "no_new_privs") || !strings.Contains(err.Error(), "outside the sandbox") {
+			t.Fatalf("refusal: %v", err)
+		}
+		return
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root needs no sudo")
+	}
+	setpriv, err := exec.LookPath("setpriv")
+	if err != nil {
+		t.Skipf("setpriv unavailable: %v", err)
+	}
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "sudo")
+	if err := os.WriteFile(fake, []byte("synthetic executable; never run"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fake, os.ModeSetuid|0755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(setpriv, "--no-new-privs", os.Args[0], "-test.run=^TestTaskConfirmChecksNoNewPrivs$", "-test.count=1")
+	cmd.Env = append(os.Environ(), child+"=1", "PATH="+dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed child: %v\n%s", err, out)
+	}
 }
 
 // A local step that succeeded is not failed by a daemon it started that

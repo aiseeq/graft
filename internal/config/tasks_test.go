@@ -98,6 +98,14 @@ func TestTaskConfirm(t *testing.T) {
 	}
 }
 
+func TestTaskConfirmRejectsCache(t *testing.T) {
+	data := strings.Replace(tasksBase, "    desc: lint\n", "    desc: lint\n    confirm: sudo\n    cache: tree\n", 1)
+	_, err := Parse([]byte(data))
+	if err == nil || !strings.Contains(err.Error(), "confirm cannot be combined with cache") || !strings.Contains(err.Error(), "before confirmation") {
+		t.Fatalf("confirm with cache: %v", err)
+	}
+}
+
 func TestTaskMemoryMax(t *testing.T) {
 	data := strings.Replace(tasksBase, "    desc: lint\n", "    desc: lint\n    heavy: true\n    memory_max: 12G\n", 1)
 	cfg, err := Parse([]byte(data))
