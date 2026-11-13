@@ -2152,16 +2152,21 @@ func (g *approvalGate) versionsOfRelease(issue jira.Issue) string {
 }
 
 // fixVersions lists the item's fix versions of the prefix and whether every
-// approver approved each.
+// approver approved each, as far as the gate read it.
 func (g *approvalGate) fixVersions(issue jira.Issue) string {
 	var vs []string
 	for _, v := range issue.FixVersions {
 		if !strings.HasPrefix(v.Name, g.conf.Prefix) {
 			continue
 		}
-		state := "not approved by every approver"
-		if g.versions[v.ID] {
-			state = "approved"
+		// Approval is read only where the gate came to versions; a refusal
+		// before that leaves it unread, which is not the same as unapproved.
+		state := "approval not read"
+		if full, seen := g.versions[v.ID]; seen {
+			state = "not approved by every approver"
+			if full {
+				state = "approved"
+			}
 		}
 		vs = append(vs, v.Name+" ("+state+")")
 	}

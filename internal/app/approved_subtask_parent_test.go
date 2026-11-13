@@ -233,5 +233,10 @@ func TestApprovedSubtaskPrefixRefusalNamesItsParent(t *testing.T) {
 		if got, want := gate.versionsOfRelease(gate.issues["PROJ-2"]), `goes out with its parent PROJ-1: in no "Product" version`; got != want {
 			t.Errorf("description %q, want %q", got, want)
 		}
+		parent := gate.issues["PROJ-1"]
+		parent.FixVersions = []jira.Version{{ID: "1", Name: "Product 1"}}
+		if got, want := gate.fixVersions(parent), "fix versions Product 1 (approval not read)"; got != want {
+			t.Errorf("unread approval %q, want %q", got, want)
+		}
 	}
 }
