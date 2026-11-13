@@ -1892,9 +1892,11 @@ release_notes:
    With `approved_release` (it needs `deployed_sha` and `release_notes.jira`),
    every commit going out, merges aside, must name an item that passes:
    with `statuses`, the item is in one of them, or in the statuses configured
-   for one of its `label_statuses` labels; a subtask passes by its own labels
-   or its parent's status and labels. Without a matching label, only
-   `statuses` apply. With `prefix`, the item has a fix version that begins with
+   for one of its `label_statuses` labels. Without a matching label, only
+   `statuses` apply. A subtask passes by its parent alone, by the parent's
+   status and labels: its own status and labels do not let its code out, since
+   a subtask is done once its code is in the trunk, before the release. With
+   `prefix`, the item has a fix version that begins with
    `prefix` and that has approvers, every one of whom approved it in Jira,
    or it is a subtask whose parent has such a version; with both, both. One
    passing item lets the commit out. A commit let out by
@@ -2126,16 +2128,14 @@ label, the freeze and the trunk merge check:
   commits: another product's deploy may have closed it. `skip_statuses` naming
   the sweep's `done` is a config error, for it would take that note away;
 - `approved_release` refuses an item that is ready (in `statuses`, or in the
-  `from` of a transition to the sweep's `done`) with subtasks open, and a
-  subtask that is not ready under a parent that is ready, or under a done
+  `from` of a transition to the sweep's `done`) with subtasks open, and any
+  subtask under such a parent, under a parent not ready, or under a done
   parent whose version alone would let it out. A subtask is
   open unless it is done or ready itself, since done comes only after the
   release, or it waits in the `to` of a transition with `assign` and came there
   before its parent came into the ready statuses: the reviewer checks the item,
   so accepting it takes such a subtask along, and one that came later nobody
-  has seen. A parent or subtask in `skip_keys` does not count, and a subtask
-  ready itself passes whatever its parent's state (unless the version gate
-  below is enabled);
+  has seen. A parent or subtask in `skip_keys` does not count;
 - the sweep counts such a commit for every item of its work;
 - a subtask moved by a transition with `assign` stays with its assignee, named
   in a commit or following its parent, and so needs no `require_comment`: the

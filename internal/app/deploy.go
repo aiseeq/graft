@@ -1902,15 +1902,16 @@ func (g *approvalGate) readyFor(issue jira.Issue) []string {
 }
 
 // openParent says why a parent keeps the item in: the item is ready with
-// subtasks still open, or it is not ready and its parent, ready or done, would
-// let it through. A subtask that is ready itself is not open: done comes only
-// after the release. It is "" when nothing keeps it in.
+// subtasks still open, or it is a subtask whose parent, ready or done, would
+// let it through. A subtask is judged by its parent alone: it is done once
+// its code is in the trunk, before the release. It is "" when nothing keeps
+// it in.
 func (g *approvalGate) openParent(ctx context.Context, issue jira.Issue) (string, error) {
 	holder := issue
 	switch {
-	case issue.Done:
+	case issue.Parent == "" && issue.Done:
 		return "", nil
-	case slices.Contains(g.readyFor(issue), issue.Status):
+	case issue.Parent == "" && slices.Contains(g.readyFor(issue), issue.Status):
 	case issue.Parent == "":
 		return "", nil
 	default:
@@ -2011,6 +2012,9 @@ func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 			return pass, err
 		}
 		if checked == nil {
+			if issue.Parent != "" {
+				return gatePass{why: g.parentNotReady(ctx, issue)}, nil
+			}
 			return gatePass{why: fmt.Sprintf("%s is %s, not %s", key, issue.Status, orList(statuses))}, nil
 		}
 		pass = gatePass{ok: true, label: checked.Status}
@@ -2035,13 +2039,14 @@ func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 	return pass, nil
 }
 
-// checkedIssue returns the item when it is in one of the statuses, or its
-// parent when that is, and nil when neither is.
+// checkedIssue returns the item when it is in one of the statuses of its
+// labels and nil when it is not; a subtask is checked by its parent alone, by
+// the parent's statuses and labels.
 func (g *approvalGate) checkedIssue(ctx context.Context, issue jira.Issue) (*jira.Issue, error) {
-	if slices.Contains(g.conf.StatusesFor(issue.Labels), issue.Status) {
-		return &issue, nil
-	}
 	if issue.Parent == "" {
+		if slices.Contains(g.conf.StatusesFor(issue.Labels), issue.Status) {
+			return &issue, nil
+		}
 		return nil, nil
 	}
 	parent, err := g.issue(ctx, issue.Parent)
@@ -2513,4 +2518,14 @@ func runPassthrough(cmd *exec.Cmd, what string) error {
 		return &ExitCodeError{Code: exitErr.ExitCode(), Err: fmt.Errorf("%s command failed with exit status %d", what, exitErr.ExitCode())}
 	}
 	return err
+}
+
+// parentNotReady says why a subtask's parent does not let it out: its own
+// status does not count.
+func (g *approvalGate) parentNotReady(ctx context.Context, issue jira.Issue) string {
+	parent, err := g.issue(ctx, issue.Parent)
+	if err != nil {
+		return fmt.Sprintf("%s goes out with its parent %s, which could not be read: %v", issue.Key, issue.Parent, err)
+	}
+	return fmt.Sprintf("%s goes out with its parent %s, which is %s, not %s", issue.Key, parent.Key, parent.Status, orList(g.conf.StatusesFor(parent.Labels)))
 }
