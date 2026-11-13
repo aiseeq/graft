@@ -78,12 +78,13 @@ func (a *App) retryHeld(ctx context.Context, sub *subtaskRun, held []heldItem, d
 			continue
 		}
 		reached := issue.Status
-		if err := m.move(ctx, issue, t, h.after); err == nil {
+		moveErr := m.move(ctx, issue, t, h.after)
+		if moveErr == nil {
 			reached = t.To
-		} else if !errors.Is(err, errHeld) {
-			a.warn("%v", err)
+		} else if !errors.Is(moveErr, errHeld) && !errors.Is(moveErr, errTypeNotAllowed) {
+			a.warn("%v", moveErr)
 		}
-		if h.after == "" {
+		if h.after == "" && !errors.Is(moveErr, errTypeNotAllowed) {
 			sub.delivered = append(sub.delivered, issue)
 			sub.reached[issue.Key] = reached
 		}

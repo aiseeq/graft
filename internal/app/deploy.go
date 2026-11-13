@@ -953,6 +953,8 @@ type noteMover struct {
 // for, or for the glint findings, reported already.
 var errHeld = errors.New("held")
 
+var errTypeNotAllowed = errors.New("transition does not allow this issue type")
+
 // delivered moves a delivered item along only from the statuses a transition
 // names: a paused item stays paused whatever its commits say. It returns the
 // status the item is left in.
@@ -963,7 +965,7 @@ func (m *noteMover) delivered(ctx context.Context, issue jira.Issue) string {
 		m.app.printf("%s stays %s: release_notes.transitions move only from %s", issue.Key, issue.Status, strings.Join(m.conf.FromStatuses(), ", "))
 	default:
 		if err := m.move(ctx, issue, t, ""); err != nil {
-			if !errors.Is(err, errHeld) {
+			if !errors.Is(err, errHeld) && !errors.Is(err, errTypeNotAllowed) {
 				m.app.warn("%v", err)
 			}
 			return issue.Status
@@ -982,6 +984,10 @@ func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTr
 	how := ""
 	if after != "" {
 		how = " after its parent " + after
+	}
+	if !t.AllowsType(issue.Type) {
+		fmt.Fprintf(m.app.Stderr, "%s stays %s%s: the transition to %s moves only %s\n", issue.Key, issue.Status, how, t.To, t.TypeNames())
+		return errTypeNotAllowed
 	}
 	if why := m.glint.held(ctx, m.client); why != "" {
 		fmt.Fprintf(m.app.Stderr, "graft: %s: NOT MOVED to %s%s: %s; once glint finds nothing in the deployed commit, the next deploy to %s or graft deploy handover %s moves it, at a release acceptance --glint-ticket KEY names an item for all the findings\n", issue.Key, t.To, how, why, m.target, m.target)
@@ -1127,7 +1133,7 @@ func (s *subtaskRun) move(ctx context.Context, key, parent string, t *config.Not
 			return
 		}
 	}
-	if err := s.mover.move(ctx, issue, t, parent); err != nil && !errors.Is(err, errHeld) {
+	if err := s.mover.move(ctx, issue, t, parent); err != nil && !errors.Is(err, errHeld) && !errors.Is(err, errTypeNotAllowed) {
 		app.warn("%v", err)
 	}
 }
@@ -1979,13 +1985,14 @@ func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 		return gatePass{why: why}, nil
 	}
 	var pass gatePass
-	if len(g.conf.Statuses) > 0 {
+	statuses := g.conf.StatusesFor(issue.Labels)
+	if len(statuses) > 0 {
 		checked, err := g.checkedIssue(ctx, issue)
 		if err != nil {
 			return pass, err
 		}
 		if checked == nil {
-			return gatePass{why: fmt.Sprintf("%s is %s, not %s", key, issue.Status, orList(g.conf.Statuses))}, nil
+			return gatePass{why: fmt.Sprintf("%s is %s, not %s", key, issue.Status, orList(statuses))}, nil
 		}
 		pass = gatePass{ok: true, label: checked.Status}
 		if checked.Done {
@@ -2012,7 +2019,7 @@ func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 // checkedIssue returns the item when it is in one of the statuses, or its
 // parent when that is, and nil when neither is.
 func (g *approvalGate) checkedIssue(ctx context.Context, issue jira.Issue) (*jira.Issue, error) {
-	if slices.Contains(g.conf.Statuses, issue.Status) {
+	if slices.Contains(g.conf.StatusesFor(issue.Labels), issue.Status) {
 		return &issue, nil
 	}
 	if issue.Parent == "" {
@@ -2022,7 +2029,7 @@ func (g *approvalGate) checkedIssue(ctx context.Context, issue jira.Issue) (*jir
 	if err != nil {
 		return nil, err
 	}
-	if slices.Contains(g.conf.Statuses, parent.Status) {
+	if slices.Contains(g.conf.StatusesFor(parent.Labels), parent.Status) {
 		return &parent, nil
 	}
 	return nil, nil
@@ -2128,8 +2135,8 @@ func (g *approvalGate) fixVersions(issue jira.Issue) string {
 // remedy says how an item gets a commit out.
 func (g *approvalGate) remedy() string {
 	var ways []string
-	if len(g.conf.Statuses) > 0 {
-		ways = append(ways, "move their items to "+orList(g.conf.Statuses))
+	if statuses := g.conf.StatusesFor(nil); len(statuses) > 0 {
+		ways = append(ways, "move their items to "+orList(statuses))
 	}
 	if g.conf.Prefix != "" {
 		ways = append(ways, "put their items into the approved version")

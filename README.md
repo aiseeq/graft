@@ -1824,7 +1824,7 @@ deploy:
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
       release_notes:
         transitions:            # In Progress moves to Testing and goes to the reviewer
-          - {from: [In Progress], to: Testing, assign: "<reviewer accountId>", keep_assignee_labels: [internal], require_comment: "How to check"}   # optional: items labelled internal move but stay with their assignee; the others wait for a comment with "How to check"
+          - {from: [In Progress], to: Testing, types: [Story, Task, Bug], assign: "<reviewer accountId>", keep_assignee_labels: [internal], require_comment: "How to check"}   # optional: types limits the issue types that move; items labelled internal move but stay with their assignee; the others wait for a comment with "How to check"
         fix_version: {prefix: "Product v"}  # add the next unreleased "Product v…" version
         glint: low              # optional: no item moves while glint finds anything of low and up in the deployed commit
       dotenv: [REGISTRY_TOKEN, 'SMTP_HOST?']        # .env keys the script gets, as for tasks
@@ -1840,6 +1840,8 @@ deploy:
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
       approved_release:         # only commits of checked items go out
         statuses: [Ready for release, Done]  # the item, or a subtask's parent, is in one of these
+        label_statuses:         # additionally allow these statuses for items carrying each label
+          internal: [Done]
         prefix: "Product v"     # optional: and in a "Product v…" version every approver approved
         ignore_paths: ["docs/**", "*.md"]   # a commit changing only these ships nothing and passes
         attribute:              # optional: a commit whose message names no item, or the wrong one, as a commit of the item
@@ -1889,8 +1891,10 @@ release_notes:
    `deployed_sha` is deployed whatever it runs.
    With `approved_release` (it needs `deployed_sha` and `release_notes.jira`),
    every commit going out, merges aside, must name an item that passes:
-   with `statuses`, the item is in one of them, or it is a subtask whose
-   parent is; with `prefix`, the item has a fix version that begins with
+   with `statuses`, the item is in one of them, or in the statuses configured
+   for one of its `label_statuses` labels; a subtask passes by its own labels
+   or its parent's status and labels. Without a matching label, only
+   `statuses` apply. With `prefix`, the item has a fix version that begins with
    `prefix` and that has approvers, every one of whom approved it in Jira,
    or it is a subtask whose parent has such a version; with both, both. One
    passing item lets the commit out. A commit let out by
@@ -1970,6 +1974,9 @@ release_notes:
    and with `transitions`, a move of the items in one of a transition's `from`
    statuses to its `to` (a status is in one `from` at most); an item
    elsewhere, paused or not started, gets the comment and keeps its status.
+   An optional `types` list on a transition limits it to those Jira issue types,
+   compared without regard to case; without it, every type can move. An item of
+   another type stays in place and the output says which types the transition moves.
    A transition with `assign` (an account id) hands the moved item over to
    that account, the reviewer of Testing say, unless it is assigned there
    already or has one of the transition's `keep_assignee_labels`, or its
@@ -2136,6 +2143,7 @@ To check the complete Jira release version on a target, add `version` to
 ```yaml
 approved_release:
   statuses: [Ready for release, Done]
+  label_statuses: {internal: [Done]}
   ignore_paths: ["docs/**"]
   version:
     match: '^Product[ .]?\d\d\.\d\d\.\d\d$'
@@ -2148,10 +2156,11 @@ withheld work, excluding reverts, reverted work and commits changing only
 `ignore_paths`. For each commit's item it uses the parent if it is a subtask.
 The unreleased, unarchived fix versions of those top-level items must identify
 exactly one version matching `match`; an omitted `match` accepts any name.
-Every top-level item must be in that version and in `statuses`. Every item in
-the version must be in `statuses` and must not be a subtask. When a commit
+Every top-level item must be in that version and in its approved status
+(`statuses` plus any matching `label_statuses`). Every item in the version
+must be in its approved status and must not be a subtask. When a commit
 names a subtask, all of its parent's subtasks must be done-category or in
-`statuses`; `release_notes.jira.skip_keys` exempts the parent from this last
+their approved statuses; `release_notes.jira.skip_keys` exempts the parent from this last
 check only. The version must have approvers and every one must have approved.
 Items in the version without code in the range are warnings. With no active
 commits the version checks are skipped. `prefix`, when set, still checks the

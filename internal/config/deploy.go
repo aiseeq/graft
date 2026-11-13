@@ -199,6 +199,8 @@ const (
 type NoteTransition struct {
 	From []string `yaml:"from"`
 	To   string   `yaml:"to"`
+	// Types limits the transition to these issue types; empty means every type.
+	Types []string `yaml:"types"`
 	// Assign is the account id the item is handed over to on the move: the
 	// reviewer of Testing, say.
 	Assign string `yaml:"assign"`
@@ -273,6 +275,8 @@ type ApprovedRelease struct {
 	// Statuses are the item statuses that go out, such as Ready for release;
 	// a subtask also goes out when its parent is in one of them.
 	Statuses []string `yaml:"statuses"`
+	// LabelStatuses adds statuses for items that carry the matching label.
+	LabelStatuses map[string][]string `yaml:"label_statuses"`
 	// Prefix is how the names of the versions begin, such as "Product v".
 	Prefix string `yaml:"prefix"`
 	// IgnorePaths are globs of files that ship nothing: a commit that
@@ -284,6 +288,42 @@ type ApprovedRelease struct {
 	Attribute []Attribution `yaml:"attribute"`
 	// Attributed maps the full commit hashes of Attribute to their entries.
 	Attributed map[string]Attribution `yaml:"-"`
+}
+
+// StatusesFor returns the approved statuses for an item's labels.
+func (r *ApprovedRelease) StatusesFor(labels []string) []string {
+	if r == nil {
+		return nil
+	}
+	statuses := append([]string(nil), r.Statuses...)
+	for _, label := range labels {
+		statuses = append(statuses, r.LabelStatuses[label]...)
+	}
+	return statuses
+}
+
+// AllStatuses returns the statuses that any label can add to the base set.
+func (r *ApprovedRelease) AllStatuses() []string {
+	labels := slices.Sorted(maps.Keys(r.LabelStatuses))
+	return r.StatusesFor(labels)
+}
+
+// AllowsType tells whether this transition applies to the issue type.
+func (t *NoteTransition) AllowsType(issueType string) bool {
+	if len(t.Types) == 0 {
+		return true
+	}
+	for _, allowed := range t.Types {
+		if strings.EqualFold(allowed, issueType) {
+			return true
+		}
+	}
+	return false
+}
+
+// TypeNames formats the transition's issue types for a stay message.
+func (t *NoteTransition) TypeNames() string {
+	return strings.Join(t.Types, ", ")
 }
 
 // ApprovedReleaseVersion checks the complete Jira release version.
@@ -623,6 +663,9 @@ func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {
 			return fmt.Errorf("%s.approved_release.statuses[%d]: blank", where, i)
 		}
 	}
+	if err := validateLabelStatuses(where+".approved_release.label_statuses", t.ApprovedRelease.LabelStatuses); err != nil {
+		return err
+	}
 	t.ApprovedRelease.Ignore = nil
 	for i, g := range t.ApprovedRelease.IgnorePaths {
 		re, err := CompileGlob(g)
@@ -632,6 +675,23 @@ func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {
 		t.ApprovedRelease.Ignore = append(t.ApprovedRelease.Ignore, re)
 	}
 	return c.validateAttribute(where+".approved_release.attribute", t.ApprovedRelease)
+}
+
+func validateLabelStatuses(where string, labelStatuses map[string][]string) error {
+	for label, statuses := range labelStatuses {
+		if strings.TrimSpace(label) == "" {
+			return fmt.Errorf("%s: blank label; name the Jira label whose statuses go out", where)
+		}
+		if len(statuses) == 0 {
+			return fmt.Errorf("%s[%q]: needs statuses, such as [Done]", where, label)
+		}
+		for i, st := range statuses {
+			if strings.TrimSpace(st) == "" {
+				return fmt.Errorf("%s[%q][%d]: blank status", where, label, i)
+			}
+		}
+	}
+	return nil
 }
 
 var fullHashRe = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
@@ -692,7 +752,7 @@ func (c *Config) validateRequires(where, name string, t *DeployTarget) error {
 func (t *DeployTarget) ReadyStatuses() []string {
 	var ready []string
 	if t.ApprovedRelease != nil {
-		ready = append(ready, t.ApprovedRelease.Statuses...)
+		ready = append(ready, t.ApprovedRelease.AllStatuses()...)
 	}
 	if n := t.ReleaseNotes; n != nil && n.Sweep != nil {
 		for _, tr := range n.Transitions {
@@ -875,6 +935,8 @@ func validateTransitions(where string, ts []NoteTransition) error {
 			return fmt.Errorf("%s.require_comment: needs assign, the account the comment is for", at)
 		case t.RequireComment != "" && strings.TrimSpace(t.RequireComment) == "":
 			return fmt.Errorf("%s.require_comment: blank", at)
+		case slices.ContainsFunc(t.Types, func(issueType string) bool { return strings.TrimSpace(issueType) == "" }):
+			return fmt.Errorf("%s.types: a blank issue type", at)
 		}
 		for _, f := range t.From {
 			if j, ok := from[f]; ok {

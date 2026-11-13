@@ -121,7 +121,8 @@ func (v *releaseVersionCheck) checkTops() bool {
 	for _, key := range slices.Sorted(maps.Keys(v.tops)) {
 		issue := v.tops[key]
 		inVersion := v.selected.ID == "" || slices.Contains(issue.FixVersionIDs([]string{v.selected.ID}), v.selected.ID)
-		if !inVersion || !slices.Contains(v.gate.conf.Statuses, issue.Status) {
+		statuses := v.gate.conf.StatusesFor(issue.Labels)
+		if !inVersion || !slices.Contains(statuses, issue.Status) {
 			var names []string
 			for _, version := range issue.FixVersions {
 				names = append(names, version.Name)
@@ -133,8 +134,8 @@ func (v *releaseVersionCheck) checkTops() bool {
 			if !inVersion {
 				todo = append(todo, "add it to "+v.selected.Name)
 			}
-			if !slices.Contains(v.gate.conf.Statuses, issue.Status) {
-				todo = append(todo, "move it to "+strings.Join(v.gate.conf.Statuses, " or "))
+			if !slices.Contains(statuses, issue.Status) {
+				todo = append(todo, "move it to "+strings.Join(statuses, " or "))
 			}
 			msg := fmt.Sprintf("%s is %s, fix versions %s: %s", key, issue.Status, strings.Join(names, ", "), strings.Join(todo, " and "))
 			if v.fail("version-top", msg) {
@@ -159,7 +160,7 @@ func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 			}
 			continue
 		}
-		if !slices.Contains(v.gate.conf.Statuses, issue.Status) {
+		if !slices.Contains(v.gate.conf.StatusesFor(issue.Labels), issue.Status) {
 			bad = append(bad, key+" ("+issue.Status+")")
 		}
 		if issue.Subtask || issue.Parent != "" {
@@ -169,7 +170,7 @@ func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 			missing = append(missing, key)
 		}
 	}
-	if len(bad) > 0 && v.fail("version-status", fmt.Sprintf("%s: %s; move to %s", v.selected.Name, strings.Join(bad, ", "), strings.Join(v.gate.conf.Statuses, " or "))) {
+	if len(bad) > 0 && v.fail("version-status", fmt.Sprintf("%s: %s; move to an approved status", v.selected.Name, strings.Join(bad, ", "))) {
 		return true
 	}
 	if len(subtasks) > 0 && v.fail("version-subtasks", fmt.Sprintf("%s: %s; remove subtasks from the version and add their parents", v.selected.Name, strings.Join(subtasks, ", "))) {
@@ -199,7 +200,7 @@ func (v *releaseVersionCheck) checkUmbrellas(ctx context.Context) bool {
 				}
 				continue
 			}
-			if !sub.Done && !slices.Contains(v.gate.conf.Statuses, sub.Status) {
+			if !sub.Done && !slices.Contains(v.gate.conf.StatusesFor(sub.Labels), sub.Status) {
 				open = append(open, subkey+" ("+sub.Status+")")
 			}
 		}

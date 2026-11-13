@@ -808,7 +808,7 @@ func (s *sweepRun) inFlow(status string) bool {
 		if n := t.ReleaseNotes; n != nil && (n.Moving(status) != nil || n.Leading(status) != nil) {
 			return true
 		}
-		if ar := t.ApprovedRelease; ar != nil && slices.Contains(ar.Statuses, status) {
+		if ar := t.ApprovedRelease; ar != nil && slices.Contains(ar.AllStatuses(), status) {
 			return true
 		}
 	}

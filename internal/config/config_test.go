@@ -340,10 +340,10 @@ deploy:
 		t.Errorf("default comment: %q", cfg.ReleaseNotes.Jira.Comment)
 	}
 	notes := func(n string) string { return strings.Replace(base, "release_notes: {}}", "release_notes: "+n+"}", 1) }
-	cfg, err = Parse([]byte(notes("{transitions: [{from: [In Progress, To Do], to: Testing, assign: qa-account}, {from: [Ready for release], to: Done}]}")))
+	cfg, err = Parse([]byte(notes("{transitions: [{from: [In Progress, To Do], to: Testing, types: [Story, Task, Bug], assign: qa-account}, {from: [Ready for release], to: Done}]}")))
 	if err != nil {
 		t.Errorf("transitions: %v", err)
-	} else if tr := cfg.Deploy.Targets["test"].ReleaseNotes.Transitions; len(tr) != 2 || tr[0].To != "Testing" || tr[0].Assign != "qa-account" || !slices.Equal(tr[1].From, []string{"Ready for release"}) {
+	} else if tr := cfg.Deploy.Targets["test"].ReleaseNotes.Transitions; len(tr) != 2 || tr[0].To != "Testing" || tr[0].Assign != "qa-account" || !slices.Equal(tr[0].Types, []string{"Story", "Task", "Bug"}) || !slices.Equal(tr[1].From, []string{"Ready for release"}) {
 		t.Errorf("transitions = %+v", tr)
 	}
 	if _, err := Parse([]byte(notes("{transition: Testing, from: [In Progress]}"))); err == nil || !strings.Contains(err.Error(), "release_notes.transition and from are replaced by transitions: [{from: [In Progress], to: Testing}]") {
@@ -366,6 +366,14 @@ deploy:
 		t.Errorf("approved_release: %v", err)
 	} else if ar := cfg.Deploy.Targets["test"].ApprovedRelease; ar == nil || ar.Prefix != "Product v" {
 		t.Errorf("approved_release = %+v", ar)
+	}
+	cfg, err = Parse([]byte(strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {statuses: [Ready for release], label_statuses: {internal: [Done]}}}", 1)))
+	if err != nil {
+		t.Errorf("approved_release.label_statuses: %v", err)
+	} else if got := cfg.Deploy.Targets["test"].ApprovedRelease.StatusesFor([]string{"internal"}); !slices.Equal(got, []string{"Ready for release", "Done"}) {
+		t.Errorf("StatusesFor(internal) = %v", got)
+	} else if got := cfg.Deploy.Targets["test"].ApprovedRelease.StatusesFor(nil); !slices.Equal(got, []string{"Ready for release"}) {
+		t.Errorf("StatusesFor(no labels) = %v", got)
 	}
 	sha := strings.Repeat("0123456789abcdef", 3)[:40]
 	attr := func(entries string) string {
@@ -390,60 +398,63 @@ deploy:
 		}
 	}
 	cases := map[string]string{
-		"transition w/o from":   notes("{transitions: [{to: Testing}]}"),
-		"transition w/o to":     notes("{transitions: [{from: [In Progress]}]}"),
-		"from has transition":   notes("{transitions: [{from: [Testing], to: Testing}]}"),
-		"from twice":            notes("{transitions: [{from: [In Progress], to: Testing}, {from: [In Progress], to: Done}]}"),
-		"blank assign":          notes("{transitions: [{from: [In Progress], to: Testing, assign: ' '}]}"),
-		"keep without assign":   notes("{transitions: [{from: [In Progress], to: Testing, keep_assignee_labels: [internal]}]}"),
-		"sweep without done":    notes("{transitions: [{from: [In Progress], to: Testing}], sweep: {}}"),
-		"sweep negative days":   notes("{transitions: [{from: [Ready for release], to: Done}], sweep: {days: -1}}"),
-		"sweep blank done":      notes("{transitions: [{from: [Ready for release], to: Done}], sweep: {done: ' '}}"),
-		"blank keep label":      notes("{transitions: [{from: [In Progress], to: Testing, assign: qa, keep_assignee_labels: [' ']}]}"),
-		"comment w/o assign":    notes("{transitions: [{from: [In Progress], to: Testing, require_comment: How to check}]}"),
-		"blank comment":         notes("{transitions: [{from: [In Progress], to: Testing, assign: qa, require_comment: ' '}]}"),
-		"unknown glint":         notes("{transitions: [{from: [In Progress], to: Testing}], glint: info}"),
-		"glint w/o transitions": notes("{glint: low}"),
-		"comment in the note":   notes("{comment: 'Deployed to {target}, how to check: see above', transitions: [{from: [In Progress], to: Testing, assign: qa, require_comment: How to CHECK}]}"),
-		"old from":              notes("{from: [In Progress]}"),
-		"fix_version w/o pfx":   notes("{fix_version: {}}"),
-		"subtasks w/o move":     notes("{subtasks: true}"),
-		"fix_version blank":     notes("{fix_version: {prefix: '  '}}"),
-		"fix_version name":      notes("{fix_version: {name: Product v1}}"),
-		"approved w/o sha":      strings.Replace(base, "confirm: sudo}", "confirm: sudo, approved_release: {prefix: Product v}}", 1),
-		"approved w/o prefix":   strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {}}", 1),
-		"approved bad glob":     strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {prefix: Product v, ignore_paths: [/etc/x]}}", 1),
-		"approved w/o jira":     strings.Replace(strings.Replace(base, "release_notes: {jira: {project_keys: [PROJ]}}\n", "", 1), "release_notes: {}}", "approved_release: {prefix: Product v}}", 1),
-		"no remote":             strings.Replace(base, "remote: origin", "remote: ''", 1),
-		"unknown env":           strings.Replace(base, "env: prod,", "env: staging,", 1),
-		"unknown requires":      strings.Replace(base, "requires: test", "requires: uat", 1),
-		"requires self":         strings.Replace(base, "requires: test", "requires: prod", 1),
-		"requires w/o version":  strings.Replace(base, "version: 'cat /opt/app/VERSION', ", "", 1),
-		"bad confirm":           strings.Replace(base, "confirm: sudo", "confirm: yes", 1),
-		"notes w/o sha":         strings.Replace(base, "deployed_sha: {path: /opt/app/DEPLOYED_SHA}, ", "", 1),
-		"merge w/o sha":         strings.Replace(base, "deployed_sha: {path: /opt/app/DEPLOYED_SHA}, release_notes: {}", "merge_into_trunk: true", 1),
-		"notes w/o jira":        strings.Replace(base, "release_notes: {jira: {project_keys: [PROJ]}}\n", "", 1),
-		"bad project key":       strings.Replace(base, "[PROJ]", "[proj]", 1),
-		"no project keys":       strings.Replace(base, "{project_keys: [PROJ]}", "{comment: x}", 1),
-		"skip key elsewhere":    strings.Replace(base, "{project_keys: [PROJ]}", "{project_keys: [PROJ], skip_keys: [OTHER-1]}", 1),
-		"skip key no number":    strings.Replace(base, "{project_keys: [PROJ]}", "{project_keys: [PROJ], skip_keys: [PROJ]}", 1),
-		"worktree copy outside": base + "worktree: {copy: [../x]}\n",
-		"worktree copy git":     base + "worktree: {copy: [.git/config]}\n",
-		"worktree setup task":   base + "worktree: {setup: [nothing]}\n",
-		"disposable parent":     base + "worktree: {disposable: ['../x']}\n",
-		"disposable only root":  base + "worktree: {disposable: ['/']}\n",
-		"disposable two roots":  base + "worktree: {disposable: ['//x']}\n",
-		"disposable git":        base + "worktree: {disposable: [.git/x]}\n",
-		"disposable empty":      base + "worktree: {disposable: ['']}\n",
-		"disposable bad glob":   base + "worktree: {disposable: ['bad[']}\n",
-		"reserved target name":  strings.Replace(base, "    prod:", "    status:", 1),
-		"no run":                strings.Replace(base, "run: [sh, deploy.sh], requires", "requires", 1),
-		"requires without ver":  strings.Replace(base, "mode: file", "mode: none", 1),
-		"unknown dotenv set":    strings.Replace(base, "confirm: sudo}", "confirm: sudo, dotenv_sets: [nope]}", 1),
-		"placeholder twice":     strings.Replace(base, "requires: test, confirm", "status: [x, '{args}{args}'], requires: test, confirm", 1),
-		"unknown dep":           strings.Replace(base, "confirm: sudo}", "confirm: sudo, deps: [nope]}", 1),
-		"load wait then":        strings.Replace(base, "  remote: origin\n", "  remote: origin\n  load_wait: {then: maybe}\n", 1),
-		"negative load wait":    strings.Replace(base, "  remote: origin\n", "  remote: origin\n  load_wait: {budget: -1m}\n", 1),
+		"transition w/o from":           notes("{transitions: [{to: Testing}]}"),
+		"transition w/o to":             notes("{transitions: [{from: [In Progress]}]}"),
+		"from has transition":           notes("{transitions: [{from: [Testing], to: Testing}]}"),
+		"from twice":                    notes("{transitions: [{from: [In Progress], to: Testing}, {from: [In Progress], to: Done}]}"),
+		"blank assign":                  notes("{transitions: [{from: [In Progress], to: Testing, assign: ' '}]}"),
+		"keep without assign":           notes("{transitions: [{from: [In Progress], to: Testing, keep_assignee_labels: [internal]}]}"),
+		"sweep without done":            notes("{transitions: [{from: [In Progress], to: Testing}], sweep: {}}"),
+		"sweep negative days":           notes("{transitions: [{from: [Ready for release], to: Done}], sweep: {days: -1}}"),
+		"sweep blank done":              notes("{transitions: [{from: [Ready for release], to: Done}], sweep: {done: ' '}}"),
+		"blank keep label":              notes("{transitions: [{from: [In Progress], to: Testing, assign: qa, keep_assignee_labels: [' ']}]}"),
+		"comment w/o assign":            notes("{transitions: [{from: [In Progress], to: Testing, require_comment: How to check}]}"),
+		"blank comment":                 notes("{transitions: [{from: [In Progress], to: Testing, assign: qa, require_comment: ' '}]}"),
+		"unknown glint":                 notes("{transitions: [{from: [In Progress], to: Testing}], glint: info}"),
+		"glint w/o transitions":         notes("{glint: low}"),
+		"comment in the note":           notes("{comment: 'Deployed to {target}, how to check: see above', transitions: [{from: [In Progress], to: Testing, assign: qa, require_comment: How to CHECK}]}"),
+		"old from":                      notes("{from: [In Progress]}"),
+		"fix_version w/o pfx":           notes("{fix_version: {}}"),
+		"subtasks w/o move":             notes("{subtasks: true}"),
+		"fix_version blank":             notes("{fix_version: {prefix: '  '}}"),
+		"fix_version name":              notes("{fix_version: {name: Product v1}}"),
+		"approved w/o sha":              strings.Replace(base, "confirm: sudo}", "confirm: sudo, approved_release: {prefix: Product v}}", 1),
+		"approved w/o prefix":           strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {}}", 1),
+		"approved blank label":          strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {statuses: [Ready for release], label_statuses: {' ': [Done]}}}", 1),
+		"approved empty label statuses": strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {statuses: [Ready for release], label_statuses: {internal: []}}}", 1),
+		"transition blank type":         notes("{transitions: [{from: [In Progress], to: Testing, types: [' '] }]}"),
+		"approved bad glob":             strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {prefix: Product v, ignore_paths: [/etc/x]}}", 1),
+		"approved w/o jira":             strings.Replace(strings.Replace(base, "release_notes: {jira: {project_keys: [PROJ]}}\n", "", 1), "release_notes: {}}", "approved_release: {prefix: Product v}}", 1),
+		"no remote":                     strings.Replace(base, "remote: origin", "remote: ''", 1),
+		"unknown env":                   strings.Replace(base, "env: prod,", "env: staging,", 1),
+		"unknown requires":              strings.Replace(base, "requires: test", "requires: uat", 1),
+		"requires self":                 strings.Replace(base, "requires: test", "requires: prod", 1),
+		"requires w/o version":          strings.Replace(base, "version: 'cat /opt/app/VERSION', ", "", 1),
+		"bad confirm":                   strings.Replace(base, "confirm: sudo", "confirm: yes", 1),
+		"notes w/o sha":                 strings.Replace(base, "deployed_sha: {path: /opt/app/DEPLOYED_SHA}, ", "", 1),
+		"merge w/o sha":                 strings.Replace(base, "deployed_sha: {path: /opt/app/DEPLOYED_SHA}, release_notes: {}", "merge_into_trunk: true", 1),
+		"notes w/o jira":                strings.Replace(base, "release_notes: {jira: {project_keys: [PROJ]}}\n", "", 1),
+		"bad project key":               strings.Replace(base, "[PROJ]", "[proj]", 1),
+		"no project keys":               strings.Replace(base, "{project_keys: [PROJ]}", "{comment: x}", 1),
+		"skip key elsewhere":            strings.Replace(base, "{project_keys: [PROJ]}", "{project_keys: [PROJ], skip_keys: [OTHER-1]}", 1),
+		"skip key no number":            strings.Replace(base, "{project_keys: [PROJ]}", "{project_keys: [PROJ], skip_keys: [PROJ]}", 1),
+		"worktree copy outside":         base + "worktree: {copy: [../x]}\n",
+		"worktree copy git":             base + "worktree: {copy: [.git/config]}\n",
+		"worktree setup task":           base + "worktree: {setup: [nothing]}\n",
+		"disposable parent":             base + "worktree: {disposable: ['../x']}\n",
+		"disposable only root":          base + "worktree: {disposable: ['/']}\n",
+		"disposable two roots":          base + "worktree: {disposable: ['//x']}\n",
+		"disposable git":                base + "worktree: {disposable: [.git/x]}\n",
+		"disposable empty":              base + "worktree: {disposable: ['']}\n",
+		"disposable bad glob":           base + "worktree: {disposable: ['bad[']}\n",
+		"reserved target name":          strings.Replace(base, "    prod:", "    status:", 1),
+		"no run":                        strings.Replace(base, "run: [sh, deploy.sh], requires", "requires", 1),
+		"requires without ver":          strings.Replace(base, "mode: file", "mode: none", 1),
+		"unknown dotenv set":            strings.Replace(base, "confirm: sudo}", "confirm: sudo, dotenv_sets: [nope]}", 1),
+		"placeholder twice":             strings.Replace(base, "requires: test, confirm", "status: [x, '{args}{args}'], requires: test, confirm", 1),
+		"unknown dep":                   strings.Replace(base, "confirm: sudo}", "confirm: sudo, deps: [nope]}", 1),
+		"load wait then":                strings.Replace(base, "  remote: origin\n", "  remote: origin\n  load_wait: {then: maybe}\n", 1),
+		"negative load wait":            strings.Replace(base, "  remote: origin\n", "  remote: origin\n  load_wait: {budget: -1m}\n", 1),
 	}
 	for name, data := range cases {
 		if _, err := Parse([]byte(data)); err == nil {

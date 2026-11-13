@@ -1,0 +1,56 @@
+package app
+
+import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/jira"
+)
+
+func TestApprovedLabelStatusesPassVersionGates(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		labels []string
+		want   bool
+	}{
+		{name: "internal", labels: []string{"internal"}, want: true},
+		{name: "unlabelled", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/rest/api/3/search/jql") {
+					fmt.Fprint(w, `{"issues":[{"key":"PROJ-1"}],"isLast":true}`)
+					return
+				}
+				if strings.HasPrefix(r.URL.Path, "/rest/api/3/issue/PROJ-1") {
+					fmt.Fprintf(w, `{"fields":{"summary":"synthetic","status":{"name":"Done","statusCategory":{"key":"done"}},"issuetype":{"name":"Task"},"labels":%q}}`, tc.labels)
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			t.Cleanup(srv.Close)
+			client := jira.New(jira.Credentials{BaseURL: srv.URL})
+			approved := &config.ApprovedRelease{
+				Statuses:      []string{"Ready for Release"},
+				LabelStatuses: map[string][]string{"internal": {"Done"}},
+				Version:       &config.ApprovedReleaseVersion{Refs: map[string]string{}},
+			}
+			app := &App{Stdout: &strings.Builder{}, Stderr: &strings.Builder{}}
+			gate := &gateRun{app: app, conf: approved, gate: &approvalGate{client: client, conf: approved, issues: map[string]jira.Issue{}}}
+			check := &releaseVersionCheck{
+				gate: gate, collect: true,
+				tops:     map[string]jira.Issue{"PROJ-1": {Key: "PROJ-1", Status: "Done", Labels: tc.labels, FixVersions: []jira.Version{{ID: "v1"}}}},
+				selected: jira.Version{ID: "v1", Name: "Synthetic 1"},
+			}
+			check.checkTops()
+			check.checkItems(t.Context())
+			if got := len(check.failures) == 0; got != tc.want {
+				t.Errorf("version checks passed = %t, failures = %v", got, check.failures)
+			}
+		})
+	}
+}
