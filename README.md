@@ -1898,8 +1898,8 @@ release_notes:
    a subtask is done once its code is in the trunk, before the release. With
    `prefix`, the item has a fix version that begins with
    `prefix` and that has approvers, every one of whom approved it in Jira,
-   or it is a subtask whose parent has such a version; with both, both. One
-   passing item lets the commit out. A commit let out by
+   or it is a subtask whose parent has such a version; with both, both. Every
+   item the commit names must pass. A commit let out by
    a done-category item gets a line of its own: it may only refer to old
    work. A revert (`Revert "…"`, `revert:`) passes, but a revert of a revert
    (`Revert "Revert "…""`, `Reapply "…"`) brings the work back and is checked
@@ -2121,8 +2121,8 @@ label, the freeze and the trunk merge check:
   `from` of a transition to the sweep's `done`) with subtasks open, and any
   subtask under such a parent, under a parent not ready, or under a done
   parent whose version alone would let it out. A subtask is
-  open unless it is done or ready itself, since done comes only after the
-  release, or it waits in the `to` of a transition with `assign` and came there
+  open unless it is done or ready itself, or it waits in the `to` of a
+  transition with `assign` and came there
   before its parent came into the ready statuses: the reviewer checks the item,
   so accepting it takes such a subtask along, and one that came later nobody
   has seen. A parent or subtask in `skip_keys` does not count;

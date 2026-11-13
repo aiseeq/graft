@@ -2167,7 +2167,7 @@ func (g *approvalGate) fixVersions(issue jira.Issue) string {
 func (g *approvalGate) remedy() string {
 	var ways []string
 	if len(g.conf.Statuses) > 0 || len(g.conf.LabelStatuses) > 0 {
-		parts := []string{"move their items to " + orList(g.conf.Statuses)}
+		parts := []string{"move their items (a subtask's parent for a subtask) to " + orList(g.conf.Statuses)}
 		for _, label := range slices.Sorted(maps.Keys(g.conf.LabelStatuses)) {
 			parts = append(parts, fmt.Sprintf("items labelled %s to %s", label, orList(g.conf.LabelStatuses[label])))
 		}

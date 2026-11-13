@@ -83,12 +83,12 @@ func TestApprovedRemedyNamesLabelStatusesPerLabel(t *testing.T) {
 		Statuses:      []string{"Ready for Release"},
 		LabelStatuses: map[string][]string{"internal": {"Done"}},
 	}}
-	want := "move their items to Ready for Release, items labelled internal to Done and finish any subtasks called open"
+	want := "move their items (a subtask's parent for a subtask) to Ready for Release, items labelled internal to Done and finish any subtasks called open"
 	if got := g.remedy(); got != want {
 		t.Fatalf("remedy = %q, want %q", got, want)
 	}
 	g.conf.LabelStatuses = nil
-	if got, want := g.remedy(), "move their items to Ready for Release and finish any subtasks called open"; got != want {
+	if got, want := g.remedy(), "move their items (a subtask's parent for a subtask) to Ready for Release and finish any subtasks called open"; got != want {
 		t.Fatalf("remedy without labels = %q, want %q", got, want)
 	}
 }
