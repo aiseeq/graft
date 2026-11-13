@@ -643,6 +643,8 @@ func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {
 		return fmt.Errorf("%s.approved_release: needs statuses (the item statuses that go out, such as [Ready for release]), prefix (how the names of the approved versions begin, such as \"Product v\"), or both", where)
 	case t.ApprovedRelease.Prefix != "" && strings.TrimSpace(t.ApprovedRelease.Prefix) == "":
 		return fmt.Errorf("%s.approved_release.prefix: blank", where)
+	case len(t.ApprovedRelease.LabelStatuses) > 0 && len(t.ApprovedRelease.Statuses) == 0:
+		return fmt.Errorf("%s.approved_release.label_statuses: needs statuses, those of items without the labels; without them an unlabelled item would pass in any status", where)
 	}
 	if v := t.ApprovedRelease.Version; v != nil {
 		if len(t.ApprovedRelease.Statuses) == 0 {

@@ -2155,14 +2155,11 @@ func (g *approvalGate) fixVersions(issue jira.Issue) string {
 func (g *approvalGate) remedy() string {
 	var ways []string
 	if len(g.conf.Statuses) > 0 || len(g.conf.LabelStatuses) > 0 {
-		way := "move their items to " + orList(g.conf.Statuses)
-		if len(g.conf.Statuses) == 0 {
-			way = "move their items"
-		}
+		parts := []string{"move their items to " + orList(g.conf.Statuses)}
 		for _, label := range slices.Sorted(maps.Keys(g.conf.LabelStatuses)) {
-			way += fmt.Sprintf(", items labelled %s to %s", label, orList(g.conf.LabelStatuses[label]))
+			parts = append(parts, fmt.Sprintf("items labelled %s to %s", label, orList(g.conf.LabelStatuses[label])))
 		}
-		ways = append(ways, way)
+		ways = append(ways, strings.Join(parts, ", "))
 	}
 	if g.conf.Prefix != "" {
 		ways = append(ways, "put their items into the approved version")

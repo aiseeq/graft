@@ -421,6 +421,7 @@ deploy:
 		"approved w/o sha":              strings.Replace(base, "confirm: sudo}", "confirm: sudo, approved_release: {prefix: Product v}}", 1),
 		"approved w/o prefix":           strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {}}", 1),
 		"approved blank label":          strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {statuses: [Ready for release], label_statuses: {' ': [Done]}}}", 1),
+		"approved labels w/o statuses":  strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {prefix: Product v, label_statuses: {internal: [Done]}}}", 1),
 		"approved empty label statuses": strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {statuses: [Ready for release], label_statuses: {internal: []}}}", 1),
 		"transition blank type":         notes("{transitions: [{from: [In Progress], to: Testing, types: [' '] }]}"),
 		"approved bad glob":             strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {prefix: Product v, ignore_paths: [/etc/x]}}", 1),

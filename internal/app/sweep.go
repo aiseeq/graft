@@ -642,7 +642,7 @@ func (s *sweepRun) item(ctx context.Context, issue jira.Issue, commits []sweptCo
 	allOn := !slices.ContainsFunc(commits, func(c sweptCommit) bool { return !c.onTarget })
 	inTrunk := slices.ContainsFunc(commits, func(c sweptCommit) bool { return c.inTrunk })
 	key, status := issue.Key, issue.Status
-	finishing, finishingAllowed := s.finishing(issue)
+
 	switch {
 	case issue.Done:
 		if i := slices.IndexFunc(commits, func(c sweptCommit) bool { return !c.inTrunk }); i >= 0 {
@@ -655,11 +655,8 @@ func (s *sweepRun) item(ctx context.Context, issue jira.Issue, commits []sweptCo
 		if inTrunk {
 			s.list(ctx, issue, "%s is %s, but its commits are in %s", key, status, s.trunk)
 		}
-	case finishing != nil:
-		if !finishingAllowed {
-			s.lines = append(s.lines, transitionTypeStayMessage(key, status, "", finishing))
-			break
-		}
+	case s.finishing(status):
+		// An item whose type the transition does not move is told by move.
 		s.finishingItem(ctx, issue, commits, allOn)
 	default:
 		// In work, whether a transition names the status or not.
@@ -799,13 +796,11 @@ func (s *sweepRun) acceptedSubtasks(ctx context.Context, parent jira.Issue, allO
 	}
 }
 
-// finishing tells whether the target's transition to done moves this issue.
-func (s *sweepRun) finishing(issue jira.Issue) (*config.NoteTransition, bool) {
-	t := s.r.target.ReleaseNotes.Moving(issue.Status)
-	if t == nil || t.To != s.conf.Done {
-		return nil, false
-	}
-	return t, t.AllowsType(issue.Type)
+// finishing tells whether the target's transition to the done status moves
+// an item in status.
+func (s *sweepRun) finishing(status string) bool {
+	t := s.r.target.ReleaseNotes.Moving(status)
+	return t != nil && t.To == s.conf.Done
 }
 
 // inFlow tells whether some target's transitions or approved_release name

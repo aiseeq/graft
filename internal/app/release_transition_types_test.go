@@ -89,10 +89,6 @@ func TestSweepTransitionTypesKeepOtherTypesInPlace(t *testing.T) {
 		client: client, conf: notes.Sweep, notes: &config.JiraNotes{},
 	}
 	issue := jira.Issue{Key: "PROJ-2", Type: "Sub-task", Status: "Ready for Release"}
-	transitionToDone, allowed := run.finishing(issue)
-	if transitionToDone == nil || allowed {
-		t.Fatalf("finishing = (%v, %t), want transition denied for %s", transitionToDone, allowed, issue.Type)
-	}
 	run.item(t.Context(), issue, []sweptCommit{{sha: "abc", when: time.Now(), onTarget: true}})
 	if requests != 0 {
 		t.Fatalf("transition requests = %d, want 0", requests)
