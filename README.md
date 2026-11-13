@@ -113,7 +113,8 @@ repository itself.
 A hotfix or release branch (`deploy.hotfix.branches`, `version.build_branches`)
 keeps its Go and npm dependency versions, and graft says so: it carries a
 candidate someone approved, and a raise there would ship a change outside the
-approval (`approved_release` counts a changed `go.mod` as shipped); the
+approval (`approved_release` counts a changed `go.mod` as shipped unless no
+shipped binary's module moves); the
 trunk takes the raise.
 Offline or otherwise unknown latest versions produce a warning and leave that
 dependency alone. If a raised version makes the gate fail, the commit stops
@@ -1911,7 +1912,9 @@ release_notes:
    packages outside `ignore_paths` build from keeps its version: graft writes
    the commit's tree and its parent's to a temporary directory, no hook runs,
    and compares their `go list -deps` modules at the versions of `go list -m
-   all`, for this machine's GOOS and GOARCH and no build tags. Another `go.mod`
+   all` (or `go list -deps` with a vendor directory) in every module of the
+   tree, with this machine's GOOS, GOARCH and GOFLAGS: a module needed only
+   under other build tags or another GOOS is not seen. Another `go.mod`
    directive (`go`, `toolchain`, `replace`) still needs approval; when `go
    list` fails the check stops with its error. Otherwise the deploy stops here, before deps
    and the script, listing each commit outside the release: one naming no

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -177,5 +178,60 @@ func TestShipsNothingModuleBumpAgainstShippedGraph(t *testing.T) {
 				t.Errorf("the check changed the repository's tree:\n%s", status)
 			}
 		})
+	}
+}
+
+func TestShipsNothingNestedModuleBumpReachesTheRootBinary(t *testing.T) {
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOSUMDB", "off")
+	t.Setenv("GOFLAGS", "-mod=mod")
+	main := "package main\n\nimport _ \"example.com/nested\"\n\nfunc main() {}\n"
+	root, write := moduleBumpRepo(t, "cmd/app/main.go", main, "1.21", "\texample.com/nested v0.0.0\n")
+	nested := func(b string) string {
+		return "module example.com/nested\n\ngo 1.21\n\nrequire example.com/b " + b + "\n"
+	}
+	write("go.mod", moduleBumpGoMod("1.21", "\texample.com/nested v0.0.0\n", "replace example.com/nested => ./nested\n"))
+	write("nested/go.mod", nested("v1.0.0"))
+	write("nested/x.go", "package nested\n\nimport _ \"example.com/b\"\n")
+	freezePolishGit(t, root, "add", ".")
+	freezePolishGit(t, root, "commit", "-q", "-m", "nested")
+	write("nested/go.mod", nested("v1.1.0"))
+	freezePolishGit(t, root, "add", ".")
+	freezePolishGit(t, root, "commit", "-q", "-m", "nested bump")
+	repo, err := gitx.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Version: config.Version{Mode: config.ModeFile, File: "VERSION"}}
+	ok, why, err := shipsNothing(repo, cfg, &config.ApprovedRelease{}, freezePolishGit(t, root, "rev-parse", "HEAD"))
+	if err != nil || ok || !strings.Contains(why, "example.com/b") {
+		t.Errorf("shipsNothing = (%t, %q, %v), want the root binary's example.com/b named", ok, why, err)
+	}
+}
+
+func TestShipsNothingVendoredModuleBump(t *testing.T) {
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOSUMDB", "off")
+	t.Setenv("GOFLAGS", "")
+	main := "package main\n\nimport _ \"example.com/b\"\n\nfunc main() {}\n"
+	root, write := moduleBumpRepo(t, "cmd/app/main.go", main, "1.21", "\texample.com/a v1.0.0\n\texample.com/b v1.0.0\n")
+	vendor := exec.Command("go", "mod", "vendor")
+	vendor.Dir = root
+	if out, err := vendor.CombinedOutput(); err != nil {
+		t.Fatalf("go mod vendor: %v\n%s", err, out)
+	}
+	freezePolishGit(t, root, "add", ".")
+	freezePolishGit(t, root, "commit", "-q", "-m", "vendor")
+	write("go.sum", "example.com/z v1.0.0/go.mod h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n")
+	freezePolishGit(t, root, "add", ".")
+	freezePolishGit(t, root, "commit", "-q", "-m", "go.sum only")
+	repo, err := gitx.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Version: config.Version{Mode: config.ModeFile, File: "VERSION"}}
+	ok, why, err := shipsNothing(repo, cfg, &config.ApprovedRelease{}, freezePolishGit(t, root, "rev-parse", "HEAD"))
+	if err != nil || !ok {
+		t.Errorf("vendored go.sum change, shipsNothing = (%t, %q, %v), want it to pass", ok, why, err)
 	}
 }
