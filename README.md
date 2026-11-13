@@ -2039,7 +2039,9 @@ release_notes:
    so naming the item is the acceptance's to do. The sweep (below) moves no
    item to its done status either while glint finds anything in the commit
    the target runs: it lists the item instead.
-   The release note itself must not contain the text. A key mentioned in a
+   The release note itself must not contain the text, `{project}` and
+   `{target}` filled in: a quiet item, with no note, would wait where one
+   with its note moves. A key mentioned in a
    commit does not make the item yours, so only open items of the owner of
    the Jira token get notes: not in a done-category status (Done, Won't do),
    a to-do-category one (To Do, Backlog: work not started) or `skip_statuses`, and assigned to the owner now or at some point in

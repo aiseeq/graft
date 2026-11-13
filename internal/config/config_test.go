@@ -423,6 +423,7 @@ deploy:
 		"unknown glint":                 notes("{transitions: [{from: [In Progress], to: Testing}], glint: info}"),
 		"glint w/o transitions":         notes("{glint: low}"),
 		"comment in the note":           notes("{comment: 'Deployed to {target}, how to check: see above', transitions: [{from: [In Progress], to: Testing, assign: qa, require_comment: How to CHECK}]}"),
+		"comment in the filled note":    strings.Replace(notes("{comment: '{project} on {target}', transitions: [{from: [In Progress], to: Testing, assign: qa, require_comment: Widget}]}"), "{project_keys: [PROJ]}", "{project_keys: [PROJ], project: Widget}", 1),
 		"old from":                      notes("{from: [In Progress]}"),
 		"fix_version w/o pfx":           notes("{fix_version: {}}"),
 		"subtasks w/o move":             notes("{subtasks: true}"),

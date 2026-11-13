@@ -847,10 +847,14 @@ func (c *Config) validateTargetNotes(where string, t *DeployTarget) error {
 	return validateNoteFixVersion(where, n)
 }
 
-// validateRequireComments refuses a require_comment the note itself satisfies.
+// validateRequireComments refuses a require_comment the note itself
+// satisfies, with {project} and {target} filled in as the deploy fills them:
+// the note is not the comment the gate waits for, and an item whose note is
+// quiet would wait where one with its note moves.
 func (c *Config) validateRequireComments(where string, t *DeployTarget) error {
+	note := strings.NewReplacer("{project}", c.ReleaseNotes.Jira.Project, "{target}", strings.TrimPrefix(where, "deploy.targets.")).Replace(c.NoteComment(t))
 	for i, tr := range t.ReleaseNotes.Transitions {
-		if tr.RequireComment != "" && tr.Instructs(c.NoteComment(t)) {
+		if tr.RequireComment != "" && tr.Instructs(note) {
 			return fmt.Errorf("%s.release_notes.transitions[%d].require_comment: the release note itself contains %q, so it would pass for the comment", where, i, tr.RequireComment)
 		}
 	}
