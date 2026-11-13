@@ -1443,7 +1443,7 @@ func (d *deployFixture) fakeSudoScript(t *testing.T, script string) string {
 	t.Helper()
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "calls")
-	writeFile(t, filepath.Join(dir, "sudo"), "#!/bin/sh\necho \"$*\" >> "+yamlQuote(calls)+"\nn=$(wc -l < "+yamlQuote(calls)+")\n"+script+"\n")
+	writeFile(t, filepath.Join(dir, "sudo"), "#!/bin/sh\necho \"$*\" >> "+yamlQuote(calls)+"\ncase \"$*\" in -k) exit 0;; \"-n -v\") exit 1;; esac\nn=$(grep -c '^-v -p ' "+yamlQuote(calls)+" || true)\n"+script+"\n")
 	if err := os.Chmod(filepath.Join(dir, "sudo"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1477,7 +1477,7 @@ func TestDeployConfirmWithoutTerminalBySudo(t *testing.T) {
 	if d.stateFile("prod-run") == "" {
 		t.Error("prod deploy did not run after sudo confirmed it")
 	}
-	if got := readFile(t, calls); !strings.HasPrefix(got, "-v -p ") {
+	if got := readFile(t, calls); !strings.HasPrefix(got, "-k\n-n -v\n-v -p ") {
 		t.Errorf("sudo calls: %q", got)
 	}
 }
@@ -1497,8 +1497,8 @@ func TestDeployConfirmWithoutTerminalAsksTheReaderAgain(t *testing.T) {
 	if d.stateFile("prod-run") == "" {
 		t.Error("prod deploy did not run after the reader accepted")
 	}
-	if got := strings.Count(readFile(t, calls), "\n"); got != 3 {
-		t.Errorf("sudo asked %d times, want 3", got)
+	if got := strings.Count(readFile(t, calls), "\n"); got != 5 {
+		t.Errorf("sudo asked %d times, want 5", got)
 	}
 }
 
@@ -1515,8 +1515,8 @@ func TestDeployConfirmWithoutTerminalAsksAgainForRefusalOnStderr(t *testing.T) {
 	if d.stateFile("prod-run") == "" {
 		t.Error("prod deploy did not run after the reader accepted")
 	}
-	if got := strings.Count(readFile(t, calls), "\n"); got != 3 {
-		t.Errorf("sudo asked %d times, want 3", got)
+	if got := strings.Count(readFile(t, calls), "\n"); got != 5 {
+		t.Errorf("sudo asked %d times, want 5", got)
 	}
 }
 
@@ -1534,8 +1534,8 @@ func TestDeployConfirmWithoutTerminalRefused(t *testing.T) {
 	if d.stateFile("prod-run") != "" {
 		t.Error("prod deploy ran without confirmation")
 	}
-	if got := strings.Count(readFile(t, calls), "\n"); got != 1 {
-		t.Errorf("sudo asked %d times, want 1", got)
+	if got := strings.Count(readFile(t, calls), "\n"); got != 3 {
+		t.Errorf("sudo asked %d times, want 3", got)
 	}
 }
 
@@ -1569,8 +1569,8 @@ func TestDeployConfirmWaitsForABusyReader(t *testing.T) {
 	if d.stateFile("prod-run") == "" {
 		t.Error("prod deploy did not run after the reader was free")
 	}
-	if got := strings.Count(readFile(t, calls), "\n"); got != 2 {
-		t.Errorf("sudo asked %d times, want 2", got)
+	if got := strings.Count(readFile(t, calls), "\n"); got != 4 {
+		t.Errorf("sudo asked %d times, want 4", got)
 	}
 }
 
@@ -1587,8 +1587,8 @@ func TestDeployConfirmNoReaderRefusedAtOnce(t *testing.T) {
 	if d.stateFile("prod-run") != "" {
 		t.Error("prod deploy ran without confirmation")
 	}
-	if got := strings.Count(readFile(t, calls), "\n"); got != 1 {
-		t.Errorf("sudo asked %d times, want 1", got)
+	if got := strings.Count(readFile(t, calls), "\n"); got != 3 {
+		t.Errorf("sudo asked %d times, want 3", got)
 	}
 }
 
@@ -1836,7 +1836,7 @@ func TestDeployRefusesSameCommit(t *testing.T) {
 	out := filepath.Join(state, "out")
 	sudoDir := t.TempDir()
 	calls := filepath.Join(sudoDir, "calls")
-	writeFile(t, filepath.Join(sudoDir, "sudo"), "#!/bin/sh\necho \"$*\" >> "+yamlQuote(calls)+"\n")
+	writeFile(t, filepath.Join(sudoDir, "sudo"), "#!/bin/sh\necho \"$*\" >> "+yamlQuote(calls)+"\ncase \"$*\" in -k) exit 0;; \"-n -v\") exit 1;; esac\n")
 	if err := os.Chmod(filepath.Join(sudoDir, "sudo"), 0o755); err != nil {
 		t.Fatal(err)
 	}

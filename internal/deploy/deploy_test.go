@@ -25,6 +25,124 @@ const (
 	fingerListed = "found 1 devices\nDevice at /net/reactivated/Fprint/Device/0\nUsing device /net/reactivated/Fprint/Device/0\nFingerprints for user someone on Reader (press):\n - #0: right-middle-finger\n"
 )
 
+func fakeSudoForConfirmation(t *testing.T, script string) string {
+	t.Helper()
+	bin := t.TempDir()
+	path := filepath.Join(bin, "sudo")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return filepath.Join(bin, "calls")
+}
+
+func TestConfirmSudoInvalidatesCachedCredentialsBeforeChecking(t *testing.T) {
+	calls := fakeSudoForConfirmation(t, `echo "$*" >> "$CALLS"
+case "$*" in
+  -k) : > "$RESET"; exit 0 ;;
+  "-n -v") [ ! -e "$RESET" ] ;;
+  -v\ -p\ *) exit 0 ;;
+  *) exit 9 ;;
+esac`)
+	t.Setenv("CALLS", calls)
+	t.Setenv("RESET", filepath.Join(filepath.Dir(calls), "reset"))
+	if err := ConfirmSudo(context.Background(), "prod", &bytes.Buffer{}); err != nil {
+		t.Fatalf("ConfirmSudo: %v", err)
+	}
+	got, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(got)), "\n")
+	if len(lines) != 3 || lines[0] != "-k" || lines[1] != "-n -v" || !strings.HasPrefix(lines[2], "-v -p ") {
+		t.Fatalf("sudo calls = %q, want -k, -n -v, then -v", lines)
+	}
+}
+
+func TestConfirmSudoRefusesSilentNonInteractiveSuccess(t *testing.T) {
+	calls := fakeSudoForConfirmation(t, `echo "$*" >> "$CALLS"
+case "$*" in
+  -k) exit 0 ;;
+  "-n -v") exit 0 ;;
+  *) exit 9 ;;
+esac`)
+	t.Setenv("CALLS", calls)
+	err := ConfirmSudo(context.Background(), "prod", &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "NOPASSWD") {
+		t.Fatalf("ConfirmSudo error = %v, want NOPASSWD refusal", err)
+	}
+	got, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != "-k\n-n -v" {
+		t.Fatalf("sudo calls = %q, want only -k and -n -v", got)
+	}
+}
+
+func TestConfirmSudoDoesNotTreatUnrelatedOutputAsConfirmation(t *testing.T) {
+	calls := fakeSudoForConfirmation(t, `echo "$*" >> "$CALLS"
+case "$*" in
+  -k) exit 0 ;;
+  "-n -v") echo 'policy status' >&2; exit 0 ;;
+  *) exit 9 ;;
+esac`)
+	t.Setenv("CALLS", calls)
+	err := ConfirmSudo(context.Background(), "prod", &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "NOPASSWD") {
+		t.Fatalf("ConfirmSudo error = %v, want refusal", err)
+	}
+	got, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != "-k\n-n -v" {
+		t.Fatalf("sudo calls = %q, want only -k and -n -v", got)
+	}
+}
+
+func TestConfirmSudoAcceptsPAMConfirmationOutput(t *testing.T) {
+	calls := fakeSudoForConfirmation(t, `echo "$*" >> "$CALLS"
+case "$*" in
+  -k) exit 0 ;;
+  "-n -v") echo 'Place your finger on the reader' >&2; exit 0 ;;
+  *) exit 9 ;;
+esac`)
+	t.Setenv("CALLS", calls)
+	if err := ConfirmSudo(context.Background(), "prod", &bytes.Buffer{}); err != nil {
+		t.Fatalf("ConfirmSudo: %v", err)
+	}
+	got, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != "-k\n-n -v" {
+		t.Fatalf("sudo calls = %q, want PAM check to confirm without another prompt", got)
+	}
+}
+
+func TestConfirmSudoAcceptsOrdinaryInteractiveConfirmation(t *testing.T) {
+	calls := fakeSudoForConfirmation(t, `echo "$*" >> "$CALLS"
+case "$*" in
+  -k) exit 0 ;;
+  "-n -v") exit 1 ;;
+  -v\ -p\ *) exit 0 ;;
+  *) exit 9 ;;
+esac`)
+	t.Setenv("CALLS", calls)
+	if err := ConfirmSudo(context.Background(), "prod", &bytes.Buffer{}); err != nil {
+		t.Fatalf("ConfirmSudo: %v", err)
+	}
+	got, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(got)), "\n")
+	if len(lines) != 3 || lines[0] != "-k" || lines[1] != "-n -v" || !strings.HasPrefix(lines[2], "-v -p ") {
+		t.Fatalf("sudo calls = %q, want -k, -n -v, then -v", lines)
+	}
+}
+
 func limitsOf(wait time.Duration) fingerprintLimits {
 	return fingerprintLimits{wait: wait, busyWait: time.Minute, now: time.Now}
 }

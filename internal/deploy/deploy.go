@@ -334,13 +334,20 @@ const fingerprintNotAsked = "a terminal is required to read the password"
 // asked the reader and got no finger in time or one it does not know.
 var fingerprintRefusals = []string{"Verification timed out", "Failed to match fingerprint"}
 
-// ConfirmSudo confirms the deploy with sudo. In a terminal it asks until the
-// password is given; Ctrl-C stops. Without a terminal sudo passes only on
-// credentials it has cached or on a PAM method that reads nothing from stdin
-// (a fingerprint reader): it asks again while the reader refuses, for at most
-// fingerprintWait, and any other refusal ends the deploy, since nobody can
-// type a password there.
+// ConfirmSudo confirms the deploy with sudo. It invalidates cached credentials
+// and checks that non-interactive authentication does not silently succeed
+// before asking for confirmation. In a terminal it asks until the password is
+// given; Ctrl-C stops. Without a terminal it asks again while the fingerprint
+// reader refuses, for at most fingerprintWait, and any other refusal ends the
+// deploy, since nobody can type a password there.
 func ConfirmSudo(ctx context.Context, target string, log io.Writer) error {
+	confirmed, err := checkSudoConfirmation(ctx, target)
+	if err != nil {
+		return err
+	}
+	if confirmed {
+		return nil
+	}
 	prompt := fmt.Sprintf("[sudo] password to confirm the deploy to %s: ", target)
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		return confirmInTerminal(ctx, prompt, log)
@@ -359,6 +366,45 @@ func ConfirmSudo(ctx context.Context, target string, log io.Writer) error {
 		runErr := cmd.Run()
 		return sudoResult(runErr, append(out.Bytes(), stderr.Bytes()...))
 	})
+}
+
+// checkSudoConfirmation clears the current timestamp before the first attempt
+// and detects a silent non-interactive success (for example, NOPASSWD).
+func checkSudoConfirmation(ctx context.Context, target string) (bool, error) {
+	invalidate, err := execx.CommandContext(ctx, execx.ShortGrace, "sudo", "-k")
+	if err != nil {
+		return false, fmt.Errorf("deploying to %s was not confirmed: sudo -k: %w", target, err)
+	}
+	if err := invalidate.Run(); err != nil {
+		return false, fmt.Errorf("deploying to %s was not confirmed: sudo -k: %w", target, err)
+	}
+
+	check, err := execx.CommandContext(ctx, execx.ShortGrace, "sudo", "-n", "-v")
+	if err != nil {
+		return false, fmt.Errorf("deploying to %s was not confirmed: sudo -n -v: %w", target, err)
+	}
+	check.Env = append(os.Environ(), "LC_ALL=C")
+	var stdout, stderr bytes.Buffer
+	check.Stdout = io.MultiWriter(os.Stdout, &stdout)
+	check.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	if err := check.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("deploying to %s was not confirmed: sudo -n -v: %w", target, err)
+	}
+	if fingerprintPrompted(append(stdout.Bytes(), stderr.Bytes()...)) {
+		// pam_fprintd reports the requested finger through PAM before checking
+		// it. A successful check after this prompt means the user confirmed.
+		return true, nil
+	}
+	return false, fmt.Errorf("deploying to %s was not confirmed: sudo on this host does not confirm anything: sudo passes without a password or fingerprint; remove NOPASSWD for the user or remove confirm from the target", target)
+}
+
+func fingerprintPrompted(out []byte) bool {
+	return (bytes.Contains(out, []byte("Place your ")) || bytes.Contains(out, []byte("Swipe your "))) &&
+		bytes.Contains(out, []byte("finger"))
 }
 
 func confirmInTerminal(ctx context.Context, prompt string, log io.Writer) error {
