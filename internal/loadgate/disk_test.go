@@ -169,8 +169,7 @@ func TestNoDiskSourceUsesPSI(t *testing.T) {
 	}
 }
 
-// TestBusyNowAsksTheKind: BusyNow reads the machine as Wait does, for the
-// kind given.
+// TestBusyNowAsksTheSource: BusyNow reads the disk state source as Wait does.
 func TestBusyNowAsksTheSource(t *testing.T) {
 	fakeMachine(t)
 	d := fakeDisk(t)

@@ -138,7 +138,7 @@ going on (dirty and writeback memory of `/proc/meminfo` below
 memory pressure above `max_mem_some` while the machine swaps more than
 `max_swap_kbs`: swap in use is no harm, and swapping without memory pressure
 neither. The disk is read from the disk state source on
-`$XDG_RUNTIME_DIR/io-state.sock`, asked for the task's kind; without the
+`$XDG_RUNTIME_DIR/io-state.sock`; without the
 source, or when it fails, graft says so once per look at the machine (a task
 with `remote_heavy` under `when: busy` looks twice: before it chooses the
 host, and when it waits here) and
@@ -1326,7 +1326,7 @@ that hook, by an empty message, still shows). Lines are in
 `refused-commits.jsonl` next to `stats.jsonl`, one JSON object each, kept like
 it. `--since`, `--project` and `--all` work as below.
 
-`admissions.jsonl` beside `stats.jsonl` records each heavy-task admission decision. A `wait` line is written on the first busy measure and whenever that measure changes, not on each poll. An `admitted` line marks the single admission; `refused` records a deadline, priority-budget, measurement, queue or context failure. One process can admit several heavy tasks under one `run`: a line is keyed by `run` and `kind`. Each line has `time`, `run`, `kind`, `verdict`, `measure`, `why`, `waited_s` (from the start of the admission, the queue for the load lock included), `dirty_mb` and `dirty_limit_mb` of the measure the decision used (absent on a decision before the first measure), and `priority`; `admitted` and `refused` lines add `waits` (seconds by why, the queue too) and `behind` (the holder the task queued behind). Tasks that never reach the load gate, as a light gate, have no line. The file rotates like `stats.jsonl`; a write failure warns on stderr and does not stop the task.
+`admissions.jsonl` beside `stats.jsonl` records each heavy-task admission decision. A `wait` line is written on the first busy measure and whenever that measure changes, not on each poll. An `admitted` line marks the single admission; `refused` records a deadline, priority-budget, measurement, queue or context failure. One process can admit several heavy tasks under one `run`: a line is keyed by `run` and `kind`. Each line has `time`, `run`, `kind`, `verdict`, `measure`, `why`, `waited_s` (from the start of the admission, the queue for the load lock included), `dirty_mb` and `dirty_limit_mb` of the measure the decision used (absent on a decision before the first measure), `disk_fault` (the disk state source's error when it failed and the disk was measured by the IO pressure instead), and `priority`; `admitted` and `refused` lines add `waits` (seconds by why, the queue too) and `behind` (the holder the task queued behind). Tasks that never reach the load gate, as a light gate, have no line. The file rotates like `stats.jsonl`; a write failure warns on stderr and does not stop the task.
 
 `graft stats --failures` lists recent failed steps and task failures that
 happened before a step ran, newest first. Each row shows the time, project

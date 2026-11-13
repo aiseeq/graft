@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -50,6 +51,9 @@ func TestAdmissionJournalMeasureChangesThenAdmits(t *testing.T) {
 	defer release()
 
 	journal := filepath.Join(os.Getenv("XDG_CACHE_HOME"), "graft", "admissions.jsonl")
+	if raw, err := os.ReadFile(journal); err != nil || bytes.Contains(raw, []byte(`"profile`)) || bytes.Contains(raw, []byte(`"disk_fault"`)) {
+		t.Errorf("journal with a working disk source has a profile or a disk fault (%v):\n%s", err, raw)
+	}
 	lines := readAdmissionLines(t, journal)
 	if len(lines) != 3 {
 		t.Fatalf("got %d records, want 3: %+v", len(lines), lines)
@@ -124,6 +128,18 @@ func TestAdmissionJournalRefusesAtDeadline(t *testing.T) {
 	lines := readAdmissionLines(t, filepath.Join(os.Getenv("XDG_CACHE_HOME"), "graft", "admissions.jsonl"))
 	if len(lines) < 2 || lines[len(lines)-1].Verdict != "refused" || lines[len(lines)-1].Why == "" {
 		t.Fatalf("deadline refusal missing: %+v", lines)
+	}
+}
+
+func TestAdmissionRecordNamesFailingDiskSource(t *testing.T) {
+	fault := fmt.Errorf("%w: connect: refused", pressure.ErrIOSourceFailed)
+	m := &machine{haveView: true, lastView: pressure.Verdict{Load: pressure.Load{DiskFault: fault}}}
+	if got := m.admissionRecord(false).DiskFault; got != "disk state source failed: connect: refused" {
+		t.Errorf("disk_fault = %q, want the source's own error", got)
+	}
+	none := &machine{haveView: true, lastView: pressure.Verdict{Load: pressure.Load{DiskFault: pressure.ErrNoIOSource}}}
+	if got := none.admissionRecord(false).DiskFault; got != "" {
+		t.Errorf("disk_fault = %q with no source at all, want none", got)
 	}
 }
 

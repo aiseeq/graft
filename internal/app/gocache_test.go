@@ -201,7 +201,7 @@ func serveTrimDisk(t *testing.T, ioFullMS int) {
 				return
 			}
 			_, _ = bufio.NewReader(conn).ReadString('\n')
-			_, _ = fmt.Fprintf(conn, `{"v":1,"at":%q,"5s":{"io_full_ms":%d},"open":{"open":false,"ms":0},"profile":{"kind":"gocache-trim"}}`+"\n", time.Now().Format(time.RFC3339Nano), ioFullMS)
+			_, _ = fmt.Fprintf(conn, `{"v":1,"at":%q,"5s":{"io_full_ms":%d},"open":{"open":false,"ms":0}}`+"\n", time.Now().Format(time.RFC3339Nano), ioFullMS)
 			_ = conn.Close()
 		}
 	}()

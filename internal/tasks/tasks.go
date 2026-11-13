@@ -3907,8 +3907,7 @@ func (r *Runner) Waited(why string, d time.Duration) {
 	}
 }
 
-// waitedFor adds the waits of a heavy task's admission, and gives the task
-// running its disk profile.
+// waitedFor adds the waits of a heavy task's admission.
 func (r *Runner) waitedFor(a loadgate.Admission) {
 	for why, d := range a.Waits {
 		r.Waited(why, d)
