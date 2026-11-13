@@ -270,3 +270,26 @@ func TestShipsNothingMainPackageByItsFiles(t *testing.T) {
 		t.Errorf("a main package in app.go, its module behind a symlink, shipsNothing = (%t, %q, %v), want example.com/a named", ok, why, err)
 	}
 }
+
+func TestShipsNothingMainPackageWithOneFileIgnored(t *testing.T) {
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOSUMDB", "off")
+	t.Setenv("GOFLAGS", "-mod=mod")
+	root, write := moduleBumpRepo(t, "cmd/app/main.go", "package main\n\nfunc main() {}\n", "1.21", "\texample.com/a v1.0.0\n")
+	write("cmd/app/helper.go", "package main\n\nimport _ \"example.com/a\"\n")
+	freezePolishGit(t, root, "add", ".")
+	freezePolishGit(t, root, "commit", "-q", "-m", "helper")
+	write("go.mod", moduleBumpGoMod("1.21", "\texample.com/a v1.1.0\n", ""))
+	freezePolishGit(t, root, "add", ".")
+	freezePolishGit(t, root, "commit", "-q", "-m", "module bump")
+	repo, err := gitx.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Version: config.Version{Mode: config.ModeFile, File: "VERSION"}}
+	conf := &config.ApprovedRelease{Ignore: []*regexp.Regexp{regexp.MustCompile(`^cmd/app/helper\.go$`)}}
+	ok, why, err := shipsNothing(repo, cfg, conf, freezePolishGit(t, root, "rev-parse", "HEAD"))
+	if err != nil || ok || !strings.Contains(why, "example.com/a") {
+		t.Errorf("a main package with one file ignored, shipsNothing = (%t, %q, %v), want example.com/a named", ok, why, err)
+	}
+}
