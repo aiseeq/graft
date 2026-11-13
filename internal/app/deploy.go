@@ -2353,22 +2353,6 @@ func (g *approvalGate) openSubtasks(ctx context.Context, holder jira.Issue) (str
 	return fmt.Sprintf("%s is %s with open subtasks %s: move them to Done or name %s in release_notes.jira.skip_keys", holder.Key, holder.Status, strings.Join(open, ", "), holder.Key), nil
 }
 
-// acceptedWith tells whether a subtask in a status of the reviewer's came there
-// before its parent came into the accepted statuses. The reviewer checks the
-// item, so accepting it takes such a subtask along; one that came later nobody
-// has seen, and neither has one whose history does not tell.
-func acceptedWith(ctx context.Context, client *jira.Client, st, parent jira.Issue, accepted []string) (bool, error) {
-	came, err := client.CameInto(ctx, st.Key, []string{st.Status})
-	if err != nil {
-		return false, err
-	}
-	took, err := client.CameInto(ctx, parent.Key, accepted)
-	if err != nil {
-		return false, err
-	}
-	return !came.IsZero() && !took.IsZero() && came.Before(took), nil
-}
-
 // item checks one item against the statuses and the approved version.
 func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 	issue, err := g.issue(ctx, key)

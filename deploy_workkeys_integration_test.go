@@ -402,9 +402,8 @@ func TestDeployWorkKeysSubtasksMustBeDone(t *testing.T) {
 	}, nil)
 }
 
-// The sweep takes a subtask accepted with its parent through ready to done,
-// with or without commits of its own, and the parent closes in the same pass.
-func TestDeploySweepSubtaskAcceptedWithParent(t *testing.T) {
+// The sweep leaves subtasks accepted with their parent in their current status.
+func TestDeploySweepAcceptedSubtasksStayPut(t *testing.T) {
 	d := newDeployFixture(t, func(state string, q func(string) string) string {
 		return sweepConfig(state, q)
 	})
@@ -429,7 +428,6 @@ func TestDeploySweepSubtaskAcceptedWithParent(t *testing.T) {
 	d.git("push", "-q", "origin", trunk)
 	d.mustGraft("deploy", "swept")
 	out := d.mustGraft("deploy", "sweep", "swept")
-	wantLines(t, out, []string{"PROJ-81 would move to Done: it was accepted with PROJ-80", "PROJ-80 would move to Done: its subtasks are all done (2)"}, []string{"PROJ-86 would", "PROJ-89 would", "PROJ-85 would"})
 	d.jira.mu.Lock()
 	if d.jira.statuses["PROJ-81"] != "Testing" {
 		t.Errorf("moved without apply: %v", d.jira.statuses["PROJ-81"])
@@ -441,15 +439,15 @@ func TestDeploySweepSubtaskAcceptedWithParent(t *testing.T) {
 	d.jira.mu.Lock()
 	defer d.jira.mu.Unlock()
 	for key, want := range map[string]string{
-		"PROJ-80": "Done", "PROJ-81": "Done", "PROJ-82": "Done",
+		"PROJ-80": "Ready for release", "PROJ-81": "Testing", "PROJ-82": "Testing",
 		"PROJ-85": "Ready for release", "PROJ-86": "Testing", "PROJ-88": "In Progress", "PROJ-89": "Testing",
 	} {
 		if got := d.jira.statuses[key]; got != want {
 			t.Errorf("%s is %s, want %s\n%s", key, got, want, out)
 		}
 	}
-	if steps := slices.DeleteFunc(slices.Clone(moved), func(k string) bool { return k != "PROJ-81" }); len(steps) != 2 {
-		t.Errorf("PROJ-81 moved %d times, want through ready to done: %v", len(steps), moved)
+	if steps := slices.DeleteFunc(slices.Clone(moved), func(k string) bool { return k != "PROJ-81" && k != "PROJ-82" }); len(steps) != 0 {
+		t.Errorf("accepted subtasks moved during sweep: %v", steps)
 	}
 }
 
@@ -492,9 +490,8 @@ func TestDeploySweepParentWaitsForSubtaskWork(t *testing.T) {
 	}
 }
 
-// A done parent still takes along a subtask that waited for the reviewer when
-// it was accepted.
-func TestDeploySweepDoneParentTakesAcceptedSubtask(t *testing.T) {
+// A subtask of a done parent stays in its status after a sweep.
+func TestDeploySweepDoneParentLeavesSubtaskStatusAlone(t *testing.T) {
 	d := sweepRepo(t)
 	d.statuses(map[string]string{"PROJ-80": "Done", "PROJ-81": "Testing"}, map[string]string{"PROJ-81": "PROJ-80"})
 	d.jira.mu.Lock()
@@ -506,8 +503,33 @@ func TestDeploySweepDoneParentTakesAcceptedSubtask(t *testing.T) {
 	out := d.mustGraft("deploy", "sweep", "swept", "--apply")
 	d.jira.mu.Lock()
 	defer d.jira.mu.Unlock()
-	if got := d.jira.statuses["PROJ-81"]; got != "Done" {
-		t.Errorf("PROJ-81 is %s\n%s", got, out)
+	if got := d.jira.statuses["PROJ-81"]; got != "Testing" {
+		t.Errorf("PROJ-81 is %s, want Testing\n%s", got, out)
+	}
+	if steps := slices.DeleteFunc(slices.Clone(d.jira.moved), func(k string) bool { return k != "PROJ-81" }); len(steps) != 0 {
+		t.Errorf("PROJ-81 has sweep transitions: %v", steps)
+	}
+}
+
+// A subtask of a parent in skip_keys stays untouched by the sweep.
+func TestDeploySweepSubtaskOfSkippedParentStaysPut(t *testing.T) {
+	d := sweepRepo(t)
+	d.write(".graft.yaml", strings.Replace(d.read(".graft.yaml"), "skip_keys: [PROJ-40]", "skip_keys: [PROJ-40, PROJ-80]", 1))
+	d.statuses(map[string]string{"PROJ-80": "Ready for release", "PROJ-81": "Testing"}, map[string]string{"PROJ-81": "PROJ-80"})
+	d.jira.mu.Lock()
+	d.jira.statusMoves = map[string][]fakeStatusMove{"PROJ-80": into("Ready for release", 2), "PROJ-81": into("Testing", 5)}
+	d.jira.mu.Unlock()
+	d.pushCommits("feat: PROJ-81 a")
+	d.mustGraft("deploy", "swept")
+
+	out := d.mustGraft("deploy", "sweep", "swept", "--apply")
+	d.jira.mu.Lock()
+	defer d.jira.mu.Unlock()
+	if got := d.jira.statuses["PROJ-81"]; got != "Testing" {
+		t.Errorf("PROJ-81 is %s, want Testing\n%s", got, out)
+	}
+	if steps := slices.DeleteFunc(slices.Clone(d.jira.moved), func(k string) bool { return k != "PROJ-81" }); len(steps) != 0 {
+		t.Errorf("PROJ-81 has sweep transitions: %v", steps)
 	}
 }
 
@@ -567,8 +589,8 @@ func TestDeploySubtaskOfStandingItemHandedOver(t *testing.T) {
 	}
 }
 
-// The sweep takes an accepted subtask through the review status before done.
-func TestDeploySweepAcceptedSubtaskTakesReviewStep(t *testing.T) {
+// A subtask with its own deployed work stays in its current status during sweep.
+func TestDeploySweepAcceptedSubtaskWithOwnWorkStaysPut(t *testing.T) {
 	d := newDeployFixture(t, func(state string, q func(string) string) string {
 		return sweepConfig(state, q)
 	})
@@ -585,8 +607,12 @@ func TestDeploySweepAcceptedSubtaskTakesReviewStep(t *testing.T) {
 	d.git("push", "-q", "origin", trunk)
 	d.mustGraft("deploy", "swept")
 	out := d.mustGraft("deploy", "sweep", "swept", "--apply")
-	_, moved := d.jira.snapshot()
-	if steps := slices.DeleteFunc(slices.Clone(moved), func(k string) bool { return k != "PROJ-91" }); len(steps) != 2 {
-		t.Errorf("PROJ-91 moved %d times, want through review to done: %v\n%s", len(steps), moved, out)
+	d.jira.mu.Lock()
+	defer d.jira.mu.Unlock()
+	if got := d.jira.statuses["PROJ-91"]; got != "Testing" {
+		t.Errorf("PROJ-91 is %s, want Testing\n%s", got, out)
+	}
+	if steps := slices.DeleteFunc(slices.Clone(d.jira.moved), func(k string) bool { return k != "PROJ-91" }); len(steps) != 0 {
+		t.Errorf("PROJ-91 has sweep transitions: %v", steps)
 	}
 }

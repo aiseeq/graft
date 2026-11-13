@@ -730,7 +730,6 @@ func (s *sweepRun) parents(ctx context.Context, keys []string, items map[string]
 		if !ok || slices.Contains(s.notes.SkipKeys, key) {
 			continue
 		}
-		s.acceptedSubtasks(ctx, parent, allOn)
 		if !parent.Done && len(parent.Subtasks) > 0 && allOn(key) {
 			s.finishParent(ctx, parent, allOn)
 		}
@@ -769,31 +768,6 @@ func (s *sweepRun) finishParent(ctx context.Context, parent jira.Issue, allOn fu
 		return
 	}
 	s.move(ctx, parent, why, false)
-}
-
-// acceptedSubtasks moves to the done status the subtasks accepted along with
-// their parent, as acceptedWith tells, whose work the target runs: nobody else
-// moves them on, a reviewer checks the parent alone.
-func (s *sweepRun) acceptedSubtasks(ctx context.Context, parent jira.Issue, allOn func(string) bool) {
-	accepted := append(s.r.target.ReadyStatusesFor(parent.Labels, parent.Type), s.conf.Done)
-	if !slices.Contains(accepted, parent.Status) {
-		return
-	}
-	s.read(ctx, parent.Subtasks)
-	for _, key := range parent.Subtasks {
-		st, ok := s.issues[key]
-		if !ok || st.Done || !slices.Contains(s.review, st.Status) || slices.Contains(s.notes.SkipKeys, key) || !allOn(key) {
-			continue
-		}
-		with, err := acceptedWith(ctx, s.client, st, parent, accepted)
-		if err != nil {
-			s.app.warn("sweep %s: %s not moved: %v", s.r.name, key, err)
-			continue
-		}
-		if with {
-			s.move(ctx, st, fmt.Sprintf("it was accepted with %s and no commit of its last %d days is off %s", parent.Key, s.conf.Days, s.r.name), true)
-		}
-	}
 }
 
 // finishing tells whether the target's transition to the done status moves
