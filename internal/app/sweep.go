@@ -883,7 +883,16 @@ func (s *sweepRun) hops(issue jira.Issue, t *config.NoteTransition) bool {
 // the transition to done, or the one into its from that a subtask with the
 // reviewer goes through first, does not move the item's type.
 func (s *sweepRun) typeStop(issue jira.Issue) string {
-	t := s.r.target.ReleaseNotes.Leading(s.conf.Done)
+	notes := s.r.target.ReleaseNotes
+	if t := notes.Moving(issue.Status); t != nil && t.To == s.conf.Done {
+		// Several transitions may lead to done: the one from the item's
+		// status is the one that moves it.
+		if !t.AllowsType(issue.Type) {
+			return transitionTypeStayMessage(issue.Key, issue.Status, "", t)
+		}
+		return ""
+	}
+	t := notes.Leading(s.conf.Done)
 	if t == nil {
 		return ""
 	}
@@ -891,11 +900,22 @@ func (s *sweepRun) typeStop(issue jira.Issue) string {
 		return transitionTypeStayMessage(issue.Key, issue.Status, "", t)
 	}
 	if s.hops(issue, t) {
-		if hop := s.r.target.ReleaseNotes.Leading(t.From[0]); hop != nil && !hop.AllowsType(issue.Type) {
+		if hop := transitionBetween(notes, issue.Status, t.From[0]); hop != nil && !hop.AllowsType(issue.Type) {
 			return transitionTypeStayMessage(issue.Key, issue.Status, "", hop)
 		}
 	}
 	return ""
+}
+
+// transitionBetween is the transition from status to to, or failing that the
+// first one leading to to: several may lead to one status from different ones.
+func transitionBetween(notes *config.TargetNotes, status, to string) *config.NoteTransition {
+	for i := range notes.Transitions {
+		if t := &notes.Transitions[i]; t.To == to && slices.Contains(t.From, status) {
+			return t
+		}
+	}
+	return notes.Leading(to)
 }
 
 // transitionDone takes the item to the done status; a subtask in a status of

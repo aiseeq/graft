@@ -109,6 +109,30 @@ func TestSweepTransitionTypesKeepOtherTypesInPlace(t *testing.T) {
 	}
 }
 
+// Of several transitions to done, the one from the item's status decides
+// whether its type moves.
+func TestSweepTransitionTypesUseTheTransitionFromTheStatus(t *testing.T) {
+	notes := &config.TargetNotes{Transitions: []config.NoteTransition{
+		{From: []string{"Other"}, To: "Done", Types: []string{"Sub-task"}},
+		{From: []string{"Ready for Release"}, To: "Done", Types: []string{"Task"}},
+	}, Sweep: &config.Sweep{Done: "Done"}}
+	run := &sweepRun{r: &deployRun{target: &config.DeployTarget{ReleaseNotes: notes}}, conf: notes.Sweep, review: []string{"Testing"}}
+	if got := run.typeStop(jira.Issue{Key: "PROJ-2", Type: "Sub-task", Status: "Ready for Release"}); got != "PROJ-2 stays Ready for Release: the transition to Done moves only Task" {
+		t.Errorf("done transition: typeStop = %q", got)
+	}
+	// Of several transitions into the from a reviewer's subtask goes through,
+	// the one from its status decides.
+	notes = &config.TargetNotes{Transitions: []config.NoteTransition{
+		{From: []string{"Ready for Release"}, To: "Done", Types: []string{"Sub-task", "Task"}},
+		{From: []string{"Elsewhere"}, To: "Ready for Release", Types: []string{"Sub-task"}},
+		{From: []string{"Testing"}, To: "Ready for Release", Types: []string{"Task"}},
+	}, Sweep: &config.Sweep{Done: "Done"}}
+	run.r.target.ReleaseNotes, run.conf = notes, notes.Sweep
+	if got := run.typeStop(jira.Issue{Key: "PROJ-3", Type: "Sub-task", Status: "Testing", Parent: "PROJ-1"}); got != "PROJ-3 stays Testing: the transition to Ready for Release moves only Task" {
+		t.Errorf("hop transition: typeStop = %q", got)
+	}
+}
+
 // A subtask with the reviewer reaches done through the from of the done
 // transition: the transition into that from must move its type too.
 func TestSweepTransitionTypesGuardTheHopBeforeDone(t *testing.T) {
