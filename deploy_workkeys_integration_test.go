@@ -138,8 +138,9 @@ func TestDeployProjectPlaceholderNeedsName(t *testing.T) {
 	}
 }
 
-// A parent ready with open subtasks keeps itself and them in; a subtask ready
-// itself goes, a closed one does not count, and a standing item is left alone.
+// A parent ready with open subtasks keeps itself and them in, a ready subtask
+// too: a subtask goes out with its parent alone. A closed one does not count,
+// and a standing item is left alone.
 func TestDeployWorkKeysOpenParent(t *testing.T) {
 	d := workKeysRepo(t)
 	d.statuses(map[string]string{
@@ -171,9 +172,11 @@ func TestDeployWorkKeysOpenParent(t *testing.T) {
 		"feat: PROJ-8 the parent: PROJ-8 is Ready for release with open subtasks PROJ-9 (In Progress)",
 		"feat: PROJ-9 the open subtask: PROJ-8 is Ready for release with open subtasks PROJ-9 (In Progress)",
 		"feat: PROJ-44 open under a done parent: PROJ-43 is Done with open subtasks PROJ-44 (In Progress)",
-	}, []string{"PROJ-10 the subtask that is ready:", "PROJ-11 the parent", "PROJ-12 ready under it:", "PROJ-41 under a standing item:", "PROJ-47 ready under"})
+		"feat: PROJ-10 the subtask that is ready: PROJ-8 is Ready for release with open subtasks PROJ-9 (In Progress)",
+		"feat: PROJ-47 ready under a parent in work: PROJ-47 goes out with its parent PROJ-46, which is In Progress",
+	}, []string{"PROJ-11 the parent", "PROJ-12 ready under it:", "PROJ-41 under a standing item:"})
 
-	d.statuses(map[string]string{"PROJ-9": "Ready for release", "PROJ-44": "Done"}, map[string]string{
+	d.statuses(map[string]string{"PROJ-9": "Ready for release", "PROJ-44": "Done", "PROJ-46": "Ready for release"}, map[string]string{
 		"PROJ-9": "PROJ-8", "PROJ-10": "PROJ-8", "PROJ-12": "PROJ-11", "PROJ-13": "PROJ-11",
 		"PROJ-41": "PROJ-40", "PROJ-44": "PROJ-43", "PROJ-47": "PROJ-46",
 	})
@@ -395,7 +398,7 @@ func TestDeployWorkKeysSubtaskAcceptedWithParent(t *testing.T) {
 		"PROJ-12 is Ready for release with open subtasks PROJ-13 (Testing, not accepted with PROJ-12)",
 		"PROJ-14 is Ready for release with open subtasks PROJ-15 (In Progress)",
 		"PROJ-16 is Ready for release with open subtasks PROJ-17 (Testing, not accepted with PROJ-16)",
-		"feat: PROJ-19 under a parent in work: PROJ-19 is Testing",
+		"feat: PROJ-19 under a parent in work: PROJ-19 goes out with its parent PROJ-18, which is In Progress",
 	}, []string{"PROJ-9 accepted with its parent:"})
 }
 
