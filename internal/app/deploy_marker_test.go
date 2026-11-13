@@ -80,6 +80,7 @@ func moduleBumpRepo(t *testing.T, mainFile, mainSrc, goVersion, require string) 
 	}
 	write("go.mod", moduleBumpGoMod(goVersion, require, ""))
 	write("VERSION", "1.0.0\n")
+	write(".gitattributes", "*.go filter=probe\n")
 	write(mainFile, mainSrc)
 	write("cmd/app/main_test.go", "package main\n\nimport (\n\t\"testing\"\n\n\t\"example.com/a\"\n)\n\nfunc TestA(t *testing.T) { _ = a.Dir }\n")
 	freezePolishGit(t, root, "add", ".")
@@ -155,6 +156,8 @@ func TestShipsNothingModuleBumpAgainstShippedGraph(t *testing.T) {
 				t.Fatal(err)
 			}
 			freezePolishGit(t, root, "config", "core.hooksPath", hooks)
+			filtered := filepath.Join(t.TempDir(), "filtered")
+			freezePolishGit(t, root, "config", "filter.probe.smudge", "touch "+strconv.Quote(filtered)+"; cat")
 			repo, err := gitx.Open(root)
 			if err != nil {
 				t.Fatal(err)
@@ -170,6 +173,9 @@ func TestShipsNothingModuleBumpAgainstShippedGraph(t *testing.T) {
 			}
 			if _, err := os.Stat(hooked); err == nil {
 				t.Error("the check ran the repository's post-checkout hook")
+			}
+			if _, err := os.Stat(filtered); err == nil {
+				t.Error("the check ran the repository's smudge filter")
 			}
 			if list := freezePolishGit(t, root, "worktree", "list", "--porcelain"); strings.Count(list, "worktree ") != 1 {
 				t.Errorf("worktrees left after the check:\n%s", list)
@@ -203,7 +209,8 @@ func TestShipsNothingNestedModuleBumpReachesTheRootBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Version: config.Version{Mode: config.ModeFile, File: "VERSION"}}
-	ok, why, err := shipsNothing(repo, cfg, &config.ApprovedRelease{}, freezePolishGit(t, root, "rev-parse", "HEAD"))
+	conf := &config.ApprovedRelease{Ignore: []*regexp.Regexp{regexp.MustCompile(`^go\.mod$`)}}
+	ok, why, err := shipsNothing(repo, cfg, conf, freezePolishGit(t, root, "rev-parse", "HEAD"))
 	if err != nil || ok || !strings.Contains(why, "example.com/b") {
 		t.Errorf("shipsNothing = (%t, %q, %v), want the root binary's example.com/b named", ok, why, err)
 	}

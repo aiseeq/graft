@@ -1894,9 +1894,8 @@ func moduleBumpIsUnshipped(repo *gitx.Repo, sha string, files []string, conf *co
 }
 
 // inspectModuleBump compares the module graph of the main packages outside
-// ignore_paths in the commit's tree and in its parent's. The trees are
-// written from a temporary index into a temporary directory: no worktree is
-// added and no hook runs. err tells why the check could not be made.
+// ignore_paths in the commit's tree and in its parent's, written into a
+// temporary directory by writeTree. err tells why the check could not be made.
 func inspectModuleBump(repo *gitx.Repo, sha string, dirs []string, conf *config.ApprovedRelease) (ok bool, why string, err error) {
 	line, err := repo.Git("rev-list", "--parents", "-n", "1", sha)
 	if err != nil {
@@ -1932,9 +1931,6 @@ func inspectModuleBump(repo *gitx.Repo, sha string, dirs []string, conf *config.
 	}
 	var moved []string
 	for _, dir := range modules {
-		if conf.Ignored([]string{path.Join(dir, "go.mod")}) {
-			continue
-		}
 		rel := filepath.FromSlash(dir)
 		mains, err := shippedMainPackages(after, filepath.Join(after, rel), conf)
 		if err != nil {
@@ -1963,7 +1959,8 @@ func inspectModuleBump(repo *gitx.Repo, sha string, dirs []string, conf *config.
 // moduleRoots lists the directories, "." for the root, of every module of
 // the commit's tree a build can reach: a module's go.mod change reaches the
 // binaries of the modules that import it. Modules under testdata, vendor and
-// directories go ignores (".", "_") are left out.
+// directories go ignores (".", "_") are left out; a module under ignore_paths
+// is not, its main packages are.
 func moduleRoots(repo *gitx.Repo, sha string) ([]string, error) {
 	out, err := repo.Git("ls-tree", "-r", "--name-only", "-z", "--full-tree", sha)
 	if err != nil {
@@ -1984,14 +1981,40 @@ func moduleRoots(repo *gitx.Repo, sha string) ([]string, error) {
 	return roots, nil
 }
 
-// writeTree writes the files of rev into dir through a temporary index.
+// maxTreeBlob is the largest file writeTree copies; a larger one is written
+// empty, which go list, reading Go files and go.mod, does not miss.
+const maxTreeBlob = 16 << 20
+
+// writeTree writes the files of rev into dir as git stores them: no index,
+// no filter and no hook of the repository runs, and nothing is left in it.
 func writeTree(repo *gitx.Repo, rev, dir string) error {
-	env := []string{"GIT_INDEX_FILE=" + dir + ".index"}
-	if _, err := repo.GitEnv(env, "read-tree", rev); err != nil {
+	out, err := repo.Git("ls-tree", "-r", "-z", "--full-tree", rev)
+	if err != nil {
 		return err
 	}
-	_, err := repo.GitEnv(env, "checkout-index", "--all", "--force", "--prefix="+filepath.ToSlash(dir)+"/")
-	return err
+	var paths, oids []string
+	for entry := range strings.SplitSeq(out, "\x00") {
+		meta, p, ok := strings.Cut(entry, "\t")
+		fields := strings.Fields(meta)
+		if !ok || len(fields) != 3 || fields[1] != "blob" {
+			continue
+		}
+		paths, oids = append(paths, p), append(oids, fields[2])
+	}
+	blobs, err := repo.ReadBlobs(oids, maxTreeBlob)
+	if err != nil {
+		return err
+	}
+	for i, p := range paths {
+		full := filepath.Join(dir, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			return fmt.Errorf("create the directory of %s: %w", p, err)
+		}
+		if err := os.WriteFile(full, blobs[i].Content, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", p, err)
+		}
+	}
+	return nil
 }
 
 // changedRequirements names the modules whose requirement the commit changes
