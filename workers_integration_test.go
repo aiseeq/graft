@@ -287,6 +287,24 @@ func TestWorkerTrailersWithUnknownTrunk(t *testing.T) {
 	}
 }
 
+// TestWorkerTrailersOfAFileNamedLikeAPathspec: a file whose name reads as
+// pathspec magic is compared with the trunk by its literal name.
+func TestWorkerTrailersOfAFileNamedLikeAPathspec(t *testing.T) {
+	f := workerRepo(t, "none")
+	name := ":(glob)x.txt"
+	f.write(name, "old\n")
+	f.mustPlainCommit("chore: add a file")
+	job := filepath.Join(f.base, "job")
+	f.git("worktree", "add", "-q", "-b", "w/job", job, "main")
+	f.write(name, "by the job\n")
+	f.git("--literal-pathspecs", "add", "--", name)
+	writeMarkerJSON(t, f, map[string]any{"id": "job1", "models": []string{"vendor/model-a"}, "client": "cli", "dir": job, "finished": true, "fighter_files": map[string]string{name: f.git("hash-object", "--", name)}})
+	out := f.mustGraft("commit", "-m", "feat: carry finished work")
+	if got := f.workers("HEAD"); got != "vendor/model-a" || strings.Contains(out, "cannot be read") {
+		t.Errorf("pathspec-like name, trailers %q\n%s", got, out)
+	}
+}
+
 func TestWorkerTrailersFromFinishedFileList(t *testing.T) {
 	t.Run("matching blob without worktree", func(t *testing.T) {
 		f := workerRepo(t, "none")

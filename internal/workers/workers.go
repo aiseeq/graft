@@ -137,7 +137,8 @@ func Models(repo *gitx.Repo, trunk func() string, warn io.Writer, excluded []str
 		}
 		trunkFiles, err := treeBlobs(repo, trunk(), staged, deleted)
 		if err != nil {
-			return nil, err
+			fmt.Fprintf(warn, "graft: the trunk's files cannot be read, a finished job of another worktree counts by its files alone: %v\n", err)
+			trunkFiles = nil
 		}
 		for i := range others {
 			m := others[i]
@@ -383,7 +384,7 @@ func treeBlobs(repo *gitx.Repo, trunk string, staged map[string]string, deleted 
 	if len(paths) == 0 {
 		return map[string]string{}, nil
 	}
-	out, err := repo.Git(append([]string{"ls-tree", "-z", "--full-tree", trunk, "--"}, paths...)...)
+	out, err := repo.Git(append([]string{"--literal-pathspecs", "ls-tree", "-z", "--full-tree", trunk, "--"}, paths...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -414,7 +415,7 @@ func forkBlobs(repo *gitx.Repo, dir string, paths []string) (map[string]string, 
 	if err != nil {
 		return nil, err
 	}
-	out, err := repo.Git(append([]string{"ls-tree", "-z", "--full-tree", strings.TrimSpace(fork), "--"}, paths...)...)
+	out, err := repo.Git(append([]string{"--literal-pathspecs", "ls-tree", "-z", "--full-tree", strings.TrimSpace(fork), "--"}, paths...)...)
 	if err != nil {
 		return nil, err
 	}
