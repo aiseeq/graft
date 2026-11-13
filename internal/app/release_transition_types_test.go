@@ -195,11 +195,17 @@ func TestSweepTransitionDoneChecksTheStatusAfterTheHop(t *testing.T) {
 		app:    &App{Stdout: &strings.Builder{}, Stderr: &strings.Builder{}},
 		r:      &deployRun{name: "prod", target: &config.DeployTarget{ReleaseNotes: notes}},
 		client: jira.New(jira.Credentials{BaseURL: srv.URL}), conf: notes.Sweep, review: []string{"Testing"},
+		notes: &config.JiraNotes{}, glint: &glintCheck{}, judged: map[string]bool{}, issues: map[string]jira.Issue{}, apply: true,
 	}
 	issue := jira.Issue{Key: "PROJ-2", Type: "Sub-task", Status: "Testing", Parent: "PROJ-1",
 		Transitions: []jira.Transition{{ID: "2", To: "Ready for Release"}}}
 	if err := run.transitionDone(t.Context(), issue); !errors.Is(err, errTypeNotAllowed) || len(moves) != 1 {
 		t.Fatalf("transitionDone = %v, requests %q, want the hop only and the type refusal", err, moves)
+	}
+	// The pass lists where it stays, as a refusal before the hop is listed.
+	run.move(t.Context(), issue, "synthetic", true)
+	if want := "PROJ-2 stays Other: the transition to Done moves only Task"; !slices.Contains(run.lines, want) {
+		t.Fatalf("sweep lines %q, want %q", run.lines, want)
 	}
 }
 

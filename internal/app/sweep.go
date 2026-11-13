@@ -860,6 +860,11 @@ func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, check
 		return
 	}
 	if err := s.transitionDone(ctx, issue); err != nil {
+		var stay *typeStayError
+		if errors.As(err, &stay) {
+			s.lines = append(s.lines, stay.line)
+			return
+		}
 		s.app.warn("sweep %s: %s not moved to %s: %v", s.r.name, key, s.conf.Done, err)
 		return
 	}
@@ -935,11 +940,18 @@ func (s *sweepRun) transitionDone(ctx context.Context, issue jira.Issue) error {
 		// Jira may have put it elsewhere than via: the move from where it is
 		// must take its type too.
 		if t := transitionBetween(s.r.target.ReleaseNotes, issue.Status, s.conf.Done); t != nil && !t.AllowsType(issue.Type) {
-			return errTypeNotAllowed
+			return &typeStayError{line: transitionTypeStayMessage(issue.Key, issue.Status, "", t)}
 		}
 	}
 	return s.client.Transition(ctx, issue, s.conf.Done)
 }
+
+// typeStayError is a type refusal found only after the first step, where Jira
+// left the item: line says where it stays, for the report.
+type typeStayError struct{ line string }
+
+func (e *typeStayError) Error() string { return errTypeNotAllowed.Error() }
+func (e *typeStayError) Unwrap() error { return errTypeNotAllowed }
 
 // gatePass checks an item against approved_release: a parent the sweep
 // finishes is not in its statuses yet, so only its version counts.
