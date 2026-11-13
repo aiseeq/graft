@@ -138,7 +138,7 @@ func Models(repo *gitx.Repo, trunk func() string, warn io.Writer, excluded []str
 		trunkFiles, err := treeBlobs(repo, trunk(), staged, deleted)
 		if err != nil {
 			fmt.Fprintf(warn, "graft: the trunk's files cannot be read, a finished job of another worktree counts by its files alone: %v\n", err)
-			trunkFiles = nil
+			trunkFiles, err = nil, nil
 		}
 		for i := range others {
 			m := others[i]
@@ -371,27 +371,31 @@ func differsFromTrunk(blob string, trunk map[string]string, path string) bool {
 // entry, including files deleted from trunk. An unknown trunk ("") gives
 // nil, which differsFromTrunk and listedFiles read as "no trunk to check".
 func treeBlobs(repo *gitx.Repo, trunk string, staged map[string]string, deleted map[string]bool) (map[string]string, error) {
-	paths := make([]string, 0, len(staged)+len(deleted))
-	for p := range staged {
-		paths = append(paths, p)
-	}
-	for p := range deleted {
-		paths = append(paths, p)
-	}
 	if trunk == "" {
 		return nil, nil
 	}
-	if len(paths) == 0 {
+	if len(staged)+len(deleted) == 0 {
 		return map[string]string{}, nil
 	}
-	out, err := repo.Git(append([]string{"--literal-pathspecs", "ls-tree", "-z", "--full-tree", trunk, "--"}, paths...)...)
+	return blobsAt(repo, trunk, func(p string) bool {
+		_, ok := staged[p]
+		return ok || deleted[p]
+	})
+}
+
+// blobsAt are the blobs of rev's tree at the paths want keeps. The whole tree
+// is listed and filtered here: paths given to git would be read as pathspecs
+// and could pass the argument limit of a large index.
+func blobsAt(repo *gitx.Repo, rev string, want func(string) bool) (map[string]string, error) {
+	out, err := repo.Git("ls-tree", "-r", "-z", "--full-tree", rev)
 	if err != nil {
 		return nil, err
 	}
 	blobs := map[string]string{}
 	for entry := range strings.SplitSeq(out, "\x00") {
+		// <mode> <type> <object>\t<path>
 		meta, name, ok := strings.Cut(entry, "\t")
-		if fields := strings.Fields(meta); ok && len(fields) == 3 && fields[1] == "blob" {
+		if fields := strings.Fields(meta); ok && len(fields) == 3 && fields[1] == "blob" && want(name) {
 			blobs[name] = fields[2]
 		}
 	}
@@ -415,19 +419,11 @@ func forkBlobs(repo *gitx.Repo, dir string, paths []string) (map[string]string, 
 	if err != nil {
 		return nil, err
 	}
-	out, err := repo.Git(append([]string{"--literal-pathspecs", "ls-tree", "-z", "--full-tree", strings.TrimSpace(fork), "--"}, paths...)...)
-	if err != nil {
-		return nil, err
+	want := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		want[p] = true
 	}
-	blobs := map[string]string{}
-	for entry := range strings.SplitSeq(out, "\x00") {
-		// <mode> <type> <object>\t<path>
-		meta, name, ok := strings.Cut(entry, "\t")
-		if f := strings.Fields(meta); ok && len(f) == 3 {
-			blobs[name] = f[2]
-		}
-	}
-	return blobs, nil
+	return blobsAt(repo, strings.TrimSpace(fork), func(p string) bool { return want[p] })
 }
 
 // squashedCommit is a commit line of SQUASH_MSG, which git merge --squash
