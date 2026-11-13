@@ -19,6 +19,7 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/envs"
+	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 )
 
@@ -347,7 +348,10 @@ func ConfirmSudo(ctx context.Context, target string, log io.Writer) error {
 	fmt.Fprintf(log, "graft: no terminal, touch the fingerprint reader to confirm the deploy to %s (waiting up to %s, Ctrl-C to stop)\n", target, fingerprintWait)
 	limits := fingerprintLimits{wait: fingerprintWait, busyWait: fingerprintBusyWait, busyPause: fingerprintBusyPause, now: time.Now}
 	return confirmByFingerprint(ctx, target, limits, log, fingerprintEnrolled, func(ctx context.Context) (bool, []byte, error) {
-		cmd := exec.CommandContext(ctx, "sudo", "-v", "-p", prompt)
+		cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "sudo", "-v", "-p", prompt)
+		if err != nil {
+			return false, nil, err
+		}
 		// The reader's messages are matched in English.
 		cmd.Env = append(os.Environ(), "LC_ALL=C")
 		var out, stderr bytes.Buffer
@@ -359,7 +363,10 @@ func ConfirmSudo(ctx context.Context, target string, log io.Writer) error {
 
 func confirmInTerminal(ctx context.Context, prompt string, log io.Writer) error {
 	for {
-		cmd := exec.CommandContext(ctx, "sudo", "-v", "-p", prompt)
+		cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "sudo", "-v", "-p", prompt)
+		if err != nil {
+			return err
+		}
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 		ok, _, err := sudoResult(cmd.Run(), nil)
 		if ok {
@@ -465,7 +472,10 @@ func fingerprintEnrolled(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, fingerprintListWait)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "fprintd-list", u.Username)
+	cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "fprintd-list", u.Username)
+	if err != nil {
+		return err
+	}
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	out, err := cmd.CombinedOutput()
 	return enrolledFingers(out, err)

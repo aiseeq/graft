@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/stats"
 )
 
@@ -343,7 +344,10 @@ func TestDeployPrioritySkipsTheQueue(t *testing.T) {
 	// Queued, it would wait as long as the load stays up.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	priority := exec.CommandContext(ctx, graftBin, "build")
+	priority, err := execx.CommandContext(ctx, execx.ShortGrace, graftBin, "build")
+	if err != nil {
+		t.Fatal(err)
+	}
 	priority.Dir = f.work
 	budget := filepath.Join(t.TempDir(), "budget")
 	writeFile(t, budget, fmt.Sprint(int64(300*time.Millisecond)))

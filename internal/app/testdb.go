@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
+	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/tasks"
@@ -159,7 +159,10 @@ func (a *App) migrate(ctx context.Context, repo *gitx.Repo, cfg *config.Config, 
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd, err := execx.CommandContext(ctx, execx.ShortGrace, argv[0], argv[1:]...)
+	if err != nil {
+		return err
+	}
 	cmd.Dir = repo.Root
 	cmd.Env = append(env, cfg.TestDB.DSNVar+"="+dsn)
 	cmd.Stdout, cmd.Stderr = a.Stdout, a.Stderr

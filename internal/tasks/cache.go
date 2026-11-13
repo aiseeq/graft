@@ -10,7 +10,6 @@ import (
 	"hash"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
+	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/taskcache"
@@ -216,7 +216,10 @@ func (r *Runner) keyInputs(ctx context.Context, add func(...string), c *config.T
 		if err := proc.RefusedCommand(r.Root, c.Argv[0]); err != nil {
 			return fmt.Errorf("cache.commands %s: %w", c.Source, err)
 		}
-		cmd := exec.CommandContext(ctx, c.Argv[0], c.Argv[1:]...)
+		cmd, err := execx.CommandContext(ctx, execx.ShortGrace, c.Argv[0], c.Argv[1:]...)
+		if err != nil {
+			return err
+		}
 		cmd.Dir = r.Root
 		var stderr strings.Builder
 		cmd.Stderr = &stderr

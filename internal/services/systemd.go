@@ -4,16 +4,19 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/execx"
 )
 
 // systemctl runs systemctl --user and returns its output.
 func systemctl(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "systemctl", append([]string{"--user"}, args...)...)
+	cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "systemctl", append([]string{"--user"}, args...)...)
+	if err != nil {
+		return "", err
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

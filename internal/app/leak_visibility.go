@@ -5,18 +5,21 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
 var runGitHubVisibility = func(ctx context.Context, owner, repo string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gh", "api", "repos/"+owner+"/"+repo, "--jq", ".visibility")
+	cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "gh", "api", "repos/"+owner+"/"+repo, "--jq", ".visibility")
+	if err != nil {
+		return "", err
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

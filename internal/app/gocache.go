@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aiseeq/graft/v2/internal/checks"
+	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/gocache"
 	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
@@ -32,7 +32,10 @@ var dirtyMeasured = func() bool {
 // go env GOCACHE not used for longer than older, or tells how many it
 // would; it needs no project.
 func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, maxWait time.Duration) error {
-	cmd := exec.CommandContext(ctx, "go", "env", "GOCACHE")
+	cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "go", "env", "GOCACHE")
+	if err != nil {
+		return err
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

@@ -34,6 +34,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/deploystate"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
 	"github.com/aiseeq/graft/v2/internal/envs"
+	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/iosched"
 	"github.com/aiseeq/graft/v2/internal/lintcache"
@@ -2566,9 +2567,8 @@ var localStopGrace = 10 * time.Second
 func (r *Runner) stopLocalCommand(cmd *exec.Cmd, local bool) {
 	if local {
 		proc.Reap(cmd)
-		// StopOnCancel's WaitDelay holds for the output pipes too: a shorter
-		// one would kill the reaper before its command ends, and its orphans
-		// would pass to the session manager.
+		// StopOnCancel keeps the reaper alive long enough to finish stopping
+		// the command tree and to preserve the command's exit status.
 		proc.StopOnCancel(cmd, localStopGrace, func(err error) {
 			if r.Stats != nil {
 				r.Stats.Warn(fmt.Errorf("stopping command tree: %w", err))
@@ -2753,7 +2753,10 @@ type remoteLoadWatch struct {
 func readRemoteLoad(parent context.Context, argv []string) (float64, error) {
 	ctx, cancel := context.WithTimeout(parent, remoteLoadTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd, err := execx.CommandContext(ctx, execx.ShortGrace, argv[0], argv[1:]...)
+	if err != nil {
+		return 0, err
+	}
 	cmd.WaitDelay = remoteLoadStopWait
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -4064,7 +4067,11 @@ func (r *Runner) install(ctx context.Context, s config.Step, t *config.Task) err
 	var errs []error
 	for _, host := range hosts {
 		for i, candidate := range candidates {
-			cmd := exec.CommandContext(ctx, "rsync", "--archive", "--mkpath", candidate.source, host+":"+candidate.destination)
+			cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "rsync", "--archive", "--mkpath", candidate.source, host+":"+candidate.destination)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("install to %s: rsync: %w", host, err))
+				break
+			}
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				// A host that failed once is not tried for the other files.

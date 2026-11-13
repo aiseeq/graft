@@ -23,6 +23,7 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 	"github.com/aiseeq/graft/v2/internal/version"
 )
@@ -74,7 +75,10 @@ func Check(ctx context.Context, name string, t *config.Tool) (Result, error) {
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, checkTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(checkCtx, path, t.Check[1:]...)
+	cmd, err := execx.CommandContext(checkCtx, execx.ShortGrace, path, t.Check[1:]...)
+	if err != nil {
+		return r, err
+	}
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	runErr := cmd.Run()
@@ -227,7 +231,10 @@ func Install(ctx context.Context, name string, t *config.Tool, binDir string, lo
 	}
 	args = append(args, installArg)
 	fmt.Fprintf(log, "graft: go %s\n", strings.Join(args, " "))
-	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "go", args...)
+	if err != nil {
+		return err
+	}
 	cmd.Env = append(os.Environ(), "GOBIN="+binDir)
 	cmd.Stdout, cmd.Stderr = log, log
 	if err := cmd.Run(); err != nil {
@@ -303,7 +310,11 @@ func InstallDir(ctx context.Context) (string, error) {
 
 // goBin is where go install puts binaries.
 func goBin(ctx context.Context) (string, error) {
-	out, err := exec.CommandContext(ctx, "go", "env", "GOBIN", "GOPATH").Output()
+	cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "go", "env", "GOBIN", "GOPATH")
+	if err != nil {
+		return "", fmt.Errorf("go env: %w", err)
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("go env: %w", err)
 	}

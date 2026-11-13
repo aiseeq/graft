@@ -3,11 +3,11 @@ package tasks
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"slices"
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/execx"
 )
 
 // goBoolFlags are the go test and build flags that take no separate value;
@@ -116,7 +116,10 @@ func trimRun(ctx context.Context, dir string, argv, env []string, remote bool) (
 	if root, _ := lookupEnv(env, "GOROOT"); root != "" {
 		return trimmed, env, nil
 	}
-	cmd := exec.CommandContext(ctx, "go", "env", "GOROOT")
+	cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "go", "env", "GOROOT")
+	if err != nil {
+		return nil, nil, fmt.Errorf("go env GOROOT, which a -trimpath build needs to find the standard library: %w", err)
+	}
 	cmd.Dir, cmd.Env = dir, env
 	out, err := cmd.Output()
 	if err != nil {

@@ -7,9 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
+	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/jira"
 )
@@ -193,7 +193,10 @@ func (g *glintCheck) link(dir string) {
 // run is glint check in dir. glint exits non-zero on findings from its own
 // fail_on up, so the report decides; a rule that panicked leaves it short.
 func (g *glintCheck) run(ctx context.Context, dir string) (int, error) {
-	cmd := exec.CommandContext(ctx, "glint", "check", ".", "-s", g.severity, "-o", "json")
+	cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "glint", "check", ".", "-s", g.severity, "-o", "json")
+	if err != nil {
+		return 0, err
+	}
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

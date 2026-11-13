@@ -24,6 +24,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/atomicfile"
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
+	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/fsx"
 	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/tasks"
@@ -522,7 +523,10 @@ func (m *Manager) Logs(ctx context.Context, name string, lines int, follow bool,
 		if follow {
 			args = append(args, "-f")
 		}
-		cmd := exec.CommandContext(ctx, "journalctl", args...)
+		cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "journalctl", args...)
+		if err != nil {
+			return err
+		}
 		cmd.Stdout, cmd.Stderr = w, w
 		if err := cmd.Run(); err != nil && ctx.Err() == nil {
 			return fmt.Errorf("journalctl --user -u %s: %w", s.SystemdUnit, err)
