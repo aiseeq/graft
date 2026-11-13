@@ -1907,34 +1907,41 @@ func (g *approvalGate) readyFor(issue jira.Issue) []string {
 // its code is in the trunk, before the release. It is "" when nothing keeps
 // it in.
 func (g *approvalGate) openParent(ctx context.Context, issue jira.Issue) (string, error) {
-	holder := issue
-	switch {
-	case issue.Parent == "" && issue.Done:
-		return "", nil
-	case issue.Parent == "" && slices.Contains(g.readyFor(issue), issue.Status):
-	case issue.Parent == "":
-		return "", nil
-	default:
-		parent, err := g.issue(ctx, issue.Parent)
-		if err != nil {
-			return "", err
-		}
-		if !slices.Contains(g.readyFor(parent), parent.Status) {
-			// A done parent keeps a subtask in only where its version would
-			// let the subtask out.
-			if !parent.Done || g.conf.Prefix == "" {
-				return "", nil
-			}
-			own, err := g.ownApprovedVersion(ctx, issue)
-			if err != nil || own != "" {
-				return "", err
-			}
-		}
-		holder = parent
+	holder, ok, err := g.holder(ctx, issue)
+	if err != nil || !ok || slices.Contains(g.skipKeys, holder.Key) {
+		return "", err
 	}
-	if slices.Contains(g.skipKeys, holder.Key) {
-		return "", nil
+	return g.openSubtasks(ctx, holder)
+}
+
+// holder is the item whose subtasks openParent looks at: the item itself when
+// it is a ready top-level one, a subtask's parent when that is ready, or done
+// with a version that would let the subtask out; ok is false for none.
+func (g *approvalGate) holder(ctx context.Context, issue jira.Issue) (jira.Issue, bool, error) {
+	if issue.Parent == "" {
+		return issue, !issue.Done && slices.Contains(g.readyFor(issue), issue.Status), nil
 	}
+	parent, err := g.issue(ctx, issue.Parent)
+	if err != nil {
+		return jira.Issue{}, false, err
+	}
+	if slices.Contains(g.readyFor(parent), parent.Status) {
+		return parent, true, nil
+	}
+	// A done parent keeps a subtask in only where its version would let the
+	// subtask out.
+	if !parent.Done || g.conf.Prefix == "" {
+		return jira.Issue{}, false, nil
+	}
+	own, err := g.ownApprovedVersion(ctx, issue)
+	if err != nil || own != "" {
+		return jira.Issue{}, false, err
+	}
+	return parent, true, nil
+}
+
+// openSubtasks says which of holder's subtasks keep it in, "" when none does.
+func (g *approvalGate) openSubtasks(ctx context.Context, holder jira.Issue) (string, error) {
 	var open []string
 	for _, key := range holder.Subtasks {
 		st, err := g.issue(ctx, key)
