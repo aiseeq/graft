@@ -1069,7 +1069,7 @@ func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTr
 		} else if label != "" {
 			hand = "; keep assignee: " + label
 		}
-		m.app.printf("- %s: %s → %s%s", issue.Key, issue.Status, t.To, hand)
+		m.app.printf("- %s: %s → %s%s%s", issue.Key, issue.Status, t.To, how, hand)
 		return nil
 	}
 	if err := m.client.Transition(ctx, issue, t.To); err != nil {
