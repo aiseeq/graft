@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"math"
 	"os"
 	"os/exec"
 	"path"
@@ -1981,9 +1982,14 @@ func moduleRoots(repo *gitx.Repo, sha string) ([]string, error) {
 	return roots, nil
 }
 
-// maxTreeBlob is the largest file writeTree copies; a larger one is written
-// empty, which go list, reading Go files and go.mod, does not miss.
+// maxTreeBlob is the largest file writeTree copies besides those go list
+// reads (Go files, go.mod, go.sum, vendor/modules.txt); a larger one is
+// written empty.
 const maxTreeBlob = 16 << 20
+
+func goListReads(p string) bool {
+	return strings.HasSuffix(p, ".go") || isModuleFile(p) || p == "vendor/modules.txt" || strings.HasSuffix(p, "/vendor/modules.txt")
+}
 
 // writeTree writes the files of rev into dir as git stores them: no index,
 // no filter and no hook of the repository runs, and nothing is left in it.
@@ -1992,26 +1998,47 @@ func writeTree(repo *gitx.Repo, rev, dir string) error {
 	if err != nil {
 		return err
 	}
-	var paths, oids []string
+	type file struct{ path, oid string }
+	var read, rest []file
+	links := map[string]bool{}
 	for entry := range strings.SplitSeq(out, "\x00") {
 		meta, p, ok := strings.Cut(entry, "\t")
 		fields := strings.Fields(meta)
 		if !ok || len(fields) != 3 || fields[1] != "blob" {
 			continue
 		}
-		paths, oids = append(paths, p), append(oids, fields[2])
-	}
-	blobs, err := repo.ReadBlobs(oids, maxTreeBlob)
-	if err != nil {
-		return err
-	}
-	for i, p := range paths {
-		full := filepath.Join(dir, filepath.FromSlash(p))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			return fmt.Errorf("create the directory of %s: %w", p, err)
+		links[p] = fields[0] == "120000"
+		if goListReads(p) {
+			read = append(read, file{p, fields[2]})
+		} else {
+			rest = append(rest, file{p, fields[2]})
 		}
-		if err := os.WriteFile(full, blobs[i].Content, 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", p, err)
+	}
+	for _, set := range []struct {
+		files []file
+		limit int64
+	}{{read, math.MaxInt64}, {rest, maxTreeBlob}} {
+		oids := make([]string, len(set.files))
+		for i, f := range set.files {
+			oids[i] = f.oid
+		}
+		blobs, err := repo.ReadBlobs(oids, set.limit)
+		if err != nil {
+			return err
+		}
+		for i, f := range set.files {
+			full := filepath.Join(dir, filepath.FromSlash(f.path))
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				return fmt.Errorf("create the directory of %s: %w", f.path, err)
+			}
+			if links[f.path] {
+				err = os.Symlink(string(blobs[i].Content), full)
+			} else {
+				err = os.WriteFile(full, blobs[i].Content, 0o644)
+			}
+			if err != nil {
+				return fmt.Errorf("write %s: %w", f.path, err)
+			}
 		}
 	}
 	return nil
@@ -2077,21 +2104,26 @@ func readModFile(repo *gitx.Repo, rev, path string) (*modfile.File, error) {
 // shippedMainPackages lists the import paths of the main packages of the
 // module at root whose directory is outside ignore_paths.
 func shippedMainPackages(work, root string, conf *config.ApprovedRelease) ([]string, error) {
-	data, err := goList(root, "-e", "-f", "{{if eq .Name \"main\"}}{{.Dir}}\t{{.ImportPath}}{{end}}", "./...")
+	data, err := goList(root, "-e", "-f", "{{if eq .Name \"main\"}}{{.Dir}}\t{{.ImportPath}}{{range .GoFiles}}\t{{.}}{{end}}{{range .CgoFiles}}\t{{.}}{{end}}{{end}}", "./...")
 	if err != nil {
 		return nil, fmt.Errorf("go list failed: %s", oneLine(err.Error()))
 	}
 	var mains []string
 	for line := range strings.SplitSeq(data, "\n") {
-		fields := strings.SplitN(line, "\t", 2)
-		if len(fields) != 2 || fields[0] == "" {
+		fields := strings.Split(line, "\t")
+		if len(fields) < 2 || fields[0] == "" {
 			continue
 		}
 		rel, err := filepath.Rel(work, fields[0])
 		if err != nil {
 			return nil, fmt.Errorf("cannot locate main package: %s", oneLine(err.Error()))
 		}
-		if !conf.Ignored([]string{filepath.ToSlash(rel) + "/main.go"}) {
+		var files []string
+		for _, f := range fields[2:] {
+			files = append(files, path.Join(filepath.ToSlash(rel), f))
+		}
+		// A main package ships unless ignore_paths names every file of it.
+		if !conf.Ignored(files) {
 			mains = append(mains, fields[1])
 		}
 	}
