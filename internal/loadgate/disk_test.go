@@ -19,7 +19,7 @@ import (
 
 // diskSource is a disk state source on its socket in XDG_RUNTIME_DIR: it
 // answers every reading with the IO full time of the last 5 seconds set,
-// or the error set, and the kind it was asked for as the profile.
+// or the error set; kinds records each request's kind field.
 type diskSource struct {
 	mu    sync.Mutex
 	ioMS  float64
@@ -95,7 +95,7 @@ func (d *diskSource) answer(t *testing.T, conn net.Conn) {
 	d.kinds = append(d.kinds, req.Kind)
 	answer := map[string]any{"v": 1, "at": time.Now().Format(time.RFC3339Nano),
 		"5s": map[string]any{"io_full_ms": d.ioMS, "capped": map[string]any{"capped": false}}, "open": map[string]any{"open": false, "ms": 0},
-		"profile": map[string]any{"kind": req.Kind}}
+	}
 	if d.fail != "" {
 		answer = map[string]any{"v": 1, "error": d.fail}
 	}
@@ -105,9 +105,8 @@ func (d *diskSource) answer(t *testing.T, conn net.Conn) {
 	}
 }
 
-// TestDiskSourceKnowsTheKind: the admission asks the disk state source for
-// the task's kind.
-func TestDiskSourceKnowsTheKind(t *testing.T) {
+// TestDiskSourceIsAsked: the admission reads the disk state source once.
+func TestDiskSourceIsAsked(t *testing.T) {
 	fakeMachine(t)
 	d := fakeDisk(t)
 	var log strings.Builder
@@ -118,8 +117,8 @@ func TestDiskSourceKnowsTheKind(t *testing.T) {
 	if err := release(); err != nil {
 		t.Fatal(err)
 	}
-	if kinds := d.asked(); len(kinds) != 1 || kinds[0] != "projectA:build" {
-		t.Errorf("the source was asked for %q", kinds)
+	if kinds := d.asked(); len(kinds) != 1 {
+		t.Errorf("the source was asked %d times, want once", len(kinds))
 	}
 	if adm.Waits == nil {
 		t.Errorf("admission has no waits map")
@@ -172,7 +171,7 @@ func TestNoDiskSourceUsesPSI(t *testing.T) {
 
 // TestBusyNowAsksTheKind: BusyNow reads the machine as Wait does, for the
 // kind given.
-func TestBusyNowAsksTheKind(t *testing.T) {
+func TestBusyNowAsksTheSource(t *testing.T) {
 	fakeMachine(t)
 	d := fakeDisk(t)
 	d.set(2000, "") // 40% of 5 s
@@ -181,7 +180,7 @@ func TestBusyNowAsksTheKind(t *testing.T) {
 	if err != nil || !busy {
 		t.Fatalf("busy %v, %v:\n%s", busy, err, log.String())
 	}
-	if kinds := d.asked(); len(kinds) != 1 || kinds[0] != "projectA:test" {
-		t.Errorf("the source was asked for %q", kinds)
+	if kinds := d.asked(); len(kinds) != 1 {
+		t.Errorf("the source was asked %d times, want once", len(kinds))
 	}
 }

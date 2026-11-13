@@ -1,21 +1,17 @@
 package loadgate
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"time"
 
-	"github.com/aiseeq/akit/pressure"
 	"github.com/aiseeq/graft/v2/internal/stats"
 )
 
-// admissionRecord records the decision and the exact disk and writeback
-// sample that informed it. A decision taken before the first measure has no
-// dirty fields and says so in ProfileNone.
+// admissionRecord records the decision and the writeback sample that
+// informed it. A decision taken before the first measure has no dirty fields.
 type admissionRecord struct {
 	Time         time.Time          `json:"time"`
 	Run          string             `json:"run"`
@@ -28,13 +24,8 @@ type admissionRecord struct {
 	Behind       string             `json:"behind,omitempty"`
 	DirtyMB      *float64           `json:"dirty_mb,omitempty"`
 	DirtyLimitMB *float64           `json:"dirty_limit_mb,omitempty"`
-	Profile      json.RawMessage    `json:"profile,omitempty"`
-	ProfileNone  string             `json:"profile_none,omitempty"`
 	Priority     bool               `json:"priority"`
 }
-
-// notMeasured is the ProfileNone of a decision taken before any measure.
-const notMeasured = "not measured"
 
 var admissionWriteWarning atomic.Bool
 
@@ -58,21 +49,10 @@ func (m *machine) admissionRecord(priority bool) admissionRecord {
 	rec := admissionRecord{Time: time.Now(), Run: os.Getenv(stats.EnvRun), Kind: m.kind,
 		WaitedS: max(0, time.Since(m.admissionStart).Seconds()), Priority: priority}
 	if !m.haveView {
-		rec.ProfileNone = notMeasured
 		return rec
 	}
 	load := m.lastView.Load
 	rec.DirtyMB, rec.DirtyLimitMB = &load.DirtyMB, &load.DirtyLimitMB
-	switch {
-	case load.Disk != nil && len(load.Disk.Profile) > 0:
-		rec.Profile = load.Disk.Profile
-	case load.Disk != nil:
-		rec.ProfileNone = "the disk state source gave no profile of the kind"
-	case load.DiskFault == nil || errors.Is(load.DiskFault, pressure.ErrNoIOSource):
-		rec.ProfileNone = "no disk state source"
-	default:
-		rec.ProfileNone = load.DiskFault.Error()
-	}
 	return rec
 }
 

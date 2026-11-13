@@ -237,8 +237,7 @@ func (p *Priority) spend(from, to time.Time) (left time.Duration, err error) {
 // measuring the machine and writing their live expected-core reservation.
 // A task with a priority skips the queue and waits no longer than its budget.
 //
-// kind is the task's kind as the stats profile names it, which the disk state
-// source keeps its profiles by.
+// kind is the task's kind as the stats profile names it.
 func Wait(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (Admission, func() error, error) {
 	return WaitWithSettle(ctx, name, kind, p, l, lockPath, "", 0, 0, log)
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -29,14 +28,14 @@ func (m *admissionMeter) Check(context.Context, pressure.Limits, string, bool) (
 func TestAdmissionJournalMeasureChangesThenAdmits(t *testing.T) {
 	fakeMachine(t)
 	t.Setenv(stats.EnvRun, "run-synthetic")
-	profile := json.RawMessage(`{"p90_write_mbs":42}`)
+
 	oldFactory := pressureMeterFactory
 	pressureMeterFactory = func(string) machineMeter {
 		return &admissionMeter{verdicts: []pressure.Verdict{
-			{Measure: pressure.Writeback, Value: 200, Limit: 64, Load: pressure.Load{Runnable: 1, Threads: 22, DirtyMB: 200, DirtyLimitMB: 64, Disk: &pressure.DiskNow{Profile: profile}}},
-			{Measure: pressure.Writeback, Value: 200, Limit: 64, Load: pressure.Load{Runnable: 1, Threads: 22, DirtyMB: 200, DirtyLimitMB: 64, Disk: &pressure.DiskNow{Profile: profile}}},
-			{Measure: pressure.IO, Value: 35, Limit: 10, Load: pressure.Load{Runnable: 1, Threads: 22, DirtyMB: 18, DirtyLimitMB: 64, Disk: &pressure.DiskNow{Profile: profile}}},
-			{Load: pressure.Load{Runnable: 1, Threads: 22, DirtyMB: 12, DirtyLimitMB: 64, Disk: &pressure.DiskNow{Profile: profile}}},
+			{Measure: pressure.Writeback, Value: 200, Limit: 64, Load: pressure.Load{Runnable: 1, Threads: 22, DirtyMB: 200, DirtyLimitMB: 64}},
+			{Measure: pressure.Writeback, Value: 200, Limit: 64, Load: pressure.Load{Runnable: 1, Threads: 22, DirtyMB: 200, DirtyLimitMB: 64}},
+			{Measure: pressure.IO, Value: 35, Limit: 10, Load: pressure.Load{Runnable: 1, Threads: 22, DirtyMB: 18, DirtyLimitMB: 64}},
+			{Load: pressure.Load{Runnable: 1, Threads: 22, DirtyMB: 12, DirtyLimitMB: 64}},
 		}}
 	}
 	defer func() { pressureMeterFactory = oldFactory }()
@@ -59,8 +58,8 @@ func TestAdmissionJournalMeasureChangesThenAdmits(t *testing.T) {
 		t.Fatalf("verdict sequence = %+v", lines)
 	}
 	for _, rec := range lines {
-		if rec.Kind != "projectA:exec:go" || rec.Run != "run-synthetic" || string(rec.Profile) != string(profile) {
-			t.Errorf("record identity/profile = %+v", rec)
+		if rec.Kind != "projectA:exec:go" || rec.Run != "run-synthetic" {
+			t.Errorf("record identity = %+v", rec)
 		}
 	}
 	if mb(lines[0].DirtyMB) != 200 || mb(lines[0].DirtyLimitMB) != 64 || mb(lines[1].DirtyMB) != 18 || mb(lines[1].DirtyLimitMB) != 64 {
@@ -99,7 +98,7 @@ func TestAdmissionJournalRefusedBeforeMeasure(t *testing.T) {
 	}
 	lines := readAdmissionLines(t, filepath.Join(os.Getenv("XDG_CACHE_HOME"), "graft", "admissions.jsonl"))
 	last := lines[len(lines)-1]
-	if last.Verdict != "refused" || last.ProfileNone != notMeasured || last.DirtyMB != nil || last.DirtyLimitMB != nil || last.Profile != nil {
+	if last.Verdict != "refused" || last.DirtyMB != nil || last.DirtyLimitMB != nil {
 		t.Fatalf("refusal before any measure = %+v", last)
 	}
 }
@@ -125,15 +124,6 @@ func TestAdmissionJournalRefusesAtDeadline(t *testing.T) {
 	lines := readAdmissionLines(t, filepath.Join(os.Getenv("XDG_CACHE_HOME"), "graft", "admissions.jsonl"))
 	if len(lines) < 2 || lines[len(lines)-1].Verdict != "refused" || lines[len(lines)-1].Why == "" {
 		t.Fatalf("deadline refusal missing: %+v", lines)
-	}
-}
-
-func TestAdmissionRecordNamesFailingDiskSourceOnce(t *testing.T) {
-	fault := fmt.Errorf("%w: connect: refused", pressure.ErrIOSourceFailed)
-	m := &machine{haveView: true, lastView: pressure.Verdict{Load: pressure.Load{DiskFault: fault}}}
-	got := m.admissionRecord(false).ProfileNone
-	if got != "disk state source failed: connect: refused" {
-		t.Fatalf("profile_none = %q, want the source's own error once", got)
 	}
 }
 
