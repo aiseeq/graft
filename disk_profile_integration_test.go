@@ -13,7 +13,7 @@ import (
 )
 
 // TestHeavyTaskStatsOmitDiskProfile: admission reads the disk state source,
-// and the task's stats line carries nothing of its response.
+// and the task's stats line has no disk_profile key.
 func TestHeavyTaskStatsOmitDiskProfile(t *testing.T) {
 	f, statsFile := statsRepo(t, "tasks:\n  build:\n    heavy: true\n    run: ["+helperStep("ok")+"]\n")
 	// A socket's path is short: the test's temporary directory may not fit.

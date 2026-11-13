@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -52,7 +53,7 @@ func TestAdmissionJournalMeasureChangesThenAdmits(t *testing.T) {
 
 	journal := filepath.Join(os.Getenv("XDG_CACHE_HOME"), "graft", "admissions.jsonl")
 	if raw, err := os.ReadFile(journal); err != nil || bytes.Contains(raw, []byte(`"profile`)) || bytes.Contains(raw, []byte(`"disk_fault"`)) {
-		t.Errorf("journal with a working disk source has a profile or a disk fault (%v):\n%s", err, raw)
+		t.Errorf("journal of measures without a disk fault has a profile or a disk fault (%v):\n%s", err, raw)
 	}
 	lines := readAdmissionLines(t, journal)
 	if len(lines) != 3 {
@@ -133,13 +134,22 @@ func TestAdmissionJournalRefusesAtDeadline(t *testing.T) {
 
 func TestAdmissionRecordNamesFailingDiskSource(t *testing.T) {
 	fault := fmt.Errorf("%w: connect: refused", pressure.ErrIOSourceFailed)
-	m := &machine{haveView: true, lastView: pressure.Verdict{Load: pressure.Load{DiskFault: fault}}}
-	if got := m.admissionRecord(false).DiskFault; got != "disk state source failed: connect: refused" {
-		t.Errorf("disk_fault = %q, want the source's own error", got)
+	for _, c := range []struct {
+		fault error
+		want  string
+	}{
+		{fault, `"disk_fault":"disk state source failed: connect: refused"`},
+		{pressure.ErrNoIOSource, `"disk_fault":` + strconv.Quote(pressure.ErrNoIOSource.Error())},
+	} {
+		m := &machine{haveView: true, lastView: pressure.Verdict{Load: pressure.Load{DiskFault: c.fault}}}
+		line, err := json.Marshal(m.admissionRecord(false))
+		if err != nil || !bytes.Contains(line, []byte(c.want)) {
+			t.Errorf("journal line %s (%v), want %s", line, err, c.want)
+		}
 	}
-	none := &machine{haveView: true, lastView: pressure.Verdict{Load: pressure.Load{DiskFault: pressure.ErrNoIOSource}}}
-	if got := none.admissionRecord(false).DiskFault; got != "" {
-		t.Errorf("disk_fault = %q with no source at all, want none", got)
+	ok := &machine{haveView: true, lastView: pressure.Verdict{Load: pressure.Load{Disk: &pressure.DiskNow{}}}}
+	if line, _ := json.Marshal(ok.admissionRecord(false)); bytes.Contains(line, []byte("disk_fault")) {
+		t.Errorf("journal line with a disk reading names a fault: %s", line)
 	}
 }
 

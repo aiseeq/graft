@@ -1,21 +1,18 @@
 package loadgate
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"time"
 
-	"github.com/aiseeq/akit/pressure"
 	"github.com/aiseeq/graft/v2/internal/stats"
 )
 
 // admissionRecord records the decision and the writeback sample that
-// informed it, and the disk state source's failure when the measure fell
-// back to the IO pressure for it. A decision taken before the first measure
-// has no dirty fields.
+// informed it, and why the disk state source gave no reading when it gave
+// none. A decision taken before the first measure has no dirty fields.
 type admissionRecord struct {
 	Time         time.Time          `json:"time"`
 	Run          string             `json:"run"`
@@ -58,7 +55,7 @@ func (m *machine) admissionRecord(priority bool) admissionRecord {
 	}
 	load := m.lastView.Load
 	rec.DirtyMB, rec.DirtyLimitMB = &load.DirtyMB, &load.DirtyLimitMB
-	if load.DiskFault != nil && !errors.Is(load.DiskFault, pressure.ErrNoIOSource) {
+	if load.DiskFault != nil {
 		rec.DiskFault = load.DiskFault.Error()
 	}
 	return rec
