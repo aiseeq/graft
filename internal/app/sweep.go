@@ -657,7 +657,7 @@ func (s *sweepRun) item(ctx context.Context, issue jira.Issue, commits []sweptCo
 		}
 	case finishing != nil:
 		if !finishingAllowed {
-			s.app.printf("%s", transitionTypeStayMessage(key, status, "", finishing))
+			s.lines = append(s.lines, transitionTypeStayMessage(key, status, "", finishing))
 			break
 		}
 		s.finishingItem(ctx, issue, commits, allOn)
@@ -836,8 +836,8 @@ func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, check
 	if slices.Contains(s.notes.SkipStatuses, issue.Status) {
 		return
 	}
-	if t := s.r.target.ReleaseNotes.Leading(s.conf.Done); t != nil && !t.AllowsType(issue.Type) {
-		s.app.printf("%s", transitionTypeStayMessage(issue.Key, issue.Status, "", t))
+	if stop := s.typeStop(issue); stop != "" {
+		s.lines = append(s.lines, stop)
 		return
 	}
 	if !s.owned(ctx, issue) {
@@ -878,15 +878,40 @@ func (s *sweepRun) markDone(issue jira.Issue) {
 	s.issues[issue.Key] = issue
 }
 
+// hops tells whether transitionDone takes the item through t's first from
+// before done: a subtask in a status of the reviewer's.
+func (s *sweepRun) hops(issue jira.Issue, t *config.NoteTransition) bool {
+	return t != nil && len(t.From) > 0 && !slices.Contains(t.From, issue.Status) && issue.Parent != "" && slices.Contains(s.review, issue.Status)
+}
+
+// typeStop says why transitionDone may not move the item, "" when it may:
+// the transition to done, or the one into its from that a subtask with the
+// reviewer goes through first, does not move the item's type.
+func (s *sweepRun) typeStop(issue jira.Issue) string {
+	t := s.r.target.ReleaseNotes.Leading(s.conf.Done)
+	if t == nil {
+		return ""
+	}
+	if !t.AllowsType(issue.Type) {
+		return transitionTypeStayMessage(issue.Key, issue.Status, "", t)
+	}
+	if s.hops(issue, t) {
+		if hop := s.r.target.ReleaseNotes.Leading(t.From[0]); hop != nil && !hop.AllowsType(issue.Type) {
+			return transitionTypeStayMessage(issue.Key, issue.Status, "", hop)
+		}
+	}
+	return ""
+}
+
 // transitionDone takes the item to the done status; a subtask in a status of
 // the reviewer's goes through the from of the transition there, the way a
 // reviewer would take it. Stopped between the two, it stays in that from: a
 // pass finishes it by its commits, one without any is listed by nobody.
 func (s *sweepRun) transitionDone(ctx context.Context, issue jira.Issue) error {
-	if t := s.r.target.ReleaseNotes.Leading(s.conf.Done); t != nil && !t.AllowsType(issue.Type) {
+	if s.typeStop(issue) != "" {
 		return errTypeNotAllowed
 	}
-	if t := s.r.target.ReleaseNotes.Leading(s.conf.Done); t != nil && len(t.From) > 0 && !slices.Contains(t.From, issue.Status) && issue.Parent != "" && slices.Contains(s.review, issue.Status) {
+	if t := s.r.target.ReleaseNotes.Leading(s.conf.Done); s.hops(issue, t) {
 		if err := s.client.Transition(ctx, issue, t.From[0]); err != nil {
 			return err
 		}

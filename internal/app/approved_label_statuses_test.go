@@ -75,3 +75,20 @@ func TestApprovedStatusesForSubtasksUseTheirLabels(t *testing.T) {
 		t.Fatalf("open parent reason = %q, want unlabelled subtask held", why)
 	}
 }
+
+// The hint after a refusal names a label's statuses for its items only: an
+// item without the label is not told to move to them.
+func TestApprovedRemedyNamesLabelStatusesPerLabel(t *testing.T) {
+	g := &approvalGate{conf: &config.ApprovedRelease{
+		Statuses:      []string{"Ready for Release"},
+		LabelStatuses: map[string][]string{"internal": {"Done"}},
+	}}
+	want := "move their items to Ready for Release, items labelled internal to Done and finish any subtasks called open"
+	if got := g.remedy(); got != want {
+		t.Fatalf("remedy = %q, want %q", got, want)
+	}
+	g.conf.LabelStatuses = nil
+	if got, want := g.remedy(), "move their items to Ready for Release and finish any subtasks called open"; got != want {
+		t.Fatalf("remedy without labels = %q, want %q", got, want)
+	}
+}

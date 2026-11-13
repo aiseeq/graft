@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -97,18 +98,52 @@ func TestSweepTransitionTypesKeepOtherTypesInPlace(t *testing.T) {
 		t.Fatalf("transition requests = %d, want 0", requests)
 	}
 	want := "PROJ-2 stays Ready for Release: the transition to Done moves only Task"
-	if !strings.Contains(output.String(), want) {
-		t.Fatalf("sweep output = %q, want %q", output.String(), want)
+	if !slices.Contains(run.lines, want) {
+		t.Fatalf("sweep lines = %q, want %q", run.lines, want)
 	}
 	run.move(t.Context(), jira.Issue{
 		Key: "PROJ-3", Type: "Sub-task", Status: "Testing", Parent: "PROJ-1",
 	}, "accepted with PROJ-1", true)
 	reviewerWant := "PROJ-3 stays Testing: the transition to Done moves only Task"
-	if !strings.Contains(output.String(), reviewerWant) {
-		t.Fatalf("sweep output = %q, want reviewer transition message %q", output.String(), reviewerWant)
+	if !slices.Contains(run.lines, reviewerWant) {
+		t.Fatalf("sweep lines = %q, want reviewer transition message %q", run.lines, reviewerWant)
 	}
 	if requests != 0 {
 		t.Fatalf("reviewer transition requests = %d, want 0", requests)
+	}
+}
+
+// A subtask with the reviewer reaches done through the from of the done
+// transition: the transition into that from must move its type too.
+func TestSweepTransitionTypesGuardTheHopBeforeDone(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/transitions") {
+			requests++
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/myself") {
+			fmt.Fprint(w, `{"accountId":"token-owner"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	notes := &config.TargetNotes{Transitions: []config.NoteTransition{
+		{From: []string{"Testing"}, To: "Ready for Release", Types: []string{"Task"}},
+		{From: []string{"Ready for Release"}, To: "Done", Types: []string{"Sub-task", "Task"}},
+	}, Sweep: &config.Sweep{Done: "Done"}}
+	run := &sweepRun{
+		app:    &App{Stdout: &strings.Builder{}, Stderr: &strings.Builder{}},
+		r:      &deployRun{name: "prod", target: &config.DeployTarget{ReleaseNotes: notes}},
+		client: jira.New(jira.Credentials{BaseURL: srv.URL}), conf: notes.Sweep, notes: &config.JiraNotes{},
+		review: []string{"Testing"}, judged: map[string]bool{},
+	}
+	run.move(t.Context(), jira.Issue{Key: "PROJ-4", Type: "Sub-task", Status: "Testing", Parent: "PROJ-1"}, "accepted with PROJ-1", true)
+	want := "PROJ-4 stays Testing: the transition to Ready for Release moves only Task"
+	if requests != 0 || !slices.Contains(run.lines, want) {
+		t.Fatalf("transition requests = %d, lines = %q, want 0 and %q", requests, run.lines, want)
 	}
 }
 

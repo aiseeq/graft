@@ -2154,8 +2154,15 @@ func (g *approvalGate) fixVersions(issue jira.Issue) string {
 // remedy says how an item gets a commit out.
 func (g *approvalGate) remedy() string {
 	var ways []string
-	if statuses := g.conf.AllStatuses(); len(statuses) > 0 {
-		ways = append(ways, "move their items to "+orList(statuses))
+	if len(g.conf.Statuses) > 0 || len(g.conf.LabelStatuses) > 0 {
+		way := "move their items to " + orList(g.conf.Statuses)
+		if len(g.conf.Statuses) == 0 {
+			way = "move their items"
+		}
+		for _, label := range slices.Sorted(maps.Keys(g.conf.LabelStatuses)) {
+			way += fmt.Sprintf(", items labelled %s to %s", label, orList(g.conf.LabelStatuses[label]))
+		}
+		ways = append(ways, way)
 	}
 	if g.conf.Prefix != "" {
 		ways = append(ways, "put their items into the approved version")

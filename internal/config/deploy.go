@@ -302,12 +302,6 @@ func (r *ApprovedRelease) StatusesFor(labels []string) []string {
 	return statuses
 }
 
-// AllStatuses returns every status when no item's labels are available.
-func (r *ApprovedRelease) AllStatuses() []string {
-	labels := slices.Sorted(maps.Keys(r.LabelStatuses))
-	return r.StatusesFor(labels)
-}
-
 // AllowsType tells whether this transition applies to the issue type.
 func (t *NoteTransition) AllowsType(issueType string) bool {
 	if len(t.Types) == 0 {
