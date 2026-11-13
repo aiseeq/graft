@@ -1946,13 +1946,16 @@ release_notes:
    up and its DSN. A failure ends the deploy before the deploy script runs or
    anything is written in the target environment. A `deps` entry that is not
    a task is a config error.
-5. With `confirm: sudo`, run `sudo -k` to invalidate cached credentials, then
-   check `sudo -n -v`. With `timestamp_type=global`, the reset also clears the
-   user's cached credentials in other sessions. A silent success (for example,
-   with `NOPASSWD`) means sudo asks for nothing, so the deploy is refused.
-   Remove `NOPASSWD` for the user or remove `confirm` from the target. A
-   successful check that prints a fingerprint prompt counts as confirmation,
-   so a fingerprint touch is not mistaken for `NOPASSWD`. The following
+5. With `confirm: sudo`, run `sudo -k` first, so credentials cached by a sudo
+   run a moment ago do not stand for this confirmation (with
+   `timestamp_type=global` this clears them in the user's other sessions too;
+   the `sudo -v` below caches them again, for a deploy script that asks sudo
+   itself). Then `sudo -n -v`: with sudoers' default `noninteractive_auth`
+   off it does not authenticate at all, so its success means sudo passes
+   without a password or a finger (`NOPASSWD`, a PAM stack that lets anyone
+   through), and the deploy is refused; where `noninteractive_auth` is on, a
+   success is refused all the same, since a prompt for a finger does not tell
+   that one was read. Make sudo ask, or remove `confirm` from the target. Then
    `sudo -v` asks until the password is given in a terminal (Ctrl-C stops).
    Without a terminal it confirms through a
    PAM method that types nothing (a fingerprint reader): while

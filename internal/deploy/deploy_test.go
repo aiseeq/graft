@@ -101,23 +101,26 @@ esac`)
 	}
 }
 
-func TestConfirmSudoAcceptsPAMConfirmationOutput(t *testing.T) {
+// A prompt for a finger does not tell that one was read: a PAM stack may let
+// sudo -n through after it without any, so that success refuses too.
+func TestConfirmSudoRefusesSuccessAfterAFingerPrompt(t *testing.T) {
 	calls := fakeSudoForConfirmation(t, `echo "$*" >> "$CALLS"
 case "$*" in
   -k) exit 0 ;;
-  "-n -v") echo 'Place your finger on the reader' >&2; exit 0 ;;
+  "-n -v") echo 'Place your right index finger on the fingerprint reader' >&2; echo 'Verification timed out' >&2; exit 0 ;;
   *) exit 9 ;;
 esac`)
 	t.Setenv("CALLS", calls)
-	if err := ConfirmSudo(context.Background(), "prod", &bytes.Buffer{}); err != nil {
-		t.Fatalf("ConfirmSudo: %v", err)
+	err := ConfirmSudo(context.Background(), "prod", &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "NOPASSWD") {
+		t.Fatalf("ConfirmSudo error = %v, want refusal", err)
 	}
 	got, err := os.ReadFile(calls)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.TrimSpace(string(got)) != "-k\n-n -v" {
-		t.Fatalf("sudo calls = %q, want PAM check to confirm without another prompt", got)
+		t.Fatalf("sudo calls = %q, want only -k and -n -v", got)
 	}
 }
 
