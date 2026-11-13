@@ -242,3 +242,31 @@ func TestShipsNothingVendoredModuleBump(t *testing.T) {
 		t.Errorf("vendored go.sum change, shipsNothing = (%t, %q, %v), want it to pass", ok, why, err)
 	}
 }
+
+func TestShipsNothingMainPackageByItsFiles(t *testing.T) {
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOSUMDB", "off")
+	t.Setenv("GOFLAGS", "-mod=mod")
+	main := "package main\n\nimport _ \"example.com/a\"\n\nfunc main() {}\n"
+	root, write := moduleBumpRepo(t, "cmd/app/app.go", main, "1.21", "\texample.com/a v1.0.0\n")
+	if err := os.Symlink("mods/a1", filepath.Join(root, "linked-a")); err != nil {
+		t.Fatal(err)
+	}
+	link := "replace example.com/a v1.2.0 => ./linked-a\n"
+	write("go.mod", moduleBumpGoMod("1.21", "\texample.com/a v1.0.0\n", link))
+	freezePolishGit(t, root, "add", ".")
+	freezePolishGit(t, root, "commit", "-q", "-m", "linked module")
+	write("go.mod", moduleBumpGoMod("1.21", "\texample.com/a v1.2.0\n", link))
+	freezePolishGit(t, root, "add", ".")
+	freezePolishGit(t, root, "commit", "-q", "-m", "module bump")
+	repo, err := gitx.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Version: config.Version{Mode: config.ModeFile, File: "VERSION"}}
+	conf := &config.ApprovedRelease{Ignore: []*regexp.Regexp{regexp.MustCompile(`^cmd/app/main\.go$`)}}
+	ok, why, err := shipsNothing(repo, cfg, conf, freezePolishGit(t, root, "rev-parse", "HEAD"))
+	if err != nil || ok || !strings.Contains(why, "example.com/a") {
+		t.Errorf("a main package in app.go, its module behind a symlink, shipsNothing = (%t, %q, %v), want example.com/a named", ok, why, err)
+	}
+}
