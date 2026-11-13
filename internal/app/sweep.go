@@ -932,6 +932,11 @@ func (s *sweepRun) transitionDone(ctx context.Context, issue jira.Issue) error {
 			return err
 		}
 		issue = fresh
+		// Jira may have put it elsewhere than via: the move from where it is
+		// must take its type too.
+		if t := transitionBetween(s.r.target.ReleaseNotes, issue.Status, s.conf.Done); t != nil && !t.AllowsType(issue.Type) {
+			return errTypeNotAllowed
+		}
 	}
 	return s.client.Transition(ctx, issue, s.conf.Done)
 }

@@ -170,6 +170,39 @@ func TestSweepTransitionDoneTakesTheCheckedRoute(t *testing.T) {
 	}
 }
 
+// After the hop sweep reads the item again: Jira having put it elsewhere, the
+// move to done from there must take its type.
+func TestSweepTransitionDoneChecksTheStatusAfterTheHop(t *testing.T) {
+	var moves []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/transitions"):
+			body, _ := io.ReadAll(r.Body)
+			moves = append(moves, string(body))
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasPrefix(r.URL.Path, "/rest/api/3/issue/PROJ-2"):
+			fmt.Fprint(w, `{"fields":{"summary":"synthetic","status":{"name":"Other","statusCategory":{"key":"indeterminate"}},"issuetype":{"name":"Sub-task","subtask":true},"parent":{"key":"PROJ-1"},"labels":[]},"transitions":[{"id":"3","name":"Done","to":{"name":"Done"}}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	notes := &config.TargetNotes{Transitions: []config.NoteTransition{
+		{From: []string{"Ready for Release"}, To: "Done", Types: []string{"Sub-task"}},
+		{From: []string{"Other"}, To: "Done", Types: []string{"Task"}},
+	}, Sweep: &config.Sweep{Done: "Done"}}
+	run := &sweepRun{
+		app:    &App{Stdout: &strings.Builder{}, Stderr: &strings.Builder{}},
+		r:      &deployRun{name: "prod", target: &config.DeployTarget{ReleaseNotes: notes}},
+		client: jira.New(jira.Credentials{BaseURL: srv.URL}), conf: notes.Sweep, review: []string{"Testing"},
+	}
+	issue := jira.Issue{Key: "PROJ-2", Type: "Sub-task", Status: "Testing", Parent: "PROJ-1",
+		Transitions: []jira.Transition{{ID: "2", To: "Ready for Release"}}}
+	if err := run.transitionDone(t.Context(), issue); !errors.Is(err, errTypeNotAllowed) || len(moves) != 1 {
+		t.Fatalf("transitionDone = %v, requests %q, want the hop only and the type refusal", err, moves)
+	}
+}
+
 // Jira offering a reviewer's subtask no direct move to done, sweep takes it
 // through the done transition's from, as before types.
 func TestSweepTransitionDoneHopsWhenJiraOffersNoDirectMove(t *testing.T) {
