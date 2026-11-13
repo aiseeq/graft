@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -1925,9 +1926,16 @@ func inspectModuleBump(repo *gitx.Repo, sha string, dirs []string, conf *config.
 			return false, "", fmt.Errorf("write the tree of %s: %w", t.rev, err)
 		}
 	}
+	modules, err := moduleRoots(repo, sha)
+	if err != nil {
+		return false, "", err
+	}
 	var moved []string
-	for _, dir := range dirs {
-		rel := filepath.FromSlash(strings.TrimSuffix(dir, "/"))
+	for _, dir := range modules {
+		if conf.Ignored([]string{path.Join(dir, "go.mod")}) {
+			continue
+		}
+		rel := filepath.FromSlash(dir)
 		mains, err := shippedMainPackages(after, filepath.Join(after, rel), conf)
 		if err != nil {
 			return false, "", err
@@ -1950,6 +1958,30 @@ func inspectModuleBump(repo *gitx.Repo, sha string, dirs []string, conf *config.
 		return false, "changes modules of a shipped binary: " + strings.Join(slices.Compact(moved), ", "), nil
 	}
 	return true, "changes only ignore_paths and go.mod/go.sum, the shipped binaries' modules stay as they were (" + strings.Join(changed, ", ") + "), passes", nil
+}
+
+// moduleRoots lists the directories, "." for the root, of every module of
+// the commit's tree a build can reach: a module's go.mod change reaches the
+// binaries of the modules that import it. Modules under testdata, vendor and
+// directories go ignores (".", "_") are left out.
+func moduleRoots(repo *gitx.Repo, sha string) ([]string, error) {
+	out, err := repo.Git("ls-tree", "-r", "--name-only", "-z", "--full-tree", sha)
+	if err != nil {
+		return nil, err
+	}
+	var roots []string
+	for f := range strings.SplitSeq(out, "\x00") {
+		if f != "go.mod" && !strings.HasSuffix(f, "/go.mod") {
+			continue
+		}
+		dir := path.Dir(f)
+		if !slices.ContainsFunc(strings.Split(dir, "/"), func(e string) bool {
+			return e == "testdata" || e == "vendor" || (e != "." && (strings.HasPrefix(e, ".") || strings.HasPrefix(e, "_")))
+		}) {
+			roots = append(roots, dir)
+		}
+	}
+	return roots, nil
 }
 
 // writeTree writes the files of rev into dir through a temporary index.
@@ -2022,7 +2054,7 @@ func readModFile(repo *gitx.Repo, rev, path string) (*modfile.File, error) {
 // shippedMainPackages lists the import paths of the main packages of the
 // module at root whose directory is outside ignore_paths.
 func shippedMainPackages(work, root string, conf *config.ApprovedRelease) ([]string, error) {
-	data, err := goList(root, "-f", "{{if eq .Name \"main\"}}{{.Dir}}\t{{.ImportPath}}{{end}}", "./...")
+	data, err := goList(root, "-e", "-f", "{{if eq .Name \"main\"}}{{.Dir}}\t{{.ImportPath}}{{end}}", "./...")
 	if err != nil {
 		return nil, fmt.Errorf("go list failed: %s", oneLine(err.Error()))
 	}
@@ -2049,6 +2081,9 @@ func shippedMainPackages(work, root string, conf *config.ApprovedRelease) ([]str
 // go.mod that lists a lower version than a dependency requires does not
 // mislead.
 func moduleGraph(root string, mains []string) (map[string]string, error) {
+	if _, err := os.Stat(filepath.Join(root, "vendor", "modules.txt")); err == nil {
+		return vendoredGraph(root, mains)
+	}
 	deps, err := goList(root, append([]string{"-deps", "-f", "{{with .Module}}{{.Path}}{{end}}"}, mains...)...)
 	if err != nil {
 		return nil, err
@@ -2070,6 +2105,23 @@ func moduleGraph(root string, mains []string) (map[string]string, error) {
 	return graph, nil
 }
 
+// vendoredGraph is moduleGraph of a module that builds from its vendor
+// directory, where go list -m all does not work and go checks that
+// vendor/modules.txt agrees with go.mod: the versions go list -deps gives.
+func vendoredGraph(root string, mains []string) (map[string]string, error) {
+	data, err := goList(root, append([]string{"-deps", "-f", "{{with .Module}}{{.Path}}\t{{.Version}}{{with .Replace}} => {{.Path}} {{.Version}}{{end}}{{end}}"}, mains...)...)
+	if err != nil {
+		return nil, err
+	}
+	graph := map[string]string{}
+	for line := range strings.SplitSeq(data, "\n") {
+		if p, version, ok := strings.Cut(line, "\t"); ok {
+			graph[p] = version
+		}
+	}
+	return graph, nil
+}
+
 // graphChanges names the modules added, removed or moved between two graphs.
 func graphChanges(was, now map[string]string) []string {
 	var moved []string
@@ -2087,7 +2139,7 @@ func graphChanges(was, now map[string]string) []string {
 	return moved
 }
 
-// goList runs go list in root outside any workspace, on this machine's
+// goList runs go list in root outside any workspace, with this machine's
 // GOOS, GOARCH and GOFLAGS.
 func goList(root string, args ...string) (string, error) {
 	cmd := exec.Command("go", append([]string{"list"}, args...)...)
