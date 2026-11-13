@@ -186,7 +186,9 @@ func RunReaper(path string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "graft: reaper: %v\n", err)
 	}
 	if r.status.Signaled() {
-		dieOf(r.status.Signal())
+		// The parent sees the command's own signal; a core-dumping one leaves
+		// no second crash record, akit turns the reaper non-dumpable first.
+		akitproc.ExitWithSignal(r.status.Signal())
 	}
 	return r.status.ExitStatus()
 }
@@ -391,43 +393,4 @@ func isZombie(pid int) (bool, error) {
 		return false, fmt.Errorf("/proc/%d/stat: no state in %q", pid, data)
 	}
 	return data[i+2] == 'Z', nil
-}
-
-// dieOf ends this process with sig, as the command ended: with the default
-// action restored past Go's handlers, the parent sees the same signal. The
-// crash, if it is one, is the command's: the reaper turns itself
-// non-dumpable first, so a core-dumping signal leaves no second crash record
-// (a core_pattern pipe such as systemd-coredump ignores RLIMIT_CORE=0).
-// Should it survive, it exits 128 and the signal, as a shell reports one.
-func dieOf(sig syscall.Signal) {
-	if sig == syscall.SIGKILL {
-		if err := unix.Kill(os.Getpid(), sig); err != nil {
-			fmt.Fprintf(os.Stderr, "graft: reaper: raising %v: %v\n", sig, err)
-		}
-	}
-	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
-		fmt.Fprintf(os.Stderr, "graft: reaper: not dumpable: %v\n", err)
-	}
-	// A zeroed kernel sigaction is SIG_DFL with no flags and an empty mask,
-	// whatever the architecture's field order; the buffer is larger than any.
-	var dfl [64]byte
-	if _, _, errno := unix.RawSyscall6(unix.SYS_RT_SIGACTION, uintptr(sig), uintptr(unsafe.Pointer(&dfl)), 0, 8, 0, 0); errno != 0 {
-		fmt.Fprintf(os.Stderr, "graft: reaper: default action of %v: %v\n", sig, errno)
-	}
-	var set unix.Sigset_t
-	sigaddset(&set, sig)
-	if err := unix.PthreadSigmask(unix.SIG_UNBLOCK, &set, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "graft: reaper: unblocking %v: %v\n", sig, err)
-	}
-	if err := unix.Kill(os.Getpid(), sig); err != nil {
-		fmt.Fprintf(os.Stderr, "graft: reaper: raising %v: %v\n", sig, err)
-	}
-	time.Sleep(100 * time.Millisecond)
-	os.Exit(128 + int(sig))
-}
-
-func sigaddset(set *unix.Sigset_t, sig syscall.Signal) {
-	n := uint(sig - 1)
-	bits := uint(unsafe.Sizeof(set.Val[0])) * 8
-	set.Val[n/bits] |= 1 << (n % bits)
 }

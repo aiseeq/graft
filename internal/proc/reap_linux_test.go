@@ -232,7 +232,7 @@ func TestReapAbortCommand(t *testing.T) {
 	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
-	dieOf(syscall.SIGABRT)
+	akitproc.ExitWithSignal(syscall.SIGABRT)
 }
 
 // SIGTERM reaches the command; SIGINT does not, a terminal sends it to the
