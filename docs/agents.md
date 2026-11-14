@@ -12,6 +12,16 @@ Use `graft -C <directory> <task>` to select a directory before the command.
 If the project lacks a repeatable task, add one to `.graft.yaml` with a desc.
 For a one-off command use `graft exec --heavy -- <cmd>` when it is heavy.
 
+## Approved release
+
+`approved_release.dormant` lists `{key, reason}` for work included in an
+approved version while its feature remains disabled by a flag or setting.
+It still needs an approved version, but does not need an approved status;
+deploy, release notes and sweep leave it open and report why. Use
+`release_notes.jira.skip_keys` for umbrella or other standing items whose work
+is assembled from subtasks. Remove a dormant entry once the item has been
+checked; graft suggests removal when it reaches an approved or done status.
+
 ## Commit
 
 `graft commit` stages changes, runs the gate and checks the staged content.

@@ -271,6 +271,7 @@ func (f *FixVersion) Matches(name string) bool {
 // ApprovedRelease lets out only the commits of checked items: items in one of
 // Statuses, items of an approved version of Prefix, or both when both are set.
 type ApprovedRelease struct {
+	Dormant []DormantReleaseItem    `yaml:"dormant"`
 	Version *ApprovedReleaseVersion `yaml:"version"`
 	// Statuses are the item statuses that go out, such as Ready for release;
 	// a subtask also goes out when its parent is in one of them.
@@ -288,6 +289,32 @@ type ApprovedRelease struct {
 	Attribute []Attribution `yaml:"attribute"`
 	// Attributed maps the full commit hashes of Attribute to their entries.
 	Attributed map[string]Attribution `yaml:"-"`
+}
+
+// DormantReleaseItem names checked-in work that ships disabled.
+type DormantReleaseItem struct {
+	Key    string `yaml:"key"`
+	Reason string `yaml:"reason"`
+}
+
+// DormantItems returns the target's dormant work, if configured.
+func (t *DeployTarget) DormantItems() []DormantReleaseItem {
+	if t == nil || t.ApprovedRelease == nil {
+		return nil
+	}
+	return t.ApprovedRelease.Dormant
+}
+
+// DormantReason returns the reason an item ships disabled.
+func (r *ApprovedRelease) DormantReason(key string) string {
+	if r != nil {
+		for _, item := range r.Dormant {
+			if item.Key == key {
+				return item.Reason
+			}
+		}
+	}
+	return ""
 }
 
 // StatusesFor returns the approved statuses for an item's labels.
@@ -653,6 +680,9 @@ func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {
 	case len(t.ApprovedRelease.LabelStatuses) > 0 && len(t.ApprovedRelease.Statuses) == 0:
 		return fmt.Errorf("%s.approved_release.label_statuses: needs statuses, those of items without the labels; without them an unlabelled item would pass in any status", where)
 	}
+	if err := c.validateDormant(where, t.ApprovedRelease.Dormant); err != nil {
+		return err
+	}
 	if v := t.ApprovedRelease.Version; v != nil {
 		if len(t.ApprovedRelease.Statuses) == 0 {
 			return fmt.Errorf("%s.approved_release.version: needs statuses", where)
@@ -678,6 +708,24 @@ func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {
 		t.ApprovedRelease.Ignore = append(t.ApprovedRelease.Ignore, re)
 	}
 	return c.validateAttribute(where+".approved_release.attribute", t.ApprovedRelease)
+}
+
+func (c *Config) validateDormant(where string, items []DormantReleaseItem) error {
+	seenDormant := map[string]bool{}
+	for i, item := range items {
+		field := fmt.Sprintf("%s.approved_release.dormant[%d]", where, i)
+		if !c.isProjectKey(item.Key) {
+			return fmt.Errorf("%s.key: %q is not an item of release_notes.jira.project_keys, such as PROJ-123", field, item.Key)
+		}
+		if strings.TrimSpace(item.Reason) == "" {
+			return fmt.Errorf("%s.reason: blank", field)
+		}
+		if seenDormant[item.Key] {
+			return fmt.Errorf("%s.key: duplicate %q", field, item.Key)
+		}
+		seenDormant[item.Key] = true
+	}
+	return nil
 }
 
 func validateLabelStatuses(where string, labelStatuses map[string][]string) error {

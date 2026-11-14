@@ -334,6 +334,13 @@ func buildSection(ctx context.Context, client *jira.Client, p *config.ReleasePag
 		b.WriteString("<h3>" + html.EscapeString(p.Label(part.label)) + "</h3>")
 		b.WriteString(issueTable(client, p, part.issues))
 	}
+	if ar := r.target.ApprovedRelease; ar != nil && len(ar.Dormant) > 0 {
+		b.WriteString("<h3>ships dormant</h3><ul>")
+		for _, item := range ar.Dormant {
+			b.WriteString("<li>" + html.EscapeString(item.Key+" — "+item.Reason) + "</li>")
+		}
+		b.WriteString("</ul>")
+	}
 	if len(items) == 0 && len(waiting) == 0 {
 		b.WriteString("<p>" + html.EscapeString(p.Label("none")) + "</p>")
 	}

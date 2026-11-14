@@ -258,7 +258,8 @@ func (a *App) previewNotes(ctx context.Context, r *deployRun) {
 			glint.err = errors.New("findings cannot be checked on a dirty work tree")
 		}
 	}
-	m := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name, glint: glint, standing: r.cfg.ReleaseNotes.Jira.SkipKeys, readOnly: true}
+	dormant := r.target.DormantItems()
+	m := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name, glint: glint, standing: r.cfg.ReleaseNotes.Jira.SkipKeys, dormant: dormant, readOnly: true}
 	for _, key := range keys {
 		if slices.Contains(r.cfg.ReleaseNotes.Jira.SkipKeys, key) || (r.moveOut != nil && slices.Contains(r.moveOut.keys, key)) {
 			a.printf("- %s: left alone", key)

@@ -24,6 +24,21 @@ func TestApprovedDoneParentWithOpenSubtaskIsHeld(t *testing.T) {
 	}
 }
 
+func TestDormantNeedsApprovedVersionButNotReadyStatus(t *testing.T) {
+	conf := &config.ApprovedRelease{Prefix: "Product ", Statuses: []string{"Ready for release"}, Dormant: []config.DormantReleaseItem{{Key: "PROJ-123", Reason: "test fixture"}}}
+	issue := jira.Issue{Key: "PROJ-123", Status: "Testing", FixVersions: []jira.Version{{ID: "v1", Name: "Product 1"}}}
+	gate := &approvalGate{conf: conf, issues: map[string]jira.Issue{"PROJ-123": issue}, versions: map[string]bool{"v1": true}}
+	pass, err := gate.item(t.Context(), "PROJ-123")
+	if err != nil || !pass.ok {
+		t.Fatalf("dormant gate = %+v, %v; want pass", pass, err)
+	}
+	gate.versions["v1"] = false
+	pass, err = gate.item(t.Context(), "PROJ-123")
+	if err != nil || pass.ok || !strings.Contains(pass.why, "(dormant: still needs an approved version)") {
+		t.Fatalf("unapproved dormant gate = %+v, %v", pass, err)
+	}
+}
+
 func TestApprovedPrefixHoldsOpenSubtasksRegardlessOfParentStatus(t *testing.T) {
 	gate := &approvalGate{
 		conf: &config.ApprovedRelease{Prefix: "Product v", Version: &config.ApprovedReleaseVersion{}},

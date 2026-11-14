@@ -407,6 +407,17 @@ deploy:
 			t.Errorf("attribute %s: %v, want %q", entries, err, want)
 		}
 	}
+	dormant := func(items string) string {
+		return strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {prefix: Product v, dormant: ["+items+"]}}", 1)
+	}
+	if cfg, err := Parse([]byte(dormant("{key: PROJ-12, reason: test fixture}"))); err != nil || cfg.Deploy.Targets["test"].ApprovedRelease.DormantReason("PROJ-12") != "test fixture" {
+		t.Errorf("dormant parse: cfg=%v err=%v", cfg, err)
+	}
+	for _, tc := range []struct{ yaml, want string }{{"{key: OTHER-1, reason: x}", ".key:"}, {"{key: PROJ-1, reason: ' '}", ".reason: blank"}, {"{key: PROJ-1, reason: x}, {key: PROJ-1, reason: y}", ".key: duplicate"}} {
+		if _, err := Parse([]byte(dormant(tc.yaml))); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("dormant %s: err=%v want %q", tc.yaml, err, tc.want)
+		}
+	}
 	cases := map[string]string{
 		"transition w/o from":           notes("{transitions: [{to: Testing}]}"),
 		"transition w/o to":             notes("{transitions: [{from: [In Progress]}]}"),

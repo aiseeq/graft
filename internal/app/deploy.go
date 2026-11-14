@@ -844,7 +844,8 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 	if err != nil {
 		return skipAll("release notes skipped: whose items are whose is unknown: %v", err)
 	}
-	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name, glint: r.glint, standing: notes.SkipKeys}
+	dormant := r.target.DormantItems()
+	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name, glint: r.glint, standing: notes.SkipKeys, dormant: dormant}
 	sub := &subtaskRun{mover: mover, notes: notes, me: me, reached: map[string]string{}, run: r,
 		targetHead: func(context.Context) (string, error) { return r.head, nil }}
 	items := &noteItems{app: a, run: r, client: client, me: me, text: text, fix: fix, mover: mover, sub: sub}
@@ -899,6 +900,19 @@ func (n *noteItems) post(ctx context.Context, key string) {
 	}
 	if slices.Contains(notes.SkipKeys, key) {
 		a.printf("release note for %s not posted, %s left alone: release_notes.jira.skip_keys", key, key)
+		return
+	}
+	var dormantReason string
+	if n.run.target != nil && n.run.target.ApprovedRelease != nil {
+		dormantReason = n.run.target.ApprovedRelease.DormantReason(key)
+	}
+	if reason := dormantReason; reason != "" {
+		issue, err := n.client.Issue(ctx, key)
+		if err != nil {
+			n.app.warn("release note for %s not posted: %v", key, err)
+			return
+		}
+		n.app.printf("%s ships dormant (%s): left in %s, not moved", key, reason, issue.Status)
 		return
 	}
 	issue, err := n.client.Issue(ctx, key)
@@ -969,6 +983,7 @@ type noteMover struct {
 	// release_notes.jira.skip_keys names: no reviewer gets those, so their
 	// subtasks are handed over.
 	standing []string
+	dormant  []config.DormantReleaseItem
 	readOnly bool
 }
 
@@ -997,6 +1012,12 @@ func quietNoteReason(q *config.QuietNotes, issue jira.Issue) string {
 // names: a paused item stays paused whatever its commits say. It returns the
 // status the item is left in.
 func (m *noteMover) delivered(ctx context.Context, issue jira.Issue) string {
+	for _, item := range m.dormant {
+		if item.Key == issue.Key || item.Key == issue.Parent {
+			m.app.printf("%s ships dormant (%s): left in %s, not moved", item.Key, item.Reason, issue.Status)
+			return issue.Status
+		}
+	}
 	switch t := m.conf.Moving(issue.Status); {
 	case len(m.conf.Transitions) == 0 || m.conf.Leading(issue.Status) != nil:
 	case t == nil:
@@ -1538,6 +1559,9 @@ func (a *App) passApproved(r *deployRun, out gateOutcome) {
 		r.approvedVersions = slices.Sorted(maps.Keys(out.approved))
 	}
 	a.printf("approved release: %d commits since %s, all in %s", out.commits, gitx.Short(r.prev), strings.Join(slices.Sorted(maps.Keys(out.approved)), ", "))
+	for _, item := range r.target.ApprovedRelease.Dormant {
+		a.printf("ships dormant: %s — %s", item.Key, item.Reason)
+	}
 }
 
 // gateRun is one pass of approved_release over the commits going out.
@@ -1722,6 +1746,7 @@ func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out
 		}
 		if pass.ok {
 			out.passed = append(out.passed, fail.keys...)
+			g.dormantAdvice(fail.keys)
 			for _, label := range pass.labels {
 				out.approved[label] = true
 			}
@@ -1744,6 +1769,23 @@ func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out
 		return nil, nil
 	}
 	return &fail, nil
+}
+
+func (g *gateRun) dormantAdvice(keys []string) {
+	for _, key := range keys {
+		if g.conf.DormantReason(key) == "" {
+			continue
+		}
+		issue, ok := g.gate.issues[key]
+		if !ok {
+			continue
+		}
+		if slices.Contains(g.gate.readyFor(issue), issue.Status) {
+			g.app.printf("%s is %s: drop it from approved_release.dormant to let the deploy close it", key, issue.Status)
+		} else if issue.Done {
+			g.app.printf("%s is %s: drop it from approved_release.dormant", key, issue.Status)
+		}
+	}
 }
 
 // oneCommit reads a commit's subject and body.
@@ -2407,25 +2449,11 @@ func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 	if err != nil {
 		return gatePass{}, err
 	}
+	if g.conf.DormantReason(key) != "" || issue.Parent != "" && g.conf.DormantReason(issue.Parent) != "" {
+		return g.dormantItem(ctx, issue)
+	}
 	if g.conf.Version != nil {
-		if g.conf.Prefix == "" {
-			return gatePass{ok: true, label: "release version"}, nil
-		}
-		why, err := g.openParent(ctx, issue)
-		if err != nil {
-			return gatePass{}, err
-		}
-		if why != "" {
-			return gatePass{why: why}, nil
-		}
-		version, err := g.approvedVersion(ctx, issue)
-		if err != nil {
-			return gatePass{}, err
-		}
-		if version == "" {
-			return gatePass{why: g.notInApprovedVersion(issue)}, nil
-		}
-		return gatePass{ok: true, label: version}, nil
+		return g.versionItem(ctx, issue)
 	}
 	why, err := g.openParent(ctx, issue)
 	if err != nil {
@@ -2463,6 +2491,38 @@ func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 		pass.ok, pass.label = true, version
 	}
 	return pass, nil
+}
+
+func (g *approvalGate) versionItem(ctx context.Context, issue jira.Issue) (gatePass, error) {
+	if g.conf.Prefix == "" {
+		return gatePass{ok: true, label: "release version"}, nil
+	}
+	why, err := g.openParent(ctx, issue)
+	if err != nil {
+		return gatePass{}, err
+	}
+	if why != "" {
+		return gatePass{why: why}, nil
+	}
+	version, err := g.approvedVersion(ctx, issue)
+	if err != nil {
+		return gatePass{}, err
+	}
+	if version == "" {
+		return gatePass{why: g.notInApprovedVersion(issue)}, nil
+	}
+	return gatePass{ok: true, label: version}, nil
+}
+
+func (g *approvalGate) dormantItem(ctx context.Context, issue jira.Issue) (gatePass, error) {
+	version, err := g.approvedVersion(ctx, issue)
+	if err != nil {
+		return gatePass{}, err
+	}
+	if version == "" {
+		return gatePass{why: g.notInApprovedVersion(issue) + " (dormant: still needs an approved version)"}, nil
+	}
+	return gatePass{ok: true, label: "dormant " + version}, nil
 }
 
 // checkedIssue returns the item when it is in one of the statuses of its

@@ -1856,12 +1856,21 @@ deploy:
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
       approved_release:         # only commits of checked items go out
         statuses: [Ready for release, Done]  # the item, or a subtask's parent, is in one of these
+        dormant:                    # ships in an approved version with work disabled
+          - {key: PROJ-123, reason: "test stand; production stays off without a live provider"}
         label_statuses:         # additionally allow these statuses for items carrying each label
           internal: [Done]
         prefix: "Product v"     # optional: and in a "Product v…" version every approver approved
         ignore_paths: ["docs/**", "*.md"]   # a commit changing only these ships nothing and passes
         attribute:              # optional: a commit whose message names no item, or the wrong one, as a commit of the item
           - {commit: 0123456789abcdef0123456789abcdef01234567, item: PROJ-123, reason: "the key was left out of the message"}
+
+Use `approved_release.dormant` when work must stay in the build but its
+feature is disabled by a flag or setting. It must be in an approved version,
+but needs no approved status; graft leaves it open and reports its reason.
+Unlike `release_notes.jira.skip_keys`, which is for umbrella or other standing
+items assembled from subtasks, dormant items are shipped work. Remove an item
+when it has been checked so the deploy can close it.
       release_notes:
         transitions: [{from: [Ready for release], to: Done}]
         subtasks: true

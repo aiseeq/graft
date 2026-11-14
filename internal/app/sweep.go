@@ -334,6 +334,11 @@ func (s *sweepRun) judge(ctx context.Context, items map[string][]sweptCommit) {
 	s.parents(ctx, keys, items)
 	for _, key := range keys {
 		if issue, ok := s.issues[key]; ok && !s.judged[key] && !slices.Contains(s.notes.SkipKeys, key) {
+			if reason := s.r.target.ApprovedRelease.DormantReason(key); reason != "" {
+				s.judged[key] = true
+				s.lines = append(s.lines, fmt.Sprintf("%s ships dormant (%s): left in %s, not moved", key, reason, issue.Status))
+				continue
+			}
 			s.item(ctx, issue, items[key])
 		}
 	}
