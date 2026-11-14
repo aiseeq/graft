@@ -60,12 +60,7 @@ tasks:
     run:
       - sh: 'out=$(gofmt -l .); test -z "$out" || { echo "not formatted, run graft fmt:"; echo "$out"; exit 1; }'
   vet:
-    desc: go vet for the host and Windows
-    run:
-      - go vet ./...
-      - task: vet-windows
-  vet-windows:
-    env: {GOOS: windows}
+    desc: go vet for the host
     run: [go vet ./...]
   test:
     desc: all tests, the PostgreSQL and docker ones included

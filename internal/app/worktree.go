@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -516,9 +515,6 @@ func listWorktrees(repo *gitx.Repo) ([]worktree, error) {
 // open, to the processes, from /proc: a process may work on a worktree from
 // elsewhere (git -C, go -C, an editor). It errs off Linux.
 func processPaths() (map[string][]string, error) {
-	if runtime.GOOS != "linux" {
-		return nil, fmt.Errorf("graft worktree clean reads the processes' working directories from /proc, which %s lacks", runtime.GOOS)
-	}
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil, fmt.Errorf("list the processes: %w", err)

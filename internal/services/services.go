@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -369,9 +368,6 @@ func (m *Manager) stop(ctx context.Context, name string) error {
 		fmt.Fprintf(m.Log, "graft: %s is not running\n", name)
 		return nil
 	}
-	if runtime.GOOS != "linux" {
-		return fmt.Errorf("graft: %s was not stopped: this OS cannot verify its process; stop it manually (PID %d)", name, pid)
-	}
 	start, err := m.serviceStartRecord(name, s)
 	if err != nil {
 		return err
@@ -400,9 +396,6 @@ func (m *Manager) stop(ctx context.Context, name string) error {
 }
 
 func (m *Manager) removeGoneLeader(name string, s *config.Service) (bool, error) {
-	if runtime.GOOS != "linux" {
-		return false, nil
-	}
 	data, err := os.ReadFile(m.path(s.PIDFile))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -416,9 +409,6 @@ func (m *Manager) removeGoneLeader(name string, s *config.Service) (bool, error)
 	}
 	startData, err := os.ReadFile(m.path(s.PIDFile) + ".start")
 	if errors.Is(err, os.ErrNotExist) {
-		if runtime.GOOS != "linux" {
-			return false, nil
-		}
 		members, scanErr := sessionMembers(pid)
 		if scanErr != nil || len(members) == 0 {
 			return false, scanErr

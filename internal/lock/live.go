@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync"
 
 	"github.com/aiseeq/graft/v2/internal/fsx"
@@ -141,18 +140,11 @@ func gone(name string) (bool, error) {
 	if !ok {
 		return false, fl.Close()
 	}
-	if runtime.GOOS == "windows" {
-		// Windows removes no open file; an owner taking it meanwhile sees it
-		// removed and takes another.
-		return true, errors.Join(fl.Unlock(), removeDead(name))
-	}
 	// The lock still held, an owner that locks the file next finds no file.
 	return true, errors.Join(removeDead(name), fl.Unlock())
 }
 
-// removeDead removes a live file no process holds. On Windows a handle
-// another process has open, reading it or probing it, keeps it: unlocked,
-// the next reader removes it.
+// removeDead removes a live file no process holds.
 func removeDead(name string) error {
 	if err := fsx.Remove(name); err != nil && !busy(err) {
 		return err

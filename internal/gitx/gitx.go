@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 )
@@ -414,13 +413,8 @@ func LocalEnvVars() ([]string, error) {
 	return splitLines(out), nil
 }
 
-// SameEnvName reports whether a and b name one environment variable: case
-// aside on Windows, which treats names so, exactly elsewhere, where gomaxprocs
-// is not GOMAXPROCS.
+// SameEnvName reports whether a and b name one environment variable.
 func SameEnvName(a, b string) bool {
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(a, b)
-	}
 	return a == b
 }
 

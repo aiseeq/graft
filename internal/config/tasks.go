@@ -10,7 +10,6 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -880,9 +879,6 @@ func (t *TestDB) validateListen() error {
 	}
 	if t.Port != 0 {
 		return errors.New("test_db.port: not used with socket: true, the database has no TCP port on the host")
-	}
-	if runtime.GOOS != "linux" {
-		return fmt.Errorf("test_db.socket: needs docker on Linux, a unix socket does not cross the VM of docker on %s", runtime.GOOS)
 	}
 	for _, s := range t.Settings {
 		if strings.HasPrefix(s, "unix_socket_directories=") {

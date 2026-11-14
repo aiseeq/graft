@@ -11,8 +11,7 @@ dependencies and locks, background services, a disposable test database,
 pinned tools, the event journal (flags) and a deploy wrapper.
 
 What differs between projects lives in `.graft.yaml` at the repository root.
-graft is a single Go binary with no shell dependency in its core, so it works the
-same on Linux, macOS and Windows (Git for Windows).
+graft is a single Go binary with no shell dependency in its core.
 
 ## Install
 
@@ -204,7 +203,7 @@ each with as many threads as `GOMAXPROCS`. The environment's `GOMAXPROCS` and
 bare `go test` to one thread; an admitted task gets its threads. The task's
 own `env` and `.env` keys win (a key the environment sets takes its value
 from there, so it is the environment's, unless the steps' environment drops
-it, as a local git variable; names differ in case except on Windows): their `GOMAXPROCS`, and a `-p` in their
+it, as a local git variable): their `GOMAXPROCS`, and a `-p` in their
 `GOFLAGS` as written, are left as they are; `${GOFLAGS}` there brings the
 user's flags, and `-p=threads` still follows them. An empty `GOFLAGS` of the
 task is none, as go has it: the user's flags hold. A step with `{threads}` that is not heavy gets `GOMAXPROCS` only
@@ -650,8 +649,7 @@ commit through unchecked.
 `graft init` rewrites shims an older graft wrote. It refuses to overwrite hooks it did not
 write and to repoint a
 `core.hooksPath` that leads elsewhere. An absolute `core.hooksPath` to the same
-directory is rewritten as relative. On Windows, keep the shims LF:
-add `.githooks/* text eol=lf` to `.gitattributes`.
+directory is rewritten as relative.
 
 ### Worker trailers
 
@@ -1233,7 +1231,6 @@ graft's version, pid and command line. A
   `wait4`). It is not the sum over the process tree: eight linters in
   parallel at 1 GB each show 1 GB. Processes that are never waited for
   (daemons, detached children) are not counted, in memory or in CPU time.
-  Windows reports no peak memory; the field is left out there.
 - `tree_mem_mb` is the peak of the memory the whole process tree held at
   once: the step's process and every descendant, summed, so four test
   binaries of 1 GB running side by side show 4 GB. graft reads it from
@@ -1476,9 +1473,8 @@ services:
 for the process to listen (without `addr`: to survive a second) and shows the
 end of the log when it dies instead. `graft stop` sends SIGTERM to the
 process group, so wrappers like `go run` do not leave the server behind, and
-SIGKILL after `stop_timeout`. A pid file whose process is gone, or on Linux
-now runs another program, is removed. On Windows stop terminates the process
-itself, not its children: run the program, not a wrapper. `graft logs`
+SIGKILL after `stop_timeout`. A pid file whose process is gone, or now runs
+another program, is removed. `graft logs`
 prints the end of the log file, or `journalctl --user -u` for a unit; with
 `-f` it follows until Ctrl-C.
 
@@ -2697,8 +2693,7 @@ that name it, before the tasks of `setup`; a group whose key matches but
 whose setup runs for another group is not linked either (`not linking
 <paths>: graft <setup> installs it with another group`). A group needs
 `key`, `paths` and `setup`; a path the checkout tracks is an error. A
-directory link the system does not make (Windows without the right to make
-symlinks) is warned and the group's setup installs instead. A setup task run
+directory link the system does not make is warned and the group's setup installs instead. A setup task run
 in a worktree, on its own or as a dependency or step of another task, first
 removes its groups' links to the main worktree (links there only, never a
 directory), so it installs into the worktree, not into the main one. `graft
@@ -2912,7 +2907,7 @@ chosen with that tradeoff in mind.
 graft builds, tests and commits itself through its own `.graft.yaml`:
 
 ```sh
-go run . smoke     # the gate: gofmt check, vet (host and windows), glint, the tests but the docker container ones
+go run . smoke     # the gate: gofmt check, vet, glint, the tests but the docker container ones
 go run . all       # the gate (go vet, go fix, smoke) + race, the docker tests included
 go run . install   # ~/bin/graft, after the pilot's gate (see Install)
 go run . commit -m "..."

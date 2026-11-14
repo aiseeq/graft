@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 )
@@ -21,9 +20,6 @@ const cgroupRoot = "/sys/fs/cgroup"
 // Cgroup is the directory of the running container's cgroup v2, where the
 // CPU and memory of PostgreSQL and every backend it forks are counted.
 func (d *DB) Cgroup(ctx context.Context) (string, error) {
-	if runtime.GOOS != "linux" {
-		return "", ErrNoCgroup
-	}
 	s, err := d.Inspect(ctx)
 	if err != nil {
 		return "", err
