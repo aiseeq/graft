@@ -49,8 +49,7 @@ func TestGocacheFreeBelowMeasuresBeforeAndAfterTrim(t *testing.T) {
 	t.Setenv("GOCACHE", dir)
 	trimProc(t, 1, 1)
 	serveTrimDisk(t, 0)
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configHome := quietConfigHome(t)
 	limits := filepath.Join(configHome, "akit", "pressure.yaml")
 	if err := os.MkdirAll(filepath.Dir(limits), 0o755); err != nil {
 		t.Fatal(err)
@@ -145,8 +144,7 @@ func TestTrimWaitsForDirty(t *testing.T) {
 func TestTrimWaitsForBusyDisk(t *testing.T) {
 	trimProc(t, 1, 1)
 	serveTrimDisk(t, 1000)
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configHome := quietConfigHome(t)
 	limits := filepath.Join(configHome, "akit", "pressure.yaml")
 	if err := os.MkdirAll(filepath.Dir(limits), 0o755); err != nil {
 		t.Fatal(err)
@@ -184,8 +182,7 @@ func TestTrimIgnoresCPUAndLoadAverage(t *testing.T) {
 		t.Fatal(err)
 	}
 	serveTrimDisk(t, 0)
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configHome := quietConfigHome(t)
 	limits := filepath.Join(configHome, "akit", "pressure.yaml")
 	if err := os.MkdirAll(filepath.Dir(limits), 0o755); err != nil {
 		t.Fatal(err)
@@ -307,4 +304,21 @@ func TestGocacheFreeBelowDryRunKeepsEntries(t *testing.T) {
 	if _, err := os.Stat(old); err != nil {
 		t.Errorf("dry run removed the stale entry: %v", err)
 	}
+}
+
+// quietConfigHome points XDG_CONFIG_HOME at a fresh directory with go
+// telemetry off: go writes its telemetry under the config directory from a
+// child that can outlive the command, racing the directory's cleanup.
+func quietConfigHome(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	mode := filepath.Join(dir, "go", "telemetry", "mode")
+	if err := os.MkdirAll(filepath.Dir(mode), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mode, []byte("off"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	return dir
 }
