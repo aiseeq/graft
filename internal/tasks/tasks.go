@@ -4322,7 +4322,7 @@ func (r *Runner) installedNames(s config.Step, t *config.Task, destination strin
 	files, err := r.installMatches(s, t, func(pattern string) ([]string, error) {
 		base := filepath.Base(filepath.FromSlash(pattern))
 		if strings.ContainsAny(base, "*?[") {
-			return filepath.Glob(filepath.Join(destination, base))
+			return installedMatches(destination, base)
 		}
 		return []string{filepath.FromSlash(pattern)}, nil
 	})
@@ -4332,6 +4332,40 @@ func (r *Runner) installedNames(s config.Step, t *config.Task, destination strin
 	names := make([]string, 0, len(files))
 	for _, file := range files {
 		names = append(names, filepath.Base(file))
+	}
+	return names, nil
+}
+
+// installedMatches are the regular files of the install directory whose
+// name matches base. The directory is listed, not globbed: its own path may
+// hold glob characters. A FIFO or device is left out: reading its build
+// info would wait for a writer.
+func installedMatches(destination, base string) ([]string, error) {
+	entries, err := os.ReadDir(destination)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing the install directory: %w", err)
+	}
+	var names []string
+	for _, e := range entries {
+		ok, err := filepath.Match(base, e.Name())
+		if err != nil {
+			return nil, fmt.Errorf("install pattern %s: %w", base, err)
+		}
+		if !ok {
+			continue
+		}
+		// Stat, not the entry's Lstat: a symlink to a binary counts.
+		info, err := os.Stat(filepath.Join(destination, e.Name()))
+		if err != nil { //nolint:silent-error-handling // An entry gone, dangling or unreadable since the listing is not an installed binary to check.
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		names = append(names, e.Name())
 	}
 	return names, nil
 }

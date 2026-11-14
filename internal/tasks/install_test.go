@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/aiseeq/graft/v2/internal/config"
@@ -142,7 +143,8 @@ func TestInstallFreshnessNamesTheInstalledFile(t *testing.T) {
 		}
 		return gittest.Run(t, root, "rev-parse", "HEAD")
 	}
-	root, dest := t.TempDir(), t.TempDir()
+	// Glob characters in the install directory's own path are not a pattern.
+	root, dest := t.TempDir(), filepath.Join(t.TempDir(), "install[1]")
 	built := build(root, filepath.Join(dest, "tool"), "fixture")
 	gittest.Run(t, root, "commit", "-q", "--allow-empty", "-m", "two")
 	head := gittest.Run(t, root, "rev-parse", "HEAD")
@@ -155,6 +157,11 @@ func TestInstallFreshnessNamesTheInstalledFile(t *testing.T) {
 	want := []string{"tool is from " + shortRevision(built) + ", 1 commit behind; run graft install"}
 	if got := runner("bin/tool").InstallFreshnessWarnings(context.Background(), head); !slices.Equal(got, want) {
 		t.Errorf("unbuilt path: %q, want %q", got, want)
+	}
+	// A FIFO among the installed files is not opened: reading it would wait
+	// for a writer and hang the commit.
+	if err := syscall.Mkfifo(filepath.Join(dest, "pipe"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	if got := runner("bin/*").InstallFreshnessWarnings(context.Background(), head); !slices.Equal(got, want) {
 		t.Errorf("unmatched glob: %q, want only the local stale binary %q", got, want)
