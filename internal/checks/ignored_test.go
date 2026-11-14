@@ -25,6 +25,8 @@ func TestIgnoredSources(t *testing.T) {
 		{"next generated", "next-env.d.ts", "web/next-env.d.ts", "", "", ""},
 		{"exact file", "web/types/generated.ts", "web/types/generated.ts", "", "", ""},
 		{"exact basename elsewhere", "generated.ts", "web/types/generated.ts", "", "", "generated.ts"},
+		{"escaped exact file", `web/a\*.ts`, "web/a*.ts", "", "", ""},
+		{"glob over a starred name", "web/a*.ts", "web/a*.ts", "", "", "web/a*.ts"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -79,6 +81,21 @@ func TestNewIgnoredSourcesSkipsTreeWithoutIgnoreChanges(t *testing.T) {
 	got, err := NewIgnoredSources(&gitx.Repo{Root: root}, config.IgnoredSources{}, nil)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("findings = %v, error = %v", got, err)
+	}
+}
+
+// A git failure other than "no HEAD yet" is an error, not an empty set of
+// HEAD's rules: the commit's rules would all look new, or none would.
+func TestWriteHeadIgnoresGitError(t *testing.T) {
+	root := t.TempDir()
+	writeIgnoredFile(t, root, ".git", "gitdir: "+filepath.Join(root, "missing")+"\n")
+	if err := writeHeadIgnores(&gitx.Repo{Root: root}, t.TempDir()); err == nil {
+		t.Fatal("broken repository: no error")
+	}
+	unborn := t.TempDir()
+	initIgnoredRepo(t, unborn)
+	if err := writeHeadIgnores(&gitx.Repo{Root: unborn}, t.TempDir()); err != nil {
+		t.Fatalf("unborn HEAD: %v", err)
 	}
 }
 

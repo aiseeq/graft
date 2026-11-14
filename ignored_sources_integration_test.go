@@ -309,3 +309,55 @@ func TestIgnoredSourcesInfoExcludeBefore(t *testing.T) {
 		t.Fatalf("hidden by info/exclude before: exit %d: %s", code, out)
 	}
 }
+
+// HEAD's rules are matched under the repository's own settings: its
+// core.excludesFile replaces the global one, which the empty repository of
+// HEAD's rules would otherwise read.
+func TestIgnoredSourcesRepositoryExcludesFile(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": ignoredConfig})
+	f.git("add", ".graft.yaml")
+	f.git("commit", "-m", "initial")
+	global := filepath.Join(f.base, "global-excludes")
+	if err := os.WriteFile(global, []byte("*.go\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.git("config", "--global", "core.excludesFile", global)
+	f.git("config", "core.excludesFile", os.DevNull)
+	f.write("cmd/jwt-helper/main.go", "package main\n")
+	f.write(".gitignore", "jwt-*\n")
+	f.git("add", ".gitignore")
+	if out, code := f.graft("", "check"); code == 0 || !strings.Contains(out, "cmd/jwt-helper/main.go") {
+		t.Fatalf("global excludes overridden by the repository: exit %d: %s", code, out)
+	}
+	// A relative core.excludesFile is the repository's file, hiding the
+	// source before the commit.
+	f.write("local-excludes", "jwt-*\n")
+	f.git("config", "core.excludesFile", "local-excludes")
+	if out, code := f.graft("", "check"); code != 0 {
+		t.Fatalf("hidden by the repository's excludes before: exit %d: %s", code, out)
+	}
+}
+
+// git reads no rules through a symlinked .gitignore, so neither do HEAD's
+// rules: the link's target is not a rule. The commit makes it a regular file.
+func TestIgnoredSourcesSymlinkedIgnoreInHead(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": ignoredConfig})
+	if err := os.MkdirAll(filepath.Join(f.work, "cmd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("jwt-helper", filepath.Join(f.work, "cmd", ".gitignore")); err != nil {
+		t.Fatal(err)
+	}
+	f.git("add", ".")
+	f.git("commit", "-m", "initial")
+	f.write("cmd/jwt-helper/main.go", "package main\n")
+	if err := os.Remove(filepath.Join(f.work, "cmd", ".gitignore")); err != nil {
+		t.Fatal(err)
+	}
+	f.write("cmd/.gitignore", "# none\n")
+	f.write(".gitignore", "jwt-*\n")
+	f.git("add", ".gitignore", "cmd/.gitignore")
+	if out, code := f.graft("", "check"); code == 0 || !strings.Contains(out, "cmd/jwt-helper/main.go") {
+		t.Fatalf("symlinked .gitignore in HEAD: exit %d: %s", code, out)
+	}
+}

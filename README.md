@@ -2594,9 +2594,11 @@ up to date and release again.
   leads into this machine and nowhere in another clone: one made by mistake
   inside the tree is staged by a commit that stages all.
 - **Ignored sources**: a commit that changes a `.gitignore` fails when a
-  source file is hidden now and was not under HEAD's rules (its `.gitignore`
-  files and `info/exclude`, asked with `git check-ignore --no-index` in an
-  empty repository): a rule added, repeated after its negation or moved counts
+  source file is hidden now and was not under HEAD's rules (its regular
+  `.gitignore` files and `info/exclude`, asked with `git check-ignore
+  --no-index` in an empty repository under the repository's
+  `core.excludesFile` and `core.ignoreCase`): a rule added, repeated after its
+  negation or moved counts
   by what git does with it. Without staged `.gitignore` changes there is no
   tree scan. Each finding names the rule's file, line and pattern. Git reads
   ignore rules from the worktree, so when a `.gitignore` is staged, every

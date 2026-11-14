@@ -79,7 +79,8 @@ func ignoredByHead(repo *gitx.Repo, files []string) (hidden map[string]bool, err
 			err = fmt.Errorf("removing %s: %w", tmp, rerr)
 		}
 	}()
-	if _, err := gitx.InOther(tmp, nil, "init", "-q"); err != nil {
+	// No template: an info/exclude of the user's template is not HEAD's.
+	if _, err := gitx.InOther(tmp, nil, "init", "-q", "--template="); err != nil {
 		return nil, fmt.Errorf("making a repository for HEAD's ignore rules: %w", err)
 	}
 	if err := writeHeadIgnores(repo, tmp); err != nil {
@@ -92,13 +93,21 @@ func ignoredByHead(repo *gitx.Repo, files []string) (hidden map[string]bool, err
 	data, err := os.ReadFile(strings.TrimSpace(exclude))
 	switch {
 	case err == nil:
+		if err := os.MkdirAll(filepath.Join(tmp, ".git", "info"), 0o700); err != nil {
+			return nil, fmt.Errorf("writing HEAD's info/exclude: %w", err)
+		}
 		if err := os.WriteFile(filepath.Join(tmp, ".git", "info", "exclude"), data, 0o600); err != nil {
 			return nil, fmt.Errorf("writing HEAD's info/exclude: %w", err)
 		}
 	case !os.IsNotExist(err):
 		return nil, fmt.Errorf("reading info/exclude: %w", err)
 	}
-	out, err := gitx.InOther(tmp, strings.NewReader(strings.Join(files, "\x00")+"\x00"), "check-ignore", "--no-index", "-z", "--stdin")
+	args, err := ignoreSettings(repo)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, "check-ignore", "--no-index", "-z", "--stdin")
+	out, err := gitx.InOther(tmp, strings.NewReader(strings.Join(files, "\x00")+"\x00"), args...)
 	if err != nil && gitx.ExitCode(err) != 1 {
 		return nil, fmt.Errorf("checking HEAD's ignore rules: %w", err)
 	}
@@ -111,17 +120,53 @@ func ignoredByHead(repo *gitx.Repo, files []string) (hidden map[string]bool, err
 	return hidden, nil
 }
 
+// ignoreSettings are -c options giving the empty repository the settings by
+// which the repository itself matches ignore rules: its own config may set
+// core.excludesFile (or core.ignoreCase) over the global one that the empty
+// repository would read. Unset everywhere, both use the same default.
+func ignoreSettings(repo *gitx.Repo) ([]string, error) {
+	var args []string
+	for _, key := range []string{"core.excludesFile", "core.ignoreCase"} {
+		get := []string{"config", "--get", key}
+		if key == "core.excludesFile" {
+			get = []string{"config", "--path", "--get", key}
+		}
+		value, err := repo.Git(get...)
+		switch {
+		case err == nil:
+		case gitx.ExitCode(err) == 1:
+			continue
+		default:
+			return nil, fmt.Errorf("reading %s: %w", key, err)
+		}
+		value = strings.TrimSpace(value)
+		if key == "core.excludesFile" && value != "" && !filepath.IsAbs(value) {
+			value = filepath.Join(repo.Root, value)
+		}
+		args = append(args, "-c", key+"="+value)
+	}
+	return args, nil
+}
+
 // writeHeadIgnores writes every .gitignore of HEAD under dir at its path.
 func writeHeadIgnores(repo *gitx.Repo, dir string) error {
-	if _, err := repo.Git("rev-parse", "--verify", "-q", "HEAD^{commit}"); err != nil { //nolint:silent-error-handling // No HEAD yet: no rules of HEAD to write.
-		return nil
+	// rev-parse -q exits 1, saying nothing, only when HEAD is not there yet
+	// (the first commit); any other failure is an error, not "no rules".
+	if _, err := repo.Git("rev-parse", "--verify", "-q", "HEAD^{commit}"); err != nil {
+		if gitx.ExitCode(err) == 1 {
+			return nil
+		}
+		return fmt.Errorf("resolving HEAD: %w", err)
 	}
-	listed, err := repo.Git("ls-tree", "-r", "-z", "--name-only", "HEAD")
+	listed, err := repo.Git("ls-tree", "-r", "-z", "HEAD")
 	if err != nil {
 		return fmt.Errorf("listing HEAD's files: %w", err)
 	}
-	for name := range strings.SplitSeq(listed, "\x00") {
-		if path.Base(name) != ".gitignore" {
+	for entry := range strings.SplitSeq(listed, "\x00") {
+		meta, name, ok := strings.Cut(entry, "\t")
+		// git reads no rules through a symlinked .gitignore: only a
+		// regular file (100644, 100755) counts.
+		if !ok || path.Base(name) != ".gitignore" || !strings.HasPrefix(meta, "100") {
 			continue
 		}
 		data, err := repo.ShowFile("HEAD", name)

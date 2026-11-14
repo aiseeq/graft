@@ -64,11 +64,29 @@ func ignoredSources(repo *gitx.Repo, cfg config.IgnoredSources, before func(file
 	return slices.DeleteFunc(findings, func(f Finding) bool { return hidden[f.Path] }), nil
 }
 
+// exactIgnoredFile reports whether pattern of the ignore file source names
+// file itself: a literal path, a backslash taking the next character as it is
+// (`a\*.go` is the file a*.go), with no unescaped glob and no trailing slash.
 func exactIgnoredFile(source, pattern, file string) bool {
-	if strings.ContainsAny(pattern, "*?[\\") || strings.HasSuffix(pattern, "/") {
+	if strings.HasSuffix(pattern, "/") {
 		return false
 	}
-	return path.Join(path.Dir(source), strings.TrimPrefix(pattern, "/")) == file
+	var literal strings.Builder
+	for i := 0; i < len(pattern); i++ {
+		switch c := pattern[i]; c {
+		case '\\':
+			if i+1 == len(pattern) {
+				return false
+			}
+			i++
+			literal.WriteByte(pattern[i])
+		case '*', '?', '[':
+			return false
+		default:
+			literal.WriteByte(c)
+		}
+	}
+	return path.Join(path.Dir(source), strings.TrimPrefix(literal.String(), "/")) == file
 }
 
 func collectIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, listed string) ([]string, error) {
