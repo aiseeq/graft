@@ -18,7 +18,9 @@ func IgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources) ([]Finding, erro
 	return ignoredSources(repo, cfg, nil)
 }
 
-func ignoredSources(repo *gitx.Repo, cfg config.IgnoredSources, added map[string]map[string]bool) ([]Finding, error) {
+// ignoredSources finds the ignored sources of the tree; before, when set,
+// names those already hidden before the commit, which are left out.
+func ignoredSources(repo *gitx.Repo, cfg config.IgnoredSources, before func(files []string) (map[string]bool, error)) ([]Finding, error) {
 	listed, err := repo.GitStrict("ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("listing ignored files: %w", err)
@@ -43,15 +45,23 @@ func ignoredSources(repo *gitx.Repo, cfg config.IgnoredSources, added map[string
 		if fields[n] == "" || strings.HasPrefix(fields[n+2], "!") {
 			continue
 		}
-		if added != nil && !added[fields[n]][fields[n+1]] {
-			continue
-		}
 		if exactIgnoredFile(fields[n], fields[n+2], fields[n+3]) {
 			continue
 		}
 		findings = append(findings, Finding{Path: fields[n+3], Reason: fmt.Sprintf("ignored source (%s:%s: %s)", fields[n], fields[n+1], fields[n+2]), IgnoredSource: true})
 	}
-	return findings, nil
+	if before == nil || len(findings) == 0 {
+		return findings, nil
+	}
+	files := make([]string, len(findings))
+	for i, f := range findings {
+		files[i] = f.Path
+	}
+	hidden, err := before(files)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(findings, func(f Finding) bool { return hidden[f.Path] }), nil
 }
 
 func exactIgnoredFile(source, pattern, file string) bool {

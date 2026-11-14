@@ -6,7 +6,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/config"
@@ -15,7 +14,6 @@ import (
 
 // NewIgnoredSources checks only rules added to staged .gitignore files.
 func NewIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, staged []StagedFile) ([]Finding, error) {
-	added := make(map[string]map[string]bool)
 	var mismatches []Finding
 	changed := false
 	for _, f := range staged {
@@ -36,14 +34,6 @@ func NewIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, staged []Stag
 		}
 		if !same {
 			mismatches = append(mismatches, Finding{Path: f.Path, Reason: ".gitignore staged differs from the work tree", IgnoredSource: true})
-			continue
-		}
-		lines, err := addedIgnoreLines(repo, f)
-		if err != nil {
-			return nil, err
-		}
-		if len(lines) > 0 {
-			added[f.Path] = lines
 		}
 	}
 	if len(mismatches) > 0 {
@@ -68,10 +58,85 @@ func NewIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, staged []Stag
 	if err != nil || len(mismatches) > 0 {
 		return mismatches, err
 	}
-	if len(added) == 0 {
-		return nil, nil
+	return ignoredSources(repo, cfg, func(files []string) (map[string]bool, error) {
+		return ignoredByHead(repo, files)
+	})
+}
+
+// ignoredByHead are those of files that HEAD's ignore rules hide already:
+// its .gitignore files and the repository's info/exclude, written into an
+// empty repository and asked with git check-ignore --no-index, which needs
+// no file on disk. The commit's rules are what they hide on top: no line of
+// a diff is read, so a rule repeated, moved or negated counts by what git
+// does with it. Without HEAD (the first commit) nothing was hidden.
+func ignoredByHead(repo *gitx.Repo, files []string) (hidden map[string]bool, err error) {
+	tmp, err := os.MkdirTemp("", "graft-ignore-head-")
+	if err != nil {
+		return nil, fmt.Errorf("making a directory for HEAD's ignore rules: %w", err)
 	}
-	return ignoredSources(repo, cfg, added)
+	defer func() {
+		if rerr := os.RemoveAll(tmp); rerr != nil && err == nil {
+			err = fmt.Errorf("removing %s: %w", tmp, rerr)
+		}
+	}()
+	if _, err := gitx.InOther(tmp, nil, "init", "-q"); err != nil {
+		return nil, fmt.Errorf("making a repository for HEAD's ignore rules: %w", err)
+	}
+	if err := writeHeadIgnores(repo, tmp); err != nil {
+		return nil, err
+	}
+	exclude, err := repo.Git("rev-parse", "--path-format=absolute", "--git-path", "info/exclude")
+	if err != nil {
+		return nil, fmt.Errorf("locating info/exclude: %w", err)
+	}
+	data, err := os.ReadFile(strings.TrimSpace(exclude))
+	switch {
+	case err == nil:
+		if err := os.WriteFile(filepath.Join(tmp, ".git", "info", "exclude"), data, 0o600); err != nil {
+			return nil, fmt.Errorf("writing HEAD's info/exclude: %w", err)
+		}
+	case !os.IsNotExist(err):
+		return nil, fmt.Errorf("reading info/exclude: %w", err)
+	}
+	out, err := gitx.InOther(tmp, strings.NewReader(strings.Join(files, "\x00")+"\x00"), "check-ignore", "--no-index", "-z", "--stdin")
+	if err != nil && gitx.ExitCode(err) != 1 {
+		return nil, fmt.Errorf("checking HEAD's ignore rules: %w", err)
+	}
+	hidden = make(map[string]bool)
+	for name := range strings.SplitSeq(out, "\x00") {
+		if name != "" {
+			hidden[name] = true
+		}
+	}
+	return hidden, nil
+}
+
+// writeHeadIgnores writes every .gitignore of HEAD under dir at its path.
+func writeHeadIgnores(repo *gitx.Repo, dir string) error {
+	if _, err := repo.Git("rev-parse", "--verify", "-q", "HEAD^{commit}"); err != nil { //nolint:silent-error-handling // No HEAD yet: no rules of HEAD to write.
+		return nil
+	}
+	listed, err := repo.Git("ls-tree", "-r", "-z", "--name-only", "HEAD")
+	if err != nil {
+		return fmt.Errorf("listing HEAD's files: %w", err)
+	}
+	for name := range strings.SplitSeq(listed, "\x00") {
+		if path.Base(name) != ".gitignore" {
+			continue
+		}
+		data, err := repo.ShowFile("HEAD", name)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("writing HEAD's %s: %w", name, err)
+		}
+		if err := os.WriteFile(target, data, 0o600); err != nil {
+			return fmt.Errorf("writing HEAD's %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func sameStagedIgnore(repo *gitx.Repo, f StagedFile) (bool, error) {
@@ -91,33 +156,4 @@ func sameStagedIgnore(repo *gitx.Repo, f StagedFile) (bool, error) {
 		return false, fmt.Errorf("reading %s: %w", f.Path, err)
 	}
 	return bytes.Equal(disk, f.Content), nil
-}
-
-// addedIgnoreLines are the numbers of the lines of the staged f whose text
-// is not a line of f in HEAD: the rules this commit brings. The staged and
-// HEAD contents are compared here, not git diff's text, whose hunks and
-// context follow the user's diff settings (interHunkContext,
-// suppressBlankEmpty). A rule only moved is not new.
-func addedIgnoreLines(repo *gitx.Repo, f StagedFile) (map[string]bool, error) {
-	old := make(map[string]bool)
-	listed, err := repo.Git("ls-tree", "HEAD", "--", ":(literal)"+f.Path)
-	// No HEAD yet (the first commit) fails ls-tree: nothing is old, every
-	// rule is checked.
-	if err == nil && strings.TrimSpace(listed) != "" {
-		data, err := repo.ShowFile("HEAD", f.Path)
-		if err != nil {
-			return nil, err
-		}
-		for line := range strings.SplitSeq(string(data), "\n") {
-			old[strings.TrimSuffix(line, "\r")] = true
-		}
-	}
-	lines := make(map[string]bool)
-	for i, line := range strings.Split(string(f.Content), "\n") {
-		line = strings.TrimSuffix(line, "\r")
-		if strings.TrimSpace(line) != "" && !old[line] {
-			lines[strconv.Itoa(i+1)] = true
-		}
-	}
-	return lines, nil
 }

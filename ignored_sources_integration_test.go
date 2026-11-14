@@ -266,3 +266,46 @@ func TestIgnoredSourcesDiffSettings(t *testing.T) {
 		t.Fatalf("moved rule: exit %d: %s", code, out)
 	}
 }
+
+// The commit's rules count by what git does with them, not by which lines
+// are new: a rule repeated after its negation, or a negation moved above
+// the rule, starts hiding a source; a rule moved without effect does not.
+func TestIgnoredSourcesRepeatedAndReorderedRules(t *testing.T) {
+	for _, tc := range []struct{ before, after string }{
+		{"jwt-*\n!jwt-*\n", "jwt-*\n!jwt-*\njwt-*\n"},
+		{"jwt-*\n!jwt-*\n", "!jwt-*\njwt-*\n"},
+	} {
+		f := newRepo(t, map[string]string{".graft.yaml": ignoredConfig, ".gitignore": tc.before})
+		f.git("add", ".")
+		f.git("commit", "-m", "initial")
+		f.write("cmd/jwt-helper/main.go", "package main\n")
+		f.write(".gitignore", tc.after)
+		f.git("add", ".gitignore")
+		if out, code := f.graft("", "check"); code == 0 || !strings.Contains(out, "cmd/jwt-helper/main.go") {
+			t.Errorf("%q -> %q: exit %d: %s", tc.before, tc.after, code, out)
+		}
+	}
+	f := newRepo(t, map[string]string{".graft.yaml": ignoredConfig, ".gitignore": "jwt-*\nold\n"})
+	f.git("add", ".")
+	f.git("commit", "-m", "initial")
+	f.write("cmd/jwt-helper/main.go", "package main\n")
+	f.write(".gitignore", "old\njwt-*\n")
+	f.git("add", ".gitignore")
+	if out, code := f.graft("", "check"); code != 0 {
+		t.Errorf("rule moved, the file hidden before too: exit %d: %s", code, out)
+	}
+}
+
+// A source info/exclude hid before the commit is not the commit's finding.
+func TestIgnoredSourcesInfoExcludeBefore(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": ignoredConfig, ".gitignore": "old\n"})
+	f.git("add", ".")
+	f.git("commit", "-m", "initial")
+	f.write(".git/info/exclude", "jwt-*\n")
+	f.write("cmd/jwt-helper/main.go", "package main\n")
+	f.write(".gitignore", "old\nnew\n")
+	f.git("add", ".gitignore")
+	if out, code := f.graft("", "check"); code != 0 {
+		t.Fatalf("hidden by info/exclude before: exit %d: %s", code, out)
+	}
+}

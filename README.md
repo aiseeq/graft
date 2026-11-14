@@ -2593,10 +2593,12 @@ up to date and release again.
   refused, and so is a symlink to an absolute path (`/x`, `C:\x`), which
   leads into this machine and nowhere in another clone: one made by mistake
   inside the tree is staged by a commit that stages all.
-- **Ignored sources**: a commit fails when a source file is hidden by a rule
-  added or changed in a staged `.gitignore`: a line whose text that file in
-  HEAD does not have (a rule only moved is not new). Without staged
-  `.gitignore` changes there is no tree scan. Each finding names the rule's file, line and pattern. Git reads
+- **Ignored sources**: a commit that changes a `.gitignore` fails when a
+  source file is hidden now and was not under HEAD's rules (its `.gitignore`
+  files and `info/exclude`, asked with `git check-ignore --no-index` in an
+  empty repository): a rule added, repeated after its negation or moved counts
+  by what git does with it. Without staged `.gitignore` changes there is no
+  tree scan. Each finding names the rule's file, line and pattern. Git reads
   ignore rules from the worktree, so when a `.gitignore` is staged, every
   `.gitignore` in the scanned directories must match the index. An untracked,
   ignored, changed or missing `.gitignore` fails the check. Excluded directories
