@@ -11,6 +11,25 @@ import (
 	"github.com/aiseeq/graft/v2/internal/iosched"
 )
 
+func TestHalfModeHeavyEnv(t *testing.T) {
+	r := &Runner{halfProcs: 4, base: []string{}}
+	got, err := r.heavyEnv(nil, nil, &config.Task{Heavy: true}, "8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := lookupEnv(got, "GOMAXPROCS"); !ok || value != "4" {
+		t.Errorf("half-mode GOMAXPROCS = %q, %v; want 4", value, ok)
+	}
+	r.base = []string{"GOMAXPROCS=6"}
+	got, err = r.heavyEnv([]string{"GOMAXPROCS=6"}, nil, &config.Task{Heavy: true}, "8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := lookupEnv(got, "GOMAXPROCS"); !ok || value != "6" {
+		t.Errorf("caller GOMAXPROCS = %q, %v; want 6", value, ok)
+	}
+}
+
 // TestMemoryKills: a kill at the scope's own ceiling names the ceiling and how
 // to raise it; a kill without the scope's oom names the limit above; no kill
 // is no error.

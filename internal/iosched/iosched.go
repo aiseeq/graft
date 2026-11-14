@@ -5,6 +5,11 @@ package iosched
 import (
 	"context"
 	"fmt"
+	"math"
+	"runtime"
+	"time"
+
+	"github.com/aiseeq/akit/pressure"
 )
 
 // DefaultPercent is the memory ceiling of heavy work, in percent of RAM, when
@@ -17,6 +22,32 @@ const (
 	SlicePercent   = 50
 )
 
+var (
+	halfPath    = pressure.HalfPath
+	halfRead    = pressure.ReadQuiet
+	halfNow     = time.Now
+	halfThreads = runtime.NumCPU
+)
+
+// halfCPU follows pressure.Limits.RunnableLimit in akit/pressure:
+// max(1, float64(threads)/2), preserving a fractional half on odd machines.
+func halfCPU(threads int) float64 { return math.Max(1, float64(threads)/2) }
+
+// HalfMode reports the active half-mode CPU allowance, if any. The integer
+// GOMAXPROCS rounds the same allowance up; the quota retains its fraction.
+func HalfMode() (quotaUSec int64, gomaxprocs int, until time.Time, err error) {
+	p, err := halfPath()
+	if err != nil {
+		return 0, 0, time.Time{}, err
+	}
+	until, err = halfRead(p)
+	if err != nil || !until.After(halfNow()) {
+		return 0, 0, time.Time{}, err
+	}
+	half := halfCPU(halfThreads())
+	return int64(half * 1_000_000), int(math.Ceil(half)), until, nil
+}
+
 // Request is the memory ceiling heavy work asks for: Value as memory_max
 // takes it ("12G", "40%"), "" for the default; Source names where it was set
 // (memory_max of task X, --memory-max), for the lines that cite it. Outer is
@@ -28,6 +59,8 @@ type Request struct {
 	Outer, OuterSource string
 	Held               string
 	Kind               string
+	CPUQuotaUSec       int64
+	HalfUntil          time.Time
 }
 
 // explicit says the request names a ceiling, not the default.

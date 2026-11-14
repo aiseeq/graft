@@ -124,6 +124,7 @@ type Runner struct {
 	// what memory ceiling; placeNoted holds the placement lines printed, so
 	// that each step of a split gate does not print them again.
 	heavyPlace iosched.Placement
+	halfProcs  int
 	placeNoted map[string]bool
 
 	lookup *dotenv.Lookup
@@ -3655,7 +3656,12 @@ func (r *Runner) enterHeavy(ctx context.Context, name, memoryMax string) (leave 
 // memoryMax asks for ("" for the default), raising the one graft already
 // holds it under when that is lower.
 func (r *Runner) holdCeiling(ctx context.Context, name, memoryMax string) error {
-	req := iosched.Request{Value: memoryMax, Source: "memory_max of task " + name, Held: os.Getenv(HeldScopeEnv), Kind: r.kind(name)}
+	quota, procs, until, err := iosched.HalfMode()
+	if err != nil {
+		return fmt.Errorf("read half-mode state: %w", err)
+	}
+	r.halfProcs = procs
+	req := iosched.Request{Value: memoryMax, Source: "memory_max of task " + name, Held: os.Getenv(HeldScopeEnv), Kind: r.kind(name), CPUQuotaUSec: quota, HalfUntil: until}
 	if name == ExecTask {
 		req.Source = "--memory-max"
 	}
@@ -3823,7 +3829,13 @@ func (r *Runner) heavyEnv(env, own []string, t *config.Task, threads string) ([]
 		if heavy {
 			env = append(env, ThreadsEnv+"="+threads)
 		}
-		if !ownProcs && (heavy || !procs) {
+		_, inheritedProcs := lookupEnv(r.base, "GOMAXPROCS")
+		local := len(r.frames) == 0 || !r.frames[len(r.frames)-1].remote
+		if r.halfProcs > 0 && local && !ownProcs {
+			if !inheritedProcs {
+				env = append(env, "GOMAXPROCS="+strconv.Itoa(r.halfProcs))
+			}
+		} else if !ownProcs && (heavy || !procs) {
 			env = append(env, "GOMAXPROCS="+threads)
 		}
 		if heavy && !ownsP(t, own) {

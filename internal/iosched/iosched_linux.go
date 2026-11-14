@@ -42,6 +42,8 @@ type plan struct {
 	limited              string
 	ceiling              int64
 	linkSource           bool
+	cpuQuotaUSec         int64
+	halfUntil            time.Time
 }
 
 // userScope says whether cgroup is a scope of a user's systemd manager, and
@@ -175,6 +177,10 @@ func scopeProperties(p plan, pid int) []string {
 	// the slice's IOWeight does not count the scope's own reads and writes.
 	count := 7
 	properties := []string{"PIDs", "au", "1", strconv.Itoa(pid), "Slice", "s", p.slice}
+	if p.cpuQuotaUSec > 0 {
+		count++
+		properties = append(properties, "CPUQuotaPerSecUSec", "t", strconv.FormatInt(p.cpuQuotaUSec, 10))
+	}
 	if p.linkSource {
 		count += 2
 		properties = append(properties, "PartOf", "as", "1", p.source, "After", "as", "1", p.source)
@@ -278,7 +284,7 @@ func configure(ctx context.Context, pid int, procRoot string, req Request) (Plac
 			}
 			return noUserManager(os.Getuid(), held, req.explicit(), source), nil
 		}
-		return place(ctx, self, move, session, pid, total, source, req.Kind)
+		return place(ctx, self, move, session, pid, total, source, req)
 	}
 	switch holds(cg, limits, sole, ownScope, req.Held) {
 	case heavyHeld:
@@ -290,15 +296,23 @@ func configure(ctx context.Context, pid int, procRoot string, req Request) (Plac
 	if !ok {
 		return unplaced(procRoot, cg, move.limited, req.explicit(), source)
 	}
-	return place(ctx, self, move, move.source, pid, total, source, req.Kind)
+	return place(ctx, self, move, move.source, pid, total, source, req)
 }
 
-func place(ctx context.Context, self string, move plan, from string, pid int, total int64, source, kind string) (Placement, error) {
+func cpuCeilingNote(quotaUSec int64, until time.Time) string {
+	if quotaUSec <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(", CPU ceiling %s threads: half until %s", strconv.FormatFloat(float64(quotaUSec)/1_000_000, 'f', -1, 64), until.Format("15:04"))
+}
+
+func place(ctx context.Context, self string, move plan, from string, pid int, total int64, source string, req Request) (Placement, error) {
+	move.cpuQuotaUSec, move.halfUntil = req.CPUQuotaUSec, req.HalfUntil
 	sliceMax := sliceCeiling(total)
 	if err := ensureSlice(ctx, move.slice, sliceMax); err != nil {
 		return Placement{}, err
 	}
-	recordScopeKind(move.scope, kind)
+	recordScopeKind(move.scope, req.Kind)
 	if err := transient(ctx, move.scope, "fail", scopeProperties(move, pid)...); err != nil {
 		return Placement{}, fmt.Errorf("create heavy scope %s: %w", move.scope, err)
 	}
@@ -309,8 +323,9 @@ func place(ctx context.Context, self string, move plan, from string, pid int, to
 		}
 		return Placement{}, fmt.Errorf("%w; %s", err, unitState(ctx, move.scope))
 	}
+	cpuNote := cpuCeilingNote(move.cpuQuotaUSec, move.halfUntil)
 	return Placement{
-		Message: fmt.Sprintf("moved from %s to %s in %s (IOWeight=%d, memory ceiling %s: %s)%s", from, move.scope, move.slice, ioWeight, Bytes(move.ceiling), source, lateNote(waited)),
+		Message: fmt.Sprintf("moved from %s to %s in %s (IOWeight=%d, memory ceiling %s: %s%s)%s", from, move.scope, move.slice, ioWeight, Bytes(move.ceiling), source, cpuNote, lateNote(waited)),
 		Ceiling: move.ceiling, Source: source, Scope: move.scope, Slice: move.slice, SliceMax: sliceMax,
 	}, nil
 }

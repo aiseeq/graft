@@ -15,6 +15,24 @@ import (
 	"time"
 )
 
+func TestHalfMode(t *testing.T) {
+	oldPath, oldRead, oldNow, oldThreads := halfPath, halfRead, halfNow, halfThreads
+	t.Cleanup(func() { halfPath, halfRead, halfNow, halfThreads = oldPath, oldRead, oldNow, oldThreads })
+	until := time.Date(2026, 11, 14, 10, 30, 0, 0, time.UTC)
+	halfPath = func() (string, error) { return "half-state", nil }
+	halfRead = func(string) (time.Time, error) { return until, nil }
+	halfNow = func() time.Time { return until.Add(-time.Minute) }
+	halfThreads = func() int { return 7 }
+	quota, procs, gotUntil, err := HalfMode()
+	if err != nil || quota != 3_500_000 || procs != 4 || !gotUntil.Equal(until) {
+		t.Fatalf("HalfMode = %d, %d, %s, %v; want 3500000, 4, %s", quota, procs, gotUntil, err, until)
+	}
+	halfNow = func() time.Time { return until }
+	if quota, procs, gotUntil, err = HalfMode(); err != nil || quota != 0 || procs != 0 || !gotUntil.IsZero() {
+		t.Errorf("expired HalfMode = %d, %d, %s, %v; want no mode", quota, procs, gotUntil, err)
+	}
+}
+
 func TestDecide(t *testing.T) {
 	const scope = "/user.slice/user-1000.slice/user@1000.service/agents.slice/console.scope"
 	const session = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-probe-77-r2.scope"
@@ -377,6 +395,24 @@ func TestSoleProcess(t *testing.T) {
 // TestScopePropertiesCount: the count busctl reads first is the number of
 // properties that follow, with and without the link to the source scope; a
 // wrong count fails StartTransientUnit with too few parameters.
+func TestHalfModeQuotaProperty(t *testing.T) {
+	until := time.Date(2026, 11, 14, 10, 30, 0, 0, time.UTC)
+	if got, want := cpuCeilingNote(3_500_000, until), ", CPU ceiling 3.5 threads: half until 10:30"; got != want {
+		t.Errorf("CPU ceiling note = %q, want %q", got, want)
+	}
+	if got := cpuCeilingNote(0, until); got != "" {
+		t.Errorf("no-quota note = %q, want empty", got)
+	}
+	p := plan{source: "console.scope", slice: "agents-graft.slice", scope: "graft-heavy-42.scope", ceiling: 7, linkSource: true, cpuQuotaUSec: 3_500_000, halfUntil: time.Date(2026, 11, 14, 10, 30, 0, 0, time.UTC)}
+	got := scopeProperties(p, 42)
+	if !strings.Contains(strings.Join(got, " "), "CPUQuotaPerSecUSec t 3500000") {
+		t.Fatalf("scope properties lack half CPU quota: %q", got)
+	}
+	if got[0] != "10" {
+		t.Errorf("property count = %s, want 10", got[0])
+	}
+}
+
 func TestScopePropertiesCount(t *testing.T) {
 	names := map[string]bool{"PIDs": true, "Slice": true, "PartOf": true, "After": true, "CollectMode": true, "IOAccounting": true, "MemoryMax": true, "MemorySwapMax": true, "OOMPolicy": true}
 	for _, linked := range []bool{true, false} {

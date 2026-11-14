@@ -212,6 +212,12 @@ when the environment leaves it unset. `GOFLAGS` in a task's `env` comes after
 the user's, which it would otherwise replace; a later flag wins, so the
 task's still override them.
 
+When akit's `busy --half` mode is active, a newly started local heavy scope
+gets a CPU quota of half the machine's threads. Child commands get
+`GOMAXPROCS` set to that half, rounded up to an integer, when the caller did
+not set it. The mode does not change tasks already running when enabled, and
+does not affect a `remote_heavy` host.
+
 A heavy command that is no task of the project (a one-off `go test`, a
 build, an e2e run) takes the same queue with `graft exec --heavy -- <command>
 [args]`: it runs in the current directory once the machine admits it, `{threads}`
