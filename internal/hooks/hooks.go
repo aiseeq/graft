@@ -35,7 +35,6 @@ const InstallHint = "in a checkout of github.com/aiseeq/graft: git pull && go ru
 const shimMarker = "# Installed by graft init. The hook logic lives in graft itself."
 
 // Shim is the hook file content: a POSIX sh stub that hands over to graft.
-// Git for Windows runs hooks through its own sh, so the same file works there.
 // A missing graft fails the hook rather than letting the commit through.
 func Shim(name string) []byte {
 	return []byte(`#!/bin/sh
