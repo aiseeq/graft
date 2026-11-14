@@ -245,10 +245,24 @@ func (g GoFmt) IsEnabled() bool { return g.Enabled == nil || *g.Enabled }
 
 // Checks configures the content checks run on the staged changes.
 type Checks struct {
-	Secrets    Secrets    `yaml:"secrets"`
-	LargeFiles LargeFiles `yaml:"large_files"`
-	Reverts    Reverts    `yaml:"reverts"`
+	Secrets        Secrets        `yaml:"secrets"`
+	LargeFiles     LargeFiles     `yaml:"large_files"`
+	IgnoredSources IgnoredSources `yaml:"ignored_sources"`
+	Reverts        Reverts        `yaml:"reverts"`
 }
+
+// IgnoredSources configures the scan of ignored source files in the worktree.
+type IgnoredSources struct {
+	Enabled    *bool       `yaml:"enabled"`
+	Extensions []string    `yaml:"extensions"`
+	Exceptions []Exception `yaml:"exceptions"`
+}
+
+// DefaultSourceExtensions are source types checked when no list is configured.
+var DefaultSourceExtensions = []string{"go", "ts", "tsx", "js", "jsx", "mjs", "cjs", "sql", "sh", "py"}
+
+// IsEnabled reports whether ignored sources are checked.
+func (i IgnoredSources) IsEnabled() bool { return i.Enabled == nil || *i.Enabled }
 
 // Reverts configures the check that a commit does not take back a recent
 // commit's change to a file without saying so.
@@ -370,6 +384,7 @@ func (c *Config) validate() error {
 		c.validatePush,
 		c.validateSecrets,
 		c.validateLargeFiles,
+		c.validateIgnoredSources,
 		c.validateGoVet,
 		c.validateGoFmt,
 		c.validateReverts,
@@ -586,6 +601,20 @@ func (c *Config) validateLargeFiles() error {
 		l.BinaryExtensions[i] = strings.ToLower(ext)
 	}
 	return validateExceptions("checks.large_files.exceptions", l.Exceptions)
+}
+
+func (c *Config) validateIgnoredSources() error {
+	i := &c.Checks.IgnoredSources
+	if i.Extensions == nil {
+		i.Extensions = slices.Clone(DefaultSourceExtensions)
+	}
+	for n, ext := range i.Extensions {
+		if ext == "" || strings.ContainsAny(ext, "./\\") {
+			return fmt.Errorf("checks.ignored_sources.extensions[%d]: %q must be a bare extension like go", n, ext)
+		}
+		i.Extensions[n] = strings.ToLower(ext)
+	}
+	return validateExceptions("checks.ignored_sources.exceptions", i.Exceptions)
 }
 
 func (c *Config) validateGoVet() error {

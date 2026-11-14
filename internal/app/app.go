@@ -226,7 +226,7 @@ func (e *ChecksError) Error() string {
 		b.WriteString("\nthe line with graft:leak-ok <reason>, or allow a term everywhere in leaks.allow")
 	}
 	switch {
-	case !slices.ContainsFunc(e.Findings, func(f checks.Finding) bool { return !f.Leak }):
+	case !slices.ContainsFunc(e.Findings, func(f checks.Finding) bool { return !f.Leak && !f.IgnoredSource }):
 	case e.NoConfig:
 		b.WriteString("\nfix the files: take the value out of them; this repository has no .graft.yaml, and an exception")
 		b.WriteString("\nneeds one with checks.secrets.exceptions (path and reason);")
@@ -234,6 +234,12 @@ func (e *ChecksError) Error() string {
 	default:
 		b.WriteString("\nfix the files, or add an exception with a reason to .graft.yaml (checks.*.exceptions);")
 		b.WriteString("\nto drop a file from the commit: git rm --cached <file> and add it to .gitignore")
+	}
+	if slices.ContainsFunc(e.Findings, func(f checks.Finding) bool { return f.IgnoredSource }) {
+		b.WriteString("\nanchor the ignore rule (for example /name) or narrow it; reconcile staged .gitignore files with the work tree")
+		if !e.NoConfig {
+			b.WriteString("; or add an exception with a reason to checks.ignored_sources.exceptions")
+		}
 	}
 	return b.String()
 }
@@ -253,6 +259,13 @@ func runChecks(ctx context.Context, repo *gitx.Repo, cfg *config.Config, message
 	}
 	if cfg.Checks.LargeFiles.IsEnabled() {
 		findings = append(findings, checks.LargeFiles(staged, cfg.Checks.LargeFiles)...)
+	}
+	if cfg.Checks.IgnoredSources.IsEnabled() {
+		ignored, err := checks.NewIgnoredSources(repo, cfg.Checks.IgnoredSources, staged)
+		if err != nil {
+			return err
+		}
+		findings = append(findings, ignored...)
 	}
 	if cfg.Checks.Reverts.IsEnabled() {
 		if message == "" {

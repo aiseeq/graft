@@ -108,7 +108,7 @@ var registrySpecs = []registrySpec{
 	{path: "version", rest: "none", source: "version"},
 	{path: "version bump", rest: "none", source: "version bump"},
 	{path: "init", rest: "none", manual: "--global"},
-	{path: "check", rest: "none", manual: "--secrets"}, {path: "leaks", rest: "args", manual: "--all"},
+	{path: "check", rest: "none", manual: "--secrets --ignored-sources"}, {path: "leaks", rest: "args", manual: "--all"},
 	{path: "gate", rest: "none"}, {path: "hook", rest: "none"},
 	{path: "merge", rest: "args", manual: "--mode --no-deps --reason -m", values: "--mode --reason -m"},
 	{path: "hook pre-commit", rest: "args"}, {path: "hook prepare-commit-msg", rest: "args"},

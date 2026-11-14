@@ -18,6 +18,8 @@ type Finding struct {
 	Reason string
 	// Leak marks a private name or term headed for a public repository.
 	Leak bool
+	// IgnoredSource identifies a finding in the worktree, outside the index.
+	IgnoredSource bool
 }
 
 func (f Finding) String() string {

@@ -312,18 +312,7 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		}
 		return noArgs(a, cmd, rest, func() error { return a.Init(ctx) })
 	case "check":
-		fs := newFlags(a, cmd)
-		secrets := fs.Bool("secrets", false, "scan the staged text for secrets only; works without .graft.yaml")
-		if err := parse(fs, rest); err != nil {
-			return err
-		}
-		if fs.NArg() > 0 {
-			return usageOf(cmd)
-		}
-		if *secrets {
-			return a.CheckSecrets()
-		}
-		return a.Check(ctx)
+		return checkCmd(ctx, a, rest)
 	case "leaks":
 		if len(rest) == 0 {
 			return usageOf("leaks")
@@ -640,6 +629,25 @@ func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
 		}
 	}
 	return a.GocacheTrim(ctx, *older, *apply, *maxWait, freeBelowBytes)
+}
+
+func checkCmd(ctx context.Context, a *app.App, args []string) error {
+	fs := newFlags(a, "check")
+	secrets := fs.Bool("secrets", false, "scan the staged text for secrets only; works without .graft.yaml")
+	ignored := fs.Bool("ignored-sources", false, "audit all ignored sources; works without .graft.yaml")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 || *secrets && *ignored {
+		return usageOf("check")
+	}
+	if *secrets {
+		return a.CheckSecrets()
+	}
+	if *ignored {
+		return a.CheckIgnoredSources()
+	}
+	return a.Check(ctx)
 }
 
 func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
