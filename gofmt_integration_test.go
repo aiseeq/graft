@@ -13,7 +13,7 @@ const fmtBad = "package main\n\nfunc main()  {}\n"
 // with the files and what to do. Files under testdata and ignored files are
 // not checked; line endings are not formatting.
 func TestGofmtFailsTheGateWithTheFiles(t *testing.T) {
-	f := vetRepo(t, "", map[string]string{
+	f := vetRepo(t, "checks: {ignored_sources: {exceptions: [{path: 'gen/**', reason: generated fixture}]}}\n", map[string]string{
 		"go.mod": vetGoMod, "main.go": fmtBad,
 		"crlf.go":            "package main\r\n\r\nfunc f() {}\r\n",
 		"testdata/bad.go":    fmtBad,

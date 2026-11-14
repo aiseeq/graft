@@ -108,6 +108,26 @@ func TestParseDefaults(t *testing.T) {
 	}
 }
 
+func TestIgnoredSourcesConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml, want string
+	}{
+		{"extension", "extensions: [.go]", "bare extension"},
+		{"reason", "exceptions: [{path: 'generated/**'}]", "reason is required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(minimal + "checks:\n  ignored_sources:\n    " + tc.yaml + "\n"))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	cfg, err := Parse([]byte(minimal + "checks:\n  ignored_sources:\n    enabled: false\n    extensions: [GO]\n"))
+	if err != nil || cfg.Checks.IgnoredSources.IsEnabled() || !slices.Equal(cfg.Checks.IgnoredSources.Extensions, []string{"go"}) {
+		t.Fatalf("config = %+v, error = %v", cfg, err)
+	}
+}
+
 func TestParseFull(t *testing.T) {
 	cfg, err := Parse([]byte(`
 schema: 1

@@ -1036,9 +1036,36 @@ func (a *App) CheckSecrets() error {
 		return err
 	}
 	if findings := checks.Secrets(staged, secrets); len(findings) > 0 {
-		return &ChecksError{Findings: findings}
+		return &ChecksError{Findings: findings, NoConfig: cfg == nil}
 	}
 	a.printf("no secrets in the staged files")
+	return nil
+}
+
+// CheckIgnoredSources audits ignored sources, including rules already in HEAD.
+func (a *App) CheckIgnoredSources() error {
+	repo, err := gitx.Open(a.Dir)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(repo.Root)
+	var ignored config.IgnoredSources
+	switch {
+	case err == nil:
+		ignored = cfg.Checks.IgnoredSources
+	case errors.Is(err, config.ErrNotFound):
+		ignored.Extensions = config.DefaultSourceExtensions
+	default:
+		return err
+	}
+	findings, err := checks.IgnoredSources(repo, ignored)
+	if err != nil {
+		return err
+	}
+	if len(findings) > 0 {
+		return &ChecksError{Findings: findings, NoConfig: cfg == nil}
+	}
+	a.printf("no ignored sources found")
 	return nil
 }
 

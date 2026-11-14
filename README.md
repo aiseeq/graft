@@ -486,7 +486,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft version bump [--minor\|--major]` | raise the version in the version file and its synced files without committing, for a script that folds the bump into its own commit or `graft amend`; `graft commit` raises it again, so a merged work branch is released with `graft release --minor` |
 | `graft version --describe` | the build identity for stamping binaries: `v1.4.0-3-gabc1234[-dirty]`, `1.4.0[-dirty]` in mode `file`, `v0.0.0-<commits>-g<hash>` without a tag |
 | `graft init` | install the hooks and set `core.hooksPath`, create the `.env` file from `dotenv_template` when it is missing, install pinned tools that fail their check; safe to repeat |
-| `graft check [--secrets]` | run the content checks on the index; `--secrets`: the secrets check alone, which needs no `.graft.yaml` (with one, its `checks.secrets` applies), for the pre-commit hook of a repository graft does not manage |
+| `graft check [--secrets \| --ignored-sources]` | check staged content and new ignore rules; `--secrets` scans secrets alone, `--ignored-sources` audits all ignored sources. Both work without `.graft.yaml` and use its settings when present |
 | `graft leaks <revision>…` | scan commits, including merge resolutions and messages (Git 2.36 or newer for merges), for the private names and terms of the user config (`leaks`) |
 | `graft gate` | run the gate commands (`go vet ./...` in every Go module first, see `go_vet`, then `go fix -diff ./...` with `go_fix`, then `gofmt -l` with `go_fmt`) |
 | `graft merge [--mode rebase\|merge] [--no-deps --reason TEXT] [-m MESSAGE] <branch>` | build and check a trunk update in a temporary worktree, push it to configured remotes, then fast-forward the local trunk |
@@ -811,6 +811,12 @@ checks:
     exceptions:
       - path: docs/vendor/diagram.min.js
         reason: vendored library, updated on purpose
+  ignored_sources:
+    enabled: true               # default true
+    extensions: [go, ts, tsx, js, jsx, mjs, cjs, sql, sh, py] # replaces defaults
+    exceptions:
+      - path: 'generated/**'
+        reason: generated sources
   reverts:
     enabled: true               # default true
     depth: 60                   # default: recent commits of HEAD's first-parent line
@@ -2583,6 +2589,20 @@ up to date and release again.
   refused, and so is a symlink to an absolute path (`/x`, `C:\x`), which
   leads into this machine and nowhere in another clone: one made by mistake
   inside the tree is staged by a commit that stages all.
+- **Ignored sources**: a commit fails when a source file is hidden by a rule
+  added or changed in a staged `.gitignore`. Without added rules there is no
+  tree scan. Each finding names the rule's file, line and pattern. Git reads
+  ignore rules from the worktree, so a changed staged `.gitignore` must match
+  its worktree file; a mismatch fails the check. `graft check --ignored-sources`
+  audits all current ignore rules, even without `.graft.yaml`; an explicit
+  audit runs even when the commit check is disabled. A literal rule naming the
+  exact file is treated as intentional. Ignored directories
+  are traversed except nested repositories, configured exceptions, and generated
+  directories `node_modules`, `.next`, `.nuxt`, `.svelte-kit`, `.turbo`,
+  `__pycache__`, `.venv` and `.git`. `out`, `dist` and `build` are skipped
+  only next to a `package.json`; generated `next-env.d.ts` is skipped too.
+  Test reports are not excluded by default. Extensions and path exceptions
+  can be configured under `checks.ignored_sources`.
 - **Reverts**: a commit must not silently take back merged work, a tree from
   an old base committed on a fresh parent say. For each staged file and each
   of the `depth` recent commits of HEAD's first-parent line that changed it:
