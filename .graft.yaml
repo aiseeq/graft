@@ -3,6 +3,9 @@ schema: 1
 limits: {gate: 2m}
 version:
   mode: git-tag
+# graft release refuses a tag over commits whose author or committer is not listed.
+release:
+  authors: ["20417799+aiseeq@users.noreply.github.com"]
 gate:
   - task: smoke
 
