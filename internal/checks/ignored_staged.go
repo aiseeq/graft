@@ -111,8 +111,16 @@ func addedIgnoreLines(repo *gitx.Repo, name string) (map[string]bool, error) {
 			}
 			continue
 		}
-		if line > 0 && strings.HasPrefix(text, "+") {
+		if line == 0 {
+			continue
+		}
+		// diff.interHunkContext joins near hunks with context lines even
+		// under --unified=0: they hold index lines too.
+		switch {
+		case strings.HasPrefix(text, "+"):
 			lines[strconv.Itoa(line)] = true
+			line++
+		case strings.HasPrefix(text, " "):
 			line++
 		}
 	}

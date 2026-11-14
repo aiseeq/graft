@@ -224,3 +224,20 @@ func TestIgnoredSourcesAuditWhenDisabled(t *testing.T) {
 		t.Fatalf("audit: %d: %s", code, out)
 	}
 }
+
+// diff.interHunkContext joins near hunks with context lines even under
+// --unified=0: the new rule's line number counts them, or the finding is
+// dropped as an old rule's.
+func TestIgnoredSourcesInterHunkContext(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": ignoredConfig, ".gitignore": "old-a\nold-b\nold-c\n"})
+	f.git("config", "diff.interHunkContext", "10")
+	f.git("add", ".")
+	f.git("commit", "-m", "initial")
+	f.write(".gitignore", "added-a\nold-a\nold-b\nold-c\njwt-*\n")
+	f.write("cmd/jwt-helper/main.go", "package main\n")
+	f.git("add", ".gitignore")
+	out, code := f.graft("", "check")
+	if code == 0 || !strings.Contains(out, "cmd/jwt-helper/main.go") || !strings.Contains(out, ".gitignore:5: jwt-*") {
+		t.Fatalf("joined hunks: exit %d: %s", code, out)
+	}
+}
