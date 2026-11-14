@@ -378,11 +378,15 @@ func TestTaskCacheWrappingConfirmRefused(t *testing.T) {
 			t.Errorf("%s: %v", wrapper, err)
 		}
 	}
-	for _, step := range []string{"[graft push]", "[[graft, exec, --heavy, --, graft, push]]", "[{sh: \"graft push --dry-run\"}]"} {
+	for _, step := range []string{"[graft push]", "[graft run push]", "[[graft, exec, --heavy, --, graft, push]]", "[{sh: \"graft push --dry-run\"}]"} {
 		_, err := Parse([]byte(base + "  ship:\n    run: " + step + "\n    cache: tree\n"))
-		if err == nil || !strings.Contains(err.Error(), "runs graft push, which has confirm") {
+		if err == nil || !strings.Contains(err.Error(), "runs graft push: task push has confirm") {
 			t.Errorf("%s: %v", step, err)
 		}
+	}
+	// graft <task> whose task reaches confirm through its own deps.
+	if _, err := Parse([]byte(base + "  ship:\n    run: [graft mid]\n    cache: tree\n")); err == nil || !strings.Contains(err.Error(), "runs graft mid: task push has confirm") {
+		t.Errorf("graft mid: %v", err)
 	}
 	if _, err := Parse([]byte(base + "  ship:\n    deps: [plain]\n    run: [./notes.sh, graft plain]\n    cache: tree\n")); err != nil {
 		t.Errorf("cache over a chain without confirm: %v", err)
