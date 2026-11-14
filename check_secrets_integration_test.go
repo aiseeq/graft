@@ -24,6 +24,11 @@ func TestCheckSecretsWithoutConfig(t *testing.T) {
 	if strings.Contains(out, token) || strings.Contains(out, "big.bin") {
 		t.Errorf("the output shows the value or checks more than secrets:\n%s", out)
 	}
+	// No .graft.yaml here: the hint does not send to an exception in it as a
+	// step ready to take, but says one is needed.
+	if strings.Contains(out, "exception with a reason to .graft.yaml") || !strings.Contains(out, "no .graft.yaml") {
+		t.Errorf("the hint without a config points at .graft.yaml exceptions:\n%s", out)
+	}
 	// The secret is looked for in the staged text, not in the file on disk.
 	f.write("notes.md", "one\n")
 	if _, code := f.graft("", "check", "--secrets"); code == 0 {
@@ -40,7 +45,7 @@ func TestCheckSecretsTakesConfig(t *testing.T) {
 	})
 	f.git("add", ".")
 	out, code := f.graft("", "check", "--secrets")
-	if code == 0 || !strings.Contains(out, "a.txt:1") || strings.Contains(out, "testdata/key.txt") {
+	if code == 0 || !strings.Contains(out, "a.txt:1") || strings.Contains(out, "testdata/key.txt") || !strings.Contains(out, "exception with a reason to .graft.yaml") {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
 	// An extra pattern may be the secret itself: the finding does not show it.

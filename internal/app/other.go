@@ -1036,7 +1036,7 @@ func (a *App) CheckSecrets() error {
 		return err
 	}
 	if findings := checks.Secrets(staged, secrets); len(findings) > 0 {
-		return &ChecksError{Findings: findings}
+		return &ChecksError{Findings: findings, NoConfig: cfg == nil}
 	}
 	a.printf("no secrets in the staged files")
 	return nil

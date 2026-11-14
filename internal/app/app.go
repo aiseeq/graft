@@ -208,6 +208,9 @@ var markerEnv = []string{tasks.MarkerEnv + "=1"}
 // ChecksError lists what the staged content checks found.
 type ChecksError struct {
 	Findings []checks.Finding
+	// NoConfig: the repository has no .graft.yaml, so an exception there is
+	// not a step ready to take.
+	NoConfig bool
 }
 
 func (e *ChecksError) Error() string {
@@ -222,7 +225,13 @@ func (e *ChecksError) Error() string {
 		b.WriteString("\nprivate names and terms come from the user config (leaks); rewrite them in neutral words, or mark")
 		b.WriteString("\nthe line with graft:leak-ok <reason>, or allow a term everywhere in leaks.allow")
 	}
-	if slices.ContainsFunc(e.Findings, func(f checks.Finding) bool { return !f.Leak }) {
+	switch {
+	case !slices.ContainsFunc(e.Findings, func(f checks.Finding) bool { return !f.Leak }):
+	case e.NoConfig:
+		b.WriteString("\nfix the files: take the value out of them; this repository has no .graft.yaml, and an exception")
+		b.WriteString("\nneeds one with checks.secrets.exceptions (path and reason);")
+		b.WriteString("\nto drop a file from the commit: git rm --cached <file> and add it to .gitignore")
+	default:
 		b.WriteString("\nfix the files, or add an exception with a reason to .graft.yaml (checks.*.exceptions);")
 		b.WriteString("\nto drop a file from the commit: git rm --cached <file> and add it to .gitignore")
 	}
