@@ -27,7 +27,7 @@ func TestDeployLeavesDormantReleaseNoteAlone(t *testing.T) {
 	if len(comments["PROJ-124"]) != 0 || slices.Contains(moved, "PROJ-124") {
 		t.Fatalf("dormant item got note/transition: comments=%v moved=%v\n%s", comments, moved, out)
 	}
-	if !strings.Contains(out, "PROJ-123 ships dormant (test-stand): left in In Progress, not moved") {
+	if !strings.Contains(out, "PROJ-124 ships dormant with its parent PROJ-123 (test-stand): left in In Progress, not moved") {
 		t.Fatalf("missing dormant note line:\n%s", out)
 	}
 }
@@ -35,7 +35,8 @@ func TestDeployLeavesDormantReleaseNoteAlone(t *testing.T) {
 func TestDeployCheckShowsDormantLineAndStatusAdvice(t *testing.T) {
 	configure := func(state string, q func(string) string) string {
 		cfg := deployConfig(state, q)
-		return strings.Replace(cfg, `approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}`, `approved_release: {statuses: [Ready for release, Done], prefix: "Product v", dormant: [{key: PROJ-123, reason: ready-fixture}, {key: PROJ-124, reason: done-fixture}, {key: PROJ-125, reason: not-in-release}], ignore_paths: ["docs/**", "*.md"]}`, 1)
+		return strings.Replace(cfg, `approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}`, `release_notes: {transitions: [{from: [In Progress], to: Testing}]}
+      approved_release: {statuses: [Ready for release, Done], prefix: "Product v", dormant: [{key: PROJ-123, reason: ready-fixture}, {key: PROJ-124, reason: done-fixture}, {key: PROJ-125, reason: not-in-release}], ignore_paths: ["docs/**", "*.md"]}`, 1)
 	}
 	d := newDeployFixture(t, configure)
 	d.mustGraft("deploy", "--unapproved", "live")
@@ -52,6 +53,7 @@ func TestDeployCheckShowsDormantLineAndStatusAdvice(t *testing.T) {
 	}
 	for _, want := range []string{
 		"ships dormant: PROJ-123 — ready-fixture", "ships dormant: PROJ-124 — done-fixture",
+		"PROJ-124 ships dormant (done-fixture): left in Done, not moved",
 		"PROJ-123 is Ready for release: drop it from approved_release.dormant to let the deploy close it",
 		"PROJ-124 is Done: drop it from approved_release.dormant",
 	} {
@@ -64,5 +66,8 @@ func TestDeployCheckShowsDormantLineAndStatusAdvice(t *testing.T) {
 	}
 	if strings.Contains(out, "would refuse") {
 		t.Errorf("status advice became a refusal:\n%s", out)
+	}
+	if strings.Contains(out, "note only") {
+		t.Errorf("closed dormant task was previewed as note-only:\n%s", out)
 	}
 }

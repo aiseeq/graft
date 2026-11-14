@@ -172,6 +172,7 @@ func (a *App) printDeploySummary(ctx context.Context, r *deployRun) {
 		}
 		a.previewNotes(ctx, r)
 	}
+	a.printDormantSummary(r)
 	if t.MergeIntoTrunk {
 		a.printf("- merge_into_trunk: record the release branch on the trunk")
 	}
@@ -182,6 +183,15 @@ func (a *App) printDeploySummary(ctx context.Context, r *deployRun) {
 		a.printf("- release_page: Confluence parent %s; title %q", p.Parent, p.Title)
 	}
 	a.printf("- command: graft deploy %s", r.name)
+}
+
+func (a *App) printDormantSummary(r *deployRun) {
+	if r.gated { // passApproved already printed the list.
+		return
+	}
+	for _, item := range config.UniqueDormant(r.dormantItems) {
+		a.printf("ships dormant: %s — %s", item.Key, item.Reason)
+	}
 }
 
 // transitionSummary is a transition of release_notes in one line, naming
@@ -242,7 +252,6 @@ func (a *App) previewNotes(ctx context.Context, r *deployRun) {
 		a.printf("- keys not checked: %v", err)
 		return
 	}
-	a.previewDormant(ctx, r, client, keys)
 	me, err := client.Myself(ctx)
 	if err != nil {
 		a.printf("- keys not checked: %v", err)
@@ -262,52 +271,49 @@ func (a *App) previewNotes(ctx context.Context, r *deployRun) {
 	}
 	m := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, approved: r.target.ApprovedRelease, me: me, target: r.name, glint: glint, standing: r.cfg.ReleaseNotes.Jira.SkipKeys, readOnly: true}
 	for _, key := range keys {
-		if slices.Contains(r.cfg.ReleaseNotes.Jira.SkipKeys, key) || (r.moveOut != nil && slices.Contains(r.moveOut.keys, key)) {
-			a.printf("- %s: left alone", key)
-			continue
-		}
-		issue, err := client.Issue(ctx, key)
-		if err != nil {
-			a.printf("- %s: not checked: %v", key, err)
-			continue
-		}
-		yours, err := a.noteable(ctx, client, r.cfg.ReleaseNotes.Jira, me, issue)
-		if err != nil {
-			a.printf("- %s: not checked: %v", key, err)
-			continue
-		}
-		if !yours {
-			a.printf("- %s: %s → %s (left alone)", key, issue.Status, issue.Status)
-			continue
-		}
-		if issue.Done {
-			a.printf("- %s: %s → %s (note only, if not quiet)", key, issue.Status, issue.Status)
-			continue
-		}
-		if status := m.delivered(ctx, issue); status == issue.Status {
-			a.printf("- %s: %s → %s (stays)", key, issue.Status, status)
-		}
+		a.previewNoteKey(ctx, r, m, key)
 	}
 	a.retryHeld(ctx, &subtaskRun{mover: m, reached: map[string]string{}}, held, keys)
 }
 
-func (a *App) previewDormant(ctx context.Context, r *deployRun, client *jira.Client, keys []string) {
-	if r.gated || r.target.ApprovedRelease == nil {
+func (a *App) previewNoteKey(ctx context.Context, r *deployRun, m *noteMover, key string) {
+	if slices.Contains(r.cfg.ReleaseNotes.Jira.SkipKeys, key) || (r.moveOut != nil && slices.Contains(r.moveOut.keys, key)) {
+		a.printf("- %s: left alone", key)
 		return
 	}
-	listed := config.UniqueDormant(r.dormantItems)
-	for _, key := range keys {
-		issue, err := client.Issue(ctx, key)
-		if err != nil {
-			a.printf("- %s dormant status not checked: %v", key, err)
-			continue
-		}
-		if item, dormant := r.target.ApprovedRelease.DormantFor(key, issue.Parent); dormant {
-			listed = config.UniqueDormant(listed, []config.DormantReleaseItem{item})
-		}
+	issue, err := m.client.Issue(ctx, key)
+	if err != nil {
+		a.printf("- %s: not checked: %v", key, err)
+		return
 	}
-	for _, item := range listed {
-		a.printf("ships dormant: %s — %s", item.Key, item.Reason)
+	a.previewDormant(r, issue)
+	if m.leaveDormant(issue) {
+		return
+	}
+	yours, err := a.noteable(ctx, m.client, r.cfg.ReleaseNotes.Jira, m.me, issue)
+	if err != nil {
+		a.printf("- %s: not checked: %v", key, err)
+		return
+	}
+	if !yours {
+		a.printf("- %s: %s → %s (left alone)", key, issue.Status, issue.Status)
+		return
+	}
+	if issue.Done {
+		a.printf("- %s: %s → %s (note only, if not quiet)", key, issue.Status, issue.Status)
+		return
+	}
+	if status := m.delivered(ctx, issue); status == issue.Status {
+		a.printf("- %s: %s → %s (stays)", key, issue.Status, status)
+	}
+}
+
+func (a *App) previewDormant(r *deployRun, issue jira.Issue) {
+	if r.target.ApprovedRelease == nil || len(r.target.ApprovedRelease.Dormant) == 0 {
+		return
+	}
+	if item, dormant := r.target.ApprovedRelease.DormantFor(issue.Key, issue.Parent); dormant {
+		r.dormantItems = config.UniqueDormant(r.dormantItems, []config.DormantReleaseItem{item})
 	}
 }
 

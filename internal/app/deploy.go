@@ -996,8 +996,15 @@ func (m *noteMover) leaveDormant(issue jira.Issue) bool {
 	if !ok {
 		return false
 	}
-	m.app.printf("%s ships dormant (%s): left in %s, not moved", item.Key, item.Reason, issue.Status)
+	m.app.printf("%s", dormantLeftMessage(item, issue))
 	return true
+}
+
+func dormantLeftMessage(item config.DormantReleaseItem, issue jira.Issue) string {
+	if item.Key != issue.Key && issue.Parent == item.Key {
+		return fmt.Sprintf("%s ships dormant with its parent %s (%s): left in %s, not moved", issue.Key, item.Key, item.Reason, issue.Status)
+	}
+	return fmt.Sprintf("%s ships dormant (%s): left in %s, not moved", issue.Key, item.Reason, issue.Status)
 }
 
 func quietNoteReason(q *config.QuietNotes, issue jira.Issue) string {

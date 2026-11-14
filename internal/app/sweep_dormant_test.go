@@ -173,7 +173,7 @@ func TestDormantHeldSubtaskStaysDuringHandoverRetry(t *testing.T) {
 	if len(requests) != 0 {
 		t.Fatalf("handover retry transitioned dormant subtask: %v", requests)
 	}
-	if !strings.Contains(output.String(), "PROJ-123 ships dormant (disabled parent): left in In Progress, not moved") {
+	if !strings.Contains(output.String(), "PROJ-124 ships dormant with its parent PROJ-123 (disabled parent): left in In Progress, not moved") {
 		t.Fatalf("missing dormant handover line:\n%s", output.String())
 	}
 }

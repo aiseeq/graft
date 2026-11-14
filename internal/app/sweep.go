@@ -340,7 +340,7 @@ func (s *sweepRun) judge(ctx context.Context, items map[string][]sweptCommit) {
 					continue
 				}
 				s.judged[key] = true
-				s.lines = append(s.lines, fmt.Sprintf("%s ships dormant (%s): left in %s, not moved", item.Key, item.Reason, issue.Status))
+				s.lines = append(s.lines, dormantLeftMessage(item, issue))
 				continue
 			}
 			s.item(ctx, issue, items[key])
@@ -818,7 +818,7 @@ func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, check
 	key := issue.Key
 	if item, dormant := s.r.target.ApprovedRelease.DormantFor(issue.Key, issue.Parent); dormant {
 		s.judged[key] = true
-		s.lines = append(s.lines, fmt.Sprintf("%s ships dormant (%s): left in %s, not moved", item.Key, item.Reason, issue.Status))
+		s.lines = append(s.lines, dormantLeftMessage(item, issue))
 		return
 	}
 	if slices.Contains(s.notes.SkipStatuses, issue.Status) {

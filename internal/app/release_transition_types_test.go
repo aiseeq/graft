@@ -51,6 +51,46 @@ func TestDeploySummaryConfiguredEffects(t *testing.T) {
 	}
 }
 
+func TestDeploySummaryShowsDormantWithoutTargetReleaseNotes(t *testing.T) {
+	var out bytes.Buffer
+	a := &App{Stdout: &out, Stderr: io.Discard}
+	r := &deployRun{
+		name:         "prod",
+		target:       &config.DeployTarget{ApprovedRelease: &config.ApprovedRelease{}},
+		dormantItems: []config.DormantReleaseItem{{Key: "PROJ-1", Reason: "disabled"}},
+	}
+	a.printDeploySummary(t.Context(), r)
+	if !strings.Contains(out.String(), "ships dormant: PROJ-1 — disabled") {
+		t.Fatalf("summary omitted dormant item without target release_notes:\n%s", out.String())
+	}
+}
+
+func TestPreviewDormantOnlyAddsListedTaskOrSubtask(t *testing.T) {
+	r := &deployRun{target: &config.DeployTarget{ApprovedRelease: &config.ApprovedRelease{Dormant: []config.DormantReleaseItem{{Key: "PROJ-1", Reason: "disabled"}}}}}
+	(&App{}).previewDormant(r, jira.Issue{Key: "PROJ-2", Parent: "PROJ-1"})
+	if len(r.dormantItems) != 1 || r.dormantItems[0].Key != "PROJ-1" {
+		t.Fatalf("dormant summary entries = %+v, want only parent PROJ-1", r.dormantItems)
+	}
+	(&App{}).previewDormant(r, jira.Issue{Key: "PROJ-3"})
+	if len(r.dormantItems) != 1 {
+		t.Fatalf("unrelated task added dormant summary entry: %+v", r.dormantItems)
+	}
+}
+
+func TestDormantSubtaskMessageUsesSubtaskStatus(t *testing.T) {
+	var out bytes.Buffer
+	a := &App{Stdout: &out, Stderr: io.Discard}
+	mover := &noteMover{app: a, approved: &config.ApprovedRelease{Dormant: []config.DormantReleaseItem{{Key: "PROJ-1", Reason: "disabled parent"}}}}
+	issue := jira.Issue{Key: "PROJ-2", Parent: "PROJ-1", Status: "Done"}
+	if !mover.leaveDormant(issue) {
+		t.Fatal("subtask of dormant parent was not treated as dormant")
+	}
+	want := "PROJ-2 ships dormant with its parent PROJ-1 (disabled parent): left in Done, not moved"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("message = %q, want %q", out.String(), want)
+	}
+}
+
 func TestTransitionTypesKeepNamedAndFollowingSubtasks(t *testing.T) {
 	var moved []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

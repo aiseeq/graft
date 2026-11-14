@@ -2079,6 +2079,34 @@ func TestDeployCheckSummaryReadOnly(t *testing.T) {
 	}
 }
 
+func TestDeployCheckWithoutDormantDoesNotAddJiraPreviewRead(t *testing.T) {
+	configure := func(state string, q func(string) string) string {
+		cfg := deployConfig(state, q)
+		return strings.Replace(cfg,
+			`      release_notes: {transitions: [{from: [In Progress], to: Testing}], fix_version: {prefix: "Product v"}}`,
+			`      release_notes: {transitions: [{from: [In Progress], to: Testing}], fix_version: {prefix: "Product v"}}
+      approved_release: {statuses: [Ready for release]}`, 1)
+	}
+	d := newDeployFixture(t, configure)
+	d.mustGraft("deploy", "--unapproved", "uat")
+	d.write("without-dormant.txt", "synthetic\n")
+	d.mustFixtureCommit("feat: PROJ-1 ordinary work")
+	d.jira.mu.Lock()
+	d.jira.requests = 0
+	d.jira.failAll = true
+	d.jira.mu.Unlock()
+	out, _ := d.graft("", "deploy", "check", "uat")
+	d.jira.mu.Lock()
+	requests := d.jira.requests
+	d.jira.mu.Unlock()
+	if requests != 2 { // approval item read and the existing release-note preview's /myself
+		t.Fatalf("Jira requests = %d, want 2 without a dormant list:\n%s", requests, out)
+	}
+	if strings.Contains(out, "dormant status not checked") || strings.Contains(out, "ships dormant:") {
+		t.Fatalf("empty dormant list changed check output:\n%s", out)
+	}
+}
+
 func TestDeployVersions(t *testing.T) {
 	d := deployRepo(t)
 	d.mustGraft("deploy", "test")
