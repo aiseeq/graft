@@ -212,6 +212,11 @@ func (c *Config) sideEffect(name string, seen map[string]bool) string {
 			if slices.Contains(sideEffects[words[i]], words[i+1]) {
 				return fmt.Sprintf("task %s runs %s %s", name, words[i], words[i+1])
 			}
+			// graft <task>, graft exec -- graft <task> too: its confirmed
+			// run would be skipped on a hit like a dep's.
+			if words[i] == "graft" && c.Tasks[words[i+1]] != nil && c.Tasks[words[i+1]].Confirm != "" {
+				return fmt.Sprintf("task %s runs graft %s, which has confirm, whose run a cache hit would skip", name, words[i+1])
+			}
 		}
 	}
 	return ""

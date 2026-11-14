@@ -378,7 +378,13 @@ func TestTaskCacheWrappingConfirmRefused(t *testing.T) {
 			t.Errorf("%s: %v", wrapper, err)
 		}
 	}
-	if _, err := Parse([]byte(base + "  ship:\n    deps: [plain]\n    run: [./notes.sh]\n    cache: tree\n")); err != nil {
+	for _, step := range []string{"[graft push]", "[[graft, exec, --heavy, --, graft, push]]", "[{sh: \"graft push --dry-run\"}]"} {
+		_, err := Parse([]byte(base + "  ship:\n    run: " + step + "\n    cache: tree\n"))
+		if err == nil || !strings.Contains(err.Error(), "runs graft push, which has confirm") {
+			t.Errorf("%s: %v", step, err)
+		}
+	}
+	if _, err := Parse([]byte(base + "  ship:\n    deps: [plain]\n    run: [./notes.sh, graft plain]\n    cache: tree\n")); err != nil {
 		t.Errorf("cache over a chain without confirm: %v", err)
 	}
 }

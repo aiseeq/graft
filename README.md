@@ -1101,8 +1101,9 @@ dotenv_sets:                   # key lists several tasks and services share
 
   Cache only checks that change nothing outside the work tree. A task that
   runs `graft deploy`, `release`, `commit`, `git push`, `docker push`, acts
-  on services or has `confirm` (a hit would skip the confirmed run), itself or
-  through its deps and inner tasks, is refused; what
+  on services, has `confirm` or runs `graft <task>` of a task with `confirm`
+  (a hit would skip the confirmed run), itself or through its deps and inner
+  tasks, is refused; what
   graft cannot see (a script that deploys) is the author's to keep out. A
   check whose result depends on something outside the tree that the key
   does not cover (a database state, a remote service) must name it in
