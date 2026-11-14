@@ -20,13 +20,6 @@ import (
 	"github.com/aiseeq/graft/v2/internal/proc"
 )
 
-func TestMain(m *testing.M) {
-	if err := akitproc.BecomeChildSubreaper(); err != nil {
-		panic(err)
-	}
-	os.Exit(m.Run())
-}
-
 // TestTaskConfirmChecksNoNewPrivs tests the default refusal with a synthetic
 // setuid file. It never executes sudo and runs no_new_privs in a child only.
 func TestTaskConfirmChecksNoNewPrivs(t *testing.T) {
