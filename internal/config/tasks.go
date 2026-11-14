@@ -530,7 +530,10 @@ func (c *Config) validateTasks() error {
 			return errors.New("gate: service steps belong in tasks; the gate only checks")
 		}
 	}
-	return c.checkTaskCycles()
+	if err := c.checkTaskCycles(); err != nil {
+		return err
+	}
+	return c.checkCachedConfirm()
 }
 
 func (c *Config) validateTask(name string, t *Task) error {
@@ -662,6 +665,39 @@ func (c *Config) checkTaskCycles() error {
 	for _, name := range slices.Sorted(maps.Keys(c.Tasks)) {
 		if err := visit(name, nil); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// checkCachedConfirm refuses a task with cache whose deps or task steps
+// lead, at any depth, to a task with confirm: a cache hit returns before the
+// deps and steps, so the confirmed write would silently not happen.
+func (c *Config) checkCachedConfirm() error {
+	for _, name := range slices.Sorted(maps.Keys(c.Tasks)) {
+		if c.Tasks[name].Cache == nil {
+			continue
+		}
+		if path := c.confirmPath(name, map[string]bool{}); path != nil {
+			return fmt.Errorf("tasks.%s: cache cannot wrap tasks.%s, which has confirm (%s): a cache hit skips it and its confirmed run silently does not happen", name, path[len(path)-1], strings.Join(path, " -> "))
+		}
+	}
+	return nil
+}
+
+// confirmPath is the chain of refs from name to the first task with confirm
+// below it, or nil. Cycles are refused before this runs; seen only saves work.
+func (c *Config) confirmPath(name string, seen map[string]bool) []string {
+	for _, ref := range c.Tasks[name].Refs() {
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		if c.Tasks[ref].Confirm != "" {
+			return []string{name, ref}
+		}
+		if rest := c.confirmPath(ref, seen); rest != nil {
+			return append([]string{name}, rest...)
 		}
 	}
 	return nil

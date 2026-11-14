@@ -910,6 +910,8 @@ dotenv_sets:                   # key lists several tasks and services share
   A heavy task confirms locally before it can run on a remote host. The same
   script run outside graft does not ask for confirmation. A task with `confirm`
   cannot also have `cache`: a hit skips the task and cache commands run before confirmation.
+  Nor can a task with `cache` reach one with `confirm` through its deps or `{task: …}`
+  steps, at any depth: its hit returns before them, and the confirmed run would not happen.
 - A step is a string (split into words, no shell; pipes, `$VAR` and
   redirects are errors), a list (argv as is), `{sh: "..."}`, `{task: name}`,
   `{service: action [name]}` or `{install: paths}` (below). A string with
