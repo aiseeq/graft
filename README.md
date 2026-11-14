@@ -2605,7 +2605,8 @@ up to date and release again.
   `.gitignore` in the scanned directories must match the index. An untracked,
   ignored, changed or missing `.gitignore` (its directory gone too) fails the
   check, and so does a symlinked one: git reads no rules through it and warns,
-  so what it hides cannot be told. Excluded directories
+  so what it hides cannot be told. A missing `.gitignore` marked
+  `skip-worktree` is read from the index. Excluded directories
   and nested repositories are skipped. `graft check --ignored-sources`
   audits all current ignore rules, even without `.graft.yaml`; an explicit
   audit runs even when the commit check is disabled. A literal rule naming the

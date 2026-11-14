@@ -21,6 +21,10 @@ func IgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources) ([]Finding, erro
 // ignoredSources finds the ignored sources of the tree; before, when set,
 // names those already hidden before the commit, which are left out.
 func ignoredSources(repo *gitx.Repo, cfg config.IgnoredSources, before func(files []string) (map[string]bool, error)) ([]Finding, error) {
+	ignoreCase, excludesFile, err := ignoreSourceSettings(repo)
+	if err != nil {
+		return nil, err
+	}
 	listed, err := repo.GitStrict("ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("listing ignored files: %w", err)
@@ -45,7 +49,7 @@ func ignoredSources(repo *gitx.Repo, cfg config.IgnoredSources, before func(file
 		if fields[n] == "" || strings.HasPrefix(fields[n+2], "!") {
 			continue
 		}
-		if exactIgnoredFile(fields[n], fields[n+2], fields[n+3]) {
+		if exactIgnoredFile(fields[n], fields[n+2], fields[n+3], excludesFile, ignoreCase) {
 			continue
 		}
 		findings = append(findings, Finding{Path: fields[n+3], Reason: fmt.Sprintf("ignored source (%s:%s: %s)", fields[n], fields[n+1], fields[n+2]), IgnoredSource: true})
@@ -67,7 +71,7 @@ func ignoredSources(repo *gitx.Repo, cfg config.IgnoredSources, before func(file
 // exactIgnoredFile reports whether pattern of the ignore file source names
 // file itself: a literal path, a backslash taking the next character as it is
 // (`a\*.go` is the file a*.go), with no unescaped glob and no trailing slash.
-func exactIgnoredFile(source, pattern, file string) bool {
+func exactIgnoredFile(source, pattern, file, excludesFile string, ignoreCase bool) bool {
 	if strings.HasSuffix(pattern, "/") {
 		return false
 	}
@@ -86,13 +90,47 @@ func exactIgnoredFile(source, pattern, file string) bool {
 			literal.WriteByte(c)
 		}
 	}
-	// info/exclude and core.excludesFile (git names it by its absolute path,
-	// ~/.gitignore say) apply from the top of the work tree.
+	// info/exclude and the configured core.excludesFile apply from the top
+	// of the work tree, regardless of their filename.
 	base := ""
-	if path.Base(source) == ".gitignore" && !path.IsAbs(source) {
+	if source != filepath.ToSlash(filepath.Join(".git", "info", "exclude")) && !path.IsAbs(source) && !sameIgnorePath(source, excludesFile, ignoreCase) {
 		base = path.Dir(source)
 	}
-	return path.Join(base, strings.TrimPrefix(literal.String(), "/")) == file
+	matched := path.Join(base, strings.TrimPrefix(literal.String(), "/"))
+	if ignoreCase {
+		return strings.EqualFold(matched, file)
+	}
+	return matched == file
+}
+
+func ignoreSourceSettings(repo *gitx.Repo) (ignoreCase bool, excludesFile string, err error) {
+	value, err := repo.Git("config", "--bool", "--get", "core.ignoreCase")
+	switch {
+	case err == nil:
+		ignoreCase = strings.TrimSpace(value) == "true"
+	case gitx.ExitCode(err) != 1:
+		return false, "", fmt.Errorf("reading core.ignoreCase: %w", err)
+	}
+	value, err = repo.Git("config", "--path", "--get", "core.excludesFile")
+	switch {
+	case err == nil:
+		excludesFile = strings.TrimSuffix(value, "\n")
+	case gitx.ExitCode(err) != 1:
+		return false, "", fmt.Errorf("reading core.excludesFile: %w", err)
+	}
+	return ignoreCase, excludesFile, nil
+}
+
+func sameIgnorePath(a, b string, ignoreCase bool) bool {
+	if b == "" {
+		return false
+	}
+	a = filepath.ToSlash(filepath.Clean(filepath.FromSlash(a)))
+	b = filepath.ToSlash(filepath.Clean(filepath.FromSlash(b)))
+	if ignoreCase {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 func collectIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, listed string) ([]string, error) {

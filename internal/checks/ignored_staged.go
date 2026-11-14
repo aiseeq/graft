@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/config"
@@ -16,11 +17,24 @@ import (
 func NewIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, staged []StagedFile) ([]Finding, error) {
 	var mismatches []Finding
 	changed := false
+	var skipWorktree map[string]bool
+	var err error
 	for _, f := range staged {
 		if path.Base(f.Path) != ".gitignore" {
 			continue
 		}
 		changed = true
+		if skipWorktree == nil {
+			skipWorktree, err = skipWorktreeFiles(repo)
+			if err != nil {
+				return nil, err
+			}
+		}
+		skipMismatch := false
+		if skipWorktree[f.Path] {
+			_, statErr := os.Lstat(filepath.Join(repo.Root, filepath.FromSlash(f.Path)))
+			skipMismatch = os.IsNotExist(statErr)
+		}
 		excluded, err := excludedIgnoreFile(repo.Root, f.Path, cfg.Exceptions)
 		if err != nil {
 			return nil, err
@@ -28,9 +42,12 @@ func NewIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, staged []Stag
 		if excluded {
 			continue
 		}
-		reason, err := ignoreMismatch(repo, f)
-		if err != nil {
-			return nil, err
+		reason := ""
+		if !skipMismatch {
+			reason, err = ignoreMismatch(repo, f)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if reason != "" {
 			mismatches = append(mismatches, Finding{Path: f.Path, Reason: reason, IgnoredSource: true})
@@ -54,7 +71,7 @@ func NewIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, staged []Stag
 	if !changed {
 		return nil, nil
 	}
-	mismatches, err := mismatchedIgnoreFiles(repo, cfg)
+	mismatches, err = mismatchedIgnoreFiles(repo, cfg)
 	if err != nil || len(mismatches) > 0 {
 		return mismatches, err
 	}
@@ -125,27 +142,16 @@ func ignoredByHead(repo *gitx.Repo, files []string) (hidden map[string]bool, err
 // core.excludesFile (or core.ignoreCase) over the global one that the empty
 // repository would read. Unset everywhere, both use the same default.
 func ignoreSettings(repo *gitx.Repo) ([]string, error) {
-	var args []string
-	for _, key := range []string{"core.excludesFile", "core.ignoreCase"} {
-		get := []string{"config", "--get", key}
-		if key == "core.excludesFile" {
-			get = []string{"config", "--path", "--get", key}
+	ignoreCase, excludesFile, err := ignoreSourceSettings(repo)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"-c", "core.ignoreCase=" + strconv.FormatBool(ignoreCase)}
+	if excludesFile != "" {
+		if !filepath.IsAbs(excludesFile) {
+			excludesFile = filepath.Join(repo.Root, excludesFile)
 		}
-		value, err := repo.Git(get...)
-		switch {
-		case err == nil:
-		case gitx.ExitCode(err) == 1:
-			continue
-		default:
-			return nil, fmt.Errorf("reading %s: %w", key, err)
-		}
-		// Only the newline git ends the value with: a space may be part of a
-		// file name.
-		value = strings.TrimSuffix(value, "\n")
-		if key == "core.excludesFile" && value != "" && !filepath.IsAbs(value) {
-			value = filepath.Join(repo.Root, value)
-		}
-		args = append(args, "-c", key+"="+value)
+		args = append(args, "-c", "core.excludesFile="+excludesFile)
 	}
 	return args, nil
 }

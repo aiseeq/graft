@@ -102,6 +102,53 @@ func TestIgnoredSourcesExactPathInInfoExclude(t *testing.T) {
 	}
 }
 
+func TestIgnoredSourcesExactPathWithIgnoreCase(t *testing.T) {
+	root := t.TempDir()
+	initIgnoredRepo(t, root)
+	gitIgnored(t, root, "config", "core.ignoreCase", "true")
+	writeIgnoredFile(t, root, ".gitignore", "/FILE.go\n")
+	writeIgnoredFile(t, root, "file.go", "source")
+	cfg, err := config.Parse([]byte("schema: 1\nversion: {mode: none}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := IgnoredSources(&gitx.Repo{Root: root}, cfg.Checks.IgnoredSources)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("findings = %v, error = %v; full path is an intentional exact match", got, err)
+	}
+}
+
+func TestIgnoredSourcesExactPathInRelativeCoreExcludesFile(t *testing.T) {
+	root := t.TempDir()
+	initIgnoredRepo(t, root)
+	writeIgnoredFile(t, root, "config/.gitignore", "/web/generated.ts\n")
+	gitIgnored(t, root, "config", "core.excludesFile", "config/.gitignore")
+	writeIgnoredFile(t, root, "web/generated.ts", "source")
+	cfg, err := config.Parse([]byte("schema: 1\nversion: {mode: none}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := IgnoredSources(&gitx.Repo{Root: root}, cfg.Checks.IgnoredSources)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("findings = %v, error = %v; configured excludes file applies from the tree root", got, err)
+	}
+}
+
+func TestIgnoredSourcesSparseSkipWorktreeIgnoreMissing(t *testing.T) {
+	root := t.TempDir()
+	initIgnoredRepo(t, root)
+	writeIgnoredFile(t, root, ".gitignore", "generated/\n")
+	gitIgnored(t, root, "add", ".gitignore")
+	gitIgnored(t, root, "update-index", "--skip-worktree", ".gitignore")
+	if err := os.Remove(filepath.Join(root, ".gitignore")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewIgnoredSources(&gitx.Repo{Root: root}, config.IgnoredSources{}, []StagedFile{{Path: ".gitignore"}})
+	if err != nil || len(got) != 0 {
+		t.Fatalf("findings = %v, error = %v; absent skip-worktree ignore file is read from the index", got, err)
+	}
+}
+
 // A git failure other than "no HEAD yet" is an error, not an empty set of
 // HEAD's rules: the commit's rules would all look new, or none would.
 func TestWriteHeadIgnoresGitError(t *testing.T) {
@@ -138,5 +185,19 @@ func writeIgnoredFile(t *testing.T, root, name, content string) {
 	}
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func gitIgnored(t *testing.T, root string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = root
+	drop, err := gitx.LocalEnvVars()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Env = gitx.Without(os.Environ(), drop)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %s: %v", args, out, err)
 	}
 }

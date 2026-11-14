@@ -14,6 +14,10 @@ import (
 // mismatchedIgnoreFiles checks even ignored and untracked .gitignore files:
 // Git can read them while deciding which files a staged rule hides.
 func mismatchedIgnoreFiles(repo *gitx.Repo, cfg config.IgnoredSources) ([]Finding, error) {
+	skipWorktree, err := skipWorktreeFiles(repo)
+	if err != nil {
+		return nil, err
+	}
 	indexed, err := indexedIgnoreFiles(repo, cfg.Exceptions)
 	if err != nil {
 		return nil, err
@@ -65,15 +69,30 @@ func mismatchedIgnoreFiles(repo *gitx.Repo, cfg config.IgnoredSources) ([]Findin
 	if err != nil {
 		return nil, fmt.Errorf("checking worktree ignore files: %w", err)
 	}
-	// indexed has no file under a skipped directory already, so an indexed
-	// .gitignore not seen is missing, even with its whole directory.
+	// An indexed .gitignore not seen is missing, even with its whole directory,
+	// unless Git marked it skip-worktree and will read it from the index.
 	for name := range indexed {
-		if !seen[name] && !config.Matches(cfg.Exceptions, name) {
+		if !seen[name] && !skipWorktree[name] && !config.Matches(cfg.Exceptions, name) {
 			findings = append(findings, Finding{Path: name, Reason: reasonIgnoreDiffers, IgnoredSource: true})
 		}
 	}
 	slices.SortFunc(findings, func(a, b Finding) int { return strings.Compare(a.Path, b.Path) })
 	return findings, nil
+}
+
+func skipWorktreeFiles(repo *gitx.Repo) (map[string]bool, error) {
+	listed, err := repo.GitStrict("ls-files", "-v", "-z", "--", ":(glob)**/.gitignore")
+	if err != nil {
+		return nil, fmt.Errorf("listing skip-worktree files: %w", err)
+	}
+	skipped := make(map[string]bool)
+	for entry := range strings.SplitSeq(listed, "\x00") {
+		// S, or s when also assume-unchanged.
+		if len(entry) >= 3 && (entry[0] == 'S' || entry[0] == 's') && entry[1] == ' ' {
+			skipped[entry[2:]] = true
+		}
+	}
+	return skipped, nil
 }
 
 func indexedIgnoreFiles(repo *gitx.Repo, exceptions []config.Exception) (map[string]StagedFile, error) {
