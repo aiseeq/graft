@@ -59,6 +59,11 @@ func TestGocacheTrimTakesTheCacheOfGoEnv(t *testing.T) {
 	if out, code := f.graft("", "gocache", "trim", "--free-below", ""); code != 2 || !strings.Contains(out, "--free-below") {
 		t.Errorf("empty --free-below: exit %d\n%s", code, out)
 	}
+	for _, bad := range []string{"10%", "0G"} {
+		if out, code := f.graft("", "gocache", "trim", "--free-below", bad); code != 2 || !strings.Contains(out, "want a size above zero") || strings.Contains(out, "percentage") {
+			t.Errorf("--free-below %s: exit %d\n%s", bad, code, out)
+		}
+	}
 	f.env = append(f.env, "GOCACHE=off")
 	if out, code := f.graft("", "gocache", "trim"); code != 1 || !strings.Contains(out, `go env GOCACHE is "off"`) {
 		t.Errorf("GOCACHE=off: exit %d\n%s", code, out)

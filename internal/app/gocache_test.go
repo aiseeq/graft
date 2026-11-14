@@ -305,3 +305,23 @@ func TestTrimMemoryCalmWithoutTheMeasure(t *testing.T) {
 		t.Fatal("with the measure and no meminfo: no error")
 	}
 }
+
+// TestGocacheFreeBelowDryRunKeepsEntries: low free space without --apply only
+// reports the would-be removals.
+func TestGocacheFreeBelowDryRunKeepsEntries(t *testing.T) {
+	dir, old := makeTrimCache(t)
+	t.Setenv("GOCACHE", dir)
+	previous := freeSpace
+	freeSpace = func(string) (int64, error) { return 40 << 30, nil }
+	t.Cleanup(func() { freeSpace = previous })
+	var out bytes.Buffer
+	if err := (&App{Stdout: &out, Stderr: &bytes.Buffer{}}).GocacheTrim(context.Background(), 25*time.Hour, false, 0, 80<<30); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "dry run: graft gocache trim --apply removes 1 entries") {
+		t.Errorf("output %q", out.String())
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Errorf("dry run removed the stale entry: %v", err)
+	}
+}

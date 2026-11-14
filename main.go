@@ -635,11 +635,8 @@ func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
 	if freeBelowSet {
 		var percent int
 		freeBelowBytes, percent, err = memorymax.Parse(*freeBelow)
-		if err != nil || percent != 0 {
-			if err == nil {
-				err = fmt.Errorf("want a size such as 80G (binary K, M, G)")
-			}
-			return fmt.Errorf("%w: --free-below %q: %w", errUsage, *freeBelow, err)
+		if err != nil || percent != 0 || freeBelowBytes <= 0 {
+			return fmt.Errorf("%w: --free-below %q: want a size above zero such as 80G (binary K, M, G)", errUsage, *freeBelow)
 		}
 	}
 	return a.GocacheTrim(ctx, *older, *apply, *maxWait, freeBelowBytes)
