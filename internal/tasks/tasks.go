@@ -4315,11 +4315,15 @@ func (r *Runner) installFiles(s config.Step, t *config.Task) ([]string, error) {
 }
 
 // installedNames are the names an install step gives its files in the
-// destination. A path matching nothing yet (a fresh clone, nothing built)
-// names its last element: a plain path its file, a pattern no installed
-// file, so a commit before the first build says nothing about it.
-func (r *Runner) installedNames(s config.Step, t *config.Task) ([]string, error) {
+// destination. When a glob has no local matches yet, use its basename to find
+// possible installed files; revision checks below discard binaries from other
+// repositories.
+func (r *Runner) installedNames(s config.Step, t *config.Task, destination string) ([]string, error) {
 	files, err := r.installMatches(s, t, func(pattern string) ([]string, error) {
+		base := filepath.Base(filepath.FromSlash(pattern))
+		if strings.ContainsAny(base, "*?[") {
+			return filepath.Glob(filepath.Join(destination, base))
+		}
 		return []string{filepath.FromSlash(pattern)}, nil
 	})
 	if err != nil {
@@ -4367,14 +4371,14 @@ func (r *Runner) InstallFreshnessWarnings(ctx context.Context, reference string)
 			if step.Install == nil {
 				continue
 			}
-			names, err := r.installedNames(step, task)
-			if err != nil {
-				warnings = append(warnings, fmt.Sprintf("cannot inspect install paths for task %s: %v", taskName, err))
-				continue
-			}
 			destination, err := installDestination(ctx, step.Install.To)
 			if err != nil {
 				warnings = append(warnings, fmt.Sprintf("cannot resolve install destination for task %s: %v", taskName, err))
+				continue
+			}
+			names, err := r.installedNames(step, task, destination)
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("cannot inspect install paths for task %s: %v", taskName, err))
 				continue
 			}
 			for _, name := range names {

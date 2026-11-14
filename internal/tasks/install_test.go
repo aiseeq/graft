@@ -112,17 +112,18 @@ func TestInstallRevisionDistance(t *testing.T) {
 	}
 }
 
-// TestInstallFreshnessNamesTheInstalledFile: the warning names a Go binary
-// built from an older commit of this repository, also when the build output
-// is not there (a fresh clone): a path without glob characters names its
-// file; a pattern matching nothing, or a binary built in another repository,
-// says nothing.
+// TestInstallFreshnessNamesTheInstalledFile checks that a glob with no local
+// matches finds stale installed binaries from this repository, while skipping
+// binaries built in another repository.
 func TestInstallFreshnessNamesTheInstalledFile(t *testing.T) {
 	if testing.Short() {
-		t.Skip("builds a synthetic Go binary")
+		t.Skip("builds synthetic Go binaries")
 	}
-	build := func(root, out, message string) {
+	build := func(root, out, message string) string {
 		t.Helper()
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
 		for name, body := range map[string]string{
 			"go.mod":  "module example.org/tool\ngo 1.22\n",
 			"main.go": "package main\nfunc main() {}\n",
@@ -136,15 +137,16 @@ func TestInstallFreshnessNamesTheInstalledFile(t *testing.T) {
 		gittest.Run(t, root, "commit", "-q", "-m", message)
 		cmd := exec.Command("go", "build", "-buildvcs=true", "-o", out, ".")
 		cmd.Dir = root
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("go build: %v\n%s", err, out)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("go build: %v\n%s", err, output)
 		}
+		return gittest.Run(t, root, "rev-parse", "HEAD")
 	}
 	root, dest := t.TempDir(), t.TempDir()
-	build(root, filepath.Join(dest, "tool"), "fixture")
-	built := gittest.Run(t, root, "rev-parse", "HEAD")
+	built := build(root, filepath.Join(dest, "tool"), "fixture")
 	gittest.Run(t, root, "commit", "-q", "--allow-empty", "-m", "two")
 	head := gittest.Run(t, root, "rev-parse", "HEAD")
+	build(t.TempDir(), filepath.Join(dest, "other-tool"), "another repository")
 	runner := func(path string) *Runner {
 		return &Runner{Root: root, Config: &config.Config{Tasks: map[string]*config.Task{
 			"install": {Run: []config.Step{{Install: &config.InstallStep{Path: path, To: dest}}}},
@@ -154,13 +156,16 @@ func TestInstallFreshnessNamesTheInstalledFile(t *testing.T) {
 	if got := runner("bin/tool").InstallFreshnessWarnings(context.Background(), head); !slices.Equal(got, want) {
 		t.Errorf("unbuilt path: %q, want %q", got, want)
 	}
-	if got := runner("bin/*").InstallFreshnessWarnings(context.Background(), head); len(got) != 0 {
-		t.Errorf("pattern matching nothing: %q, want nothing", got)
+	if got := runner("bin/*").InstallFreshnessWarnings(context.Background(), head); !slices.Equal(got, want) {
+		t.Errorf("unmatched glob: %q, want only the local stale binary %q", got, want)
 	}
 	// Another message: the same tree, author and second would give the
 	// other repository the very same commit.
-	build(t.TempDir(), filepath.Join(dest, "tool"), "another repository")
+	build(t.TempDir(), filepath.Join(dest, "tool"), "another repository, same name")
 	if got := runner("bin/tool").InstallFreshnessWarnings(context.Background(), head); len(got) != 0 {
 		t.Errorf("binary of another repository: %q, want nothing", got)
+	}
+	if got := runner("bin/*").InstallFreshnessWarnings(context.Background(), head); len(got) != 0 {
+		t.Errorf("unmatched glob over binaries of other repositories: %q, want nothing", got)
 	}
 }
