@@ -241,3 +241,28 @@ func TestIgnoredSourcesInterHunkContext(t *testing.T) {
 		t.Fatalf("joined hunks: exit %d: %s", code, out)
 	}
 }
+
+// diff.suppressBlankEmpty prints a blank context line without its space:
+// added rules are found by comparing contents, not diff text, so no diff
+// setting moves a new rule's line number.
+func TestIgnoredSourcesDiffSettings(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": ignoredConfig, ".gitignore": "old-a\n\nold-b\n"})
+	f.git("config", "diff.interHunkContext", "10")
+	f.git("config", "diff.suppressBlankEmpty", "true")
+	f.git("add", ".")
+	f.git("commit", "-m", "initial")
+	f.write(".gitignore", "added-a\nold-a\n\nold-b\njwt-*\n")
+	f.write("cmd/jwt-helper/main.go", "package main\n")
+	f.git("add", ".gitignore")
+	out, code := f.graft("", "check")
+	if code == 0 || !strings.Contains(out, ".gitignore:5: jwt-*") {
+		t.Fatalf("blank context: exit %d: %s", code, out)
+	}
+	// A rule only moved is not new: it hid the file before this commit.
+	f.git("commit", "-q", "--no-verify", "-m", "rules")
+	f.write(".gitignore", "jwt-*\nadded-a\nold-a\n\nold-b\n")
+	f.git("add", ".gitignore")
+	if out, code := f.graft("", "check"); code != 0 {
+		t.Fatalf("moved rule: exit %d: %s", code, out)
+	}
+}

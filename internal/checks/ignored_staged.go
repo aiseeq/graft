@@ -6,15 +6,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 )
-
-var addedHunk = regexp.MustCompile(`^@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,[0-9]+)? @@`)
 
 // NewIgnoredSources checks only rules added to staged .gitignore files.
 func NewIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, staged []StagedFile) ([]Finding, error) {
@@ -41,7 +38,7 @@ func NewIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, staged []Stag
 			mismatches = append(mismatches, Finding{Path: f.Path, Reason: ".gitignore staged differs from the work tree", IgnoredSource: true})
 			continue
 		}
-		lines, err := addedIgnoreLines(repo, f.Path)
+		lines, err := addedIgnoreLines(repo, f)
 		if err != nil {
 			return nil, err
 		}
@@ -96,32 +93,30 @@ func sameStagedIgnore(repo *gitx.Repo, f StagedFile) (bool, error) {
 	return bytes.Equal(disk, f.Content), nil
 }
 
-func addedIgnoreLines(repo *gitx.Repo, name string) (map[string]bool, error) {
-	diff, err := repo.Git("diff", "--cached", "--no-renames", "--no-ext-diff", "--no-textconv", "--text", "--no-color", "--unified=0", "--", ":(literal)"+name)
-	if err != nil {
-		return nil, fmt.Errorf("reading staged ignore changes for %s: %w", name, err)
+// addedIgnoreLines are the numbers of the lines of the staged f whose text
+// is not a line of f in HEAD: the rules this commit brings. The staged and
+// HEAD contents are compared here, not git diff's text, whose hunks and
+// context follow the user's diff settings (interHunkContext,
+// suppressBlankEmpty). A rule only moved is not new.
+func addedIgnoreLines(repo *gitx.Repo, f StagedFile) (map[string]bool, error) {
+	old := make(map[string]bool)
+	listed, err := repo.Git("ls-tree", "HEAD", "--", ":(literal)"+f.Path)
+	// No HEAD yet (the first commit) fails ls-tree: nothing is old, every
+	// rule is checked.
+	if err == nil && strings.TrimSpace(listed) != "" {
+		data, err := repo.ShowFile("HEAD", f.Path)
+		if err != nil {
+			return nil, err
+		}
+		for line := range strings.SplitSeq(string(data), "\n") {
+			old[strings.TrimSuffix(line, "\r")] = true
+		}
 	}
 	lines := make(map[string]bool)
-	line := 0
-	for text := range strings.SplitSeq(diff, "\n") {
-		if match := addedHunk.FindStringSubmatch(text); match != nil {
-			line, err = strconv.Atoi(match[1])
-			if err != nil {
-				return nil, fmt.Errorf("invalid diff hunk for %s: %w", name, err)
-			}
-			continue
-		}
-		if line == 0 {
-			continue
-		}
-		// diff.interHunkContext joins near hunks with context lines even
-		// under --unified=0: they hold index lines too.
-		switch {
-		case strings.HasPrefix(text, "+"):
-			lines[strconv.Itoa(line)] = true
-			line++
-		case strings.HasPrefix(text, " "):
-			line++
+	for i, line := range strings.Split(string(f.Content), "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.TrimSpace(line) != "" && !old[line] {
+			lines[strconv.Itoa(i+1)] = true
 		}
 	}
 	return lines, nil
