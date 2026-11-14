@@ -73,7 +73,10 @@ func TestIgnoredSourcesNestedRepository(t *testing.T) {
 }
 
 func TestNewIgnoredSourcesSkipsTreeWithoutIgnoreChanges(t *testing.T) {
-	got, err := NewIgnoredSources(&gitx.Repo{Root: filepath.Join(t.TempDir(), "missing")}, config.IgnoredSources{}, nil)
+	root := t.TempDir()
+	initIgnoredRepo(t, root)
+	writeIgnoredFile(t, root, "nested/.gitignore", "*.go\n")
+	got, err := NewIgnoredSources(&gitx.Repo{Root: root}, config.IgnoredSources{}, nil)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("findings = %v, error = %v", got, err)
 	}

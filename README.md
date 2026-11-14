@@ -2594,10 +2594,12 @@ up to date and release again.
   leads into this machine and nowhere in another clone: one made by mistake
   inside the tree is staged by a commit that stages all.
 - **Ignored sources**: a commit fails when a source file is hidden by a rule
-  added or changed in a staged `.gitignore`. Without added rules there is no
-  tree scan. Each finding names the rule's file, line and pattern. Git reads
-  ignore rules from the worktree, so a changed staged `.gitignore` must match
-  its worktree file; a mismatch fails the check. `graft check --ignored-sources`
+  added or changed in a staged `.gitignore`. Without staged `.gitignore`
+  changes there is no tree scan. Each finding names the rule's file, line and pattern. Git reads
+  ignore rules from the worktree, so when a `.gitignore` is staged, every
+  `.gitignore` in the scanned directories must match the index. An untracked,
+  ignored, changed or missing `.gitignore` fails the check. Excluded directories
+  and nested repositories are skipped. `graft check --ignored-sources`
   audits all current ignore rules, even without `.graft.yaml`; an explicit
   audit runs even when the commit check is disabled. A literal rule naming the
   exact file is treated as intentional. Ignored directories

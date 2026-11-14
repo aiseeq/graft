@@ -1,9 +1,133 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestIgnoredSourcesAlternateIndex(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": ignoredConfig})
+	f.git("add", ".graft.yaml")
+	f.git("commit", "-m", "initial")
+	f.write("cmd/jwt-helper/main.go", "package main\n")
+	f.write(".gitignore", "jwt-*\n")
+	index, err := os.ReadFile(filepath.Join(f.work, ".git", "index"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	alt := filepath.Join(f.base, "alternate-index")
+	if err := os.WriteFile(alt, index, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env, "GIT_INDEX_FILE="+alt)
+	if out, code := f.tryGit("add", ".gitignore"); code != 0 {
+		t.Fatalf("add to alternate index: %d: %s", code, out)
+	}
+	f.git("add", "-f", "cmd/jwt-helper/main.go")
+	out, code := f.graft("", "check")
+	if code == 0 || !strings.Contains(out, "cmd/jwt-helper/main.go") || !strings.Contains(out, ".gitignore:1: jwt-*") {
+		t.Fatalf("alternate index: exit %d: %s", code, out)
+	}
+}
+
+func TestIgnoredSourcesUntrackedIgnoreCancelsRule(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": ignoredConfig})
+	f.git("add", ".graft.yaml")
+	f.git("commit", "-m", "initial")
+	f.write("cmd/jwt-helper/main.go", "package main\n")
+	f.write(".gitignore", "jwt-*\n")
+	f.write("cmd/.gitignore", "!jwt-*\n")
+	f.git("add", ".gitignore")
+	out, code := f.graft("", "check")
+	if code == 0 || !strings.Contains(out, "cmd/.gitignore") || !strings.Contains(out, ".gitignore staged differs from the work tree") {
+		t.Fatalf("untracked ignore: exit %d: %s", code, out)
+	}
+}
+
+func TestIgnoredSourcesOtherWorktreeIgnores(t *testing.T) {
+	for _, tc := range []struct {
+		name, initial, rootRule, nested string
+		stageNested                     bool
+	}{
+		{"ignored file", "", "cmd/.gitignore\njwt-*\n", "!jwt-*\n", false},
+		{"tracked file modified", "original\n", "jwt-*\n", "!jwt-*\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRepo(t, map[string]string{".graft.yaml": ignoredConfig})
+			if tc.stageNested {
+				f.write("cmd/.gitignore", tc.initial)
+			}
+			f.git("add", ".")
+			f.git("commit", "-m", "initial")
+			f.write("cmd/.gitignore", tc.nested)
+			f.write("cmd/jwt-helper/main.go", "source\n")
+			f.write(".gitignore", tc.rootRule)
+			f.git("add", ".gitignore")
+			if out, code := f.graft("", "check"); code == 0 || !strings.Contains(out, "cmd/.gitignore: .gitignore staged differs from the work tree") {
+				t.Fatalf("exit %d: %s", code, out)
+			}
+		})
+	}
+}
+
+func TestIgnoredSourcesSkipsExcludedIgnoreFiles(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": ignoredConfig + "checks: {ignored_sources: {exceptions: [{path: 'generated/**', reason: generated}]}}\n",
+	})
+	f.git("add", ".graft.yaml")
+	f.git("commit", "-m", "initial")
+	f.write("node_modules/pkg/.gitignore", "*.go\n")
+	f.write("generated/.gitignore", "*.go\n")
+	f.write("nested/.gitignore", "*.go\n")
+	f.run(filepath.Join(f.work, "nested"), "git", "init", "-q")
+	f.write(".gitignore", "*.go\n")
+	f.git("add", ".gitignore")
+	if out, code := f.graft("", "check"); code != 0 {
+		t.Fatalf("excluded directories: exit %d: %s", code, out)
+	}
+}
+
+func TestIgnoredSourcesDeletedIgnoreTriggersComparison(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": ignoredConfig, ".gitignore": "*.log\n"})
+	f.git("add", ".")
+	f.git("commit", "-m", "initial")
+	f.git("rm", ".gitignore")
+	f.write("nested/.gitignore", "*.go\n")
+	if out, code := f.graft("", "check"); code == 0 || !strings.Contains(out, "nested/.gitignore: .gitignore staged differs from the work tree") {
+		t.Fatalf("deleted ignore: exit %d: %s", code, out)
+	}
+}
+
+func TestIgnoredSourcesMissingTrackedIgnore(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": ignoredConfig, "cmd/.gitignore": "*.go\n"})
+	f.git("add", ".")
+	f.git("commit", "-m", "initial")
+	if err := os.Remove(filepath.Join(f.work, "cmd", ".gitignore")); err != nil {
+		t.Fatal(err)
+	}
+	f.write(".gitignore", "jwt-*\n")
+	f.git("add", ".gitignore")
+	if out, code := f.graft("", "check"); code == 0 || !strings.Contains(out, "cmd/.gitignore: .gitignore staged differs from the work tree") {
+		t.Fatalf("missing tracked ignore: exit %d: %s", code, out)
+	}
+}
+
+func TestIgnoredSourcesStagedIgnoreInExcludedDirectory(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml":          ignoredConfig + "checks: {ignored_sources: {exceptions: [{path: 'generated/**', reason: generated}]}}\n",
+		"generated/.gitignore": "old\n",
+	})
+	f.git("add", ".")
+	f.git("commit", "-m", "initial")
+	f.write("generated/.gitignore", "new\n")
+	f.git("add", "generated/.gitignore")
+	f.write("generated/.gitignore", "local\n")
+	if out, code := f.graft("", "check"); code != 0 {
+		t.Fatalf("excluded staged ignore: exit %d: %s", code, out)
+	}
+}
 
 const ignoredConfig = "schema: 1\nversion: {mode: none, reason: 'no version'}\ngate: []\n"
 

@@ -20,8 +20,17 @@ var addedHunk = regexp.MustCompile(`^@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,[0-9]+
 func NewIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, staged []StagedFile) ([]Finding, error) {
 	added := make(map[string]map[string]bool)
 	var mismatches []Finding
+	changed := false
 	for _, f := range staged {
 		if path.Base(f.Path) != ".gitignore" {
+			continue
+		}
+		changed = true
+		excluded, err := excludedIgnoreFile(repo.Root, f.Path, cfg.Exceptions)
+		if err != nil {
+			return nil, err
+		}
+		if excluded {
 			continue
 		}
 		same, err := sameStagedIgnore(repo, f)
@@ -40,21 +49,51 @@ func NewIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, staged []Stag
 			added[f.Path] = lines
 		}
 	}
-	if len(mismatches) > 0 || len(added) == 0 {
+	if len(mismatches) > 0 {
 		return mismatches, nil
+	}
+	if !changed {
+		deleted, err := repo.Git("diff", "--cached", "--name-only", "--no-renames", "--diff-filter=D", "-z", "--no-ext-diff")
+		if err != nil {
+			return nil, fmt.Errorf("listing deleted ignore files: %w", err)
+		}
+		for name := range strings.SplitSeq(deleted, "\x00") {
+			if path.Base(name) == ".gitignore" {
+				changed = true
+				break
+			}
+		}
+	}
+	if !changed {
+		return nil, nil
+	}
+	mismatches, err := mismatchedIgnoreFiles(repo, cfg)
+	if err != nil || len(mismatches) > 0 {
+		return mismatches, err
+	}
+	if len(added) == 0 {
+		return nil, nil
 	}
 	return ignoredSources(repo, cfg, added)
 }
 
 func sameStagedIgnore(repo *gitx.Repo, f StagedFile) (bool, error) {
-	disk, err := os.ReadFile(filepath.Join(repo.Root, filepath.FromSlash(f.Path)))
+	filename := filepath.Join(repo.Root, filepath.FromSlash(f.Path))
+	info, err := os.Lstat(filename)
 	if os.IsNotExist(err) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("reading %s: %w", f.Path, err)
 	}
-	return !f.Symlink && f.Content != nil && bytes.Equal(disk, f.Content), nil
+	if !info.Mode().IsRegular() || f.Symlink || f.Content == nil {
+		return false, nil
+	}
+	disk, err := os.ReadFile(filename)
+	if err != nil {
+		return false, fmt.Errorf("reading %s: %w", f.Path, err)
+	}
+	return bytes.Equal(disk, f.Content), nil
 }
 
 func addedIgnoreLines(repo *gitx.Repo, name string) (map[string]bool, error) {

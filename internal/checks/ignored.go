@@ -19,7 +19,7 @@ func IgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources) ([]Finding, erro
 }
 
 func ignoredSources(repo *gitx.Repo, cfg config.IgnoredSources, added map[string]map[string]bool) ([]Finding, error) {
-	listed, err := gitx.InOtherStrict(repo.Root, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
+	listed, err := repo.GitStrict("ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("listing ignored files: %w", err)
 	}
@@ -30,7 +30,7 @@ func ignoredSources(repo *gitx.Repo, cfg config.IgnoredSources, added map[string
 	if len(paths) == 0 {
 		return nil, nil
 	}
-	out, err := gitx.InOther(repo.Root, strings.NewReader(strings.Join(paths, "\x00")+"\x00"), "check-ignore", "-v", "-z", "--non-matching", "--stdin")
+	out, err := repo.GitInput(strings.NewReader(strings.Join(paths, "\x00")+"\x00"), nil, "check-ignore", "-v", "-z", "--non-matching", "--stdin")
 	if err != nil && gitx.ExitCode(err) != 1 {
 		return nil, fmt.Errorf("checking ignore rules: %w", err)
 	}
@@ -79,13 +79,12 @@ func collectIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, listed st
 			}
 			rel = filepath.ToSlash(rel)
 			if d.IsDir() {
-				if excludedIgnoredDir(repo.Root, rel, cfg.Exceptions) {
-					return filepath.SkipDir
-				}
-				if _, err := os.Lstat(filepath.Join(p, ".git")); err == nil {
-					return filepath.SkipDir
-				} else if !os.IsNotExist(err) {
+				skip, err := skipIgnoredDir(repo.Root, rel, p, cfg.Exceptions)
+				if err != nil {
 					return err
+				}
+				if skip {
+					return filepath.SkipDir
 				}
 				return nil
 			}
@@ -104,6 +103,36 @@ func collectIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, listed st
 		}
 	}
 	return paths, nil
+}
+
+func skipIgnoredDir(root, rel, p string, exceptions []config.Exception) (bool, error) {
+	if excludedIgnoredDir(root, rel, exceptions) {
+		return true, nil
+	}
+	_, err := os.Lstat(filepath.Join(p, ".git"))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func excludedIgnoreFile(root, name string, exceptions []config.Exception) (bool, error) {
+	if config.Matches(exceptions, name) {
+		return true, nil
+	}
+	dir := path.Dir(name)
+	if dir == "." {
+		return false, nil
+	}
+	rel := ""
+	for part := range strings.SplitSeq(dir, "/") {
+		rel = path.Join(rel, part)
+		skip, err := skipIgnoredDir(root, rel, filepath.Join(root, filepath.FromSlash(rel)), exceptions)
+		if err != nil || skip {
+			return skip, err
+		}
+	}
+	return false, nil
 }
 
 func excludedIgnoredDir(root, rel string, exceptions []config.Exception) bool {

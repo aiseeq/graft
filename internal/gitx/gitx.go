@@ -57,6 +57,19 @@ func (r *Repo) Git(args ...string) (string, error) {
 	return run(r.Root, nil, nil, args...)
 }
 
+// GitStrict runs git against this repository and treats warnings as errors.
+// Like Git, it keeps the caller's index and other repository environment.
+func (r *Repo) GitStrict(args ...string) (string, error) {
+	stdout, stderr, err := runCaptured(r.Root, nil, nil, args...)
+	if err != nil {
+		return stdout, err
+	}
+	if strings.TrimSpace(stderr) != "" {
+		return stdout, &Error{Args: args, Stderr: stderr, Err: errors.New("it could not read everything")}
+	}
+	return stdout, nil
+}
+
 // MainWorktree returns the first worktree listed by git. Git lists the main
 // checkout first, regardless of where the repository's common directory is.
 func (r *Repo) MainWorktree() (string, error) {
