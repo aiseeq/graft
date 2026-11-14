@@ -1865,12 +1865,6 @@ deploy:
         attribute:              # optional: a commit whose message names no item, or the wrong one, as a commit of the item
           - {commit: 0123456789abcdef0123456789abcdef01234567, item: PROJ-123, reason: "the key was left out of the message"}
 
-Use `approved_release.dormant` when work must stay in the build but its
-feature is disabled by a flag or setting. It must be in an approved version,
-but needs no approved status; graft leaves it open and reports its reason.
-Unlike `release_notes.jira.skip_keys`, which is for umbrella or other standing
-items assembled from subtasks, dormant items are shipped work. Remove an item
-when it has been checked so the deploy can close it.
       release_notes:
         transitions: [{from: [Ready for release], to: Done}]
         subtasks: true
@@ -1885,6 +1879,13 @@ release_notes:
     skip_keys: [PROJ-100]       # these too, and no subtask follows them; a subtask named by its own key goes as any item
     quiet: {subtasks: true, labels: [internal]} # suppress release note comments on subtasks and items with these labels; moves and other release work still run
 ```
+
+Use `approved_release.dormant` when work must stay in the build but its
+feature is disabled by a flag or setting. The item or its parent must be in an
+approved version; its status need not be approved. Graft leaves it and its
+subtasks open and reports the reason. Use `release_notes.jira.skip_keys` for
+umbrella items that collect work from subtasks. Remove a dormant entry once
+the feature has been enabled and the work checked, so the deploy can close it.
 
 `graft deploy [--redeploy] [--unapproved] <target> [-- args]`:
 

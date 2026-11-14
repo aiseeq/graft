@@ -297,24 +297,50 @@ type DormantReleaseItem struct {
 	Reason string `yaml:"reason"`
 }
 
-// DormantItems returns the target's dormant work, if configured.
-func (t *DeployTarget) DormantItems() []DormantReleaseItem {
-	if t == nil || t.ApprovedRelease == nil {
-		return nil
+// UniqueDormant combines dormant entries while keeping the first entry for a key.
+func UniqueDormant(groups ...[]DormantReleaseItem) []DormantReleaseItem {
+	seen := make(map[string]struct{})
+	var unique []DormantReleaseItem
+	for _, group := range groups {
+		for _, item := range group {
+			if _, ok := seen[item.Key]; ok {
+				continue
+			}
+			seen[item.Key] = struct{}{}
+			unique = append(unique, item)
+		}
 	}
-	return t.ApprovedRelease.Dormant
+	return unique
 }
 
-// DormantReason returns the reason an item ships disabled.
-func (r *ApprovedRelease) DormantReason(key string) string {
+// DormantFor returns the dormant entry for an item or its parent. A subtask
+// ships disabled with its parent.
+func (r *ApprovedRelease) DormantFor(key, parent string) (DormantReleaseItem, bool) {
+	if item, ok := r.dormant(key); ok {
+		return item, true
+	}
+	return r.dormant(parent)
+}
+
+// DormantSubtask returns a configured dormant item among the given subtasks.
+func (r *ApprovedRelease) DormantSubtask(keys []string) (DormantReleaseItem, bool) {
+	for _, key := range keys {
+		if item, ok := r.dormant(key); ok {
+			return item, true
+		}
+	}
+	return DormantReleaseItem{}, false
+}
+
+func (r *ApprovedRelease) dormant(key string) (DormantReleaseItem, bool) {
 	if r != nil {
 		for _, item := range r.Dormant {
 			if item.Key == key {
-				return item.Reason
+				return item, true
 			}
 		}
 	}
-	return ""
+	return DormantReleaseItem{}, false
 }
 
 // StatusesFor returns the approved statuses for an item's labels.
@@ -680,7 +706,7 @@ func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {
 	case len(t.ApprovedRelease.LabelStatuses) > 0 && len(t.ApprovedRelease.Statuses) == 0:
 		return fmt.Errorf("%s.approved_release.label_statuses: needs statuses, those of items without the labels; without them an unlabelled item would pass in any status", where)
 	}
-	if err := c.validateDormant(where, t.ApprovedRelease.Dormant); err != nil {
+	if err := c.validateApprovedDormant(where, t.ApprovedRelease); err != nil {
 		return err
 	}
 	if v := t.ApprovedRelease.Version; v != nil {
@@ -708,6 +734,13 @@ func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {
 		t.ApprovedRelease.Ignore = append(t.ApprovedRelease.Ignore, re)
 	}
 	return c.validateAttribute(where+".approved_release.attribute", t.ApprovedRelease)
+}
+
+func (c *Config) validateApprovedDormant(where string, approved *ApprovedRelease) error {
+	if len(approved.Dormant) > 0 && approved.Prefix == "" && approved.Version == nil {
+		return fmt.Errorf("%s.approved_release.dormant: needs prefix or version to identify approved versions", where)
+	}
+	return c.validateDormant(where, approved.Dormant)
 }
 
 func (c *Config) validateDormant(where string, items []DormantReleaseItem) error {

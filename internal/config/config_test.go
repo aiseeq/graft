@@ -410,7 +410,10 @@ deploy:
 	dormant := func(items string) string {
 		return strings.Replace(base, "release_notes: {}}", "release_notes: {}, approved_release: {prefix: Product v, dormant: ["+items+"]}}", 1)
 	}
-	if cfg, err := Parse([]byte(dormant("{key: PROJ-12, reason: test fixture}"))); err != nil || cfg.Deploy.Targets["test"].ApprovedRelease.DormantReason("PROJ-12") != "test fixture" {
+	if cfg, err := Parse([]byte(dormant("{key: PROJ-12, reason: test fixture}"))); err != nil || func() bool {
+		item, ok := cfg.Deploy.Targets["test"].ApprovedRelease.DormantFor("PROJ-12", "")
+		return !ok || item.Reason != "test fixture"
+	}() {
 		t.Errorf("dormant parse: cfg=%v err=%v", cfg, err)
 	}
 	for _, tc := range []struct{ yaml, want string }{{"{key: OTHER-1, reason: x}", ".key:"}, {"{key: PROJ-1, reason: ' '}", ".reason: blank"}, {"{key: PROJ-1, reason: x}, {key: PROJ-1, reason: y}", ".key: duplicate"}} {

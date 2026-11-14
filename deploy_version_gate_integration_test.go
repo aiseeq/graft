@@ -151,6 +151,31 @@ func TestDeployReleaseVersionSkippedParentAndIgnoredCommits(t *testing.T) {
 	}
 }
 
+func TestDeployReleaseVersionAllowsDormantTestingParentWithOpenSubtask(t *testing.T) {
+	cfg := func(state string, q func(string) string) string {
+		return strings.Replace(versionGateConfig(state, q), "approved_release: {statuses: [Ready for release, Done]}", `approved_release: {statuses: [Ready for release, Done], dormant: [{key: PROJ-123, reason: disabled parent}], version: {match: '^Product'}}`, 1)
+	}
+	d := newDeployFixture(t, cfg)
+	writeFile(t, filepath.Join(d.state, "gate-sha"), d.git("rev-parse", "HEAD")+"\n")
+	d.jira.setVersions([]map[string]any{{"id": "10030", "name": "Product 05.11.26"}}, map[string][]string{"PROJ-123": {"10030"}})
+	d.jira.setApprovers(map[string][]string{"10030": {"APPROVED", "APPROVED"}})
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-123"] = "Testing"
+	d.jira.statuses["PROJ-124"] = "In Progress"
+	d.jira.parents = map[string]string{"PROJ-124": "PROJ-123"}
+	d.jira.mu.Unlock()
+	d.commitFile("dormant-parent.txt", "feat: PROJ-123 disabled parent")
+	out, code := d.graft("", "deploy", "check", "prod")
+	if code != 0 {
+		t.Fatalf("dormant parent with open subtask refused: code=%d\n%s", code, out)
+	}
+	for _, want := range []string{"ships dormant: PROJ-123 — disabled parent", "passes its checks now"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestDeployReleaseVersionHotfix(t *testing.T) {
 	cfg := func(state string, q func(string) string) string {
 		return strings.Replace(releaseConfig(state, q), "approved_release: {statuses: [Ready for release, Done], ignore_paths: [\"docs/**\"]}", "approved_release: {statuses: [Ready for release, Done], ignore_paths: [\"docs/**\"], version: {manual: ['manual release check']}}", 1)

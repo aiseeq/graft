@@ -50,7 +50,7 @@ func TestReleasePageListsDormantWork(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	client := jira.New(jira.Credentials{BaseURL: server.URL})
-	r := &deployRun{version: "1.2.3", name: "prod", target: &config.DeployTarget{ApprovedRelease: &config.ApprovedRelease{Dormant: []config.DormantReleaseItem{{Key: "PROJ-123", Reason: "feature flag stays off"}}}}}
+	r := &deployRun{version: "1.2.3", name: "prod", target: &config.DeployTarget{ApprovedRelease: &config.ApprovedRelease{Dormant: []config.DormantReleaseItem{{Key: "PROJ-123", Reason: "feature flag stays off"}, {Key: "PROJ-124", Reason: "not part of this release"}}}}}
 	section, err := buildSection(context.Background(), client, &config.ReleasePage{}, r, []string{"PROJ-123"}, nil, func(string, ...any) {})
 	if err != nil {
 		t.Fatal(err)
@@ -59,5 +59,8 @@ func TestReleasePageListsDormantWork(t *testing.T) {
 		if !strings.Contains(section, want) {
 			t.Errorf("missing %q in release page section:\n%s", want, section)
 		}
+	}
+	if strings.Contains(section, "not part of this release") {
+		t.Errorf("listed dormant work outside the release:\n%s", section)
 	}
 }

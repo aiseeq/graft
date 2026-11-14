@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -36,6 +37,42 @@ func TestDormantNeedsApprovedVersionButNotReadyStatus(t *testing.T) {
 	pass, err = gate.item(t.Context(), "PROJ-123")
 	if err != nil || pass.ok || !strings.Contains(pass.why, "(dormant: still needs an approved version)") {
 		t.Fatalf("unapproved dormant gate = %+v, %v", pass, err)
+	}
+}
+
+func TestDormantParentDisablesSubtaskAndBypassesOpenSubtasks(t *testing.T) {
+	conf := &config.ApprovedRelease{Prefix: "Product ", Statuses: []string{"Ready for release"}, Dormant: []config.DormantReleaseItem{{Key: "PROJ-123", Reason: "disabled parent"}}}
+	parent := jira.Issue{Key: "PROJ-123", Status: "Testing", FixVersions: []jira.Version{{ID: "v1", Name: "Product 1"}}, Subtasks: []string{"PROJ-124"}}
+	child := jira.Issue{Key: "PROJ-124", Parent: parent.Key, Status: "In Progress"}
+	gate := &approvalGate{conf: conf, issues: map[string]jira.Issue{parent.Key: parent, child.Key: child}, versions: map[string]bool{"v1": true}}
+	for _, key := range []string{parent.Key, child.Key} {
+		pass, err := gate.item(t.Context(), key)
+		if err != nil || !pass.ok {
+			t.Errorf("dormant parent gate for %s = %+v, %v; want pass", key, pass, err)
+		}
+	}
+}
+
+func TestDormantParentAdviceFollowsSubtaskCommitAndDoneWins(t *testing.T) {
+	conf := &config.ApprovedRelease{Statuses: []string{"Ready for release", "Done"}, Dormant: []config.DormantReleaseItem{{Key: "PROJ-123", Reason: "disabled parent"}}}
+	for _, tc := range []struct {
+		status string
+		done   bool
+		want   string
+	}{
+		{"Ready for release", false, "PROJ-123 is Ready for release: drop it from approved_release.dormant to let the deploy close it"},
+		{"Done", true, "PROJ-123 is Done: drop it from approved_release.dormant"},
+	} {
+		var output bytes.Buffer
+		parent := jira.Issue{Key: "PROJ-123", Status: tc.status, Done: tc.done}
+		gate := &gateRun{app: &App{Stdout: &output}, conf: conf, gate: &approvalGate{conf: conf, issues: map[string]jira.Issue{"PROJ-124": {Key: "PROJ-124", Parent: parent.Key}, parent.Key: parent}}}
+		gate.dormantAdvice(t.Context(), []string{"PROJ-124"})
+		if !strings.Contains(output.String(), tc.want) {
+			t.Errorf("advice = %q, want %q", output.String(), tc.want)
+		}
+		if tc.done && strings.Contains(output.String(), "to let the deploy close it") {
+			t.Errorf("Done item got ready advice: %s", output.String())
+		}
 	}
 }
 

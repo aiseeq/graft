@@ -13,6 +13,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/deploy"
 	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/jira"
 	"github.com/aiseeq/graft/v2/internal/proc"
 )
 
@@ -241,6 +242,7 @@ func (a *App) previewNotes(ctx context.Context, r *deployRun) {
 		a.printf("- keys not checked: %v", err)
 		return
 	}
+	a.previewDormant(ctx, r, client, keys)
 	me, err := client.Myself(ctx)
 	if err != nil {
 		a.printf("- keys not checked: %v", err)
@@ -258,8 +260,7 @@ func (a *App) previewNotes(ctx context.Context, r *deployRun) {
 			glint.err = errors.New("findings cannot be checked on a dirty work tree")
 		}
 	}
-	dormant := r.target.DormantItems()
-	m := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, me: me, target: r.name, glint: glint, standing: r.cfg.ReleaseNotes.Jira.SkipKeys, dormant: dormant, readOnly: true}
+	m := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, approved: r.target.ApprovedRelease, me: me, target: r.name, glint: glint, standing: r.cfg.ReleaseNotes.Jira.SkipKeys, readOnly: true}
 	for _, key := range keys {
 		if slices.Contains(r.cfg.ReleaseNotes.Jira.SkipKeys, key) || (r.moveOut != nil && slices.Contains(r.moveOut.keys, key)) {
 			a.printf("- %s: left alone", key)
@@ -288,6 +289,26 @@ func (a *App) previewNotes(ctx context.Context, r *deployRun) {
 		}
 	}
 	a.retryHeld(ctx, &subtaskRun{mover: m, reached: map[string]string{}}, held, keys)
+}
+
+func (a *App) previewDormant(ctx context.Context, r *deployRun, client *jira.Client, keys []string) {
+	if r.gated || r.target.ApprovedRelease == nil {
+		return
+	}
+	listed := config.UniqueDormant(r.dormantItems)
+	for _, key := range keys {
+		issue, err := client.Issue(ctx, key)
+		if err != nil {
+			a.printf("- %s dormant status not checked: %v", key, err)
+			continue
+		}
+		if item, dormant := r.target.ApprovedRelease.DormantFor(key, issue.Parent); dormant {
+			listed = config.UniqueDormant(listed, []config.DormantReleaseItem{item})
+		}
+	}
+	for _, item := range listed {
+		a.printf("ships dormant: %s — %s", item.Key, item.Reason)
+	}
 }
 
 // DeployVersions is graft deploy versions: the version and the commit each

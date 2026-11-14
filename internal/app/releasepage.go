@@ -334,9 +334,19 @@ func buildSection(ctx context.Context, client *jira.Client, p *config.ReleasePag
 		b.WriteString("<h3>" + html.EscapeString(p.Label(part.label)) + "</h3>")
 		b.WriteString(issueTable(client, p, part.issues))
 	}
-	if ar := r.target.ApprovedRelease; ar != nil && len(ar.Dormant) > 0 {
+	var dormant []config.DormantReleaseItem
+	if ar := r.target.ApprovedRelease; ar != nil {
+		dormant = config.UniqueDormant(dormant, r.dormantItems)
+		for i := range items {
+			issue := &items[i]
+			if item, ok := ar.DormantFor(issue.Key, issue.Parent); ok {
+				dormant = config.UniqueDormant(dormant, []config.DormantReleaseItem{item})
+			}
+		}
+	}
+	if len(dormant) > 0 {
 		b.WriteString("<h3>ships dormant</h3><ul>")
-		for _, item := range ar.Dormant {
+		for _, item := range dormant {
 			b.WriteString("<li>" + html.EscapeString(item.Key+" — "+item.Reason) + "</li>")
 		}
 		b.WriteString("</ul>")

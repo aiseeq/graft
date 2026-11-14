@@ -72,6 +72,9 @@ func (a *App) retryHeld(ctx context.Context, sub *subtaskRun, held []heldItem, d
 			unread = append(unread, h)
 			continue
 		}
+		if m.leaveDormant(issue) {
+			continue
+		}
 		t := m.conf.Moving(issue.Status)
 		if t == nil || issue.Done {
 			a.printf("%s is held no more: it is %s", h.key, issue.Status)
@@ -134,8 +137,7 @@ func (a *App) DeployHandover(ctx context.Context, target, ticket string) error {
 	if err != nil {
 		return err
 	}
-	dormant := r.target.DormantItems()
-	mover := &noteMover{app: a, client: client, conf: n, me: me, target: r.name, glint: r.glint, standing: r.cfg.ReleaseNotes.Jira.SkipKeys, dormant: dormant}
+	mover := &noteMover{app: a, client: client, conf: n, approved: r.target.ApprovedRelease, me: me, target: r.name, glint: r.glint, standing: r.cfg.ReleaseNotes.Jira.SkipKeys}
 	sub := &subtaskRun{mover: mover, notes: r.cfg.ReleaseNotes.Jira, me: me, reached: map[string]string{}, run: r, targetHead: deployedHead}
 	unread := a.retryHeld(ctx, sub, held, nil)
 	if r.target.ReleaseNotes.Subtasks {

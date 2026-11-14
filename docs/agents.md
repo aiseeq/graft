@@ -15,12 +15,12 @@ For a one-off command use `graft exec --heavy -- <cmd>` when it is heavy.
 ## Approved release
 
 `approved_release.dormant` lists `{key, reason}` for work included in an
-approved version while its feature remains disabled by a flag or setting.
-It still needs an approved version, but does not need an approved status;
-deploy, release notes and sweep leave it open and report why. Use
-`release_notes.jira.skip_keys` for umbrella or other standing items whose work
-is assembled from subtasks. Remove a dormant entry once the item has been
-checked; graft suggests removal when it reaches an approved or done status.
+approved version while its feature remains disabled by a flag or setting. The
+item or its parent must be in an approved version; its status need not be
+approved. Deploy, release notes and sweep leave it and its subtasks open and
+report why. Use `release_notes.jira.skip_keys` for umbrella items that collect
+work from subtasks. Remove a dormant entry once the feature is enabled and its
+work has been checked; graft suggests removal at an approved or done status.
 
 ## Commit
 

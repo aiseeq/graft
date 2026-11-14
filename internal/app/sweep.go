@@ -334,9 +334,13 @@ func (s *sweepRun) judge(ctx context.Context, items map[string][]sweptCommit) {
 	s.parents(ctx, keys, items)
 	for _, key := range keys {
 		if issue, ok := s.issues[key]; ok && !s.judged[key] && !slices.Contains(s.notes.SkipKeys, key) {
-			if reason := s.r.target.ApprovedRelease.DormantReason(key); reason != "" {
+			if item, dormant := s.r.target.ApprovedRelease.DormantFor(key, issue.Parent); dormant {
+				if s.judged[item.Key] {
+					s.judged[key] = true
+					continue
+				}
 				s.judged[key] = true
-				s.lines = append(s.lines, fmt.Sprintf("%s ships dormant (%s): left in %s, not moved", key, reason, issue.Status))
+				s.lines = append(s.lines, fmt.Sprintf("%s ships dormant (%s): left in %s, not moved", item.Key, item.Reason, issue.Status))
 				continue
 			}
 			s.item(ctx, issue, items[key])
@@ -760,6 +764,11 @@ func (s *sweepRun) parentKeys(keys []string) []string {
 // target.
 func (s *sweepRun) finishParent(ctx context.Context, parent jira.Issue, allOn func(string) bool) {
 	s.read(ctx, parent.Subtasks)
+	if item, dormant := s.r.target.ApprovedRelease.DormantSubtask(parent.Subtasks); dormant {
+		s.judged[parent.Key] = true
+		s.list(ctx, parent, "%s stays %s: its subtask %s ships dormant", parent.Key, parent.Status, item.Key)
+		return
+	}
 	for _, st := range parent.Subtasks {
 		if issue, ok := s.issues[st]; !ok || !issue.Done || !allOn(st) {
 			return
@@ -807,6 +816,11 @@ func (s *sweepRun) inFlow(issue jira.Issue) bool {
 // itself (checked), by version alone for a parent the sweep finishes.
 func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, checked bool) {
 	key := issue.Key
+	if item, dormant := s.r.target.ApprovedRelease.DormantFor(issue.Key, issue.Parent); dormant {
+		s.judged[key] = true
+		s.lines = append(s.lines, fmt.Sprintf("%s ships dormant (%s): left in %s, not moved", item.Key, item.Reason, issue.Status))
+		return
+	}
 	if slices.Contains(s.notes.SkipStatuses, issue.Status) {
 		return
 	}

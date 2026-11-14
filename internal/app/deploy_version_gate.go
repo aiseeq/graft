@@ -79,6 +79,7 @@ func (v *releaseVersionCheck) readTops(ctx context.Context) bool {
 			v.umbrellas[issue.Key] = true
 		}
 		v.tops[issue.Key] = issue
+		v.gate.recordDormantIssue(issue)
 	}
 	return false
 }
@@ -124,7 +125,9 @@ func (v *releaseVersionCheck) checkTops() bool {
 		issue := v.tops[key]
 		inVersion := v.selected.ID == "" || slices.Contains(issue.FixVersionIDs([]string{v.selected.ID}), v.selected.ID)
 		statuses := v.gate.conf.StatusesFor(issue.Labels)
-		if !inVersion || !slices.Contains(statuses, issue.Status) {
+		v.gate.recordDormantIssue(issue)
+		_, dormant := v.gate.conf.DormantFor(issue.Key, issue.Parent)
+		if !inVersion || !dormant && !slices.Contains(statuses, issue.Status) {
 			var names []string
 			for _, version := range issue.FixVersions {
 				names = append(names, version.Name)
@@ -136,7 +139,7 @@ func (v *releaseVersionCheck) checkTops() bool {
 			if !inVersion {
 				todo = append(todo, "add it to "+v.selected.Name)
 			}
-			if !slices.Contains(statuses, issue.Status) {
+			if !dormant && !slices.Contains(statuses, issue.Status) {
 				todo = append(todo, "move it to "+strings.Join(statuses, " or "))
 			}
 			msg := fmt.Sprintf("%s is %s, fix versions %s: %s", key, issue.Status, strings.Join(names, ", "), strings.Join(todo, " and "))
@@ -173,8 +176,12 @@ func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 			}
 			continue
 		}
-		if detail := versionStatusDetail(issue, v.gate.conf.StatusesFor(issue.Labels), len(v.gate.conf.LabelStatuses) > 0); detail != "" {
-			bad = append(bad, detail)
+		v.gate.recordDormantIssue(issue)
+		_, dormant := v.gate.conf.DormantFor(issue.Key, issue.Parent)
+		if !dormant {
+			if detail := versionStatusDetail(issue, v.gate.conf.StatusesFor(issue.Labels), len(v.gate.conf.LabelStatuses) > 0); detail != "" {
+				bad = append(bad, detail)
+			}
 		}
 		if issue.Subtask || issue.Parent != "" {
 			subtasks = append(subtasks, key+" ("+issue.Status+")")
@@ -211,6 +218,10 @@ func (v *releaseVersionCheck) checkUmbrellas(ctx context.Context) bool {
 		if !ok {
 			continue
 		}
+		if _, dormant := v.gate.conf.DormantFor(parent.Key, parent.Parent); dormant {
+			v.gate.recordDormantIssue(parent)
+			continue
+		}
 		var open []string
 		for _, subkey := range parent.Subtasks {
 			if slices.Contains(v.gate.gate.skipKeys, subkey) {
@@ -221,6 +232,10 @@ func (v *releaseVersionCheck) checkUmbrellas(ctx context.Context) bool {
 				if v.fail("version-umbrella", fmt.Sprintf("%s: read subtask %s: %v; retry", key, subkey, err)) {
 					return true
 				}
+				continue
+			}
+			if _, dormant := v.gate.conf.DormantFor(subkey, parent.Key); dormant {
+				v.gate.recordDormantIssue(sub)
 				continue
 			}
 			if !sub.Done {

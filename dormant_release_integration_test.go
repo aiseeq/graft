@@ -16,16 +16,18 @@ func TestDeployLeavesDormantReleaseNoteAlone(t *testing.T) {
 	d := newDeployFixture(t, configure)
 	d.jira.mu.Lock()
 	d.jira.statuses["PROJ-123"] = "Testing"
+	d.jira.statuses["PROJ-124"] = "In Progress"
+	d.jira.parents = map[string]string{"PROJ-124": "PROJ-123"}
 	d.jira.mu.Unlock()
 	d.mustGraft("deploy", "--unapproved", "test")
 	d.write("dormant.txt", "disabled feature stays in build\n")
-	d.mustFixtureCommit("feat: PROJ-123 dormant work")
+	d.mustFixtureCommit("feat: PROJ-124 dormant child work")
 	out := d.mustGraft("deploy", "--unapproved", "test")
 	comments, moved := d.jira.snapshot()
-	if len(comments["PROJ-123"]) != 0 || slices.Contains(moved, "PROJ-123") {
+	if len(comments["PROJ-124"]) != 0 || slices.Contains(moved, "PROJ-124") {
 		t.Fatalf("dormant item got note/transition: comments=%v moved=%v\n%s", comments, moved, out)
 	}
-	if !strings.Contains(out, "PROJ-123 ships dormant (test-stand): left in Testing, not moved") {
+	if !strings.Contains(out, "PROJ-123 ships dormant (test-stand): left in In Progress, not moved") {
 		t.Fatalf("missing dormant note line:\n%s", out)
 	}
 }
@@ -33,7 +35,7 @@ func TestDeployLeavesDormantReleaseNoteAlone(t *testing.T) {
 func TestDeployCheckShowsDormantLineAndStatusAdvice(t *testing.T) {
 	configure := func(state string, q func(string) string) string {
 		cfg := deployConfig(state, q)
-		return strings.Replace(cfg, `approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}`, `approved_release: {statuses: [Ready for release], prefix: "Product v", dormant: [{key: PROJ-123, reason: ready-fixture}, {key: PROJ-124, reason: done-fixture}], ignore_paths: ["docs/**", "*.md"]}`, 1)
+		return strings.Replace(cfg, `approved_release: {prefix: "Product v", ignore_paths: ["docs/**", "*.md"]}`, `approved_release: {statuses: [Ready for release, Done], prefix: "Product v", dormant: [{key: PROJ-123, reason: ready-fixture}, {key: PROJ-124, reason: done-fixture}, {key: PROJ-125, reason: not-in-release}], ignore_paths: ["docs/**", "*.md"]}`, 1)
 	}
 	d := newDeployFixture(t, configure)
 	d.mustGraft("deploy", "--unapproved", "live")
@@ -56,6 +58,9 @@ func TestDeployCheckShowsDormantLineAndStatusAdvice(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "not-in-release") {
+		t.Errorf("reported dormant item outside this release:\n%s", out)
 	}
 	if strings.Contains(out, "would refuse") {
 		t.Errorf("status advice became a refusal:\n%s", out)
