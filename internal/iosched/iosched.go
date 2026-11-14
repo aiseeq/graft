@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"runtime"
+	"os"
 	"time"
 
 	"github.com/aiseeq/akit/pressure"
@@ -26,15 +26,28 @@ var (
 	halfPath    = pressure.HalfPath
 	halfRead    = pressure.ReadQuiet
 	halfNow     = time.Now
-	halfThreads = runtime.NumCPU
+	halfThreads = statThreads
 )
 
-// halfCPU follows pressure.Limits.RunnableLimit in akit/pressure:
-// max(1, float64(threads)/2), preserving a fractional half on odd machines.
-func halfCPU(threads int) float64 { return math.Max(1, float64(threads)/2) }
+// statThreads counts the machine's threads the way akit/pressure does: the
+// cpuN lines of /proc/stat, not the CPU affinity of this process, so a graft
+// started under taskset still caps at half the machine akit measures.
+func statThreads() (int, error) {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0, fmt.Errorf("threads of the machine: %w", err)
+	}
+	_, threads, err := pressure.ParseStat(string(data))
+	if err != nil {
+		return 0, fmt.Errorf("threads of the machine: %w", err)
+	}
+	return threads, nil
+}
 
-// HalfMode reports the active half-mode CPU allowance, if any. The integer
-// GOMAXPROCS rounds the same allowance up; the quota retains its fraction.
+// HalfMode reports the active half-mode CPU allowance, if any: the runnable
+// limit akit/pressure applies in half mode (half the threads, at least 1, a
+// fraction kept on odd machines). The integer GOMAXPROCS rounds it up; the
+// quota keeps the fraction.
 func HalfMode() (quotaUSec int64, gomaxprocs int, until time.Time, err error) {
 	p, err := halfPath()
 	if err != nil {
@@ -44,7 +57,11 @@ func HalfMode() (quotaUSec int64, gomaxprocs int, until time.Time, err error) {
 	if err != nil || !until.After(halfNow()) {
 		return 0, 0, time.Time{}, err
 	}
-	half := halfCPU(halfThreads())
+	threads, err := halfThreads()
+	if err != nil {
+		return 0, 0, time.Time{}, err
+	}
+	half := pressure.Limits{}.RunnableLimit(pressure.Load{Threads: threads, HalfUntil: until})
 	return int64(half * 1_000_000), int(math.Ceil(half)), until, nil
 }
 

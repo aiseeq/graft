@@ -3656,7 +3656,7 @@ func (r *Runner) enterHeavy(ctx context.Context, name, memoryMax string) (leave 
 // memoryMax asks for ("" for the default), raising the one graft already
 // holds it under when that is lower.
 func (r *Runner) holdCeiling(ctx context.Context, name, memoryMax string) error {
-	quota, procs, until, err := iosched.HalfMode()
+	quota, procs, until, err := halfMode()
 	if err != nil {
 		return fmt.Errorf("read half-mode state: %w", err)
 	}
@@ -3691,7 +3691,10 @@ const outerMemorySource = "--memory-max of the graft exec that started this graf
 
 // configureHeavy places the heavy work under its memory ceiling; tests
 // replace it.
-var configureHeavy = iosched.Configure
+var (
+	configureHeavy = iosched.Configure
+	halfMode       = iosched.HalfMode
+)
 
 // lightGate says whether this gate need not wait for a busy machine: one this
 // machine would make wait, whose last runs cost next to nothing

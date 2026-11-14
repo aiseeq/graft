@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/iosched"
@@ -143,5 +144,26 @@ func TestExecPassesTheHeldScopeToItsGraft(t *testing.T) {
 	}
 	if got.Held != "run-7.scope" {
 		t.Errorf("the inner graft asked with Held %q", got.Held)
+	}
+}
+
+// TestHoldCeilingPassesHalfMode: in half mode holdCeiling asks the new scope
+// for the CPU quota and keeps the GOMAXPROCS half for the child commands.
+func TestHoldCeilingPassesHalfMode(t *testing.T) {
+	origConf, origHalf := configureHeavy, halfMode
+	t.Cleanup(func() { configureHeavy, halfMode = origConf, origHalf })
+	until := time.Date(2026, 11, 14, 10, 30, 0, 0, time.UTC)
+	halfMode = func() (int64, int, time.Time, error) { return 3_500_000, 4, until, nil }
+	var got iosched.Request
+	configureHeavy = func(_ context.Context, _ int, _ string, req iosched.Request) (iosched.Placement, error) {
+		got = req
+		return iosched.Placement{}, nil
+	}
+	r := &Runner{Stderr: &bytes.Buffer{}}
+	if err := r.holdCeiling(context.Background(), "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got.CPUQuotaUSec != 3_500_000 || !got.HalfUntil.Equal(until) || r.halfProcs != 4 {
+		t.Errorf("request quota %d until %s, halfProcs %d; want 3500000, %s, 4", got.CPUQuotaUSec, got.HalfUntil, r.halfProcs, until)
 	}
 }

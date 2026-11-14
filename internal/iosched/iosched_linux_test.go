@@ -22,7 +22,7 @@ func TestHalfMode(t *testing.T) {
 	halfPath = func() (string, error) { return "half-state", nil }
 	halfRead = func(string) (time.Time, error) { return until, nil }
 	halfNow = func() time.Time { return until.Add(-time.Minute) }
-	halfThreads = func() int { return 7 }
+	halfThreads = func() (int, error) { return 7, nil }
 	quota, procs, gotUntil, err := HalfMode()
 	if err != nil || quota != 3_500_000 || procs != 4 || !gotUntil.Equal(until) {
 		t.Fatalf("HalfMode = %d, %d, %s, %v; want 3500000, 4, %s", quota, procs, gotUntil, err, until)
