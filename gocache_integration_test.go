@@ -53,6 +53,12 @@ func TestGocacheTrimTakesTheCacheOfGoEnv(t *testing.T) {
 	if out, code := f.graft("", "gocache", "trim", "--older", "1h"); code != 2 || !strings.Contains(out, "want more than 1h0m0s") {
 		t.Errorf("--older 1h: exit %d\n%s", code, out)
 	}
+	if out, code := f.graft("", "gocache", "trim", "--free-below", "nope"); code != 2 || !strings.Contains(out, "--free-below") {
+		t.Errorf("bad --free-below: exit %d\n%s", code, out)
+	}
+	if out, code := f.graft("", "gocache", "trim", "--free-below", ""); code != 2 || !strings.Contains(out, "--free-below") {
+		t.Errorf("empty --free-below: exit %d\n%s", code, out)
+	}
 	f.env = append(f.env, "GOCACHE=off")
 	if out, code := f.graft("", "gocache", "trim"); code != 1 || !strings.Contains(out, `go env GOCACHE is "off"`) {
 		t.Errorf("GOCACHE=off: exit %d\n%s", code, out)

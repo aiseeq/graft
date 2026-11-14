@@ -2,12 +2,14 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,86 @@ import (
 	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
+
+func TestGocacheFreeBelowSkipsCacheWalkWhenSpaceIsEnough(t *testing.T) {
+	dir, old := makeTrimCache(t)
+	t.Setenv("GOCACHE", dir)
+	var calls int
+	previous := freeSpace
+	freeSpace = func(path string) (int64, error) {
+		calls++
+		if path != dir {
+			t.Fatalf("measured %s, want %s", path, dir)
+		}
+		return 80 << 30, nil
+	}
+	t.Cleanup(func() { freeSpace = previous })
+	var out bytes.Buffer
+	err := (&App{Stdout: &out}).GocacheTrim(context.Background(), 6*time.Hour, true, 0, 80<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || !strings.Contains(out.String(), "80.0 GiB free on "+dir+", at or above --free-below 80.0 GiB: nothing to do") {
+		t.Fatalf("calls %d, output %q", calls, out.String())
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Errorf("skip removed stale entry: %v", err)
+	}
+}
+
+func TestGocacheFreeBelowMeasuresBeforeAndAfterTrim(t *testing.T) {
+	dir, old := makeTrimCache(t)
+	t.Setenv("GOCACHE", dir)
+	trimProc(t, 1, 1)
+	serveTrimDisk(t, 0)
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	limits := filepath.Join(configHome, "akit", "pressure.yaml")
+	if err := os.MkdirAll(filepath.Dir(limits), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(limits, []byte("runnable: 10\nmax_io_full: 10\nmax_swap_kbs: 1024\nswap_window: 1ms\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous := freeSpace
+	values := []int64{40 << 30, 42 << 30}
+	freeSpace = func(string) (int64, error) {
+		value := values[0]
+		values = values[1:]
+		return value, nil
+	}
+	t.Cleanup(func() { freeSpace = previous })
+	var out bytes.Buffer
+	err := (&App{Stdout: &out, Stderr: &bytes.Buffer{}}).GocacheTrim(context.Background(), 25*time.Hour, true, time.Second, 80<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "removed 1 entries") || !strings.Contains(out.String(), "free space 40.0 GiB before, 42.0 GiB after") {
+		t.Errorf("output %q", out.String())
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("low free space did not remove stale entry: %v", err)
+	}
+}
+
+func makeTrimCache(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	old := filepath.Join(dir, "3f", strings.Repeat("3", 64)+"-d")
+	if err := os.MkdirAll(filepath.Dir(old), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(old, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(old, time.Now().Add(-48*time.Hour), time.Now().Add(-48*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("This directory holds cached build artifacts from the Go build system.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir, old
+}
 
 func trimProc(t *testing.T, dirty, writeback int) string {
 	t.Helper()

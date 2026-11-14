@@ -599,7 +599,7 @@ func testDBCmd(ctx context.Context, a *app.App, args []string) error {
 	return err
 }
 
-// gocacheCmd is graft gocache trim [--older 25h] [--apply] [--max-wait 2h].
+// gocacheCmd is graft gocache trim [--older 25h] [--apply] [--max-wait 2h] [--free-below SIZE].
 func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
 	usage := usageOf("gocache")
 	if len(args) == 0 || args[0] != "trim" {
@@ -609,6 +609,7 @@ func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
 	apply := fs.Bool("apply", false, "remove; without it only report")
 	older := fs.Duration("older", 25*time.Hour, "remove the entries unused for longer than this")
 	maxWait := fs.Duration("max-wait", 2*time.Hour, "stop waiting for a quiet machine after this long")
+	freeBelow := fs.String("free-below", "", "trim only when filesystem free space is below this size (binary K/M/G)")
 	pos, err := parseInterspersed(fs, args[1:])
 	if err != nil {
 		return err
@@ -624,7 +625,24 @@ func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
 	if *maxWait < 0 {
 		return fmt.Errorf("%w: --max-wait %s: want zero or more", errUsage, *maxWait)
 	}
-	return a.GocacheTrim(ctx, *older, *apply, *maxWait)
+	var freeBelowBytes int64
+	freeBelowSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "free-below" {
+			freeBelowSet = true
+		}
+	})
+	if freeBelowSet {
+		var percent int
+		freeBelowBytes, percent, err = memorymax.Parse(*freeBelow)
+		if err != nil || percent != 0 {
+			if err == nil {
+				err = fmt.Errorf("want a size such as 80G (binary K, M, G)")
+			}
+			return fmt.Errorf("%w: --free-below %q: %w", errUsage, *freeBelow, err)
+		}
+	}
+	return a.GocacheTrim(ctx, *older, *apply, *maxWait, freeBelowBytes)
 }
 
 func worktreeCmd(ctx context.Context, a *app.App, args []string) error {

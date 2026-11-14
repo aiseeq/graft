@@ -21,6 +21,8 @@ import (
 const maxDirtyWritebackKB = 64 * 1024
 const trimKind = "gocache-trim"
 
+var freeSpace = availableFreeSpace
+
 // dirtyMeasured is whether the machine reports the memory queued to write:
 // Linux does in /proc/meminfo, and a test's GRAFT_PROC stands for it.
 // Elsewhere a batch waits for the busy check alone.
@@ -31,7 +33,7 @@ var dirtyMeasured = func() bool {
 // GocacheTrim removes, with apply, the entries of the Go build cache of
 // go env GOCACHE not used for longer than older, or tells how many it
 // would; it needs no project.
-func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, maxWait time.Duration) error {
+func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, maxWait time.Duration, freeBelow int64) error {
 	cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "go", "env", "GOCACHE")
 	if err != nil {
 		return err
@@ -45,6 +47,19 @@ func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, 
 	dir := strings.TrimSpace(string(out))
 	if dir == "off" || !filepath.IsAbs(dir) {
 		return fmt.Errorf("go env GOCACHE is %q: no build cache to trim", dir)
+	}
+	var freeBefore int64
+	if freeBelow > 0 {
+		var err error
+		freeBefore, err = freeSpace(dir)
+		if err != nil {
+			return fmt.Errorf("measure free space on filesystem of %s: %w", dir, err)
+		}
+		if freeBefore >= freeBelow {
+			a.printf("%s free on %s, at or above --free-below %s: nothing to do",
+				checks.FormatSize(freeBefore), dir, checks.FormatSize(freeBelow))
+			return nil
+		}
 	}
 	waits := loadgate.Waits{}
 	remainingWait := maxWait
@@ -71,18 +86,38 @@ func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, 
 	if err != nil {
 		return err
 	}
+	var freeAfter int64
+	if freeBelow > 0 {
+		freeAfter, err = freeSpace(dir)
+		if err != nil {
+			return fmt.Errorf("measure free space on filesystem of %s after trim: %w", dir, err)
+		}
+	}
 	verb := "removed"
 	if !apply {
 		verb = "dry run: graft gocache trim --apply removes"
 	}
 	if apply {
 		waited := waitTotal(waits)
-		a.printf("%s %d entries, %s, unused for %s in %s; %d entries, %s remain; %d entries, %s kept; waited %s%s",
-			verb, r.Removed, checks.FormatSize(r.RemovedBytes), older, dir, r.Remaining, checks.FormatSize(r.RemainingBytes),
-			r.Kept, checks.FormatSize(r.KeptBytes), waited.Round(time.Second), formatTrimWaits(waits))
+		if freeBelow > 0 {
+			a.printf("%s %d entries, %s, unused for %s in %s; %d entries, %s remain; %d entries, %s kept; free space %s before, %s after; waited %s%s",
+				verb, r.Removed, checks.FormatSize(r.RemovedBytes), older, dir, r.Remaining, checks.FormatSize(r.RemainingBytes),
+				r.Kept, checks.FormatSize(r.KeptBytes), checks.FormatSize(freeBefore), checks.FormatSize(freeAfter),
+				waited.Round(time.Second), formatTrimWaits(waits))
+		} else {
+			a.printf("%s %d entries, %s, unused for %s in %s; %d entries, %s remain; %d entries, %s kept; waited %s%s",
+				verb, r.Removed, checks.FormatSize(r.RemovedBytes), older, dir, r.Remaining, checks.FormatSize(r.RemainingBytes),
+				r.Kept, checks.FormatSize(r.KeptBytes), waited.Round(time.Second), formatTrimWaits(waits))
+		}
 	} else {
-		a.printf("%s %d entries, %s, unused for %s in %s; %d entries, %s kept",
-			verb, r.Removed, checks.FormatSize(r.RemovedBytes), older, dir, r.Kept, checks.FormatSize(r.KeptBytes))
+		if freeBelow > 0 {
+			a.printf("%s %d entries, %s, unused for %s in %s; %d entries, %s kept; free space %s before, %s after",
+				verb, r.Removed, checks.FormatSize(r.RemovedBytes), older, dir, r.Kept, checks.FormatSize(r.KeptBytes),
+				checks.FormatSize(freeBefore), checks.FormatSize(freeAfter))
+		} else {
+			a.printf("%s %d entries, %s, unused for %s in %s; %d entries, %s kept",
+				verb, r.Removed, checks.FormatSize(r.RemovedBytes), older, dir, r.Kept, checks.FormatSize(r.KeptBytes))
+		}
 	}
 	return nil
 }

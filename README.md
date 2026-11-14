@@ -520,7 +520,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h] [--in <directory>]...` | remove the worktrees and branches whose work is in the trunk by content; list the rest |
 | `graft worktree sync [--trunk <ref>] [--push]` | move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted; `--push` updates its upstream with a lease (see Worktrees) |
 | `graft tools [install]` | check the pinned tools; install the failing ones |
-| `graft gocache trim [--older 25h] [--apply] [--max-wait 2h]` | remove the Go build cache entries unused for longer than `--older` (see [Go build cache](#go-build-cache)) |
+| `graft gocache trim [--older 25h] [--apply] [--max-wait 2h] [--free-below SIZE]` | remove the Go build cache entries unused for longer than `--older`, optionally only when filesystem space is low (see [Go build cache](#go-build-cache)) |
 | `graft help` | the commands the project's `.graft.yaml` uses, its tasks (those with `desc`, with their arguments) and services |
 | `graft help <command>`, `graft <command> -h` | one command's part of `graft help`, with details such as the exit codes of `exec`; a command with flags lists them after it |
 | `graft --version` | print graft's own version |
@@ -2895,6 +2895,17 @@ trim --apply`, and `OnCalendar=daily` with `Persistent=true` and
 active, so a hung run would hold off every later one. A run stopped this way
 fails the unit and exits at the end of its batch, without the summary line, and
 the next run removes the rest.
+
+Keep the daily 25h trim: its age preserves cold builds for projects that were
+not used for roughly a day. For low-space emergencies, add a second systemd
+user timer with `OnCalendar=hourly` and
+`ExecStart=<absolute-path-to-graft> gocache trim --apply --free-below 80G --older 6h`.
+While the filesystem containing `go env GOCACHE` has at least 80 GiB available
+to the unprivileged user, graft checks free space and exits without walking
+the cache. Below the threshold it trims entries unused for 6h and reports
+available space before and after. The shorter `--older` age makes projects
+that have not been built for those hours cold again; the threshold should be
+chosen with that tradeoff in mind.
 
 ## Development
 
