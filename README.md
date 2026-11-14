@@ -2603,7 +2603,9 @@ up to date and release again.
   tree scan. Each finding names the rule's file, line and pattern. Git reads
   ignore rules from the worktree, so when a `.gitignore` is staged, every
   `.gitignore` in the scanned directories must match the index. An untracked,
-  ignored, changed or missing `.gitignore` fails the check. Excluded directories
+  ignored, changed or missing `.gitignore` (its directory gone too) fails the
+  check, and so does a symlinked one: git reads no rules through it and warns,
+  so what it hides cannot be told. Excluded directories
   and nested repositories are skipped. `graft check --ignored-sources`
   audits all current ignore rules, even without `.graft.yaml`; an explicit
   audit runs even when the commit check is disabled. A literal rule naming the

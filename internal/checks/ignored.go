@@ -86,7 +86,13 @@ func exactIgnoredFile(source, pattern, file string) bool {
 			literal.WriteByte(c)
 		}
 	}
-	return path.Join(path.Dir(source), strings.TrimPrefix(literal.String(), "/")) == file
+	// info/exclude and core.excludesFile (git names it by its absolute path,
+	// ~/.gitignore say) apply from the top of the work tree.
+	base := ""
+	if path.Base(source) == ".gitignore" && !path.IsAbs(source) {
+		base = path.Dir(source)
+	}
+	return path.Join(base, strings.TrimPrefix(literal.String(), "/")) == file
 }
 
 func collectIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, listed string) ([]string, error) {

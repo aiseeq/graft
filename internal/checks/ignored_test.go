@@ -84,6 +84,24 @@ func TestNewIgnoredSourcesSkipsTreeWithoutIgnoreChanges(t *testing.T) {
 	}
 }
 
+// A full path in info/exclude names the file from the top of the work tree,
+// as a root .gitignore would: not a finding.
+func TestIgnoredSourcesExactPathInInfoExclude(t *testing.T) {
+	root := t.TempDir()
+	initIgnoredRepo(t, root)
+	writeIgnoredFile(t, root, "web/generated.ts", "source")
+	writeIgnoredFile(t, root, "web/other.ts", "source")
+	writeIgnoredFile(t, root, ".git/info/exclude", "/web/generated.ts\nother.ts\n")
+	cfg, err := config.Parse([]byte("schema: 1\nversion: {mode: none}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := IgnoredSources(&gitx.Repo{Root: root}, cfg.Checks.IgnoredSources)
+	if err != nil || len(got) != 1 || got[0].Path != "web/other.ts" {
+		t.Fatalf("findings = %v, error = %v; want only the mask's web/other.ts", got, err)
+	}
+}
+
 // A git failure other than "no HEAD yet" is an error, not an empty set of
 // HEAD's rules: the commit's rules would all look new, or none would.
 func TestWriteHeadIgnoresGitError(t *testing.T) {

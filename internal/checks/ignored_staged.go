@@ -28,12 +28,12 @@ func NewIgnoredSources(repo *gitx.Repo, cfg config.IgnoredSources, staged []Stag
 		if excluded {
 			continue
 		}
-		same, err := sameStagedIgnore(repo, f)
+		reason, err := ignoreMismatch(repo, f)
 		if err != nil {
 			return nil, err
 		}
-		if !same {
-			mismatches = append(mismatches, Finding{Path: f.Path, Reason: ".gitignore staged differs from the work tree", IgnoredSource: true})
+		if reason != "" {
+			mismatches = append(mismatches, Finding{Path: f.Path, Reason: reason, IgnoredSource: true})
 		}
 	}
 	if len(mismatches) > 0 {
@@ -139,7 +139,9 @@ func ignoreSettings(repo *gitx.Repo) ([]string, error) {
 		default:
 			return nil, fmt.Errorf("reading %s: %w", key, err)
 		}
-		value = strings.TrimSpace(value)
+		// Only the newline git ends the value with: a space may be part of a
+		// file name.
+		value = strings.TrimSuffix(value, "\n")
 		if key == "core.excludesFile" && value != "" && !filepath.IsAbs(value) {
 			value = filepath.Join(repo.Root, value)
 		}
@@ -184,21 +186,34 @@ func writeHeadIgnores(repo *gitx.Repo, dir string) error {
 	return nil
 }
 
-func sameStagedIgnore(repo *gitx.Repo, f StagedFile) (bool, error) {
+const (
+	reasonIgnoreDiffers = ".gitignore staged differs from the work tree"
+	reasonIgnoreSymlink = "symlinked .gitignore: git reads no rules through it and warns, so its rules cannot be checked; make it a regular file"
+)
+
+// ignoreMismatch says why the work tree's .gitignore at f.Path is not the
+// indexed f, or "" when it is.
+func ignoreMismatch(repo *gitx.Repo, f StagedFile) (string, error) {
 	filename := filepath.Join(repo.Root, filepath.FromSlash(f.Path))
 	info, err := os.Lstat(filename)
 	if os.IsNotExist(err) {
-		return false, nil
+		return reasonIgnoreDiffers, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("reading %s: %w", f.Path, err)
+		return "", fmt.Errorf("reading %s: %w", f.Path, err)
 	}
-	if !info.Mode().IsRegular() || f.Symlink || f.Content == nil {
-		return false, nil
+	if f.Symlink || info.Mode()&os.ModeSymlink != 0 {
+		return reasonIgnoreSymlink, nil
+	}
+	if !info.Mode().IsRegular() || f.Content == nil {
+		return reasonIgnoreDiffers, nil
 	}
 	disk, err := os.ReadFile(filename)
 	if err != nil {
-		return false, fmt.Errorf("reading %s: %w", f.Path, err)
+		return "", fmt.Errorf("reading %s: %w", f.Path, err)
 	}
-	return bytes.Equal(disk, f.Content), nil
+	if !bytes.Equal(disk, f.Content) {
+		return reasonIgnoreDiffers, nil
+	}
+	return "", nil
 }

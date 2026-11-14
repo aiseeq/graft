@@ -361,3 +361,50 @@ func TestIgnoredSourcesSymlinkedIgnoreInHead(t *testing.T) {
 		t.Fatalf("symlinked .gitignore in HEAD: exit %d: %s", code, out)
 	}
 }
+
+// A core.excludesFile whose name ends in a space is that file, not the one
+// without the space.
+func TestIgnoredSourcesExcludesFileNameWithSpace(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": ignoredConfig, "exclude ": "", "exclude": "*.go\n"})
+	f.git("config", "core.excludesFile", "exclude ")
+	f.git("add", ".graft.yaml")
+	f.git("commit", "-m", "initial")
+	f.write("cmd/main.go", "package main\n")
+	f.write(".gitignore", "*.go\n")
+	f.git("add", ".gitignore")
+	if out, code := f.graft("", "check"); code == 0 || !strings.Contains(out, "cmd/main.go") {
+		t.Fatalf("excludes file named with a space: exit %d: %s", code, out)
+	}
+}
+
+// An indexed .gitignore missing with its whole directory differs from the
+// index all the same.
+func TestIgnoredSourcesMissingIgnoreDirectory(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": ignoredConfig, "cmd/.gitignore": "jwt-*\n"})
+	f.git("add", ".")
+	f.git("commit", "-m", "initial")
+	if err := os.RemoveAll(filepath.Join(f.work, "cmd")); err != nil {
+		t.Fatal(err)
+	}
+	f.write(".gitignore", "# change\n")
+	f.git("add", ".gitignore")
+	if out, code := f.graft("", "check"); code == 0 || !strings.Contains(out, "cmd/.gitignore") {
+		t.Fatalf("missing directory of an indexed .gitignore: exit %d: %s", code, out)
+	}
+}
+
+// A symlinked .gitignore is refused for what it is: git reads no rules through
+// it and warns, so the check cannot tell what it hides.
+func TestIgnoredSourcesSymlinkedIgnoreRefused(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": ignoredConfig, "rules": "# rules\n"})
+	if err := os.Symlink("rules", filepath.Join(f.work, ".gitignore")); err != nil {
+		t.Fatal(err)
+	}
+	f.git("add", ".")
+	f.git("commit", "-m", "initial")
+	f.write("nested/.gitignore", "# changed\n")
+	f.git("add", "nested/.gitignore")
+	if out, code := f.graft("", "check"); code == 0 || !strings.Contains(out, ".gitignore: symlinked .gitignore: git reads no rules through it") {
+		t.Fatalf("symlinked .gitignore: exit %d: %s", code, out)
+	}
+}

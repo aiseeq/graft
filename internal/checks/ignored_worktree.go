@@ -3,7 +3,6 @@ package checks
 import (
 	"fmt"
 	"io/fs"
-	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,7 +19,6 @@ func mismatchedIgnoreFiles(repo *gitx.Repo, cfg config.IgnoredSources) ([]Findin
 		return nil, err
 	}
 	var findings []Finding
-	dirs := make(map[string]bool)
 	seen := make(map[string]bool)
 	err = filepath.WalkDir(repo.Root, func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -33,7 +31,6 @@ func mismatchedIgnoreFiles(repo *gitx.Repo, cfg config.IgnoredSources) ([]Findin
 		rel = filepath.ToSlash(rel)
 		if d.IsDir() {
 			if rel == "." {
-				dirs[rel] = true
 				return nil
 			}
 			skip, err := skipIgnoredDir(repo.Root, rel, p, cfg.Exceptions)
@@ -43,7 +40,6 @@ func mismatchedIgnoreFiles(repo *gitx.Repo, cfg config.IgnoredSources) ([]Findin
 			if skip {
 				return filepath.SkipDir
 			}
-			dirs[rel] = true
 			return nil
 		}
 		if d.Name() != ".gitignore" || config.Matches(cfg.Exceptions, rel) {
@@ -51,23 +47,29 @@ func mismatchedIgnoreFiles(repo *gitx.Repo, cfg config.IgnoredSources) ([]Findin
 		}
 		seen[rel] = true
 		f, ok := indexed[rel]
-		if ok {
-			ok, err = sameStagedIgnore(repo, f)
+		reason := reasonIgnoreDiffers
+		switch {
+		case ok:
+			reason, err = ignoreMismatch(repo, f)
 			if err != nil {
 				return err
 			}
+		case d.Type()&fs.ModeSymlink != 0:
+			reason = reasonIgnoreSymlink
 		}
-		if !ok {
-			findings = append(findings, Finding{Path: rel, Reason: ".gitignore staged differs from the work tree", IgnoredSource: true})
+		if reason != "" {
+			findings = append(findings, Finding{Path: rel, Reason: reason, IgnoredSource: true})
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("checking worktree ignore files: %w", err)
 	}
+	// indexed has no file under a skipped directory already, so an indexed
+	// .gitignore not seen is missing, even with its whole directory.
 	for name := range indexed {
-		if !seen[name] && dirs[path.Dir(name)] && !config.Matches(cfg.Exceptions, name) {
-			findings = append(findings, Finding{Path: name, Reason: ".gitignore staged differs from the work tree", IgnoredSource: true})
+		if !seen[name] && !config.Matches(cfg.Exceptions, name) {
+			findings = append(findings, Finding{Path: name, Reason: reasonIgnoreDiffers, IgnoredSource: true})
 		}
 	}
 	slices.SortFunc(findings, func(a, b Finding) int { return strings.Compare(a.Path, b.Path) })
