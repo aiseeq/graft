@@ -359,21 +359,23 @@ func TestUnquotedArgsHints(t *testing.T) {
 	}
 }
 
-// A task with cache whose chain reaches a task with confirm is refused: a
-// cache hit returns before the deps and steps, so the confirmed run would
-// silently not happen. A cached task without confirm below it is fine.
+// A task with cache whose deps or task steps reach a task with confirm, at
+// any depth, is refused: a cache hit returns before them, so the confirmed
+// run would silently not happen. A cached task without confirm below it is
+// fine.
 func TestTaskCacheWrappingConfirmRefused(t *testing.T) {
 	const base = "schema: 1\nversion: {mode: git-tag}\ngate: []\ntasks:\n" +
 		"  push:\n    run: [./push.sh]\n    confirm: sudo\n" +
-		"  mid:\n    run: [{task: push}]\n" +
+		"  mid:\n    run: [{task: mid2}]\n" +
+		"  mid2:\n    deps: [push]\n    run: [./mid.sh]\n" +
 		"  plain:\n    run: [./build.sh]\n"
-	for _, tc := range []struct{ wrapper, path string }{
-		{"  ship:\n    deps: [push]\n    run: [./notes.sh]\n    cache: tree\n", "ship -> push"},
-		{"  ship:\n    run: [{task: mid}]\n    cache: tree\n", "ship -> mid -> push"},
+	for _, wrapper := range []string{
+		"  ship:\n    deps: [push]\n    run: [./notes.sh]\n    cache: tree\n",
+		"  ship:\n    run: [{task: mid}]\n    cache: tree\n",
 	} {
-		_, err := Parse([]byte(base + tc.wrapper))
-		if err == nil || !strings.Contains(err.Error(), "tasks.ship: cache cannot wrap tasks.push") || !strings.Contains(err.Error(), tc.path) {
-			t.Errorf("%s: %v", tc.path, err)
+		_, err := Parse([]byte(base + wrapper))
+		if err == nil || !strings.Contains(err.Error(), "tasks.ship.cache: task push has confirm") {
+			t.Errorf("%s: %v", wrapper, err)
 		}
 	}
 	if _, err := Parse([]byte(base + "  ship:\n    deps: [plain]\n    run: [./notes.sh]\n    cache: tree\n")); err != nil {

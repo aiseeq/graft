@@ -182,6 +182,11 @@ func (c *Config) sideEffect(name string, seen map[string]bool) string {
 	}
 	seen[name] = true
 	t := c.Tasks[name]
+	// A hit returns before the deps and steps: the confirmed run would
+	// silently not happen.
+	if t.Confirm != "" {
+		return fmt.Sprintf("task %s has confirm, whose run a cache hit would skip", name)
+	}
 	for _, d := range t.Deps {
 		if e := c.sideEffect(d, seen); e != "" {
 			return e

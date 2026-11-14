@@ -909,9 +909,8 @@ dotenv_sets:                   # key lists several tasks and services share
   target (see below). A task chain and its deploy share one confirmation.
   A heavy task confirms locally before it can run on a remote host. The same
   script run outside graft does not ask for confirmation. A task with `confirm`
-  cannot also have `cache`: a hit skips the task and cache commands run before confirmation.
-  Nor can a task with `cache` reach one with `confirm` through its deps or `{task: …}`
-  steps, at any depth: its hit returns before them, and the confirmed run would not happen.
+  cannot also have `cache`, nor be reached from a task with `cache` (see Cache):
+  a hit skips the task and cache commands run before confirmation.
 - A step is a string (split into words, no shell; pipes, `$VAR` and
   redirects are errors), a list (argv as is), `{sh: "..."}`, `{task: name}`,
   `{service: action [name]}` or `{install: paths}` (below). A string with
@@ -1101,8 +1100,9 @@ dotenv_sets:                   # key lists several tasks and services share
   in the stats (see below) with what the passed run cost.
 
   Cache only checks that change nothing outside the work tree. A task that
-  runs `graft deploy`, `release`, `commit`, `git push`, `docker push` or acts
-  on services, itself or through its deps and inner tasks, is refused; what
+  runs `graft deploy`, `release`, `commit`, `git push`, `docker push`, acts
+  on services or has `confirm` (a hit would skip the confirmed run), itself or
+  through its deps and inner tasks, is refused; what
   graft cannot see (a script that deploys) is the author's to keep out. A
   check whose result depends on something outside the tree that the key
   does not cover (a database state, a remote service) must name it in
