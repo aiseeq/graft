@@ -75,42 +75,67 @@ func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, 
 	}
 	r, err := gocache.TrimWithOptions(dir, older, time.Now(), options)
 	if err != nil {
+		if apply && r.CacheValidated {
+			var freeAfter *int64
+			var freeAfterErr error
+			if freeBelow > 0 {
+				if measured, measureErr := freeSpace(dir); measureErr != nil {
+					freeAfterErr = measureErr
+				} else {
+					freeAfter = &measured
+				}
+			}
+			a.printf("%s", formatTrimSummary(dir, older, apply, r, waits, freeBelow > 0, freeBefore, freeAfter, freeAfterErr, err))
+		}
 		return err
 	}
-	var freeAfter int64
+	var freeAfter *int64
 	if freeBelow > 0 {
-		freeAfter, err = freeSpace(dir)
-		if err != nil {
-			return fmt.Errorf("measure free space on filesystem of %s after trim: %w", dir, err)
+		measured, measureErr := freeSpace(dir)
+		if measureErr != nil {
+			return fmt.Errorf("measure free space on filesystem of %s after trim: %w", dir, measureErr)
 		}
+		freeAfter = &measured
 	}
+	a.printf("%s", formatTrimSummary(dir, older, apply, r, waits, freeBelow > 0, freeBefore, freeAfter, nil, nil))
+	return nil
+}
+
+func formatTrimSummary(dir string, older time.Duration, apply bool, r gocache.Result, waits loadgate.Waits, measureFree bool, freeBefore int64, freeAfter *int64, freeAfterErr, interrupted error) string {
 	verb := "removed"
 	if !apply {
 		verb = "dry run: graft gocache trim --apply removes"
 	}
+	var summary strings.Builder
+	fmt.Fprintf(&summary, "%s %d entries, %s, unused for %s in %s", verb, r.Removed,
+		checks.FormatSize(r.RemovedBytes), older, dir)
 	if apply {
-		waited := waitTotal(waits)
-		if freeBelow > 0 {
-			a.printf("%s %d entries, %s, unused for %s in %s; %d entries, %s remain; %d entries, %s kept; free space %s before, %s after; waited %s%s",
-				verb, r.Removed, checks.FormatSize(r.RemovedBytes), older, dir, r.Remaining, checks.FormatSize(r.RemainingBytes),
-				r.Kept, checks.FormatSize(r.KeptBytes), checks.FormatSize(freeBefore), checks.FormatSize(freeAfter),
-				waited.Round(time.Second), formatTrimWaits(waits))
+		if interrupted != nil {
+			countWord, remainWord := "entries", "remain"
+			if r.Remaining == 1 {
+				countWord, remainWord = "entry", "remains"
+			}
+			fmt.Fprintf(&summary, "; at least %d %s %s (%s; walk stopped)", r.Remaining, countWord, remainWord, checks.FormatSize(r.RemainingBytes))
 		} else {
-			a.printf("%s %d entries, %s, unused for %s in %s; %d entries, %s remain; %d entries, %s kept; waited %s%s",
-				verb, r.Removed, checks.FormatSize(r.RemovedBytes), older, dir, r.Remaining, checks.FormatSize(r.RemainingBytes),
-				r.Kept, checks.FormatSize(r.KeptBytes), waited.Round(time.Second), formatTrimWaits(waits))
-		}
-	} else {
-		if freeBelow > 0 {
-			a.printf("%s %d entries, %s, unused for %s in %s; %d entries, %s kept; free space %s before, %s after",
-				verb, r.Removed, checks.FormatSize(r.RemovedBytes), older, dir, r.Kept, checks.FormatSize(r.KeptBytes),
-				checks.FormatSize(freeBefore), checks.FormatSize(freeAfter))
-		} else {
-			a.printf("%s %d entries, %s, unused for %s in %s; %d entries, %s kept",
-				verb, r.Removed, checks.FormatSize(r.RemovedBytes), older, dir, r.Kept, checks.FormatSize(r.KeptBytes))
+			fmt.Fprintf(&summary, "; %d entries, %s remain", r.Remaining, checks.FormatSize(r.RemainingBytes))
 		}
 	}
-	return nil
+	fmt.Fprintf(&summary, "; %d entries, %s kept", r.Kept, checks.FormatSize(r.KeptBytes))
+	if measureFree {
+		fmt.Fprintf(&summary, "; free space %s before", checks.FormatSize(freeBefore))
+		if freeAfter != nil {
+			fmt.Fprintf(&summary, ", %s after", checks.FormatSize(*freeAfter))
+		} else if freeAfterErr != nil {
+			fmt.Fprintf(&summary, ", after unavailable: %v", freeAfterErr)
+		}
+	}
+	if apply {
+		fmt.Fprintf(&summary, "; waited %s%s", waitTotal(waits).Round(time.Second), formatTrimWaits(waits))
+	}
+	if interrupted != nil {
+		fmt.Fprintf(&summary, "; interrupted: %v", interrupted)
+	}
+	return summary.String()
 }
 
 func trimMemoryCalm() (bool, error) {

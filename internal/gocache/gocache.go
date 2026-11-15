@@ -28,9 +28,11 @@ const BatchEntries = 1000
 const BatchBytes int64 = 256 << 20
 
 // Result counts the entries a trim takes, with apply or without, and keeps.
+// CacheValidated reports whether the cache README passed validation.
 type Result struct {
 	Removed, Kept, Remaining                int
 	RemovedBytes, KeptBytes, RemainingBytes int64
+	CacheValidated                          bool
 }
 
 // Options controls a trim. BeforeBatch is called before each batch of
@@ -51,6 +53,7 @@ func TrimWithOptions(dir string, older time.Duration, now time.Time, opts Option
 	if !strings.HasPrefix(string(data), readme) {
 		return r, fmt.Errorf("%s is not a Go build cache: its README does not start with %q", dir, readme)
 	}
+	r.CacheValidated = true
 	cutoff := now.Add(-older)
 	if !opts.Apply {
 		return trimDryRun(dir, cutoff, r)

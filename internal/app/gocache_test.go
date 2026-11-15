@@ -264,6 +264,83 @@ func TestTrimStopsAtMaxWait(t *testing.T) {
 	}
 }
 
+func TestGocacheTrimReportsPartialResultWhenContextIsCanceled(t *testing.T) {
+	trimProc(t, 1, 1)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("This directory holds cached build artifacts from the Go build system.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	shard := filepath.Join(dir, "00")
+	if err := os.Mkdir(shard, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3*gocache.BatchEntries + 1 {
+		path := filepath.Join(shard, fmt.Sprintf("%064x-a", i))
+		if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, time.Now().Add(-48*time.Hour), time.Now().Add(-48*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	configHome := quietConfigHome(t)
+	limits := filepath.Join(configHome, "akit", "pressure.yaml")
+	if err := os.MkdirAll(filepath.Dir(limits), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(limits, []byte("runnable: 10\nmax_io_full: 10\nmax_swap_kbs: 1024\nswap_window: 1ms\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+	listener, err := net.Listen("unix", filepath.Join(runtimeDir, "io-state.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = bufio.NewReader(conn).ReadString('\n')
+		_, _ = fmt.Fprintf(conn, `{"v":1,"at":%q,"5s":{"io_full_ms":0},"open":{"open":false,"ms":0}}`+"\n", time.Now().Format(time.RFC3339Nano))
+		time.AfterFunc(10*time.Millisecond, cancel)
+	}()
+
+	t.Setenv("GOCACHE", dir)
+	var out bytes.Buffer
+	err = (&App{Stdout: &out, Stderr: &bytes.Buffer{}}).GocacheTrim(ctx, 25*time.Hour, true, time.Second, 0)
+	if err == nil {
+		t.Fatal("GocacheTrim returned nil after context cancellation")
+	}
+	if !strings.Contains(out.String(), "removed ") || !strings.Contains(out.String(), "remain") || !strings.Contains(out.String(), "at least ") || !strings.Contains(out.String(), "interrupted: context canceled") {
+		t.Fatalf("error %v, output %q", err, out.String())
+	}
+}
+
+func TestGocacheTrimReportsZeroRemovedWhenCanceledInFirstWait(t *testing.T) {
+	trimProc(t, maxDirtyWritebackKB, 1)
+	dir, _ := makeTrimCache(t)
+	quietConfigHome(t)
+	t.Setenv("GOCACHE", dir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(time.Second, cancel)
+
+	var out bytes.Buffer
+	err := (&App{Stdout: &out, Stderr: &bytes.Buffer{}}).GocacheTrim(ctx, 25*time.Hour, true, time.Minute, 0)
+	if err == nil {
+		t.Fatal("GocacheTrim returned nil after context cancellation")
+	}
+	if !strings.Contains(out.String(), "removed 0 entries") || !strings.Contains(out.String(), "remain") || !strings.Contains(out.String(), "interrupted: context canceled") {
+		t.Fatalf("error %v, output %q", err, out.String())
+	}
+}
+
 func serveTrimDisk(t *testing.T, ioFullMS int) {
 	t.Helper()
 	dir := t.TempDir()

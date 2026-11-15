@@ -53,6 +53,7 @@ func TestTrimRemovesTheEntriesUnusedForLongerThanTheAge(t *testing.T) {
 	kept := []string{"0a/" + strings.Repeat("a", 64) + "-a", "0a/" + strings.Repeat("b", 64) + "-d",
 		"README", "trim.txt", "testexpire.txt", "fuzz/example.com/m/FuzzX/0123", "0a/notes"}
 	want := Result{Removed: 4, Kept: 3, RemovedBytes: 3*5 + 7, KeptBytes: 2*5 + 7}
+	want.CacheValidated = true
 
 	dir := cacheDir(t, now, ages)
 	// Executables go run built: a directory <hash>-d, marked used on itself.
@@ -104,7 +105,7 @@ func TestTrimRemovesTheEntriesUnusedForLongerThanTheAge(t *testing.T) {
 			t.Errorf("%s removed: %v", rel, err)
 		}
 	}
-	if r, err := TrimWithOptions(dir, 25*time.Hour, now, Options{Apply: true}); err != nil || r != (Result{Kept: 3, KeptBytes: 17}) {
+	if r, err := TrimWithOptions(dir, 25*time.Hour, now, Options{Apply: true}); err != nil || r != (Result{Kept: 3, KeptBytes: 17, CacheValidated: true}) {
 		t.Errorf("second trim: %+v, %v", r, err)
 	}
 }
