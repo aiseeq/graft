@@ -346,6 +346,7 @@ type PushError struct {
 	Refs         []string
 	Lease        bool
 	NoFollowTags bool
+	LocalState   string
 }
 
 func (e *PushError) Error() string {
@@ -353,8 +354,12 @@ func (e *PushError) Error() string {
 	for _, r := range e.Failed {
 		retry = append(retry, retryPushCommand(r, e.Refs, e.Lease, e.NoFollowTags))
 	}
-	return fmt.Sprintf("push failed for %d of %d remotes (%s); local refs are kept, retry with: %s",
-		len(e.Failed), e.Total, strings.Join(e.Failed, ", "), strings.Join(retry, "; "))
+	localState := e.LocalState
+	if localState == "" {
+		localState = "local refs are kept"
+	}
+	return fmt.Sprintf("push failed for %d of %d remotes (%s); %s, retry with: %s",
+		len(e.Failed), e.Total, strings.Join(e.Failed, ", "), localState, strings.Join(retry, "; "))
 }
 
 func retryPushCommand(remote string, refs []string, lease, noFollowTags bool) string {

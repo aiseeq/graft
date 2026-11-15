@@ -332,6 +332,10 @@ func (a *App) pushCommit(repo *gitx.Repo, cfg *config.Config, plan commitPlan, r
 		if _, delErr := repo.Git("tag", "-d", plan.bump.tag); delErr != nil {
 			return errors.Join(err, fmt.Errorf("removing the local tag %s: %w", plan.bump.tag, delErr))
 		}
+		var pushErr *PushError
+		if errors.As(err, &pushErr) {
+			pushErr.LocalState = fmt.Sprintf("local branch and release commit are kept; the local tag %s was removed", plan.bump.tag)
+		}
 		return fmt.Errorf("%w\nthe release commit is made here, tag %s is not: bring %s up to date with its remote, push it, then run graft release to tag the committed version", err, plan.bump.tag, plan.branch)
 	}
 	return a.push(repo, plan.remotes, refs[1:], false, noFollow)

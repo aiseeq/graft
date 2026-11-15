@@ -12,6 +12,7 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/checks"
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/gomods"
 	"github.com/aiseeq/graft/v2/internal/hooks"
@@ -261,11 +262,8 @@ func releaseAuthorsThen(repo *gitx.Repo, cfg *config.Config, run func() error) e
 }
 
 func (a *App) releaseLocked(ctx context.Context, repo *gitx.Repo, cfg *config.Config, opts ReleaseOptions) error {
-	if cfg.Version.Mode == config.ModeFile && opts.Version != "" {
-		return errors.New("in version.mode file release takes no --version")
-	}
-	if cfg.Version.Mode == config.ModeFile && (opts.Level != version.Patch || opts.Patch) {
-		return a.releaseFileCommit(ctx, repo, cfg, opts)
+	if handled, err := a.handleFileRelease(ctx, repo, cfg, opts); handled || err != nil {
+		return err
 	}
 	next, err := releaseVersion(repo, cfg, opts)
 	if err != nil {
@@ -283,7 +281,11 @@ func (a *App) releaseLocked(ctx context.Context, repo *gitx.Repo, cfg *config.Co
 				return err
 			}
 			if released != "" {
-				return fmt.Errorf("HEAD is already released as %s: commit the change first", released)
+				tags, err := releasedTagsAtHEAD(repo, cfg.Version.TagPrefix)
+				if err != nil {
+					return err
+				}
+				return alreadyReleasedRefusal(repo, cfg, tags, fmt.Sprintf("HEAD is already released as %s: commit the change first", released))
 			}
 			return fmt.Errorf("tag %s already exists on an earlier commit: use graft release --patch, --minor or --major for the next version", tag)
 		}
@@ -310,6 +312,20 @@ func (a *App) releaseLocked(ctx context.Context, repo *gitx.Repo, cfg *config.Co
 	}
 	a.printf("tagged %s", tag)
 	return a.push(repo, remotes, []string{"refs/tags/" + tag}, false, hasConfiguredFreeze(cfg))
+}
+
+// handleFileRelease dispatches file-mode releases that create a version commit.
+func (a *App) handleFileRelease(ctx context.Context, repo *gitx.Repo, cfg *config.Config, opts ReleaseOptions) (bool, error) {
+	if cfg.Version.Mode != config.ModeFile {
+		return false, nil
+	}
+	if opts.Version != "" {
+		return true, errors.New("in version.mode file release takes no --version")
+	}
+	if opts.Level != version.Patch || opts.Patch {
+		return true, a.releaseFileCommit(ctx, repo, cfg, opts)
+	}
+	return false, nil
 }
 
 type releaseCommit struct {
@@ -555,7 +571,7 @@ func releaseVersion(repo *gitx.Repo, cfg *config.Config, opts ReleaseOptions) (v
 		if !found {
 			return InitialRelease, nil
 		}
-		if err := requireUnreleased(repo, cfg.Version.TagPrefix); err != nil {
+		if err := requireUnreleased(repo, cfg); err != nil {
 			return version.Semver{}, err
 		}
 		return latest.Bump(opts.Level), nil
@@ -603,7 +619,11 @@ func (a *App) releaseFileCommitLocked(ctx context.Context, repo *gitx.Repo, cfg 
 		return err
 	}
 	if released != "" {
-		return fmt.Errorf("HEAD is already released as %s: commit the change first; a new version of the same code ships nothing new", released)
+		tags, err := releasedTagsAtHEAD(repo, cfg.Version.TagPrefix)
+		if err != nil {
+			return err
+		}
+		return alreadyReleasedRefusal(repo, cfg, tags, fmt.Sprintf("HEAD is already released as %s: commit the change first; a new version of the same code ships nothing new", released))
 	}
 	plan, err := planBump(repo, cfg, opts.Level, branch)
 	if err != nil {
@@ -637,6 +657,25 @@ func (a *App) releaseFileCommitLocked(ctx context.Context, repo *gitx.Repo, cfg 
 	// (the next graft commit raises them), and a refusal leaves nothing behind.
 	commit := commitPlan{branch: branch, remotes: remotes, message: msg, bump: plan, bumpBeforeGate: true, release: true}
 	return a.commit(ctx, repo, cfg, commit)
+}
+
+// alreadyReleasedRefusal keeps the original refusal and names a retry command
+// for every version tag on every configured push remote.
+func alreadyReleasedRefusal(repo *gitx.Repo, cfg *config.Config, tags []string, refusal string) error {
+	remotes, err := pushRemotes(repo, cfg)
+	if err != nil {
+		return errors.New(refusal)
+	}
+	var details []string
+	for _, tag := range tags {
+		for _, remote := range remotes {
+			details = append(details, fmt.Sprintf("if a push of %s stopped, finish it with: git push --no-follow-tags -- %s refs/tags/%s", tag, envs.Quote(remote), envs.Quote(tag)))
+		}
+	}
+	if len(details) == 0 {
+		return errors.New(refusal)
+	}
+	return fmt.Errorf("%s\n%s", refusal, strings.Join(details, "\n"))
 }
 
 // requireBranchCurrent refuses a release over a branch some remote has moved
@@ -675,29 +714,41 @@ func requireBranchCurrent(repo *gitx.Repo, remotes []string, branch string) erro
 // requireUnreleased refuses a release of a commit that already carries a
 // version tag: release run again after a commit that failed would publish
 // the same code under a new version.
-func requireUnreleased(repo *gitx.Repo, prefix string) error {
-	released, err := releasedAs(repo, prefix)
+func requireUnreleased(repo *gitx.Repo, cfg *config.Config) error {
+	tags, err := releasedTagsAtHEAD(repo, cfg.Version.TagPrefix)
 	if err != nil {
 		return err
 	}
-	if released != "" {
-		return fmt.Errorf("HEAD is already released as %s: commit the change first, or pass --version to tag the same commit again", released)
+	if len(tags) > 0 {
+		return alreadyReleasedRefusal(repo, cfg, tags, fmt.Sprintf("HEAD is already released as %s: commit the change first, or pass --version to tag the same commit again", tags[0]))
 	}
 	return nil
 }
 
 // releasedAs is the version tag HEAD carries already, "" for none.
 func releasedAs(repo *gitx.Repo, prefix string) (string, error) {
-	out, err := repo.Git("tag", "--points-at", "HEAD", "--list", prefix+"*")
+	tags, err := releasedTagsAtHEAD(repo, prefix)
 	if err != nil {
 		return "", err
 	}
-	for tag := range strings.FieldsSeq(out) {
-		if version.IsPlain(strings.TrimPrefix(tag, prefix)) {
-			return tag, nil
-		}
+	if len(tags) > 0 {
+		return tags[0], nil
 	}
 	return "", nil
+}
+
+func releasedTagsAtHEAD(repo *gitx.Repo, prefix string) ([]string, error) {
+	out, err := repo.Git("tag", "--points-at", "HEAD", "--list", prefix+"*")
+	if err != nil {
+		return nil, err
+	}
+	var tags []string
+	for tag := range strings.FieldsSeq(out) {
+		if version.IsPlain(strings.TrimPrefix(tag, prefix)) {
+			tags = append(tags, tag)
+		}
+	}
+	return tags, nil
 }
 
 // warnInstallFreshness checks installed task binaries after a successful

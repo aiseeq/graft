@@ -170,13 +170,50 @@ func TestReleaseFileRefusalsAreAtomic(t *testing.T) {
 func TestReleaseFileWithoutStepExplainsNextStep(t *testing.T) {
 	f := fileReleaseRepo(t, false, "gate: []\n")
 	f.git("tag", "v0.7.0")
-	if out, code := f.graft("", "release"); code == 0 || !strings.Contains(out, "HEAD is already released as v0.7.0") {
+	if out, code := f.graft("", "release"); code == 0 || !strings.Contains(out, "HEAD is already released as v0.7.0") || strings.Contains(out, "pass --version") {
 		t.Fatalf("release of a released HEAD: exit %d\n%s", code, out)
+	}
+	if out, code := f.graft("", "release", "--version", "0.8.0", "--minor"); code == 0 || !strings.Contains(out, "in version.mode file release takes no --version") || strings.Contains(out, "already released") {
+		t.Fatalf("file-mode flags should be validated before release status: exit %d\n%s", code, out)
 	}
 	ffFeature(t, f)
 	f.git("push", "-q", "origin", "main")
 	if out, code := f.graft("", "release"); code == 0 || !strings.Contains(out, "--minor") {
 		t.Fatalf("release existing HEAD version: exit %d\n%s", code, out)
+	}
+}
+
+func TestReleaseFileRefusalFollowsMainVersionChecks(t *testing.T) {
+	t.Run("old tag does not block the version in VERSION", func(t *testing.T) {
+		f := fileReleaseRepo(t, false, "gate: []\n")
+		f.git("tag", "v0.6.0")
+		f.mustGraft("release")
+		if got := f.git("tag", "-l", "v0.7.0"); got != "v0.7.0" {
+			t.Fatalf("release tag = %q, want v0.7.0", got)
+		}
+	})
+	t.Run("invalid VERSION is reported before existing HEAD tag", func(t *testing.T) {
+		f := fileReleaseRepo(t, false, "gate: []\n")
+		f.write("VERSION", "bad\n")
+		f.git("add", "VERSION")
+		f.git("commit", "-q", "-m", "chore: invalid version")
+		f.git("tag", "v0.6.0")
+		out, code := f.graft("", "release")
+		if code == 0 || !strings.Contains(out, "is not a MAJOR.MINOR.PATCH") || strings.Contains(out, "already released") {
+			t.Fatalf("invalid VERSION should be reported first: exit %d\n%s", code, out)
+		}
+	})
+}
+
+func TestReleaseVersionModeNoneIgnoresTags(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\ngate: []\n"}, "origin")
+	f.mustPlainCommit("chore: initial")
+	f.git("tag", "v1.0.0")
+	for _, args := range [][]string{{"release"}, {"release", "--minor"}, {"release", "--version", "1.0.0"}} {
+		out, code := f.graft("", args...)
+		if code == 0 || !strings.Contains(out, "version.mode none has no releases") || strings.Contains(out, "already released") || strings.Contains(out, "git push") {
+			t.Errorf("release %v in none mode: exit %d\n%s", args, code, out)
+		}
 	}
 }
 
@@ -349,6 +386,11 @@ func TestReleaseFileRemoteBranch(t *testing.T) {
 		if code == 0 || !strings.Contains(out, "tag v0.8.0 is not") {
 			t.Fatalf("release with a rejected branch push: exit %d\n%s", code, out)
 		}
+		retryAt := strings.Index(out, "retry with: git push origin HEAD")
+		tagAt := strings.Index(out, "tag v0.8.0 is not")
+		if retryAt < 0 || tagAt <= retryAt || strings.Contains(out, "local refs are kept") || !strings.Contains(out, "local tag v0.8.0 was removed") {
+			t.Fatalf("branch failure should explain the absent local tag after the retry command: exit %d\n%s", code, out)
+		}
 		if got := f.gitIn(f.remote("origin"), "tag", "-l"); got != "" {
 			t.Fatalf("remote tags = %q", got)
 		}
@@ -367,6 +409,41 @@ func TestReleaseFileRemoteBranch(t *testing.T) {
 			t.Fatalf("release after the push: remote tags %q", got)
 		}
 	})
+	t.Run("tag push rejected and retry is suggested", func(t *testing.T) {
+		f := fileReleaseRepo(t, false, "gate: []\n")
+		ffFeature(t, f)
+		hook := filepath.Join(f.remote("origin"), "hooks", "pre-receive")
+		if err := os.WriteFile(hook, []byte("#!/bin/sh\nwhile read old new ref; do case $ref in refs/tags/*) echo rejected >&2; exit 1;; esac; done\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		out, code := f.graft("", "release", "--minor")
+		if code == 0 || !strings.Contains(out, "git push origin refs/tags/v0.8.0") {
+			t.Fatalf("release with a rejected tag push: exit %d\n%s", code, out)
+		}
+		if got := f.git("tag", "-l"); got != "v0.8.0" {
+			t.Fatalf("local tags = %q", got)
+		}
+		if err := os.Remove(hook); err != nil {
+			t.Fatal(err)
+		}
+		trace := filepath.Join(t.TempDir(), "git-trace")
+		f.env = append(f.env, "GIT_TRACE="+trace)
+		out, code = f.graft("", "release")
+		if code == 0 || !strings.Contains(out, "already released as v0.8.0") || !strings.Contains(out, "if a push of v0.8.0 stopped") || !strings.Contains(out, "git push --no-follow-tags -- origin refs/tags/v0.8.0") {
+			t.Fatalf("retry after tag push failure: exit %d\n%s", code, out)
+		}
+		if traceOutput, err := os.ReadFile(trace); err != nil || containsRemoteGitOperation(string(traceOutput)) {
+			t.Fatalf("already-released refusal queried a remote; trace err=%v\n%s", err, traceOutput)
+		}
+		if got := f.git("ls-remote", "--tags", "origin", "refs/tags/v0.8.0"); strings.TrimSpace(got) != "" {
+			t.Fatalf("repeat release pushed the rejected tag: %q", got)
+		}
+		f.git("push", "-q", "origin", "refs/tags/v0.8.0")
+		out, code = f.graft("", "release")
+		if code == 0 || !strings.Contains(out, "already released as v0.8.0") || !strings.Contains(out, "if a push of v0.8.0 stopped") {
+			t.Fatalf("release after tag reached all remotes: exit %d\n%s", code, out)
+		}
+	})
 	t.Run("patch on a build branch", func(t *testing.T) {
 		f := fileReleaseRepo(t, false, "gate: []\n")
 		f.git("checkout", "-q", "-b", "build/one")
@@ -374,4 +451,174 @@ func TestReleaseFileRemoteBranch(t *testing.T) {
 			t.Fatalf("--patch on a build branch: exit %d\n%s", code, out)
 		}
 	})
+}
+
+func TestReleaseReportsUnpublishedTagWithoutPushing(t *testing.T) {
+	t.Run("manual tag on unpublished commit", func(t *testing.T) {
+		f := fileReleaseRepo(t, false, "gate: []\n")
+		f.write("local.txt", "not published\n")
+		f.mustPlainCommit("feat: local release candidate")
+		f.git("tag", "v0.7.0")
+		out, code := f.graft("", "release", "--minor")
+		if code == 0 || !strings.Contains(out, "already released as v0.7.0") || !strings.Contains(out, "git push --no-follow-tags -- origin refs/tags/v0.7.0") {
+			t.Fatalf("release with manual tag on unpublished HEAD: exit %d\n%s", code, out)
+		}
+		if got := f.git("ls-remote", "--tags", "origin", "refs/tags/v0.7.0"); strings.TrimSpace(got) != "" {
+			t.Fatalf("release published manual tag: %q", got)
+		}
+	})
+	t.Run("one hint per remote", func(t *testing.T) {
+		f := fileReleaseRepo(t, false, "gate: []\n")
+		f.git("tag", "v0.7.0")
+		backup := filepath.Join(t.TempDir(), "backup.git")
+		if err := os.CopyFS(backup, os.DirFS(bareTemplate)); err != nil {
+			t.Fatal(err)
+		}
+		f.addRemote("backup", backup)
+		out, code := f.graft("", "release")
+		if code == 0 || !strings.Contains(out, "git push --no-follow-tags -- origin refs/tags/v0.7.0") || !strings.Contains(out, "git push --no-follow-tags -- backup refs/tags/v0.7.0") {
+			t.Fatalf("release refusal did not name each remote: exit %d\n%s", code, out)
+		}
+		for _, remote := range []string{"origin", "backup"} {
+			if got := f.git("ls-remote", "--tags", remote, "refs/tags/v0.7.0"); strings.TrimSpace(got) != "" {
+				t.Fatalf("release pushed tag to %s: %q", remote, got)
+			}
+		}
+	})
+	t.Run("shell quotes remote names", func(t *testing.T) {
+		f := fileReleaseRepo(t, false, "gate: []\n")
+		backup := filepath.Join(t.TempDir(), "backup.git")
+		if err := os.CopyFS(backup, os.DirFS(bareTemplate)); err != nil {
+			t.Fatal(err)
+		}
+		f.addRemote("backup;true", backup)
+		gitConfig := filepath.Join(f.work, ".git", "config")
+		data, err := os.ReadFile(gitConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = []byte(strings.ReplaceAll(string(data), "\tfetch = +refs/heads/*:refs/remotes/backup;true/*\n", ""))
+		if err := os.WriteFile(gitConfig, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		f.git("tag", "v0.7.0")
+		out, code := f.graft("", "release")
+		if code == 0 || !strings.Contains(out, "git push --no-follow-tags -- 'backup;true' refs/tags/v0.7.0") {
+			t.Fatalf("unsafe remote was not quoted: exit %d\n%s", code, out)
+		}
+		const marker = "finish it with: "
+		_, after, ok := strings.Cut(out, marker)
+		if !ok {
+			t.Fatalf("retry command missing: %s", out)
+		}
+		command := strings.SplitN(after, "\n", 2)[0]
+		if output, code := f.exec(f.work, "", "sh", "-c", command); code != 0 {
+			t.Fatalf("suggested shell command failed: exit %d\n%s", code, output)
+		}
+		if _, code := f.exec(backup, "", "git", "show-ref", "--verify", "--quiet", "refs/tags/v0.7.0"); code != 0 {
+			t.Fatal("quoted command did not push tag to the intended remote")
+		}
+	})
+	t.Run("remote beginning with dash works in shell", func(t *testing.T) {
+		f := fileReleaseRepo(t, false, "gate: []\n")
+		backup := filepath.Join(t.TempDir(), "backup.git")
+		if err := os.CopyFS(backup, os.DirFS(bareTemplate)); err != nil {
+			t.Fatal(err)
+		}
+		f.addRemote("-backup", backup)
+		f.git("tag", "v0.7.0")
+		out, code := f.graft("", "release")
+		if code == 0 || !strings.Contains(out, "git push --no-follow-tags -- -backup refs/tags/v0.7.0") {
+			t.Fatalf("dash-prefixed remote lacks option separator: exit %d\n%s", code, out)
+		}
+		const marker = "finish it with: "
+		_, after, ok := strings.Cut(out, marker)
+		if !ok {
+			t.Fatalf("retry command missing: %s", out)
+		}
+		command := strings.SplitN(after, "\n", 2)[0]
+		if output, code := f.exec(f.work, "", "sh", "-c", command); code != 0 {
+			t.Fatalf("suggested command for dash-prefixed remote failed: exit %d\n%s", code, output)
+		}
+		if _, code := f.exec(backup, "", "git", "show-ref", "--verify", "--quiet", "refs/tags/v0.7.0"); code != 0 {
+			t.Fatal("suggested command did not push tag to -backup")
+		}
+	})
+}
+
+func containsRemoteGitOperation(trace string) bool {
+	for _, operation := range []string{"ls-remote", "git fetch", "upload-pack", "receive-pack", "git-remote-"} {
+		if strings.Contains(trace, operation) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestReleaseGitTagReportsRejectedTagPush(t *testing.T) {
+	f := releaseBranchRepo(t)
+	hook := filepath.Join(f.remote("origin"), "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nwhile read old new ref; do case $ref in refs/tags/*) echo rejected >&2; exit 1;; esac; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := f.graft("", "release", "--version", "1.0.0")
+	if code == 0 || !strings.Contains(out, "git push origin refs/tags/v1.0.0") {
+		t.Fatalf("git-tag release with rejected tag push: exit %d\n%s", code, out)
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	out, code = f.graft("", "release")
+	if code == 0 || !strings.Contains(out, "already released as v1.0.0") || !strings.Contains(out, "git push --no-follow-tags -- origin refs/tags/v1.0.0") {
+		t.Fatalf("git-tag retry after rejected push: exit %d\n%s", code, out)
+	}
+	if got := f.git("ls-remote", "--tags", "origin", "refs/tags/v1.0.0"); strings.TrimSpace(got) != "" {
+		t.Fatalf("repeat release pushed the rejected tag: %q", got)
+	}
+	f.git("push", "-q", "origin", "refs/tags/v1.0.0")
+	out, code = f.graft("", "release")
+	if code == 0 || !strings.Contains(out, "already released as v1.0.0") || !strings.Contains(out, "if a push of v1.0.0 stopped") {
+		t.Fatalf("git-tag release after manual tag push: exit %d\n%s", code, out)
+	}
+}
+
+func TestReleaseGitTagChecksEveryVersionOnHEAD(t *testing.T) {
+	f := releaseBranchRepo(t)
+	f.mustGraft("release", "--version", "1.0.0")
+	hook := filepath.Join(f.remote("origin"), "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nwhile read old new ref; do case $ref in refs/tags/*) echo rejected >&2; exit 1;; esac; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := f.graft("", "release", "--version", "1.1.0")
+	if code == 0 || !strings.Contains(out, "git push origin refs/tags/v1.1.0") {
+		t.Fatalf("second version tag push rejected: exit %d\n%s", code, out)
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"release"}} {
+		out, code = f.graft("", args...)
+		if code == 0 || !strings.Contains(out, "already released") || !strings.Contains(out, "git push --no-follow-tags -- origin refs/tags/v1.0.0") || !strings.Contains(out, "git push --no-follow-tags -- origin refs/tags/v1.1.0") {
+			t.Fatalf("retry %v did not report the missing HEAD tag: exit %d\n%s", args, code, out)
+		}
+	}
+	out, code = f.graft("", "release", "--version", "1.1.0")
+	if code == 0 || !strings.Contains(out, "not above the latest tag") || strings.Contains(out, "git push") {
+		t.Fatalf("exact version should retain main's refusal: exit %d\n%s", code, out)
+	}
+	out, code = f.graft("", "release", "--version", "1.0.0", "--minor")
+	if code == 0 || !strings.Contains(out, "--version and --minor/--major exclude each other") || strings.Contains(out, "already released") {
+		t.Fatalf("incompatible flags were not rejected first: exit %d\n%s", code, out)
+	}
+}
+
+func TestReleaseGitTagChecksLatestTagBeforeFlagConflict(t *testing.T) {
+	f := releaseBranchRepo(t)
+	tag := "v999999999999999999999.0.0"
+	f.git("tag", tag)
+	out, code := f.graft("", "release", "--version", "1.0.0", "--minor")
+	want := "tag " + tag + ": \"999999999999999999999.0.0\": version part \"999999999999999999999\" out of range"
+	if code == 0 || !strings.Contains(out, want) || strings.Contains(out, "--version and --minor/--major exclude each other") {
+		t.Fatalf("release should report main's reachable tag error before flag conflict: exit %d\nwant %q\n%s", code, want, out)
+	}
 }

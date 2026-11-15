@@ -2571,7 +2571,11 @@ deploy:
   the history the first release is **v0.1.0**. A HEAD that already carries a
   version tag is refused, unless `--version` names the new one: a release run
   after a commit that failed would tag the same code again. Tags that are not
-  plain `vX.Y.Z` (such as `v1.0.0-rc1`) are ignored.
+  plain `vX.Y.Z` (such as `v1.0.0-rc1`) are ignored. On an already-released
+  refusal, graft suggests `git push --no-follow-tags -- <remote>
+  refs/tags/<tag>` for each local version tag on HEAD. The command only pushes
+  that tag: pushing the same tag is a no-op, and Git rejects a tag that points
+  to a different object without force.
 - **none**: no version at all.
 
 `graft release` only tags a HEAD that every push remote already has. On a
