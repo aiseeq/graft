@@ -40,6 +40,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/tasks"
+	"github.com/aiseeq/graft/v2/internal/tools"
 	"github.com/aiseeq/graft/v2/internal/version"
 )
 
@@ -860,6 +861,17 @@ func toolsCmd(ctx context.Context, a *app.App, args []string) error {
 		return a.Tools(ctx, false)
 	case len(args) == 1 && args[0] == "install":
 		return a.Tools(ctx, true)
+	case len(args) == 1 && args[0] == "install-dir":
+		dir, err := tools.InstallDir(ctx)
+		if err != nil {
+			return err
+		}
+		dir, err = filepath.Abs(dir)
+		if err != nil {
+			return fmt.Errorf("resolving install directory: %w", err)
+		}
+		fmt.Fprintln(a.Stdout, dir)
+		return nil
 	default:
 		return usageOf("tools")
 	}

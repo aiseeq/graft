@@ -98,7 +98,7 @@ var commands = []command{
 	{name: "locks", syntax: fixed("graft locks"), summary: text("show who holds graft's locks")},
 	{name: "testdb", syntax: fixed(app.TestDBUsage()), summary: text("manage the disposable test PostgreSQL in docker"),
 		applies: func(c *config.Config) bool { return c.TestDB != nil }},
-	{name: "tools", syntax: fixed("graft tools [install]"), summary: text("check the pinned tools; install installs the failing ones"),
+	{name: "tools", syntax: fixed("graft tools [install]", "graft tools install-dir"), summary: text("check the pinned tools; install installs the failing ones; install-dir prints the binary installation directory"),
 		applies: func(c *config.Config) bool { return len(c.Tools) > 0 }},
 	{name: "worktree", syntax: fixed("graft worktree add [--trunk <ref>] <branch> [<base>]", "graft worktree check [--trunk <ref>] [--json] <path>", "graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h] [--in <directory>]...", "graft worktree sync [--trunk <ref>] [--push]"),
 		summary: text("a worktree under the user's cache, with go.work's neighbours linked; remove the worktrees and branches whose work is in the trunk by content; move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted")},
