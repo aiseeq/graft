@@ -186,6 +186,12 @@ lock:
 	}
 }
 
+func TestTicketHintRequiresPattern(t *testing.T) {
+	if _, err := Parse([]byte("schema: 1\nversion: {mode: none}\nticket: {hint: 'Find a key'}\n")); err == nil || !strings.Contains(err.Error(), "ticket.pattern: required when ticket is set") {
+		t.Fatalf("ticket.hint without ticket.pattern: %v", err)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := map[string]string{
 		"missing schema":            "version:\n  mode: none\n",

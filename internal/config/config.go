@@ -184,6 +184,8 @@ type SyncFile struct {
 // Ticket describes how a work item key is recognised in a branch name.
 type Ticket struct {
 	Pattern string `yaml:"pattern"`
+	// Hint is printed when a required ticket key is missing.
+	Hint string `yaml:"hint"`
 	// Required makes graft commit refuse a commit that names no work item, in
 	// its message or by its branch; a revert and a commit that changes only
 	// approved_release ignore_paths need none.

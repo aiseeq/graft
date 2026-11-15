@@ -165,7 +165,11 @@ func requireTicketWithVersion(repo *gitx.Repo, cfg *config.Config, msg, base str
 	if cfg.ShipsNothing(changed) || versionOnly {
 		return nil
 	}
-	return fmt.Errorf("the commit names no work item (ticket.required): put a key matching %s in the message or commit from a branch named for the item; only a revert and changes ignored by every approved_release target need none", cfg.Ticket.Pattern)
+	message := fmt.Sprintf("the commit names no work item (ticket.required): put a key matching %s in the message or commit from a branch named for the item; only a revert and changes ignored by every approved_release target need none", cfg.Ticket.Pattern)
+	if hint := strings.TrimSpace(cfg.Ticket.Hint); hint != "" {
+		message += "\n" + hint
+	}
+	return errors.New(message)
 }
 
 // hasTicketKey tells whether some whole word of msg is a work item key; with

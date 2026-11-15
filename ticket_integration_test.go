@@ -95,6 +95,34 @@ func TestTicketRequiredFirstCommitWithoutHead(t *testing.T) {
 	f.mustGraft("commit", "-m", "chore: PROJ-1 base")
 }
 
+func TestTicketRequiredHint(t *testing.T) {
+	const refusal = "graft: the commit names no work item (ticket.required): put a key matching PROJ-[0-9]+ in the message or commit from a branch named for the item; only a revert and changes ignored by every approved_release target need none\n"
+	const prelude = "graft: warning: the hooks are out of date (core.hooksPath is \"\", not \".githooks\"; .githooks/pre-commit is missing; .githooks/prepare-commit-msg is missing; .githooks/post-merge is missing); run graft init\ngraft: gate is empty, nothing to run\n"
+	for _, tc := range []struct {
+		name string
+		hint string
+		want string
+	}{
+		{name: "configured", hint: ", hint: 'Find a key, such as PROJ-123.'", want: prelude + refusal + "Find a key, such as PROJ-123.\n"},
+		{name: "unset", want: prelude + refusal},
+		{name: "whitespace", hint: ", hint: '   '", want: prelude + refusal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRepo(t, map[string]string{
+				".graft.yaml": "schema: 1\nversion: {mode: none, reason: test}\nticket: {pattern: 'PROJ-[0-9]+', required: true" + tc.hint + "}\ngate: []\n",
+				"base.txt":    "base\n",
+			}, "origin")
+			f.git("checkout", "-q", "-b", "main")
+			f.mustPlainCommit("feat: PROJ-1 base")
+			f.write("change.txt", "change\n")
+			out, code := f.graft("", "commit", "-m", "fix: missing ticket")
+			if code == 0 || out != tc.want {
+				t.Errorf("refusal exit %d = %q, want nonzero and %q", code, out, tc.want)
+			}
+		})
+	}
+}
+
 func TestTicketRequiredHashPattern(t *testing.T) {
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: none}\nticket: {pattern: '#[0-9]+', required: true}\ngate: []\n",

@@ -789,6 +789,7 @@ version:
 ticket:                         # omit to never add a key
   pattern: '[A-Z][A-Z]+-[0-9]+' # first match in the branch name
   required: false               # true: a commit must name a work item
+  hint: 'Find a key in the issue tracker, such as PROJ-123.' # appended to the refusal when required and missing
   skip_branches: ['agent/*']    # commits on these branches need no work item and take no key from the branch
 
 release:
