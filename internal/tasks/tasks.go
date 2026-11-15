@@ -1538,19 +1538,7 @@ func (r *Runner) lightSplitRemainder(localSteps []string) bool {
 		fmt.Fprintf(r.Stderr, "graft: gate: not checked for a light remainder, it waits for this machine: %v\n", err)
 		return false
 	}
-	since := time.Now().Add(-lightGateWindow)
-	info, err := os.Stat(filepath.Join(r.Root, ".graft.yaml"))
-	if err != nil {
-		return note(err)
-	}
-	if info.ModTime().After(since) {
-		since = info.ModTime()
-	}
-	path, err := stats.Path()
-	if err != nil {
-		return note(err)
-	}
-	recs, _, err := stats.Load(path, since)
+	recs, since, err := r.lightGateRecords()
 	if err != nil {
 		return note(err)
 	}
@@ -3713,23 +3701,31 @@ func (r *Runner) lightGate(ctx context.Context) bool {
 	if !busy {
 		return false
 	}
+	recs, since, err := r.lightGateRecords()
+	if err != nil {
+		return note(err)
+	}
+	return stats.LightGate(recs, filepath.Clean(r.Root), since)
+}
+
+// lightGateRecords loads the journal runs a light gate is judged by: those of
+// the last lightGateWindow, or since .graft.yaml last changed if later, with
+// the moment they start from.
+func (r *Runner) lightGateRecords() ([]stats.Record, time.Time, error) {
 	since := time.Now().Add(-lightGateWindow)
 	info, err := os.Stat(filepath.Join(r.Root, ".graft.yaml"))
 	if err != nil {
-		return note(err)
+		return nil, since, fmt.Errorf("config age: %w", err)
 	}
 	if info.ModTime().After(since) {
 		since = info.ModTime()
 	}
 	path, err := stats.Path()
 	if err != nil {
-		return note(err)
+		return nil, since, err
 	}
 	recs, _, err := stats.Load(path, since)
-	if err != nil {
-		return note(err)
-	}
-	return stats.LightGate(recs, filepath.Clean(r.Root), since)
+	return recs, since, err
 }
 
 // lightGateWindow is how far back the runs of a light gate are looked for.
