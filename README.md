@@ -1734,9 +1734,12 @@ events with a reason. Every command takes `--env` (default
 zone, as PostgreSQL itself reads it.
 
 The flag is meant to be looked at daily, and graft takes that look for whoever
-forgot it: once a day per repository and environment, `graft commit` (after
-its push) prints the flag of `flags.default_env` and `graft deploy` (after a
-deploy that succeeded) the flag of the target's environment, in one line:
+forgot it: once a day per repository and environment, a command of the
+project that succeeded (`graft commit` after its push, a task, `graft exec`,
+`graft stats` and the like) prints, on stderr, the flag of `flags.default_env`,
+and `graft deploy` (after a deploy that succeeded) the flag of the target's
+environment, in one line. Help, guide, `--version`, `graft flags`, the hooks
+graft installs and a graft another graft started print nothing:
 
 ```
 graft: flag RAISED (prod): 2 events to review, 1 muted by exceptions: graft flags --env prod

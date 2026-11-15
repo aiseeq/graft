@@ -74,13 +74,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "graft:", err)
 		os.Exit(failed)
 	}
+	nested := os.Getenv(stats.EnvRun) != ""
 	if err := stats.StartRun(); err != nil {
 		fmt.Fprintln(os.Stderr, "graft:", err)
 		os.Exit(failed)
 	}
 	// Runs only on a panic: every other way out of main is os.Exit.
 	defer crashlog.Note(crashlog.Keep(), toolVersion(), os.Args[1:])
-	a := &app.App{Dir: wd, ToolVersion: toolVersion(), Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}
+	a := &app.App{Dir: wd, ToolVersion: toolVersion(), Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Nested: nested}
 	// Ctrl-C stops a lock wait or a gate command instead of leaving them
 	// running behind the user's back.
 	ctx, stopSignals := signal.NotifyContext(context.Background(), signalSet(os.Args[1:])...)
@@ -221,7 +222,35 @@ func runArgs(ctx context.Context, a *app.App, args []string, fail func(error) in
 		return fail(err)
 	}
 	err := dispatch(ctx, a, args)
+	if err == nil && dailyFlagsCommand(args) {
+		a.DailyFlags(ctx)
+	}
 	return fail(err)
+}
+
+// dailyFlagsCommand excludes commands that are informational, manage flags
+// themselves, or retain their established post-work order.
+func dailyFlagsCommand(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	cmd := args[0]
+	if cmd == "-C" {
+		return false
+	}
+	switch cmd {
+	case "help", "-h", "--help", "guide", "--version", "-v", "flags", "hook", "commit", "deploy":
+		return false
+	}
+	for _, arg := range args[1:] {
+		if arg == "--" {
+			break
+		}
+		if arg == "-h" || arg == "--help" {
+			return false
+		}
+	}
+	return true
 }
 
 // misplacedDir refuses -C <directory> after the command, before any --, with

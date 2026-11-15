@@ -25,11 +25,13 @@ const flagsEvery = 24 * time.Hour
 const flagsTimeout = 15 * time.Second
 
 // dailyFlags prints the flag of env (empty means flags.default_env) when no
-// graft has looked at it for a day. Commit and deploy have done their work
-// by then, so nothing here fails them: a journal that cannot be read is a
-// warning, and the next try is a day later all the same, so that a commit
-// without the network does not wait for it every time.
+// graft has looked at it for a day. Nothing here fails the command: a journal
+// that cannot be read is a warning, and the next try is a day later all the
+// same, so the work does not wait for it every time.
 func (a *App) dailyFlags(ctx context.Context, repo *gitx.Repo, cfg *config.Config, env string) {
+	if a.Nested {
+		return
+	}
 	f := cfg.Flags
 	if f == nil {
 		return
@@ -64,6 +66,16 @@ func (a *App) dailyFlags(ctx context.Context, repo *gitx.Repo, cfg *config.Confi
 	}
 }
 
+// DailyFlags checks the project's daily flag after a successful command.
+// Commands without a project or without a flags section have nothing to read.
+func (a *App) DailyFlags(ctx context.Context) {
+	repo, cfg, err := a.open()
+	if err != nil { //nolint:silent-error-handling // Commands outside a project have no project flags to summarize.
+		return
+	}
+	a.dailyFlags(ctx, repo, cfg, "")
+}
+
 func (a *App) printFlags(ctx context.Context, repo *gitx.Repo, cfg *config.Config, env string) error {
 	j, err := a.journal(repo, cfg, env)
 	if err != nil {
@@ -74,9 +86,9 @@ func (a *App) printFlags(ctx context.Context, repo *gitx.Repo, cfg *config.Confi
 		return err
 	}
 	if c.Raised() {
-		a.printf("%s: graft flags --env %s", c.Headline(env), env)
+		fmt.Fprintf(a.Stderr, "graft: %s: graft flags --env %s\n", c.Headline(env), env)
 	} else {
-		a.printf("%s", c.Headline(env))
+		fmt.Fprintf(a.Stderr, "graft: %s\n", c.Headline(env))
 	}
 	return nil
 }

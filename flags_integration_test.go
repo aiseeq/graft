@@ -1,14 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/aiseeq/graft/v2/internal/stats"
 )
 
 // journalServer is a minimal journal API for the CLI tests.
@@ -131,6 +136,107 @@ func TestFlagsStatusCountsAsTheDailyLook(t *testing.T) {
 	if out := f.mustGraft("commit", "-m", "feat: base"); strings.Contains(out, "flag") || api.listings() != 1 {
 		t.Errorf("commit read the flag graft flags had just read (%d listings):\n%s", api.listings(), out)
 	}
+}
+
+func TestTaskShowsTheFlagOnceADay(t *testing.T) {
+	f, api := flagsRepo(t)
+	f.write(".graft.yaml", f.read(".graft.yaml")+`tasks:
+  ok:
+    run: [['sh', '-c', 'true']]
+  fail:
+    run: [[sh, -c, 'exit 7']]
+`)
+	out := f.mustGraft("ok")
+	if !strings.Contains(out, "graft: flag RAISED (local):") {
+		t.Errorf("first task of the day:\n%s", out)
+	}
+	if out := f.mustGraft("ok"); strings.Contains(out, "flag") || api.listings() != 1 {
+		t.Errorf("flag read again within the day (%d listings):\n%s", api.listings(), out)
+	}
+}
+
+func TestDailyFlagsSkipsHelpNestedAndFailedCommands(t *testing.T) {
+	t.Run("help", func(t *testing.T) {
+		f, api := flagsRepo(t)
+		f.mustGraft("help")
+		if api.listings() != 0 {
+			t.Errorf("help read the journal %d times", api.listings())
+		}
+	})
+	t.Run("nested", func(t *testing.T) {
+		f, api := flagsRepo(t)
+		f.write(".graft.yaml", f.read(".graft.yaml")+"tasks:\n  ok:\n    run: [['sh', '-c', 'true']]\n")
+		f.env = append(f.env, stats.EnvRun+"=outer-run")
+		f.mustGraft("ok")
+		if api.listings() != 0 {
+			t.Errorf("nested graft read the journal %d times", api.listings())
+		}
+	})
+	t.Run("failure", func(t *testing.T) {
+		f, api := flagsRepo(t)
+		f.write(".graft.yaml", f.read(".graft.yaml")+"tasks:\n  fail:\n    run: [['sh', '-c', 'exit 7']]\n")
+		if out, code := f.graft("", "fail"); code == 0 || strings.Contains(out, "flag") {
+			t.Errorf("failed task: exit %d\n%s", code, out)
+		}
+		if api.listings() != 0 {
+			t.Errorf("failed task read the journal %d times", api.listings())
+		}
+	})
+}
+
+func TestDailyFlagsPreservesStdout(t *testing.T) {
+	t.Run("exec", func(t *testing.T) {
+		f, api := flagsRepo(t)
+		stdout, stderr, code := graftSeparate(f, "exec", "--", "printf", "DATA")
+		if code != 0 || stdout != "DATA" {
+			t.Errorf("exec stdout = %q, exit %d; want DATA", stdout, code)
+		}
+		if !strings.Contains(stderr, "graft: flag RAISED (local):") || api.listings() != 1 {
+			t.Errorf("daily flag stderr/listings = %q / %d", stderr, api.listings())
+		}
+	})
+	t.Run("json", func(t *testing.T) {
+		f, _ := flagsRepo(t)
+		if out, code := f.exec(f.work, "", "git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture"); code != 0 {
+			t.Fatalf("seed commit: exit %d\n%s", code, out)
+		}
+		other := filepath.Join(f.base, "other")
+		f.git("worktree", "add", "--detach", other, "HEAD")
+		stdout, stderr, code := graftSeparate(f, "worktree", "check", "--json", "--trunk", "HEAD", other)
+		if code != 0 || !json.Valid([]byte(stdout)) {
+			t.Errorf("worktree JSON invalid, exit %d, stderr %q: %q", code, stderr, stdout)
+		}
+	})
+}
+
+func TestDailyFlagsWithUserGitIndex(t *testing.T) {
+	f, api := flagsRepo(t)
+	f.write(".graft.yaml", f.read(".graft.yaml")+"tasks:\n  ok:\n    run: [['sh', '-c', 'true']]\n")
+	f.env = append(f.env, "GIT_INDEX_FILE=.git/index")
+	stdout, stderr, code := graftSeparate(f, "ok")
+	if code != 0 || stdout != "" {
+		t.Errorf("task stdout = %q, exit %d", stdout, code)
+	}
+	if !strings.Contains(stderr, "graft: flag RAISED (local):") || api.listings() != 1 {
+		t.Errorf("user GIT_INDEX_FILE suppressed summary: stderr %q, listings %d", stderr, api.listings())
+	}
+}
+
+func graftSeparate(f *fixture, args ...string) (stdout, stderr string, code int) {
+	f.t.Helper()
+	cmd := exec.Command(graftBin, args...)
+	cmd.Dir = f.work
+	cmd.Env = append(slices.Clone(testEnv), f.env...)
+	var errOut bytes.Buffer
+	cmd.Stderr = &errOut
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return string(out), errOut.String(), exitErr.ExitCode()
+		}
+		f.t.Fatalf("graft %v: %v\n%s", args, err, errOut.String())
+	}
+	return string(out), errOut.String(), 0
 }
 
 func TestCommitSurvivesAnUnreadableJournal(t *testing.T) {

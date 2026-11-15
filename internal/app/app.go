@@ -39,6 +39,8 @@ type App struct {
 	// Command is the graft command being run (commit, gate, deploy, ...):
 	// the stats record tasks as run under it. Empty for graft <task>.
 	Command string
+	// Nested reports that this process was started by another graft.
+	Nested bool
 
 	stats *stats.Recorder
 }
