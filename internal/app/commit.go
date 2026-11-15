@@ -515,11 +515,68 @@ func restageOverHead(repo *gitx.Repo) error {
 	if head.sha == "" {
 		args = []string{"read-tree", "--empty"}
 	}
+	skipped, err := saveSkipWorktree(repo)
+	if err != nil {
+		return fmt.Errorf("restaging over the moved HEAD: %w", err)
+	}
 	if _, err := repo.Git(args...); err != nil {
 		return fmt.Errorf("restaging over the moved HEAD: %w", err)
 	}
+	// The flags go back before add -A: a path hidden by skip-worktree keeps
+	// its local change out of the index, as it did before the restage.
+	if err := restoreSkipWorktree(repo, skipped); err != nil {
+		return fmt.Errorf("restaging over the moved HEAD: restoring skip-worktree flags: %w", err)
+	}
 	if _, err := repo.Git("add", "-A"); err != nil {
 		return fmt.Errorf("restaging over the moved HEAD: %w", err)
+	}
+	return nil
+}
+
+// saveSkipWorktree records index paths marked skip-worktree without touching
+// the work tree. This also preserves flags set outside sparse-checkout.
+func saveSkipWorktree(repo *gitx.Repo) ([]string, error) {
+	out, err := repo.Git("ls-files", "-t", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("listing skip-worktree paths: %w", err)
+	}
+	var paths []string
+	for record := range strings.SplitSeq(out, "\x00") {
+		if len(record) >= 2 && record[0] == 'S' && record[1] == ' ' {
+			paths = append(paths, record[2:])
+		}
+	}
+	return paths, nil
+}
+
+// restoreSkipWorktree reapplies saved flags to paths still present in the
+// rebuilt index. It changes index metadata only and never visits the work tree.
+func restoreSkipWorktree(repo *gitx.Repo, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	out, err := repo.Git("ls-files", "-z")
+	if err != nil {
+		return fmt.Errorf("listing indexed paths: %w", err)
+	}
+	present := make(map[string]bool)
+	for path := range strings.SplitSeq(out, "\x00") {
+		if path != "" {
+			present[path] = true
+		}
+	}
+	var input strings.Builder
+	for _, path := range paths {
+		if present[path] {
+			input.WriteString(path)
+			input.WriteByte(0)
+		}
+	}
+	if input.Len() == 0 {
+		return nil
+	}
+	if _, err := repo.GitInput(strings.NewReader(input.String()), nil, "update-index", "--skip-worktree", "-z", "--stdin"); err != nil {
+		return fmt.Errorf("setting skip-worktree flags: %w", err)
 	}
 	return nil
 }
@@ -608,9 +665,25 @@ func (a *App) stageGateChanges(repo *gitx.Repo, start commitStart, command strin
 	}
 	// The index goes back to what the commit started with: a git add, mv or
 	// rm another writer ran while the gate ran is left out as its paths are.
+	skipped, err := saveSkipWorktree(repo)
+	if err != nil {
+		return fmt.Errorf("saving skip-worktree flags before restoring the index: %w", err)
+	}
 	if _, err := repo.Git("read-tree", start.tree); err != nil {
 		return fmt.Errorf("restoring the index the gate started with: %w", err)
 	}
+	if err := stageKeptGateChanges(repo, kept, after); err != nil {
+		return err
+	}
+	if err := restoreSkipWorktree(repo, skipped); err != nil {
+		return fmt.Errorf("restoring skip-worktree flags after the gate: %w", err)
+	}
+	return nil
+}
+
+// stageKeptGateChanges stages, over the restored index, the paths the commit
+// started with that the gate changed, as the gate left them in after.
+func stageKeptGateChanges(repo *gitx.Repo, kept []string, after string) error {
 	if len(kept) == 0 {
 		return nil
 	}
