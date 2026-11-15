@@ -277,7 +277,8 @@ own). A heavy scope's ceiling only goes up: a later heavy task of the same
 graft, a task of a gate split between machines, or a graft started inside it
 (`GRAFT_HEAVY_SCOPE` names the scope to its steps) raises it to its own when
 that is larger. All heavy work of a `*-graft.slice` together stays under
-`MemoryMax` 50% of RAM. A scope graft is alone in and that has no limits gets
+`MemoryMax` 50% of RAM, and a scope ceiling above that is held to it (on a 32 GB
+machine `--memory-max 16G` gets 50%). A scope graft is alone in and that has no limits gets
 `MemoryMax` and `MemorySwapMax=0` in place; systemd does not change
 `OOMPolicy` on a running scope, and with its default, stop, the first kill at
 the ceiling stops the scope, graft with it (graft still reports the ceiling,
