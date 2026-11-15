@@ -460,9 +460,9 @@ func (a *App) checkFreeze(ctx context.Context, r *deployRun, o DeployOptions) er
 	return nil
 }
 
-// checkTargetRuns reads what the target runs, shows it and refuses a deploy
-// it does not take. The deployed commit is read before deps, sudo and the
-// script: a target that already runs HEAD has nothing to gain from them.
+// checkTargetRuns reads and shows what the target runs, then applies the
+// same-commit and release checks. The deployed commit is read before deps,
+// sudo and the script.
 func (a *App) checkTargetRuns(ctx context.Context, r *deployRun, o DeployOptions) error {
 	if r.target.DeployedSHA != nil {
 		var err error
@@ -522,10 +522,19 @@ func (a *App) showDeployed(ctx context.Context, r *deployRun) error {
 	return nil
 }
 
-// refuseSameCommit refuses to deploy the commit the target already runs,
-// unless redeploy asks for exactly that.
+// refusesSameCommit reports whether confirmation protects a repeated deploy
+// of the commit the target already runs.
+func refusesSameCommit(r *deployRun) bool {
+	return r.prev == r.head && r.target.Confirm != ""
+}
+
+// refuseSameCommit refuses a repeated deploy only for targets that require
+// confirmation, unless redeploy explicitly asks for it.
 func (a *App) refuseSameCommit(r *deployRun, redeploy bool) error {
-	if r.prev != r.head {
+	if !refusesSameCommit(r) {
+		if r.prev == r.head {
+			a.printf("%s already runs %s, deploying it again", r.name, gitx.Short(r.head))
+		}
 		return nil
 	}
 	if redeploy {

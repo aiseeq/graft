@@ -121,9 +121,12 @@ func (a *App) checkDeployed(ctx context.Context, r *deployRun, sudoRefusal error
 	if err := a.showDeployed(ctx, r); err != nil {
 		return err
 	}
-	if r.prev == r.head {
+	if refusesSameCommit(r) {
 		refuse(fmt.Errorf("%s already runs %s; graft deploy --redeploy %s deploys it again", r.name, gitx.Short(r.head), r.name))
 		return nil
+	}
+	if r.prev == r.head {
+		a.printf("%s already runs %s, deploying it again", r.name, gitx.Short(r.head))
 	}
 	var listRefusals func(error)
 	listRefusals = func(err error) {

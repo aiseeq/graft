@@ -1927,9 +1927,12 @@ the feature has been enabled and the work checked, so the deploy can close it.
    `graft deploy versions` shows it; then the commits the deploy brings and
    those it takes back (`git log <deploying>..<deployed>`), the hotfix a
    deploy from another branch would drop. `graft deploy check` prints them too.
-   When the commit the target runs is the one being deployed, the deploy is refused (`test already runs <sha> <subject>;
-   pass --redeploy to deploy it again`) before deps, sudo and the script;
-   `--redeploy` deploys it again. With `deployed_sha.sudo`, this read runs
+   When the commit the target runs is the one being deployed, a target with
+   `confirm` refuses before deps, sudo and the script (`test already runs
+   <sha> <subject>; pass --redeploy to deploy it again`); `--redeploy` deploys
+   it again. Other targets print `test already runs <sha>, deploying it again`
+   and continue. `graft deploy check` applies the same rule. With
+   `deployed_sha.sudo`, this read runs
    `sudo` in the target environment before the confirmation prompt: on this
    machine it may ask for its own password there. A target without
    `deployed_sha` is deployed whatever it runs.

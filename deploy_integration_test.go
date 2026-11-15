@@ -1946,6 +1946,7 @@ deploy:
       run: [sh, deploy.sh]
     plain:
       env: local
+      deployed_sha: {path: ` + yamlQuote(filepath.Join(state, "plain-sha")) + `}
       run: [sh, deploy.sh]
 `,
 		"deploy.sh": `echo "deploy $GRAFT_DEPLOY_TARGET" >> ` + out + "\n",
@@ -1994,11 +1995,27 @@ deploy:
 		t.Errorf("a new commit ran:\n%s", got)
 	}
 
-	// Without deployed_sha nothing is known about the target: deploys repeat.
+	// An unconfirmed target warns and still deploys a repeated commit; deploy
+	// check reports the same warning without refusing.
 	reset()
 	f.mustGraft("deploy", "plain")
+	reset()
+	short = f.git("rev-parse", "--short=12", "HEAD")
+	got, code = f.graft("", "deploy", "plain")
+	if code != 0 || !strings.Contains(got, "plain already runs "+short+", deploying it again") {
+		t.Errorf("same commit on unconfirmed target: exit %d\n%s", code, got)
+	}
+	if got := readFile(t, out); got != "deploy plain\n" {
+		t.Errorf("unconfirmed target deploy ran:\n%s", got)
+	}
+	if check, checkCode := f.graft("", "deploy", "check", "plain"); checkCode != 0 ||
+		!strings.Contains(check, "plain already runs "+short+", deploying it again") ||
+		!strings.Contains(check, "passes its checks now") {
+		t.Errorf("deploy check on same commit for unconfirmed target: exit %d\n%s", checkCode, check)
+	}
+	reset()
 	f.mustGraft("deploy", "plain")
-	if got := readFile(t, out); got != "deploy plain\ndeploy plain\n" {
+	if got := readFile(t, out); got != "deploy plain\n" {
 		t.Errorf("plain ran:\n%s", got)
 	}
 }

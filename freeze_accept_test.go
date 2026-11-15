@@ -354,8 +354,8 @@ func TestFreezeEndsWhenTheBranchReachesProd(t *testing.T) {
 	}
 	d.commitFile("three.txt", "feat: PROJ-1 after the thaw")
 	d.mustGraft("deploy", "acc")
-	if out, code := d.graft("", "deploy", "acc"); code == 0 || !strings.Contains(out, "already runs") {
-		t.Errorf("acc took the commit it runs again without --redeploy: exit %d\n%s", code, out)
+	if out, code := d.graft("", "deploy", "acc"); code != 0 || !strings.Contains(out, "acc already runs ") || !strings.Contains(out, ", deploying it again") {
+		t.Errorf("acc repeated deploy should warn and succeed without confirm: exit %d\n%s", code, out)
 	}
 
 	// Frozen again from another clone, this clone's tag of the earlier freeze
