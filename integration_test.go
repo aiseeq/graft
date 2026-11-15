@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	akitproc "github.com/aiseeq/akit/proc"
 	"github.com/aiseeq/graft/v2/internal/testinputs"
 	"github.com/aiseeq/graft/v2/internal/version"
+	"github.com/gofrs/flock"
 )
 
 // The integration tests drive the built graft binary against throwaway
@@ -34,6 +36,9 @@ var (
 	testEnv      []string
 	repoTemplate string
 	bareTemplate string
+	testTempDir  string
+	testTempLock *flock.Flock
+	testTempMu   sync.Mutex
 )
 
 func TestMain(m *testing.M) {
@@ -43,20 +48,27 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
+	stopSignals := watchTestSignals()
+	if err := prepareTestTempDir(); err != nil {
+		fmt.Fprintln(os.Stderr, "integration temp cleanup:", err)
+		os.Exit(1)
+	}
+	if runTempDirTestHelper() {
+		return
+	}
 	code, err := setup(m)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "integration setup:", err)
-		os.Exit(1)
+		code = 1
 	}
+	cleanupTestTempDir()
+	stopSignals()
 	os.Exit(code)
 }
 
 func setup(m *testing.M) (int, error) {
-	dir, err := os.MkdirTemp("", "graft-it-")
-	if err != nil {
-		return 0, fmt.Errorf("a directory for the tests: %w", err)
-	}
-	defer os.RemoveAll(dir)
+	dir := currentTestTempDir()
+	var err error
 	binDir = filepath.Join(dir, "bin")
 	exe := ""
 	if runtime.GOOS == "windows" {
