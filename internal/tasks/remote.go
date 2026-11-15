@@ -138,6 +138,17 @@ const (
 	WhyGateAlways      = "when: always places the gate's heavy tasks, not its steps"
 )
 
+const checkWaitThreshold = time.Second
+
+var checkMachineBusy = loadgate.BusyNow
+var checkMachineBusyWithReserves = loadgate.BusyNowWithReserves
+
+func (r *Runner) recordCheckWait(why string, started time.Time) {
+	if waited := time.Since(started); waited >= checkWaitThreshold {
+		r.Waited(why, waited)
+	}
+}
+
 // wouldWait tells whether this machine's queue would make the heavy task wait
 // now, as admit and enterHeavy decide for a task outside an admitted one
 // (placeHeavy keeps those here): one with a priority waits for the machine
@@ -155,10 +166,12 @@ func (r *Runner) wouldWait(ctx context.Context, name string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	started := time.Now()
+	defer r.recordCheckWait("load-check", started)
 	if priority {
-		return loadgate.BusyNowWithReserves(ctx, name, r.kind(name), l, lockPath, false, r.Stderr)
+		return checkMachineBusyWithReserves(ctx, name, r.kind(name), l, lockPath, false, r.Stderr)
 	}
-	return loadgate.BusyNow(ctx, name, r.kind(name), l, lockPath, r.Stderr)
+	return checkMachineBusy(ctx, name, r.kind(name), l, lockPath, r.Stderr)
 }
 
 func (r *Runner) journalRemoteBroken(task, reason string) error {
@@ -441,6 +454,8 @@ func dotenvRef(t *config.Task) (string, error) {
 // remoteUp runs remote_heavy's up and returns why the host is not there,
 // "" when it is.
 func (r *Runner) remoteUp(ctx context.Context) string {
+	started := time.Now()
+	defer r.recordCheckWait("host-check", started)
 	up := r.remoteHeavy.Up
 	ctx, cancel := context.WithTimeout(ctx, remoteUpTimeout)
 	defer cancel()

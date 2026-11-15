@@ -70,8 +70,17 @@ const HeldScopeEnv = "GRAFT_HEAVY_SCOPE"
 // ArgsPlaceholder in a step receives the arguments given after --.
 const ArgsPlaceholder = config.ArgsPlaceholder
 
+// gateHistory is shared by the light-gate checks in one gate preparation.
+type gateHistory struct {
+	records []stats.Record
+	since   time.Time
+	err     error
+	loaded  bool
+}
+
 // Runner runs tasks of one project.
 type Runner struct {
+	gateHistory *gateHistory
 	// admitTask overrides heavy-task admission in tests.
 	admitTask func(context.Context, string) (loadgate.Admission, func() error, error)
 	Root      string
@@ -721,7 +730,9 @@ func (r *Runner) gateBusyNow(ctx context.Context, name string, nestedAdmitted bo
 	if err != nil {
 		return false, err
 	}
-	return loadgate.BusyNow(ctx, name, r.kind(name), l, "", r.Stderr)
+	started := time.Now()
+	defer r.recordCheckWait("load-check", started)
+	return checkMachineBusy(ctx, name, r.kind(name), l, "", r.Stderr)
 }
 
 const gateStatsTailBytes = 8 << 20
@@ -1369,6 +1380,9 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 		return err
 	}
 	f := r.begin(stats.GateTask)
+	previousHistory := r.gateHistory
+	r.gateHistory = &gateHistory{}
+	defer func() { r.gateHistory = previousHistory }()
 	defer func() { r.end(f, err) }()
 	nestedAdmitted := r.heavy > 0 || os.Getenv(AdmittedEnv) != ""
 	light := r.lightGate(ctx)
@@ -1383,6 +1397,7 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 	f.here = why
 	defer func() { r.gateCosts = nil }()
 	leave, err := r.enterGateMode(ctx, steps, light, splitGate, why, nestedAdmitted)
+	r.gateHistory = previousHistory
 	if err != nil {
 		return err
 	}
@@ -3712,6 +3727,19 @@ func (r *Runner) lightGate(ctx context.Context) bool {
 // the last lightGateWindow, or since .graft.yaml last changed if later, with
 // the moment they start from.
 func (r *Runner) lightGateRecords() ([]stats.Record, time.Time, error) {
+	if h := r.gateHistory; h != nil {
+		if !h.loaded {
+			h.records, h.since, h.err = r.readLightGateRecords()
+			h.loaded = true
+		}
+		return h.records, h.since, h.err
+	}
+	return r.readLightGateRecords()
+}
+
+var loadGateHistory = stats.LoadGateHistory
+
+func (r *Runner) readLightGateRecords() ([]stats.Record, time.Time, error) {
 	since := time.Now().Add(-lightGateWindow)
 	info, err := os.Stat(filepath.Join(r.Root, ".graft.yaml"))
 	if err != nil {
@@ -3724,7 +3752,7 @@ func (r *Runner) lightGateRecords() ([]stats.Record, time.Time, error) {
 	if err != nil {
 		return nil, since, err
 	}
-	recs, _, err := stats.Load(path, since)
+	recs, err := loadGateHistory(path, filepath.Clean(r.Root), since)
 	return recs, since, err
 }
 

@@ -1175,8 +1175,10 @@ graft's version, pid and command line. A
   no `parent`.
 - `wait_s`, on a task line, is the part of `wall_s` the task and the tasks
   it ran waited before their steps: for the load in the queue of heavy
-  tasks and for their locks. A step `remote_heavy`'s host ran has the
-  host's admission wait (`wait_why.host`, see remote_heavy) on its own
+  tasks, their locks and sudo confirmations, and preliminary machine load
+  and remote host checks that take at least one second. A step
+  `remote_heavy`'s host ran has the host's admission wait (`wait_why.host`,
+  see remote_heavy) on its own
   line too, and its tasks add it; it counts no more than the step's
   `wall_s`. Absent when nothing waited.
 - `wait_why` splits `wait_s` by what was waited for, in seconds: `queue`
@@ -1186,7 +1188,9 @@ graft's version, pid and command line. A
   tasks the load average does not show yet), a
   measure graft does not know yet by its own name, `lock` (a task lock) and
   `host` (the heavy queue on `remote_heavy`'s host), `sudo` (a deploy's
-  confirmation). Absent when nothing waited.
+  confirmation), `load-check` (the preliminary machine check) and
+  `host-check` (the remote host availability check); these checks are counted
+  only when each takes at least one second. Absent when nothing waited.
 - `waited_behind`, on a task line that waited for a queue or lock, names the
   command and task ahead of it (for example `graft build (starting a heavy
   task)`). Queue time overlapping quiet mode is counted as `quiet`, not

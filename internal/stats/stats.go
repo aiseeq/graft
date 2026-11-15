@@ -139,7 +139,8 @@ type Record struct {
 	// (queue, load, io, swap; lines before graft 2.42.14 also have settle, the
 	// hold after a wait, and load is the load average there), a task lock
 	// (lock), a remote_heavy host's queue (host) and a deploy's sudo
-	// confirmation (sudo). Absent when nothing
+	// confirmation (sudo), and preliminary machine and remote host checks
+	// taking at least a second (load-check, host-check). Absent when nothing
 	// waited, and in lines written before graft 2.40.
 	WaitWhy      map[string]float64 `json:"wait_why,omitempty"`
 	ReserveCores float64            `json:"reserve_cores,omitempty"`

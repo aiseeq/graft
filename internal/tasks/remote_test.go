@@ -18,7 +18,58 @@ import (
 	akitproc "github.com/aiseeq/akit/proc"
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/stats"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
+
+func TestLoadCheckWaitAccounting(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv(AdmittedEnv, "")
+	old := checkMachineBusy
+	t.Cleanup(func() { checkMachineBusy = old })
+	for _, nested := range []bool{false, true} {
+		for _, slow := range []bool{false, true} {
+			t.Run(fmt.Sprintf("nested_%t_slow_%t", nested, slow), func(t *testing.T) {
+				checkMachineBusy = func(_ context.Context, _, _ string, _ userconfig.MachineLoad, _ string, _ io.Writer) (bool, error) {
+					if slow {
+						time.Sleep(checkWaitThreshold + 20*time.Millisecond)
+					}
+					return true, nil
+				}
+				r := NewRunner(t.TempDir(), &config.Config{}, io.Discard, io.Discard)
+				r.Stats = stats.NewRecorder(io.Discard)
+				r.Load = func() (userconfig.MachineLoad, error) { return userconfig.MachineLoad{Threads: 1}, nil }
+				f := r.begin(stats.GateTask)
+				busy, err := r.gateBusyNow(context.Background(), stats.GateTask, nested)
+				if err != nil || !busy {
+					t.Fatalf("busy=%t err=%v", busy, err)
+				}
+				use := r.end(f, nil)
+				if slow && (use.WaitWhy["load-check"] < checkWaitThreshold || use.Wait < checkWaitThreshold) {
+					t.Fatalf("missing wait: %+v", use)
+				}
+				if !slow && (use.Wait != 0 || len(use.WaitWhy) != 0) {
+					t.Fatalf("fast check: %+v", use)
+				}
+				path, err := stats.Path()
+				if err != nil {
+					t.Fatal(err)
+				}
+				records, _, err := stats.Load(path, time.Time{})
+				if err != nil || len(records) == 0 {
+					t.Fatalf("record: %v %v", records, err)
+				}
+				rec := records[len(records)-1]
+				if slow && (rec.WaitWhy["load-check"] < 1 || rec.WaitS < 1) {
+					t.Fatalf("record missing wait: %+v", rec)
+				}
+				if !slow && (rec.WaitS != 0 || len(rec.WaitWhy) != 0) {
+					t.Fatalf("fast record has wait: %+v", rec)
+				}
+			})
+		}
+	}
+}
 
 func TestTaskConfirmationChain(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -327,5 +378,58 @@ func TestRemoteLoadCancelIsNoFailure(t *testing.T) {
 	}
 	if sample.LoadKnown {
 		t.Errorf("cancelled step before any answer has a known load: %+v", sample)
+	}
+}
+
+func TestRemoteCheckWaitRecordedOnGate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	root := t.TempDir()
+	var log bytes.Buffer
+	r := NewRunner(root, &config.Config{}, io.Discard, &log)
+	r.remoteHeavy = &config.RemoteHeavy{Host: "hostA", Up: []string{"sh", "-c", "sleep 1.1"}}
+	r.Stats = stats.NewRecorder(&log)
+	r.Limits = func() (userconfig.LimitSelection, error) {
+		return userconfig.LimitSelection{Values: userconfig.Limits{Gate: 100 * time.Millisecond}}, nil
+	}
+	f := r.begin(stats.GateTask)
+	if reason := r.remoteUp(context.Background()); reason != "" {
+		t.Fatal(reason)
+	}
+	use := r.end(f, nil)
+	if use.WaitWhy["host-check"] < time.Second || use.Wall-use.Wait > 100*time.Millisecond {
+		t.Fatalf("usage: %+v", use)
+	}
+	if strings.Contains(log.String(), "over the limit") {
+		t.Fatalf("wait counted as work: %s", log.String())
+	}
+	path, err := stats.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, _, err := stats.Load(path, time.Time{})
+	if err != nil || len(records) != 1 {
+		t.Fatalf("records %v: %v", records, err)
+	}
+	if records[0].WaitWhy["host-check"] < 1 || records[0].WaitS < 1 {
+		t.Fatalf("record: %+v", records[0])
+	}
+}
+
+func TestFastRemoteCheckDoesNotAddWait(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	r := NewRunner(t.TempDir(), &config.Config{}, io.Discard, io.Discard)
+	r.remoteHeavy = &config.RemoteHeavy{Host: "hostA", Up: []string{"sh", "-c", "exit 0"}}
+	f := r.begin(stats.GateTask)
+	if reason := r.remoteUp(context.Background()); reason != "" {
+		t.Fatal(reason)
+	}
+	use := r.end(f, nil)
+	if use.Wait != 0 || len(use.WaitWhy) != 0 {
+		t.Fatalf("fast check wait = %+v", use)
 	}
 }
