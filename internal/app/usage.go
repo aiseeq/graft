@@ -83,6 +83,16 @@ func commitHowTo(cfg *config.Config) string {
 // ProjectHelp lists described or confirmed tasks and the project's services.
 func (a *App) ProjectHelp(cfg *config.Config) error {
 	var b strings.Builder
+	var goTests []string
+	for _, name := range slices.Sorted(maps.Keys(cfg.Tasks)) {
+		t := cfg.Tasks[name]
+		if t.Tests == config.TestsGo && !t.Heavy {
+			goTests = append(goTests, name)
+		}
+	}
+	if len(goTests) > 0 {
+		fmt.Fprintf(&b, "\ngraft: tasks %s use tests: go without heavy: true; add heavy: true to wait for the machine and get the Go test environment\n", strings.Join(goTests, ", "))
+	}
 	if len(cfg.Tasks) > 0 {
 		var rows [][2]string
 		for _, name := range slices.Sorted(maps.Keys(cfg.Tasks)) {
