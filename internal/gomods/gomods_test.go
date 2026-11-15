@@ -1,10 +1,26 @@
 package gomods
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
+
+func TestEnvWithNameCaseByOS(t *testing.T) {
+	env := []string{"GOWORK=old", "gowork=lower", "PATH=/bin"}
+	for _, tc := range []struct {
+		goos string
+		want []string
+	}{
+		{"linux", []string{"gowork=lower", "PATH=/bin", "GOWORK=off"}},
+		{"windows", []string{"PATH=/bin", "GOWORK=off"}},
+	} {
+		if got := envWithForOS(env, "GOWORK", "off", tc.goos); !slices.Equal(got, tc.want) {
+			t.Errorf("envWithForOS on %s = %#v, want %#v", tc.goos, got, tc.want)
+		}
+	}
+}
 
 func TestSelectCandidates(t *testing.T) {
 	const gomod = `module example.com/own/app

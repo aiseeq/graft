@@ -18,6 +18,7 @@ import (
 	"time"
 
 	akitproc "github.com/aiseeq/akit/proc"
+	"github.com/aiseeq/graft/v2/internal/envname"
 	"github.com/aiseeq/graft/v2/internal/testinputs"
 	"github.com/aiseeq/graft/v2/internal/version"
 	"github.com/gofrs/flock"
@@ -214,7 +215,7 @@ func isolatedEnv(gitconfig, userConfig, cache string) ([]string, error) {
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		if !slices.ContainsFunc(drop, func(d string) bool { return strings.EqualFold(d, name) }) {
+		if !slices.ContainsFunc(drop, func(d string) bool { return envname.Same(runtime.GOOS, d, name) }) {
 			env = append(env, kv)
 		}
 	}

@@ -9,8 +9,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+
+	"github.com/aiseeq/graft/v2/internal/envname"
 )
 
 // newlySet are the variables that change git and go when set later: go test
@@ -40,15 +43,23 @@ var perRun = []string{
 // ones, and the newlySet ones. Call it from a test: go test logs the reads
 // only once the tests start, not in TestMain or init.
 func Env() {
-	for _, kv := range os.Environ() {
+	readEnv(os.Environ(), os.Getenv)
+}
+
+func readEnv(environ []string, getenv func(string) string) {
+	for _, kv := range environ {
 		name, _, _ := strings.Cut(kv, "=")
-		if !slices.ContainsFunc(perRun, func(s string) bool { return strings.EqualFold(s, name) }) {
-			os.Getenv(name)
+		if shouldReadEnv(name, runtime.GOOS) {
+			getenv(name)
 		}
 	}
 	for _, name := range newlySet {
-		os.Getenv(name)
+		getenv(name)
 	}
+}
+
+func shouldReadEnv(name, goos string) bool {
+	return !slices.ContainsFunc(perRun, func(s string) bool { return envname.Same(goos, s, name) })
 }
 
 // Files opens the files under dir, the sources of a helper the tests build,

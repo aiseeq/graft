@@ -11,9 +11,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
+	"github.com/aiseeq/graft/v2/internal/envname"
 	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"golang.org/x/mod/modfile"
@@ -232,10 +234,18 @@ func goFailure(display, command, stderr, stdout string, err error) error {
 }
 
 func envWith(env []string, key, value string) []string {
+	return envWithForOS(env, key, value, runtime.GOOS)
+}
+
+func envWithForOS(env []string, key, value, goos string) []string {
 	out := make([]string, 0, len(env)+1)
 	for _, entry := range env {
 		name, _, _ := strings.Cut(entry, "=")
-		if !gitx.SameEnvName(name, key) {
+		same := envname.Same(goos, name, key)
+		if goos == runtime.GOOS {
+			same = gitx.SameEnvName(name, key)
+		}
+		if !same {
 			out = append(out, entry)
 		}
 	}

@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -32,6 +33,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/deploy"
 	"github.com/aiseeq/graft/v2/internal/deploystate"
 	"github.com/aiseeq/graft/v2/internal/dotenv"
+	"github.com/aiseeq/graft/v2/internal/envname"
 	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/gitx"
@@ -3495,9 +3497,17 @@ func (r *Runner) goFlags(v string) (string, error) {
 // lookupEnv is the last value of the variable in env, which is the one a
 // process sees.
 func lookupEnv(env []string, name string) (string, bool) {
+	return lookupEnvForOS(env, name, runtime.GOOS)
+}
+
+func lookupEnvForOS(env []string, name, goos string) (string, bool) {
 	for i := len(env) - 1; i >= 0; i-- {
 		k, v, _ := strings.Cut(env[i], "=")
-		if gitx.SameEnvName(k, name) {
+		same := envname.Same(goos, k, name)
+		if goos == runtime.GOOS {
+			same = gitx.SameEnvName(k, name)
+		}
+		if same {
 			return v, true
 		}
 	}

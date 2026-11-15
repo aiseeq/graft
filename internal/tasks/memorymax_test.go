@@ -31,6 +31,23 @@ func TestHalfModeHeavyEnv(t *testing.T) {
 	}
 }
 
+func TestLookupEnvNameCaseByOS(t *testing.T) {
+	env := []string{"GOMAXPROCS=1", "gomaxprocs=2"}
+	for _, tc := range []struct {
+		goos string
+		want string
+		ok   bool
+	}{
+		{"linux", "1", true},
+		{"windows", "2", true},
+	} {
+		got, ok := lookupEnvForOS(env, "GOMAXPROCS", tc.goos)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("lookupEnvForOS on %s = %q, %v; want %q, %v", tc.goos, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
 // TestMemoryKills: a kill at the scope's own ceiling names the ceiling and how
 // to raise it; a kill without the scope's oom names the limit above; no kill
 // is no error.

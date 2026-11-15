@@ -11,8 +11,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+
+	"github.com/aiseeq/graft/v2/internal/envname"
 )
 
 // Repo is a work tree with its git directories resolved to absolute paths.
@@ -428,15 +431,24 @@ func LocalEnvVars() ([]string, error) {
 
 // SameEnvName reports whether a and b name one environment variable.
 func SameEnvName(a, b string) bool {
-	return a == b
+	return envname.SameEnvName(a, b)
 }
 
 // Without is environ but the variables named in drop (SameEnvName).
 func Without(environ, drop []string) []string {
+	return without(environ, drop, runtime.GOOS)
+}
+
+func without(environ, drop []string, goos string) []string {
 	var kept []string
 	for _, kv := range environ {
 		name, _, _ := strings.Cut(kv, "=")
-		if !slices.ContainsFunc(drop, func(d string) bool { return SameEnvName(d, name) }) {
+		if !slices.ContainsFunc(drop, func(d string) bool {
+			if goos == runtime.GOOS {
+				return SameEnvName(d, name)
+			}
+			return envname.Same(goos, d, name)
+		}) {
 			kept = append(kept, kv)
 		}
 	}
