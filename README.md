@@ -623,7 +623,9 @@ refused with the form that works: `graft -C <directory> <command> …`.
    the key is added as a paragraph of its own, before a closing trailer block
    (`Co-Authored-By: ...`) so git still sees the trailers; a branch in
    `ticket.skip_branches` lends no key. The only trailers graft adds are
-   `Worker` ones (see [Worker trailers](#worker-trailers)).
+   `Worker` ones (see [Worker trailers](#worker-trailers)). Projects with
+   `ticket` refuse Jira Smart Commit commands in commit messages; change ticket
+   transitions and comments in the ticket itself.
 8. Push to each remote in turn, with `--force-with-lease` on a branch in
    `push.force_with_lease`. A failing remote does not stop the others; the
    summary names every failure with the command to retry, and the exit status

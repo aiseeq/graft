@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -128,7 +129,27 @@ func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level versio
 	if cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, branch) {
 		msg = message.WithKey(msg, message.BranchKey(branch, cfg.Ticket.Regexp))
 	}
+	if cfg.Ticket != nil {
+		if subject, _, _ := strings.Cut(msg, "\n"); !isRevert(subject) {
+			if token := smartCommitToken(msg); token != "" && cfg.Ticket.Regexp != nil && len(message.WordKeys(msg, cfg.Ticket.Regexp)) > 0 {
+				return plan, fmt.Errorf("commit message contains Smart Commit token %s: change ticket transitions and comments in the ticket itself, not through a commit; rewrite the message without # (for example, %s)", token, strings.TrimPrefix(token, "#"))
+			}
+		}
+	}
 	return commitPlan{branch: branch, remotes: remotes, message: msg, bump: bump}, nil
+}
+
+var smartCommitTokenPattern = regexp.MustCompile(`(^|[\s\p{Z}])(#\p{L}[\p{L}\p{N}_-]*)`)
+
+// smartCommitToken finds a Jira Smart Commit command: # followed immediately
+// by a letter at the start of a word. Numeric issue markers such as #123 do
+// not match.
+func smartCommitToken(msg string) string {
+	match := smartCommitTokenPattern.FindStringSubmatch(msg)
+	if len(match) < 3 {
+		return ""
+	}
+	return match[2]
 }
 
 // requireTicket refuses, under ticket.required, a commit that names no work
