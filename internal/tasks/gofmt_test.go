@@ -127,7 +127,7 @@ func TestCheckGoFmtListsAConflictOnce(t *testing.T) {
 func TestBuiltinStepFailureHasReason(t *testing.T) {
 	f := &frame{task: "gate"}
 	r := &Runner{frames: []*frame{f}}
-	err := r.measureFunc(GoFmtSource, func() error { return errors.New("Go files need formatting: a.go") })
+	err := r.measureFunc(GoFmtSource, func() error { return errors.New("Go files need formatting: a.go") }, false)
 	if err == nil || f.reason != "Go files need formatting: a.go" || f.exit != 1 {
 		t.Fatalf("err %v, frame reason %q exit %d", err, f.reason, f.exit)
 	}

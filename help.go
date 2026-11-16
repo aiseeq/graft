@@ -153,21 +153,21 @@ func sectionOf(name string) (command, bool) {
 }
 
 // usageOf builds a usage error from the syntax printed by graft help. When a
-// section has several forms, prefix selects one form; without it all forms
-// are joined in their help order.
-func usageOf(section string, prefix ...string) error {
+// section has several forms, prefix selects one form; an empty prefix joins
+// all forms in their help order.
+func usageOf(section, prefix string) error {
 	c, ok := sectionOf(section)
 	if !ok {
 		return fmt.Errorf("unknown help section %q", section)
 	}
 	lines := c.syntax(nil)
-	if len(prefix) > 0 {
+	if prefix != "" {
 		for _, line := range lines {
-			if strings.HasPrefix(line, prefix[0]) {
+			if strings.HasPrefix(line, prefix) {
 				return fmt.Errorf("%w: %s", errUsage, line)
 			}
 		}
-		return fmt.Errorf("help section %q has no syntax beginning with %q", section, prefix[0])
+		return fmt.Errorf("help section %q has no syntax beginning with %q", section, prefix)
 	}
 	return fmt.Errorf("%w: %s", errUsage, strings.Join(lines, " | "))
 }

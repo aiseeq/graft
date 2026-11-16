@@ -1250,9 +1250,9 @@ func goFmtInModule(file string, dirs, selected map[string]bool) bool {
 
 // measureFunc runs a gate step done in graft's process and records it as
 // measure records a command's step, its error the reason of a failure.
-func (r *Runner) measureFunc(source string, run func() error, builtin ...bool) error {
+func (r *Runner) measureFunc(source string, run func() error, builtin bool) error {
 	start := time.Now()
-	isBuiltin := len(builtin) > 0 && builtin[0]
+	isBuiltin := builtin
 	var cpuStart float64
 	var cpuKnown bool
 	var watch *stats.Watch
@@ -1752,7 +1752,7 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 func (r *Runner) runBuiltinGateStep(ctx context.Context, gs *gateStep, s config.Step) (entered bool, err error) {
 	run := func() error { return gs.run(ctx) }
 	if r.gateSplit {
-		if err := r.enterSplit(ctx, stats.GateTask, ""); err != nil {
+		if err := r.enterSplit(ctx, stats.GateTask, "", false); err != nil {
 			return false, err
 		}
 	}
@@ -2118,13 +2118,13 @@ func (r *Runner) steps(ctx context.Context, name string, t *config.Task, args []
 // waits for this machine, the rest run under its admission to the gate's
 // end, so that a busy machine does not queue each cheap step again. Its
 // lock on the queue goes after load.settle as any admission's.
-func (r *Runner) enterSplit(ctx context.Context, name, memoryMax string, fallback ...bool) error {
+func (r *Runner) enterSplit(ctx context.Context, name, memoryMax string, fallback bool) error {
 	if r.splitLeave != nil {
 		// Admitted already: a task of the gate asking for more raises the
 		// ceiling.
 		return r.holdCeiling(ctx, name, memoryMax)
 	}
-	remoteFallback := len(fallback) > 0 && fallback[0]
+	remoteFallback := fallback
 	if r.lightRemainder && !remoteFallback {
 		return r.holdCeiling(ctx, name, memoryMax)
 	}
@@ -2185,7 +2185,7 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 	}
 	started := time.Now()
 	if !remote {
-		if err := r.enterSplit(ctx, frame.task, taskMemoryMax(t)); err != nil {
+		if err := r.enterSplit(ctx, frame.task, taskMemoryMax(t), false); err != nil {
 			frame.remote = wasRemote
 			frame.stepHere = ""
 			return nil, err

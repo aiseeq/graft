@@ -161,7 +161,7 @@ func reap(args, argv []string) int {
 
 // reapCmd answers a graft reap without a command.
 func reapCmd(context.Context, *app.App, []string) error {
-	return usageOf("reap")
+	return usageOf("reap", "")
 }
 
 // execCall reports a graft exec command line, after any -C.
@@ -350,7 +350,7 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 		return checkCmd(ctx, a, rest)
 	case "leaks":
 		if len(rest) == 0 {
-			return usageOf("leaks")
+			return usageOf("leaks", "")
 		}
 		return a.Leaks(rest)
 	case "gate":
@@ -376,7 +376,7 @@ func mergeCmd(ctx context.Context, a *app.App, args []string) error {
 		return err
 	}
 	if len(pos) != 1 {
-		return usageOf("merge")
+		return usageOf("merge", "")
 	}
 	o.Branch = pos[0]
 	return a.Merge(ctx, o)
@@ -679,18 +679,18 @@ func logsCmd(ctx context.Context, a *app.App, args []string) error {
 
 func testDBCmd(ctx context.Context, a *app.App, args []string) error {
 	if len(args) != 1 {
-		return usageOf("testdb")
+		return usageOf("testdb", "")
 	}
 	err := a.TestDB(ctx, args[0])
 	if errors.Is(err, app.ErrUnknownTestDBAction) {
-		return usageOf("testdb")
+		return usageOf("testdb", "")
 	}
 	return err
 }
 
 // gocacheCmd is graft gocache trim [--older 25h] [--apply] [--max-wait 2h] [--free-below SIZE].
 func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := usageOf("gocache")
+	usage := usageOf("gocache", "")
 	if len(args) == 0 || args[0] != "trim" {
 		return usage
 	}
@@ -739,7 +739,7 @@ func checkCmd(ctx context.Context, a *app.App, args []string) error {
 		return err
 	}
 	if fs.NArg() > 0 || *secrets && *ignored {
-		return usageOf("check")
+		return usageOf("check", "")
 	}
 	if *secrets {
 		return a.CheckSecrets()
@@ -751,7 +751,7 @@ func checkCmd(ctx context.Context, a *app.App, args []string) error {
 }
 
 func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
-	usage := usageOf("worktree")
+	usage := usageOf("worktree", "")
 	if len(args) == 0 {
 		return usage
 	}
@@ -1032,7 +1032,7 @@ func toolsCmd(ctx context.Context, a *app.App, args []string) error {
 		fmt.Fprintln(a.Stdout, dir)
 		return nil
 	default:
-		return usageOf("tools")
+		return usageOf("tools", "")
 	}
 }
 
@@ -1353,7 +1353,7 @@ type deployCommandArgs struct {
 
 func runDeployCommand(ctx context.Context, a *app.App, args deployCommandArgs) error {
 	pos, scriptArgs := args.pos, args.scriptArgs
-	usage := usageOf("deploy")
+	usage := usageOf("deploy", "")
 	if len(pos) == 0 {
 		return usage
 	}

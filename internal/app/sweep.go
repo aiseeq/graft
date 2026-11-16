@@ -875,7 +875,7 @@ func (s *sweepRun) inFlow(issue jira.Issue) bool {
 // move takes an item to the done status when it is the token owner's and,
 // with approved_release, passes it: by statuses and version for an item
 // itself (checked), by version alone for a parent the sweep finishes.
-func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, checked bool, ownershipAlready ...bool) {
+func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, checked, ownershipAlready bool) {
 	key := issue.Key
 	if item, dormant := s.r.target.ApprovedRelease.DormantFor(issue.Key, issue.Parent); dormant {
 		s.judged[key] = true
@@ -889,7 +889,7 @@ func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, check
 		s.lines = append(s.lines, stop)
 		return
 	}
-	if (len(ownershipAlready) == 0 || !ownershipAlready[0]) && !s.owned(ctx, issue) {
+	if !ownershipAlready && !s.owned(ctx, issue) {
 		return
 	}
 	if s.gate != nil {

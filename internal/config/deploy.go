@@ -950,14 +950,14 @@ func (c *Config) validateRequires(where, name string, t *DeployTarget) error {
 }
 
 // ReadyStatusesFor returns statuses of finished work for an item carrying labels.
-func (t *DeployTarget) ReadyStatusesFor(labels []string, issueType ...string) []string {
+func (t *DeployTarget) ReadyStatusesFor(labels []string, issueType string) []string {
 	var ready []string
 	if t.ApprovedRelease != nil {
 		ready = append(ready, t.ApprovedRelease.StatusesFor(labels)...)
 	}
 	if n := t.ReleaseNotes; n != nil && n.Sweep != nil {
 		for _, tr := range n.Transitions {
-			if tr.To == n.Sweep.Done && (len(issueType) == 0 || tr.AllowsType(issueType[0])) {
+			if tr.To == n.Sweep.Done && tr.AllowsType(issueType) {
 				ready = append(ready, tr.From...)
 			}
 		}

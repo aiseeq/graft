@@ -175,7 +175,7 @@ func TestSweepTransitionTypesKeepOtherTypesInPlace(t *testing.T) {
 	}
 	run.move(t.Context(), jira.Issue{
 		Key: "PROJ-3", Type: "Sub-task", Status: "Testing", Parent: "PROJ-1",
-	}, "accepted with PROJ-1", true)
+	}, "accepted with PROJ-1", true, false)
 	reviewerWant := "PROJ-3 stays Testing: the transition to Done moves only Task"
 	if !slices.Contains(run.lines, reviewerWant) {
 		t.Fatalf("sweep lines = %q, want reviewer transition message %q", run.lines, reviewerWant)
@@ -277,7 +277,7 @@ func TestSweepTransitionDoneChecksTheStatusAfterTheHop(t *testing.T) {
 		t.Fatalf("transitionDone = %v, requests %q, want the hop only and the type refusal", err, moves)
 	}
 	// The pass lists where it stays, as a refusal before the hop is listed.
-	run.move(t.Context(), issue, "synthetic", true)
+	run.move(t.Context(), issue, "synthetic", true, false)
 	if want := "PROJ-2 stays Other: the transition to Done moves only Task"; !slices.Contains(run.lines, want) {
 		t.Fatalf("sweep lines %q, want %q", run.lines, want)
 	}
@@ -346,7 +346,7 @@ func TestSweepTransitionTypesGuardTheHopBeforeDone(t *testing.T) {
 		client: jira.New(jira.Credentials{BaseURL: srv.URL}), conf: notes.Sweep, notes: &config.JiraNotes{},
 		review: []string{"Testing"}, judged: map[string]bool{},
 	}
-	run.move(t.Context(), jira.Issue{Key: "PROJ-4", Type: "Sub-task", Status: "Testing", Parent: "PROJ-1"}, "accepted with PROJ-1", true)
+	run.move(t.Context(), jira.Issue{Key: "PROJ-4", Type: "Sub-task", Status: "Testing", Parent: "PROJ-1"}, "accepted with PROJ-1", true, false)
 	want := "PROJ-4 stays Testing: the transition to Ready for Release moves only Task"
 	if requests != 0 || !slices.Contains(run.lines, want) {
 		t.Fatalf("transition requests = %d, lines = %q, want 0 and %q", requests, run.lines, want)

@@ -113,7 +113,7 @@ func TestSplitGateCeiling(t *testing.T) {
 	var stderr strings.Builder
 	r := &Runner{Stderr: &stderr, splitLeave: func() error { return nil }}
 	for _, step := range []struct{ task, max string }{{"lint", ""}, {"test", "6G"}, {"test", "6G"}} {
-		if err := r.enterSplit(context.Background(), step.task, step.max); err != nil {
+		if err := r.enterSplit(context.Background(), step.task, step.max, false); err != nil {
 			t.Fatal(err)
 		}
 	}
