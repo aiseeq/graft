@@ -979,11 +979,149 @@ func TestWorktreeSync(t *testing.T) {
 	f.mustPlainCommit("feat: trunk conflicts")
 	f.git("push", "-q", "origin", "HEAD")
 	out, code = f.exec(wt, "", graftBin, "worktree", "sync")
-	if code == 0 || !strings.Contains(out, "the uncommitted changes conflict with it in shared.txt") {
+	if code == 0 || !strings.Contains(out, "the uncommitted changes conflict with") || !strings.Contains(out, "shared.txt") || strings.Contains(out, "worktree is as it was") {
 		t.Errorf("a conflict: exit %d\n%s", code, out)
 	}
-	if got := f.gitIn(wt, "stash", "list"); !strings.Contains(got, "autostash") {
-		t.Errorf("the changes are not kept in the stash: %q", got)
+	stashLines := strings.Split(f.gitIn(wt, "stash", "list", "--format=%H %gs"), "\n")
+	var autostash string
+	for _, line := range stashLines {
+		sha, subject, ok := strings.Cut(line, " ")
+		if ok && subject == "autostash" {
+			autostash = sha
+			break
+		}
+	}
+	if autostash == "" || !strings.Contains(out, "autostash "+autostash+" is kept") {
+		t.Errorf("the failure should name the retained autostash SHA %q:\n%s", autostash, out)
+	}
+	if strings.Contains(out, "newer") || strings.Contains(out, "go mod tidy") {
+		t.Errorf("ordinary-file conflict received a Go version hint:\n%s", out)
+	}
+}
+
+func TestWorktreeSyncAutostashGoModConflict(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none}\n",
+		"go.mod":      "module example.com/projectA\n\ngo 1.26\n\nrequire example.com/akit v1.8.0\n",
+		"go.sum":      "example.com/akit v1.8.0 h1:base\n",
+		"prior.txt":   "clean\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
+	f.git("remote", "set-head", "origin", "main")
+	wt := filepath.Join(f.base, "wt-sync-go-mod")
+	f.git("worktree", "add", "-q", "-b", "w/go-mod", wt, "main")
+	// A real pre-existing entry must survive the sync and not be mistaken for
+	// its autostash.
+	writeFile(t, filepath.Join(f.work, "prior.txt"), "dirty before sync\n")
+	f.git("stash", "push", "-q", "-m", "pre-existing")
+	priorStash := f.gitIn(f.work, "stash", "list", "--format=%H %gs")
+	priorSHA, priorSubject, ok := strings.Cut(priorStash, " ")
+	if !ok || !strings.HasSuffix(priorSubject, "pre-existing") || priorSHA == "" {
+		t.Fatalf("pre-existing stash was not created: %q", priorStash)
+	}
+	writeFile(t, filepath.Join(f.work, "go.mod"), "module example.com/projectA\n\ngo 1.26\n\nrequire example.com/akit v1.10.0\n")
+	writeFile(t, filepath.Join(f.work, "go.sum"), "example.com/akit v1.10.0 h1:trunk\n")
+	f.mustPlainCommit("feat: trunk module version")
+	f.git("push", "-q", "origin", "HEAD")
+	writeFile(t, filepath.Join(wt, "go.mod"), "module example.com/projectA\n\ngo 1.26\n\nrequire example.com/akit v1.9.0\n")
+	writeFile(t, filepath.Join(wt, "go.sum"), "example.com/akit v1.9.0 h1:worktree\n")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shimDir := t.TempDir()
+	rebased := filepath.Join(shimDir, "rebased")
+	injected := filepath.Join(shimDir, "injected")
+	shim := "#!/bin/sh\n" +
+		"if [ \"$1\" = rebase ]; then\n \"$GRAFT_TEST_REAL_GIT\" \"$@\"; rc=$?; : > \"$GRAFT_TEST_REBASED\"; exit $rc\nfi\n" +
+		"if [ \"$1\" = stash ] && [ \"$2\" = list ] && [ -e \"$GRAFT_TEST_REBASED\" ] && [ ! -e \"$GRAFT_TEST_INJECTED\" ]; then\n" +
+		": > \"$GRAFT_TEST_INJECTED\"\nprintf 'concurrent stash change\\n' > \"$GRAFT_TEST_STASH_WORKTREE/prior.txt\"\n" +
+		"\"$GRAFT_TEST_REAL_GIT\" -C \"$GRAFT_TEST_STASH_WORKTREE\" stash push -q -m concurrent\nfi\n" +
+		"exec \"$GRAFT_TEST_REAL_GIT\" \"$@\"\n"
+	writeFile(t, filepath.Join(shimDir, "git"), shim)
+	if err := os.Chmod(filepath.Join(shimDir, "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env,
+		"PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"GRAFT_TEST_REAL_GIT="+realGit,
+		"GRAFT_TEST_REBASED="+rebased,
+		"GRAFT_TEST_INJECTED="+injected,
+		"GRAFT_TEST_STASH_WORKTREE="+f.work,
+	)
+
+	before := f.gitIn(wt, "stash", "list", "--format=%H %gs")
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync")
+	if code == 0 || !strings.Contains(out, "go.mod") || !strings.Contains(out, "go.sum") || strings.Contains(out, "usage: require") || strings.Contains(out, "worktree is as it was") {
+		t.Fatalf("go.mod conflict: exit %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "example.com/akit") || !strings.Contains(out, "v1.9.0") || !strings.Contains(out, "v1.10.0") || !strings.Contains(out, "keep the newer v1.10.0") || !strings.Contains(out, "go mod tidy") {
+		t.Errorf("go.mod conflict lacks the precise version hint:\n%s", out)
+	}
+	var sha string
+	for line := range strings.SplitSeq(f.gitIn(wt, "stash", "list", "--format=%H %gs"), "\n") {
+		item, subject, ok := strings.Cut(line, " ")
+		if ok && subject == "autostash" && !strings.Contains(before, item) {
+			sha = item
+		}
+	}
+	if sha == "" || !strings.Contains(out, "autostash "+sha+" is kept") {
+		t.Fatalf("sync did not report the new autostash SHA %q:\n%s", sha, out)
+	}
+	stashAfter := f.gitIn(wt, "stash", "list", "--format=%H %gs")
+	if sha == priorSHA || !strings.Contains(stashAfter, priorSHA) || !strings.Contains(stashAfter, "pre-existing") {
+		t.Fatalf("sync confused the pre-existing stash %s with autostash %s", priorSHA, sha)
+	}
+	stashTopLine, _, _ := strings.Cut(f.gitIn(wt, "stash", "list", "--format=%H %gs"), "\n")
+	stashTop, stashTopSubject, ok := strings.Cut(stashTopLine, " ")
+	if !ok || stashTop == sha || !strings.HasSuffix(stashTopSubject, "concurrent") {
+		t.Fatalf("test did not place a foreign stash above autostash %s: %q", sha, stashTopSubject)
+	}
+	if !strings.Contains(out, `git stash drop "$(git stash list --format='%gd %H' | awk`) {
+		t.Fatalf("sync did not explain how to drop the identified stash entry:\n%s", out)
+	}
+	writeFile(t, filepath.Join(wt, "go.mod"), "module example.com/projectA\n\ngo 1.26\n\nrequire example.com/akit v1.69.6\n")
+	writeFile(t, filepath.Join(wt, "go.sum"), "example.com/akit v1.69.6 h1:trunk\n")
+	f.gitIn(wt, "add", "go.mod", "go.sum")
+	dropCommand := `git stash drop "$(git stash list --format='%gd %H' | awk '$2 == "` + sha + `" {print $1; exit}')"`
+	if drop, dropCode := f.exec(wt, "", "sh", "-c", dropCommand); dropCode != 0 || !strings.Contains(drop, "Dropped") {
+		t.Fatalf("drop by looking up the reported SHA: exit %d\n%s", dropCode, drop)
+	}
+	if remaining := f.gitIn(wt, "stash", "list", "--format=%H %gs"); !strings.Contains(remaining, priorSHA) || !strings.Contains(remaining, "pre-existing") || !strings.Contains(remaining, stashTop) || !strings.Contains(remaining, "concurrent") {
+		t.Fatalf("dropping autostash removed another stash entry: %s", remaining)
+	}
+}
+
+func TestWorktreeSyncAutostashGoModAndTextConflictHasNoVersionHint(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none}\n",
+		"go.mod":      "module example.com/projectA\n\ngo 1.26\n\nrequire example.com/akit v1.8.0\n",
+		"go.sum":      "example.com/akit v1.8.0 h1:base\n",
+		"shared.txt":  "base\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
+	f.git("remote", "set-head", "origin", "main")
+	wt := filepath.Join(f.base, "wt-sync-go-mod-and-text")
+	f.git("worktree", "add", "-q", "-b", "w/go-mod-and-text", wt, "main")
+	writeFile(t, filepath.Join(f.work, "go.mod"), "module example.com/projectA\n\ngo 1.26\n\nrequire example.com/akit v1.10.0\n")
+	writeFile(t, filepath.Join(f.work, "go.sum"), "example.com/akit v1.10.0 h1:trunk\n")
+	writeFile(t, filepath.Join(f.work, "shared.txt"), "trunk\n")
+	f.mustPlainCommit("feat: trunk changes")
+	f.git("push", "-q", "origin", "HEAD")
+	writeFile(t, filepath.Join(wt, "go.mod"), "module example.com/projectA\n\ngo 1.26\n\nrequire example.com/akit v1.9.0\n")
+	writeFile(t, filepath.Join(wt, "go.sum"), "example.com/akit v1.9.0 h1:worktree\n")
+	writeFile(t, filepath.Join(wt, "shared.txt"), "worktree\n")
+
+	out, code := f.exec(wt, "", graftBin, "worktree", "sync")
+	if code == 0 || !strings.Contains(out, "go.mod") || !strings.Contains(out, "go.sum") || !strings.Contains(out, "shared.txt") {
+		t.Fatalf("go.mod, go.sum and shared.txt conflict: exit %d\n%s", code, out)
+	}
+	if strings.Contains(out, "keep the newer") || strings.Contains(out, "go mod tidy") {
+		t.Errorf("mixed conflict received a Go version hint:\n%s", out)
 	}
 }
 

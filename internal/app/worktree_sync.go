@@ -1,12 +1,16 @@
 package app
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/semver"
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
@@ -122,23 +126,205 @@ func (a *App) WorktreeSync(o WorktreeSyncOptions) error {
 }
 
 func worktreeSyncRebase(repo *gitx.Repo, trunk string) error {
-	if _, err := repo.Git("rebase", "--autostash", trunk); err != nil {
-		for _, dir := range []string{"rebase-merge", "rebase-apply"} {
-			if _, serr := os.Stat(filepath.Join(repo.GitDir, dir)); serr == nil {
-				return fmt.Errorf("a commit of the branch conflicts with %s: resolve and git rebase --continue, or git rebase --abort; the uncommitted changes come back when the rebase ends: %w", trunk, err)
-			}
-		}
-		return fmt.Errorf("git rebase --autostash %s failed, the worktree is as it was: %w", trunk, err)
-	}
-	out, err := repo.Git("diff", "--name-only", "--diff-filter=U")
+	beforeStashes, err := worktreeSyncStashes(repo)
 	if err != nil {
 		return err
 	}
+	rebaseOutput, rebaseErr := repo.Git("rebase", "--autostash", trunk)
+	for _, dir := range []string{"rebase-merge", "rebase-apply"} {
+		if _, serr := os.Stat(filepath.Join(repo.GitDir, dir)); serr == nil {
+			return fmt.Errorf("a commit of the branch conflicts with %s: resolve and git rebase --continue, or git rebase --abort; the uncommitted changes come back when the rebase ends: %w", trunk, rebaseErr)
+		}
+	}
+	out, diffErr := repo.Git("diff", "--name-only", "--diff-filter=U")
+	if diffErr != nil {
+		return diffErr
+	}
 	if conflicts := strings.Fields(out); len(conflicts) > 0 {
-		return errors.New("on " + trunk + " now, but the uncommitted changes conflict with it in " + strings.Join(conflicts, ", ") +
-			": resolve the markers, then git stash drop (the changes are kept in the stash too)")
+		stash, stashErr := worktreeSyncNewAutostash(repo, beforeStashes, worktreeSyncCreatedAutostash(rebaseOutput, rebaseErr))
+		if stashErr != nil {
+			return fmt.Errorf("the uncommitted changes conflict with %s in %s; could not identify their autostash: %w", trunk, strings.Join(conflicts, ", "), stashErr)
+		}
+		dropCommand := `git stash drop "$(git stash list --format='%gd %H' | awk '$2 == "` + stash + `" {print $1; exit}')"`
+		message := "the uncommitted changes conflict with " + trunk + " in " + strings.Join(conflicts, ", ") +
+			"; autostash " + stash + " is kept in the shared stash. Resolve the markers, then remove this entry with: " + dropCommand
+		if hint, hintErr := worktreeSyncGoModHint(repo, conflicts); hintErr != nil {
+			message += "; could not compare go.mod versions: " + hintErr.Error()
+		} else if hint != "" {
+			message += "; " + hint
+		}
+		return errors.New(message)
+	}
+	if rebaseErr != nil {
+		return fmt.Errorf("git rebase --autostash %s failed, the worktree is as it was: %w", trunk, rebaseErr)
 	}
 	return nil
+}
+
+func worktreeSyncStashes(repo *gitx.Repo) (map[string]bool, error) {
+	out, err := repo.Git("stash", "list", "--format=%H %gs")
+	if err != nil {
+		return nil, err
+	}
+	stashes := make(map[string]bool)
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		if sha, _, ok := strings.Cut(line, " "); ok {
+			stashes[sha] = true
+		}
+	}
+	return stashes, nil
+}
+
+func worktreeSyncNewAutostash(repo *gitx.Repo, before map[string]bool, created string) (string, error) {
+	out, err := repo.Git("stash", "list", "--format=%H %gs")
+	if err != nil {
+		return "", err
+	}
+	var found string
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		sha, subject, ok := strings.Cut(line, " ")
+		if ok && subject == "autostash" && !before[sha] && (created == "" || strings.HasPrefix(sha, created)) {
+			if found != "" {
+				return "", errors.New("more than one new autostash entry appeared")
+			}
+			found = sha
+		}
+	}
+	if found == "" {
+		return "", errors.New("no new autostash entry was found")
+	}
+	return found, nil
+}
+
+func worktreeSyncCreatedAutostash(output string, rebaseErr error) string {
+	if gitErr, ok := errors.AsType[*gitx.Error](rebaseErr); ok {
+		output += "\n" + gitErr.Stderr
+	}
+	for line := range strings.SplitSeq(output, "\n") {
+		line = strings.TrimSpace(line)
+		short, ok := strings.CutPrefix(line, "Created autostash: ")
+		if ok {
+			if fields := strings.Fields(short); len(fields) > 0 {
+				return fields[0]
+			}
+		}
+	}
+	return ""
+}
+
+func worktreeSyncGoModHint(repo *gitx.Repo, conflicts []string) (string, error) {
+	if !slices.Contains(conflicts, "go.mod") {
+		return "", nil
+	}
+	for _, path := range conflicts {
+		if path != "go.mod" && path != "go.sum" {
+			return "", nil
+		}
+	}
+	ours, err := repo.Git("show", ":2:go.mod")
+	if err != nil {
+		return "", fmt.Errorf("reading stage 2: %w", err)
+	}
+	theirs, err := repo.Git("show", ":3:go.mod")
+	if err != nil {
+		return "", fmt.Errorf("reading stage 3: %w", err)
+	}
+	return worktreeSyncGoModVersionHint(ours, theirs)
+}
+
+func worktreeSyncGoModVersionHint(ours, theirs string) (string, error) {
+	oursFile, err := modfile.ParseLax("go.mod", []byte(ours), nil)
+	if err != nil {
+		return "", fmt.Errorf("parsing stage 2: %w", err)
+	}
+	theirsFile, err := modfile.ParseLax("go.mod", []byte(theirs), nil)
+	if err != nil {
+		return "", fmt.Errorf("parsing stage 3: %w", err)
+	}
+	path, oursVersion, theirsVersion, ok := worktreeSyncRequireVersionChange(oursFile, theirsFile)
+	if !ok || !semver.IsValid(oursVersion) || !semver.IsValid(theirsVersion) {
+		return "", nil
+	}
+	if err := worktreeSyncSetRequireVersion(oursFile, path, theirsVersion); err != nil {
+		return "", err
+	}
+	equal, err := worktreeSyncGoModFilesEqual(oursFile, theirsFile)
+	if err != nil {
+		return "", err
+	}
+	if !equal {
+		return "", nil
+	}
+	newer := oursVersion
+	if semver.Compare("v"+strings.TrimPrefix(theirsVersion, "v"), "v"+strings.TrimPrefix(oursVersion, "v")) > 0 {
+		newer = theirsVersion
+	}
+	return fmt.Sprintf("only %s differs by version (%s vs %s); keep the newer %s, then run go mod tidy", path, oursVersion, theirsVersion, newer), nil
+}
+
+func worktreeSyncRequireVersionChange(ours, theirs *modfile.File) (path, oursVersion, theirsVersion string, ok bool) {
+	if len(ours.Require) != len(theirs.Require) {
+		return "", "", "", false
+	}
+	versions := map[string]string{}
+	for _, req := range ours.Require {
+		versions[req.Mod.Path] = req.Mod.Version
+	}
+	for _, req := range theirs.Require {
+		oursSideVersion, exists := versions[req.Mod.Path]
+		if !exists || oursSideVersion == req.Mod.Version {
+			continue
+		}
+		if path != "" {
+			return "", "", "", false
+		}
+		path, oursVersion, theirsVersion = req.Mod.Path, oursSideVersion, req.Mod.Version
+	}
+	if path == "" {
+		return "", "", "", false
+	}
+	for _, req := range ours.Require {
+		if !slices.ContainsFunc(theirs.Require, func(other *modfile.Require) bool {
+			return other.Mod.Path == req.Mod.Path
+		}) {
+			return "", "", "", false
+		}
+	}
+	return path, oursVersion, theirsVersion, true
+}
+
+func worktreeSyncSetRequireVersion(file *modfile.File, path, version string) error {
+	for _, req := range file.Require {
+		if req.Mod.Path != path {
+			continue
+		}
+		req.Mod.Version = version
+		if req.Syntax == nil {
+			return errors.New("require directive has no syntax")
+		}
+		token := 1
+		if !req.Syntax.InBlock {
+			token = 2
+		}
+		if len(req.Syntax.Token) <= token {
+			return fmt.Errorf("require %s has no version token", path)
+		}
+		req.Syntax.Token[token] = version
+		return nil
+	}
+	return fmt.Errorf("require %s was not found", path)
+}
+
+func worktreeSyncGoModFilesEqual(ours, theirs *modfile.File) (bool, error) {
+	oursFormatted, err := ours.Format()
+	if err != nil {
+		return false, fmt.Errorf("formatting normalized stage 2: %w", err)
+	}
+	theirsFormatted, err := theirs.Format()
+	if err != nil {
+		return false, fmt.Errorf("formatting stage 3: %w", err)
+	}
+	return bytes.Equal(oursFormatted, theirsFormatted), nil
 }
 
 func worktreeSyncCheckFetchedUpstream(repo *gitx.Repo, branch, trackingRef, before, after string) error {
