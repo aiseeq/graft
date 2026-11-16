@@ -108,8 +108,9 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 	return m.locked(ctx, name, func() error { return m.start(ctx, name) })
 }
 
-// Stop stops a service: SIGTERM to its process group, SIGKILL after
-// stop_timeout, then waiting for its address to be released.
+// Stop asks the configured stop command first, then uses SIGTERM and SIGKILL
+// after stop_timeout if the service is still running, and waits for its
+// address to be released.
 func (m *Manager) Stop(ctx context.Context, name string) error {
 	return m.locked(ctx, name, func() error { return m.stop(ctx, name) })
 }
@@ -372,6 +373,24 @@ func (m *Manager) stop(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
+	if s.Stop != "" {
+		deadline := time.Now().Add(s.StopTimeout)
+		if err := m.runStopCommand(ctx, s, deadline); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			fmt.Fprintf(m.Log, "graft: %s: stop command did not succeed (%v); falling back to signals\n", name, err)
+		} else {
+			gone, waitErr := waitForUntil(ctx, deadline, func() (bool, error) { return dead(pid) })
+			if waitErr != nil {
+				return waitErr
+			}
+			if gone {
+				return m.finishStop(ctx, name, s)
+			}
+			fmt.Fprintf(m.Log, "graft: %s: stop command did not stop the service in %s; falling back to signals\n", name, s.StopTimeout)
+		}
+	}
 	result, err := m.stopSession(ctx, name, pid, start, s)
 	if err != nil {
 		return err
@@ -389,6 +408,33 @@ func (m *Manager) stop(ctx context.Context, name string) error {
 	if !gone {
 		return fmt.Errorf("%s: process %d survived session stop", name, pid)
 	}
+	return m.finishStop(ctx, name, s)
+}
+
+func (m *Manager) runStopCommand(ctx context.Context, s *config.Service, deadline time.Time) error {
+	env, err := m.env(s)
+	if err != nil {
+		return err
+	}
+	stopCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	cmd := exec.CommandContext(stopCtx, "sh", "-c", s.Stop)
+	cmd.Dir, cmd.Env = m.Root, env
+	cmd.Stdout, cmd.Stderr = m.Log, m.Log
+	proc.Detach(cmd)
+	proc.Reap(cmd)
+	proc.StopOnCancel(cmd, stopCommandGrace, func(err error) {
+		fmt.Fprintf(m.Log, "graft: warning stopping stop command: %v\n", err)
+	})
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("running stop command: %w", err)
+	}
+	return nil
+}
+
+const stopCommandGrace = time.Second
+
+func (m *Manager) finishStop(ctx context.Context, name string, s *config.Service) error {
 	if err := errors.Join(fsx.Remove(m.path(s.PIDFile)), fsx.Remove(m.path(s.PIDFile)+".start")); err != nil {
 		return err
 	}
@@ -749,19 +795,25 @@ func listening(addr string) (bool, error) {
 }
 
 func waitFor(ctx context.Context, timeout time.Duration, done func() (bool, error)) (bool, error) {
-	deadline := time.Now().Add(timeout)
+	return waitForUntil(ctx, time.Now().Add(timeout), done)
+}
+
+func waitForUntil(ctx context.Context, deadline time.Time, done func() (bool, error)) (bool, error) {
 	for {
 		ok, err := done()
 		if err != nil || ok {
 			return ok, err
 		}
-		if time.Now().After(deadline) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
 			return false, nil
 		}
+		timer := time.NewTimer(min(remaining, 100*time.Millisecond))
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return false, ctx.Err()
-		case <-time.After(100 * time.Millisecond):
+		case <-timer.C:
 		}
 	}
 }

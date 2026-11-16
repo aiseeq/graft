@@ -196,6 +196,254 @@ func TestStopFinishesSessionAfterLeaderExits(t *testing.T) {
 	}
 }
 
+func TestStopCommandStopsServiceWithoutSignals(t *testing.T) {
+	dir := t.TempDir()
+	signalFile := filepath.Join(dir, "signal")
+	if err := os.WriteFile(signalFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "service.sh")
+	workerFile := filepath.Join(dir, "worker")
+	workerScript := filepath.Join(dir, "worker.sh")
+	workerBody := `trap 'echo TERM >> "$1"; exit 0' TERM; while :; do sleep 1; done`
+	if err := os.WriteFile(workerScript, []byte(workerBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := `sh "$3" "$2" & echo $! > "$4"; trap 'echo TERM >> "$2"; exit 0' TERM; while [ ! -f "$1" ]; do sleep 0.02; done; sleep 0.25; exit 0`
+	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &config.Service{
+		Run: config.Command{Argv: []string{"sh", script, "stop", signalFile, workerScript, workerFile}}, Stop: "touch stop",
+		Log: "service.log", PIDFile: "service.pid", StopTimeout: time.Second,
+	}
+	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
+	if err := m.start(t.Context(), "svc"); err != nil {
+		t.Fatal(err)
+	}
+	pid := serviceTestPID(t, m.path(s.PIDFile))
+	worker := serviceTestPID(t, workerFile)
+	stopServiceTestProcess(t, pid)
+	stopServiceTestProcess(t, worker)
+	m.Log = &strings.Builder{}
+	if err := m.stop(t.Context(), "svc"); err != nil {
+		t.Fatalf("stop error = %v, log: %s", err, m.Log.(*strings.Builder).String())
+	}
+	if got, err := os.ReadFile(signalFile); err != nil || len(got) != 0 {
+		t.Fatalf("received signals = %q, %v", got, err)
+	}
+	if !serviceTestRunning(worker) {
+		t.Fatal("worker received a signal after the service stopped gracefully")
+	}
+}
+
+func TestStopCommandFallsBackToSignals(t *testing.T) {
+	dir := t.TempDir()
+	signalFile := filepath.Join(dir, "signal")
+	if err := os.WriteFile(signalFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "service.sh")
+	body := `trap 'echo TERM >> "$1"; exit 0' TERM; while :; do sleep 0.02; done`
+	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &config.Service{
+		Run: config.Command{Argv: []string{"sh", script, signalFile}}, Stop: ":",
+		Log: "service.log", PIDFile: "service.pid", StopTimeout: 100 * time.Millisecond,
+	}
+	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
+	if err := m.start(t.Context(), "svc"); err != nil {
+		t.Fatal(err)
+	}
+	pid := serviceTestPID(t, m.path(s.PIDFile))
+	stopServiceTestProcess(t, pid)
+	m.Log = &strings.Builder{}
+	if err := m.stop(t.Context(), "svc"); err != nil {
+		t.Fatalf("stop error = %v, log: %s", err, m.Log.(*strings.Builder).String())
+	}
+	if got := m.Log.(*strings.Builder).String(); !strings.Contains(got, "stop command did not stop the service") {
+		t.Fatalf("stop log lacks fallback message: %s", got)
+	}
+	if got, err := os.ReadFile(signalFile); err != nil || !strings.Contains(string(got), "TERM") {
+		t.Fatalf("received signals = %q, %v", got, err)
+	}
+}
+
+func TestStopCommandTimeoutKillsItsProcessGroup(t *testing.T) {
+	dir := t.TempDir()
+	stopChildFile := filepath.Join(dir, "stop-child")
+	s := &config.Service{
+		Run:  config.Command{Argv: []string{"sh", "-c", "while :; do sleep 1; done"}},
+		Stop: "sleep 30 & echo $! > stop-child; wait", Log: "service.log", PIDFile: "service.pid", StopTimeout: 150 * time.Millisecond,
+	}
+	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
+	if err := m.start(t.Context(), "svc"); err != nil {
+		t.Fatal(err)
+	}
+	servicePID := serviceTestPID(t, m.path(s.PIDFile))
+	stopServiceTestProcess(t, servicePID)
+	m.Log = io.Discard
+	started := time.Now()
+	if err := m.stop(t.Context(), "svc"); err != nil {
+		t.Fatalf("stop error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("stop took %s, want return near stop_timeout", elapsed)
+	}
+	stopChild := serviceTestPID(t, stopChildFile)
+	if serviceTestRunning(stopChild) {
+		t.Fatalf("stop command child %d survived timeout", stopChild)
+	}
+}
+
+func TestStopTimeoutCoversCommandAndServiceWaitTogether(t *testing.T) {
+	dir := t.TempDir()
+	signalFile := filepath.Join(dir, "signal")
+	if err := os.WriteFile(signalFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &config.Service{
+		Run:  config.Command{Argv: []string{"sh", "-c", `trap 'echo TERM >> "$1"; exit 0' TERM; while :; do sleep 0.02; done`, "sh", signalFile}},
+		Stop: "touch stop-started; sleep 3; touch stop-finished", Log: "service.log", PIDFile: "service.pid", StopTimeout: 5 * time.Second,
+	}
+	serviceScript := filepath.Join(dir, "service.sh")
+	body := `trap 'echo TERM >> "$1"; exit 0' TERM; while [ ! -f stop-finished ]; do sleep 0.02; done; sleep 3; exit 0`
+	if err := os.WriteFile(serviceScript, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.Run = config.Command{Argv: []string{"sh", serviceScript, signalFile}}
+	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
+	if err := m.start(t.Context(), "svc"); err != nil {
+		t.Fatal(err)
+	}
+	servicePID := serviceTestPID(t, m.path(s.PIDFile))
+	stopServiceTestProcess(t, servicePID)
+	m.Log = &strings.Builder{}
+	if err := m.stop(t.Context(), "svc"); err != nil {
+		t.Fatalf("stop error = %v, log: %s", err, m.Log.(*strings.Builder).String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stop-started")); err != nil {
+		t.Fatalf("stop command did not start: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stop-finished")); err != nil {
+		t.Fatalf("stop command did not finish: %v", err)
+	}
+	if got := m.Log.(*strings.Builder).String(); !strings.Contains(got, "stop command did not stop the service in 5s") {
+		t.Fatalf("stop log lacks shared-deadline fallback: %s", got)
+	}
+	if got, err := os.ReadFile(signalFile); err != nil || !strings.Contains(string(got), "TERM") {
+		t.Fatalf("service received signals = %q, %v", got, err)
+	}
+}
+
+func TestStopCommandReapsOrphansAfterLeaderExits(t *testing.T) {
+	for _, logMode := range []string{"pipe", "file"} {
+		t.Run(logMode, func(t *testing.T) {
+			dir := t.TempDir()
+			s := &config.Service{
+				Run:  config.Command{Argv: []string{"sh", "-c", "exec sleep 30"}},
+				Stop: "sleep 5 & echo $! > child; exit 0", Log: "service.log", PIDFile: "service.pid", StopTimeout: 300 * time.Millisecond,
+			}
+			m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
+			if err := m.start(t.Context(), "svc"); err != nil {
+				t.Fatal(err)
+			}
+			serviceTestPID(t, m.path(s.PIDFile))
+			stopServiceTestProcess(t, serviceTestPID(t, m.path(s.PIDFile)))
+			var logFile *os.File
+			if logMode == "pipe" {
+				m.Log = io.Discard
+			} else {
+				var err error
+				logFile, err = os.Create(filepath.Join(dir, "stop.log"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer logFile.Close()
+				m.Log = logFile
+			}
+			if err := m.stop(t.Context(), "svc"); err != nil {
+				t.Fatal(err)
+			}
+			child := serviceTestPID(t, filepath.Join(dir, "child"))
+			if serviceTestRunning(child) {
+				t.Fatalf("stop command child %d survived return with %s log", child, logMode)
+			}
+		})
+	}
+}
+
+func TestStopCommandFailureFallsBackToStopSession(t *testing.T) {
+	dir := t.TempDir()
+	signalFile := filepath.Join(dir, "signal")
+	if err := os.WriteFile(signalFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &config.Service{
+		Run:  config.Command{Argv: []string{"sh", "-c", `trap 'echo TERM >> "$1"; exit 0' TERM; while :; do sleep 0.02; done`, "sh", signalFile}},
+		Stop: "exit 17", Log: "service.log", PIDFile: "service.pid", StopTimeout: time.Second,
+	}
+	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
+	if err := m.start(t.Context(), "svc"); err != nil {
+		t.Fatal(err)
+	}
+	servicePID := serviceTestPID(t, m.path(s.PIDFile))
+	stopServiceTestProcess(t, servicePID)
+	m.Log = &strings.Builder{}
+	if err := m.stop(t.Context(), "svc"); err != nil {
+		t.Fatalf("stop error = %v, log: %s", err, m.Log.(*strings.Builder).String())
+	}
+	got := m.Log.(*strings.Builder).String()
+	if !strings.Contains(got, "stop command did not succeed") {
+		t.Fatalf("stop log lacks command failure: %s", got)
+	}
+	if data, err := os.ReadFile(signalFile); err != nil || !strings.Contains(string(data), "TERM") {
+		t.Fatalf("service received signals = %q, %v", data, err)
+	}
+}
+
+func TestStopCommandUsesServiceEnvironmentAndDirectory(t *testing.T) {
+	dir := t.TempDir()
+	s := &config.Service{
+		Run:  config.Command{Argv: []string{"sh", "-c", `while [ ! -f stop ]; do sleep 0.02; done`}},
+		Stop: `printf '%s:%s' "$SERVICE_MARKER" "$PWD" > stop-result; touch stop`,
+		Env:  map[string]string{"SERVICE_MARKER": "service-env"},
+		Log:  "service.log", PIDFile: "service.pid", StopTimeout: time.Second,
+	}
+	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
+	if err := m.start(t.Context(), "svc"); err != nil {
+		t.Fatal(err)
+	}
+	servicePID := serviceTestPID(t, m.path(s.PIDFile))
+	stopServiceTestProcess(t, servicePID)
+	if err := m.stop(t.Context(), "svc"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "stop-result"))
+	if err != nil || string(got) != "service-env:"+dir {
+		t.Fatalf("stop result = %q, %v; want service env and directory %q", got, err, dir)
+	}
+}
+
+func TestStopCommandIsNotRunForDeadService(t *testing.T) {
+	dir := t.TempDir()
+	s := &config.Service{
+		Run: config.Command{Argv: []string{"sh", "-c", "exec sleep 30"}}, Stop: "touch stop-ran",
+		Log: "service.log", PIDFile: "service.pid", StopTimeout: time.Second,
+	}
+	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
+	if err := writePID(m.path(s.PIDFile), 2_147_483_647, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.stop(t.Context(), "svc"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stop-ran")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stop command was run for a dead service: stat error = %v", err)
+	}
+}
+
 func serviceTestPID(t *testing.T, path string) int {
 	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {

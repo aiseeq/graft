@@ -81,6 +81,43 @@ func TestParseTasks(t *testing.T) {
 	}
 }
 
+func TestServiceStopWhitespaceIsUnset(t *testing.T) {
+	data := strings.Replace(tasksBase, "    run: [bin/web]\n", "    run: [bin/web]\n    stop: '   '\n", 1)
+	cfg, err := Parse([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Services["web"].Stop != "" {
+		t.Errorf("service stop = %q, want unset", cfg.Services["web"].Stop)
+	}
+}
+
+func TestNullServiceReturnsConfigError(t *testing.T) {
+	data := `schema: 1
+version: {mode: none}
+services:
+  web: null
+`
+	_, err := Parse([]byte(data))
+	if err == nil || !strings.Contains(err.Error(), "services.web: empty") {
+		t.Fatalf("Parse error = %v, want services.web: empty", err)
+	}
+}
+
+func TestServiceStopRejectedWithSystemdUnit(t *testing.T) {
+	data := `schema: 1
+version: {mode: none}
+services:
+  web:
+    systemd_unit: web.service
+    stop: 'touch marker'
+`
+	_, err := Parse([]byte(data))
+	if err == nil || !strings.Contains(err.Error(), "services.web.stop: cannot be used with systemd_unit") {
+		t.Fatalf("Parse error = %v, want systemd stop conflict", err)
+	}
+}
+
 func TestTaskConfirm(t *testing.T) {
 	for _, tc := range []struct {
 		value string

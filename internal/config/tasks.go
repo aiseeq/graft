@@ -242,6 +242,8 @@ type Service struct {
 	// Build is a task run before start.
 	Build string  `yaml:"build"`
 	Run   Command `yaml:"run"`
+	// Stop is a shell command asked to stop the service before signals are sent.
+	Stop string `yaml:"stop"`
 	// DotEnv lists the .env keys the process gets; "all" passes the whole
 	// file, as an application reading its config from the environment needs.
 	DotEnv     DotEnvKeys `yaml:"dotenv"`
@@ -677,6 +679,7 @@ func (c *Config) validateServices() error {
 		if err := s.validateRunner(where); err != nil {
 			return err
 		}
+		s.Stop = strings.TrimSpace(s.Stop)
 		if s.DotEnv.All && len(s.DotEnvSets) > 0 {
 			return fmt.Errorf("%s: dotenv: all already passes every key, dotenv_sets adds nothing", where)
 		}
@@ -791,6 +794,9 @@ func (s *Service) validateRunner(where string) error {
 	if s.SystemdUnit != "" {
 		if !unitRe.MatchString(s.SystemdUnit) {
 			return fmt.Errorf("%s.systemd_unit: %q is not a name.service unit", where, s.SystemdUnit)
+		}
+		if strings.TrimSpace(s.Stop) != "" {
+			return fmt.Errorf("%s.stop: cannot be used with systemd_unit; configure ExecStop in the unit", where)
 		}
 		if len(s.Run.Argv) > 0 || s.PIDFile != "" || s.Log != "" || s.DotEnv.All || len(s.DotEnv.Keys) > 0 || len(s.DotEnvSets) > 0 || len(s.Env) > 0 {
 			return fmt.Errorf("%s: with systemd_unit, run, pidfile, log, dotenv and env belong to the unit", where)

@@ -1499,7 +1499,8 @@ services:
     pidfile: tmp/api.pid
     log: tmp/api.log             # appended to, one header line per start
     start_timeout: 30s           # default 30s
-    stop_timeout: 10s            # default 10s, then SIGKILL
+    stop: "curl -fsS -X POST http://localhost:8080/stop" # optional shell command
+    stop_timeout: 10s            # default 10s to stop gracefully, then signals
     lock: work-tree              # held for writing while starting or stopping
   worker:
     systemd_unit: worker.service # a systemd --user unit: start, stop, status and logs go through
@@ -1510,10 +1511,14 @@ services:
 
 `graft start` refuses an address something else already listens on, waits
 for the process to listen (without `addr`: to survive a second) and shows the
-end of the log when it dies instead. `graft stop` sends SIGTERM to the
-process group, so wrappers like `go run` do not leave the server behind, and
-SIGKILL after `stop_timeout`. A pid file whose process is gone, or now runs
-another program, is removed. `graft logs`
+end of the log when it dies instead. When configured, `stop` runs as a shell
+command from the project root with the service environment and `.env` values.
+The stop command and service share one `stop_timeout` deadline. If the command
+fails or the service does not exit before it, `graft stop` sends SIGTERM to the
+process group, so wrappers like `go run` do not leave the server behind, then
+SIGKILL after `stop_timeout`. Without `stop`, it sends SIGTERM immediately as
+before. A pid file whose process is gone, or now runs another program, is
+removed. `graft logs`
 prints the end of the log file, or `journalctl --user -u` for a unit; with
 `-f` it follows until Ctrl-C.
 
