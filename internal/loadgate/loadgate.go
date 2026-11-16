@@ -936,6 +936,9 @@ type machine struct {
 	avg1Known bool
 	// unchecked holds the measures the system does not have, told once.
 	unchecked map[error]bool
+	// ignoreCPUPressure keeps disk-only work from waiting on CPU, including
+	// when akit's half mode caps the configured runnable limit.
+	ignoreCPUPressure bool
 	// waits is how long admit waited, by why.
 	waits Waits
 }
@@ -996,7 +999,7 @@ type BusyChecker struct{ machine *machine }
 // so CPU runnable and load-average limits do not apply to it.
 func NewDiskBusyChecker(name, kind string, l userconfig.MachineLoad, log io.Writer) *BusyChecker {
 	checker := &BusyChecker{machine: newMachine(l, log, name, kind)}
-	checker.machine.limits.Runnable = math.Inf(1)
+	checker.machine.ignoreCPUPressure = true
 	return checker
 }
 
@@ -1036,6 +1039,11 @@ func (m *machine) busy(ctx context.Context, fresh, priority bool) (busyness, err
 	if err != nil {
 		m.samples.observe(m.now(), 0, false)
 		return busyness{}, fmt.Errorf("measuring the machine: %w", err)
+	}
+	if m.ignoreCPUPressure {
+		skipped := v.Skipped
+		v = pressure.Rule(v.Load, m.limits, append(slices.Clone(skipped), pressure.ErrNoRunnable, pressure.ErrNoLoadAvg))
+		v.Skipped = skipped
 	}
 	// A look that the wait's end cut short is no measure: its disk source
 	// failed for the deadline, not for the machine.

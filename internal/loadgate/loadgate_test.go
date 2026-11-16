@@ -1054,6 +1054,33 @@ func setQuiet(t *testing.T, until time.Time) {
 	}
 }
 
+func TestOrdinaryAdmissionWaitsForCPUInHalfMode(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(12) // Above half of 22 threads, below the normal threshold.
+	setLoadavg(t, 0)
+	dir := filepath.Join(os.Getenv("XDG_STATE_HOME"), "akit")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "half-until"), []byte(time.Now().Add(time.Hour).Format(time.RFC3339)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		setRunnable(1)
+	}()
+
+	adm, release, err := Wait(context.Background(), "half admission", "projectA:half-admission", nil,
+		testLoad, filepath.Join(t.TempDir(), "load.lock"), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if adm.Waits[WhyLoad] < 30*time.Millisecond {
+		t.Fatalf("load wait = %s; ordinary admission should wait above the half-mode CPU threshold", adm.Waits[WhyLoad])
+	}
+}
+
 // TestQuietModeOverHoldsNoTask: a quiet mode whose time has passed holds
 // nothing.
 func TestQuietModeOverHoldsNoTask(t *testing.T) {

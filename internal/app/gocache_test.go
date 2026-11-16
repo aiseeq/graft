@@ -174,6 +174,49 @@ func TestTrimWaitCountsTheTimeOfItsChecks(t *testing.T) {
 }
 
 func TestTrimIgnoresCPUAndLoadAverage(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		halfMode bool
+	}{
+		{name: "half disabled"},
+		{name: "half enabled", halfMode: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := trimProc(t, 1, 1)
+			if err := os.WriteFile(filepath.Join(root, "stat"), []byte("cpu 1 1 1 1\ncpu0 1 1 1 1\nprocs_running 100\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "loadavg"), []byte("100.00 100.00 100.00 100/100 1\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tc.halfMode {
+				setTrimHalfMode(t)
+			}
+			serveTrimDisk(t, 0)
+			configHome := quietConfigHome(t)
+			limits := filepath.Join(configHome, "akit", "pressure.yaml")
+			if err := os.MkdirAll(filepath.Dir(limits), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(limits, []byte("runnable: 1\nmax_io_full: 10\nmax_swap_kbs: 1024\nswap_window: 1ms\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			load := userconfig.MachineLoad{Poll: 5 * time.Millisecond}
+			checker := loadgate.NewDiskBusyChecker("gocache trim", trimKind, load, io.Discard)
+			why, err := checker.Why(context.Background())
+			if err != nil || why != "" {
+				t.Fatalf("Why = %q, %v; want empty", why, err)
+			}
+			proceed, waits, err := waitForTrimBatch(context.Background(), 100*time.Millisecond, load.Poll,
+				trimMemoryCalm, checker.Why)
+			if err != nil || !proceed || waitTotal(waits) > 20*time.Millisecond {
+				t.Fatalf("proceed %v, waits %v, error %v", proceed, waits, err)
+			}
+		})
+	}
+}
+
+func TestTrimStillWaitsForIOInHalfMode(t *testing.T) {
 	root := trimProc(t, 1, 1)
 	if err := os.WriteFile(filepath.Join(root, "stat"), []byte("cpu 1 1 1 1\ncpu0 1 1 1 1\nprocs_running 100\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -181,7 +224,8 @@ func TestTrimIgnoresCPUAndLoadAverage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "loadavg"), []byte("100.00 100.00 100.00 100/100 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	serveTrimDisk(t, 0)
+	setTrimHalfMode(t)
+	serveTrimDisk(t, 1000)
 	configHome := quietConfigHome(t)
 	limits := filepath.Join(configHome, "akit", "pressure.yaml")
 	if err := os.MkdirAll(filepath.Dir(limits), 0o755); err != nil {
@@ -192,10 +236,20 @@ func TestTrimIgnoresCPUAndLoadAverage(t *testing.T) {
 	}
 	load := userconfig.MachineLoad{Poll: 5 * time.Millisecond}
 	checker := loadgate.NewDiskBusyChecker("gocache trim", trimKind, load, io.Discard)
-	proceed, waits, err := waitForTrimBatch(context.Background(), 100*time.Millisecond, load.Poll,
-		trimMemoryCalm, checker.Why)
-	if err != nil || !proceed || waitTotal(waits) > 20*time.Millisecond {
-		t.Fatalf("proceed %v, waits %v, error %v", proceed, waits, err)
+	why, err := checker.Why(context.Background())
+	if err != nil || why != loadgate.WhyIO {
+		t.Fatalf("Why = %q, %v; want %q", why, err, loadgate.WhyIO)
+	}
+}
+
+func setTrimHalfMode(t *testing.T) {
+	t.Helper()
+	path := filepath.Join(os.Getenv("XDG_STATE_HOME"), "akit", "half-until")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(time.Now().Add(time.Hour).Format(time.RFC3339)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
