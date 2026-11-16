@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -20,7 +21,9 @@ import (
 
 // StatsOptions select what graft stats reports.
 type StatsOptions struct {
-	Since time.Duration
+	Since time.Time
+	Until time.Time
+	By    string
 	// Project is a project root; empty with All unset means the current
 	// project.
 	Project string
@@ -54,16 +57,16 @@ func (a *App) Stats(o StatsOptions) error {
 	if err != nil {
 		return err
 	}
-	since := time.Now().Add(-o.Since)
+	since := o.Since
 	f, where, err := a.statsFilter(o, since)
 	if err != nil {
 		return err
 	}
 	if o.Refused {
-		return a.statsRefused(f.Project, where, since)
+		return a.statsRefused(f.Project, where, since, o.Until)
 	}
 	if o.Tests {
-		return a.statsTests(path, stats.TestFilter{Since: since, Project: f.Project, Task: o.Task, MaxLoad: o.MaxLoad}, where+calmNote(o.MaxLoad))
+		return a.statsTests(path, stats.TestFilter{Since: since, Until: o.Until, Project: f.Project, Task: o.Task, MaxLoad: o.MaxLoad}, where+calmNote(o.MaxLoad))
 	}
 	recs, malformed, err := stats.Load(path, since)
 	if err != nil {
@@ -72,16 +75,22 @@ func (a *App) Stats(o StatsOptions) error {
 	if malformed > 0 {
 		fmt.Fprintf(a.Stderr, "graft: %s: %d malformed line(s) left out\n", path, malformed)
 	}
+	if !o.Until.IsZero() {
+		recs = beforeUntil(recs, o.Until)
+	}
 	if o.Failures {
 		return a.statsFailures(recs, f, where, since)
 	}
 	if o.Value != "" {
 		return a.statsValue(recs, f, o)
 	}
+	if o.By != "" {
+		return a.statsBy(recs, f, o, where, since)
+	}
 	return a.statsTasks(recs, path, f, o, where, since)
 }
 
-func (a *App) statsRefused(project, where string, since time.Time) error {
+func (a *App) statsRefused(project, where string, since, until time.Time) error {
 	refused, malformed, err := stats.LoadRefusedCommits(since, project)
 	if err != nil {
 		return err
@@ -89,9 +98,18 @@ func (a *App) statsRefused(project, where string, since time.Time) error {
 	if malformed > 0 {
 		fmt.Fprintf(a.Stderr, "graft: the refused commits: %d malformed line(s) left out\n", malformed)
 	}
+	if !until.IsZero() {
+		kept := refused[:0]
+		for _, r := range refused {
+			if r.Time.Before(until) {
+				kept = append(kept, r)
+			}
+		}
+		refused = kept
+	}
 	start := since.Local().Format("2006-01-02 15:04")
 	if len(refused) == 0 {
-		a.printf("no raw git commits refused in %s since %s", where, start)
+		a.printf("no raw git commits refused in %s since %s%s", where, start, untilText(until))
 		return nil
 	}
 	bypassed := 0
@@ -104,7 +122,7 @@ func (a *App) statsRefused(project, where string, since time.Time) error {
 	if bypassed > 0 {
 		summary += ", " + plural(bypassed, "commit") + " past the hook (--no-verify)"
 	}
-	a.printf("%s in %s since %s", summary, where, start)
+	a.printf("%s in %s since %s%s", summary, where, start, untilText(until))
 	tw := tabwriter.NewWriter(a.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "TIME\tPROJECT/TREE\tBRANCH\tSESSION\tKIND")
 	for _, r := range refused {
@@ -114,6 +132,101 @@ func (a *App) statsRefused(project, where string, since time.Time) error {
 		return fmt.Errorf("formatting the refused commits: %w", err)
 	}
 	return nil
+}
+
+func beforeUntil(recs []stats.Record, until time.Time) []stats.Record {
+	kept := recs[:0]
+	for i := range recs {
+		if recs[i].Time.Before(until) {
+			kept = append(kept, recs[i])
+		}
+	}
+	return kept
+}
+
+type waitGroup struct {
+	wait         float64
+	waited, runs int
+}
+
+func (a *App) statsBy(recs []stats.Record, f stats.Filter, o StatsOptions, where string, since time.Time) error {
+	groups := map[string]waitGroup{}
+	type nestedTotal struct {
+		wait         float64
+		waited, runs int
+	}
+	var nested nestedTotal
+	var selected []int
+	for i := range recs {
+		r := &recs[i]
+		if r.Kind != stats.KindTask || r.Time.Before(f.Since) || (f.Project != "" && r.Project != f.Project) || !calmStats(r, f.MaxLoad) {
+			continue
+		}
+		selected = append(selected, i)
+	}
+	nestedWaits := stats.NestedWaits(recs, selected)
+	for _, i := range selected {
+		r := &recs[i]
+		if nestedWaits[i] {
+			nested.runs++
+			nested.wait += r.WaitS
+			if r.WaitS > 0 {
+				nested.waited++
+			}
+			continue
+		}
+		key := r.Here
+		if o.By == "profile-task" {
+			key = r.Profile + "/" + r.Task
+		}
+		if key == "" {
+			key = "(none)"
+		}
+		g := groups[key]
+		g.runs++
+		g.wait += r.WaitS
+		if r.WaitS > 0 {
+			g.waited++
+		}
+		groups[key] = g
+	}
+	byWait := make([]string, 0, len(groups))
+	for key := range groups {
+		byWait = append(byWait, key)
+	}
+	sort.Slice(byWait, func(i, j int) bool {
+		a, b := groups[byWait[i]], groups[byWait[j]]
+		if a.wait != b.wait {
+			return a.wait > b.wait
+		}
+		return byWait[i] < byWait[j]
+	})
+	label := "HERE"
+	if o.By == "profile-task" {
+		label = "PROFILE/TASK"
+	}
+	a.printf("wait by %s in %s since %s%s", o.By, where, since.Format(time.RFC3339), untilText(o.Until))
+	tw := tabwriter.NewWriter(a.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(tw, "%s\tWAIT S\tWAITED\tRUNS\n", label)
+	for _, key := range byWait {
+		g := groups[key]
+		fmt.Fprintf(tw, "%s\t%.3f\t%d\t%d\n", key, g.wait, g.waited, g.runs)
+	}
+	if nested.runs > 0 {
+		fmt.Fprintf(tw, "nested (already in parents)\t%.3f\t%d\t%d\n", nested.wait, nested.waited, nested.runs)
+	}
+	return tw.Flush()
+}
+
+func calmStats(r *stats.Record, maxLoad float64) bool {
+	return maxLoad == 0 || r.LoadMax != nil && *r.LoadMax < maxLoad
+}
+
+func untilText(until time.Time) string {
+	if until.IsZero() {
+		return ""
+	}
+	return " until " + until.Format(time.RFC3339) + " (exclusive)"
 }
 
 func (a *App) statsFilter(o StatsOptions, since time.Time) (stats.Filter, string, error) {
@@ -135,7 +248,7 @@ func (a *App) statsTasks(recs []stats.Record, path string, f stats.Filter, o Sta
 	if o.Task != "" {
 		what, label = "task "+o.Task, "STEP"
 	}
-	a.printf("%s in %s%s since %s", what, where, calmNote(o.MaxLoad), sinceText(since, earliest(recs, func(r *stats.Record) time.Time { return r.Time })))
+	a.printf("%s in %s%s since %s%s", what, where, calmNote(o.MaxLoad), sinceText(since, earliest(recs, func(r *stats.Record) time.Time { return r.Time })), untilText(o.Until))
 	rows, saved := stats.Summarize(recs, f)
 	if len(rows) == 0 && saved.Hits == 0 {
 		a.printf("nothing recorded (%s)", path)
@@ -347,11 +460,14 @@ func (a *App) statsTests(statsPath string, f stats.TestFilter, where string) err
 	if malformed > 0 {
 		fmt.Fprintf(a.Stderr, "graft: %s: %d malformed line(s) left out\n", statsPath, malformed)
 	}
+	if !f.Until.IsZero() {
+		recs = beforeUntil(recs, f.Until)
+	}
 	what := "tests"
 	if f.Task != "" {
 		what = "tests of task " + f.Task
 	}
-	a.printf("%s in %s since %s, the %d slowest by median", what, where, sinceText(f.Since, firstTest), testsLimit)
+	a.printf("%s in %s since %s%s, the %d slowest by median", what, where, sinceText(f.Since, firstTest), untilText(f.Until), testsLimit)
 	rep.Reruns = stats.Reruns(recs, f)
 	if len(rep.Packages) == 0 && len(rep.Reruns) == 0 {
 		a.printf("nothing recorded (%s); a task records its tests with tests: go", path)

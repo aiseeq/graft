@@ -224,10 +224,11 @@ func HasHost(recs []Record, f Filter) bool {
 // first; a broken down task leads with its whole-task row. Saved sums the
 // cache hits, which also show on their task's row.
 func Summarize(recs []Record, f Filter) ([]Row, Saved) {
-	groups := map[rowKey][]Record{}
+	groups := map[rowKey][]int{}
 	hits := map[rowKey]Saved{}
 	var saved Saved
 	var order []rowKey
+	var selectedTasks []int
 	runs := f.taskRuns(recs)
 	for i := range recs {
 		r := &recs[i]
@@ -250,16 +251,78 @@ func Summarize(recs []Record, f Filter) ([]Row, Saved) {
 		if _, ok := groups[k]; !ok {
 			order = append(order, k)
 		}
-		groups[k] = append(groups[k], *r)
+		groups[k] = append(groups[k], i)
+		if r.Kind == KindTask {
+			selectedTasks = append(selectedTasks, i)
+		}
 	}
+	nestedWaits := NestedWaits(recs, selectedTasks)
 	rows := make([]Row, 0, len(order))
 	for _, k := range order {
-		row := summarize(k.project, k.label, groups[k])
+		row := summarize(k.project, k.label, recs, groups[k], nestedWaits)
 		row.Hits, row.SavedS = hits[k].Hits, hits[k].WallS
 		rows = append(rows, row)
 	}
 	sortRows(rows, f.Task != "")
 	return rows, saved
+}
+
+// NestedWaits returns the selected task records whose waits are already
+// represented by a parent in the same filtered report selection. Parent is
+// the parent graft process id, so it matches a task record's Run only when
+// that task's [Time-WallS, Time] interval contains the child's interval. In
+// names the task running the child; it matches Task in the same Run, also
+// subject to interval containment. When both fields are present, Parent
+// candidates must additionally have Task == In. Callers pass indices after
+// applying their report filters, so a parent omitted by time, project, task,
+// load or journal rotation does not hide its child's wait.
+func NestedWaits(recs []Record, selected []int) map[int]bool {
+	byRun := map[string][]int{}
+	byRunTask := map[struct{ run, task string }][]int{}
+	for _, i := range selected {
+		r := &recs[i]
+		if r.Kind != KindTask || r.Run == "" {
+			continue
+		}
+		byRun[r.Run] = append(byRun[r.Run], i)
+		key := struct{ run, task string }{r.Run, r.Task}
+		byRunTask[key] = append(byRunTask[key], i)
+	}
+	nested := make(map[int]bool)
+	for _, i := range selected {
+		r := &recs[i]
+		if r.Kind != KindTask {
+			continue
+		}
+		parentFound := false
+		for _, parent := range byRun[r.Parent] {
+			p := &recs[parent]
+			if r.Parent != "" && parent != i && (r.In == "" || p.Task == r.In) && containsInterval(p, r) {
+				parentFound = true
+				break
+			}
+		}
+		inParentFound := false
+		if !parentFound && r.In != "" {
+			key := struct{ run, task string }{r.Run, r.In}
+			for _, parent := range byRunTask[key] {
+				if parent != i && containsInterval(&recs[parent], r) {
+					inParentFound = true
+					break
+				}
+			}
+		}
+		if parentFound || inParentFound {
+			nested[i] = true
+		}
+	}
+	return nested
+}
+
+func containsInterval(parent, child *Record) bool {
+	parentStart := parent.Time.Add(-time.Duration(parent.WallS * float64(time.Second)))
+	childStart := child.Time.Add(-time.Duration(child.WallS * float64(time.Second)))
+	return !parentStart.After(childStart) && !parent.Time.Before(child.Time)
 }
 
 // selects tells whether a record is of the period and the project.
@@ -360,28 +423,30 @@ func compareRSS(a, b *float64) int {
 	return 0
 }
 
-func summarize(project, label string, recs []Record) Row {
-	row := Row{Project: project, Label: label, Runs: len(recs)}
-	walls := make([]float64, 0, len(recs))
-	waits := make([]float64, 0, len(recs))
-	owns := make([]float64, 0, len(recs))
-	cpus := make([]float64, 0, len(recs))
+func summarize(project, label string, all []Record, indices []int, nestedWaits map[int]bool) Row {
+	row := Row{Project: project, Label: label, Runs: len(indices)}
+	walls := make([]float64, 0, len(indices))
+	waits := make([]float64, 0, len(indices))
+	owns := make([]float64, 0, len(indices))
+	cpus := make([]float64, 0, len(indices))
 	var dbCPUs []float64
 	var writes []float64
-	for i := range recs {
-		r := &recs[i]
+	for _, index := range indices {
+		r := &all[index]
 		walls = append(walls, r.WallS)
-		waits = append(waits, r.WaitS)
+		if !nestedWaits[index] {
+			waits = append(waits, r.WaitS)
+			row.WaitMax = max(row.WaitMax, r.WaitS)
+			for why, s := range r.WaitWhy {
+				if row.WaitWhy == nil {
+					row.WaitWhy = map[string]float64{}
+				}
+				row.WaitWhy[why] += s
+			}
+		}
 		owns = append(owns, r.WallS-r.WaitS)
 		cpus = append(cpus, r.UserS+r.SysS)
 		row.WallMax = max(row.WallMax, r.WallS)
-		row.WaitMax = max(row.WaitMax, r.WaitS)
-		for why, s := range r.WaitWhy {
-			if row.WaitWhy == nil {
-				row.WaitWhy = map[string]float64{}
-			}
-			row.WaitWhy[why] += s
-		}
 		row.MaxRSSMB = larger(row.MaxRSSMB, r.MaxRSSMB)
 		row.TreeMemMB = larger(row.TreeMemMB, r.TreeMemMB)
 		row.DBMemMB = larger(row.DBMemMB, r.DBMemMB)
@@ -400,7 +465,9 @@ func summarize(project, label string, recs []Record) Row {
 		}
 	}
 	row.WallMed = Median(walls)
-	row.WaitMed = Median(waits)
+	if len(waits) > 0 {
+		row.WaitMed = Median(waits)
+	}
 	row.OwnMed = Median(owns)
 	row.CPUMed = Median(cpus)
 	if len(dbCPUs) > 0 {

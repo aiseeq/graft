@@ -623,3 +623,199 @@ func TestStatsValueCommand(t *testing.T) {
 		t.Errorf("--tests with --in: exit %d, %q; want a usage error", code, out)
 	}
 }
+
+func TestStatsWindowAndWaitBreakdown(t *testing.T) {
+	f, path := statsRepo(t, "tasks: {}\n")
+	root := realRoot(t, f)
+	stamp := func(s string) time.Time {
+		parsed, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parsed
+	}
+	recs := []stats.Record{
+		{Time: stamp("2026-11-09T23:59:59Z"), Kind: stats.KindTask, Project: root, Here: "outside-before", Task: "x", WaitS: 70},
+		{Time: stamp("2026-11-10T00:00:00Z"), Kind: stats.KindTask, Project: root, Here: "queue", Task: "x", WaitS: 10},
+		{Time: stamp("2026-11-11T12:00:00Z"), Kind: stats.KindTask, Project: root, Here: "queue", Task: "x", WaitS: 20},
+		{Time: stamp("2026-11-11T13:00:00Z"), Kind: stats.KindTask, Project: root, Here: "local", Task: "x", WaitS: 5},
+		{Time: stamp("2026-11-11T14:01:00Z"), Kind: stats.KindTask, Project: root, Here: "outer-queue", Task: "outer", Run: "outer-run", WallS: 3000, WaitS: 10},
+		{Time: stamp("2026-11-11T13:30:00Z"), Kind: stats.KindTask, Project: root, Here: "outer-queue", Task: "dep", In: "outer", Run: "outer-run", WaitS: 5},
+		{Time: stamp("2026-11-11T14:00:00Z"), Kind: stats.KindTask, Project: root, Here: "queue", Task: "child", Parent: "outer-run", WaitS: 100},
+		{Time: stamp("2026-11-12T00:00:00Z"), Kind: stats.KindTask, Project: root, Here: "outside-until", Task: "x", WaitS: 50},
+	}
+	var data strings.Builder
+	for _, rec := range recs {
+		line, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data.Write(line)
+		data.WriteByte('\n')
+	}
+	writeFile(t, path, data.String())
+	out, code := f.graft("", "stats", "--all", "--since", "2026-11-10T00:00:00Z", "--until", "2026-11-12T00:00:00Z", "--by", "here")
+	if code != 0 {
+		t.Fatalf("stats window: exit %d, %s", code, out)
+	}
+	gotRows := map[string][]string{}
+	for line := range strings.SplitSeq(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 4 && (fields[0] == "queue" || fields[0] == "local" || fields[0] == "outer-queue") {
+			gotRows[fields[0]] = fields[1:]
+		}
+		if strings.HasPrefix(line, "nested (already in parents)") {
+			gotRows["nested"] = fields[len(fields)-3:]
+		}
+	}
+	for key, want := range map[string][]string{"queue": {"30.000", "2", "2"}, "outer-queue": {"10.000", "1", "1"}, "local": {"5.000", "1", "1"}, "nested": {"105.000", "2", "2"}} {
+		if strings.Join(gotRows[key], ",") != strings.Join(want, ",") {
+			t.Errorf("%s stats: got %v, want %v; output:\n%s", key, gotRows[key], want, out)
+		}
+	}
+	for _, excluded := range []string{"outside-before", "outside-until"} {
+		if strings.Contains(out, excluded) {
+			t.Errorf("out-of-window group %q included:\n%s", excluded, out)
+		}
+	}
+	if strings.Index(out, "queue") > strings.Index(out, "local") {
+		t.Errorf("groups are not sorted by wait sum:\n%s", out)
+	}
+	if _, code := f.graft("", "stats", "--all", "--since", "2026-11-12T00:00:00Z", "--until", "2026-11-10T00:00:00Z"); code != 2 {
+		t.Errorf("until <= since: exit %d, want usage error", code)
+	}
+	if _, code := f.graft("", "stats", "--all", "--since", "1d", "--until", "1d", "--by", "here"); code != 2 {
+		t.Errorf("equal relative window: exit %d, want usage error", code)
+	}
+	if _, code := f.graft("", "stats", "--all", "--since", "1d", "--until", "", "--by", "here"); code != 2 {
+		t.Errorf("empty --until: exit %d, want usage error", code)
+	}
+}
+
+func TestStatsReportDoesNotDoubleCountNestedWait(t *testing.T) {
+	f, path := statsRepo(t, "tasks: {}\n")
+	root := realRoot(t, f)
+	recs := []stats.Record{
+		{Time: time.Date(2026, 11, 11, 11, 1, 0, 0, time.UTC), Kind: stats.KindTask, Project: root, Task: "same", Here: "queue", Profile: "p", WallS: 120, WaitS: 10, WaitWhy: map[string]float64{"queue": 10}, Run: "r"},
+		{Time: time.Date(2026, 11, 11, 11, 0, 0, 0, time.UTC), Kind: stats.KindTask, Project: root, Task: "same", Here: "queue", Profile: "p", WallS: 8, WaitS: 5, WaitWhy: map[string]float64{"queue": 5}, Run: "c", Parent: "r"},
+		{Time: time.Date(2026, 11, 11, 12, 3, 0, 0, time.UTC), Kind: stats.KindTask, Project: root, Task: "outer", Here: "queue", Profile: "p", WallS: 120, WaitS: 10, WaitWhy: map[string]float64{"queue": 10}, Run: "in-run"},
+		{Time: time.Date(2026, 11, 11, 12, 2, 0, 0, time.UTC), Kind: stats.KindTask, Project: root, Task: "dep", In: "outer", Here: "queue", Profile: "p", WallS: 8, WaitS: 5, WaitWhy: map[string]float64{"queue": 5}, Run: "in-run"},
+	}
+	var data strings.Builder
+	for _, rec := range recs {
+		line, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data.Write(line)
+		data.WriteByte('\n')
+	}
+	writeFile(t, path, data.String())
+	out, code := f.graft("", "stats", "--all", "--since", "2026-11-10T00:00:00Z")
+	if code != 0 {
+		t.Fatalf("stats report: exit %d, %s", code, out)
+	}
+	rows := map[string][]string{}
+	for line := range strings.SplitSeq(out, "\n") {
+		lineFields := strings.Fields(line)
+		if len(lineFields) > 1 {
+			rows[lineFields[1]] = lineFields
+		}
+	}
+	for _, task := range []string{"same", "outer"} {
+		fields := rows[task]
+		if len(fields) < 9 || strings.Join(fields[5:9], " ") != "10s 10s queue 10s" {
+			t.Errorf("nested wait leaked into %s row: fields %v\n%s", task, fields, out)
+		}
+	}
+	if strings.Contains(strings.Join(rows["dep"], " "), "queue 5s") {
+		t.Errorf("dep wait leaked into old report: %v\n%s", rows["dep"], out)
+	}
+}
+
+func TestStatsOrphanedNestedWaitCountsAsTopLevel(t *testing.T) {
+	f, path := statsRepo(t, "tasks: {}\n")
+	root := realRoot(t, f)
+	recs := []stats.Record{
+		{Time: time.Date(2026, 11, 11, 11, 0, 0, 0, time.UTC), Kind: stats.KindTask, Project: root, Task: "child", Here: "queue", Profile: "p", WallS: 8, WaitS: 5, WaitWhy: map[string]float64{"queue": 5}, Run: "c", Parent: "r"},
+		{Time: time.Date(2026, 11, 11, 11, 30, 0, 0, time.UTC), Kind: stats.KindTask, Project: root, Task: "dep", In: "outer", Here: "queue", Profile: "p", WallS: 9, WaitS: 7, WaitWhy: map[string]float64{"queue": 7}, Run: "orphan-run"},
+		{Time: time.Date(2026, 11, 12, 0, 0, 1, 0, time.UTC), Kind: stats.KindTask, Project: root, Task: "outer", Here: "queue", Profile: "p", WallS: 20, WaitS: 10, WaitWhy: map[string]float64{"queue": 10}, Run: "r"},
+	}
+	var data strings.Builder
+	for _, rec := range recs {
+		line, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data.Write(line)
+		data.WriteByte('\n')
+	}
+	writeFile(t, path, data.String())
+	args := []string{"stats", "--all", "--since", "2026-11-10T00:00:00Z", "--until", "2026-11-12T00:00:00Z"}
+	if out, code := f.graft("", args...); code != 0 || !strings.Contains(out, "queue 5s") {
+		t.Errorf("orphan wait in old report: exit %d, %s", code, out)
+	}
+	if out, code := f.graft("", append(args, "--by", "here")...); code != 0 || !strings.Contains(out, "queue") || !strings.Contains(out, "12.000") || strings.Contains(out, "nested (already in parents)") {
+		t.Errorf("orphan wait by here: exit %d, %s", code, out)
+	}
+	if out, code := f.graft("", append(args, "--by", "profile-task")...); code != 0 || !strings.Contains(out, "p/child") || !strings.Contains(out, "5.000") || !strings.Contains(out, "p/dep") || !strings.Contains(out, "7.000") || strings.Contains(out, "nested (already in parents)") {
+		t.Errorf("orphan wait by profile-task: exit %d, %s", code, out)
+	}
+}
+
+func TestStatsParentMustContainChildInterval(t *testing.T) {
+	f, path := statsRepo(t, "tasks: {}\n")
+	root := realRoot(t, f)
+	stamp := func(s string) time.Time {
+		parsed, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parsed
+	}
+	recs := []stats.Record{
+		{Time: stamp("2026-11-11T10:00:00Z"), Kind: stats.KindTask, Project: root, Task: "sibling", Here: "queue", Profile: "p", WallS: 10, WaitS: 2, WaitWhy: map[string]float64{"queue": 2}, Run: "outer-run"},
+		{Time: stamp("2026-11-11T11:00:00Z"), Kind: stats.KindTask, Project: root, Task: "child", Here: "queue", Profile: "p", WallS: 20, WaitS: 5, WaitWhy: map[string]float64{"queue": 5}, Run: "child-run", Parent: "outer-run"},
+		{Time: stamp("2026-11-12T00:00:01Z"), Kind: stats.KindTask, Project: root, Task: "outer", Here: "outer", Profile: "p", WallS: 50000, WaitS: 10, WaitWhy: map[string]float64{"queue": 10}, Run: "outer-run"},
+	}
+	var data strings.Builder
+	for _, rec := range recs {
+		line, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data.Write(line)
+		data.WriteByte('\n')
+	}
+	writeFile(t, path, data.String())
+
+	window := []string{"--all", "--since", "2026-11-10T00:00:00Z", "--until", "2026-11-12T00:00:00Z"}
+	byArgs := append(append([]string(nil), window...), "--by", "here")
+	out, code := f.graft("", append([]string{"stats"}, byArgs...)...)
+	if code != 0 || !strings.Contains(out, "queue  7.000") || strings.Contains(out, "nested (already in parents)") {
+		t.Errorf("sibling must not hide child wait when outer is outside the window: exit %d, %s", code, out)
+	}
+	out, code = f.graft("", append([]string{"stats"}, window...)...)
+	if code != 0 || !strings.Contains(out, "child") || !strings.Contains(out, "queue 5s") {
+		t.Errorf("old report must include orphaned-in-window child wait: exit %d, %s", code, out)
+	}
+
+	fullWindow := []string{"--all", "--since", "2026-11-10T00:00:00Z", "--until", "2026-11-13T00:00:00Z"}
+	out, code = f.graft("", append(append([]string{"stats"}, fullWindow...), "--by", "here")...)
+	if code != 0 || !strings.Contains(out, "outer") || !strings.Contains(out, "10.000") || !hasNestedWaitLine(out, "5.000") {
+		t.Errorf("containing outer must account for child exactly once: exit %d, %s", code, out)
+	}
+	out, code = f.graft("", append([]string{"stats"}, fullWindow...)...)
+	if code != 0 || !strings.Contains(out, "outer") || strings.Contains(out, "queue 5s") {
+		t.Errorf("old report must suppress child wait when containing outer is selected: exit %d, %s", code, out)
+	}
+}
+
+func hasNestedWaitLine(output, wait string) bool {
+	for line := range strings.SplitSeq(output, "\n") {
+		if strings.HasPrefix(line, "nested (already in parents)") && strings.Contains(line, wait) {
+			return true
+		}
+	}
+	return false
+}

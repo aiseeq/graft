@@ -511,7 +511,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft tasks` | every task, building blocks and deps included |
 | `graft start` / `stop` / `restart [service]` | background services, all of them without a name |
 | `graft logs <service> [--lines N] [-f]` | the end of a service's log, or its journal; `-f` follows until Ctrl-C |
-| `graft stats [--failures|--refused] [--since 7d] [--project <root>\|--all] [--task <name>]` | recorded resource use and recent failure reasons (see [Resource stats](#resource-stats)) |
+| `graft stats [--failures|--refused] [--since 7d] [--until <time>] [--project <root>\|--all] [--task <name>]` | recorded resource use and recent failure reasons (see [Resource stats](#resource-stats)) |
 | `graft exec [--heavy [--local] [--test-db] [--env <name>]... [--settle <duration>] [--cores <n>]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local`; `--test-db` gives it the configured test database DSN and keeps it on this machine; the host gets no variable of the caller's but the go command's own unless `--env <name>` names it; `--settle` holds a separate FIFO lock for this long, waited on only by another `exec --settle`; `--cores` sets the live reservation instead of using history |
 | `graft reap -- <command> [args]` | run a command as the reaper of what it leaves behind (Linux): its orphans become graft's children, not the session manager's, and those left in its session end with it, as for the local commands of tasks and `graft exec` (see Install) |
 | `graft status` | services, the test database, held locks |
@@ -1398,13 +1398,20 @@ their test database, `DB CPU` and `DB MEM` follow: its median CPU time and
 largest memory. When disk IO fields were recorded, `READ MAX` is the largest
 read amount, while `WRITE MED` and `WRITE MAX` are the median and largest
 write amounts. They show `-` when a field was not recorded, including on
-non-Linux systems and in older stats lines. `--since` takes days (`30d`) or
-a duration (`12h`), `--project` another
-project's root, `--all` every project; `--task <name>` breaks one task down
+non-Linux systems and in older stats lines. `--since` and `--until` take days
+(`30d`), a duration (`12h`), or an absolute RFC3339 time. Together they
+select `[since, until)`; `--until` must be later than `--since`. `--project`
+selects another project's root, `--all` every project; `--task <name>` breaks one task down
 into its steps, the tasks it ran and the grafts it started: a dep or a
 task step is a row `task <name>`, and a step or deploy script that runs
 `graft <task>` shows that graft's outermost task as a row `graft <task>`,
 their wall time part of the task's own.
+
+`graft stats --by here` sums task `wait_s` by the recorded `here` reason;
+`--by profile-task` groups by profile and task. Each row gives total wait in
+seconds, the number of runs that waited, and all runs, sorted by total wait.
+Records with `parent` appear in `nested (already in parents)`: their wait is
+included in the parent graft's task record and is excluded from the groups.
 
 Under the table a line `over the limit: <task> takes 1m12s by median without
 waits, above 1m0s (user config limits.gate)` marks the gate over

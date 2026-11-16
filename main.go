@@ -458,6 +458,8 @@ func runTask(ctx context.Context, a *app.App, name string, args []string) error 
 func statsCmd(a *app.App, args []string) error {
 	fs := newFlags(a, "stats")
 	since := fs.String("since", "7d", "how far back: days (7d), or a duration such as 12h or 30m")
+	until := fs.String("until", "", "end of the report window (exclusive): RFC3339 time or duration back")
+	by := fs.String("by", "", "sum waits by here or profile-task")
 	project := fs.String("project", "", "`root` of the project to report (default: the current one)")
 	all := fs.Bool("all", false, "report every project")
 	task := fs.String("task", "", "break this `task` down into its steps; with --tests, only its tests")
@@ -471,43 +473,106 @@ func statsCmd(a *app.App, args []string) error {
 	if err := parse(fs, args); err != nil {
 		return err
 	}
-	age, err := parseAge(*since)
+	start, end, err := parseStatsWindow(*since, *until, visitedStatsFlags(fs).until)
 	if err != nil {
-		return fmt.Errorf("%w: --since: %w", errUsage, err)
+		return err
 	}
-	if *all && *project != "" {
+	if err := validateStatsFlags(fs, *by, *project, *all, *task, *in, *tests, *maxLoad, *value, *minRuns, *failures, *refused); err != nil {
+		return err
+	}
+	return a.Stats(app.StatsOptions{Since: start, Until: end, By: *by, Project: *project, All: *all, Task: *task, In: *in, Tests: *tests, MaxLoad: *maxLoad, Value: *value, MinRuns: *minRuns, Failures: *failures, Refused: *refused})
+}
+
+func parseStatsWindow(since, until string, untilSet bool) (time.Time, time.Time, error) {
+	now := time.Now()
+	start, err := parseStatsTime(since, now)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("%w: --since: %w", errUsage, err)
+	}
+	if !untilSet {
+		return start, time.Time{}, nil
+	}
+	end, err := parseStatsTime(until, now)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("%w: --until: %w", errUsage, err)
+	}
+	if !end.After(start) {
+		return time.Time{}, time.Time{}, fmt.Errorf("%w: --until must be after --since", errUsage)
+	}
+	return start, end, nil
+}
+
+func validateStatsFlags(fs *flag.FlagSet, by, project string, all bool, task, in string, tests bool, maxLoad float64, value string, minRuns int, failures, refused bool) error {
+	set := visitedStatsFlags(fs)
+	if err := validateStatsBy(by, set.by, failures, refused, tests, value, task, in, maxLoad); err != nil {
+		return err
+	}
+	if all && project != "" {
 		return fmt.Errorf("%w: --all and --project exclude each other", errUsage)
 	}
-	valueSet, minRunsSet, inSet := false, false, false
+	if set.value && value == "" {
+		return fmt.Errorf("%w: --value: want wall-p50, wall-p95 or wait-p95", errUsage)
+	}
+	if err := validateStatsValue(value, task, in, set.in, tests, minRuns, set.minRuns); err != nil {
+		return err
+	}
+	if err := validateStatsMaxLoad(maxLoad, set.maxLoad); err != nil {
+		return err
+	}
+	return validateStatsModes(failures, refused, tests, value != "" || maxLoad != 0, task != "" || set.in)
+}
+
+type statsFlagPresence struct {
+	value, minRuns, in, by, maxLoad, until bool
+}
+
+func visitedStatsFlags(fs *flag.FlagSet) (set statsFlagPresence) {
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "value":
-			valueSet = true
+			set.value = true
 		case "min-runs":
-			minRunsSet = true
+			set.minRuns = true
 		case "in":
-			inSet = true
+			set.in = true
+		case "by":
+			set.by = true
+		case "max-load":
+			set.maxLoad = true
+		case "until":
+			set.until = true
 		}
 	})
-	if valueSet && *value == "" {
-		return fmt.Errorf("%w: --value: want wall-p50, wall-p95 or wait-p95", errUsage)
+	return set
+}
+
+func validateStatsBy(by string, set, failures, refused, tests bool, value, task, in string, maxLoad float64) error {
+	if set && by != "here" && by != "profile-task" {
+		return fmt.Errorf("%w: unknown --by %q (want here or profile-task)", errUsage, by)
 	}
-	if err := validateStatsValue(*value, *task, *in, inSet, *tests, *minRuns, minRunsSet); err != nil {
-		return err
+	if by != "" && (failures || refused || tests || value != "" || task != "" || in != "" || maxLoad != 0) {
+		return fmt.Errorf("%w: --by cannot be combined with report mode flags", errUsage)
 	}
-	maxLoadSet := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "max-load" {
-			maxLoadSet = true
-		}
-	})
-	if maxLoadSet && (*maxLoad <= 0 || math.IsNaN(*maxLoad) || math.IsInf(*maxLoad, 0)) {
-		return fmt.Errorf("%w: --max-load: want a positive load, got %v", errUsage, *maxLoad)
+	return nil
+}
+
+func validateStatsMaxLoad(maxLoad float64, set bool) error {
+	if set && (maxLoad <= 0 || math.IsNaN(maxLoad) || math.IsInf(maxLoad, 0)) {
+		return fmt.Errorf("%w: --max-load: want a positive load, got %v", errUsage, maxLoad)
 	}
-	if err := validateStatsModes(*failures, *refused, *tests, *value != "" || *maxLoad != 0, *task != "" || inSet); err != nil {
-		return err
+	return nil
+}
+
+// parseStatsTime accepts the duration forms used by --since and absolute
+// RFC3339 timestamps. Durations are measured back from now.
+func parseStatsTime(s string, now time.Time) (time.Time, error) {
+	if d, err := parseAge(s); err == nil {
+		return now.Add(-d), nil
 	}
-	return a.Stats(app.StatsOptions{Since: age, Project: *project, All: *all, Task: *task, In: *in, Tests: *tests, MaxLoad: *maxLoad, Value: *value, MinRuns: *minRuns, Failures: *failures, Refused: *refused})
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("%q is neither an age (7d, 12h) nor an RFC3339 time", s)
 }
 
 // validateStatsModes refuses the reports that exclude each other: timing says

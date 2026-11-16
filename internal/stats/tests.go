@@ -228,6 +228,7 @@ func ReadTests(path string, since time.Time, visit func(PackageRun) error) (malf
 // TestFilter selects the package runs a report covers.
 type TestFilter struct {
 	Since time.Time
+	Until time.Time
 	// Project is the project root; empty takes every project.
 	Project string
 	// Task, when set, takes only the runs of that task.
@@ -237,7 +238,7 @@ type TestFilter struct {
 }
 
 func (f TestFilter) takes(r *PackageRun) bool {
-	return !r.Time.Before(f.Since) && (f.Project == "" || r.Project == f.Project) && (f.Task == "" || r.Task == f.Task) &&
+	return !r.Time.Before(f.Since) && (f.Until.IsZero() || r.Time.Before(f.Until)) && (f.Project == "" || r.Project == f.Project) && (f.Task == "" || r.Task == f.Task) &&
 		calm(r.LoadMax, f.MaxLoad)
 }
 
