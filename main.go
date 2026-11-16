@@ -753,6 +753,8 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 	switch args[0] {
 	case "sync":
 		return worktreeSyncCmd(a, args[1:], usage)
+	case "stale":
+		return worktreeStaleCmd(ctx, a, args[1:], usage)
 	case "add":
 		return worktreeAddCmd(ctx, a, args[1:], usage)
 	case "check":
@@ -830,6 +832,34 @@ func worktreeCleanCmd(ctx context.Context, a *app.App, args []string, usage erro
 		return fmt.Errorf("%w: --trunk cannot be used with --in: each repository has its own trunk", errUsage)
 	}
 	return a.WorktreeClean(ctx, o)
+}
+
+func worktreeStaleCmd(ctx context.Context, a *app.App, args []string, usage error) error {
+	fs := newFlags(a, "worktree stale")
+	o := app.WorktreeStaleOptions{}
+	fs.DurationVar(&o.Uncommitted, "uncommitted", 0, "report changed files at least this old")
+	fs.DurationVar(&o.Unmerged, "unmerged", 0, "report commits not merged into the local trunk at least this old")
+	fs.StringVar(&o.Trunk, "trunk", "", "the local ref to check unmerged work against")
+	fs.Var((*stringListFlag)(&o.In), "in", "also scan worktree catalogs (repeatable)")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 0 {
+		return usage
+	}
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "uncommitted":
+			o.UncommittedSet = true
+		case "unmerged":
+			o.UnmergedSet = true
+		}
+	})
+	if (!o.UncommittedSet && !o.UnmergedSet) || o.Uncommitted < 0 || o.Unmerged < 0 {
+		return usage
+	}
+	return a.WorktreeStale(ctx, o)
 }
 
 type stringListFlag []string

@@ -297,6 +297,20 @@ func (r *Repo) ChangedFiles() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseChangedFiles(out), nil
+}
+
+// ChangedFilesReadOnly lists changed paths without asking Git to refresh the
+// index stat cache. This is useful for inspection commands that must not write.
+func (r *Repo) ChangedFilesReadOnly() ([]string, error) {
+	out, err := r.GitEnv([]string{"GIT_OPTIONAL_LOCKS=0"}, "status", "--porcelain", "-z", "--untracked-files=all")
+	if err != nil {
+		return nil, err
+	}
+	return parseChangedFiles(out), nil
+}
+
+func parseChangedFiles(out string) []string {
 	var files []string
 	entries := strings.Split(out, "\x00")
 	for i := 0; i < len(entries); i++ {
@@ -312,7 +326,7 @@ func (r *Repo) ChangedFiles() ([]string, error) {
 			}
 		}
 	}
-	return files, nil
+	return files
 }
 
 // StagedFiles lists the paths that differ in the index from base, or, when

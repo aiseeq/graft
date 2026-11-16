@@ -77,7 +77,7 @@ func recordedFlags(a *app.App, name string) (*flag.FlagSet, error) {
 		err = deployCmd(ctx, &copyApp, nil)
 	case "gocache trim":
 		err = gocacheCmd(ctx, &copyApp, []string{"trim"})
-	case "worktree add", "worktree check", "worktree clean", "worktree sync":
+	case "worktree add", "worktree check", "worktree clean", "worktree stale", "worktree sync":
 		err = worktreeCmd(ctx, &copyApp, []string{strings.TrimPrefix(name, "worktree ")})
 	default:
 		return nil, fmt.Errorf("no flag recorder for %s", name)
@@ -148,6 +148,7 @@ var registrySpecs = []registrySpec{
 	{path: "worktree sync", rest: "none", source: "worktree sync"},
 	{path: "worktree check", rest: "args", source: "worktree check"},
 	{path: "worktree clean", rest: "none", source: "worktree clean"},
+	{path: "worktree stale", rest: "none", source: "worktree stale"},
 	{path: "gocache", rest: "none"}, {path: "gocache trim", rest: "none", source: "gocache trim", manual: "--free-below", values: "--free-below"},
 	{path: "guide", rest: "args"}, {path: "help", rest: "args", manual: "--json"},
 }

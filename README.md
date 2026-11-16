@@ -520,6 +520,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft worktree add [--trunk <ref>] <branch> [<base>]` | a worktree under the user's cache, go.work's neighbours linked (see Worktrees) |
 | `graft worktree check [--trunk <ref>] [--json] <path>` | whether removing one linked worktree would lose data `git status` does not show; removes nothing (see Worktrees) |
 | `graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h] [--in <directory>]...` | remove the worktrees and branches whose work is in the trunk by content; list the rest |
+| `graft worktree stale [--uncommitted 3h] [--unmerged 24h] [--trunk <ref>] [--in <directory>]...` | report old changed files and work not merged into the local trunk; does not change refs, the index or worktrees |
 | `graft worktree sync [--trunk <ref>] [--push]` | move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted; `--push` updates its upstream with a lease (see Worktrees) |
 | `graft tools [install]` | check the pinned tools; install the failing ones |
 | `graft gocache trim [--older 25h] [--apply] [--max-wait 2h] [--free-below SIZE]` | remove the Go build cache entries unused for longer than `--older`, optionally only when filesystem space is low (see [Go build cache](#go-build-cache)) |
@@ -2776,6 +2777,19 @@ run graft <setup>`; the gate goes on.
 A file of `copy` missing in the main worktree, or one the checkout has
 (tracked), is an error, and so is a failing `setup` task; the worktree stays,
 for the fix and a rerun of the task there.
+
+`graft worktree stale` reports changed files older than `--uncommitted` and
+commits not merged into the local trunk older than `--unmerged`; `--trunk`
+selects the local ref when it cannot be resolved automatically. It checks the
+main worktree, registered worktrees and worktrees under
+`<user cache>/worktrees`, the same root used by `graft worktree add`; repeat
+`--in <directory>` to scan more catalogs. Its content comparison can create
+unreachable Git objects, as the `worktree clean` report does; it does not
+change refs, the index or worktrees. Deleted files have no current mtime and are skipped; files inside
+submodules are checked using the submodule's own status. If no local trunk can
+be resolved, unmerged work is skipped for that repository with a note and the
+command exits 2. It prints `nothing stale` and exits 0 when there are no
+findings, or exits 1 when it finds stale work.
 
 `graft worktree clean` lists every worktree but the main one and every local
 branch no worktree holds; with `--apply` it removes the ones whose work is in

@@ -92,7 +92,12 @@ uncommitted changes; conflicts can require manual resolution.
 `graft worktree check <path>` reports whether removing a worktree loses data.
 `graft worktree clean` reports candidates; `--apply` removes eligible trees
 and branches, including eligible remote branches. Review before applying.
-Read-only inspection and the clean report are safe to run without asking;
+`graft worktree stale [--uncommitted 3h] [--unmerged 24h] [--trunk <ref>]` reports old
+uncommitted files and work not merged into the local trunk across the project,
+its worktrees and graft's worktree cache.
+The stale report does not change refs, the index or worktrees, though its
+content comparison may create unreachable Git objects like the clean report.
+Inspection and the clean report are safe to run without asking;
 coordinate changes to branches and removal with the user's instructions.
 
 ## Leaks
