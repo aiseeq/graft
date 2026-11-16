@@ -900,57 +900,66 @@ func (r *Runner) gateHasEligible(gate []gateStep) (bool, error) {
 // remoteGateTaskKinds reports the remote-eligible step kinds in gate tasks
 // and their deps.
 func (r *Runner) remoteGateTaskKinds(gate []gateStep) (goSteps, glintSteps, singleSteps bool, err error) {
+	var kinds remoteStepKinds
 	seen := map[string]bool{}
-	var visit func(string, *config.Task) error
-	visit = func(name string, t *config.Task) error {
+	var visit func(string) error
+	visit = func(name string) error {
+		if seen[name] {
+			return nil
+		}
+		seen[name] = true
+		t := r.Config.Tasks[name]
 		if t == nil {
 			return nil
 		}
-		for _, dep := range t.Deps {
-			if !seen[dep] {
-				seen[dep] = true
-				if err := visit(dep, r.Config.Tasks[dep]); err != nil {
-					return err
-				}
-			}
-		}
-		for _, s := range t.Run {
-			if s.Task != "" && !seen[s.Task] {
-				seen[s.Task] = true
-				if err := visit(s.Task, r.Config.Tasks[s.Task]); err != nil {
-					return err
-				}
-			}
-		}
-		if !remoteVouched(t) {
-			return nil
-		}
-		for _, s := range t.Run {
-			goCheck := goCheckNoOutput(s.Argv, nil)
-			glintCheck := !goCheck && glintCheckNoOutput(s.Argv, nil)
-			remote, _, err := r.gateStepPlacement(s, t, name, false)
-			if err != nil {
+		for _, nested := range nestedTaskNames(t) {
+			if err := visit(nested); err != nil {
 				return err
 			}
-			goSteps = goSteps || goCheck && remote
-			glintSteps = glintSteps || glintCheck && remote
-			singleSteps = singleSteps || !goCheck && !glintCheck && remote
 		}
-		return nil
+		return r.addRemoteStepKinds(&kinds, name, t)
 	}
 	for i := range gate {
-		if gate[i].step.Task == "" {
-			continue
-		}
-		name := gate[i].step.Task
-		if !seen[name] {
-			seen[name] = true
-			if err := visit(name, r.Config.Tasks[name]); err != nil {
+		if name := gate[i].step.Task; name != "" {
+			if err := visit(name); err != nil {
 				return false, false, false, err
 			}
 		}
 	}
-	return goSteps, glintSteps, singleSteps, nil
+	return kinds.goSteps, kinds.glintSteps, kinds.singleSteps, nil
+}
+
+type remoteStepKinds struct{ goSteps, glintSteps, singleSteps bool }
+
+// nestedTaskNames lists a task's deps, then the tasks its steps call.
+func nestedTaskNames(t *config.Task) []string {
+	names := append([]string(nil), t.Deps...)
+	for _, s := range t.Run {
+		if s.Task != "" {
+			names = append(names, s.Task)
+		}
+	}
+	return names
+}
+
+// addRemoteStepKinds adds the kinds of a remote: true task's steps that a
+// split gate sends to the host.
+func (r *Runner) addRemoteStepKinds(kinds *remoteStepKinds, name string, t *config.Task) error {
+	if !remoteVouched(t) {
+		return nil
+	}
+	for _, s := range t.Run {
+		goCheck := goCheckNoOutput(s.Argv, nil)
+		glintCheck := !goCheck && glintCheckNoOutput(s.Argv, nil)
+		remote, _, err := r.gateStepPlacement(s, t, name, false)
+		if err != nil {
+			return err
+		}
+		kinds.goSteps = kinds.goSteps || goCheck && remote
+		kinds.glintSteps = kinds.glintSteps || glintCheck && remote
+		kinds.singleSteps = kinds.singleSteps || !goCheck && !glintCheck && remote
+	}
+	return nil
 }
 
 // remoteVouched reports whether the project set remote: true in the task:
@@ -1716,26 +1725,9 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 	}
 	var stepErr error
 	if gs.run != nil {
-		run := func() error { return gs.run(ctx) }
-		if r.gateSplit {
-			if err := r.enterSplit(ctx, stats.GateTask, ""); err != nil {
-				return err
-			}
-		}
-		var restoreHere func()
-		if r.gateSplit && s.Source == GoFmtSource && len(r.frames) > 0 {
-			frame := r.frames[len(r.frames)-1]
-			previous := frame.stepHere
-			frame.stepHere = "gofmt is a local gate check"
-			restoreHere = func() { frame.stepHere = previous }
-		}
-		if gs.measured {
-			stepErr = run()
-		} else {
-			stepErr = r.measureFunc(s.Source, run, gs.builtinCost)
-		}
-		if restoreHere != nil {
-			restoreHere()
+		var entered bool
+		if entered, stepErr = r.runBuiltinGateStep(ctx, gs, s); !entered {
+			return stepErr
 		}
 	} else if r.gateSplit {
 		// Where the step runs is decided in step, and its threads with it.
@@ -1753,6 +1745,27 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 		return fmt.Errorf("gate failed at %q (see graft stats --failures): %w\n%s", s.Source, stepErr, gs.hint)
 	}
 	return fmt.Errorf("gate failed at %q (see graft stats --failures): %w", s.Source, stepErr)
+}
+
+// runBuiltinGateStep runs a gate step given as a function. entered is false
+// when the split gate could not be entered; err is then that failure.
+func (r *Runner) runBuiltinGateStep(ctx context.Context, gs *gateStep, s config.Step) (entered bool, err error) {
+	run := func() error { return gs.run(ctx) }
+	if r.gateSplit {
+		if err := r.enterSplit(ctx, stats.GateTask, ""); err != nil {
+			return false, err
+		}
+	}
+	if r.gateSplit && s.Source == GoFmtSource && len(r.frames) > 0 {
+		frame := r.frames[len(r.frames)-1]
+		previous := frame.stepHere
+		frame.stepHere = "gofmt is a local gate check"
+		defer func() { frame.stepHere = previous }()
+	}
+	if gs.measured {
+		return true, run()
+	}
+	return true, r.measureFunc(s.Source, run, gs.builtinCost)
 }
 
 func (r *Runner) gateStepLine(gs *gateStep, s config.Step, number, total int) (string, func(), error) {
