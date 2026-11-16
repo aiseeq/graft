@@ -9,7 +9,7 @@ release:
 gate:
   # graft targets Linux only (user, 13.11): no new *_windows*/*_darwin* sources
   # among tracked and untracked unignored files; vendor and testdata are not ours.
-  - sh: 'bad=$(git ls-files -co --exclude-standard -- "*_windows*.go" "*_darwin*.go" ":!:vendor/*" ":!:testdata/*" ":!:*/testdata/*") || exit 1; test -z "$bad" || { printf "graft targets Linux only: %s\n" $bad; exit 1; }'
+  - sh: 'bad=$(git ls-files -co --exclude-standard -- "*_windows*.go" "*_darwin*.go" ":!:vendor/*" ":!:*/vendor/*" ":!:testdata/*" ":!:*/testdata/*") || exit 1; test -z "$bad" || { printf "graft targets Linux only:\n%s\n" "$bad"; exit 1; }'
   - task: smoke
 
 # go fix -diff ./... after go vet: a rewrite go fix would make fails the gate.
