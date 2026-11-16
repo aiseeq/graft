@@ -7,8 +7,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	akitproc "github.com/aiseeq/akit/proc"
 )
 
 func TestPilotGateUsesCleanHeadWorktree(t *testing.T) {
@@ -352,6 +355,146 @@ exit 2
 	}
 	if got, err := os.ReadFile(oldRevision); err != nil || string(got) != "A\n" {
 		t.Errorf("installed graft revision = %q, err=%v; want pinned commit A", got, err)
+	}
+	assertPilotGateCleanup(t, pilot, tmpRoot)
+}
+
+func TestPilotGateTermStopsGateWithoutPstop(t *testing.T) {
+	pilot := newPilotRepo(t)
+	started := filepath.Join(t.TempDir(), "gate-pid")
+	newGraft := newPilotGraftScript(t, "#!/bin/sh\nprintf '%s\\n' \"$$\" > '"+started+"'\nexec sleep 20\n")
+	tmpRoot := setPilotGateEnv(t, pilot)
+	// /usr/bin and /bin provide the normal utilities and setsid but exclude
+	// the user's ~/bin/pstop, exercising the portable process-group path.
+	t.Setenv("PATH", newGraft+":/usr/bin:/bin")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", filepath.Join(root, "scripts", "pilot-gate.sh"), newGraft)
+	cmd.Env = append(os.Environ(), "GRAFT_PILOT="+pilot)
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if cmd.ProcessState == nil {
+			_, _ = akitproc.StopChild(cmd.Process.Pid, 0, func() error { return cmd.Process.Kill() })
+			_ = cmd.Wait()
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if cmd.ProcessState != nil || time.Now().After(deadline) {
+			t.Fatalf("pilot gate did not start; output: %s", output.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	pidBytes, err := os.ReadFile(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gatePID int
+	if _, err := fmt.Sscanf(string(pidBytes), "%d", &gatePID); err != nil {
+		t.Fatal(err)
+	}
+	stopStarted := time.Now()
+	_, stopErr := akitproc.StopChild(cmd.Process.Pid, 4*time.Second, func() error {
+		return cmd.Process.Signal(syscall.SIGTERM)
+	})
+	if elapsed := time.Since(stopStarted); elapsed > 3*time.Second {
+		t.Fatalf("pilot-gate process tree did not stop within 3 seconds after TERM (took %s)", elapsed)
+	}
+	if stopErr != nil {
+		t.Fatalf("stop pilot-gate process tree after TERM: %v", stopErr)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("pilot-gate exited successfully after TERM")
+	}
+	if err := syscall.Kill(gatePID, 0); err == nil {
+		t.Errorf("pilot gate process %d is still alive", gatePID)
+	}
+	assertPilotGateCleanup(t, pilot, tmpRoot)
+}
+
+func TestPilotGateUsesPstopWhenAvailable(t *testing.T) {
+	pilot := newPilotRepo(t)
+	started := filepath.Join(t.TempDir(), "gate-pid")
+	newGraft := newPilotGraftScript(t, "#!/bin/sh\nprintf '%s\\n' \"$$\" > '"+started+"'\nexec sleep 20\n")
+	tmpRoot := setPilotGateEnv(t, pilot)
+	pstopDir := t.TempDir()
+	pstopMarker := filepath.Join(t.TempDir(), "pstop-called")
+	pstop := "#!/bin/sh\nprintf '%s\\n' \"$*\" > '" + pstopMarker + "'\ntest \"$1\" = --grace && test \"$2\" = 1s || exit 2\nkill -TERM \"$3\"\n"
+	if err := os.WriteFile(filepath.Join(pstopDir, "pstop"), []byte(pstop), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", pstopDir+":"+newGraft+":/usr/bin:/bin")
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", filepath.Join(root, "scripts", "pilot-gate.sh"), newGraft)
+	cmd.Env = append(os.Environ(), "GRAFT_PILOT="+pilot)
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if cmd.ProcessState == nil {
+			_, _ = akitproc.StopChild(cmd.Process.Pid, 0, func() error { return cmd.Process.Kill() })
+			_ = cmd.Wait()
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if cmd.ProcessState != nil || time.Now().After(deadline) {
+			t.Fatalf("pilot gate did not start; output: %s", output.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	stopStarted := time.Now()
+	_, stopErr := akitproc.StopChild(cmd.Process.Pid, 4*time.Second, func() error {
+		return cmd.Process.Signal(syscall.SIGTERM)
+	})
+	if elapsed := time.Since(stopStarted); elapsed > 3*time.Second {
+		t.Fatalf("pilot-gate process tree did not stop within 3 seconds after TERM (took %s)", elapsed)
+	}
+	if stopErr != nil {
+		t.Fatalf("stop pilot-gate process tree after TERM: %v", stopErr)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("pilot-gate exited successfully after TERM")
+	}
+	called, err := os.ReadFile(pstopMarker)
+	if err != nil || !strings.HasPrefix(string(called), "--grace 1s ") {
+		t.Errorf("pstop marker = %q, err=%v; want invocation with --grace 1s and gate PID", called, err)
+	}
+	assertPilotGateCleanup(t, pilot, tmpRoot)
+}
+
+func TestPilotGatePreservesStdin(t *testing.T) {
+	pilot := newPilotRepo(t)
+	newGraft := newPilotGraftScript(t, "#!/bin/sh\nIFS= read -r line || exit 7\nprintf 'input:%s\\n' \"$line\"\nexit 0\n")
+	tmpRoot := setPilotGateEnv(t, pilot)
+	t.Setenv("PATH", newGraft+":"+os.Getenv("PATH"))
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", filepath.Join(root, "scripts", "pilot-gate.sh"), newGraft)
+	cmd.Stdin = strings.NewReader("hello\n")
+	cmd.Env = append(os.Environ(), "GRAFT_PILOT="+pilot)
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "input:hello\n") {
+		t.Fatalf("pilot gate stdin: err=%v, output=%q; want input:hello and exit 0", err, out)
 	}
 	assertPilotGateCleanup(t, pilot, tmpRoot)
 }
