@@ -78,9 +78,16 @@ func (a *App) DeployCheck(ctx context.Context, target string) error {
 	if err := a.checkDeployed(ctx, r, sudoRefusal, refuse); err != nil {
 		return err
 	}
+	if err := a.enforceReviewGuard(ctx, r, "", true); err != nil {
+		refuse(err)
+	}
 	// Freeze refusals are useful even when an earlier check already failed.
 	refuse(a.checkFreeze(ctx, r, DeployOptions{}))
 	if len(refusals) == 0 {
+		if r.reviewGuardActive {
+			a.printf("graft deploy %s would stop at the review guard; wait for each reviewer and pass the printed --reviewer-agreed tokens", r.name)
+			return nil
+		}
 		a.printf("graft deploy %s passes its checks now; deps, integration checks and confirmation run during the deploy", r.name)
 		return nil
 	}

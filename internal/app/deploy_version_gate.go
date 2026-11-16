@@ -90,7 +90,7 @@ func (v *releaseVersionCheck) selectVersion() bool {
 	members := map[string][]string{}
 	for _, key := range slices.Sorted(maps.Keys(v.tops)) {
 		for _, version := range v.tops[key].FixVersions {
-			if version.Released || version.Archived || !match.MatchString(version.Name) {
+			if !matchingUnreleasedVersion(version, match) {
 				continue
 			}
 			if version.ID == "" {
@@ -118,6 +118,12 @@ func (v *releaseVersionCheck) selectVersion() bool {
 		v.selected = selected
 	}
 	return false
+}
+
+// matchingUnreleasedVersion applies the shared released/archive/match rules
+// when choosing Jira versions for release checks and deploy review guards.
+func matchingUnreleasedVersion(version jira.Version, match *regexp.Regexp) bool {
+	return !version.Released && !version.Archived && (match == nil || match.MatchString(version.Name))
 }
 
 func (v *releaseVersionCheck) checkTops() bool {

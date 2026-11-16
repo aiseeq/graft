@@ -148,3 +148,105 @@ func TestAddFixVersionNotifyRetriesPermissionRejection(t *testing.T) {
 		t.Fatalf("request queries = %q, want quiet request then retry without query", queries)
 	}
 }
+
+func TestVersionItemsRejectsIncompletePagination(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte(`{"issues":[],"isLast":false}`))
+	}))
+	defer srv.Close()
+	keys, err := New(Credentials{BaseURL: srv.URL}).VersionItems(context.Background(), "42")
+	if err == nil || !strings.Contains(err.Error(), "without a nextPageToken") || keys != nil || requests != 1 {
+		t.Fatalf("VersionItems = %v, %v, requests %d; want incomplete-page error", keys, err, requests)
+	}
+}
+
+func TestVersionItemsRejectsRepeatedPageToken(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Query().Get("nextPageToken") == "" {
+			_, _ = w.Write([]byte(`{"issues":[{"key":"PROJ-1"}],"isLast":false,"nextPageToken":"next"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"issues":[{"key":"PROJ-2"}],"isLast":false,"nextPageToken":"next"}`))
+	}))
+	defer srv.Close()
+	keys, err := New(Credentials{BaseURL: srv.URL}).VersionItems(context.Background(), "42")
+	if err == nil || !strings.Contains(err.Error(), "repeated nextPageToken") || keys != nil || requests != 2 {
+		t.Fatalf("VersionItems = %v, %v, requests %d; want repeated-token error", keys, err, requests)
+	}
+}
+
+func TestVersionItemsRejectsMissingOrNullIssues(t *testing.T) {
+	for _, body := range []string{`{"isLast":true}`, `{"issues":null,"isLast":true}`} {
+		t.Run(body, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+			keys, err := New(Credentials{BaseURL: srv.URL}).VersionItems(context.Background(), "42")
+			if err == nil || !strings.Contains(err.Error(), "no issues array") || keys != nil {
+				t.Fatalf("VersionItems = %v, %v; want missing issues array error", keys, err)
+			}
+		})
+	}
+}
+
+func TestReviewSearchIssuesRejectsMissingOrNullIssues(t *testing.T) {
+	for _, body := range []string{`{"isLast":true}`, `{"issues":null,"isLast":true}`} {
+		t.Run(body, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+			issues, err := New(Credentials{BaseURL: srv.URL}).ReviewSearchIssues(context.Background(), "fixVersion = 42")
+			if err == nil || !strings.Contains(err.Error(), "no issues array") || issues != nil {
+				t.Fatalf("ReviewSearchIssues = %v, %v; want missing issues array error", issues, err)
+			}
+		})
+	}
+}
+
+func TestReviewSearchIssuesPaginates(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Query().Get("nextPageToken") == "" {
+			_, _ = w.Write([]byte(`{"issues":[{"key":"PROJ-1","fields":{"status":{"name":"Done"}}}],"isLast":false,"nextPageToken":"next"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"issues":[{"key":"PROJ-2","fields":{"status":{"name":"Testing"},"assignee":{"accountId":"anna","displayName":"Anna"}}}],"isLast":true}`))
+	}))
+	defer srv.Close()
+	issues, err := New(Credentials{BaseURL: srv.URL}).ReviewSearchIssues(context.Background(), "fixVersion = 42 AND status in (\"Testing\")")
+	if err != nil || requests != 2 || len(issues) != 2 || issues[1].Key != "PROJ-2" || issues[1].AssigneeID != "anna" {
+		t.Fatalf("ReviewSearchIssues = %+v, %v, requests %d; want both pages including PROJ-2", issues, err, requests)
+	}
+}
+
+func TestReviewSearchIssuesRejectsIncompleteAndRepeatedPages(t *testing.T) {
+	t.Run("incomplete", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"issues":[],"isLast":false}`))
+		}))
+		defer srv.Close()
+		issues, err := New(Credentials{BaseURL: srv.URL}).ReviewSearchIssues(context.Background(), "project = PROJ")
+		if err == nil || !strings.Contains(err.Error(), "without a nextPageToken") || issues != nil {
+			t.Fatalf("ReviewSearchIssues = %+v, %v; want incomplete-page error", issues, err)
+		}
+	})
+	t.Run("repeated token", func(t *testing.T) {
+		var requests int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			_, _ = w.Write([]byte(`{"issues":[],"isLast":false,"nextPageToken":"again"}`))
+		}))
+		defer srv.Close()
+		issues, err := New(Credentials{BaseURL: srv.URL}).ReviewSearchIssues(context.Background(), "project = PROJ")
+		if err == nil || !strings.Contains(err.Error(), "repeated nextPageToken") || issues != nil || requests != 2 {
+			t.Fatalf("ReviewSearchIssues = %+v, %v, requests %d; want repeated-token error", issues, err, requests)
+		}
+	})
+}

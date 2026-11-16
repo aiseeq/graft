@@ -499,7 +499,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft flags show <id>` | one event in full; `<id>` is its id or a prefix only one open event has; a closed event takes its full UUID |
 | `graft flags ack <id> --reason R` | close an open event with a reason |
 | `graft flags mute <id> --reason R [--match S] [--in subject\|body\|key] [--all-envs]` | add an exception for the event, then close it if it is open |
-| `graft deploy [--redeploy] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--unapproved` skips the `approved_release` check, `--past-freeze` records a reason for deploying through an active freeze, `--glint-ticket` names the item that takes the glint findings of the deployed commit (`release_notes.glint`) |
+| `graft deploy [--redeploy] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] [--reviewer-agreed KEY@ACCOUNT,...] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--unapproved` skips the `approved_release` check, `--past-freeze` records a reason for deploying through an active freeze, `--glint-ticket` names the item that takes the glint findings of the deployed commit (`release_notes.glint`), `--reviewer-agreed` records reviewer account IDs that answered yes |
 | `graft deploy freeze <target> [Jira version]` | cut and push the configured freeze branch and annotated freeze tag; without a version, show the active freeze |
 | `graft deploy thaw <target> --reason REASON` | end the active freeze and remove its freeze and journal tags from every remote |
 | `graft deploy check <target>` | what `graft deploy <target>` would refuse now, read only: unpublished work, the window, `requires`, the hold, `approved_release` with the items of the commits outside it (summary, status, fix versions); exit 1 when it would refuse |
@@ -1886,6 +1886,7 @@ deploy:
       run: [bash, deploy/deploy.sh, --env, test]   # argv, run here in the foreground
       version: "cat /opt/app/VERSION"              # prints what the target runs
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
+      review_guard: {jira_version: "Product v{version}", statuses: [Testing, In QA]} # block while another Jira account reviews this target's Jira release
       release_notes:
         transitions:            # In Progress moves to Testing and goes to the reviewer
           - {from: [In Progress], to: Testing, types: [Story, Task, Bug], assign: "<reviewer accountId>", keep_assignee_labels: [internal], require_comment: "How to check"}   # optional: types limits the issue types that move; items labelled internal move but stay with their assignee; the others wait for a comment with "How to check"
@@ -1927,6 +1928,38 @@ release_notes:
     skip_keys: [PROJ-100]       # these too, and no subtask follows them; a subtask named by its own key goes as any item
     quiet: {subtasks: true, labels: [internal]} # suppress release note comments on subtasks and items with these labels; moves and other release work still run
 ```
+
+`review_guard` is opt in per target and requires `jira_version`: an exact Jira
+version name template. `{version}` is replaced with the version reported by
+the target (or read from its deployed commit), so `Product v{version}` maps a
+target version `2.23.38` to Jira's `Product v2.23.38`. Graft looks for that exact
+unreleased, unarchived version across every `release_notes.jira.project_keys`;
+if it is missing, deploy stops and lists the computed name and up to five
+nearby unreleased versions. `approved_release` and `release_notes.fix_version`
+do not select the guard's Jira version.
+
+The guard checks tasks in that Jira version and their subtasks in the configured
+statuses. It separately lists every issue key in the version, regardless of
+status, then searches subtasks of those tasks and eligible commit-key tasks in
+batches of 100 parents. A parent in `Done` can therefore still have a subtask
+that blocks the deploy. It also checks keys found in commits from the target SHA back to the
+SHA of `requires`, else `prod`; without either reference, graft scans at most
+the 500 newest commits that name a configured Jira project key. A commit key
+is included only when its Jira task has no fix versions or one of them is the
+target Jira version; keys assigned to another fix version are skipped. The
+version search includes tasks without commits; if the target has no recorded
+deployed SHA, only the Jira version can supply tasks. Searches are batched: for one
+matching Jira version, up to 100 version tasks share one search and their
+keys share one search; subtasks share one search per batch of 100 parents, and
+commit keys are searched in batches of 100. With one Jira project, one matched
+version, up to 100 commit keys, and one page per search, one pass uses at most
+six Jira GET requests.
+When blocked, `graft deploy <target> --reviewer-agreed KEY@accountId,...` must
+cover every current key and reviewer pair, and the set is checked again after
+deps immediately before the deploy script. The guard cannot identify an
+unassigned reviewer or a reviewer hidden by the graft account; environments
+sharing one Jira version stop together. A same-pair agreement can outlive a SHA
+change, and a new check can begin between the final Jira read and the script.
 
 Use `approved_release.dormant` when work must stay in the build but its
 feature is disabled by a flag or setting. The item or its parent must be in an

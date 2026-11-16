@@ -74,6 +74,8 @@ type DeployOptions struct {
 	Unapproved bool
 	// PastFreeze permits a freeze refusal when it gives the bypass reason.
 	PastFreeze string
+	// ReviewerAgreed lists KEY@accountId pairs whose reviewers answered yes.
+	ReviewerAgreed string
 }
 
 type deployRun struct {
@@ -114,6 +116,9 @@ type deployRun struct {
 	// dryRun is graft deploy check: the checks record nothing and never
 	// wait for a sudo password.
 	dryRun bool
+	// reviewGuardActive lets deploy check describe a known guard stop while
+	// remaining a successful read-only report.
+	reviewGuardActive bool
 	// freeze is the active freeze related to this target, read once per run.
 	freeze                         *activeFreeze
 	freezeLogKind, freezeLogReason string
@@ -322,7 +327,7 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	if err := a.requireDeployed(ctx, r); err != nil {
 		return err
 	}
-	if err := a.checkTargetRuns(ctx, r, o); err != nil {
+	if err := a.checkTargetWithReview(ctx, r, o); err != nil {
 		return err
 	}
 	if err := a.checkFreeze(ctx, r, o); err != nil {
@@ -346,6 +351,9 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 				return err
 			}
 		}
+		if err := a.enforceReviewGuard(ctx, r, o.ReviewerAgreed, false); err != nil {
+			return err
+		}
 		return a.runDeployScript(ctx, r, o.Args)
 	})
 	if err != nil {
@@ -359,6 +367,13 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	}
 	a.printf("deployed %s to %s", gitx.Short(r.head), r.name)
 	return a.recordDeployment(ctx, r)
+}
+
+func (a *App) checkTargetWithReview(ctx context.Context, r *deployRun, o DeployOptions) error {
+	if err := a.checkTargetRuns(ctx, r, o); err != nil {
+		return err
+	}
+	return a.enforceReviewGuard(ctx, r, o.ReviewerAgreed, false)
 }
 
 func (a *App) runDeployDeps(ctx context.Context, r *deployRun) error {

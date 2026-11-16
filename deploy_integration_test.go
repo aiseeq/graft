@@ -28,25 +28,33 @@ import (
 // project PROJ, fixVersions the version ids each item has; failEdit lists keys
 // whose edit Jira refuses.
 type fakeJira struct {
-	mu              sync.Mutex
-	comments        map[string][]string
-	moved           []string
-	statuses        map[string]string
-	assignees       map[string]string
-	handedOver      []string
-	failAll         bool
-	requests        int
-	nonGET          []string
-	versions        []map[string]any
-	otherVersions   []map[string]any // of project OTHER
-	versionRequests int
-	versionPageSize int
-	fixVersions     map[string][]string
-	edits           []string
-	editRequests    []fakeIssueEditRequest
-	failEdit        []string
-	failNotifyUsers bool
-	failComments    []string
+	mu                   sync.Mutex
+	comments             map[string][]string
+	moved                []string
+	statuses             map[string]string
+	assignees            map[string]string
+	handedOver           []string
+	failAll              bool
+	failMyself           int
+	failIssues           map[string]int
+	issueReads           map[string]int
+	changeIssueRead      map[string]int
+	changeStatus         map[string]string
+	changeAssignee       map[string]string
+	requests             int
+	nonGET               []string
+	versions             []map[string]any
+	otherVersions        []map[string]any // of project OTHER
+	versionRequests      int
+	reviewSearchRequests int
+	reviewSearchJQL      []string
+	versionPageSize      int
+	fixVersions          map[string][]string
+	edits                []string
+	editRequests         []fakeIssueEditRequest
+	failEdit             []string
+	failNotifyUsers      bool
+	failComments         []string
 	// approvers maps a version id to the statuses of its approvers.
 	approvers map[string][]string
 	// parents maps a subtask's key to its parent's.
@@ -125,6 +133,10 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/myself" {
+		if j.failMyself != 0 {
+			http.Error(w, "temporary failure", j.failMyself)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"accountId": "me", "displayName": "Me"})
 		return
 	}
@@ -224,11 +236,31 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "comment":
 		j.listComments(w, key)
 	case r.Method == http.MethodGet && len(parts) == 1:
+		if j.issueReads == nil {
+			j.issueReads = map[string]int{}
+		}
+		j.issueReads[key]++
+		if j.changeIssueRead[key] != 0 && j.issueReads[key] > j.changeIssueRead[key] {
+			if v := j.changeStatus[key]; v != "" {
+				j.statuses[key] = v
+			}
+			if v := j.changeAssignee[key]; v != "" {
+				j.assignees[key] = v
+			}
+		}
+		if status := j.failIssues[key]; status != 0 {
+			http.Error(w, "temporary failure", status)
+			return
+		}
 		var assignee any = map[string]string{"accountId": "me", "displayName": "Me"}
 		if a, ok := j.assignees[key]; ok {
 			assignee = nil
 			if a != "" {
-				assignee = map[string]string{"accountId": a, "displayName": "Colleague " + a}
+				name := "Colleague " + a
+				if a == "anna" || a == "boris" || a == "deployer" {
+					name = a
+				}
+				assignee = map[string]string{"accountId": a, "displayName": name}
 			}
 		}
 		category := "indeterminate"
@@ -366,19 +398,99 @@ func (j *fakeJira) versionsAPI(w http.ResponseWriter, r *http.Request) bool {
 		maps.Copy(j.versions[i], fields)
 		_ = json.NewEncoder(w).Encode(j.versions[i])
 	case r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/search/jql":
-		id, ok := strings.CutPrefix(r.URL.Query().Get("jql"), "fixVersion = ")
-		if !ok {
-			http.Error(w, "unexpected jql", http.StatusBadRequest)
+		j.reviewSearchRequests++
+		jql := r.URL.Query().Get("jql")
+		j.reviewSearchJQL = append(j.reviewSearchJQL, jql)
+		for key, limit := range j.changeIssueRead {
+			if j.issueReads == nil {
+				j.issueReads = map[string]int{}
+			}
+			j.issueReads[key]++
+			if j.issueReads[key] > limit {
+				if status := j.changeStatus[key]; status != "" {
+					j.statuses[key] = status
+				}
+				if assignee := j.changeAssignee[key]; assignee != "" {
+					j.assignees[key] = assignee
+				}
+			}
+		}
+		statusValues := []string{}
+		if _, rest, ok := strings.Cut(jql, "status in ("); ok {
+			values := strings.TrimSpace(strings.TrimSuffix(rest, ")"))
+			if err := json.Unmarshal([]byte("["+values+"]"), &statusValues); err != nil {
+				http.Error(w, "invalid status JQL: "+jql, http.StatusBadRequest)
+				return true
+			}
+		}
+		keysIn := func(expr string) []string {
+			start := strings.Index(expr, "(")
+			if start < 0 {
+				return nil
+			}
+			relativeEnd := strings.Index(expr[start+1:], ")")
+			if relativeEnd < 0 {
+				return nil
+			}
+			end := start + 1 + relativeEnd
+			return strings.Split(strings.TrimSpace(expr[start+1:end]), ",")
+		}
+		selected := map[string]bool{}
+		switch {
+		case strings.HasPrefix(jql, "fixVersion = "):
+			id := strings.TrimPrefix(jql, "fixVersion = ")
+			id, _, _ = strings.Cut(id, " AND ")
+			for key, ids := range j.fixVersions {
+				if slices.Contains(ids, id) && (len(statusValues) == 0 || slices.Contains(statusValues, j.statuses[key])) {
+					selected[key] = true
+				}
+			}
+		case strings.HasPrefix(jql, "parent in ("):
+			parents := keysIn(strings.TrimPrefix(jql, "parent in "))
+			for key, parent := range j.parents {
+				if slices.Contains(parents, parent) && slices.Contains(statusValues, j.statuses[key]) {
+					selected[key] = true
+				}
+			}
+		case strings.HasPrefix(jql, "key in ("):
+			for _, key := range keysIn(strings.TrimPrefix(jql, "key in ")) {
+				selected[key] = true
+			}
+		default:
+			http.Error(w, "unexpected jql: "+jql, http.StatusBadRequest)
 			return true
 		}
+		allIssues := slices.Sorted(maps.Keys(selected))
 		issues := []any{}
-		for _, key := range slices.Sorted(maps.Keys(j.fixVersions)) {
-			if slices.Contains(j.fixVersions[key], id) {
-				issues = append(issues, map[string]string{"key": key})
+		for _, key := range allIssues {
+			if status := j.failIssues[key]; status != 0 {
+				http.Error(w, "temporary failure", status)
+				return true
 			}
+			assigneeID, ok := j.assignees[key]
+			var assignee any = map[string]string{"accountId": "me", "displayName": "Me"}
+			if ok {
+				assignee = nil
+				if assigneeID != "" {
+					assignee = map[string]string{"accountId": assigneeID, "displayName": assigneeID}
+				}
+			}
+			fixVersions := []any{}
+			for _, id := range j.fixVersions[key] {
+				fixVersions = append(fixVersions, map[string]string{"id": id, "name": j.versionName(id)})
+			}
+			issues = append(issues, map[string]any{"key": key, "fields": map[string]any{
+				"status": map[string]string{"name": j.statuses[key]}, "assignee": assignee,
+				"fixVersions": fixVersions, "issuetype": map[string]bool{"subtask": j.parents[key] != ""},
+				"parent": map[string]string{"key": j.parents[key]},
+			}})
 		}
 		if j.versionPageSize > 0 {
 			start, _ := strconv.Atoi(r.URL.Query().Get("nextPageToken"))
+			if start > len(issues) {
+				http.Error(w, "invalid nextPageToken", http.StatusBadRequest)
+				return true
+			}
 			end := min(start+j.versionPageSize, len(issues))
 			page := map[string]any{"issues": issues[start:end], "isLast": end == len(issues)}
 			if end < len(issues) {

@@ -1330,6 +1330,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	reason := fs.String("reason", "", "thaw: why the freeze ended")
 	apply := fs.Bool("apply", false, "sweep: move the items, not only list them")
 	glintTicket := fs.String("glint-ticket", "", "deploy, handover: the item that takes the glint findings of the deployed commit, at a release acceptance")
+	reviewerAgreed := fs.String("reviewer-agreed", "", "deploy: reviewers who agreed, as KEY@accountId[,KEY@accountId]")
 	fs.BoolVar(&a.NoCache, "no-cache", false, "run the deps again, without the cache, even if they passed on this tree")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -1338,16 +1339,16 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	return runDeployCommand(ctx, a, deployCommandArgs{
 		pos: pos, scriptArgs: scriptArgs,
 		lines: *lines, grep: *grep, redeploy: *redeploy, unapproved: *unapproved,
-		pastFreeze: *pastFreeze, reason: *reason, apply: *apply, glintTicket: *glintTicket,
+		pastFreeze: *pastFreeze, reason: *reason, apply: *apply, glintTicket: *glintTicket, reviewerAgreed: *reviewerAgreed,
 	})
 }
 
 type deployCommandArgs struct {
-	pos, scriptArgs                 []string
-	lines                           int
-	grep                            string
-	redeploy, unapproved, apply     bool
-	pastFreeze, reason, glintTicket string
+	pos, scriptArgs                                 []string
+	lines                                           int
+	grep                                            string
+	redeploy, unapproved, apply                     bool
+	pastFreeze, reason, glintTicket, reviewerAgreed string
 }
 
 func runDeployCommand(ctx context.Context, a *app.App, args deployCommandArgs) error {
@@ -1379,7 +1380,7 @@ func runDeployCommand(ctx context.Context, a *app.App, args deployCommandArgs) e
 
 func deployCommandFlagsInvalid(sub string, args deployCommandArgs) bool {
 	logFlags := args.lines != 200 || args.grep != ""
-	return deployFlagsMisplaced(sub, args.scriptArgs != nil, logFlags, args.redeploy || args.unapproved || args.pastFreeze != "") || args.apply && sub != "sweep" ||
+	return deployFlagsMisplaced(sub, args.scriptArgs != nil, logFlags, args.redeploy || args.unapproved || args.pastFreeze != "" || args.reviewerAgreed != "") || args.apply && sub != "sweep" ||
 		args.glintTicket != "" && isDeploySubcommand(sub) && sub != "handover"
 }
 
@@ -1392,7 +1393,7 @@ func runDeployTarget(ctx context.Context, a *app.App, args deployCommandArgs, us
 		}
 		return a.DeployLogs(ctx, pos[1], args.lines, args.grep, scriptArgs)
 	case !isDeploySubcommand(pos[0]) && len(pos) == 1:
-		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs, Redeploy: args.redeploy, Unapproved: args.unapproved, GlintTicket: args.glintTicket, PastFreeze: args.pastFreeze})
+		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs, Redeploy: args.redeploy, Unapproved: args.unapproved, GlintTicket: args.glintTicket, PastFreeze: args.pastFreeze, ReviewerAgreed: args.reviewerAgreed})
 	default:
 		return usage
 	}

@@ -119,7 +119,7 @@ var registrySpecs = []registrySpec{
 	{path: "flags show", rest: "args", source: "flags", selectFlags: "env"},
 	{path: "flags ack", rest: "args", source: "flags", selectFlags: "env reason"},
 	{path: "flags mute", rest: "args", source: "flags"},
-	{path: "deploy", rest: "after-dashdash", source: "deploy", selectFlags: "redeploy unapproved past-freeze glint-ticket no-cache"},
+	{path: "deploy", rest: "after-dashdash", source: "deploy", selectFlags: "redeploy unapproved past-freeze glint-ticket reviewer-agreed no-cache"},
 	{path: "deploy freeze", rest: "args", source: "deploy", selectFlags: "no-cache"},
 	{path: "deploy thaw", rest: "args", source: "deploy", selectFlags: "reason no-cache"},
 	{path: "deploy status", rest: "after-dashdash", source: "deploy", selectFlags: "no-cache"},

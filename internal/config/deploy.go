@@ -60,6 +60,7 @@ type DeployTarget struct {
 	// Confirm is "sudo": a sudo prompt in the foreground after the checks
 	// and deps, before the deploy script runs.
 	Confirm      string       `yaml:"confirm"`
+	ReviewGuard  *ReviewGuard `yaml:"review_guard"`
 	DeployedSHA  *DeployedSHA `yaml:"deployed_sha"`
 	ReleaseNotes *TargetNotes `yaml:"release_notes"`
 	// ApprovedRelease lets out only commits that name an item in one of the
@@ -89,6 +90,13 @@ type DeployTarget struct {
 	DotEnvSets []string    `yaml:"dotenv_sets"`
 	// Keys is DotEnv with the sets merged in.
 	Keys []DotEnvKey `yaml:"-"`
+}
+
+// ReviewGuard blocks deployment while another Jira account is reviewing
+// an item in one of the configured acceptance statuses.
+type ReviewGuard struct {
+	Statuses    []string `yaml:"statuses"`
+	JiraVersion string   `yaml:"jira_version"`
 }
 
 // Freeze configures a release freeze on a target that requires the acceptance target.
@@ -542,6 +550,17 @@ func (c *Config) validateTarget(name string, t *DeployTarget) error {
 }
 
 func (c *Config) validateTargetOptions(where string, t *DeployTarget) error {
+	if g := t.ReviewGuard; g != nil {
+		if len(g.Statuses) == 0 {
+			return fmt.Errorf("%s.review_guard.statuses: required", where)
+		}
+		if !strings.Contains(g.JiraVersion, "{version}") {
+			return fmt.Errorf("%s.review_guard.jira_version: required and must contain {version}", where)
+		}
+		if c.ReleaseNotes == nil || c.ReleaseNotes.Jira == nil || len(c.ReleaseNotes.Jira.ProjectKeys) == 0 {
+			return fmt.Errorf("%s.review_guard: needs release_notes.jira.project_keys", where)
+		}
+	}
 	for _, d := range t.Deps {
 		if _, ok := c.Tasks[d]; !ok {
 			return fmt.Errorf("%s.deps: unknown task %q", where, d)

@@ -370,6 +370,7 @@ const searchPage = 100
 func (c *Client) VersionItems(ctx context.Context, versionID string) ([]string, error) {
 	var keys []string
 	token := ""
+	seenTokens := map[string]bool{}
 	for {
 		q := url.Values{"jql": {"fixVersion = " + versionID}, "fields": {"key"}, "maxResults": {fmt.Sprint(searchPage)}}
 		if token != "" {
@@ -380,22 +381,166 @@ func (c *Client) VersionItems(ctx context.Context, versionID string) ([]string, 
 			return nil, err
 		}
 		var page struct {
-			Issues []struct {
-				Key string `json:"key"`
-			} `json:"issues"`
-			NextPageToken string `json:"nextPageToken"`
-			IsLast        bool   `json:"isLast"`
+			Issues        json.RawMessage `json:"issues"`
+			NextPageToken string          `json:"nextPageToken"`
+			IsLast        bool            `json:"isLast"`
 		}
 		if err := json.Unmarshal(data, &page); err != nil {
 			return nil, fmt.Errorf("version %s items: unexpected JSON: %w", versionID, err)
 		}
-		for _, i := range page.Issues {
+		if len(page.Issues) == 0 || string(page.Issues) == "null" {
+			return nil, fmt.Errorf("version %s items: Jira response has no issues array", versionID)
+		}
+		var issues []struct {
+			Key string `json:"key"`
+		}
+		if err := json.Unmarshal(page.Issues, &issues); err != nil {
+			return nil, fmt.Errorf("version %s items: unexpected issues: %w", versionID, err)
+		}
+		for _, i := range issues {
 			keys = append(keys, i.Key)
 		}
-		if page.IsLast || page.NextPageToken == "" {
+		if page.IsLast {
 			slices.Sort(keys)
 			return keys, nil
 		}
+		if page.NextPageToken == "" {
+			return nil, fmt.Errorf("version %s items: Jira marked the page incomplete without a nextPageToken", versionID)
+		}
+		if seenTokens[page.NextPageToken] {
+			return nil, fmt.Errorf("version %s items: Jira repeated nextPageToken %q", versionID, page.NextPageToken)
+		}
+		seenTokens[page.NextPageToken] = true
+		token = page.NextPageToken
+	}
+}
+
+// ReviewSearchIssues runs a paginated Jira issue search for deploy review
+// guards. A missing or null issues array is an incomplete response.
+func (c *Client) ReviewSearchIssues(ctx context.Context, jql string) ([]Issue, error) {
+	var result []Issue
+	token := ""
+	seenTokens := map[string]bool{}
+	for {
+		q := url.Values{"jql": {jql}, "fields": {"key,status,assignee,fixVersions,parent,issuetype"}, "maxResults": {fmt.Sprint(searchPage)}}
+		if token != "" {
+			q.Set("nextPageToken", token)
+		}
+		data, err := c.do(ctx, http.MethodGet, "/rest/api/3/search/jql?"+q.Encode(), nil, http.StatusOK)
+		if err != nil {
+			return nil, err
+		}
+		var page struct {
+			Issues        json.RawMessage `json:"issues"`
+			NextPageToken string          `json:"nextPageToken"`
+			IsLast        bool            `json:"isLast"`
+		}
+		if err := json.Unmarshal(data, &page); err != nil {
+			return nil, fmt.Errorf("review issue search: unexpected JSON: %w", err)
+		}
+		if len(page.Issues) == 0 || string(page.Issues) == "null" {
+			return nil, errors.New("review issue search: Jira response has no issues array")
+		}
+		var rawIssues []struct {
+			Key    string `json:"key"`
+			Fields struct {
+				Status struct {
+					Name string `json:"name"`
+				} `json:"status"`
+				Assignee *struct {
+					AccountID   string `json:"accountId"`
+					DisplayName string `json:"displayName"`
+				} `json:"assignee"`
+				FixVersions []Version `json:"fixVersions"`
+				Parent      *struct {
+					Key string `json:"key"`
+				} `json:"parent"`
+				IssueType struct {
+					Subtask bool `json:"subtask"`
+				} `json:"issuetype"`
+			} `json:"fields"`
+		}
+		if err := json.Unmarshal(page.Issues, &rawIssues); err != nil {
+			return nil, fmt.Errorf("review issue search: unexpected issues: %w", err)
+		}
+		for _, raw := range rawIssues {
+			if raw.Key == "" || raw.Fields.Status.Name == "" {
+				return nil, errors.New("review issue search: issue has no key or status")
+			}
+			issue := Issue{Key: raw.Key, Status: raw.Fields.Status.Name, FixVersions: raw.Fields.FixVersions, Subtask: raw.Fields.IssueType.Subtask}
+			if raw.Fields.Assignee != nil {
+				if raw.Fields.Assignee.AccountID == "" {
+					return nil, fmt.Errorf("review issue search: %s assignee has no accountId", raw.Key)
+				}
+				issue.AssigneeID, issue.AssigneeName = raw.Fields.Assignee.AccountID, raw.Fields.Assignee.DisplayName
+			}
+			if issue.Subtask && raw.Fields.Parent != nil {
+				issue.Parent = raw.Fields.Parent.Key
+			}
+			result = append(result, issue)
+		}
+		if page.IsLast {
+			return result, nil
+		}
+		if page.NextPageToken == "" {
+			return nil, errors.New("review issue search: Jira marked the page incomplete without a nextPageToken")
+		}
+		if seenTokens[page.NextPageToken] {
+			return nil, fmt.Errorf("review issue search: Jira repeated nextPageToken %q", page.NextPageToken)
+		}
+		seenTokens[page.NextPageToken] = true
+		token = page.NextPageToken
+	}
+}
+
+// ReviewSearchIssueKeys returns keys from a paginated issue search.
+func (c *Client) ReviewSearchIssueKeys(ctx context.Context, jql string) ([]string, error) {
+	var result []string
+	token := ""
+	seenTokens := map[string]bool{}
+	for {
+		q := url.Values{"jql": {jql}, "fields": {"key"}, "maxResults": {fmt.Sprint(searchPage)}}
+		if token != "" {
+			q.Set("nextPageToken", token)
+		}
+		data, err := c.do(ctx, http.MethodGet, "/rest/api/3/search/jql?"+q.Encode(), nil, http.StatusOK)
+		if err != nil {
+			return nil, err
+		}
+		var page struct {
+			Issues        json.RawMessage `json:"issues"`
+			NextPageToken string          `json:"nextPageToken"`
+			IsLast        bool            `json:"isLast"`
+		}
+		if err := json.Unmarshal(data, &page); err != nil {
+			return nil, fmt.Errorf("review issue-key search: unexpected JSON: %w", err)
+		}
+		if len(page.Issues) == 0 || string(page.Issues) == "null" {
+			return nil, errors.New("review issue-key search: Jira response has no issues array")
+		}
+		var issues []struct {
+			Key string `json:"key"`
+		}
+		if err := json.Unmarshal(page.Issues, &issues); err != nil {
+			return nil, fmt.Errorf("review issue-key search: unexpected issues: %w", err)
+		}
+		for _, issue := range issues {
+			if issue.Key == "" {
+				return nil, errors.New("review issue-key search: issue has no key")
+			}
+			result = append(result, issue.Key)
+		}
+		if page.IsLast {
+			slices.Sort(result)
+			return result, nil
+		}
+		if page.NextPageToken == "" {
+			return nil, errors.New("review issue-key search: Jira marked the page incomplete without a nextPageToken")
+		}
+		if seenTokens[page.NextPageToken] {
+			return nil, fmt.Errorf("review issue-key search: Jira repeated nextPageToken %q", page.NextPageToken)
+		}
+		seenTokens[page.NextPageToken] = true
 		token = page.NextPageToken
 	}
 }
