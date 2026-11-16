@@ -53,10 +53,12 @@ type fakeJira struct {
 	edits                []string
 	editRequests         []fakeIssueEditRequest
 	failEdit             []string
+	failTransitions      []string
 	failNotifyUsers      bool
 	failComments         []string
 	// approvers maps a version id to the statuses of its approvers.
-	approvers map[string][]string
+	approvers            map[string][]string
+	failVersionApprovers bool
 	// parents maps a subtask's key to its parent's.
 	parents map[string]string
 	// assigned records "KEY to account" for every assignment, failAssign
@@ -162,6 +164,10 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if id, ok := strings.CutPrefix(r.URL.Path, "/rest/api/3/version/"); ok && r.Method == http.MethodGet && r.URL.Query().Get("expand") == "approvers" {
+		if j.failVersionApprovers {
+			http.Error(w, "approvers unavailable", http.StatusInternalServerError)
+			return
+		}
 		approvers := []any{}
 		for i, status := range j.approvers[id] {
 			approvers = append(approvers, map[string]string{"accountId": "approver" + strconv.Itoa(i), "status": status})
@@ -305,6 +311,10 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"fields": fields, "transitions": transitions})
 	case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "transitions":
+		if slices.Contains(j.failTransitions, key) {
+			http.Error(w, "transition unavailable", http.StatusInternalServerError)
+			return
+		}
 		var body struct {
 			Transition struct {
 				ID string `json:"id"`

@@ -490,6 +490,151 @@ func TestDeploySweepParentWaitsForSubtaskWork(t *testing.T) {
 	}
 }
 
+// A pre-rebase copy of a subtask commit that is already on trunk and target
+// does not keep its parent open or appear as missing from trunk.
+func TestDeploySweepParentClosesForPreRebaseCopy(t *testing.T) {
+	d := sweepRepo(t)
+	trunk := d.git("branch", "--show-current")
+	d.statuses(map[string]string{"PROJ-23": "Ready for release", "PROJ-24": "Done"}, map[string]string{"PROJ-24": "PROJ-23"})
+	d.git("checkout", "-q", "-b", "side-copy")
+	d.write("rebased-copy.txt", "same change\n")
+	d.mustPlainCommit("feat: PROJ-24 same change")
+	d.git("push", "-q", "-u", "origin", "side-copy")
+	d.git("checkout", "-q", trunk)
+	d.write("rebased-copy.txt", "same change\n")
+	d.mustPlainCommit("feat: PROJ-24 same change\n\nrebased commit")
+	d.git("push", "-q", "origin", trunk)
+	d.mustGraft("deploy", "swept")
+
+	out := d.mustGraft("deploy", "sweep", "swept", "--apply")
+	d.jira.mu.Lock()
+	defer d.jira.mu.Unlock()
+	if got := d.jira.statuses["PROJ-23"]; got != "Done" {
+		t.Errorf("PROJ-23 is %s, want Done\n%s", got, out)
+	}
+	wantLines(t, out, nil, []string{"PROJ-24 is Done, but", "is not in "})
+}
+
+// A subtask commit with genuinely different content on a remote branch keeps
+// its parent open and identifies that commit in the hand-review line.
+func TestDeploySweepParentNamesOffTrunkSubtaskWork(t *testing.T) {
+	d := sweepRepo(t)
+	trunk := d.git("branch", "--show-current")
+	d.statuses(map[string]string{"PROJ-23": "Ready for release", "PROJ-24": "Done"}, map[string]string{"PROJ-24": "PROJ-23"})
+	d.git("checkout", "-q", "-b", "side-work")
+	d.write("branch-only.txt", "unreleased work\n")
+	d.mustPlainCommit("feat: PROJ-24 branch work")
+	d.git("push", "-q", "-u", "origin", "side-work")
+	short := gitShort(d.git("rev-parse", "HEAD"))
+	d.git("checkout", "-q", trunk)
+	d.write("trunk-only.txt", "released work\n")
+	d.mustPlainCommit("feat: PROJ-24 trunk work")
+	d.git("push", "-q", "origin", trunk)
+	d.mustGraft("deploy", "swept")
+
+	out := d.mustGraft("deploy", "sweep", "swept", "--apply")
+	d.jira.mu.Lock()
+	defer d.jira.mu.Unlock()
+	if got := d.jira.statuses["PROJ-23"]; got != "Ready for release" {
+		t.Errorf("PROJ-23 is %s, want Ready for release\n%s", got, out)
+	}
+	wantLines(t, out, []string{"PROJ-23 stays Ready for release: its subtask PROJ-24 has work not on swept: " + short}, nil)
+}
+
+// A parent is reported when its subtask has not reached Done.
+func TestDeploySweepParentNamesUndoneSubtask(t *testing.T) {
+	d := sweepRepo(t)
+	d.statuses(map[string]string{"PROJ-23": "Ready for release", "PROJ-24": "Testing"}, map[string]string{"PROJ-24": "PROJ-23"})
+	d.pushCommits("feat: PROJ-24 released work")
+	d.mustGraft("deploy", "swept")
+
+	out := d.mustGraft("deploy", "sweep", "swept", "--apply")
+	d.jira.mu.Lock()
+	defer d.jira.mu.Unlock()
+	if got := d.jira.statuses["PROJ-23"]; got != "Ready for release" {
+		t.Errorf("PROJ-23 is %s, want Ready for release\n%s", got, out)
+	}
+	wantLines(t, out, []string{"PROJ-23 stays Ready for release: its subtask PROJ-24 is Testing"}, nil)
+}
+
+func TestDeploySweepParentListsApprovalReadError(t *testing.T) {
+	d := sweepRepo(t)
+	d.write(".graft.yaml", strings.Replace(d.read(".graft.yaml"),
+		`release_notes: {transitions: [{from: [Ready for release], to: Done}], sweep: {}}`,
+		`release_notes: {transitions: [{from: [Ready for release], to: Done}], sweep: {}}
+      approved_release: {prefix: "Product "}`, 1))
+	d.statuses(map[string]string{"PROJ-23": "Ready for release", "PROJ-24": "Done"}, map[string]string{"PROJ-24": "PROJ-23"})
+	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-23": {"10030"}})
+	d.pushCommits("feat: PROJ-24 released work")
+	d.mustGraft("deploy", "--unapproved", "swept")
+	d.jira.mu.Lock()
+	d.jira.failVersionApprovers = true
+	d.jira.mu.Unlock()
+
+	out := d.mustGraft("deploy", "sweep", "swept", "--apply")
+	wantLines(t, out, []string{"PROJ-23 stays Ready for release though its subtasks are all done", "approval could not be read"}, nil)
+	d.jira.mu.Lock()
+	defer d.jira.mu.Unlock()
+	if got := d.jira.statuses["PROJ-23"]; got != "Ready for release" {
+		t.Errorf("PROJ-23 is %s, want Ready for release\n%s", got, out)
+	}
+}
+
+func TestDeploySweepParentListsTransitionError(t *testing.T) {
+	d := sweepRepo(t)
+	d.statuses(map[string]string{"PROJ-23": "Ready for release", "PROJ-24": "Done"}, map[string]string{"PROJ-24": "PROJ-23"})
+	d.pushCommits("feat: PROJ-24 released work")
+	d.mustGraft("deploy", "swept")
+	d.jira.mu.Lock()
+	d.jira.failTransitions = []string{"PROJ-23"}
+	d.jira.mu.Unlock()
+
+	out := d.mustGraft("deploy", "sweep", "swept", "--apply")
+	_, byHand, found := strings.Cut(out, "to look at by hand")
+	if !found {
+		t.Fatalf("no to look at by hand list:\n%s", out)
+	}
+	listed := false
+	for line := range strings.SplitSeq(byHand, "\n") {
+		if strings.Contains(line, "PROJ-23 stays Ready for release though its subtasks are all done") && strings.Contains(line, "transition to Done failed") && strings.Contains(line, "transition unavailable") {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Errorf("no by-hand line for PROJ-23 with the failed transition and its error:\n%s", out)
+	}
+	d.jira.mu.Lock()
+	defer d.jira.mu.Unlock()
+	if got := d.jira.statuses["PROJ-23"]; got != "Ready for release" {
+		t.Errorf("PROJ-23 is %s, want Ready for release\n%s", got, out)
+	}
+}
+
+func TestDeploySweepParentExplainsOwnership(t *testing.T) {
+	d := sweepRepo(t)
+	d.statuses(map[string]string{"PROJ-23": "Ready for release", "PROJ-24": "Done"}, map[string]string{"PROJ-24": "PROJ-23"})
+	d.jira.mu.Lock()
+	d.jira.assignees["PROJ-23"] = "colleague"
+	d.jira.mu.Unlock()
+	d.pushCommits("feat: PROJ-24 released work")
+	d.mustGraft("deploy", "swept")
+
+	out := d.mustGraft("deploy", "sweep", "swept", "--apply")
+	wantLines(t, out, []string{"PROJ-23 stays Ready for release: you are neither its current nor a previous executor"}, nil)
+	d.jira.mu.Lock()
+	defer d.jira.mu.Unlock()
+	if got := d.jira.statuses["PROJ-23"]; got != "Ready for release" {
+		t.Errorf("PROJ-23 is %s, want Ready for release\n%s", got, out)
+	}
+}
+
+func gitShort(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
 // A subtask of a done parent stays in its status after a sweep.
 func TestDeploySweepDoneParentLeavesSubtaskStatusAlone(t *testing.T) {
 	d := sweepRepo(t)

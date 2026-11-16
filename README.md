@@ -2231,6 +2231,9 @@ target reconciles the items with the commits the target runs, after each
 deploy to it, once a day after a `graft commit`, and on `graft deploy sweep
 <target> [--apply]`:
 
+Commits found on another branch are also checked against the trunk by content.
+This follows `landed`'s model: version-only commits count as shipping nothing, and matching a change does not prove its base commits are present.
+
 ```yaml
     prod:
       release_notes:

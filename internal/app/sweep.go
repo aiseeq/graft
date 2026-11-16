@@ -243,6 +243,7 @@ type sweepRun struct {
 	now    time.Time
 	apply  bool
 	issues map[string]jira.Issue
+	items  map[string][]sweptCommit
 	// review are the statuses work waits in for a reviewer.
 	review []string
 	// lines are the items to look at by hand; judged are the items moved,
@@ -307,7 +308,7 @@ func (a *App) sweep(ctx context.Context, r *deployRun, head string, withheld []s
 		return fmt.Errorf("whose items are whose is unknown: %w", err)
 	}
 	s := &sweepRun{app: a, r: r, conf: conf, notes: r.cfg.ReleaseNotes.Jira, client: client, me: me, trunk: trunk, now: now, apply: apply,
-		issues: map[string]jira.Issue{}, judged: map[string]bool{}, glint: r.glint}
+		issues: map[string]jira.Issue{}, items: items, judged: map[string]bool{}, glint: r.glint}
 	s.review = r.cfg.ReviewStatuses()
 	if s.glint == nil {
 		if s.glint, err = newGlintCheck(r, "", func(context.Context) (string, error) { return head, nil }); err != nil {
@@ -371,6 +372,10 @@ func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.
 	if err != nil {
 		return nil, err
 	}
+	sameHeadTrunk, err := sameCommit(r, head, trunk)
+	if err != nil {
+		return nil, err
+	}
 	reverted := map[string]bool{}
 	for _, c := range commits {
 		if !isRevert(c.subject) {
@@ -401,7 +406,7 @@ func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.
 		if took := picks.took[c.sha]; len(took) > 0 && !sc.inTrunk {
 			sc.inTrunk = !slices.ContainsFunc(took, func(sha string) bool { return !inTrunk[sha] })
 		}
-		if err := sc.byContent(r, head, trunk, c.parent); err != nil {
+		if err := sc.byContent(r, head, trunk, c.parent, sameHeadTrunk); err != nil {
 			return nil, err
 		}
 		for _, key := range keys {
@@ -409,6 +414,15 @@ func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.
 		}
 	}
 	return items, nil
+}
+
+func sameCommit(r *deployRun, a, b string) (bool, error) {
+	refs, err := r.repo.Git("rev-parse", a+"^{commit}", b+"^{commit}")
+	if err != nil {
+		return false, err
+	}
+	resolved := strings.Fields(refs)
+	return len(resolved) == 2 && resolved[0] == resolved[1], nil
 }
 
 // pickedRe is the line git cherry-pick -x adds; a commit that takes another
@@ -486,9 +500,8 @@ func sweepLog(r *deployRun, since time.Time, revs ...string) ([]loggedCommit, er
 }
 
 // byContent completes where the commit is by content: one a release branch
-// took runs on the target, and is in the trunk, under another hash. Commits
-// of other branches are in neither, and not checked.
-func (sc *sweptCommit) byContent(r *deployRun, head, trunk, parent string) error {
+// took runs on the target, and is in the trunk, under another hash.
+func (sc *sweptCommit) byContent(r *deployRun, head, trunk, parent string, sameHeadTrunk bool) error {
 	if parent == "" {
 		return nil
 	}
@@ -497,6 +510,14 @@ func (sc *sweptCommit) byContent(r *deployRun, head, trunk, parent string) error
 		if sc.inTrunk, err = landed(r, trunk, sc.sha, parent, nil); err != nil {
 			return err
 		}
+	}
+	if !sc.onTarget && !sc.inTrunk {
+		if sc.inTrunk, err = landed(r, trunk, sc.sha, parent, nil); err != nil || !sc.inTrunk {
+			return err
+		}
+	}
+	if sameHeadTrunk && sc.inTrunk {
+		sc.onTarget = true
 	}
 	if sc.inTrunk && !sc.onTarget {
 		if sc.onTarget, err = landed(r, head, sc.sha, parent, nil); err != nil || sc.onTarget || r.target.ApprovedRelease == nil {
@@ -680,7 +701,7 @@ func (s *sweepRun) item(ctx context.Context, issue jira.Issue, commits []sweptCo
 // finishing item whose remaining commits are only on non-trunk branches.
 func (s *sweepRun) finishingItem(ctx context.Context, issue jira.Issue, commits []sweptCommit, allOn bool) {
 	if allOn {
-		s.move(ctx, issue, fmt.Sprintf("its work of the last %d days %s (commits: %d)", s.conf.Days, onTargetWords(s.r.name, commits), len(commits)), true)
+		s.move(ctx, issue, fmt.Sprintf("its work of the last %d days %s (commits: %d)", s.conf.Days, onTargetWords(s.r.name, commits), len(commits)), true, false)
 		return
 	}
 	s.listStaleFinishing(ctx, issue, commits)
@@ -739,7 +760,7 @@ func (s *sweepRun) parents(ctx context.Context, keys []string, items map[string]
 		if !ok || slices.Contains(s.notes.SkipKeys, key) {
 			continue
 		}
-		if !parent.Done && len(parent.Subtasks) > 0 && allOn(key) {
+		if !parent.Done && len(parent.Subtasks) > 0 {
 			s.finishParent(ctx, parent, allOn)
 		}
 	}
@@ -763,25 +784,65 @@ func (s *sweepRun) parentKeys(keys []string) []string {
 // finishParent moves the parent when its subtasks are all done and on the
 // target.
 func (s *sweepRun) finishParent(ctx context.Context, parent jira.Issue, allOn func(string) bool) {
+	stay := func(format string, args ...any) {
+		s.judged[parent.Key] = true
+		s.lines = append(s.lines, fmt.Sprintf(format, args...))
+	}
 	s.read(ctx, parent.Subtasks)
 	if item, dormant := s.r.target.ApprovedRelease.DormantSubtask(parent.Subtasks); dormant {
-		s.judged[parent.Key] = true
-		s.list(ctx, parent, "%s stays %s: its subtask %s ships dormant", parent.Key, parent.Status, item.Key)
+		stay("%s stays %s: its subtask %s ships dormant", parent.Key, parent.Status, item.Key)
+		return
+	}
+	if slices.Contains(s.notes.SkipStatuses, parent.Status) {
+		stay("%s stays %s: status is configured to be skipped", parent.Key, parent.Status)
+		return
+	}
+	if !allOn(parent.Key) {
+		c := slices.IndexFunc(s.items[parent.Key], func(c sweptCommit) bool { return !c.onTarget })
+		short := "unknown work"
+		if c >= 0 {
+			short = gitx.Short(s.items[parent.Key][c].sha)
+		}
+		stay("%s stays %s: its own work is not on %s: %s", parent.Key, parent.Status, s.r.name, short)
 		return
 	}
 	for _, st := range parent.Subtasks {
-		if issue, ok := s.issues[st]; !ok || !issue.Done || !allOn(st) {
+		issue, ok := s.issues[st]
+		if !ok {
+			stay("%s stays %s: its subtask %s status is unknown", parent.Key, parent.Status, st)
+			return
+		}
+		if !issue.Done {
+			stay("%s stays %s: its subtask %s is %s", parent.Key, parent.Status, st, issue.Status)
+			return
+		}
+		if !allOn(st) {
+			c := slices.IndexFunc(s.items[st], func(c sweptCommit) bool { return !c.onTarget })
+			short := "unknown work"
+			if c >= 0 {
+				short = gitx.Short(s.items[st][c].sha)
+			}
+			stay("%s stays %s: its subtask %s has work not on %s: %s", parent.Key, parent.Status, st, s.r.name, short)
 			return
 		}
 	}
 	why := fmt.Sprintf("its subtasks are all done (%d) and their work is on %s", len(parent.Subtasks), s.r.name)
 	if parent.NotStarted || !s.inFlow(parent) {
 		// A parent put aside by hand, Paused say, stays there.
-		s.judged[parent.Key] = true
-		s.list(ctx, parent, "%s is %s, but %s", parent.Key, parent.Status, why)
+		stay("%s is %s, but %s", parent.Key, parent.Status, why)
 		return
 	}
-	s.move(ctx, parent, why, false)
+	owned, err := s.assignment(ctx, parent)
+	if err != nil {
+		s.app.warn("sweep %s: whose %s is is unknown: %v", s.r.name, parent.Key, err)
+		stay("%s stays %s: assignment history could not be read: %v", parent.Key, parent.Status, err)
+		return
+	}
+	if !owned {
+		stay("%s stays %s: you are neither its current nor a previous executor", parent.Key, parent.Status)
+		return
+	}
+	s.move(ctx, parent, why, false, true)
 }
 
 // finishing tells whether the target's transition to the done status moves
@@ -814,7 +875,7 @@ func (s *sweepRun) inFlow(issue jira.Issue) bool {
 // move takes an item to the done status when it is the token owner's and,
 // with approved_release, passes it: by statuses and version for an item
 // itself (checked), by version alone for a parent the sweep finishes.
-func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, checked bool) {
+func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, checked bool, ownershipAlready ...bool) {
 	key := issue.Key
 	if item, dormant := s.r.target.ApprovedRelease.DormantFor(issue.Key, issue.Parent); dormant {
 		s.judged[key] = true
@@ -828,13 +889,16 @@ func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, check
 		s.lines = append(s.lines, stop)
 		return
 	}
-	if !s.owned(ctx, issue) {
+	if (len(ownershipAlready) == 0 || !ownershipAlready[0]) && !s.owned(ctx, issue) {
 		return
 	}
 	if s.gate != nil {
 		pass, err := s.gatePass(ctx, issue, checked)
 		if err != nil {
 			s.app.warn("sweep %s: %s not moved: %v", s.r.name, key, err)
+			if !checked && len(issue.Subtasks) > 0 {
+				s.lines = append(s.lines, fmt.Sprintf("%s stays %s though %s: approval could not be read: %v", key, issue.Status, why, err))
+			}
 			return
 		}
 		if !pass.ok {
@@ -859,6 +923,9 @@ func (s *sweepRun) move(ctx context.Context, issue jira.Issue, why string, check
 			return
 		}
 		s.app.warn("sweep %s: %s not moved to %s: %v", s.r.name, key, s.conf.Done, err)
+		if len(issue.Subtasks) > 0 {
+			s.lines = append(s.lines, fmt.Sprintf("%s stays %s though %s: transition to %s failed: %v", key, issue.Status, why, s.conf.Done, err))
+		}
 		return
 	}
 	s.app.printf("sweep %s: %s moved to %s: %s%s", s.r.name, key, s.conf.Done, why, s.glint.takenBy())
@@ -972,12 +1039,16 @@ func (s *sweepRun) list(ctx context.Context, issue jira.Issue, format string, ar
 // owned tells whether the item is the token owner's now or was once: a key
 // in a commit does not make an item yours.
 func (s *sweepRun) owned(ctx context.Context, issue jira.Issue) bool {
-	if issue.AssigneeID == s.me {
-		return true
-	}
-	yours, err := s.client.WasAssignedTo(ctx, issue.Key, s.me)
+	owned, err := s.assignment(ctx, issue)
 	if err != nil {
 		s.app.warn("sweep %s: whose %s is is unknown: %v", s.r.name, issue.Key, err)
 	}
-	return yours
+	return owned
+}
+
+func (s *sweepRun) assignment(ctx context.Context, issue jira.Issue) (bool, error) {
+	if issue.AssigneeID == s.me {
+		return true, nil
+	}
+	return s.client.WasAssignedTo(ctx, issue.Key, s.me)
 }
