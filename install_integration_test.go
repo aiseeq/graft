@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -325,11 +324,11 @@ func TestInstallStep(t *testing.T) {
 	if !bytes.Equal(readBytes(t, installed), readBytes(t, f.path("bin/tool"))) {
 		t.Errorf("%s is not bin/tool", installed)
 	}
-	if runtime.GOOS != "windows" {
-		if fi, err := os.Stat(installed); err != nil || fi.Mode().Perm() != 0o755 {
-			t.Errorf("installed mode: %v %v", fi, err)
-		}
+
+	if fi, err := os.Stat(installed); err != nil || fi.Mode().Perm() != 0o755 {
+		t.Errorf("installed mode: %v %v", fi, err)
 	}
+
 	if left, _ := filepath.Glob(filepath.Join(dest, ".*")); len(left) > 0 {
 		t.Errorf("temporary files left in %s: %q", dest, left)
 	}
@@ -415,9 +414,6 @@ func TestInstallStepRelativeTo(t *testing.T) {
 // scheme) has the same bytes, but the next build would change it behind
 // the step: it is replaced with a file, never called unchanged.
 func TestInstallStepReplacesSymlink(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlinks need privileges on Windows")
-	}
 	dest := filepath.Join(t.TempDir(), "bin")
 	f := installRepo(t, dest)
 	f.mustGraft("build")

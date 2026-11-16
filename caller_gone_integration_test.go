@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -23,9 +22,7 @@ import (
 
 func callerCommand(t *testing.T, args ...string) (*exec.Cmd, *os.File, *os.File) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("uses Unix signals and pipes")
-	}
+
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -69,9 +66,6 @@ func waitProcess(t *testing.T, cmd *exec.Cmd) error {
 }
 
 func TestSignalStopsTheCommand(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses Unix signals")
-	}
 	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
 		t.Run(sig.String(), func(t *testing.T) {
 			t.Run("exec", func(t *testing.T) {
@@ -229,9 +223,6 @@ func TestCallerGoneStopsTheCommand(t *testing.T) {
 }
 
 func TestCallerGoneWaitingDoesNotStart(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses Unix pipes")
-	}
 	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"})
 	procDir, cfgDir := t.TempDir(), t.TempDir()
 	writeTestPressure(t, cfgDir)
@@ -296,9 +287,6 @@ func TestCallerGoneHeadWithStderrFile(t *testing.T) {
 // itself needs no check of graft's: exec.Cmd.Start of a cancelled context
 // starts nothing, and a started one StopOnCancel stops.
 func TestSigtermWhileWaitingDoesNotStart(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses Unix signals")
-	}
 	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"})
 	procDir, cfgDir := t.TempDir(), t.TempDir()
 	writeTestPressure(t, cfgDir)
@@ -318,9 +306,6 @@ func TestSigtermWhileWaitingDoesNotStart(t *testing.T) {
 }
 
 func TestLocalStepTreeKilledAfterGrace(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses Unix process groups")
-	}
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, "sh", "-c", `trap '' TERM; (sh -c 'echo "$$" > "$1"; exec sleep 20' sh "$1") & wait`, "sh", pidFile)

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -11,9 +10,6 @@ import (
 // gate left it, removed; the files under the new directory, written only
 // while the gate ran, stay out of the commit and in the tree.
 func TestCommitLeavesOutWhatTheGateWritesUnderAStartPath(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: none}\ngate:\n  - [sh, -c, 'rm x && mkdir x && echo late > x/y']\n",
 		"x":           "base\n",
@@ -89,9 +85,6 @@ func TestCommitWhoseGateUndoesItsChangesHasNothingToCommit(t *testing.T) {
 // parent has them, graft says there is nothing to amend, the commit stays
 // and the index is as before.
 func TestAmendWhoseGateEmptiesTheCommitHasNothingToAmend(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: none}\ngate:\n  - [sh, -c, 'rm -f h.txt mine.txt']\n",
 	})

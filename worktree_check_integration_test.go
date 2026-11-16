@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -212,9 +211,6 @@ func TestWorktreeCheckOperationAndDetachedCommits(t *testing.T) {
 // A change under assume-unchanged or skip-worktree is not in git status; what a
 // sparse checkout leaves out is not on disk, and not a change.
 func TestWorktreeHiddenChanges(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("clean's process check reads /proc")
-	}
 	for flag, name := range map[string]string{"--assume-unchanged": "assumed", "--skip-worktree": "skipped"} {
 		f, add := newWorktreeCleanFixture(t, worktreeCheckFiles())
 		path := add(name)
@@ -251,7 +247,7 @@ func TestWorktreeHiddenChanges(t *testing.T) {
 
 // git ls-files warns of a folder it cannot read and exits 0.
 func TestWorktreeUnreadableOutsideIgnored(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Geteuid() == 0 {
+	if os.Geteuid() == 0 {
 		t.Skip("needs a folder this user cannot read, and clean's process check reads /proc")
 	}
 	f, add := newWorktreeCleanFixture(t, worktreeCheckFiles())
@@ -274,7 +270,7 @@ func TestWorktreeUnreadableOutsideIgnored(t *testing.T) {
 }
 
 func TestWorktreeCheckUnreadableSubmodule(t *testing.T) {
-	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+	if os.Geteuid() == 0 {
 		t.Skip("needs a folder this user cannot read")
 	}
 	f, add := newWorktreeCleanFixture(t, worktreeCheckFiles())
@@ -388,9 +384,6 @@ func treeCommit(f *fixture, path, message string, flags ...string) {
 }
 
 func TestWorktreeCheckAndCleanUseSameContentVerdict(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("clean's process check reads /proc")
-	}
 	for _, scenario := range []struct {
 		name, kind string
 		wantClear  bool
@@ -435,9 +428,6 @@ func TestWorktreeCheckAndCleanUseSameContentVerdict(t *testing.T) {
 }
 
 func TestWorktreeCheckUsesTrunkVersionExclusions(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("clean's process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		"VERSION":     "1.0.0\n", "sub/keep": "x\n",
@@ -561,9 +551,6 @@ func TestWorktreeCheckHeadStates(t *testing.T) {
 }
 
 func TestWorktreeOwnRefs(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("clean's process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, worktreeCheckFiles())
 	path := add("own-ref")
 	treeCommit(f, path, "chore: under its ref")
@@ -615,9 +602,6 @@ func TestWorktreeCheckRelativeGitdirAndNoMainConfig(t *testing.T) {
 
 // Removing a tree takes a tree inside it, whatever rules let its folder go.
 func TestWorktreeNested(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("clean's process check reads /proc")
-	}
 	files := worktreeCheckFiles()
 	files[".graft.yaml"] = "schema: 1\nversion: {mode: file}\nworktree:\n  disposable: [/trees/]\n"
 	files[".gitignore"] = "trees/\n"
@@ -644,9 +628,6 @@ func TestWorktreeNested(t *testing.T) {
 // A sparse definition must not make a change on disk look merged: git add -A
 // leaves such a file out.
 func TestWorktreeCleanSparseChange(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("clean's process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, worktreeCheckFiles())
 	path := add("sparse-change")
 	f.gitIn(path, "sparse-checkout", "set", "--no-cone", "/VERSION", "/.gitignore", "/.graft.yaml")
@@ -660,9 +641,6 @@ func TestWorktreeCleanSparseChange(t *testing.T) {
 // Clean run from a linked tree must not let that tree choose whose rules judge
 // its neighbours.
 func TestWorktreeCleanTrunkFoundByMainWorktree(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("clean's process check reads /proc")
-	}
 	deploy := func(remote string) string {
 		return "schema: 1\nversion: {mode: file}\nenvs: {local: {}}\ndeploy:\n  remote: " + remote + "\n  targets:\n    test: {env: local, run: [\"true\"]}\n"
 	}
@@ -693,7 +671,7 @@ func TestWorktreeCleanTrunkFoundByMainWorktree(t *testing.T) {
 // git lists an unreadable tree as prunable, and git worktree prune has no way to
 // spare it.
 func TestWorktreeCleanUnreadableTreeNotPruned(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Geteuid() == 0 {
+	if os.Geteuid() == 0 {
 		t.Skip("needs a folder this user cannot read, and clean's process check reads /proc")
 	}
 	f, add := newWorktreeCleanFixture(t, worktreeCheckFiles())
@@ -725,7 +703,7 @@ func TestWorktreeCleanUnreadableTreeNotPruned(t *testing.T) {
 // What stands at a tree's path counts as there however it looks: git would
 // prune each of these, and the record is all that finds the data again.
 func TestWorktreeCleanNotPrunedWhatStandsThere(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Geteuid() == 0 {
+	if os.Geteuid() == 0 {
 		t.Skip("needs a folder this user cannot read, and clean's process check reads /proc")
 	}
 	// One run each: one tree held back spares every other record.
@@ -771,9 +749,6 @@ func TestWorktreeCleanNotPrunedWhatStandsThere(t *testing.T) {
 // A file broken in the main worktree does not stop a run told its trunk, and a
 // run that needs the file says which it is.
 func TestWorktreeCleanBrokenMainConfig(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("clean's process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, worktreeCheckFiles())
 	path := add("linked")
 	writeFile(t, filepath.Join(f.work, ".graft.yaml"), "schema: 1\nversion: [\n")
@@ -808,9 +783,6 @@ func TestCommitSparseChangeNotCalledLeftOut(t *testing.T) {
 // Clean run from a hook of a linked tree judges the neighbours by their own git
 // dir, not the hook's.
 func TestWorktreeCleanFromAHook(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("clean's process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, worktreeCheckFiles())
 	caller := add("caller")
 	rebasing := add("neighbour-rebasing")

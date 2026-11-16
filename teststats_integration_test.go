@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -158,7 +157,7 @@ func TestGoTestsAreRecordedPerTest(t *testing.T) {
 	if q.Package != "example.com/q" || q.Result != "build-fail" || len(q.Tests) != 0 {
 		t.Errorf("q: %+v", q)
 	}
-	if runtime.GOOS == "linux" && p.LoadMax == nil {
+	if p.LoadMax == nil {
 		t.Errorf("p carries no load: %+v", p)
 	}
 	if p.Package != "example.com/p" || p.Result != "fail" || p.WallS != 2.7 || p.Runner != "go" ||
@@ -333,9 +332,6 @@ func TestUnreadableGoTestOverlayHasNoTree(t *testing.T) {
 // the tests in it; the terminal output is the runner's own. A test a retry
 // passed within the run is flaky by itself.
 func TestReportFileTestsAreRecorded(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	fixture := func(name string) string {
 		path, err := filepath.Abs(filepath.Join("internal", "testreport", "testdata", name))
 		if err != nil {

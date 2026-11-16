@@ -3,7 +3,6 @@ package version
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -197,12 +196,12 @@ func TestWriteAndRestore(t *testing.T) {
 	if string(gen) != "version: \"1.3.0\"\n" {
 		t.Errorf("gen.yaml = %q", gen)
 	}
-	if runtime.GOOS != "windows" {
-		info, _ := os.Stat(filepath.Join(root, "gen.yaml"))
-		if info.Mode().Perm() != 0o444 {
-			t.Errorf("read-only mode lost: %v", info.Mode())
-		}
+
+	info, _ := os.Stat(filepath.Join(root, "gen.yaml"))
+	if info.Mode().Perm() != 0o444 {
+		t.Errorf("read-only mode lost: %v", info.Mode())
 	}
+
 	if err := backup.Restore(); err != nil {
 		t.Fatal(err)
 	}

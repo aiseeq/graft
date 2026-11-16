@@ -4,15 +4,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestLexOutputsGate(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses a shell lex stub")
-	}
 	for _, tc := range []struct {
 		name       string
 		files      map[string]string
@@ -135,9 +131,6 @@ func TestLexOutputsGate(t *testing.T) {
 }
 
 func TestLexOutputsDoesNotListWorktreesWithoutHeaders(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses a shell git wrapper")
-	}
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: none}\n",
 		"notes.md":    "ordinary notes\n",
@@ -171,9 +164,6 @@ func TestLexOutputsDoesNotListWorktreesWithoutHeaders(t *testing.T) {
 }
 
 func TestLexOutputsSkipsMarkdownSymlinkToDirectory(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creates a directory symlink")
-	}
 	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"})
 	target := filepath.Join(f.work, "target")
 	if err := os.Mkdir(target, 0755); err != nil {
@@ -189,9 +179,6 @@ func TestLexOutputsSkipsMarkdownSymlinkToDirectory(t *testing.T) {
 }
 
 func TestLexOutputsUsesMainCheckoutForWorktree(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses a shell lex stub and git worktree")
-	}
 	codexDir := filepath.ToSlash(filepath.Join(t.TempDir(), "synthetic-codex"))
 	manifestDir := filepath.Join(filepath.FromSlash(codexDir), "manifest")
 	if err := os.MkdirAll(manifestDir, 0755); err != nil {
@@ -246,9 +233,6 @@ func TestLexOutputsUsesMainCheckoutForWorktree(t *testing.T) {
 }
 
 func TestLexOutputsResolvesMainCheckoutLayouts(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses a shell lex stub and git repository layouts")
-	}
 	for _, layout := range []string{"submodule", "separate git dir", "separate git dir worktree", "separate git dir worktree without config", "submodule worktree"} {
 		t.Run(layout, func(t *testing.T) {
 			f := newRepo(t, map[string]string{})
@@ -372,9 +356,6 @@ func TestLexOutputsResolvesMainCheckoutLayouts(t *testing.T) {
 // directory as ~/…, so public repositories carry no home path; the gate
 // checks it under HOME, once with a header naming the same codex in full.
 func TestLexOutputsExpandsHomeInHeader(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses a shell lex stub")
-	}
 	home := t.TempDir()
 	codex := filepath.Join(home, ".claude", "codex")
 	if err := os.MkdirAll(filepath.Join(codex, "manifest"), 0o755); err != nil {

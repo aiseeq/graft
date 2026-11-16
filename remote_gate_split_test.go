@@ -1,7 +1,6 @@
 package main
 
 import (
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -10,9 +9,6 @@ import (
 // checks and go steps of tasks with remote: true to the host; go steps of
 // other tasks run on this machine, whose files their tests may read.
 func TestBusyGateKeepsHereAStepItsTaskKeepsHere(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	// One gate holds the three kinds, each its own task and test name: the
 	// remote: true task makes it split, and every step waits for one calm.
 	kinds := map[string]string{
@@ -47,9 +43,6 @@ func TestBusyGateKeepsHereAStepItsTaskKeepsHere(t *testing.T) {
 // has remote: true still splits for its built-in vet, while its task waits
 // for this machine.
 func TestBusyGateWithoutRemoteTasksSendsBuiltinVet(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", strings.Replace(splitGateConfig, "    remote: true\n", "", 1))
 	loaded(t, state)
@@ -69,9 +62,6 @@ func TestBusyGateWithoutRemoteTasksSendsBuiltinVet(t *testing.T) {
 // TestBusyGateWithoutEligibleStepsWaitsWhole keeps a gate together when it
 // has no built-in Go checks and no remote: true task checks.
 func TestBusyGateWithoutEligibleStepsWaitsWhole(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", "schema: 1\nversion: {mode: none}\ngo_vet: {enabled: false, reason: checks disabled in this test}\n"+
 		"gate: [{task: script}]\ntasks:\n  script:\n    run: [[sh, -c, 'echo here >> out']]\n")
@@ -89,9 +79,6 @@ func TestBusyGateWithoutEligibleStepsWaitsWhole(t *testing.T) {
 // first, so a step here gets this machine's threads over the environment's
 // GOMAXPROCS and -p, and one on the host the host's.
 func TestBusyGateStepsGetTheirThreads(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", strings.Replace(splitGateConfig, "gate:\n",
 		"go_fmt: {enabled: false, reason: the test has no go files to format}\ngate:\n  - [sh, -c, 'echo first procs=$GOMAXPROCS flags=$GOFLAGS threads=$GRAFT_THREADS >> out']\n", 1))

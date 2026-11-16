@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -225,12 +224,12 @@ tasks:
 	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, fakeMachine(t, filepath.Join(state, "proc"), 0), "XDG_CACHE_HOME="+t.TempDir())
 	f.mustGraft("keys")
 	want := "procs=2\n"
-	if runtime.GOOS != "windows" {
-		// Names are case-sensitive here, as the .env lookup reads them.
-		f.env = append(f.env, "gomaxprocs=1")
-		f.mustGraft("keys")
-		want += want
-	}
+
+	// Names are case-sensitive here, as the .env lookup reads them.
+	f.env = append(f.env, "gomaxprocs=1")
+	f.mustGraft("keys")
+	want += want
+
 	if got := readFile(t, out); got != want {
 		t.Errorf("the step saw %q, want the .env key's procs=2", got)
 	}
@@ -241,9 +240,6 @@ tasks:
 // the task's; a lowercase gomaxprocs of a heavy task is not its GOMAXPROCS
 // where names are case-sensitive.
 func TestTaskKeysTheBaseDrops(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("names differing in case are one variable on Windows")
-	}
 	state := t.TempDir()
 	out := filepath.Join(state, "out")
 	f := newRepo(t, map[string]string{
@@ -369,9 +365,6 @@ func TestDeployPrioritySkipsTheQueue(t *testing.T) {
 // stats record it as the task exec of the work tree. Without --heavy it
 // does not wait.
 func TestExecHeavyWaitsForLoad(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n", "sub/keep": ""})
 	proc := t.TempDir()
 	cfgDir, cache := t.TempDir(), t.TempDir()
@@ -414,9 +407,6 @@ func TestExecHeavyWaitsForLoad(t *testing.T) {
 // the signal for one a signal ended, and its own failures as env does: 125
 // graft, 126 a command that cannot be started, 127 one not found.
 func TestExecExitStatus(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n", "plain": "echo\n"})
 	f.env = append(f.env, "XDG_CACHE_HOME="+t.TempDir())
 	for _, c := range []struct {

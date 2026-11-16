@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -56,9 +55,7 @@ func TestToolsUnpinnedFollowLatest(t *testing.T) {
 	}
 	for _, name := range []string{"fake", "checked"} {
 		exe := name
-		if runtime.GOOS == "windows" {
-			exe += ".exe"
-		}
+
 		out, code := f.exec(f.work, "", "go", "version", "-m", filepath.Join(bin, exe))
 		if code != 0 || !strings.Contains(out, "\tv0.2.0") {
 			t.Errorf("%s after tools install (exit %d):\n%s", name, code, out)

@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,9 +30,6 @@ import (
 // subjects are all in the trunk but whose content is not is shown apart, for
 // a look; branches without a worktree go the same way.
 func TestWorktreeClean(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		"VERSION":     "1.0.0\n",
@@ -174,9 +170,6 @@ func TestWorktreeClean(t *testing.T) {
 }
 
 func TestWorktreeCleanIgnoredData(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\nworktree:\n  disposable: [rebuild]\n",
 		".gitignore":  "out/\nrebuild/\nnode_modules/\nlink-data\n",
@@ -239,9 +232,6 @@ func TestWorktreeCleanIgnoredData(t *testing.T) {
 }
 
 func TestWorktreeCleanKeepsEmptyUntrackedFile(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		"VERSION":     "1.0.0\n",
@@ -276,9 +266,6 @@ func TestWorktreeCleanKeepsEmptyUntrackedFile(t *testing.T) {
 }
 
 func TestWorktreeCleanKeepsStagedStateOverriddenByWorktree(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("clean's process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		"VERSION":     "1.0.0\n", "sub/keep": "x\n",
@@ -306,9 +293,6 @@ func TestWorktreeCleanKeepsStagedStateOverriddenByWorktree(t *testing.T) {
 }
 
 func TestWorktreeCleanKeepsDetachedCommitHiddenByWorktree(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("clean's process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		"VERSION":     "1.0.0\n", "sub/keep": "x\n",
@@ -334,9 +318,6 @@ func TestWorktreeCleanKeepsDetachedCommitHiddenByWorktree(t *testing.T) {
 }
 
 func TestWorktreeCleanKeepsHeadCommitWhenIndexAndWorktreeMatchTrunk(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("clean's process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		"VERSION":     "1.0.0\n", "sub/keep": "x\n",
@@ -386,9 +367,6 @@ func newWorktreeCleanFixture(t *testing.T, files map[string]string) (*fixture, f
 }
 
 func TestWorktreeCleanNoConfigInTrunk(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		".gitignore":  "out/\n",
@@ -409,9 +387,6 @@ func TestWorktreeCleanNoConfigInTrunk(t *testing.T) {
 }
 
 func TestWorktreeCleanSubmodule(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		"VERSION":     "1.0.0\n",
@@ -462,9 +437,6 @@ func TestWorktreeCleanSubmodule(t *testing.T) {
 }
 
 func TestWorktreeCleanRulesFromTrunk(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\nworktree: {disposable: [out]}\n",
 		".gitignore":  "out/\n", "VERSION": "1.0.0\n",
@@ -482,9 +454,6 @@ func TestWorktreeCleanRulesFromTrunk(t *testing.T) {
 }
 
 func TestWorktreeCleanDisposableUnignored(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\nworktree: {disposable: [out]}\n",
 		".gitignore":  "", "VERSION": "1.0.0\n",
@@ -501,9 +470,6 @@ func TestWorktreeCleanDisposableUnignored(t *testing.T) {
 }
 
 func TestWorktreeCleanIgnoredLimit(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		".gitignore":  "aaa/\nbbb/\nccc-data/\nzzz.txt\nzzzz/\nzzzzz/\n", "VERSION": "1.0.0\n",
@@ -529,9 +495,6 @@ func TestWorktreeCleanIgnoredLimit(t *testing.T) {
 }
 
 func TestWorktreeCleanNestedRoots(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		".gitignore":  "front/deps2\nfront/other\n", "VERSION": "1.0.0\n",
@@ -547,9 +510,6 @@ func TestWorktreeCleanNestedRoots(t *testing.T) {
 }
 
 func TestWorktreeCleanSpecialFiles(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("named pipes and Unix sockets are unavailable")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		".gitignore":  "run/\n", "VERSION": "1.0.0\n",
@@ -585,9 +545,6 @@ func TestWorktreeCleanSpecialFiles(t *testing.T) {
 }
 
 func TestWorktreeCleanControlCharacters(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the process check and control-name fixture require Unix")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "*.bad\n", "VERSION": "1.0.0\n",
 	})
@@ -601,9 +558,6 @@ func TestWorktreeCleanControlCharacters(t *testing.T) {
 }
 
 func TestWorktreeCleanInWorkData(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "data/\n", "VERSION": "1.0.0\n",
 	})
@@ -619,9 +573,6 @@ func TestWorktreeCleanInWorkData(t *testing.T) {
 }
 
 func TestWorktreeCleanSymlinkData(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink fixture requires Unix permissions")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "link\n", "VERSION": "1.0.0\n",
 	})
@@ -636,9 +587,6 @@ func TestWorktreeCleanSymlinkData(t *testing.T) {
 }
 
 func TestWorktreeCleanCopyAndLinkPaths(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	config := "schema: 1\nversion: {mode: file}\nworktree:\n  copy: [.env]\n  link:\n    - key: [deps.lock]\n      paths: [deps, frontend/deps]\n      setup: install\ntasks:\n  install:\n    run: [[sh, -c, true]]\n"
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": config, ".gitignore": ".env\ndeps/\nfrontend/deps/\n", "VERSION": "1.0.0\n", "deps.lock": "v1\n",
@@ -655,9 +603,6 @@ func TestWorktreeCleanCopyAndLinkPaths(t *testing.T) {
 }
 
 func TestWorktreeCleanUnreadableData(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("chmod permissions are unavailable")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "private/\n", "VERSION": "1.0.0\n",
 	})
@@ -678,9 +623,6 @@ func TestWorktreeCleanUnreadableData(t *testing.T) {
 }
 
 func TestWorktreeCleanOneTreeFailure(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("chmod permissions are unavailable")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "node_modules/\n", "VERSION": "1.0.0\n",
 	})
@@ -724,9 +666,6 @@ func TestWorktreeCleanOneTreeFailure(t *testing.T) {
 }
 
 func TestWorktreeCleanRebaseStateUnreadable(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("chmod permissions are unavailable")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "", "VERSION": "1.0.0\n",
 	})
@@ -756,9 +695,6 @@ func TestWorktreeCleanRebaseStateUnreadable(t *testing.T) {
 }
 
 func TestWorktreeCleanDeinitializedSubmodule(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		"VERSION":     "1.0.0\n",
@@ -803,9 +739,6 @@ func TestWorktreeCleanDeinitializedSubmodule(t *testing.T) {
 }
 
 func TestWorktreeCleanCheckoutConfigReleasesNothing(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		".gitignore":  "out/\n", "VERSION": "1.0.0\n",
@@ -830,9 +763,6 @@ func TestWorktreeCleanCheckoutConfigReleasesNothing(t *testing.T) {
 }
 
 func TestWorktreeCleanBranchFailureAfterRemoval(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n", "VERSION": "1.0.0\n",
 	})
@@ -853,9 +783,6 @@ func TestWorktreeCleanBranchFailureAfterRemoval(t *testing.T) {
 }
 
 func TestWorktreeCleanErrorTextStaysOneLine(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("chmod permissions and the control-name fixture require Unix")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n", ".gitignore": "*.bad\n", "VERSION": "1.0.0\n",
 	})
@@ -887,9 +814,6 @@ func outputLineForPath(output, path string) string {
 // between the fetch of clean and its push keep it there; a branch another
 // agent deleted there meanwhile is gone already, which is no error.
 func TestWorktreeCleanRemoteRace(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	for _, tc := range []struct {
 		name, race, want string
 		kept             bool
@@ -948,9 +872,6 @@ func TestWorktreeCleanRemoteRace(t *testing.T) {
 // the trunk, and links the modules go.work uses beside the repository next to
 // it, so the worktree builds as the repository does.
 func TestWorktreeAdd(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlinks need privileges on Windows")
-	}
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\ngo_vet: {enabled: false, reason: the fixture has no packages}\n",
 		"VERSION":     "1.0.0\n",
@@ -1275,9 +1196,6 @@ func TestWorktreeSyncPushRebasesAndPushesBranch(t *testing.T) {
 }
 
 func TestWorktreeSyncPushLeaseRejectsConcurrentPush(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the git shim is a shell script")
-	}
 	f, wt := worktreeSyncPushFixture(t, true)
 	rival := filepath.Join(f.base, "rival")
 	if out, code := f.exec(f.base, "", "git", "clone", "-q", "--branch", "feature", f.remote("origin"), rival); code != 0 {
@@ -1667,9 +1585,6 @@ func TestWorktreeSyncPushRefusesUnbornServerHead(t *testing.T) {
 }
 
 func TestWorktreeSyncPushRefusesWhenServerHeadCannotBeRead(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the git shim is a shell script")
-	}
 	f, wt := worktreeSyncPushFixture(t, true)
 	remoteBefore := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/feature")
 	realGit, err := exec.LookPath("git")
@@ -1804,7 +1719,7 @@ func TestWorktreeAddCopiesAndSetsUp(t *testing.T) {
 	if got := readFile(t, filepath.Join(dir, ".env")); got != "SECRET=local\n" {
 		t.Errorf(".env = %q", got)
 	}
-	if info, err := os.Stat(filepath.Join(dir, ".env")); err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+	if info, err := os.Stat(filepath.Join(dir, ".env")); err != nil || info.Mode().Perm() != 0o600 {
 		t.Errorf(".env: %v %v", info, err)
 	}
 	if got := readFile(t, filepath.Join(dir, "conf", "local.yaml")); got != "a: 1\n" {
@@ -1835,9 +1750,6 @@ func TestWorktreeAddCopiesAndSetsUp(t *testing.T) {
 // worktree; both there with the main worktree on another branch is
 // ambiguous and asks for --trunk.
 func TestWorktreeCleanNoRemote(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	for _, tc := range []struct {
 		name, base, other, on, want string
 	}{
@@ -1875,9 +1787,6 @@ func TestWorktreeCleanNoRemote(t *testing.T) {
 // of that name tracks; none tracked, a branch tracking another branch of the
 // remote, or branches tracking the HEADs of two remotes is ambiguous.
 func TestWorktreeCleanTrunkByUpstream(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	for _, tc := range []struct {
 		name  string
 		setup func(f *fixture)
@@ -1975,9 +1884,6 @@ func TestWorktreeCleanCanceledBetweenRepositories(t *testing.T) {
 // graft runs (systemd stops the unit's whole group) makes that git fail; the
 // repository it was in is interrupted, not counted done and listed failed.
 func TestWorktreeCleanCanceledWhileGitFails(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the git shim is a shell script")
-	}
 	parent := t.TempDir()
 	var roots []string
 	for _, name := range []string{"projectA", "projectB", "projectC"} {
@@ -2035,9 +1941,6 @@ func TestWorktreeCleanCanceledWhileGitFails(t *testing.T) {
 }
 
 func TestWorktreeCleanStopsOnSIGTERM(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("SIGTERM integration test is Linux-only")
-	}
 	skipWaitInShort(t)
 	parent := t.TempDir()
 	var first *fixture
@@ -2109,9 +2012,6 @@ func TestWorktreeCleanStopsOnSIGTERM(t *testing.T) {
 }
 
 func TestWorktreeCleanInA(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	parent := t.TempDir()
 	makeRepo := func(name string, remotes ...string) *fixture {
 		t.Helper()
@@ -2168,9 +2068,6 @@ func TestWorktreeCleanInE(t *testing.T) {
 }
 
 func TestWorktreeCleanInC(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: file}\n", "VERSION": "1.0.0\n"})
 	f.git("checkout", "-q", "-b", "main")
 	f.mustPlainCommit("feat: base")
@@ -2263,9 +2160,6 @@ func TestWorktreeCleanInD(t *testing.T) {
 // trunk by a squash, --apply deletes the branch neither here nor on the
 // remote, and the clean does not fail.
 func TestWorktreeCleanKeepsTheBranchOfARebase(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the process check reads /proc")
-	}
 	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: file}\n", "VERSION": "1.0.0\n"}, "origin")
 	f.git("checkout", "-q", "-b", "main")
 	f.mustPlainCommit("feat: base")
@@ -2454,7 +2348,7 @@ func TestWorktreeCheckSubmoduleAndLimit(t *testing.T) {
 }
 
 func TestWorktreeCheckUnreadable(t *testing.T) {
-	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+	if os.Geteuid() == 0 {
 		t.Skip("needs a folder this user cannot read")
 	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{

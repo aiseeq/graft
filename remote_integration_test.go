@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -113,9 +112,6 @@ func TestRemoteHostLoadStats(t *testing.T) {
 
 // TestRemoteTaskLoadAggregatesEveryHostStep checks load from multiple host steps.
 func TestRemoteTaskLoadAggregatesEveryHostStep(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake remote uses shell scripts")
-	}
 	state := t.TempDir()
 	seen := filepath.Join(state, "seen")
 	loadScript := filepath.Join(state, "load.sh")
@@ -152,9 +148,6 @@ func TestRemoteTaskLoadAggregatesEveryHostStep(t *testing.T) {
 }
 
 func TestRemoteLoadFailureDuringStepIsReportedOnce(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake remote uses shell scripts")
-	}
 	state := t.TempDir()
 	seen := filepath.Join(state, "seen")
 	loadScript := filepath.Join(state, "load.sh")
@@ -190,9 +183,6 @@ func TestRemoteLoadFailureDuringStepIsReportedOnce(t *testing.T) {
 }
 
 func TestRemoteLoadDoesNotDelayStepEnd(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake remote uses shell scripts")
-	}
 	tasks := `  work:
     heavy: true
     run: [[sh, -c, 'sleep 1']]
@@ -220,9 +210,6 @@ func TestRemoteLoadDoesNotDelayStepEnd(t *testing.T) {
 // A go test step on the host answers for its -run like one here, with the
 // GOFLAGS it is sent with; this machine's go env says nothing about it.
 func TestGoTestRunCheckOnRemoteHost(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake go is a shell script")
-	}
 	f, _ := remoteRepo(t, 8, `  test:
     heavy: true
     tests: go

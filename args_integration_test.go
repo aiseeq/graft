@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -121,9 +120,6 @@ esac
 }
 
 func TestSystemdServices(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("systemd is Linux")
-	}
 	f := tasksRepo(t, `services:
   web:
     desc: web through systemd
@@ -236,9 +232,6 @@ func TestServiceSteps(t *testing.T) {
 }
 
 func TestServiceLogsFollow(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("stops graft with SIGINT")
-	}
 	f, _ := serviceRepo(t, "serve", "")
 	f.write("tmp/web.log", "old\n")
 	cmd, out := f.start(f.work, "logs", "web", "-f", "--lines", "1")

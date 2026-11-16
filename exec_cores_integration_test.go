@@ -13,9 +13,7 @@ import (
 
 func TestExecCoresReservesGivenCores(t *testing.T) {
 	skipWaitInShort(t)
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
+
 	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"})
 	cache := filepath.Join(f.base, "cache")
 	cfgDir, proc := t.TempDir(), t.TempDir()

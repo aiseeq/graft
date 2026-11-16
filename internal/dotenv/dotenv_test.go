@@ -3,7 +3,6 @@ package dotenv
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"testing"
 )
@@ -129,12 +128,12 @@ func TestSetRoundTrip(t *testing.T) {
 	if data, _ := os.ReadFile(p); string(data) != "A=1\nB=v\n" {
 		t.Errorf("a line of the key whose value Load refuses must be replaced:\n%s", data)
 	}
-	if runtime.GOOS != "windows" {
-		info, _ := os.Stat(p)
-		if info.Mode().Perm() != 0o600 {
-			t.Errorf("mode changed to %v", info.Mode())
-		}
+
+	info, _ := os.Stat(p)
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("mode changed to %v", info.Mode())
 	}
+
 	broken := writeEnv(t, "A=1\nJUSTTEXT\n")
 	if err := Set(broken, "B", "v"); err == nil {
 		t.Error("Set on a file Load refuses must fail")

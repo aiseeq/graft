@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -100,9 +99,6 @@ func httpConfig(transport *config.HTTPTransport) *config.FlagsHTTP {
 }
 
 func TestHTTPSourceDirect(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("token command uses echo")
-	}
 	api := newFakeAPI()
 	srv := httptest.NewServer(api)
 	defer srv.Close()
@@ -149,9 +145,6 @@ func TestHTTPSourceDirect(t *testing.T) {
 }
 
 func TestHTTPSourceThroughCommand(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	env := localEnv(t)
 	// Stands in for a script on a server that holds the credentials: it
 	// reads the request from the environment and prints the response.

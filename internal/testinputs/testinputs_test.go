@@ -1,7 +1,6 @@
 package testinputs
 
 import (
-	"runtime"
 	"testing"
 )
 
@@ -41,11 +40,9 @@ func TestEnvReadsInheritedAndNewlySetInputs(t *testing.T) {
 	// On Windows gomaxprocs is GOMAXPROCS, a perRun name; elsewhere it is a
 	// variable of its own.
 	wantRead, wantSkipped := []string{"GIT_AUTHOR_NAME", "PATH"}, []string{"GOMAXPROCS", "GRAFT_RUN_ID"}
-	if runtime.GOOS == "windows" {
-		wantSkipped = append(wantSkipped, "gomaxprocs")
-	} else {
-		wantRead = append(wantRead, "gomaxprocs")
-	}
+
+	wantRead = append(wantRead, "gomaxprocs")
+
 	for _, name := range wantRead {
 		if !read[name] {
 			t.Errorf("readEnv did not read %q; reads: %v", name, reads)

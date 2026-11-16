@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -123,9 +122,7 @@ func TestGlobalPreCommit(t *testing.T) {
 
 	// A shim that lost its executable bit is not run by git: the global
 	// hook checks instead of taking it for done.
-	if runtime.GOOS == "windows" {
-		return
-	}
+
 	stale, err := filepath.Glob(filepath.Join(local.work, "*", hooks.PreCommit))
 	if err != nil || len(stale) != 1 {
 		t.Fatalf("local pre-commit shim: %v %v", stale, err)
@@ -373,14 +370,13 @@ func TestInitCopiesDotEnvTemplate(t *testing.T) {
 	if got := f.read("local.env"); got != "API_URL=http://localhost:8080\nAPI_KEY=\n" {
 		t.Errorf("local.env = %q", got)
 	}
-	if runtime.GOOS != "windows" {
-		st, err := os.Stat(f.path("local.env"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if mode := st.Mode().Perm(); mode != 0o600 {
-			t.Errorf("local.env mode %o, want 600", mode)
-		}
+
+	st, err := os.Stat(f.path("local.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := st.Mode().Perm(); mode != 0o600 {
+		t.Errorf("local.env mode %o, want 600", mode)
 	}
 
 	f.write("local.env", "API_KEY=mine\n")

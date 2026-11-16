@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -542,9 +541,6 @@ func (d *deployFixture) mustFixtureCommit(msg string) {
 // q quoting a path in the state directory, beside a fake Jira and a stand-in
 // deploy script.
 func newDeployFixture(t *testing.T, config func(state string, q func(string) string) string) *deployFixture {
-	if runtime.GOOS == "windows" {
-		t.Skip("deploy scripts use sh")
-	}
 	state := t.TempDir()
 	jira := &fakeJira{
 		comments:    map[string][]string{},
@@ -1651,9 +1647,6 @@ func TestDeployStatusAndLogs(t *testing.T) {
 }
 
 func TestDeployKeysAndCommandArguments(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("deploy scripts use sh")
-	}
 	state := t.TempDir()
 	f := newRepo(t, map[string]string{
 		".graft.yaml": `schema: 1
@@ -1709,9 +1702,6 @@ deploy:
 }
 
 func TestDeploySharesTaskConfirmation(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("deploy scripts use sh")
-	}
 	state := t.TempDir()
 	order := filepath.Join(state, "order")
 	bin := t.TempDir()
@@ -1768,9 +1758,6 @@ deploy:
 }
 
 func TestDeployRunsDepsFirst(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("deploy scripts use sh")
-	}
 	state := t.TempDir()
 	out := filepath.Join(state, "out")
 	f := newRepo(t, map[string]string{
@@ -1870,9 +1857,6 @@ deploy:
 }
 
 func TestDeployRequiresBeforeDeps(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("deploy scripts use sh")
-	}
 	state := t.TempDir()
 	out := filepath.Join(state, "out")
 	f := newRepo(t, map[string]string{
@@ -1916,9 +1900,6 @@ deploy:
 // A deploy of the commit the target already runs (deployed_sha) is refused
 // before deps, sudo and the script, unless --redeploy asks for it.
 func TestDeployRefusesSameCommit(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("deploy scripts use sh")
-	}
 	state := t.TempDir()
 	out := filepath.Join(state, "out")
 	sudoDir := t.TempDir()
@@ -2597,9 +2578,6 @@ func TestDeployReleaseNotesMergeOfDeployedBranch(t *testing.T) {
 }
 
 func TestDeployNoNewPrivsAllowsFakeSudo(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("no_new_privs is checked on Linux")
-	}
 	if _, err := exec.LookPath("setpriv"); err != nil {
 		t.Skipf("setpriv is unavailable: %v", err)
 	}
@@ -2631,9 +2609,6 @@ deploy:
 }
 
 func TestDeployCheckNoNewPrivsSkipsSudoSHA(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("no_new_privs is checked on Linux")
-	}
 	if _, err := exec.LookPath("setpriv"); err != nil {
 		t.Skipf("setpriv is unavailable: %v", err)
 	}
@@ -2669,9 +2644,6 @@ deploy:
 }
 
 func TestDeployCheckNoNewPrivsSudo(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("no_new_privs is checked on Linux")
-	}
 	if _, err := exec.LookPath("setpriv"); err != nil {
 		t.Skipf("setpriv is unavailable: %v", err)
 	}
@@ -2722,9 +2694,6 @@ const sudoNoNewPrivsMessage = `"no new privileges" flag`
 // TestDeployNoNewPrivsSudo checks local confirmation before sudo and leaves
 // remote deployed_sha sudo to run on the remote host.
 func TestDeployNoNewPrivsSudo(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("no_new_privs is checked on Linux")
-	}
 	if _, err := exec.LookPath("setpriv"); err != nil {
 		t.Skipf("setpriv is unavailable: %v", err)
 	}
@@ -2815,9 +2784,6 @@ func TestDeployNoNewPrivsSudo(t *testing.T) {
 // check and deploy name the sandbox once and run no sudo, with or without
 // the target's own confirm: sudo.
 func TestDeployNoNewPrivsHoldWindow(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("no_new_privs is checked on Linux")
-	}
 	if _, err := exec.LookPath("setpriv"); err != nil {
 		t.Skipf("setpriv is unavailable: %v", err)
 	}

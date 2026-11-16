@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	akitproc "github.com/aiseeq/akit/proc"
@@ -15,11 +14,10 @@ import (
 // work tree it runs a step in, and the tests' temporary trees would leave
 // theirs in the user's cache.
 func TestMain(m *testing.M) {
-	if runtime.GOOS == "linux" {
-		if err := akitproc.BecomeChildSubreaper(); err != nil {
-			panic(err)
-		}
+	if err := akitproc.BecomeChildSubreaper(); err != nil {
+		panic(err)
 	}
+
 	cache, err := os.MkdirTemp("", "graft-tasks-cache-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tasks test cache:", err)

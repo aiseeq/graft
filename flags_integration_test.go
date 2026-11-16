@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -256,9 +255,6 @@ func TestCommitSurvivesAnUnreadableJournal(t *testing.T) {
 }
 
 func TestDeployShowsTheFlagOfItsEnv(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("deploy scripts use sh")
-	}
 	_, url := startJournal(t)
 	f := newRepo(t, map[string]string{
 		".graft.yaml": `schema: 1
@@ -328,9 +324,6 @@ func TestFlagsCommands(t *testing.T) {
 }
 
 func TestCheckValidatesFlagExceptions(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("not needed twice")
-	}
 	f, _ := flagsRepo(t)
 	f.git("add", "-A")
 	f.mustGraft("check")

@@ -1,7 +1,6 @@
 package gitx
 
 import (
-	"runtime"
 	"slices"
 	"testing"
 
@@ -13,7 +12,7 @@ import (
 func TestChildInputsKeyTheCache(t *testing.T) { testinputs.Env() }
 
 func TestSameEnvName(t *testing.T) {
-	wantDifferent := runtime.GOOS != "windows"
+	wantDifferent := true
 	if !SameEnvName("GOMAXPROCS", "GOMAXPROCS") || SameEnvName("gomaxprocs", "GOMAXPROCS") != !wantDifferent {
 		t.Fatal("SameEnvName has incorrect platform case behavior")
 	}

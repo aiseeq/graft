@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -112,9 +111,6 @@ func TestTaskArguments(t *testing.T) {
 }
 
 func TestTaskShellStepQuotesArguments(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("sh steps need a POSIX shell")
-	}
 	f := tasksRepo(t, `tasks:
   sh:
     run:
@@ -426,9 +422,6 @@ func TestServiceStartFailures(t *testing.T) {
 }
 
 func TestServiceStubbornIsKilled(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("no SIGTERM on Windows")
-	}
 	f, port := serviceRepo(t, "stubborn", "    stop_timeout: 200ms\n")
 	f.mustGraft("start")
 	out := f.mustGraft("stop")
@@ -438,9 +431,6 @@ func TestServiceStubbornIsKilled(t *testing.T) {
 }
 
 func TestServiceStalePIDFile(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("pid reuse is detected through /proc")
-	}
 	f, _ := serviceRepo(t, "serve", "")
 	// A live process that is not the service: the pid was reused.
 	f.write("tmp/web.pid", strconv.Itoa(os.Getpid())+"\n")
@@ -469,9 +459,7 @@ func TestTools(t *testing.T) {
 		!strings.Contains(out, "tools not ready: old") {
 		t.Errorf("tools: exit %d\n%s", code, out)
 	}
-	if runtime.GOOS == "windows" {
-		return
-	}
+
 	// A go that installs nothing: the check still fails and graft says PATH
 	// finds another copy before the install directory.
 	fakeBin, gobin := t.TempDir(), t.TempDir()
@@ -530,9 +518,7 @@ func (f *fixture) buildGoTool(out string, tags ...string) {
 // info of the program PATH finds.
 func TestToolsBuildInfo(t *testing.T) {
 	skipGoToolchainInShort(t)
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake go and the non-Go program are sh scripts")
-	}
+
 	f := tasksRepo(t, `tools:
   tool:
     go_install: example.com/tool/cmd/tool@v1.2.0
@@ -614,9 +600,7 @@ func TestToolsManual(t *testing.T) {
 		!strings.Contains(out, "install it yourself: sudo dnf install ShellCheck") {
 		t.Errorf("tools: exit %d\n%s", code, out)
 	}
-	if runtime.GOOS == "windows" {
-		return
-	}
+
 	fakeBin := t.TempDir()
 	script := "#!/bin/sh\necho \"$*\" >> " + f.path("go.txt") + "\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(script), 0o755); err != nil {
@@ -972,9 +956,6 @@ func TestTestDBTmpfs(t *testing.T) {
 // step names itself, so graft test -- ./cmd/x tests ./cmd/x alone; flags
 // after -- keep the step's packages, and so do the values of flags.
 func TestGoTestPackagesFromArgs(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake go is a shell script")
-	}
 	f := tasksRepo(t, `tasks:
   test:
     tests: go
@@ -1054,9 +1035,6 @@ func TestGoTestRunCheckWithSkipInStep(t *testing.T) {
 }
 
 func TestGoTestRunCheckOnlyUsesDirectArgv(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake go is a shell script")
-	}
 	f := tasksRepo(t, "tasks:\n  test:\n    tests: go\n    run:\n      - sh: \"go test -json -run '^TestGone$' ./...\"\n      - sh: go test -json -run TestGone ./...\n      - [sh, script.sh, -run, TestGone, --, go, test, -json, ./...]\n", map[string]string{"script.sh": strings.Join([]string{
 		`echo '{"Action":"run","Package":"projectA/pkg","Test":"TestReal"}'`,
 		`echo '{"Action":"pass","Package":"projectA/pkg","Test":"TestReal"}'`,
@@ -1080,9 +1058,6 @@ func TestGoTestRunCheckOnlyUsesDirectArgv(t *testing.T) {
 }
 
 func TestGoTestRunCheckNeedsEventsAndSuccessfulProcess(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake go is a shell script")
-	}
 	for _, tc := range []struct {
 		name, extra string
 		wantWarning bool
@@ -1122,9 +1097,6 @@ func TestGoTestRunCheckNeedsEventsAndSuccessfulProcess(t *testing.T) {
 // cache; go vet and go fix do not, and neither does a command whose words or
 // GOFLAGS name -trimpath, =false too.
 func TestGoBuildsTrimPaths(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake go is a shell script")
-	}
 	f := tasksRepo(t, `tasks:
   build:
     run: ['go build -o bin/ ./...', 'go vet ./...', 'go fix -diff ./...', 'go test -trimpath=false ./...']
@@ -1157,9 +1129,6 @@ func TestGoBuildsTrimPaths(t *testing.T) {
 // of its own would drop; ${GOFLAGS} in the value, which sees the environment
 // only, does not lose the go env file's.
 func TestTaskGoFlagsKeepTheUsers(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	f := tasksRepo(t, `tasks:
   tags:
     env: {GOFLAGS: -tags=special}

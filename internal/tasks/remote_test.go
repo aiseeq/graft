@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -72,9 +71,6 @@ func TestLoadCheckWaitAccounting(t *testing.T) {
 }
 
 func TestTaskConfirmationChain(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	for _, refusal := range []bool{false, true} {
 		t.Run(fmt.Sprint(refusal), func(t *testing.T) {
 			root := t.TempDir()
@@ -137,9 +133,6 @@ func TestTaskConfirmationRefusedBeforeSudo(t *testing.T) {
 }
 
 func TestHeavyConfirmBeforeRemote(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	t.Setenv(HeavyEnv, "")
 	root := t.TempDir()
 	cfg := &config.Config{
@@ -224,9 +217,6 @@ func TestRecordStepTracksMixedHostMachines(t *testing.T) {
 }
 
 func TestReadRemoteLoadWaitDelay(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses a shell command")
-	}
 	if testing.Short() {
 		t.Skip("waits for the remote load timeout")
 	}
@@ -322,9 +312,6 @@ func TestGoCheckNoOutput(t *testing.T) {
 
 // TestRemoteUpUsesShortStopGrace: remote up uses the short utility stop grace.
 func TestRemoteUpUsesShortStopGrace(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses a shell command")
-	}
 	dir := t.TempDir()
 	ready := filepath.Join(dir, "ready")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -361,9 +348,6 @@ func TestRemoteUpUsesShortStopGrace(t *testing.T) {
 // TestRemoteLoadCancelIsNoFailure: a step cancelled (Ctrl-C) while its load
 // command runs leaves the load unknown without a load failure to warn about.
 func TestRemoteLoadCancelIsNoFailure(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses a shell command")
-	}
 	parent, cancel := context.WithCancel(context.Background())
 	w := watchRemoteLoad(parent, []string{"sleep", "5"})
 	cancel()
@@ -382,9 +366,6 @@ func TestRemoteLoadCancelIsNoFailure(t *testing.T) {
 }
 
 func TestRemoteCheckWaitRecordedOnGate(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	root := t.TempDir()
 	var log bytes.Buffer
@@ -419,9 +400,6 @@ func TestRemoteCheckWaitRecordedOnGate(t *testing.T) {
 }
 
 func TestFastRemoteCheckDoesNotAddWait(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	r := NewRunner(t.TempDir(), &config.Config{}, io.Discard, io.Discard)
 	r.remoteHeavy = &config.RemoteHeavy{Host: "hostA", Up: []string{"sh", "-c", "exit 0"}}
 	f := r.begin(stats.GateTask)

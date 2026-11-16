@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -98,9 +97,7 @@ func running(pid int) bool {
 	if err != nil {
 		return false
 	}
-	if runtime.GOOS == "windows" {
-		return true
-	}
+
 	return p.Signal(syscall.Signal(0)) == nil
 }
 

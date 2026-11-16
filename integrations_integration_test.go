@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,9 +13,6 @@ import (
 // that asks the uploaded build is the deploy script's to call, and graft
 // records the deploy only when that call passed.
 func TestDeployIntegrations(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("deploy scripts use sh")
-	}
 	state := t.TempDir()
 	// The stand-in ssh runs the command here, with the host it was sent to.
 	bin := t.TempDir()

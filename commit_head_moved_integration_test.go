@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -13,9 +12,7 @@ import (
 // commit ahead of the current one for a step to merge while the gate runs.
 func headMovesRepo(t *testing.T, gate string) (*fixture, string) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
+
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: none}\ngate:\n" + gate,
 		"base.txt":    "base\n",
@@ -171,9 +168,6 @@ func TestCommitRefusesAnotherBranchDuringTheGate(t *testing.T) {
 // TestCommitRefusesHeadBornDuringTheGate: an unborn branch has no commit for
 // the refusal to name, and it says so.
 func TestCommitRefusesHeadBornDuringTheGate(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: none}\ngate:\n  - [git, -c, core.hooksPath=/dev/null, commit, -q, --allow-empty, -m, 'chore: first']\n",
 	})
@@ -192,9 +186,7 @@ func TestCommitRefusesHeadBornDuringTheGate(t *testing.T) {
 // sideVersion when that is given.
 func versionedHeadMoves(t *testing.T, gate, sideVersion string) *fixture {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
+
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\ngate:\n" + gate,
 		"VERSION":     "1.2.3\n",

@@ -8,7 +8,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -122,14 +121,14 @@ tasks:
 		if l.WallS <= 0 || l.UserS < 0 || l.SysS < 0 {
 			t.Errorf("line %d: times %+v", i, l)
 		}
-		if runtime.GOOS == "linux" && (l.MaxRSSMB == nil || *l.MaxRSSMB <= 0) {
+		if l.MaxRSSMB == nil || *l.MaxRSSMB <= 0 {
 			t.Errorf("line %d: no peak memory", i)
 		}
 	}
 	if steps[0].Kind != "step" || !strings.Contains(steps[0].Step, "alloc 64") || steps[1].Kind != "step" || !strings.HasSuffix(steps[1].Step, " ok") {
 		t.Errorf("step lines: %+v", steps)
 	}
-	if runtime.GOOS == "linux" && *steps[0].MaxRSSMB < 64 {
+	if *steps[0].MaxRSSMB < 64 {
 		t.Errorf("alloc 64 peaked at %.1f MB", *steps[0].MaxRSSMB)
 	}
 	if total.Kind != "task" || total.Step != "" || total.Steps != 2 {
@@ -139,7 +138,7 @@ tasks:
 		!near(total.UserS, steps[0].UserS+steps[1].UserS) || !near(total.SysS, steps[0].SysS+steps[1].SysS) {
 		t.Errorf("task line does not sum its steps: %+v\nsteps: %+v", total, steps)
 	}
-	if runtime.GOOS == "linux" && *total.MaxRSSMB != max(*steps[0].MaxRSSMB, *steps[1].MaxRSSMB) {
+	if *total.MaxRSSMB != max(*steps[0].MaxRSSMB, *steps[1].MaxRSSMB) {
 		t.Errorf("task peak %.1f, steps %.1f and %.1f", *total.MaxRSSMB, *steps[0].MaxRSSMB, *steps[1].MaxRSSMB)
 	}
 
@@ -171,9 +170,7 @@ tasks:
 // shows four 64 MB processes at about 256 MB.
 func TestStepMemoryOfTheProcessTree(t *testing.T) {
 	skipWaitInShort(t)
-	if runtime.GOOS != "linux" {
-		t.Skip("the process tree is read from /proc")
-	}
+
 	hold := helperBin + " hold 64 1500"
 	f, statsFile := statsRepo(t, "tasks:\n  four:\n    run:\n      - sh: '"+hold+" & "+hold+" & "+hold+" & "+hold+" & wait'\n      - "+helperStep("ok")+"\n")
 	f.mustGraft("four")
@@ -203,9 +200,7 @@ func TestStepMemoryOfTheProcessTree(t *testing.T) {
 // leaves them out.
 func TestStatsRecordTheMachineLoad(t *testing.T) {
 	skipWaitInShort(t)
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
+
 	loadavg := filepath.Join(t.TempDir(), "loadavg")
 	writeFile(t, loadavg, "3.50 2.00 1.00 1/400 1234\n")
 	f, statsFile := statsRepo(t, "tasks:\n  noisy:\n    run:\n      - "+helperStep("ok")+
@@ -473,9 +468,6 @@ func TestStatsRerunsAreFlaky(t *testing.T) {
 
 // TestProjectLimitsOverrideUserConfig checks source and project precedence.
 func TestProjectLimitsOverrideUserConfig(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	f, _ := statsRepo(t, "limits:\n  gate: 200ms\n  task: 400ms\ngate:\n  - sh: sleep 0.3\ntasks:\n  slow:\n    run: [[sh, -c, 'sleep 0.5']]\n")
 	cfgDir := t.TempDir()
 	writeUserConfig(t, cfgDir, "limits: {gate: 50ms, task: 50ms}\n")
@@ -510,9 +502,7 @@ func TestProjectLimitsOverrideUserConfig(t *testing.T) {
 // under its limit and a broken down task carry no mark.
 func TestStatsMarkTasksOverTheLimits(t *testing.T) {
 	skipWaitInShort(t)
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
+
 	f, _ := statsRepo(t, "gate:\n  - sh: sleep 0.3\ntasks:\n  slow:\n    run: [[sh, -c, 'sleep 0.5']]\n  quick:\n    run: ["+helperStep("ok")+"]\n")
 	cfgDir := t.TempDir()
 	writeUserConfig(t, cfgDir, "limits: {gate: 200ms, task: 400ms}\n")
@@ -550,9 +540,6 @@ func TestStatsMarkTasksOverTheLimits(t *testing.T) {
 // TestRunOverLimitOnce: only the outermost task of a run is held to its
 // limit, its deps counting in it, and a failed run is held too.
 func TestRunOverLimitOnce(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	f, _ := statsRepo(t, "tasks:\n  outer:\n    deps: [slow]\n    run: ["+helperStep("ok")+"]\n  slow:\n    run: [[sh, -c, 'sleep 0.3']]\n  broken:\n    run: [[sh, -c, 'sleep 0.3; exit 3']]\n")
 	cfgDir := t.TempDir()
 	writeUserConfig(t, cfgDir, "limits: {task: 200ms}\n")

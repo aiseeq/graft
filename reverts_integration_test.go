@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -136,9 +135,6 @@ func TestCommitTakingAFileOutOfTheIndexIsNoRevert(t *testing.T) {
 // error of the check; one that an ignored symbolic link replaced keeps its
 // files on disk, no take-back.
 func TestCommitReplacingAFolderIsNoErrorOfTheTakeBackCheck(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symbolic links need privileges on windows")
-	}
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		"VERSION":     "1.0.0\n",
@@ -179,9 +175,6 @@ func TestCommitReplacingAFolderIsNoErrorOfTheTakeBackCheck(t *testing.T) {
 // a file that an ignored folder replaced, are take-backs: the files are gone
 // from the commit.
 func TestCommitReplacingRecentFilesSilentlyIsATakeBack(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symbolic links need privileges on windows")
-	}
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
 		"VERSION":     "1.0.0\n",

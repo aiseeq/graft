@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -70,9 +69,6 @@ func waitNestedCommand(cmd *exec.Cmd) error {
 }
 
 func TestNestedBusyGateSplits(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state, statsFile := nestedGateFixture(t)
 	cmd, out := startNestedGate(t, f, state, graftBin+" gate")
 	err := waitNestedCommand(cmd)
@@ -96,9 +92,6 @@ func TestNestedBusyGateSplits(t *testing.T) {
 }
 
 func TestNestedCalmGateStaysHere(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state, statsFile := nestedGateFixture(t)
 	ready := filepath.Join(state, "parent-ready")
 	script := "echo ready > " + yamlQuote(ready) + "; while [ ! -e " + yamlQuote(filepath.Join(state, "start-nested")) + "; do sleep 0.01; done; " + graftBin + " gate"
@@ -149,9 +142,6 @@ func TestNestedCalmGateStaysHere(t *testing.T) {
 }
 
 func TestNestedGateHeavyLocal(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state, _ := nestedGateFixture(t)
 	cmd, out := startNestedGate(t, f, state, "GRAFT_HEAVY=local "+graftBin+" gate")
 	if err := waitNestedCommand(cmd); err != nil {
@@ -166,9 +156,6 @@ func TestNestedGateHeavyLocal(t *testing.T) {
 }
 
 func TestNestedGateHostFailureStaysAdmitted(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	for _, mode := range []string{"up unavailable", "broken exit"} {
 		t.Run(mode, func(t *testing.T) {
 			f, state, _ := nestedGateFixture(t)
@@ -201,9 +188,6 @@ func TestNestedGateHostFailureStaysAdmitted(t *testing.T) {
 // TestNestedGateWhenAlways: with when: always a nested gate is not split and
 // says it runs inside the admitted task, not that when: always placed it.
 func TestNestedGateWhenAlways(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state, statsFile := nestedGateFixture(t)
 	// userRemoteRepo's user config, with when: always.
 	for _, kv := range f.env {
@@ -228,9 +212,6 @@ func TestNestedGateWhenAlways(t *testing.T) {
 }
 
 func TestNestedNonGateTaskStaysInsideHeavy(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "  unit:\n    heavy: true\n    remote: true\n    run: [[go, vet, ./...]]\n")
 	cmd, out := startNestedGate(t, f, state, graftBin+" unit")
 	if err := waitNestedCommand(cmd); err != nil {
@@ -254,9 +235,6 @@ func TestNestedNonGateTaskStaysInsideHeavy(t *testing.T) {
 // admission of this machine's queue; on a calm machine the whole gate runs
 // here.
 func TestBusyGateSendsItsGoStepsToTheHost(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", splitGateConfig)
 
@@ -306,9 +284,6 @@ const builtinSplitGateConfig = "schema: 1\nversion: {mode: none}\ngo_fix: {enabl
 // TestBusyGateSendsBuiltinVetToTheHost sends the read-only built-in Go
 // checks to the user's host while gofmt and configured scripts stay here.
 func TestBusyGateSendsBuiltinVetToTheHost(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", builtinSplitGateConfig)
 	loaded(t, state)
@@ -336,9 +311,6 @@ func TestBusyGateSendsBuiltinVetToTheHost(t *testing.T) {
 // TestBusyGateBuiltinVetBackHereWhenThePathBreaks reruns a built-in vet here
 // after the host path breaks and lets the gate pass.
 func TestBusyGateBuiltinVetBackHereWhenThePathBreaks(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", builtinSplitGateConfig)
 	goPath, err := exec.LookPath("go")
@@ -378,9 +350,6 @@ func TestBusyGateBuiltinVetBackHereWhenThePathBreaks(t *testing.T) {
 }
 
 func TestBusyGateDescriptionOmitsBuiltinKeptInSubdirectory(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", "schema: 1\nversion: {mode: none}\n"+
 		"gate:\n  - task: lint\n  - task: script\ntasks:\n"+
@@ -404,9 +373,6 @@ func TestBusyGateDescriptionOmitsBuiltinKeptInSubdirectory(t *testing.T) {
 }
 
 func TestBusyGateDescriptionNamesRemoteGlint(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "  lint:\n    heavy: true\n    remote: true\n    run: [[glint, check, ./...]]\n")
 	cfg := strings.Replace(builtinSplitGateConfig, "gate:\n  - task: script\n", "gate:\n  - task: lint\n  - task: script\n", 1) +
 		"  lint:\n    heavy: true\n    remote: true\n    run: [[glint, check, ./...]]\n"
@@ -426,9 +392,6 @@ func TestBusyGateDescriptionNamesRemoteGlint(t *testing.T) {
 // TestBusyGateBuiltinVetStaysWithProjectRemoteHeavy keeps the built-in vet
 // local when the project has its own remote_heavy setting.
 func TestBusyGateBuiltinVetStaysWithProjectRemoteHeavy(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", "schema: 1\nversion: {mode: none}\n"+
 		"go_fix: {enabled: true}\n"+
@@ -449,9 +412,6 @@ func TestBusyGateBuiltinVetStaysWithProjectRemoteHeavy(t *testing.T) {
 // end: a busy machine does not hold each cheap step of the gate in the queue
 // again.
 func TestBusyGateWaitsForThisMachineOnce(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "")
 	proc := filepath.Join(state, "proc")
 	// The first step here loads the machine again, as the other tasks of a
@@ -500,9 +460,6 @@ func TestBusyGateWaitsForThisMachineOnce(t *testing.T) {
 // TestBusyGateBrokenPathRunsTheStepHere: a go step whose path to the host
 // breaks runs here, admitted by this machine's queue, and the gate passes.
 func TestBusyGateBrokenPathRunsTheStepHere(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", splitGateConfig)
 	writeFile(t, filepath.Join(state, "broken"), "")
@@ -518,9 +475,6 @@ func TestBusyGateBrokenPathRunsTheStepHere(t *testing.T) {
 // as the exec asked, sends it to the host when it may, and else waits for
 // this machine once.
 func TestExecOfGraftLetsTheInnerGraftPlaceIt(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "  vet:\n    run: [[go, vet, ./...]]\n  script:\n    run: [[sh, -c, 'echo here >> out']]\n")
 	loaded(t, state)
 	// The machine stays loaded until the exec ends: one that queued itself

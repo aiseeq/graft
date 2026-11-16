@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -154,9 +153,7 @@ func TestSQLSourceOpsJournal(t *testing.T) {
 // notice-style journal: several open statuses, no severity, id text.
 func TestSQLSourceNoticesThroughShell(t *testing.T) {
 	dsn := pgDSN(t)
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
+
 	schema := newSchema(t, dsn)
 	psqlExec(t, dsn, `CREATE TABLE `+schema+`.notices (
   id text PRIMARY KEY, notice_type text NOT NULL, subject text NOT NULL, body text NOT NULL,
@@ -196,9 +193,6 @@ INSERT INTO `+schema+`.notices (id, notice_type, subject, body, status) VALUES
 // settings: with standard_conforming_strings off a backslash in a doubled-quote
 // literal is an escape, and the note came out changed.
 func TestSQLSourceQuotesValuesForAnySession(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	dsn := pgDSN(t)
 	cfg, _ := opsJournal(t, dsn)
 	cfg.Psql["local"] = config.EnvCommand{Shell: `PGOPTIONS='-c standard_conforming_strings=off' psql "$GRAFT_TEST_PG_DSN" -X -q -t -A -v ON_ERROR_STOP=1`}

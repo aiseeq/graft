@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -132,13 +131,12 @@ func TestWorkerTrailersInTheJobsWorktree(t *testing.T) {
 	if got := f.workers("HEAD"); got != "" {
 		t.Errorf("a killed job, trailers %q", got)
 	}
-	if runtime.GOOS == "linux" {
-		writeMarker(t, f, "job6", f.work, liveJob(t, "another-job"), "vendor/model-r")
-		f.write("a.txt", "a6\n")
-		f.mustGraft("commit", "-m", "feat: a pid reused")
-		if got := f.workers("HEAD"); got != "" {
-			t.Errorf("a pid another program took, trailers %q", got)
-		}
+
+	writeMarker(t, f, "job6", f.work, liveJob(t, "another-job"), "vendor/model-r")
+	f.write("a.txt", "a6\n")
+	f.mustGraft("commit", "-m", "feat: a pid reused")
+	if got := f.workers("HEAD"); got != "" {
+		t.Errorf("a pid another program took, trailers %q", got)
 	}
 
 	for _, m := range []string{"job4", "job5", "job6"} {

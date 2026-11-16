@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -13,9 +12,6 @@ import (
 // A file under worktree.copy goes with the tree only while it is what the main
 // worktree holds; clean and check judge it alike.
 func TestWorktreeCopyComparedWithItsSource(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("clean's process check reads /proc")
-	}
 	f, add := newWorktreeCleanFixture(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\nworktree:\n  copy: [.env, conf]\n",
 		".gitignore":  ".env\nconf/\n", "VERSION": "1.0.0\n",

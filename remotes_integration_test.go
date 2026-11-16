@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -13,9 +12,6 @@ import (
 // remote's lacks, a pull request merged on the mirror say; the same change
 // cherry-picked under another hash is there by content and passes.
 func TestDeployRefusesWorkOnAnotherRemote(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("deploy scripts use sh")
-	}
 	out := filepath.Join(t.TempDir(), "runs")
 	f := newRepo(t, map[string]string{
 		".graft.yaml": `schema: 1

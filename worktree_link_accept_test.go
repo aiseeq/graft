@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -45,7 +44,7 @@ func linksToMain(t *testing.T, f *fixture, wt, path string) bool {
 	if err != nil {
 		return false
 	}
-	if info.Mode()&os.ModeSymlink == 0 && runtime.GOOS != "windows" {
+	if info.Mode()&os.ModeSymlink == 0 {
 		return false
 	}
 	got, err := filepath.EvalSymlinks(p)

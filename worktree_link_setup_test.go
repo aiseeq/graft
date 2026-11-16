@@ -2,7 +2,6 @@ package main
 
 import (
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -12,9 +11,6 @@ import (
 // key matched, so what it installs lands in the new worktree, not in the
 // main worktree's directories.
 func TestWorktreeLinkSharedSetupNeverWritesIntoMain(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the install step is sh")
-	}
 	f, cache := linkRepo(t)
 	f.git("checkout", "-q", "-b", "w/one")
 	writeFile(t, filepath.Join(f.work, ".graft.yaml"), "schema: 1\nversion: {mode: none}\nworktree:\n  link:\n"+

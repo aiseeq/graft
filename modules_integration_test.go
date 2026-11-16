@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -300,9 +299,7 @@ func TestToolsInstallTakesOwnToolsAtLatest(t *testing.T) {
 		t.Errorf("tools install lacks pin warning:\n%s", out)
 	}
 	exe := "fake"
-	if runtime.GOOS == "windows" {
-		exe += ".exe"
-	}
+
 	out, code = f.exec(f.work, "", "go", "version", "-m", filepath.Join(bin, exe))
 	if code != 0 || !strings.Contains(out, tool+"\tv0.2.0") {
 		t.Errorf("installed build (exit %d):\n%s", code, out)
@@ -424,9 +421,7 @@ gate: []
 	}
 
 	// Without npm a raise that needs the lock fails and names the dependency.
-	if runtime.GOOS == "windows" {
-		return
-	}
+
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)

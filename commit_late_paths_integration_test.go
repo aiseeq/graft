@@ -1,7 +1,6 @@
 package main
 
 import (
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -101,9 +100,6 @@ func TestAmendLeavesOutPathsWrittenDuringTheGate(t *testing.T) {
 // mv another writer runs while the gate runs stays out of the commit too, as
 // the line about it says.
 func TestCommitLeavesOutWhatAnotherWriterStagedDuringTheGate(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: none}\ngate:\n  - [sh, -c, 'echo other > other.txt && git add other.txt && git mv old.txt moved.txt']\n",
 		"old.txt":     "old\n",

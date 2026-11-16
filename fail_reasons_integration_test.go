@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -189,9 +188,6 @@ func TestFailReasonsOfAGoTestStepAreParsed(t *testing.T) {
 // closing lines; with no report, an unreadable one or none failed in it, the
 // tail of its output stays.
 func TestReportFileStepReasonFromReport(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	fixture := func(name string) string {
 		path, err := filepath.Abs(filepath.Join("internal", "testreport", "testdata", name))
 		if err != nil {

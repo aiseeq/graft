@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -67,9 +66,7 @@ func TestLexCheckArgs(t *testing.T) {
 	if err != nil || strings.Join(got, "\x00") != strings.Join(wantDifferent, "\x00") {
 		t.Fatalf("different root args = %q, %v; want %q", got, err, wantDifferent)
 	}
-	if runtime.GOOS == "windows" {
-		t.Skip("creates a directory symlink")
-	}
+
 	alias := filepath.Join(t.TempDir(), "same-root")
 	if err := os.Symlink(main, alias); err != nil {
 		t.Fatal(err)
@@ -100,9 +97,6 @@ func TestLexMainCheckout(t *testing.T) {
 }
 
 func TestLexCheckRecordsProcessUsage(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the test lex executable is a shell script")
-	}
 	root, bin := t.TempDir(), t.TempDir()
 	if out, err := exec.Command("git", "init", "-q", root).CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)

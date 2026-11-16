@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -58,9 +57,6 @@ func writeHostGlint(t *testing.T, state, host, path, sum string) {
 }
 
 func TestUserRemoteHeavyGlintGoesWhenInstallCopiedIt(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "  lint:\n    heavy: true\n    run: [[glint, check, ./...]]\n")
 	path, sum := fakeGlint(t, f)
 	writeHostGlint(t, state, "pc", path, sum)
@@ -76,9 +72,6 @@ func TestUserRemoteHeavyGlintGoesWhenInstallCopiedIt(t *testing.T) {
 }
 
 func TestUserRemoteHeavyGlintStaysWithoutTheSameCopy(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	for _, c := range []struct{ name, sum, extra, vet, reason string }{
 		{"missing", "", "", "", "glint here ("},
 		{"different", strings.Repeat("a", 64), "", "", "glint here ("},
@@ -112,9 +105,6 @@ func TestUserRemoteHeavyGlintStaysWithoutTheSameCopy(t *testing.T) {
 // there would find no packages of the project; packages that are part of the
 // tree travel with it.
 func TestGlintStaysWhenPackagesAreLinkedOutOfTheTree(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	const linkConfig = "  deps:\n    run: [[\"true\"]]\nworktree:\n  link:\n    - {key: [a.go], paths: [web/node_modules], setup: deps}\n"
 	outside := func(t *testing.T, f *fixture, link string) {
 		if err := os.Symlink(filepath.Join(f.base, "main-packages"), link); err != nil {
@@ -174,9 +164,6 @@ func TestGlintStaysWhenPackagesAreLinkedOutOfTheTree(t *testing.T) {
 }
 
 func TestUserRemoteHeavyGlintInABusyGateSplit(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "")
 	path, sum := fakeGlint(t, f)
 	writeHostGlint(t, state, "pc", path, sum)
@@ -191,9 +178,6 @@ func TestUserRemoteHeavyGlintInABusyGateSplit(t *testing.T) {
 }
 
 func TestInstallRecordsTheCopyOnTheHost(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake rsync is sh")
-	}
 	dest := filepath.Join(t.TempDir(), "bin")
 	f := installRepo(t, dest)
 	state, cache, cfgDir, fakebin := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
@@ -270,9 +254,7 @@ func userRemoteRepoRun(t *testing.T, tasks, state, run string) *fixture {
 
 func remoteWaitRepo(t *testing.T, notice string, limit string) (*fixture, string, string) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
+
 	state, cfgDir := t.TempDir(), t.TempDir()
 	run := filepath.Join(state, "run.sh")
 	writeFile(t, run, notice+"\nexec \"$@\"\n")
@@ -371,9 +353,6 @@ func callsOf(t *testing.T, state string) string {
 // takes a heavy task only when this machine's queue would not start it now;
 // on a calm machine it runs here, as without remote_heavy.
 func TestUserRemoteHeavyOverflowsWhenBusy(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, overflowTasks)
 	if out := f.mustGraft("vet"); strings.Contains(out, "on pc") || callsOf(t, state) != "" {
 		t.Fatalf("a calm machine sent vet to pc:\n%s\ncalls: %q", out, callsOf(t, state))
@@ -396,9 +375,6 @@ func TestUserRemoteHeavyOverflowsWhenBusy(t *testing.T) {
 // and go vet steps that write no file go to the host, unless the task says
 // remote: true; the others say why they stay and wait in the queue here.
 func TestUserRemoteHeavyKeepsOtherStepsHere(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, overflowTasks)
 	for _, task := range []string{"build", "script"} {
 		loaded(t, state)
@@ -419,9 +395,6 @@ func TestUserRemoteHeavyKeepsOtherStepsHere(t *testing.T) {
 }
 
 func TestHeavyAdmissionNoticeIsPrintedOnlyAfterWaiting(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, overflowTasks)
 	if out := f.mustGraft("script"); strings.Contains(out, "admitted after") {
 		t.Errorf("calm admission printed a wait notice:\n%s", out)
@@ -476,9 +449,6 @@ func readBroken(t *testing.T, state string) []brokenLine {
 // session and the worker job that ran it. A task that fails on the host is
 // a failure, run once.
 func TestBrokenRemotePathRunsHereAndIsJournaled(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, overflowTasks)
 	f.env = append(f.env, "CLAUDE_PID=4242", "WORKER_JOB=1028-1003-probe")
 	writeFile(t, filepath.Join(state, "broken"), "")
@@ -533,9 +503,6 @@ func TestBrokenRemotePathRunsHereAndIsJournaled(t *testing.T) {
 // TestProjectRemoteHeavyWinsOverTheUsers: a project's own remote_heavy
 // replaces the user's whole, and keeps its default when: always.
 func TestProjectRemoteHeavyWinsOverTheUsers(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, overflowTasks)
 	own := filepath.Join(state, "own-calls")
 	writeFile(t, filepath.Join(state, "own.sh"), `echo "$*" >> "`+own+`"`+"\nexec \"$@\"\n")
@@ -552,9 +519,6 @@ func TestProjectRemoteHeavyWinsOverTheUsers(t *testing.T) {
 // path on each host with rsync; a host it cannot reach fails the step loudly
 // and leaves the binary installed here.
 func TestInstallCopiesToTheUsersHosts(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake rsync is sh")
-	}
 	dest := filepath.Join(t.TempDir(), "bin")
 	f := installRepo(t, dest)
 	state := t.TempDir()
@@ -598,9 +562,6 @@ func TestInstallCopiesToTheUsersHosts(t *testing.T) {
 // install of the other files here; the step tries the host once and fails
 // naming it and every file it did not get.
 func TestInstallHereDoesNotStopAtAHostDown(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake rsync is sh")
-	}
 	dest := filepath.Join(t.TempDir(), "bin")
 	f := installRepo(t, dest)
 	f.write("scripts/two.sh", "#!/bin/sh\necho two\n")
@@ -647,9 +608,6 @@ const inDirTasks = `  indir:
 // {root}, and then starts from the task's directory with the root filled
 // in; without {root} it stays here, as the line says.
 func TestUserRemoteHeavyRunsATaskInItsDirectoryWithRoot(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, inDirTasks)
 	f.write("sub/keep", "")
 	loaded(t, state)
@@ -678,9 +636,6 @@ func TestUserRemoteHeavyRunsATaskInItsDirectoryWithRoot(t *testing.T) {
 // asks remote_heavy's run to stop (SIGTERM), so it can take its work off the
 // host, rather than killing it.
 func TestUserRemoteHeavyStopsACancelledStepWithSIGTERM(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh, and Windows has no SIGTERM")
-	}
 	state := t.TempDir()
 	writeFile(t, filepath.Join(state, "run.sh"), `trap 'echo term > "`+filepath.Join(state, "term")+`"; kill $pid; exit 143' TERM`+"\n"+
 		`echo started > "`+filepath.Join(state, "calls")+`"`+"\n\"$@\" &\npid=$!\nwait $pid\n")
@@ -704,9 +659,6 @@ func TestUserRemoteHeavyStopsACancelledStepWithSIGTERM(t *testing.T) {
 // TestUserRemoteHeavyOverflowsBehindALiveReserve: a live reservation makes
 // the next task wait here, so it goes to the host though the machine is calm.
 func TestUserRemoteHeavyOverflowsBehindALiveReserve(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, overflowTasks)
 	reserveData, err := json.Marshal(struct {
 		Cores    int    `json:"cores"`
@@ -754,9 +706,6 @@ func TestUserRemoteHeavyOverflowsBehindALiveReserve(t *testing.T) {
 // machine's environment, so a go test sent there runs without the GOROOT
 // graft sets here for a -trimpath test; the test still finds its GOROOT.
 func TestUserRemoteHeavyTestFindsTheStandardLibrary(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	state := t.TempDir()
 	writeFile(t, filepath.Join(state, "run.sh"), `echo "$*" >> "`+filepath.Join(state, "calls")+`"`+"\nexec env -u GOROOT \"$@\"\n")
 	f := userRemoteRepoRun(t, "  unit:\n    heavy: true\n    run: [[go, test, -count=1, ./...]]\n", state, "[sh, "+yamlQuote(filepath.Join(state, "run.sh"))+"]")
@@ -777,9 +726,6 @@ func TestUserRemoteHeavyTestFindsTheStandardLibrary(t *testing.T) {
 // as -p after it) and the ones graft exec --env names: FOO=1 graft exec --heavy -- go test does not see FOO
 // there, with --env FOO it does.
 func TestUserRemoteHeavyPassesTheVariablesNamed(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	state := t.TempDir()
 	// The host's environment lacks the caller's variables.
 	writeFile(t, filepath.Join(state, "run.sh"), `echo "$*" >> "`+filepath.Join(state, "calls")+`"`+"\nexec env -u FOO -u GOFLAGS \"$@\"\n")
@@ -810,9 +756,6 @@ func TestUserRemoteHeavyPassesTheVariablesNamed(t *testing.T) {
 // TestUserRemoteHeavyKeepsATaskReadingFilesOfThisMachine: a task whose cache
 // names files outside the tree reads them, and the host has none of them.
 func TestUserRemoteHeavyKeepsATaskReadingFilesOfThisMachine(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	outside := filepath.Join(t.TempDir(), "models")
 	writeFile(t, outside, "model-a\n")
 	f, state := userRemoteRepo(t, "  unit:\n    heavy: true\n    cache: {files: ["+yamlQuote(outside)+"]}\n    run: [[go, vet, ./...]]\n")
@@ -830,9 +773,6 @@ func TestUserRemoteHeavyKeepsATaskReadingFilesOfThisMachine(t *testing.T) {
 // goes to the host when the arguments given write no file, and stays here
 // when one of them does.
 func TestUserRemoteHeavyJudgesTheArgumentsGiven(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, "  test:\n    heavy: true\n    run: [[go, test, -v, '{args}', ./...]]\n")
 	for _, c := range []struct {
 		args  []string
@@ -859,9 +799,6 @@ func TestUserRemoteHeavyJudgesTheArgumentsGiven(t *testing.T) {
 // user's host whose run exits broken_exit runs the command here through the
 // heavy queue and journals the break, as a heavy task does.
 func TestExecBrokenRemotePathRunsHere(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, overflowTasks)
 	writeFile(t, filepath.Join(state, "broken"), "")
 	loaded(t, state)
@@ -893,9 +830,6 @@ func TestExecBrokenRemotePathRunsHere(t *testing.T) {
 // or inside an admitted heavy task, which it does not; one sent to the host
 // says nothing.
 func TestHeavyTaskLineSaysWhyItStayedHere(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, overflowTasks+`  outer:
     heavy: true
     remote: false
@@ -932,9 +866,6 @@ func TestHeavyTaskLineSaysWhyItStayedHere(t *testing.T) {
 // whose run exits its broken_exit runs the task here, says so and journals
 // it, as the user's does; another exit is the task's failure, not retried.
 func TestProjectRemoteHeavyBrokenPathRunsHere(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, overflowTasks)
 	own := filepath.Join(state, "own-calls")
 	broken := filepath.Join(state, "own-broken")
@@ -973,9 +904,6 @@ func TestProjectRemoteHeavyBrokenPathRunsHere(t *testing.T) {
 // command's own status as much as a broken path, is the task's failure, not
 // run here again.
 func TestProjectRemoteHeavyWithoutBrokenExitRunsNothingAgain(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	f, state := userRemoteRepo(t, overflowTasks)
 	own := filepath.Join(state, "own-calls")
 	writeFile(t, filepath.Join(state, "own.sh"), `echo "$*" >> "`+own+`"`+"\nexit 125\n")

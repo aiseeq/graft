@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -24,9 +23,7 @@ type gateCostFixture struct {
 
 func newGateCostFixture(t *testing.T, cfg string) gateCostFixture {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake remote command uses sh")
-	}
+
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", cfg)
 	statsFile := filepath.Join(state, "cache", "graft", "stats.jsonl")
@@ -464,9 +461,6 @@ func TestBusyGateLineSaysWhyItStayedWhole(t *testing.T) {
 // step says why on its task line: GRAFT_HEAVY=local, inside an admitted heavy
 // task, when: always, or a project's own remote_heavy.
 func TestGateLineSaysWhyItWasNotSplit(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the run script is sh")
-	}
 	cases := []struct {
 		name string
 		set  func(f *fixture)

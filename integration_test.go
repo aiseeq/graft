@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -44,12 +43,11 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	if runtime.GOOS == "linux" {
-		if err := akitproc.BecomeChildSubreaper(); err != nil {
-			fmt.Fprintln(os.Stderr, "integration subreaper:", err)
-			os.Exit(1)
-		}
+	if err := akitproc.BecomeChildSubreaper(); err != nil {
+		fmt.Fprintln(os.Stderr, "integration subreaper:", err)
+		os.Exit(1)
 	}
+
 	stopSignals := watchTestSignals()
 	if err := prepareTestTempDir(); err != nil {
 		fmt.Fprintln(os.Stderr, "integration temp cleanup:", err)
@@ -73,9 +71,7 @@ func setup(m *testing.M) (int, error) {
 	var err error
 	binDir = filepath.Join(dir, "bin")
 	exe := ""
-	if runtime.GOOS == "windows" {
-		exe = ".exe"
-	}
+
 	graftBin = filepath.Join(binDir, "graft"+exe)
 	helperBin = filepath.Join(binDir, "gatehelper"+exe)
 	// GRAFT_TEST_COVERDIR: the coverage of the graft the tests run, which
@@ -216,7 +212,7 @@ func isolatedEnv(gitconfig, userConfig, cache string) ([]string, error) {
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		if !slices.ContainsFunc(drop, func(d string) bool { return envname.Same(runtime.GOOS, d, name) }) {
+		if !slices.ContainsFunc(drop, func(d string) bool { return envname.Same("linux", d, name) }) {
 			env = append(env, kv)
 		}
 	}
@@ -936,9 +932,6 @@ func TestBinaryFileBlocked(t *testing.T) {
 // A symlink to an absolute path, made by mistake inside the tree, is
 // refused; a relative one is a link the repository carries.
 func TestAbsoluteSymlinkBlocked(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlinks need a privilege on Windows")
-	}
 	f := fileModeRepo(t, gateStep("ok"))
 	lib := t.TempDir()
 	if err := os.Symlink(lib, f.path("lib")); err != nil {
@@ -1379,13 +1372,11 @@ func TestInitIsIdempotentAndRewritesAbsoluteHooksPath(t *testing.T) {
 		t.Errorf("second init:\n%s", out)
 	}
 
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(filepath.Join(f.work, ".githooks", "pre-commit"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if out := f.mustGraft("init"); !strings.Contains(out, "made executable") {
-			t.Errorf("lost exec bit not restored:\n%s", out)
-		}
+	if err := os.Chmod(filepath.Join(f.work, ".githooks", "pre-commit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := f.mustGraft("init"); !strings.Contains(out, "made executable") {
+		t.Errorf("lost exec bit not restored:\n%s", out)
 	}
 }
 
@@ -1425,9 +1416,6 @@ func TestInitRefusesToDisableDefaultHooks(t *testing.T) {
 }
 
 func TestShimFailsClosedWithoutGraft(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("PATH manipulation for sh differs on Windows")
-	}
 	f := hookRepo(t, gateStep("ok"))
 	f.write("shared.txt", "changed\n")
 	f.git("add", "-A")

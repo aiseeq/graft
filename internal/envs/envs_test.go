@@ -5,7 +5,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -47,9 +46,6 @@ func TestFill(t *testing.T) {
 }
 
 func TestCommand(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses sh")
-	}
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("GREETING=hello there\n"), 0o600); err != nil {
 		t.Fatal(err)

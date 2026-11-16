@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -13,9 +12,6 @@ import (
 // is kept, but the one graft gave another tree, inherited; graft worktree
 // clean --apply removes the cache of a work tree that is gone.
 func TestLintCachePerWorktree(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the steps run sh")
-	}
 	f := newRepo(t, map[string]string{".graft.yaml": `schema: 1
 version: {mode: none}
 tasks:
