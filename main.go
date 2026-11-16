@@ -764,10 +764,39 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 		return worktreeAddCmd(ctx, a, args[1:], usage)
 	case "check":
 		return worktreeCheckCmd(a, args[1:], usage)
+	case "archive":
+		return worktreeArchiveCmd(ctx, a, args[1:], usage)
 	case "clean":
 		return worktreeCleanCmd(ctx, a, args[1:], usage)
 	}
 	return usage
+}
+
+func worktreeArchiveCmd(ctx context.Context, a *app.App, args []string, usage error) error {
+	fs := newFlags(a, "worktree archive")
+	o := app.WorktreeArchiveOptions{}
+	fs.StringVar(&o.Name, "name", "", "the archive tag slug (default: the branch name)")
+	fs.StringVar(&o.Reason, "reason", "", "why the branch was rejected")
+	fs.StringVar(&o.Trunk, "trunk", "", "the trunk ref used to protect the trunk branch and check worktree data")
+	fs.BoolVar(&o.List, "list", false, "list archive tags and reasons")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if o.List {
+		if len(pos) > 1 {
+			return usage
+		}
+		if len(pos) == 1 {
+			o.Match = pos[0]
+		}
+	} else {
+		if len(pos) != 1 {
+			return usage
+		}
+		o.Branch = pos[0]
+	}
+	return a.WorktreeArchive(ctx, o)
 }
 
 func worktreeSyncCmd(a *app.App, args []string, usage error) error {

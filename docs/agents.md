@@ -105,6 +105,7 @@ exceptions: use them only on the user's word.
 
 ## Worktrees
 
+`graft worktree archive [--trunk <ref>] --reason <text> <branch>` tags a rejected branch before removing its local worktree; `--list [<RE>]` shows archived reasons and a repeated command resumes a partial push.
 `graft worktree add <branch>` creates a worktree with configured setup.
 `graft worktree sync` rebases its work onto the fresh trunk and preserves
 uncommitted changes; conflicts can require manual resolution.

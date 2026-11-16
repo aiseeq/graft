@@ -519,6 +519,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft locks` | who holds graft's locks |
 | `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |
 | `graft worktree add [--trunk <ref>] <branch> [<base>]` | a worktree under the user's cache, go.work's neighbours linked (see Worktrees) |
+| `graft worktree archive [--trunk <ref>] [--name <slug>] --reason <text> <branch>` / `graft worktree archive --list [<RE>]` | tag a rejected branch with its reason, push the tag, then remove its local worktree and branch; list archived reasons |
 | `graft worktree check [--trunk <ref>] [--json] <path>` | whether removing one linked worktree would lose data `git status` does not show; removes nothing (see Worktrees) |
 | `graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h] [--in <directory>]...` | remove the worktrees and branches whose work is in the trunk by content; list the rest |
 | `graft worktree stale [--here] [--uncommitted 3h] [--unmerged 24h] [--trunk <ref>] [--in <directory>]...` | report old changed files and work not merged into the local trunk; `--here` limits both checks to the current worktree; does not change refs, the index or worktrees |
@@ -2740,6 +2741,8 @@ up to date and release again.
   they are fetched: `git fetch origin '+refs/pull/*:refs/pull/*'` first.
 
 ## Worktrees
+
+`graft worktree archive [--trunk <ref>] --reason <text> <branch>` saves a rejected branch as an annotated `archive/<slug>` tag on every push remote before removing its local worktree and branch; `--list [<RE>]` reviews archived reasons and a repeated command continues a partial push.
 
 `graft worktree add [--trunk <ref>] <branch> [<base>]` makes a worktree at
 `<user cache>/worktrees/<repository>/<branch, / as ->` (`~/.cache` on Linux),
