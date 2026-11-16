@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -371,6 +372,98 @@ func TestFreezeEndsWhenTheBranchReachesProd(t *testing.T) {
 	}
 }
 
+func TestFreezeUnapprovedReleasePage(t *testing.T) {
+	d := freezeRepo(t)
+	d.commitFile("approved.txt", "feat: PROJ-1 approved work")
+	d.commitFile("exception.txt", "feat: PROJ-6 exceptional work")
+	d.freeze()
+	d.mustGraft("deploy", "--past-freeze", "exception", "acc")
+	if out, code := d.graft("", "deploy", "prod"); code == 0 || !strings.Contains(out, "PROJ-6") {
+		t.Fatalf("approval gate should refuse the exception: exit %d\n%s", code, out)
+	}
+	out := d.mustGraft("deploy", "--unapproved", "prod")
+	body := d.jira.page("Product v1.2.10: release notes")
+	for _, want := range []string{"PROJ-1", "Shipped by exception (--unapproved)", "PROJ-6", "not in an approved"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page missing %q:\n%s\n%s", want, body, out)
+		}
+	}
+	approved, exceptions, _ := strings.Cut(body, "<h3>Shipped by exception (--unapproved)</h3>")
+	if !strings.Contains(approved, "PROJ-1") || strings.Contains(approved, "PROJ-6") || !strings.Contains(exceptions, "PROJ-6") {
+		t.Errorf("approval and exception sections: %s", body)
+	}
+	if tags := d.remoteTags("freeze/"); len(tags) != 0 {
+		t.Errorf("freeze remains active: %v", tags)
+	}
+}
+
+func TestFreezeUnapprovedApprovalCollectionFailure(t *testing.T) {
+	d := freezeRepo(t)
+	d.commitFile("approved.txt", "feat: PROJ-1 approved work")
+	d.freeze()
+	d.mustGraft("deploy", "acc")
+	d.jira.mu.Lock()
+	d.jira.failVersionApprovers = true
+	d.jira.mu.Unlock()
+	out, code := d.graft("", "deploy", "--unapproved", "prod")
+	if code == 0 || !strings.Contains(out, "approval collection failed") || !strings.Contains(out, "release page NOT PUBLISHED") {
+		t.Errorf("missing collection failure: exit %d\n%s", code, out)
+	}
+	if got, want := strings.TrimSpace(d.stateFile("prod-sha")), d.git("rev-parse", "HEAD"); got != want {
+		t.Errorf("deployed SHA = %s, want %s", got, want)
+	}
+	if body := d.jira.page("Product v1.2.10: release notes"); body != "" {
+		t.Errorf("page published despite collection failure: %s", body)
+	}
+	if tags := d.remoteTags("freeze/"); len(tags) == 0 {
+		t.Error("freeze was removed")
+	}
+}
+
+func TestFreezeUnapprovedShowsWithheldOnPage(t *testing.T) {
+	d := freezeRepo(t)
+	d.commitFile("approved.txt", "feat: PROJ-1 approved work")
+	withheld := d.commitFile("withheld.txt", "feat: PROJ-6 deferred work")
+	d.freeze()
+	d.git("-c", "core.hooksPath=/dev/null", "revert", "--no-commit", withheld)
+	d.git("checkout", "HEAD", "--", "VERSION")
+	d.git("-c", "core.hooksPath=/dev/null", "commit", "-m", "revert: PROJ-6 deferred", "-m", "This reverts commit "+withheld+".")
+	d.git("push", "-q", "origin", "HEAD")
+	d.mustGraft("deploy", "--past-freeze", "reverted work", "acc")
+	beforeStatus, beforeVersions := d.status("PROJ-6"), d.fixVersionsOf("PROJ-6")
+	out := d.mustGraft("deploy", "--unapproved", "prod")
+	body := d.jira.page("Product v1.2.10: release notes")
+	_, moved, ok := strings.Cut(body, "<h3>Moved to the next release</h3>")
+	if !ok || !strings.Contains(moved, ">PROJ-6</a>") {
+		t.Errorf("withheld work missing from the page:\n%s\n%s", body, out)
+	}
+	if got := d.stateFile("prod-sha.withheld"); got != "" {
+		t.Errorf("--unapproved changed the withheld record: %q", got)
+	}
+	if got := d.status("PROJ-6"); got != beforeStatus || !slices.Equal(d.fixVersionsOf("PROJ-6"), beforeVersions) {
+		t.Errorf("withheld Jira item changed: status %q, versions %v", got, d.fixVersionsOf("PROJ-6"))
+	}
+	if tags := d.remoteTags("freeze/"); len(tags) != 0 {
+		t.Errorf("freeze remains active: %v", tags)
+	}
+}
+
+func TestFreezeUnapprovedAllExceptionsNeedReleaseName(t *testing.T) {
+	d := freezeRepo(t)
+	d.commitFile("exception.txt", "feat: PROJ-6 exceptional work")
+	d.freeze()
+	d.mustGraft("deploy", "--past-freeze", "exception", "acc")
+	out, code := d.graft("", "deploy", "--unapproved", "prod")
+	for _, want := range []string{"release page NOT PUBLISHED", "no approved version names the release", "release_version", "freeze stays active"} {
+		if code == 0 || !strings.Contains(out, want) {
+			t.Errorf("missing %q: exit %d\n%s", want, code, out)
+		}
+	}
+	if tags := d.remoteTags("freeze/"); len(tags) == 0 {
+		t.Error("freeze was removed")
+	}
+}
+
 // TestNoFreezeKeepsDeploysAsBefore: without freeze in the config acc takes
 // the trunk and any item, and a failing lint stops acc and prod as before.
 func TestNoFreezeKeepsDeploysAsBefore(t *testing.T) {
@@ -408,8 +501,9 @@ func TestReleasePageLinksTheVersionItsDeployCreated(t *testing.T) {
 	d.jira.mu.Unlock()
 	d.at("2026-10-16 10:00")
 	d.mustGraft("deploy", "test")
+	writeFile(t, filepath.Join(d.state, "prod-sha"), d.git("rev-parse", "HEAD"))
 	d.at("2026-10-19 15:30")
-	out, _ := d.graft("", "deploy", "--unapproved", "prod")
+	out, _ := d.graft("", "deploy", "--unapproved", "--redeploy", "prod")
 	if body := d.jira.page("Product 19.10.26: release notes"); !strings.Contains(body, "/versions/") {
 		t.Errorf("the page header does not link the version the deploy created:\n%s\n%s", body, out)
 	}

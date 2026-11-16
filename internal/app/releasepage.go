@@ -46,11 +46,18 @@ func pageRelease(r *deployRun) ([]string, string, error) {
 	case len(r.approvedVersions) > 0:
 		return r.approvedVersions, r.now.Format(time.DateOnly), nil
 	default:
-		return nil, "", errors.New("no approved version names the release (deployed with --unapproved, or a hotfix?)")
+		message := "no approved version names the release (deployed with --unapproved, or a hotfix?); configure release_version to name the page"
+		if frozen := r.freezeForOwnedTarget(); frozen != nil && frozen.branch == r.branch {
+			message += "; freeze stays active because the release page is not published"
+		}
+		return nil, "", errors.New(message)
 	}
 }
 
 func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePage) error {
+	if r.approvalCollectionErr != nil {
+		return fmt.Errorf("approval collection failed: %w", r.approvalCollectionErr)
+	}
 	names, date, err := pageRelease(r)
 	if err != nil {
 		return err
@@ -60,11 +67,8 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 	if err != nil {
 		return err
 	}
-	shipped := r.passed
-	if r.hotfix {
-		shipped = r.hotfixItems
-	}
-	moved, err := withheldItems(r, shipped)
+	shipped, allShipped := pageShipped(r)
+	moved, err := withheldItems(r, allShipped)
 	if err != nil {
 		return err
 	}
@@ -118,6 +122,22 @@ func (a *App) releasePage(ctx context.Context, r *deployRun, p *config.ReleasePa
 	}
 	a.printf("release page %q: build %s added: %s", title, r.version, page.URL)
 	return nil
+}
+
+// pageShipped separates ordinary rows from exceptions while keeping every
+// shipped item out of the list of work waiting for the next release.
+func pageShipped(r *deployRun) ([]string, []string) {
+	if r.hotfix {
+		return r.hotfixItems, r.hotfixItems
+	}
+	shipped := slices.DeleteFunc(slices.Clone(r.passed), func(key string) bool {
+		return len(r.approvalItemExceptions[key]) > 0
+	})
+	all := append(slices.Clone(shipped), slices.Collect(maps.Keys(r.approvalItemExceptions))...)
+	for _, failure := range r.approvalExceptions {
+		all = append(all, failure.keys...)
+	}
+	return shipped, all
 }
 
 func replaceFreezeJournal(body, build, heading, journal string) string {
@@ -211,7 +231,7 @@ func freezeJournalLine(tag, contents string) (string, error) {
 func withheldItems(r *deployRun, shipped []string) ([]string, error) {
 	keyRe := projectKeyRe(r.cfg)
 	var keys []string
-	for _, sha := range r.withheld {
+	for _, sha := range append(slices.Clone(r.withheld), r.pageWithheld...) {
 		c, err := oneCommit(r.repo, sha)
 		if err != nil {
 			return nil, fmt.Errorf("withheld commit %s: %w", gitx.Short(sha), err)
@@ -351,10 +371,37 @@ func buildSection(ctx context.Context, client *jira.Client, p *config.ReleasePag
 		}
 		b.WriteString("</ul>")
 	}
-	if len(items) == 0 && len(waiting) == 0 {
+	exceptions := exceptionSection(p, r)
+	b.WriteString(exceptions)
+	if len(items) == 0 && len(waiting) == 0 && exceptions == "" {
 		b.WriteString("<p>" + html.EscapeString(p.Label("none")) + "</p>")
 	}
 	return b.String(), nil
+}
+
+func exceptionSection(p *config.ReleasePage, r *deployRun) string {
+	if len(r.approvalExceptions) == 0 && len(r.approvalReasons) == 0 && len(r.approvalItemExceptions) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("<h3>" + html.EscapeString(p.Label("exceptions")) + "</h3><ul>")
+	for _, failure := range r.approvalExceptions {
+		line := failure.line()
+		if len(failure.keys) > 0 {
+			line += " (" + strings.Join(failure.keys, ", ") + ")"
+		}
+		b.WriteString("<li>" + html.EscapeString(line) + "</li>")
+	}
+	for _, key := range slices.Sorted(maps.Keys(r.approvalItemExceptions)) {
+		for _, reason := range r.approvalItemExceptions[key] {
+			b.WriteString("<li>" + html.EscapeString(key+": "+reason) + "</li>")
+		}
+	}
+	for _, reason := range r.approvalReasons {
+		b.WriteString("<li>" + html.EscapeString(reason) + "</li>")
+	}
+	b.WriteString("</ul>")
+	return b.String()
 }
 
 // groupSubtasks hides subtasks and inserts one technical row for each parent

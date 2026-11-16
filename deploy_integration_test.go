@@ -1178,7 +1178,7 @@ func TestDeployApprovedRelease(t *testing.T) {
 		t.Errorf("first deploy without a recorded commit: exit %d\n%s", code, out)
 	}
 	out = d.mustGraft("deploy", "--unapproved", "live")
-	if !strings.Contains(out, "approved release not checked (--unapproved)") {
+	if !strings.Contains(out, "approved release collection failed (--unapproved)") {
 		t.Errorf("--unapproved:\n%s", out)
 	}
 	deployed := d.git("rev-parse", "HEAD")

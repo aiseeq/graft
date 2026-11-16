@@ -70,7 +70,7 @@ type DeployOptions struct {
 	// commit, at a release acceptance: the items move with them
 	// (release_notes.glint).
 	GlintTicket string
-	// Unapproved skips the approved_release check.
+	// Unapproved collects approval results without refusing the deploy.
 	Unapproved bool
 	// PastFreeze permits a freeze refusal when it gives the bypass reason.
 	PastFreeze string
@@ -109,7 +109,12 @@ type deployRun struct {
 	dormantItems        []config.DormantReleaseItem
 	// approvedVersions are the approved versions the release took items
 	// from, with approved_release.prefix.
-	approvedVersions []string
+	approvedVersions       []string
+	approvalExceptions     []gateFailure
+	approvalReasons        []string
+	approvalItemExceptions map[string][]string
+	pageWithheld           []string
+	approvalCollectionErr  error
 	// moveOut are the items whose commits a deploy to a held target
 	// reverts: they leave the window's version for the next one.
 	moveOut *versionMove
@@ -1449,7 +1454,7 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 		return nil
 	}
 	if skip {
-		a.warn("approved release not checked (--unapproved): everything since the deployed commit goes out")
+		a.collectApproved(ctx, r)
 		return nil
 	}
 	refuse := func(format string, args ...any) error {
@@ -1497,6 +1502,39 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 	out.dormant = r.dormantItems
 	a.passApproved(r, out)
 	return nil
+}
+
+// collectApproved preserves the results for the page without blocking a deploy.
+func (a *App) collectApproved(ctx context.Context, r *deployRun) {
+	a.warn("collecting approved release (--unapproved): refusals do not stop the deploy")
+	out, g, err := a.approvalRun(ctx, r)
+	if err != nil {
+		r.approvalCollectionErr = err
+		a.warn("approved release collection failed (--unapproved): %v", err)
+		return
+	}
+	r.passed = uniqueSorted(out.passed)
+	r.pageWithheld = out.withheld
+	if r.target.ApprovedRelease.Prefix != "" {
+		r.approvedVersions = slices.Sorted(maps.Keys(out.approved))
+	}
+	r.approvalExceptions = out.failures
+	r.dormantItems = config.UniqueDormant(out.dormant)
+	for _, f := range out.failures {
+		a.warn("shipped by exception (--unapproved): %s", f.line())
+	}
+	if r.target.ApprovedRelease.Version != nil {
+		for _, failure := range g.checkReleaseVersion(ctx, true) {
+			r.approvalReasons = append(r.approvalReasons, failure.Error())
+			a.warn("shipped by exception (--unapproved): %v", failure)
+		}
+		r.approvalItemExceptions = g.versionItemFailures
+		r.dormantItems = config.UniqueDormant(r.dormantItems, g.dormant)
+		r.approvalCollectionErr = g.collectionErr
+		if g.collectionErr != nil {
+			a.warn("approved release collection failed (--unapproved): %v", g.collectionErr)
+		}
+	}
 }
 
 // approvalRun checks the commits from the deployed one to HEAD and those
@@ -1618,15 +1656,17 @@ func (a *App) passApproved(r *deployRun, out gateOutcome) {
 
 // gateRun is one pass of approved_release over the commits going out.
 type gateRun struct {
-	app           *App
-	repo          *gitx.Repo
-	cfg           *config.Config
-	conf          *config.ApprovedRelease
-	gate          *approvalGate
-	keyRe         *regexp.Regexp
-	activeKeys    map[string]bool
-	activeCommits int
-	dormant       []config.DormantReleaseItem
+	app                 *App
+	repo                *gitx.Repo
+	cfg                 *config.Config
+	conf                *config.ApprovedRelease
+	gate                *approvalGate
+	keyRe               *regexp.Regexp
+	activeKeys          map[string]bool
+	activeCommits       int
+	dormant             []config.DormantReleaseItem
+	collectionErr       error
+	versionItemFailures map[string][]string
 }
 
 func newGateRun(a *App, repo *gitx.Repo, cfg *config.Config, target *config.DeployTarget) (*gateRun, error) {

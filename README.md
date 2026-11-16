@@ -503,7 +503,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft flags show <id>` | one event in full; `<id>` is its id or a prefix only one open event has; a closed event takes its full UUID |
 | `graft flags ack <id> --reason R` | close an open event with a reason |
 | `graft flags mute <id> --reason R [--match S] [--in subject\|body\|key] [--all-envs]` | add an exception for the event, then close it if it is open |
-| `graft deploy [--redeploy] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] [--reviewer-agreed KEY@ACCOUNT,...] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--unapproved` skips the `approved_release` check, `--past-freeze` records a reason for deploying through an active freeze, `--glint-ticket` names the item that takes the glint findings of the deployed commit (`release_notes.glint`), `--reviewer-agreed` records reviewer account IDs that answered yes |
+| `graft deploy [--redeploy] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] [--reviewer-agreed KEY@ACCOUNT,...] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--unapproved` collects approval results without refusing the deploy, `--past-freeze` records a reason for deploying through an active freeze, `--glint-ticket` names the item that takes the glint findings of the deployed commit (`release_notes.glint`), `--reviewer-agreed` records reviewer account IDs that answered yes |
 | `graft deploy freeze <target> [Jira version]` | cut and push the configured freeze branch and annotated freeze tag; without a version, show the active freeze |
 | `graft deploy thaw <target> --reason REASON` | end the active freeze and remove its freeze and journal tags from every remote |
 | `graft deploy check <target>` | what `graft deploy <target>` would refuse now, read only: unpublished work, the window, `requires`, the hold, `approved_release` with the items of the commits outside it (summary, status, fix versions); exit 1 when it would refuse |
@@ -2035,8 +2035,9 @@ the feature has been enabled and the work checked, so the deploy can close it.
    item, or naming items that do not pass, and why. With no deployed commit
    recorded, or Jira unreachable, it stops too. After the commits it lists
    their items once each, with summary, status and the fix versions of
-   `prefix` and their approval: what to fix in Jira. `--unapproved` skips the
-   check with a warning. `graft deploy check <target>` runs this check and
+   `prefix` and their approval: what to fix in Jira. `--unapproved` collects
+   the results without refusing the deploy and warns about exceptions and
+   collection failures. `graft deploy check <target>` runs this check and
    the others before the deps (unpublished work, the window, `requires`, the
    hold) without deploying: it lists every refusal rather than the first,
    records nothing (not even the hold's candidate) and reads the deployed
@@ -2328,7 +2329,7 @@ when checks fail. Its final block describes dependencies, confirmation, release
 note rules and configured release effects, and ends with the deploy command.
 It reads Jira to preview the delivered items when possible; if it cannot read
 them, it says why. It does not write to Jira or deploy anything.
-`--unapproved` bypasses all of `approved_release`; hotfixes
+`--unapproved` bypasses refusals from `approved_release` while collecting its results; hotfixes
 do not run it. The gate reads deploy rules from the branch being deployed. It
 does not restore the deployed commit or Jira statuses on rollback, check who
 moved an item to Ready for release or Done, or judge whether an umbrella's
@@ -2560,9 +2561,12 @@ in the freeze journal. Advisory tasks run on the frozen branch during deploy
 and at the `graft commit` gate; failures warn and are recorded without stopping
 the operation. A successful deploy of the frozen branch to the release target
 removes the freeze and journal tags from every remote only after `deployed_sha`
-and the release page journal succeed. If no release page is configured, the
-journal is reported as having no page and `deployed_sha` is sufficient. `graft deploy thaw
+and the release page journal succeed. If approval collection fails, the page
+is not published and the freeze remains active. If no release page is configured,
+the journal is reported as having no page and `deployed_sha` is sufficient. `graft deploy thaw
 <target> --reason 'reason'` ends it manually and removes the active freeze and journal tags. Before removing them, it writes an annotated `freeze-thaw/<target>/<version>/<time>` tag to each remote; inspect the tag with `git show <tag>` to read the reason later.
+Existing deploy records do not preserve the previous SHA and approval results
+needed to reconstruct a missing page reliably; there is no automatic page retry.
 
 Freeze, thaw, and journal tags live on the remotes. To keep removed tags from
 returning in local clones, enable `fetch.pruneTags` or set
@@ -2595,11 +2599,17 @@ deploy:
   and the items of withheld commits, which wait for the next release.
 - `subtasks: parent` groups technical subtasks under one parent row; the
   `labels.technical` text (default `Technical changes`) is its summary.
+- With `--unapproved`, the page lists failing commits and their reasons under
+  `labels.exceptions` (default `Shipped by exception (--unapproved)`). If
+  a release version check fails, its affected shipped items and their reasons
+  appear there too. Reverted work waits under `labels.moved`. If approval
+  collection fails, the deploy proceeds but the page is not published. If no
+  approved version names the page, configure `release_version` to name it.
 - A title is unique in a space: a second release with the same name, such as
   a second deploy in one window, adds its build section to the page; a
   build the page lists already is left alone.
 - Labels: `release`, `date`, `target`, `build`, `changes`, `fixes`, `moved`,
-  `none`, `issue`, `summary`, `type`.
+  `none`, `issue`, `summary`, `type`, `technical`, `freeze_journal`, `exceptions`.
 - The release is live by then: a failure prints `graft: release page NOT
   PUBLISHED: <why>` and makes the deploy exit 1.
 

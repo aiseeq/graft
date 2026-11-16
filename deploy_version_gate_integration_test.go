@@ -111,12 +111,69 @@ func TestDeployReleaseVersion(t *testing.T) {
 	d.commitFile("other.txt", "feat: PROJ-30 work")
 	check(false, "version-top", "PROJ-10 is In Progress, fix versions none: add it to Product.12.11.26 and move it to Ready for release or Done", "version-umbrella")
 	out, code := d.graft("", "deploy", "--unapproved", "prod")
-	if code != 0 || !strings.Contains(out, "approved release not checked (--unapproved)") {
+	if code != 0 || !strings.Contains(out, "collecting approved release (--unapproved)") {
 		t.Errorf("bypass: exit %d\n%s", code, out)
 	}
 	d.commitFile("more.txt", "feat: PROJ-30 more work")
 	d.jira.setFailing()
 	check(false, "down for maintenance")
+}
+
+func TestDeployUnapprovedVersionFailuresOnPage(t *testing.T) {
+	for _, tc := range []struct {
+		name, parentStatus string
+		approvers          []string
+		openSubtask        bool
+		reason             string
+	}{
+		{"approval", "Ready for release", []string{"PENDING"}, false, "version-approval"},
+		{"top", "Testing", []string{"APPROVED"}, false, "version-top"},
+		{"umbrella", "Ready for release", []string{"APPROVED"}, true, "version-umbrella"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDeployFixture(t, func(state string, q func(string) string) string {
+				return strings.Replace(releaseConfig(state, q), `approved_release: {statuses: [Ready for release, Done], ignore_paths: ["docs/**"]}`,
+					`release_version: {enabled: false, name: "Product {dd}.{mm}.{yy}"}
+      release_page: {parent: "500"}
+      approved_release: {statuses: [Ready for release, Done], ignore_paths: ["docs/**"], version: {match: '^Product'}}`, 1)
+			})
+			writeFile(t, filepath.Join(d.state, "prod-sha"), d.git("rev-parse", "HEAD")+"\n")
+			d.jira.setVersions([]map[string]any{{"id": "100", "name": "Product 19.10.26"}}, map[string][]string{"PROJ-10": {"100"}, "PROJ-20": {"100"}})
+			d.jira.setApprovers(map[string][]string{"100": tc.approvers})
+			d.jira.mu.Lock()
+			d.jira.parents = map[string]string{"PROJ-11": "PROJ-10"}
+			d.jira.statuses["PROJ-11"] = "Done"
+			d.jira.statuses["PROJ-20"] = "Ready for release"
+			if tc.openSubtask {
+				d.jira.parents["PROJ-12"] = "PROJ-10"
+				d.jira.statuses["PROJ-12"] = "In Progress"
+			}
+			d.jira.mu.Unlock()
+			d.commitFile("subtask.txt", "feat: PROJ-11 work")
+			d.commitFile("independent.txt", "feat: PROJ-20 work")
+			d.at("2026-10-16 10:00")
+			d.mustGraft("deploy", "test")
+			d.setStatus("PROJ-10", tc.parentStatus)
+			d.at("2026-10-19 15:30")
+			out := d.mustGraft("deploy", "--unapproved", "prod")
+			body := d.jira.page("Product 19.10.26: release notes")
+			ordinary, exceptions, ok := strings.Cut(body, "<h3>Shipped by exception (--unapproved)</h3>")
+			if !ok || strings.Contains(ordinary, ">PROJ-11</a>") || !strings.Contains(exceptions, "PROJ-11") || !strings.Contains(exceptions, tc.reason) {
+				t.Errorf("version failure should put the shipped task and reason in exceptions:\n%s\n%s", body, out)
+			}
+			if tc.name == "approval" {
+				if strings.Contains(ordinary, ">PROJ-20</a>") || !strings.Contains(exceptions, "PROJ-20") {
+					t.Errorf("version approval affects both tasks:\n%s", body)
+				}
+			} else if !strings.Contains(ordinary, ">PROJ-20</a>") || strings.Contains(exceptions, "PROJ-20") {
+				t.Errorf("unrelated task should remain in changes:\n%s", body)
+			}
+			comments, _ := d.jira.snapshot()
+			if len(comments["PROJ-11"]) == 0 || d.status("PROJ-20") != "Done" {
+				t.Errorf("release notes or transitions changed: comments %v, PROJ-20 %s", comments, d.status("PROJ-20"))
+			}
+		})
+	}
 }
 
 func TestDeployReleaseVersionSkippedParentAndIgnoredCommits(t *testing.T) {

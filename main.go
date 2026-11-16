@@ -1325,7 +1325,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	lines := fs.Int("lines", 200, "logs: how many lines")
 	grep := fs.String("grep", "", "logs: keep lines matching this regexp")
 	redeploy := fs.Bool("redeploy", false, "deploy the commit the target already runs")
-	unapproved := fs.Bool("unapproved", false, "skip the approved_release check")
+	unapproved := fs.Bool("unapproved", false, "collect approved_release results without refusing the deploy")
 	pastFreeze := fs.String("past-freeze", "", "deploy through an acceptance freeze with a reason")
 	reason := fs.String("reason", "", "thaw: why the freeze ended")
 	apply := fs.Bool("apply", false, "sweep: move the items, not only list them")

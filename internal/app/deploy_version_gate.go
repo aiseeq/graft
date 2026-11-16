@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"regexp"
@@ -27,6 +28,26 @@ func (v *releaseVersionCheck) fail(id, message string) bool {
 	}
 	v.failures = append(v.failures, fmt.Errorf("%s%s: %s", id, ref, message))
 	return !v.collect
+}
+
+// failItems connects a version refusal to the shipped tasks it affects,
+// including subtasks whose parent is named by the version check.
+func (v *releaseVersionCheck) failItems(id, message string, keys ...string) bool {
+	stop := v.fail(id, message)
+	if !v.collect {
+		return stop
+	}
+	if v.gate.versionItemFailures == nil {
+		v.gate.versionItemFailures = map[string][]string{}
+	}
+	reason := v.failures[len(v.failures)-1].Error()
+	for key := range v.gate.activeKeys {
+		issue := v.gate.gate.issues[key]
+		if len(keys) == 0 || slices.Contains(keys, key) || issue.Parent != "" && slices.Contains(keys, issue.Parent) {
+			v.gate.versionItemFailures[key] = append(v.gate.versionItemFailures[key], reason)
+		}
+	}
+	return stop
 }
 
 // checkReleaseVersion checks the complete version and the parents of shipped subtasks.
@@ -55,13 +76,14 @@ func (v *releaseVersionCheck) readTops(ctx context.Context) bool {
 	for _, key := range slices.Sorted(maps.Keys(v.gate.activeKeys)) {
 		issue, err := v.gate.gate.issue(ctx, key)
 		if err != nil {
+			v.gate.collectionErr = errors.Join(v.gate.collectionErr, err)
 			if v.fail("version-items", fmt.Sprintf("%s: read Jira issue: %v; retry", key, err)) {
 				return true
 			}
 			continue
 		}
 		if issue.Subtask && issue.Parent == "" {
-			if v.fail("version-items", key+": subtask has no parent; fix Jira") {
+			if v.failItems("version-items", key+": subtask has no parent; fix Jira", key) {
 				return true
 			}
 			continue
@@ -70,6 +92,7 @@ func (v *releaseVersionCheck) readTops(ctx context.Context) bool {
 			v.umbrellas[issue.Parent] = true
 			issue, err = v.gate.gate.issue(ctx, issue.Parent)
 			if err != nil {
+				v.gate.collectionErr = errors.Join(v.gate.collectionErr, err)
 				if v.fail("version-items", fmt.Sprintf("%s: read parent: %v; retry", key, err)) {
 					return true
 				}
@@ -94,7 +117,7 @@ func (v *releaseVersionCheck) selectVersion() bool {
 				continue
 			}
 			if version.ID == "" {
-				if v.fail("version-select", key+": fix version has no ID; fix Jira") {
+				if v.failItems("version-select", key+": fix version has no ID; fix Jira", key) {
 					return true
 				}
 				continue
@@ -112,7 +135,7 @@ func (v *releaseVersionCheck) selectVersion() bool {
 		if len(details) > 0 {
 			msg = "multiple release versions: " + strings.Join(details, "; ") + "; choose one for the release tasks"
 		}
-		return v.fail("version-select", msg)
+		return v.failItems("version-select", msg)
 	}
 	for _, selected := range versions {
 		v.selected = selected
@@ -149,7 +172,7 @@ func (v *releaseVersionCheck) checkTops() bool {
 				todo = append(todo, "move it to "+strings.Join(statuses, " or "))
 			}
 			msg := fmt.Sprintf("%s is %s, fix versions %s: %s", key, issue.Status, strings.Join(names, ", "), strings.Join(todo, " and "))
-			if v.fail("version-top", msg) {
+			if v.failItems("version-top", msg, key) {
 				return true
 			}
 		}
@@ -171,12 +194,14 @@ func versionStatusDetail(issue jira.Issue, statuses []string, labelStatuses bool
 func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 	keys, err := v.gate.gate.client.VersionItems(ctx, v.selected.ID)
 	if err != nil {
+		v.gate.collectionErr = errors.Join(v.gate.collectionErr, err)
 		return v.fail("version-items", fmt.Sprintf("%s: read version items: %v; retry", v.selected.Name, err))
 	}
-	var bad, subtasks, missing []string
+	var bad, badKeys, subtasks, subtaskKeys, missing []string
 	for _, key := range keys {
 		issue, err := v.gate.gate.issue(ctx, key)
 		if err != nil {
+			v.gate.collectionErr = errors.Join(v.gate.collectionErr, err)
 			if v.fail("version-items", fmt.Sprintf("%s: read Jira issue: %v; retry", key, err)) {
 				return true
 			}
@@ -187,10 +212,12 @@ func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 		if !dormant {
 			if detail := versionStatusDetail(issue, v.gate.conf.StatusesFor(issue.Labels), len(v.gate.conf.LabelStatuses) > 0); detail != "" {
 				bad = append(bad, detail)
+				badKeys = append(badKeys, key)
 			}
 		}
 		if issue.Subtask || issue.Parent != "" {
 			subtasks = append(subtasks, key+" ("+issue.Status+")")
+			subtaskKeys = append(subtaskKeys, key)
 		}
 		if _, ok := v.tops[key]; !ok {
 			missing = append(missing, key)
@@ -202,11 +229,11 @@ func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 			// As before label_statuses: one remedy for the whole list.
 			message += "; move to " + strings.Join(v.gate.conf.Statuses, " or ")
 		}
-		if v.fail("version-status", message) {
+		if v.failItems("version-status", message, badKeys...) {
 			return true
 		}
 	}
-	if len(subtasks) > 0 && v.fail("version-subtasks", fmt.Sprintf("%s: %s; remove subtasks from the version and add their parents", v.selected.Name, strings.Join(subtasks, ", "))) {
+	if len(subtasks) > 0 && v.failItems("version-subtasks", fmt.Sprintf("%s: %s; remove subtasks from the version and add their parents", v.selected.Name, strings.Join(subtasks, ", ")), subtaskKeys...) {
 		return true
 	}
 	if len(missing) > 0 {
@@ -235,6 +262,7 @@ func (v *releaseVersionCheck) checkUmbrellas(ctx context.Context) bool {
 			}
 			sub, err := v.gate.gate.issue(ctx, subkey)
 			if err != nil {
+				v.gate.collectionErr = errors.Join(v.gate.collectionErr, err)
 				if v.fail("version-umbrella", fmt.Sprintf("%s: read subtask %s: %v; retry", key, subkey, err)) {
 					return true
 				}
@@ -248,7 +276,7 @@ func (v *releaseVersionCheck) checkUmbrellas(ctx context.Context) bool {
 				open = append(open, subkey+" ("+sub.Status+")")
 			}
 		}
-		if len(open) > 0 && v.fail("version-umbrella", fmt.Sprintf("%s is %s with unfinished subtasks %s; move them to Done", key, parent.Status, strings.Join(open, ", "))) {
+		if len(open) > 0 && v.failItems("version-umbrella", fmt.Sprintf("%s is %s with unfinished subtasks %s; move them to Done", key, parent.Status, strings.Join(open, ", ")), key) {
 			return true
 		}
 	}
@@ -258,6 +286,7 @@ func (v *releaseVersionCheck) checkUmbrellas(ctx context.Context) bool {
 func (v *releaseVersionCheck) checkApproval(ctx context.Context) {
 	approvers, err := v.gate.gate.client.VersionApprovers(ctx, v.selected.ID)
 	if err != nil {
+		v.gate.collectionErr = errors.Join(v.gate.collectionErr, err)
 		v.fail("version-approval", fmt.Sprintf("%s: read approvers: %v; retry", v.selected.Name, err))
 		return
 	}
@@ -279,7 +308,7 @@ func (v *releaseVersionCheck) checkApproval(ctx context.Context) {
 	if len(pending) == 0 {
 		pending = append(pending, "no approvers")
 	}
-	v.fail("version-approval", fmt.Sprintf("%s: %s; add approvers and obtain all approvals", v.selected.Name, strings.Join(pending, ", ")))
+	v.failItems("version-approval", fmt.Sprintf("%s: %s; add approvers and obtain all approvals", v.selected.Name, strings.Join(pending, ", ")))
 }
 
 // approverName reads the approver's name; without it the account still says who.

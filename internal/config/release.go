@@ -124,6 +124,7 @@ var PageLabels = map[string]string{
 	"summary":        "Summary",
 	"type":           "Type",
 	"technical":      "Technical changes",
+	"exceptions":     "Shipped by exception (--unapproved)",
 }
 
 // Label is the page's word for the key.

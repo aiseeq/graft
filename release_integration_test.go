@@ -1084,7 +1084,7 @@ func TestReleasePageApprovedVersions(t *testing.T) {
 	})
 	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-1": {"10010"}})
 	d.jira.setApprovers(map[string][]string{"10010": {"APPROVED", "APPROVED"}})
-	if out, code := d.graft("", "deploy", "--unapproved", "live"); code != 1 || !strings.Contains(out, "graft: release page NOT PUBLISHED: no approved version names the release") {
+	if out, code := d.graft("", "deploy", "--unapproved", "live"); code != 1 || !strings.Contains(out, "approval collection failed: no deployed commit recorded") {
 		t.Errorf("an unapproved release: exit %d\n%s", code, out)
 	}
 	d.write("a.txt", "a\n")
@@ -1118,7 +1118,7 @@ func TestReleasePageGroupsTechnicalSubtasks(t *testing.T) {
 			d.jira.statuses = map[string]string{"PROJ-11": "Done", "PROJ-12": "Done", "PROJ-13": "Done"}
 			d.jira.types = map[string]string{"PROJ-10": "Task", "PROJ-11": "Sub-task", "PROJ-12": "Sub-task", "PROJ-13": "Bug"} // a subtask of a fix type folds into its parent too
 			d.jira.mu.Unlock()
-			if out, code := d.graft("", "deploy", "--unapproved", "live"); code != 1 || !strings.Contains(out, "no approved version names the release") {
+			if out, code := d.graft("", "deploy", "--unapproved", "live"); code != 1 || !strings.Contains(out, "approval collection failed: no deployed commit recorded") {
 				t.Fatalf("baseline deploy: exit %d\n%s", code, out)
 			}
 			for _, key := range []string{"PROJ-20", "PROJ-11", "PROJ-12", "PROJ-13"} {
@@ -1160,7 +1160,9 @@ func TestReleaseNameWithoutVersions(t *testing.T) {
 	d.at("2026-10-16 10:00")
 	d.mustGraft("deploy", "test")
 	d.at("2026-10-19 15:30")
-	d.mustGraft("deploy", "--unapproved", "prod")
+	if out, code := d.graft("", "deploy", "--unapproved", "prod"); code == 0 || !strings.Contains(out, "approval collection failed: no deployed commit recorded") {
+		t.Fatalf("initial deploy: exit %d\n%s", code, out)
+	}
 	d.at("2026-10-20 10:00")
 	d.commitFile("checked.txt", "feat: PROJ-8 checked work")
 	d.setStatus("PROJ-8", "In Progress")
@@ -1197,7 +1199,9 @@ func TestReleaseAttribute(t *testing.T) {
 	d.at("2026-10-16 10:00")
 	d.mustGraft("deploy", "test")
 	d.at("2026-10-19 15:30")
-	d.mustGraft("deploy", "--unapproved", "prod")
+	if out, code := d.graft("", "deploy", "--unapproved", "prod"); code == 0 || !strings.Contains(out, "approval collection failed: no deployed commit recorded") {
+		t.Fatalf("initial deploy: exit %d\n%s", code, out)
+	}
 
 	d.at("2026-10-20 10:00")
 	d.commitFile("checked.txt", "feat: PROJ-8 checked work")
