@@ -1151,43 +1151,153 @@ func mergeResolveVersion(repo *gitx.Repo, cfg *config.Config) error {
 		return err
 	}
 	allowed := cfg.Version.File
-	var bad []string
-	for _, p := range paths {
-		if p != allowed {
-			bad = append(bad, p)
-		}
-	}
-	if len(bad) > 0 {
-		return fmt.Errorf("merge conflict in %s; trunk and source are unchanged", strings.Join(paths, ", "))
+	targetsByPath := make(map[string][]version.Target, len(cfg.Version.Sync))
+	for _, target := range version.Targets(cfg.Version)[1:] {
+		targetsByPath[target.Path] = append(targetsByPath[target.Path], target)
 	}
 	if len(paths) == 0 {
 		return errors.New("merge failed without conflicts")
 	}
-	oursText, err := repo.Git("show", ":2:"+allowed)
+	if !slices.Contains(paths, allowed) {
+		return fmt.Errorf("merge conflict in %s; trunk and source are unchanged", strings.Join(paths, ", "))
+	}
+	for _, p := range paths {
+		if p != allowed && len(targetsByPath[p]) == 0 {
+			return fmt.Errorf("merge conflict in %s; trunk and source are unchanged", strings.Join(paths, ", "))
+		}
+	}
+	versionStages, err := mergeVersionConflictStages(repo, allowed, len(paths) > 1)
 	if err != nil {
 		return err
 	}
-	theirsText, err := repo.Git("show", ":3:"+allowed)
-	if err != nil {
-		return err
-	}
-	ours, err := version.ParseFile(strings.TrimSpace(oursText))
-	if err != nil {
-		return err
-	}
-	theirs, err := version.ParseFile(strings.TrimSpace(theirsText))
-	if err != nil {
-		return err
-	}
+	ours, theirs := versionStages[1], versionStages[2]
+	chosen := ours
 	side := "--ours"
 	if ours.Less(theirs) {
+		chosen = theirs
 		side = "--theirs"
 	}
-	_, err = repo.Git("checkout", side, "--", allowed)
-	if err == nil {
-		_, err = repo.Git("add", "--", allowed)
+	mirrors, err := mergePrepareVersionMirrors(repo, paths, allowed, targetsByPath, versionStages, chosen.String())
+	if err != nil {
+		return err
 	}
-	return err
+	return mergeInstallVersionResolution(repo, allowed, side, mirrors)
+}
+
+func mergeVersionConflictStages(repo *gitx.Repo, path string, includeBase bool) ([3]version.Semver, error) {
+	var stages [3]version.Semver
+	for i := 1; i <= len(stages); i++ {
+		if i == 1 && !includeBase {
+			continue
+		}
+		text, err := repo.Git("show", fmt.Sprintf(":%d:%s", i, path))
+		if err != nil {
+			return stages, err
+		}
+		stages[i-1], err = version.ParseFile(strings.TrimSpace(text))
+		if err != nil {
+			return stages, err
+		}
+	}
+	return stages, nil
+}
+
+type mergeVersionMirrorResult struct {
+	path    string
+	content []byte
+}
+
+func mergePrepareVersionMirrors(repo *gitx.Repo, paths []string, versionFile string, targetsByPath map[string][]version.Target, versionStages [3]version.Semver, selected string) ([]mergeVersionMirrorResult, error) {
+	var mirrors []mergeVersionMirrorResult
+	for _, p := range paths {
+		if p == versionFile {
+			continue
+		}
+		content, err := mergeVersionMirror(repo, targetsByPath[p], p, versionStages, selected)
+		if err != nil {
+			return nil, err
+		}
+		mirrors = append(mirrors, mergeVersionMirrorResult{path: p, content: content})
+	}
+	return mirrors, nil
+}
+
+func mergeInstallVersionResolution(repo *gitx.Repo, versionFile, side string, mirrors []mergeVersionMirrorResult) error {
+	_, err := repo.Git("checkout", side, "--", versionFile)
+	if err == nil {
+		_, err = repo.Git("add", "--", versionFile)
+	}
+	if err != nil {
+		return err
+	}
+	for _, mirror := range mirrors {
+		fullPath := filepath.Join(repo.Root, filepath.FromSlash(mirror.path))
+		info, err := os.Stat(fullPath)
+		if err != nil {
+			return fmt.Errorf("stat merge mirror %s: %w", mirror.path, err)
+		}
+		if err := os.WriteFile(fullPath, mirror.content, info.Mode().Perm()); err != nil {
+			return fmt.Errorf("write merged mirror %s: %w", mirror.path, err)
+		}
+		if _, err := repo.Git("add", "--", mirror.path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func mergeVersionMirror(repo *gitx.Repo, targets []version.Target, path string, versionStages [3]version.Semver, selected string) ([]byte, error) {
+	stages := [3][]byte{}
+	for i := range stages {
+		text, err := repo.Git("show", fmt.Sprintf(":%d:%s", i+1, path))
+		if err != nil {
+			return nil, fmt.Errorf("merge conflict in %s; trunk and source are unchanged", path)
+		}
+		original := []byte(text)
+		for _, target := range targets {
+			value, err := target.Extract(original)
+			if err != nil {
+				return nil, fmt.Errorf("merge conflict in %s; trunk and source are unchanged: %w", path, err)
+			}
+			got, err := version.ParseFile(value)
+			if err != nil {
+				return nil, fmt.Errorf("merge conflict in %s; trunk and source are unchanged", path)
+			}
+			if got != versionStages[i] {
+				return nil, fmt.Errorf("merge conflict in %s: mirror version %s does not match VERSION stage %s; trunk and source are unchanged", path, got, versionStages[i])
+			}
+		}
+		stages[i] = original
+		for _, target := range targets {
+			stages[i], err = target.Replace(stages[i], selected)
+			if err != nil {
+				return nil, fmt.Errorf("merge conflict in %s; trunk and source are unchanged: %w", path, err)
+			}
+		}
+	}
+	dir, err := os.MkdirTemp("", "graft-merge-version-")
+	if err != nil {
+		return nil, fmt.Errorf("create merge version temp directory: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	files := []string{"base", "ours", "theirs"}
+	for i, name := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), stages[i], 0o600); err != nil {
+			return nil, fmt.Errorf("write merge version input %s: %w", name, err)
+		}
+	}
+	merged, err := repo.Git("merge-file", "-p", "--", filepath.Join(dir, "ours"), filepath.Join(dir, "base"), filepath.Join(dir, "theirs"))
+	if err != nil {
+		return nil, fmt.Errorf("merge conflict in %s; trunk and source are unchanged", path)
+	}
+	resolved := []byte(merged)
+	for _, target := range targets {
+		resolved, err = target.Replace(resolved, selected)
+		if err != nil {
+			return nil, fmt.Errorf("merge conflict in %s; trunk and source are unchanged: %w", path, err)
+		}
+	}
+	return resolved, nil
 }
 func mergeBump(repo *gitx.Repo, cfg *config.Config, branch, base, ticketKey string) error {
 	if cfg.Version.Mode != config.ModeFile {

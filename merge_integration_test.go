@@ -894,6 +894,182 @@ func TestMergeVersionConflictKeepsGreaterSourceVersion(t *testing.T) {
 	}
 }
 
+func TestMergeVersionSyncConflictsMergeMirrors(t *testing.T) {
+	for _, mode := range []string{"rebase", "merge"} {
+		t.Run(mode, func(t *testing.T) {
+			f := versionSyncMergeRepo(t)
+			f.git("switch", "-q", "-c", "feature/PROJ-91")
+			f.write("web/package.json", strings.Replace(f.read("web/package.json"), `"private": false`, `"private": true`, 1))
+			f.write("VERSION", "1.3.0\n")
+			f.write("web/package.json", strings.Replace(f.read("web/package.json"), `"version": "1.2.3"`, `"version": "1.3.0"`, 1))
+			f.write("app.yaml", strings.Replace(f.read("app.yaml"), `version: "1.2.3"`, `version: "1.3.0"`, 1))
+			f.mustGraft("commit", "--minor", "-m", "feat: source version")
+			f.git("switch", "-q", "main")
+			f.write("web/package.json", strings.Replace(f.read("web/package.json"), `"name": "web"`, `"name": "trunk-web"`, 1))
+			f.mustGraft("commit", "-m", "fix: trunk version")
+			f.git("push", "-q", "origin", "main")
+			args := []string{"merge"}
+			if mode == "merge" {
+				args = append(args, "--mode", "merge")
+			}
+			f.mustGraft(append(args, "feature/PROJ-91")...)
+			if got := strings.TrimSpace(f.read("VERSION")); got != "1.4.0" {
+				t.Errorf("VERSION = %q, want merge-bumped 1.4.0", got)
+			}
+			pkg := f.read("web/package.json")
+			for _, want := range []string{`"version": "1.4.0"`, `"private": true`, `"name": "trunk-web"`} {
+				if !strings.Contains(pkg, want) {
+					t.Errorf("package.json missing %s:\n%s", want, pkg)
+				}
+			}
+			if !strings.Contains(f.read("app.yaml"), `version: "1.4.0"`) {
+				t.Errorf("yaml version not synced:\n%s", f.read("app.yaml"))
+			}
+		})
+	}
+}
+
+func TestMergeVersionSyncConflictOnSameFieldRefuses(t *testing.T) {
+	f := versionSyncMergeRepo(t)
+	f.git("switch", "-q", "-c", "feature/PROJ-92")
+	f.write("web/package.json", strings.Replace(f.read("web/package.json"), `"private": false`, `"private": true`, 1))
+	f.write("VERSION", "1.3.0\n")
+	f.write("web/package.json", strings.Replace(f.read("web/package.json"), `"version": "1.2.3"`, `"version": "1.3.0"`, 1))
+	f.write("app.yaml", strings.Replace(f.read("app.yaml"), `version: "1.2.3"`, `version: "1.3.0"`, 1))
+	f.mustGraft("commit", "--minor", "-m", "feat: source version")
+	source := f.git("rev-parse", "HEAD")
+	f.git("switch", "-q", "main")
+	f.write("web/package.json", strings.Replace(f.read("web/package.json"), `"private": false`, `"private": "trunk"`, 1))
+	f.mustGraft("commit", "-m", "fix: trunk version")
+	f.git("push", "-q", "origin", "main")
+	trunk := f.git("rev-parse", "HEAD")
+	if out, code := f.graft("", "merge", "feature/PROJ-92"); code == 0 || !strings.Contains(out, "web/package.json") {
+		t.Fatalf("conflicting mirror field: exit %d\n%s", code, out)
+	}
+	if got := f.git("rev-parse", "HEAD"); got != trunk {
+		t.Errorf("trunk moved: %s", got)
+	}
+	if got := f.git("rev-parse", "feature/PROJ-92"); got != source {
+		t.Errorf("source moved: %s", got)
+	}
+}
+
+func TestMergeVersionSyncConflictWithManualVersionMismatchRefuses(t *testing.T) {
+	f := versionSyncMergeRepo(t)
+	f.git("switch", "-q", "-c", "feature/PROJ-93")
+	f.write("web/package.json", strings.Replace(f.read("web/package.json"), `"private": false`, `"private": true`, 1))
+	f.mustGraft("commit", "--minor", "-m", "feat: source version")
+	sourceVersion := strings.TrimSpace(f.read("VERSION"))
+	f.write("web/package.json", strings.Replace(f.read("web/package.json"), `"version": "`+sourceVersion+`"`, `"version": "9.9.9"`, 1))
+	f.git("add", "web/package.json")
+	f.git("commit", "--amend", "--no-edit", "--quiet")
+	source := f.git("rev-parse", "HEAD")
+	f.git("switch", "-q", "main")
+	f.write("web/package.json", strings.Replace(f.read("web/package.json"), `"name": "web"`, `"name": "trunk-web"`, 1))
+	f.mustGraft("commit", "-m", "fix: trunk version")
+	f.git("push", "-q", "origin", "main")
+	trunk := f.git("rev-parse", "HEAD")
+	remoteTrunk := f.gitIn(f.remote("origin"), "rev-parse", "main")
+	if out, code := f.graft("", "merge", "feature/PROJ-93"); code == 0 || !strings.Contains(out, "web/package.json: mirror version 9.9.9 does not match VERSION stage "+sourceVersion) {
+		t.Fatalf("inconsistent mirror version: exit %d\n%s", code, out)
+	}
+	if got := f.git("rev-parse", "HEAD"); got != trunk {
+		t.Errorf("trunk moved: %s", got)
+	}
+	if got := f.git("rev-parse", "feature/PROJ-93"); got != source {
+		t.Errorf("source moved: %s", got)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != remoteTrunk {
+		t.Errorf("remote trunk moved: %s", got)
+	}
+	if got := f.git("show", "feature/PROJ-93:web/package.json"); !strings.Contains(got, `"version": "9.9.9"`) {
+		t.Errorf("manual source version changed:\n%s", got)
+	}
+}
+
+func TestMergeVersionSyncConflictWithDifferentRegexMatchesRefuses(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion:\n  mode: file\n  file: VERSION\n  sync:\n    - {path: app.yaml, format: regex, pattern: 'version:\\s*\"([^\"]*)\"'}\nticket: {pattern: 'PROJ-[0-9]+'}\ngate: []\n",
+		"VERSION":     "1.2.3\n", "app.yaml": "name: app\nversion: \"1.2.3\"\nother-version: \"1.2.3\"\n",
+	}, "origin")
+	f.mustPlainCommit("chore: base PROJ-96")
+	f.git("branch", "-m", "main")
+	f.git("push", "-q", "origin", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("branch", "--set-upstream-to", "origin/main", "main")
+	f.git("remote", "set-head", "origin", "main")
+	f.git("switch", "-q", "-c", "feature/PROJ-97")
+	f.write("app.yaml", strings.Replace(f.read("app.yaml"), "name: app", "name: source-app", 1))
+	f.mustGraft("commit", "--minor", "-m", "feat: source version")
+	sourceVersion := strings.TrimSpace(f.read("VERSION"))
+	f.write("app.yaml", strings.Replace(f.read("app.yaml"), `other-version: "`+sourceVersion+`"`, `other-version: "8.8.8"`, 1))
+	f.git("add", "app.yaml")
+	f.git("commit", "--amend", "--no-edit", "--quiet")
+	source := f.git("rev-parse", "HEAD")
+	f.git("switch", "-q", "main")
+	f.write("app.yaml", strings.Replace(f.read("app.yaml"), "name: app", "name: trunk-app", 1))
+	f.mustGraft("commit", "-m", "fix: trunk version")
+	f.git("push", "-q", "origin", "main")
+	trunk := f.git("rev-parse", "HEAD")
+	if out, code := f.graft("", "merge", "feature/PROJ-97"); code == 0 || !strings.Contains(out, "app.yaml: disagrees with itself") {
+		t.Fatalf("different regex matches were not rejected specifically: exit %d\n%s", code, out)
+	}
+	if got := f.git("rev-parse", "HEAD"); got != trunk {
+		t.Errorf("trunk moved: %s", got)
+	}
+	if got := f.git("rev-parse", "feature/PROJ-97"); got != source {
+		t.Errorf("source moved: %s", got)
+	}
+}
+
+func TestMergeVersionSyncMultipleTargetsInOneFile(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml":       "schema: 1\nversion:\n  mode: file\n  file: VERSION\n  sync:\n    - {path: package-lock.json, format: json, key: [version]}\n    - {path: package-lock.json, format: json, key: [packages, '', version]}\nticket: {pattern: 'PROJ-[0-9]+'}\ngate: []\n",
+		"VERSION":           "1.2.3\n",
+		"package-lock.json": "{\n  \"name\": \"app\",\n  \"version\": \"1.2.3\",\n  \"packages\": {\n    \"\": {\n      \"version\": \"1.2.3\",\n      \"sourceFlag\": false\n    }\n  }\n}\n",
+	}, "origin")
+	f.mustPlainCommit("chore: base PROJ-94")
+	f.git("branch", "-m", "main")
+	f.git("push", "-q", "origin", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("branch", "--set-upstream-to", "origin/main", "main")
+	f.git("remote", "set-head", "origin", "main")
+	f.git("switch", "-q", "-c", "feature/PROJ-95")
+	f.write("package-lock.json", strings.Replace(f.read("package-lock.json"), `"sourceFlag": false`, `"sourceFlag": true`, 1))
+	f.mustGraft("commit", "--minor", "-m", "feat: source version")
+	f.git("switch", "-q", "main")
+	f.write("package-lock.json", strings.Replace(f.read("package-lock.json"), `"name": "app"`, `"name": "trunk-app"`, 1))
+	f.mustGraft("commit", "-m", "fix: trunk version")
+	f.git("push", "-q", "origin", "main")
+	f.mustGraft("merge", "feature/PROJ-95")
+	lock := f.read("package-lock.json")
+	versionValue := `"version": "` + strings.TrimSpace(f.read("VERSION")) + `"`
+	for _, want := range []string{versionValue, `"sourceFlag": true`, `"name": "trunk-app"`} {
+		if !strings.Contains(lock, want) {
+			t.Errorf("package-lock.json missing %s:\n%s", want, lock)
+		}
+	}
+	if strings.Count(lock, versionValue) != 2 {
+		t.Errorf("both package-lock version targets were not updated:\n%s", lock)
+	}
+}
+
+func versionSyncMergeRepo(t *testing.T) *fixture {
+	t.Helper()
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion:\n  mode: file\n  file: VERSION\n  sync:\n    - {path: web/package.json, format: json, key: [version]}\n    - {path: app.yaml, format: regex, pattern: 'version:\\s*\"([^\"]*)\"'}\nticket: {pattern: 'PROJ-[0-9]+'}\ngate: []\n",
+		"VERSION":     "1.2.3\n", "web/package.json": "{\n  \"name\": \"web\",\n  \"version\": \"1.2.3\",\n  \"private\": false\n}\n",
+		"app.yaml": "name: app\nversion: \"1.2.3\"\n",
+	}, "origin")
+	f.mustPlainCommit("chore: base PROJ-90")
+	f.git("branch", "-m", "main")
+	f.git("push", "-q", "origin", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("branch", "--set-upstream-to", "origin/main", "main")
+	f.git("remote", "set-head", "origin", "main")
+	return f
+}
+
 // A replace ref shows the checks one tree and pushes another: the merge
 // checks the objects the remote gets.
 func TestMergeChecksReplacedObjects(t *testing.T) {
