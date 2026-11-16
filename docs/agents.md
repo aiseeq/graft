@@ -28,6 +28,16 @@ work has been checked; graft suggests removal at an approved or done status.
 It can add a ticket key from the branch, commit and push to every remote.
 Read a refusal and its hint, then fix the cause before trying again.
 graft commit has no flag to skip a check. Flags that relax a safeguard elsewhere (deploy --unapproved, --past-freeze) are for the user's explicit word only.
+When Git's pre-commit hook detects a commit finishing a merge, rebase,
+cherry-pick or revert, it runs checks and the gate. For a conflict-free merge
+commit, pre-commit does not run; post-merge runs the gate after the commit is
+made, and skips it when the resulting HEAD has no second parent. With graft's hook active, a plain
+`git commit` is refused unless the branch matches a glob in the user config's
+`commit.local_branches`; there the hook runs checks only, without the gate,
+version bump or push. Graft adds `Worker:` trailers for detected worker models;
+write other trailers yourself. Graft normally pushes the refs it creates. Push
+branches and tags made outside graft by hand; if a push fails, follow graft's
+retry instructions.
 
 ## Merge
 
@@ -72,6 +82,15 @@ read the task output when graft reports that it cannot set one.
 ## Deploy
 
 Read the target's configuration and `graft deploy -h` before deploying.
+Run `graft deploy <target>` once in the foreground, without an external
+`timeout` wrapper: the deploy script can invoke sudo and need someone available
+to answer. For `confirm: sudo` without a terminal, graft retries fingerprint
+confirmation for up to 10 minutes; on success it runs the script, and on failure
+the deploy exits before the script. Other refusals can end the wait sooner.
+Use `graft deploy versions` to inspect each configured target's version and
+commit when available. Create an environment-fix branch from its reported commit
+only if that commit is known and available locally; otherwise determine its SHA
+and fetch it before creating the branch.
 `graft deploy check <target>` reports refusals without deploying.
 Build the user-facing summary from its output; add what was done and why, and
 risks the configuration cannot know.
