@@ -350,9 +350,18 @@ type PushError struct {
 	Lease        bool
 	NoFollowTags bool
 	LocalState   string
+	Advice       string
 }
 
 func (e *PushError) Error() string {
+	if e.Advice != "" {
+		localState := e.LocalState
+		if localState == "" {
+			localState = "local refs are kept"
+		}
+		return fmt.Sprintf("push failed for %d of %d remotes (%s); %s. %s",
+			len(e.Failed), e.Total, strings.Join(e.Failed, ", "), localState, e.Advice)
+	}
 	var retry []string
 	for _, r := range e.Failed {
 		retry = append(retry, retryPushCommand(r, e.Refs, e.GitConfig, e.Lease, e.NoFollowTags))
@@ -385,20 +394,144 @@ func (a *App) pushWithGitConfig(repo *gitx.Repo, remotes, refs, gitConfig []stri
 		return nil
 	}
 	var failed []string
+	var failedErrors []error
 	for _, remote := range remotes {
 		args := append(slices.Clone(gitConfig), pushArgs(remote, lease, noFollowTags)...)
 		args = append(args, refs...)
 		if _, err := repo.Git(args...); err != nil {
 			failed = append(failed, remote)
+			failedErrors = append(failedErrors, err)
 			fmt.Fprintf(a.Stderr, "graft: push to %s FAILED: %v\n", remote, err)
 			continue
 		}
 		a.printf("pushed to %s", remote)
 	}
 	if len(failed) > 0 {
-		return &PushError{Failed: failed, Total: len(remotes), Refs: refs, GitConfig: gitConfig, Lease: lease, NoFollowTags: noFollowTags}
+		pushErr := &PushError{Failed: failed, Total: len(remotes), Refs: refs, GitConfig: gitConfig, Lease: lease, NoFollowTags: noFollowTags}
+		advice, adviceErr := rebasedUpstreamPushAdvice(repo, failed, failedErrors, refs, gitConfig, lease, noFollowTags)
+		if adviceErr != nil {
+			fmt.Fprintf(a.Stderr, "graft: could not check the failed push's upstream history: %v\n", adviceErr)
+		}
+		if advice != "" {
+			pushErr.Advice = advice
+		}
+		return pushErr
 	}
 	return nil
+}
+
+// rebasedUpstreamPushAdvice replaces the generic retry command only for
+// rejected branches whose current tips descend from an earlier local branch
+// tip recorded in that branch's reflog.
+func rebasedUpstreamPushAdvice(repo *gitx.Repo, failed []string, failures []error, refs, gitConfig []string, lease, noFollowTags bool) (string, error) {
+	if len(failed) == 0 || len(failed) != len(failures) || !slices.Contains(refs, "HEAD") {
+		return "", nil
+	}
+	branch, err := repo.Branch()
+	if err != nil {
+		return "", err
+	}
+	upstreamRemote, upstreamBranch, _, err := worktreeBranchUpstream(repo, branch)
+	if err != nil {
+		return "", err
+	}
+	if upstreamRemote == "" || upstreamBranch != branch {
+		return "", nil
+	}
+	actions := make(map[string]string, len(failed))
+	var checkErrors []error
+	for i, remote := range failed {
+		if !pushWasNonFastForward(failures[i]) {
+			continue
+		}
+		trackingRef := "refs/remotes/" + remote + "/" + branch
+		fetchSpec := "+refs/heads/" + branch + ":" + trackingRef
+		if _, err := repo.Git("fetch", "--quiet", remote, fetchSpec); err != nil {
+			checkErrors = append(checkErrors, fmt.Errorf("fetching %s/%s for reflog check: %w", remote, branch, err))
+			continue
+		}
+		staleTip, err := repo.Git("rev-parse", "--verify", trackingRef)
+		if err != nil {
+			checkErrors = append(checkErrors, fmt.Errorf("reading fetched tip %s: %w", trackingRef, err))
+			continue
+		}
+		staleTip = strings.TrimSpace(staleTip)
+		included, err := repo.IsAncestor(staleTip, "HEAD")
+		if err != nil {
+			checkErrors = append(checkErrors, fmt.Errorf("checking whether %s is already in HEAD: %w", trackingRef, err))
+			continue
+		}
+		if included {
+			continue
+		}
+		owned, err := branchReflogContains(repo, branch, staleTip)
+		if err != nil {
+			checkErrors = append(checkErrors, fmt.Errorf("checking %s against branch reflog: %w", trackingRef, err))
+			continue
+		}
+		if !owned {
+			continue
+		}
+		if remote == upstreamRemote {
+			actions[remote] = remote + ": run `graft worktree sync --push`"
+			continue
+		}
+		actions[remote] = fmt.Sprintf("%s: run `git push --force-with-lease=refs/heads/%s:%s %s HEAD:refs/heads/%s`", remote, branch, staleTip, remote, branch)
+	}
+	if len(actions) == 0 {
+		return "", errors.Join(checkErrors...)
+	}
+	perRemote := make([]string, 0, len(failed))
+	for _, remote := range failed {
+		if action, ok := actions[remote]; ok {
+			perRemote = append(perRemote, action)
+			continue
+		}
+		perRemote = append(perRemote, remote+": retry with `"+retryPushCommand(remote, refs, gitConfig, lease, noFollowTags)+"`")
+	}
+	return "handle each rejected remote: " + strings.Join(perRemote, "; "), errors.Join(checkErrors...)
+}
+
+func pushWasNonFastForward(err error) bool {
+	gerr, ok := errors.AsType[*gitx.Error](err)
+	return ok && (strings.Contains(gerr.Stderr, "non-fast-forward") || strings.Contains(gerr.Stderr, "fetch first"))
+}
+
+func worktreeBranchUpstream(repo *gitx.Repo, branch string) (remote, remoteBranch, trackingRef string, err error) {
+	out, err := repo.Git("for-each-ref", "--format=%(upstream:remotename) %(upstream:remoteref) %(upstream)", "refs/heads/"+branch)
+	if err != nil {
+		return "", "", "", err
+	}
+	fields := strings.Fields(out)
+	if len(fields) != 3 {
+		return "", "", "", nil
+	}
+	remote = fields[0]
+	trackingRef = fields[2]
+	remoteBranch, ok := strings.CutPrefix(fields[1], "refs/heads/")
+	if !ok || remote == "." {
+		return "", "", "", nil
+	}
+	return remote, remoteBranch, trackingRef, nil
+}
+
+// branchReflogContains reports whether tip is an ancestor of a prior local
+// value of refs/heads/branch. Patch-equivalent commits do not establish origin.
+func branchReflogContains(repo *gitx.Repo, branch, tip string) (bool, error) {
+	log, err := repo.Git("reflog", "show", "--format=%H", "refs/heads/"+branch)
+	if err != nil {
+		return false, err
+	}
+	for oldTip := range strings.FieldsSeq(log) {
+		included, err := repo.IsAncestor(tip, oldTip)
+		if err != nil {
+			return false, err
+		}
+		if included {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // pushArgs is git push to remote, with --force-with-lease for a branch that is

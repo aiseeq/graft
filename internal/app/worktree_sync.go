@@ -108,6 +108,11 @@ func (a *App) WorktreeSync(o WorktreeSyncOptions) error {
 	if err := worktreeSyncRebase(repo, trunk); err != nil {
 		return err
 	}
+	if !o.Push {
+		if err := worktreeSyncStaleUpstreamHint(a, repo); err != nil {
+			return err
+		}
+	}
 	if o.Push {
 		if _, err := repo.Git("push", "--force-with-lease="+pushRef+":"+lease, pushRemote, "HEAD:"+pushRef); err != nil {
 			return fmt.Errorf("git push --force-with-lease to %s/%s failed; inspect the remote branch and include any new commits with git rebase %s or git merge before syncing again: %w", pushRemote, strings.TrimPrefix(pushRef, "refs/heads/"), trackingRef, err)
@@ -123,6 +128,34 @@ func (a *App) WorktreeSync(o WorktreeSyncOptions) error {
 	} else {
 		a.printf("on %s (%s), the uncommitted changes back in the worktree; nothing committed or pushed", trunk, strings.TrimSpace(head))
 	}
+	return nil
+}
+
+func worktreeSyncStaleUpstreamHint(a *App, repo *gitx.Repo) error {
+	branch, err := repo.Branch()
+	if err != nil {
+		return err
+	}
+	remote, remoteBranch, upstream, err := worktreeBranchUpstream(repo, branch)
+	if err != nil {
+		return err
+	}
+	if remote == "" || remoteBranch != branch || upstream != "refs/remotes/"+remote+"/"+branch {
+		return nil
+	}
+	if _, err := repo.Git("merge-base", "--is-ancestor", upstream, "HEAD"); err == nil {
+		return nil
+	} else if gitx.ExitCode(err) != 1 {
+		return err
+	}
+	owned, err := branchReflogContains(repo, branch, "refs/remotes/"+remote+"/"+branch)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return nil
+	}
+	a.printf("the remote branch %s holds the old history; the next graft commit will not overwrite it. Run `graft worktree sync --push` to replace it with force-with-lease, or `graft merge %s` from the main worktree", upstream, branch)
 	return nil
 }
 
