@@ -851,7 +851,7 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 	if len(keys) == 0 && len(held) == 0 {
 		return notesUnset{}
 	}
-	fix := &fixVersionRun{app: a, conf: r.target.ReleaseNotes.FixVersion}
+	fix := &fixVersionRun{app: a, conf: r.target.ReleaseNotes.FixVersion, outsideKeys: outsideDormantKeys(r.cfg)}
 	// skipAll reports notes that cannot be posted at all; the fix version of
 	// every delivered item is then unknown.
 	skipAll := func(format string, err error) notesUnset {
@@ -1032,10 +1032,31 @@ func (m *noteMover) leaveDormant(issue jira.Issue) bool {
 }
 
 func dormantLeftMessage(item config.DormantReleaseItem, issue jira.Issue) string {
-	if item.Key != issue.Key && issue.Parent == item.Key {
-		return fmt.Sprintf("%s ships dormant with its parent %s (%s): left in %s, not moved", issue.Key, item.Key, item.Reason, issue.Status)
+	why := item.Reason
+	if item.DisabledBy != "" {
+		why += "; disabled by " + item.DisabledBy
 	}
-	return fmt.Sprintf("%s ships dormant (%s): left in %s, not moved", issue.Key, item.Reason, issue.Status)
+	if item.Key != issue.Key && issue.Parent == item.Key {
+		return fmt.Sprintf("%s ships dormant with its parent %s (%s): left in %s, not moved", issue.Key, item.Key, why, issue.Status)
+	}
+	return fmt.Sprintf("%s ships dormant (%s): left in %s, not moved", issue.Key, why, issue.Status)
+}
+
+func outsideDormantKeys(cfg *config.Config) map[string]bool {
+	keys := map[string]bool{}
+	if cfg == nil || cfg.Deploy == nil {
+		return keys
+	}
+	for _, target := range cfg.Deploy.Targets {
+		if target != nil && target.ApprovedRelease != nil {
+			for _, item := range target.ApprovedRelease.Dormant {
+				if item.OutsideVersion != "" {
+					keys[item.Key] = true
+				}
+			}
+		}
+	}
+	return keys
 }
 
 func quietNoteReason(q *config.QuietNotes, issue jira.Issue) string {
@@ -1359,11 +1380,12 @@ func (a *App) noteable(ctx context.Context, client *jira.Client, notes *config.J
 // fixVersionRun gives the noted items of one deploy the next version of their
 // project, reading each project's versions once.
 type fixVersionRun struct {
-	app    *App
-	conf   *config.FixVersion
-	client *jira.Client
-	next   map[string]fixChoice
-	unset  []string
+	app         *App
+	conf        *config.FixVersion
+	client      *jira.Client
+	next        map[string]fixChoice
+	unset       []string
+	outsideKeys map[string]bool
 }
 
 type fixChoice struct {
@@ -1374,6 +1396,10 @@ type fixChoice struct {
 // add sets the fix version of a noted item, unless it has it already.
 func (f *fixVersionRun) add(ctx context.Context, issue jira.Issue, quiet bool, fallback func()) {
 	if f.conf == nil {
+		return
+	}
+	if f.outsideKeys[issue.Key] {
+		f.app.printf("fix version left unchanged for %s: declared dormant outside a version", issue.Key)
 		return
 	}
 	project, _, _ := strings.Cut(issue.Key, "-")
@@ -1488,8 +1514,12 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 			}
 			id += ": "
 		}
+		items := g.gate.describe(out.failures)
+		if conf.Prefix != "" {
+			items = append(items, g.outsideHints(ctx, out.failures)...)
+		}
 		failures = append(failures, refuse("%scommits outside an approved release:\n  %s\nTheir items:\n  %s\n%s, revert them, or pass --unapproved", id,
-			strings.Join(lines, "\n  "), strings.Join(g.gate.describe(out.failures), "\n  "), g.gate.remedy()))
+			strings.Join(lines, "\n  "), strings.Join(items, "\n  "), g.gate.remedy()))
 		if !r.dryRun {
 			return failures[0]
 		}
@@ -1652,7 +1682,7 @@ func (a *App) passApproved(r *deployRun, out gateOutcome) {
 	}
 	a.printf("approved release: %d commits since %s, all in %s", out.commits, gitx.Short(r.prev), strings.Join(slices.Sorted(maps.Keys(out.approved)), ", "))
 	for _, item := range out.dormant {
-		a.printf("ships dormant: %s — %s", item.Key, item.Reason)
+		a.printf("%s", item.Line())
 	}
 }
 
@@ -1669,6 +1699,23 @@ type gateRun struct {
 	dormant             []config.DormantReleaseItem
 	collectionErr       error
 	versionItemFailures map[string][]string
+	// liveVersions are the approved versions of the items without a dormant
+	// entry that go out (prefix without version); outsidePending, the items
+	// let out by an outside_version entry until the run tells whether live
+	// work of that version goes out too.
+	liveVersions   map[string]jira.Version
+	outsidePending []outsidePending
+	// advised are the items already told their outside_version is stale.
+	advised map[string]bool
+	// liveKeys are the keys of the commits that are live work (with version:
+	// shipsLiveWork), which alone anchor outside_version entries.
+	liveKeys map[string]bool
+}
+
+// outsidePending is an item that passed by its outside_version entry alone.
+type outsidePending struct {
+	commit deliveredCommit
+	item   config.DormantReleaseItem
 }
 
 func newGateRun(a *App, repo *gitx.Repo, cfg *config.Config, target *config.DeployTarget) (*gateRun, error) {
@@ -1678,9 +1725,10 @@ func newGateRun(a *App, repo *gitx.Repo, cfg *config.Config, target *config.Depl
 	}
 	return &gateRun{
 		app: a, repo: repo, cfg: cfg, conf: target.ApprovedRelease,
-		gate:       newApprovalGate(client, cfg, target, map[string]jira.Issue{}),
-		keyRe:      projectKeyRe(cfg),
-		activeKeys: map[string]bool{},
+		gate:         newApprovalGate(client, cfg, target, map[string]jira.Issue{}),
+		keyRe:        projectKeyRe(cfg),
+		activeKeys:   map[string]bool{},
+		liveVersions: map[string]jira.Version{},
 	}, nil
 }
 
@@ -1761,7 +1809,56 @@ func (g *gateRun) run(ctx context.Context, prev, head string, withheld []string,
 			out.released = append(out.released, c.sha)
 		}
 	}
+	linkFailures, err := g.linkOutside(ctx)
+	if err != nil {
+		return out, err
+	}
+	out.failures = append(out.failures, linkFailures...)
+	if err := g.adviseApproved(ctx, out.approved); err != nil {
+		return out, err
+	}
+	out.dormant = config.UniqueDormant(out.dormant, g.dormant)
 	return out, nil
+}
+
+// linkOutside settles the items let out by an outside_version entry alone,
+// without version (with it, the release version check does): the entry is
+// linked when live work of its version goes out in this run; otherwise it is
+// the old dormant form, which needs an approved version of the item's own.
+func (g *gateRun) linkOutside(ctx context.Context) ([]gateFailure, error) {
+	var failures []gateFailure
+	var whys [][]string
+	byCommit := map[string]int{}
+	told := map[string]bool{}
+	for _, p := range g.outsidePending {
+		key, version := p.item.Key, p.item.OutsideVersion
+		anchor, live := g.liveVersions[version]
+		linked, err := g.gate.outsideLinked(ctx, p.item, anchor, live)
+		if err != nil {
+			return nil, err
+		}
+		if linked {
+			g.dormant = config.UniqueDormant(g.dormant, []config.DormantReleaseItem{p.item})
+			if !told[key] {
+				told[key] = true
+				g.app.printf("approved release: %s ships dormant outside %s, not checked against the version", key, version)
+			}
+			continue
+		}
+		why := g.gate.notInApprovedVersion(g.gate.issues[key]) + " (dormant: still needs an approved version; its outside_version entry is for " + version + ", and no live work of " + version + ", unreleased and approved, goes out in this release)"
+		if i, ok := byCommit[p.commit.sha]; ok {
+			failures[i].keys = append(failures[i].keys, key)
+			whys[i] = append(whys[i], why)
+			continue
+		}
+		byCommit[p.commit.sha] = len(failures)
+		failures = append(failures, gateFailure{commit: p.commit, keys: []string{key}})
+		whys = append(whys, []string{why})
+	}
+	for i := range failures {
+		failures[i].why = strings.Join(whys[i], "; ")
+	}
+	return failures, nil
 }
 
 // reverted maps each commit the reverts among commits take back to the
@@ -1827,6 +1924,9 @@ func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out
 		for _, key := range itemKeys(g.keyRe, g.conf, c) {
 			g.activeKeys[key] = true
 		}
+		if err := g.noteLiveKeys(c); err != nil {
+			return nil, err
+		}
 	}
 	if at, ok := g.conf.Attributed[c.sha]; ok {
 		instead := ""
@@ -1842,6 +1942,9 @@ func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out
 		}
 		g.rememberDormant(fail.keys, out)
 		if pass.ok {
+			if err := g.notePass(c, pass); err != nil {
+				return nil, err
+			}
 			out.passed = append(out.passed, fail.keys...)
 			g.dormantAdvice(ctx, fail.keys)
 			for _, label := range pass.labels {
@@ -1868,6 +1971,58 @@ func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out
 	return &fail, nil
 }
 
+// noteLiveKeys keeps, with version and outside_version entries, the keys of a
+// commit that is live work.
+func (g *gateRun) noteLiveKeys(c deliveredCommit) error {
+	if !g.conf.HasOutside() {
+		return nil
+	}
+	live, err := shipsLiveWork(g.repo, g.cfg, g.conf, c.sha)
+	if err != nil || !live {
+		return err
+	}
+	if g.liveKeys == nil {
+		g.liveKeys = map[string]bool{}
+	}
+	for _, key := range itemKeys(g.keyRe, g.conf, c) {
+		g.liveKeys[key] = true
+	}
+	return nil
+}
+
+// notePass keeps what a passing commit tells about outside_version entries:
+// the versions of its live items, the items that wait for one, and the
+// entries of items already in an approved version, which ship as the old form.
+// A commit that ships nothing is no live work (shipsLiveWork).
+func (g *gateRun) notePass(c deliveredCommit, pass commitPass) error {
+	for key, version := range pass.ownVersion {
+		if item, ok := g.conf.OutsideFor(key); ok {
+			g.dormant = config.UniqueDormant(g.dormant, []config.DormantReleaseItem{item.Plain()})
+		}
+		if g.conf.Version == nil {
+			g.adviseOutside(key, version)
+		}
+	}
+	if g.conf.Version != nil {
+		return nil // the release version check links the outside entries.
+	}
+	for _, key := range pass.outside {
+		item, _ := g.conf.OutsideFor(key)
+		g.outsidePending = append(g.outsidePending, outsidePending{commit: c, item: item})
+	}
+	if len(pass.live) == 0 || !g.conf.HasOutside() {
+		return nil
+	}
+	live, err := shipsLiveWork(g.repo, g.cfg, g.conf, c.sha)
+	if err != nil || !live {
+		return err
+	}
+	for _, label := range pass.live {
+		g.liveVersions[label] = g.gate.approved[label]
+	}
+	return nil
+}
+
 func (g *gateRun) rememberDormant(keys []string, out *gateOutcome) {
 	for _, key := range keys {
 		issue, ok := g.gate.issues[key]
@@ -1880,7 +2035,9 @@ func (g *gateRun) rememberDormant(keys []string, out *gateOutcome) {
 }
 
 func (g *gateRun) recordDormantIssue(issue jira.Issue) {
-	if item, dormant := g.conf.DormantFor(issue.Key, issue.Parent); dormant {
+	// An outside_version entry is recorded where its link to the release is
+	// settled.
+	if item, dormant := g.conf.DormantFor(issue.Key, issue.Parent); dormant && item.OutsideVersion == "" {
 		g.dormant = config.UniqueDormant(g.dormant, []config.DormantReleaseItem{item})
 	}
 }
@@ -1892,7 +2049,7 @@ func (g *gateRun) dormantAdvice(ctx context.Context, keys []string) {
 			continue
 		}
 		item, dormant := g.conf.DormantFor(key, issue.Parent)
-		if !dormant {
+		if !dormant || item.OutsideVersion != "" {
 			continue
 		}
 		advice := issue
@@ -2558,8 +2715,10 @@ type approvalGate struct {
 	conf    *config.ApprovedRelease
 	issues  map[string]jira.Issue
 	history map[string]fixVersionHistoryResult
-	// versions maps a version id to whether every approver approved it.
+	// versions maps a version id to whether every approver approved it;
+	// approved, the approved versions found by name.
 	versions map[string]bool
+	approved map[string]jira.Version
 	// review are the statuses work waits in for a reviewer; skipKeys are the
 	// standing items release_notes.jira.skip_keys names.
 	review, skipKeys []string
@@ -2568,7 +2727,7 @@ type approvalGate struct {
 
 func newApprovalGate(client *jira.Client, cfg *config.Config, target *config.DeployTarget, issues map[string]jira.Issue) *approvalGate {
 	return &approvalGate{
-		client: client, conf: target.ApprovedRelease, issues: issues, versions: map[string]bool{},
+		client: client, conf: target.ApprovedRelease, issues: issues, versions: map[string]bool{}, approved: map[string]jira.Version{},
 		review: cfg.ReviewStatuses(), skipKeys: cfg.ReleaseNotes.Jira.SkipKeys, target: target,
 	}
 }
@@ -2601,6 +2760,10 @@ type gatePass struct {
 	done string
 	// why the commit stays outside.
 	why string
+	// outside: the item passed by its outside_version entry alone, until the
+	// run links the entry; ownVersion: an item with such an entry passed by
+	// an approved version of its own.
+	outside, ownVersion bool
 }
 
 // commitPass is the verdict on one commit.
@@ -2608,6 +2771,12 @@ type commitPass struct {
 	ok bool
 	// labels name what let the items out; done, the done items among them.
 	labels, done []string
+	// live are the labels of the items without a dormant entry; outside, the
+	// items let out by their outside_version entry alone; ownVersion maps an
+	// item with an outside_version entry already in an approved version to it.
+	live       []string
+	outside    []string
+	ownVersion map[string]string
 	// failed are the items that keep the commit outside, why says why.
 	failed []string
 	why    string
@@ -2628,7 +2797,20 @@ func (g *approvalGate) commit(ctx context.Context, keys []string) (commitPass, e
 			whys = append(whys, pass.why)
 			continue
 		}
+		if pass.outside {
+			out.outside = append(out.outside, key)
+			continue
+		}
 		out.labels = append(out.labels, pass.label)
+		if pass.ownVersion {
+			if out.ownVersion == nil {
+				out.ownVersion = map[string]string{}
+			}
+			out.ownVersion[key] = pass.label
+		}
+		if _, dormant := g.conf.DormantFor(key, g.issues[key].Parent); !dormant {
+			out.live = append(out.live, pass.label)
+		}
 		if pass.done != "" {
 			out.done = append(out.done, pass.done)
 		}
@@ -2655,7 +2837,8 @@ func (g *approvalGate) openParent(ctx context.Context, issue jira.Issue) (string
 	if err != nil || !ok || slices.Contains(g.skipKeys, holder.Key) {
 		return "", err
 	}
-	if _, dormant := g.conf.DormantFor(holder.Key, holder.Parent); dormant {
+	// An outside_version entry of the holder covers none of its subtasks.
+	if item, dormant := g.conf.DormantFor(holder.Key, holder.Parent); dormant && item.OutsideVersion == "" {
 		return "", nil
 	}
 	return g.openSubtasks(ctx, holder)
@@ -2686,7 +2869,9 @@ func (g *approvalGate) openSubtasks(ctx context.Context, holder jira.Issue) (str
 		if slices.Contains(g.skipKeys, key) {
 			continue
 		}
-		if _, dormant := g.conf.DormantFor(key, holder.Key); dormant {
+		// An outside_version entry stands in for the version check alone:
+		// the subtask holds its parent as without the entry.
+		if item, dormant := g.conf.DormantFor(key, holder.Key); dormant && item.OutsideVersion == "" {
 			continue
 		}
 		st, err := g.issue(ctx, key)
@@ -2703,17 +2888,21 @@ func (g *approvalGate) openSubtasks(ctx context.Context, holder jira.Issue) (str
 	return fmt.Sprintf("%s is %s with open subtasks %s: move them to Done or name %s in release_notes.jira.skip_keys", holder.Key, holder.Status, strings.Join(open, ", "), holder.Key), nil
 }
 
-// item checks one item against the statuses and the approved version.
+// item checks one item against the statuses and the approved version. An
+// outside_version entry stands in for the approved version alone: the item
+// is checked as without it otherwise, its status aside, which a dormant item
+// need not have; the run (or the release version check) links the entry.
 func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 	issue, err := g.issue(ctx, key)
 	if err != nil {
 		return gatePass{}, err
 	}
-	if _, dormant := g.conf.DormantFor(key, issue.Parent); dormant {
+	_, outside := g.conf.OutsideFor(key)
+	if _, dormant := g.conf.DormantFor(key, issue.Parent); dormant && !outside {
 		return g.dormantItem(ctx, issue)
 	}
 	if g.conf.Version != nil {
-		return g.versionItem(ctx, issue)
+		return g.versionItem(ctx, issue, outside)
 	}
 	why, err := g.openParent(ctx, issue)
 	if err != nil {
@@ -2724,7 +2913,7 @@ func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 	}
 	var pass gatePass
 	statuses := g.conf.StatusesFor(issue.Labels)
-	if len(statuses) > 0 {
+	if len(statuses) > 0 && !outside {
 		checked, err := g.checkedIssue(ctx, issue)
 		if err != nil {
 			return pass, err
@@ -2741,19 +2930,31 @@ func (g *approvalGate) item(ctx context.Context, key string) (gatePass, error) {
 		}
 	}
 	if g.conf.Prefix != "" {
-		version, err := g.approvedVersion(ctx, issue)
-		if err != nil {
-			return gatePass{}, err
-		}
-		if version == "" {
-			return gatePass{why: g.notInApprovedVersion(issue)}, nil
-		}
-		pass.ok, pass.label = true, version
+		return g.inApprovedVersion(ctx, issue, pass, outside)
 	}
 	return pass, nil
 }
 
-func (g *approvalGate) versionItem(ctx context.Context, issue jira.Issue) (gatePass, error) {
+// inApprovedVersion is the check an outside_version entry stands in for: the
+// item in an approved version of the prefix. With the entry, an item in one
+// ships as the old dormant form; an item in none waits for the run to link
+// its entry.
+func (g *approvalGate) inApprovedVersion(ctx context.Context, issue jira.Issue, pass gatePass, outside bool) (gatePass, error) {
+	version, err := g.approvedVersion(ctx, issue)
+	if err != nil {
+		return gatePass{}, err
+	}
+	if version == "" {
+		if outside {
+			return gatePass{ok: true, outside: true}, nil
+		}
+		return gatePass{why: g.notInApprovedVersion(issue)}, nil
+	}
+	pass.ok, pass.label, pass.ownVersion = true, version, outside
+	return pass, nil
+}
+
+func (g *approvalGate) versionItem(ctx context.Context, issue jira.Issue, outside bool) (gatePass, error) {
 	if g.conf.Prefix == "" {
 		return gatePass{ok: true, label: "release version"}, nil
 	}
@@ -2764,14 +2965,7 @@ func (g *approvalGate) versionItem(ctx context.Context, issue jira.Issue) (gateP
 	if why != "" {
 		return gatePass{why: why}, nil
 	}
-	version, err := g.approvedVersion(ctx, issue)
-	if err != nil {
-		return gatePass{}, err
-	}
-	if version == "" {
-		return gatePass{why: g.notInApprovedVersion(issue)}, nil
-	}
-	return gatePass{ok: true, label: version}, nil
+	return g.inApprovedVersion(ctx, issue, gatePass{}, outside)
 }
 
 func (g *approvalGate) dormantItem(ctx context.Context, issue jira.Issue) (gatePass, error) {
@@ -2782,7 +2976,7 @@ func (g *approvalGate) dormantItem(ctx context.Context, issue jira.Issue) (gateP
 	if version == "" {
 		return gatePass{why: g.notInApprovedVersion(issue) + " (dormant: still needs an approved version)"}, nil
 	}
-	return gatePass{ok: true, label: "dormant " + version}, nil
+	return gatePass{ok: true, label: version}, nil
 }
 
 // checkedIssue returns the item when it is in one of the statuses of its
@@ -2832,6 +3026,23 @@ func (g *approvalGate) approvedVersion(ctx context.Context, issue jira.Issue) (s
 	return g.ownApprovedVersion(ctx, parent)
 }
 
+// fullyApproved tells whether every approver approved the version id.
+func (g *approvalGate) fullyApproved(ctx context.Context, id string) (bool, error) {
+	if full, seen := g.versions[id]; seen {
+		return full, nil
+	}
+	approvers, err := g.client.VersionApprovers(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	full := jira.FullyApproved(approvers)
+	if g.versions == nil {
+		g.versions = map[string]bool{}
+	}
+	g.versions[id] = full
+	return full, nil
+}
+
 func (g *approvalGate) ownApprovedVersion(ctx context.Context, issue jira.Issue) (string, error) {
 	match := (*regexp.Regexp)(nil)
 	if g.conf.Prefix == "" && g.conf.Version != nil {
@@ -2841,16 +3052,15 @@ func (g *approvalGate) ownApprovedVersion(ctx context.Context, issue jira.Issue)
 		if g.conf.Prefix != "" && !strings.HasPrefix(v.Name, g.conf.Prefix) || match != nil && !match.MatchString(v.Name) {
 			continue
 		}
-		full, seen := g.versions[v.ID]
-		if !seen {
-			approvers, err := g.client.VersionApprovers(ctx, v.ID)
-			if err != nil {
-				return "", err
-			}
-			full = jira.FullyApproved(approvers)
-			g.versions[v.ID] = full
+		full, err := g.fullyApproved(ctx, v.ID)
+		if err != nil {
+			return "", err
 		}
 		if full {
+			if g.approved == nil {
+				g.approved = map[string]jira.Version{}
+			}
+			g.approved[v.Name] = v
 			return v.Name, nil
 		}
 	}
@@ -2945,7 +3155,7 @@ func (g *approvalGate) remedy() string {
 		ways = append(ways, strings.Join(parts, ", "))
 	}
 	if g.conf.Prefix != "" {
-		ways = append(ways, "put their items (a subtask's parent for a subtask) into the approved version")
+		ways = append(ways, "if the code ships switched off, declare the exact item in approved_release.dormant with its outside_version and disabled_by; live work outside the version is reverted")
 	}
 	ways = append(ways, "finish any subtasks called open")
 	return strings.Join(ways, " and ")
@@ -3306,4 +3516,48 @@ func (g *approvalGate) parentNotReady(ctx context.Context, issue jira.Issue) str
 		return fmt.Sprintf("%s goes out with its parent %s, which could not be read: %v", issue.Key, issue.Parent, err)
 	}
 	return fmt.Sprintf("%s goes out with its parent %s, which is %s, not %s", issue.Key, parent.Key, parent.Status, orList(g.conf.StatusesFor(parent.Labels)))
+}
+
+// adviseApproved tells, for every outside_version entry whose item, or its
+// parent, has among its fix versions an approved version this release ships
+// (prefix without version), that the entry outlived its release, whether or
+// not the item has commits in the range.
+func (g *gateRun) adviseApproved(ctx context.Context, approved map[string]bool) error {
+	if g.conf.Prefix == "" || g.conf.Version != nil || len(approved) == 0 {
+		return nil // with version, the release version check tells it.
+	}
+	for _, item := range g.conf.Dormant {
+		if _, ok := g.conf.OutsideFor(item.Key); !ok || g.advised[item.Key] {
+			continue
+		}
+		issue, err := g.gate.issue(ctx, item.Key)
+		if err != nil {
+			return err
+		}
+		if where := shippedFixVersion(issue, approved); where != "" {
+			g.adviseOutside(item.Key, where)
+			continue
+		}
+		if issue.Parent == "" {
+			continue
+		}
+		parent, err := g.gate.issue(ctx, issue.Parent)
+		if err != nil {
+			return err
+		}
+		if where := shippedFixVersion(parent, approved); where != "" {
+			g.adviseOutside(item.Key, where+" with its parent "+parent.Key)
+		}
+	}
+	return nil
+}
+
+// shippedFixVersion names the first of issue's fix versions among approved.
+func shippedFixVersion(issue jira.Issue, approved map[string]bool) string {
+	for _, v := range issue.FixVersions {
+		if approved[v.Name] {
+			return v.Name
+		}
+	}
+	return ""
 }

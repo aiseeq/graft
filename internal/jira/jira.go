@@ -316,6 +316,51 @@ func (c *Client) FixVersionHistoryAfter(ctx context.Context, key, versionID stri
 	return latest.After(at), hasAddition, err
 }
 
+// FixVersionRemoval is the latest change of an item's history that took a
+// fix version out.
+type FixVersionRemoval struct {
+	// Version is the name of the version taken out; Who, the author's name;
+	// When, the time of the change.
+	Version, Who, When string
+}
+
+// LastFixVersionRemoval reads key's history for the latest change that took
+// out a fix version removed accepts (by id and name); ok is false when there
+// is none.
+func (c *Client) LastFixVersionRemoval(ctx context.Context, key string, removed func(id, name string) bool) (out FixVersionRemoval, ok bool, retErr error) {
+	var latest time.Time
+	err := c.changelog(ctx, key, func(value json.RawMessage) (bool, error) {
+		var entry struct {
+			Created string `json:"created"`
+			Author  struct {
+				DisplayName string `json:"displayName"`
+			} `json:"author"`
+			Items []struct {
+				FieldID    string `json:"fieldId"`
+				From       string `json:"from"`
+				FromString string `json:"fromString"`
+				To         string `json:"to"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(value, &entry); err != nil {
+			return false, fmt.Errorf("%s: unexpected changelog entry: %w", key, err)
+		}
+		changed, err := time.Parse(timeLayout, entry.Created)
+		if err != nil {
+			return false, fmt.Errorf("%s: invalid changelog time %q: %w", key, entry.Created, err)
+		}
+		for _, item := range entry.Items {
+			if item.FieldID != "fixVersions" || item.From == "" || item.To != "" || !removed(item.From, item.FromString) || ok && changed.Before(latest) {
+				continue
+			}
+			latest, ok = changed, true
+			out = FixVersionRemoval{Version: item.FromString, Who: entry.Author.DisplayName, When: changed.Format("2006-01-02 15:04")}
+		}
+		return false, nil
+	})
+	return out, ok, err
+}
+
 // transitionID finds the offered transition to a status.
 func transitionID(issue Issue, to string) (string, error) {
 	for _, t := range issue.Transitions {

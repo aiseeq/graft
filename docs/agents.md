@@ -15,12 +15,24 @@ For a one-off command use `graft exec --heavy -- <cmd>` when it is heavy.
 ## Approved release
 
 `approved_release.dormant` lists `{key, reason}` for work included in an
-approved version while its feature remains disabled by a flag or setting. The
-item or its parent must be in an approved version; its status need not be
-approved. Deploy, release notes and sweep leave it and its subtasks open and
-report why. Use `release_notes.jira.skip_keys` for umbrella items that collect
-work from subtasks. Remove a dormant entry once the feature is enabled and its
-work has been checked; graft suggests removal at an approved or done status.
+approved version while its feature remains disabled. Optional `disabled_by`
+names its flag or setting. Add `outside_version: <version name>` only with a
+nonblank `disabled_by`; the name must match the target's `prefix` or
+`version.match`. An outside entry applies only to its exact key and stands in
+only for the item being in the version: open subtasks, umbrellas and the
+freeze history are checked as without it. It is linked only while live work
+(items with no dormant entry) of that same version goes out in the release
+and the version is unreleased, unarchived and approved; the freeze uses the
+same rule. An entry not linked follows the existing dormant rules: the item or
+its parent must be in the selected or an approved version. Graft tells to
+drop `outside_version` for every entry whose item has such a version among
+its fix versions, with or without commits in the release. Its status need not be approved. Deploy, notes
+and sweep leave dormant work open and report why and how it is disabled. The
+`release_version` content check is not covered by this exception and may still
+reject version items with no code in the range. Use `release_notes.jira.skip_keys`
+for umbrella items that collect work from subtasks. Remove `outside_version`
+when the task enters its version; remove the entry once the feature is on and
+checked.
 
 ## Commit
 

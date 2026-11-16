@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -76,6 +77,30 @@ func TestFixVersionHistoryAfterUsesLatestAddition(t *testing.T) {
 				t.Errorf("FixVersionHistoryAfter = %v, %v; want %v", got, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestLastFixVersionRemovalFindsLatestRemoval(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"isLast": true, "values": []any{
+			map[string]any{"created": "2026-11-16T15:55:00.000+0000", "author": map[string]string{"displayName": "Jane Doe"}, "items": []any{map[string]string{"fieldId": "fixVersions", "from": "10010", "fromString": "Product 1", "to": ""}}},
+			map[string]any{"created": "2026-11-16T15:40:00.000+0000", "author": map[string]string{"displayName": "Someone Else"}, "items": []any{map[string]string{"fieldId": "fixVersions", "from": "10010", "fromString": "Product 1", "to": ""}}},
+			map[string]any{"created": "2026-11-16T16:10:00.000+0000", "author": map[string]string{"displayName": "Other Version"}, "items": []any{map[string]string{"fieldId": "fixVersions", "from": "10020", "fromString": "Other 2", "to": ""}}},
+			map[string]any{"created": "2026-11-16T16:20:00.000+0000", "author": map[string]string{"displayName": "Adder"}, "items": []any{map[string]string{"fieldId": "fixVersions", "from": "", "to": "10010", "toString": "Product 1"}}},
+		}})
+	}))
+	defer srv.Close()
+	client := New(Credentials{BaseURL: srv.URL})
+	got, found, err := client.LastFixVersionRemoval(context.Background(), "PROJ-1", func(id, _ string) bool { return id == "10010" })
+	if err != nil || !found || got != (FixVersionRemoval{Version: "Product 1", Who: "Jane Doe", When: "2026-11-16 15:55"}) {
+		t.Fatalf("removal = %+v %v %v", got, found, err)
+	}
+	got, found, err = client.LastFixVersionRemoval(context.Background(), "PROJ-1", func(_, name string) bool { return strings.HasPrefix(name, "Product ") })
+	if err != nil || !found || got.Who != "Jane Doe" {
+		t.Fatalf("removal by name = %+v %v %v", got, found, err)
+	}
+	if _, found, err = client.LastFixVersionRemoval(context.Background(), "PROJ-1", func(id, _ string) bool { return id == "99" }); err != nil || found {
+		t.Fatalf("removal of a version never taken out: found=%v err=%v", found, err)
 	}
 }
 

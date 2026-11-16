@@ -64,3 +64,33 @@ func TestReleasePageListsDormantWork(t *testing.T) {
 		t.Errorf("listed dormant work outside the release:\n%s", section)
 	}
 }
+
+func TestReleasePageKeepsLinkedOutsideWorkOnlyInDormantSection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"key":"PROJ-124","fields":{"summary":"disabled checkout","status":{"name":"Testing","statusCategory":{"key":"indeterminate"}},"issuetype":{"name":"Task"},"labels":[]}}`)
+	}))
+	t.Cleanup(server.Close)
+	item := config.DormantReleaseItem{Key: "PROJ-124", Reason: "disabled checkout", DisabledBy: "checkout.v2", OutsideVersion: "Product X"}
+	page := func(dormant []config.DormantReleaseItem) string {
+		t.Helper()
+		r := &deployRun{version: "1.2.3", approvedVersions: []string{"Product X"}, dormantItems: dormant, target: &config.DeployTarget{ApprovedRelease: &config.ApprovedRelease{Dormant: []config.DormantReleaseItem{item}}}}
+		section, err := buildSection(context.Background(), jira.New(jira.Credentials{BaseURL: server.URL}), &config.ReleasePage{}, r, []string{item.Key}, nil, func(string, ...any) {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return section
+	}
+	// Linked by the gate: only in the dormant section, with its version.
+	section := page([]config.DormantReleaseItem{item})
+	if strings.Contains(section, "<h3>changes</h3>") || strings.Contains(section, "<h3>fixes</h3>") {
+		t.Fatalf("outside work appeared in changes or fixes:\n%s", section)
+	}
+	if !strings.Contains(section, item.Line()) {
+		t.Fatalf("outside dormant line missing:\n%s", section)
+	}
+	// Not linked (review finding 8): the old dormant line, never "outside".
+	section = page(nil)
+	if strings.Contains(section, "outside Product X") || !strings.Contains(section, "ships dormant: PROJ-124 — disabled checkout; disabled by checkout.v2") {
+		t.Fatalf("unlinked entry shown as linked:\n%s", section)
+	}
+}

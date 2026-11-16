@@ -101,9 +101,10 @@ type fakeStatusMove struct {
 
 // fakeFixChange is one change of an item's fix versions in its history.
 type fakeFixChange struct {
-	at    time.Time
-	id    string
-	added bool
+	at     time.Time
+	id     string
+	added  bool
+	author string
 }
 
 type fakeComment struct {
@@ -236,7 +237,11 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				side = "to"
 			}
 			item[side], item[side+"String"] = c.id, j.versionName(c.id)
-			values = append(values, map[string]any{"created": c.at.Format(fakeTimeLayout), "items": []any{item}})
+			author := c.author
+			if author == "" {
+				author = "Jane Doe"
+			}
+			values = append(values, map[string]any{"created": c.at.Format(fakeTimeLayout), "author": map[string]string{"displayName": author}, "items": []any{item}})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"isLast": true, "values": values})
 	case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "comment":
@@ -278,7 +283,7 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		fixVersions := []any{}
 		for _, id := range j.fixVersions[key] {
-			fixVersions = append(fixVersions, map[string]any{"id": id, "name": j.versionName(id)})
+			fixVersions = append(fixVersions, j.issueFixVersion(id))
 		}
 		issueType := "Task"
 		if t, ok := j.types[key]; ok {
@@ -615,6 +620,22 @@ func (j *fakeJira) versionNamed(name string) map[string]any {
 		}
 	}
 	return nil
+}
+
+// issueFixVersion is a fix version as an issue shows it: id, name and, like
+// Jira, whether it is released or archived.
+func (j *fakeJira) issueFixVersion(id string) map[string]any {
+	out := map[string]any{"id": id, "name": j.versionName(id)}
+	for _, v := range slices.Concat(j.versions, j.otherVersions) {
+		if v["id"] == id {
+			for _, flag := range []string{"released", "archived"} {
+				if set, ok := v[flag].(bool); ok {
+					out[flag] = set
+				}
+			}
+		}
+	}
+	return out
 }
 
 func (j *fakeJira) versionName(id string) string {

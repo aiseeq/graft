@@ -9,16 +9,69 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/jira"
 )
 
 type releaseVersionCheck struct {
-	gate      *gateRun
-	collect   bool
-	failures  []error
-	tops      map[string]jira.Issue
-	umbrellas map[string]bool
-	selected  jira.Version
+	gate     *gateRun
+	collect  bool
+	failures []error
+	tops     map[string]jira.Issue
+	// sources are the commit keys that brought each top in; topOf, the top
+	// each commit key went to.
+	sources map[string][]string
+	topOf   map[string]string
+	// live are the commit keys without any dormant entry whose commit is live
+	// work (gateRun.liveKeys): work that runs.
+	live map[string]bool
+	// outside are the commit keys with an outside_version entry, kept from
+	// the tops until the version is chosen; returned, those put back among
+	// the tops because their entry is not linked to this release.
+	outside  map[string]jira.Issue
+	returned map[string]bool
+	// linkedKeys are the outside items whose entry is linked: it stands in
+	// for their top being in the version, and for nothing else.
+	linkedKeys map[string]bool
+	umbrellas  map[string]bool
+	selected   jira.Version
+	// liveInSelected: live work of the selected version goes out, which links
+	// the outside entries naming it.
+	liveInSelected bool
+}
+
+func newReleaseVersionCheck(g *gateRun, collect bool) *releaseVersionCheck {
+	v := &releaseVersionCheck{gate: g, collect: collect}
+	v.ensure()
+	return v
+}
+
+// ensure makes the maps a check fills.
+func (v *releaseVersionCheck) ensure() {
+	if v.tops == nil {
+		v.tops = map[string]jira.Issue{}
+	}
+	if v.sources == nil {
+		v.sources = map[string][]string{}
+	}
+	if v.topOf == nil {
+		v.topOf = map[string]string{}
+	}
+	if v.live == nil {
+		v.live = map[string]bool{}
+	}
+	if v.outside == nil {
+		v.outside = map[string]jira.Issue{}
+	}
+	if v.returned == nil {
+		v.returned = map[string]bool{}
+	}
+	if v.linkedKeys == nil {
+		v.linkedKeys = map[string]bool{}
+	}
+	if v.umbrellas == nil {
+		v.umbrellas = map[string]bool{}
+	}
 }
 
 func (v *releaseVersionCheck) fail(id, message string) bool {
@@ -56,11 +109,11 @@ func (g *gateRun) checkReleaseVersion(ctx context.Context, collect bool) []error
 		g.app.printf("approved release: no active commits; release version checks skipped")
 		return nil
 	}
-	v := &releaseVersionCheck{gate: g, collect: collect, tops: map[string]jira.Issue{}, umbrellas: map[string]bool{}}
-	if v.readTops(ctx) || v.selectVersion() {
+	v := newReleaseVersionCheck(g, collect)
+	if v.readTops(ctx) || v.selectVersion() || v.linkOutside(ctx) {
 		return v.failures
 	}
-	if v.checkTops() || (v.selected.ID != "" && v.checkItems(ctx)) {
+	if v.checkTops(ctx) || (v.selected.ID != "" && (v.checkItems(ctx) || v.adviseSelected(ctx))) {
 		return v.failures
 	}
 	if v.checkUmbrellas(ctx) {
@@ -72,7 +125,12 @@ func (g *gateRun) checkReleaseVersion(ctx context.Context, collect bool) []error
 	return v.failures
 }
 
+// readTops reads the commit keys: an item with an outside_version entry waits
+// for the version to be chosen; the others go to their tops, a subtask to its
+// parent. Without other work, the outside items choose the version as the old
+// dormant form does.
 func (v *releaseVersionCheck) readTops(ctx context.Context) bool {
+	v.ensure()
 	for _, key := range slices.Sorted(maps.Keys(v.gate.activeKeys)) {
 		issue, err := v.gate.gate.issue(ctx, key)
 		if err != nil {
@@ -88,22 +146,55 @@ func (v *releaseVersionCheck) readTops(ctx context.Context) bool {
 			}
 			continue
 		}
-		if issue.Parent != "" {
-			v.umbrellas[issue.Parent] = true
-			issue, err = v.gate.gate.issue(ctx, issue.Parent)
-			if err != nil {
-				v.gate.collectionErr = errors.Join(v.gate.collectionErr, err)
-				if v.fail("version-items", fmt.Sprintf("%s: read parent: %v; retry", key, err)) {
-					return true
-				}
-				continue
-			}
-		} else if len(issue.Subtasks) > 0 {
-			v.umbrellas[issue.Key] = true
+		if _, outside := v.gate.conf.OutsideFor(key); outside {
+			v.outside[key] = issue
+			continue
 		}
-		v.tops[issue.Key] = issue
-		v.gate.recordDormantIssue(issue)
+		if _, dormant := v.gate.conf.DormantFor(key, issue.Parent); !dormant && v.gate.liveKeys[key] {
+			v.live[key] = true
+		}
+		if v.addTop(ctx, issue, key) {
+			return true
+		}
 	}
+	if len(v.tops) == 0 {
+		return v.returnOutside(ctx)
+	}
+	return false
+}
+
+// returnOutside puts the waiting outside items among the tops: their entries
+// are not linked to this release.
+func (v *releaseVersionCheck) returnOutside(ctx context.Context) bool {
+	for _, key := range slices.Sorted(maps.Keys(v.outside)) {
+		v.returned[key] = true
+		if v.addTop(ctx, v.outside[key], key) {
+			return true
+		}
+	}
+	v.outside = map[string]jira.Issue{}
+	return false
+}
+
+func (v *releaseVersionCheck) addTop(ctx context.Context, issue jira.Issue, source string) bool {
+	v.ensure()
+	if issue.Parent != "" {
+		v.umbrellas[issue.Parent] = true
+		parent, err := v.gate.gate.issue(ctx, issue.Parent)
+		if err != nil {
+			v.gate.collectionErr = errors.Join(v.gate.collectionErr, err)
+			return v.fail("version-items", fmt.Sprintf("%s: read parent: %v; retry", source, err))
+		}
+		issue = parent
+	} else if len(issue.Subtasks) > 0 {
+		v.umbrellas[issue.Key] = true
+	}
+	v.tops[issue.Key] = issue
+	v.topOf[source] = issue.Key
+	if !slices.Contains(v.sources[issue.Key], source) {
+		v.sources[issue.Key] = append(v.sources[issue.Key], source)
+	}
+	v.gate.recordDormantIssue(issue)
 	return false
 }
 
@@ -131,9 +222,9 @@ func (v *releaseVersionCheck) selectVersion() bool {
 		for _, id := range slices.Sorted(maps.Keys(versions)) {
 			details = append(details, fmt.Sprintf("%s (%s): %s", versions[id].Name, id, strings.Join(members[id], ", ")))
 		}
-		msg := fmt.Sprintf("release tasks %s have no unreleased release version; add one to their fix versions", strings.Join(slices.Sorted(maps.Keys(v.tops)), ", "))
+		msg := fmt.Sprintf("release tasks %s have no unreleased release version; what the version ships is its owner's call", strings.Join(slices.Sorted(maps.Keys(v.tops)), ", "))
 		if len(details) > 0 {
-			msg = "multiple release versions: " + strings.Join(details, "; ") + "; choose one for the release tasks"
+			msg = "multiple release versions: " + strings.Join(details, "; ") + "; the version shipped is its owner's call"
 		}
 		return v.failItems("version-select", msg)
 	}
@@ -143,39 +234,196 @@ func (v *releaseVersionCheck) selectVersion() bool {
 	return false
 }
 
+// inSelected tells whether issue is in the selected version.
+func (v *releaseVersionCheck) inSelected(issue jira.Issue) bool {
+	return v.selected.ID != "" && len(issue.FixVersionIDs([]string{v.selected.ID})) > 0
+}
+
+// linkOutside puts the outside items among the tops, now that the version is
+// chosen: an item whose entry is linked (outsideLinked) and that is not in the
+// version has its entry stand in for the version check; every other check
+// stays. The rest ship dormant as the old form does.
+func (v *releaseVersionCheck) linkOutside(ctx context.Context) bool {
+	for key := range v.live {
+		if v.inSelected(v.tops[v.topOf[key]]) {
+			v.liveInSelected = true
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(v.outside)) {
+		issue := v.outside[key]
+		item, _ := v.gate.conf.OutsideFor(key)
+		in := v.inSelected(issue)
+		if issue.Parent != "" {
+			parent, err := v.gate.gate.issue(ctx, issue.Parent)
+			if err != nil {
+				return v.fail("version-items", fmt.Sprintf("%s: read parent: %v; retry", key, err))
+			}
+			in = in || v.inSelected(parent)
+		}
+		linked, err := v.gate.gate.outsideLinked(ctx, item, v.selected, v.liveInSelected)
+		if err != nil {
+			return v.fail("version-items", fmt.Sprintf("%s: read approvers of %s: %v; retry", key, v.selected.Name, err))
+		}
+		if linked && !in {
+			v.linkedKeys[key] = true
+			v.gate.dormant = config.UniqueDormant(v.gate.dormant, []config.DormantReleaseItem{item})
+			v.gate.app.printf("approved release: %s ships dormant outside %s, not checked against the version", key, v.selected.Name)
+		} else {
+			v.returned[key] = true
+		}
+		if v.addTop(ctx, issue, key) {
+			return true
+		}
+	}
+	v.outside = map[string]jira.Issue{}
+	return false
+}
+
+// excused tells whether top is out of the version only by linked outside
+// entries: every commit key that brought it in has one.
+func (v *releaseVersionCheck) excused(top string) bool {
+	sources := v.sources[top]
+	for _, source := range sources {
+		if !v.linkedKeys[source] {
+			return false
+		}
+	}
+	return len(sources) > 0
+}
+
 // matchingUnreleasedVersion applies the shared released/archive/match rules
 // when choosing Jira versions for release checks and deploy review guards.
 func matchingUnreleasedVersion(version jira.Version, match *regexp.Regexp) bool {
 	return !version.Released && !version.Archived && (match == nil || match.MatchString(version.Name))
 }
 
-func (v *releaseVersionCheck) checkTops() bool {
+// dormantTop tells whether a top ships dormant: by an old entry of its own,
+// or by an outside entry of its own put back among the tops, which is read as
+// the old form. An outside entry never covers the subtasks that brought the
+// top in.
+func (v *releaseVersionCheck) dormantTop(issue jira.Issue) bool {
+	item, dormant := v.gate.conf.DormantFor(issue.Key, issue.Parent)
+	if !dormant {
+		return false
+	}
+	if item.OutsideVersion == "" {
+		v.gate.recordDormantIssue(issue)
+		return true
+	}
+	if v.linkedKeys[issue.Key] {
+		return true // recorded linked by linkOutside.
+	}
+	if !v.returned[issue.Key] {
+		return false
+	}
+	v.gate.dormant = config.UniqueDormant(v.gate.dormant, []config.DormantReleaseItem{item.Plain()})
+	return true
+}
+
+// adviseReturned tells, for the outside entries put back under a top in the
+// version, that the entry is stale now.
+func (v *releaseVersionCheck) adviseReturned(top string) {
+	for _, source := range v.sources[top] {
+		if !v.returned[source] {
+			continue
+		}
+		where := v.selected.Name
+		if source != top {
+			where = v.selected.Name + " with its parent " + top
+		}
+		v.gate.adviseOutside(source, where)
+	}
+}
+
+func (v *releaseVersionCheck) checkTops(ctx context.Context) bool {
 	for _, key := range slices.Sorted(maps.Keys(v.tops)) {
 		issue := v.tops[key]
-		inVersion := v.selected.ID == "" || slices.Contains(issue.FixVersionIDs([]string{v.selected.ID}), v.selected.ID)
+		inVersion := v.selected.ID == "" || v.inSelected(issue) || v.excused(key)
 		statuses := v.gate.conf.StatusesFor(issue.Labels)
-		v.gate.recordDormantIssue(issue)
-		_, dormant := v.gate.conf.DormantFor(issue.Key, issue.Parent)
-		if !inVersion || !dormant && !slices.Contains(statuses, issue.Status) {
-			var names []string
-			for _, version := range issue.FixVersions {
-				names = append(names, version.Name)
+		dormant := v.dormantTop(issue)
+		if v.selected.ID != "" && inVersion {
+			v.adviseReturned(key)
+		}
+		if !inVersion {
+			if v.failItems("version-top", v.notInVersion(ctx, issue), key) {
+				return true
 			}
-			if len(names) == 0 {
-				names = append(names, "none")
-			}
-			var todo []string
-			if !inVersion {
-				todo = append(todo, "add it to "+v.selected.Name)
-			}
-			if !dormant && !slices.Contains(statuses, issue.Status) {
-				todo = append(todo, "move it to "+strings.Join(statuses, " or "))
-			}
-			msg := fmt.Sprintf("%s is %s, fix versions %s: %s", key, issue.Status, strings.Join(names, ", "), strings.Join(todo, " and "))
+			continue
+		}
+		if !dormant && !slices.Contains(statuses, issue.Status) {
+			msg := fmt.Sprintf("%s is %s, fix versions %s: move it to %s", key, issue.Status, fixVersionNames(issue), strings.Join(statuses, " or "))
 			if v.failItems("version-top", msg, key) {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+func fixVersionNames(issue jira.Issue) string {
+	var names []string
+	for _, version := range issue.FixVersions {
+		names = append(names, version.Name)
+	}
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
+}
+
+// notInVersion is the refusal of a top outside the selected version: who
+// took it out, and the way to ship its switched-off code, by the commit keys
+// that brought it in.
+func (v *releaseVersionCheck) notInVersion(ctx context.Context, issue jira.Issue) string {
+	var msg strings.Builder
+	fmt.Fprintf(&msg, "%s is %s, fix versions %s: not in %s", issue.Key, issue.Status, fixVersionNames(issue), v.selected.Name)
+	msg.WriteString(removalTail(ctx, v.gate.gate.client, issue.Key, "it", func(id, _ string) bool { return id == v.selected.ID }))
+	var stale []string
+	for _, source := range v.sources[issue.Key] {
+		if item, ok := v.gate.conf.OutsideFor(source); ok && v.returned[source] {
+			stale = append(stale, source+"'s dormant entry is for "+item.OutsideVersion+", this release is "+v.selected.Name)
+		}
+	}
+	if len(stale) > 0 {
+		msg.WriteString(" (" + strings.Join(stale, "; ") + ")")
+	}
+	msg.WriteString("; " + declareHint(v.gate.gate.declareKeys(issue, v.sources[issue.Key], v.selected.Name)))
+	return msg.String()
+}
+
+// adviseSelected tells, for every outside_version entry whose item or its
+// parent is in the selected version, that the entry outlived its release,
+// whether or not the item has commits in the range.
+func (v *releaseVersionCheck) adviseSelected(ctx context.Context) bool {
+	for _, item := range v.gate.conf.Dormant {
+		if _, ok := v.gate.conf.OutsideFor(item.Key); !ok || v.gate.advised[item.Key] {
+			continue
+		}
+		issue, err := v.gate.gate.issue(ctx, item.Key)
+		if err != nil {
+			if v.fail("version-items", fmt.Sprintf("%s: read Jira issue: %v; retry", item.Key, err)) {
+				return true
+			}
+			continue
+		}
+		where := v.selected.Name
+		if !v.inSelected(issue) {
+			if issue.Parent == "" {
+				continue
+			}
+			parent, err := v.gate.gate.issue(ctx, issue.Parent)
+			if err != nil {
+				if v.fail("version-items", fmt.Sprintf("%s: read parent: %v; retry", item.Key, err)) {
+					return true
+				}
+				continue
+			}
+			if !v.inSelected(parent) {
+				continue
+			}
+			where += " with its parent " + parent.Key
+		}
+		v.gate.adviseOutside(item.Key, where)
 	}
 	return false
 }
@@ -208,7 +456,12 @@ func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 			continue
 		}
 		v.gate.recordDormantIssue(issue)
-		_, dormant := v.gate.conf.DormantFor(issue.Key, issue.Parent)
+		item, dormant := v.gate.conf.DormantFor(issue.Key, issue.Parent)
+		if dormant && item.OutsideVersion != "" {
+			// In the version, an outside entry ships dormant as the old form.
+			v.gate.dormant = config.UniqueDormant(v.gate.dormant, []config.DormantReleaseItem{item.Plain()})
+			v.gate.adviseOutside(issue.Key, v.selected.Name)
+		}
 		if !dormant {
 			if detail := versionStatusDetail(issue, v.gate.conf.StatusesFor(issue.Labels), len(v.gate.conf.LabelStatuses) > 0); detail != "" {
 				bad = append(bad, detail)
@@ -242,6 +495,9 @@ func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 	return false
 }
 
+// checkUmbrellas holds a parent while a subtask is not Done. An old dormant
+// entry of the parent or the subtask lets it be; an outside entry only when
+// it is linked to this release.
 func (v *releaseVersionCheck) checkUmbrellas(ctx context.Context) bool {
 	for _, key := range slices.Sorted(maps.Keys(v.umbrellas)) {
 		if slices.Contains(v.gate.gate.skipKeys, key) {
@@ -251,7 +507,7 @@ func (v *releaseVersionCheck) checkUmbrellas(ctx context.Context) bool {
 		if !ok {
 			continue
 		}
-		if _, dormant := v.gate.conf.DormantFor(parent.Key, parent.Parent); dormant {
+		if item, dormant := v.gate.conf.DormantFor(parent.Key, parent.Parent); dormant && item.OutsideVersion == "" {
 			v.gate.recordDormantIssue(parent)
 			continue
 		}
@@ -268,7 +524,9 @@ func (v *releaseVersionCheck) checkUmbrellas(ctx context.Context) bool {
 				}
 				continue
 			}
-			if _, dormant := v.gate.conf.DormantFor(subkey, parent.Key); dormant {
+			// An outside_version entry stands in for the version check
+			// alone: the subtask holds its parent as without the entry.
+			if item, dormant := v.gate.conf.DormantFor(subkey, parent.Key); dormant && item.OutsideVersion == "" {
 				v.gate.recordDormantIssue(sub)
 				continue
 			}

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -46,7 +47,7 @@ func TestApprovedLabelStatusesPassVersionGates(t *testing.T) {
 				tops:     map[string]jira.Issue{"PROJ-1": {Key: "PROJ-1", Status: "Done", Labels: tc.labels, FixVersions: []jira.Version{{ID: "v1"}}}},
 				selected: jira.Version{ID: "v1", Name: "Synthetic 1"},
 			}
-			check.checkTops()
+			check.checkTops(context.Background())
 			check.checkItems(t.Context())
 			if got := len(check.failures) == 0; got != tc.want {
 				t.Errorf("version checks passed = %t, failures = %v", got, check.failures)

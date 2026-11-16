@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -30,13 +31,37 @@ func TestDormantNeedsApprovedVersionButNotReadyStatus(t *testing.T) {
 	issue := jira.Issue{Key: "PROJ-123", Status: "Testing", FixVersions: []jira.Version{{ID: "v1", Name: "Product 1"}}}
 	gate := &approvalGate{conf: conf, issues: map[string]jira.Issue{"PROJ-123": issue}, versions: map[string]bool{"v1": true}}
 	pass, err := gate.item(t.Context(), "PROJ-123")
-	if err != nil || !pass.ok {
-		t.Fatalf("dormant gate = %+v, %v; want pass", pass, err)
+	if err != nil || !pass.ok || pass.label != "Product 1" {
+		t.Fatalf("dormant gate = %+v, %v; want pass labelled by its version", pass, err)
 	}
 	gate.versions["v1"] = false
 	pass, err = gate.item(t.Context(), "PROJ-123")
 	if err != nil || pass.ok || !strings.Contains(pass.why, "(dormant: still needs an approved version)") {
 		t.Fatalf("unapproved dormant gate = %+v, %v", pass, err)
+	}
+}
+
+// An outside entry in an approved version of its own ships as the old
+// dormant form; without one, it passes only until the run links it, and
+// reads no version by the name the entry gives.
+func TestOutsideDormantWaitsForItsLink(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected Jira request %s", r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	conf := &config.ApprovedRelease{Prefix: "Product ", Statuses: []string{"Ready for release"}, Dormant: []config.DormantReleaseItem{{Key: "PROJ-60", Reason: "disabled", DisabledBy: "checkout.v2", OutsideVersion: "Product 1"}}}
+	gate := &approvalGate{client: jira.New(jira.Credentials{BaseURL: srv.URL}), conf: conf, issues: map[string]jira.Issue{
+		"PROJ-60": {Key: "PROJ-60", Status: "Testing"},
+	}, versions: map[string]bool{"v2": true}}
+	pass, err := gate.item(t.Context(), "PROJ-60")
+	if err != nil || !pass.ok || !pass.outside || pass.label != "" {
+		t.Fatalf("outside item = %+v, %v; want a pass waiting for its link", pass, err)
+	}
+	gate.issues["PROJ-60"] = jira.Issue{Key: "PROJ-60", Status: "Testing", FixVersions: []jira.Version{{ID: "v2", Name: "Product 2"}}}
+	pass, err = gate.item(t.Context(), "PROJ-60")
+	if err != nil || !pass.ok || pass.outside || !pass.ownVersion || pass.label != "Product 2" {
+		t.Fatalf("outside item in an approved version = %+v, %v; want the old dormant pass", pass, err)
 	}
 }
 
@@ -112,6 +137,23 @@ func TestApprovedVersionReadTopsAddsNamedParentToUmbrellas(t *testing.T) {
 	v := &releaseVersionCheck{gate: &gateRun{conf: conf, gate: gate, activeKeys: map[string]bool{"PROJ-1": true}}, tops: map[string]jira.Issue{}, umbrellas: map[string]bool{}}
 	if v.readTops(t.Context()) || !v.umbrellas["PROJ-1"] {
 		t.Fatalf("umbrellas = %v; want directly named parent", v.umbrellas)
+	}
+}
+
+func TestApprovedVersionKeepsEverySubtaskSourceForOutsideAdvice(t *testing.T) {
+	conf := &config.ApprovedRelease{Version: &config.ApprovedReleaseVersion{Match: "^Product"}}
+	parent := jira.Issue{Key: "PROJ-170", Subtasks: []string{"PROJ-171", "PROJ-172"}}
+	gate := &approvalGate{conf: conf, issues: map[string]jira.Issue{
+		"PROJ-170": parent,
+		"PROJ-171": {Key: "PROJ-171", Parent: parent.Key, Subtask: true},
+		"PROJ-172": {Key: "PROJ-172", Parent: parent.Key, Subtask: true},
+	}}
+	v := newReleaseVersionCheck(&gateRun{conf: conf, gate: gate, activeKeys: map[string]bool{"PROJ-171": true, "PROJ-172": true}}, false)
+	if v.readTops(t.Context()) {
+		t.Fatalf("read tops failed: %v", v.failures)
+	}
+	if got := v.sources[parent.Key]; !slices.Equal(got, []string{"PROJ-171", "PROJ-172"}) {
+		t.Fatalf("sources = %v", got)
 	}
 }
 

@@ -442,9 +442,33 @@ deploy:
 	}() {
 		t.Errorf("dormant parse: cfg=%v err=%v", cfg, err)
 	}
+	if cfg, err := Parse([]byte(dormant(`{key: PROJ-13, reason: disabled checkout, disabled_by: checkout.v2, outside_version: "Product v16"}`))); err != nil {
+		t.Errorf("outside dormant parse: %v", err)
+	} else if item, ok := cfg.Deploy.Targets["test"].ApprovedRelease.DormantExact("PROJ-13"); !ok || item.Line() != "ships dormant outside Product v16: PROJ-13 — disabled checkout; disabled by checkout.v2" {
+		t.Errorf("outside dormant item/line: %+v %v", item, ok)
+	}
+	outside := &ApprovedRelease{Dormant: []DormantReleaseItem{{Key: "PROJ-10", Reason: "parent", OutsideVersion: "Product v16", DisabledBy: "flag"}}}
+	if _, ok := outside.DormantFor("PROJ-11", "PROJ-10"); ok {
+		t.Error("outside entry on parent covered subtask")
+	}
+	if _, ok := outside.DormantFor("PROJ-10", ""); !ok {
+		t.Error("outside entry did not cover its own key")
+	}
 	for _, tc := range []struct{ yaml, want string }{{"{key: OTHER-1, reason: x}", ".key:"}, {"{key: PROJ-1, reason: ' '}", ".reason: blank"}, {"{key: PROJ-1, reason: x}, {key: PROJ-1, reason: y}", ".key: duplicate"}} {
 		if _, err := Parse([]byte(dormant(tc.yaml))); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("dormant %s: err=%v want %q", tc.yaml, err, tc.want)
+		}
+	}
+	for _, tc := range []struct{ yaml, want string }{
+		{`{key: PROJ-1, reason: x, outside_version: "Product v16"}`, ".disabled_by: required"},
+		{`{key: PROJ-1, reason: x, disabled_by: flag, outside_version: "Other 16"}`, ".outside_version:"},
+		{`{key: PROJ-1, reason: x, disabled_by: flag, outside_version: ''}`, ".outside_version: blank"},
+		{`{key: PROJ-1, reason: x, outside_version: ''}`, ".outside_version: blank"},
+		{`{key: PROJ-1, reason: x, outside_version: ' '}`, ".outside_version: blank"},
+		{`{key: PROJ-1, reason: x, unknown_field: y}`, "unknown_field"},
+	} {
+		if _, err := Parse([]byte(dormant(tc.yaml))); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("outside dormant %s: err=%v want %q", tc.yaml, err, tc.want)
 		}
 	}
 	cases := map[string]string{
@@ -807,6 +831,7 @@ release_notes: {jira: {project_keys: [PROJ]}}
 		{`{statuses: [Done], version: {match: '['}}`, "approved_release.version.match"},
 		{`{prefix: Product, version: {}}`, "approved_release.version: needs statuses"},
 		{`{statuses: [Done], version: {match: '^Product'}}`, ""},
+		{`{statuses: [Done], version: {match: '^Product'}, dormant: [{key: PROJ-1, reason: x, disabled_by: flag, outside_version: Other}]}`, "outside_version"},
 	} {
 		_, err := Parse([]byte(strings.Replace(base, "REPLACE", tc.config, 1)))
 		if tc.want == "" && err != nil {
@@ -824,5 +849,20 @@ func TestBrokenSecretPatternIsNotShown(t *testing.T) {
 	_, err := Parse([]byte(minimal + "checks:\n  secrets:\n    extra_patterns: ['(" + secret + "']\n"))
 	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "extra_patterns[0]") || !strings.Contains(err.Error(), "missing closing )") {
 		t.Errorf("error: %v", err)
+	}
+}
+
+// An outside entry linked to the release takes the place of the old form of
+// the same key, wherever it comes; the first entry stays otherwise.
+func TestUniqueDormantPrefersLinkedOutsideEntry(t *testing.T) {
+	plain := DormantReleaseItem{Key: "PROJ-60", Reason: "r"}
+	linked := DormantReleaseItem{Key: "PROJ-60", Reason: "r", OutsideVersion: "Product X"}
+	other := DormantReleaseItem{Key: "PROJ-61", Reason: "r"}
+	got := UniqueDormant([]DormantReleaseItem{plain, other}, []DormantReleaseItem{linked})
+	if len(got) != 2 || got[0] != linked || got[1] != other {
+		t.Fatalf("UniqueDormant = %+v; want the linked entry in place of the old form", got)
+	}
+	if got := UniqueDormant([]DormantReleaseItem{linked}, []DormantReleaseItem{plain}); len(got) != 1 || got[0] != linked {
+		t.Fatalf("UniqueDormant = %+v; want the linked entry kept", got)
 	}
 }

@@ -200,7 +200,7 @@ func (a *App) printDormantSummary(r *deployRun) {
 		return
 	}
 	for _, item := range config.UniqueDormant(r.dormantItems) {
-		a.printf("ships dormant: %s — %s", item.Key, item.Reason)
+		a.printf("%s", item.Line())
 	}
 }
 
@@ -323,7 +323,7 @@ func (a *App) previewDormant(r *deployRun, issue jira.Issue) {
 		return
 	}
 	if item, dormant := r.target.ApprovedRelease.DormantFor(issue.Key, issue.Parent); dormant {
-		r.dormantItems = config.UniqueDormant(r.dormantItems, []config.DormantReleaseItem{item})
+		r.dormantItems = config.UniqueDormant(r.dormantItems, []config.DormantReleaseItem{shownDormant(item, linkedOutside(r.dormantItems))})
 	}
 }
 

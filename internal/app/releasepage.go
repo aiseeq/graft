@@ -319,6 +319,16 @@ func buildSection(ctx context.Context, client *jira.Client, p *config.ReleasePag
 	if err != nil {
 		return "", err
 	}
+	// Work let out by a linked outside_version entry is not in the version:
+	// it is listed only as shipping dormant.
+	linked := linkedOutside(r.dormantItems)
+	kept := items[:0]
+	for i := range items {
+		if _, ok := linked[items[i].Key]; !ok {
+			kept = append(kept, items[i])
+		}
+	}
+	items = kept
 	waiting, err := read(moved)
 	if err != nil {
 		return "", err
@@ -360,14 +370,14 @@ func buildSection(ctx context.Context, client *jira.Client, p *config.ReleasePag
 		for i := range items {
 			issue := &items[i]
 			if item, ok := ar.DormantFor(issue.Key, issue.Parent); ok {
-				dormant = config.UniqueDormant(dormant, []config.DormantReleaseItem{item})
+				dormant = config.UniqueDormant(dormant, []config.DormantReleaseItem{shownDormant(item, linked)})
 			}
 		}
 	}
 	if len(dormant) > 0 {
 		b.WriteString("<h3>ships dormant</h3><ul>")
 		for _, item := range dormant {
-			b.WriteString("<li>" + html.EscapeString(item.Key+" — "+item.Reason) + "</li>")
+			b.WriteString("<li>" + html.EscapeString(item.Line()) + "</li>")
 		}
 		b.WriteString("</ul>")
 	}
@@ -456,4 +466,25 @@ func issueTable(client *jira.Client, p *config.ReleasePage, issues []jira.Issue)
 
 func anchor(href, text string) string {
 	return `<a href="` + html.EscapeString(href) + `">` + html.EscapeString(text) + "</a>"
+}
+
+// linkedOutside are the outside_version entries the gate linked to this
+// release, by key.
+func linkedOutside(items []config.DormantReleaseItem) map[string]config.DormantReleaseItem {
+	linked := map[string]config.DormantReleaseItem{}
+	for _, item := range items {
+		if item.OutsideVersion != "" {
+			linked[item.Key] = item
+		}
+	}
+	return linked
+}
+
+// shownDormant is how an entry is shown: an outside_version entry the gate
+// did not link to this release ships dormant as the old form.
+func shownDormant(item config.DormantReleaseItem, linked map[string]config.DormantReleaseItem) config.DormantReleaseItem {
+	if _, ok := linked[item.Key]; item.OutsideVersion != "" && !ok {
+		return item.Plain()
+	}
+	return item
 }

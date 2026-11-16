@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func versionGateConfig(state string, q func(string) string) string {
@@ -138,7 +139,20 @@ func TestDeployReleaseVersion(t *testing.T) {
 	d.jira.fixVersions["PROJ-30"] = []string{"2"}
 	d.jira.mu.Unlock()
 	d.commitFile("other.txt", "feat: PROJ-30 work")
-	check(false, "version-top", "PROJ-10 is In Progress, fix versions none: add it to Product.12.11.26 and move it to Ready for release or Done", "version-umbrella")
+	d.jira.mu.Lock()
+	if d.jira.fixChanges == nil {
+		d.jira.fixChanges = map[string][]fakeFixChange{}
+	}
+	d.jira.fixChanges["PROJ-10"] = []fakeFixChange{{at: time.Date(2026, 11, 16, 15, 55, 0, 0, time.UTC), id: "2", added: false, author: "Jane Doe"}}
+	d.jira.mu.Unlock()
+	out := check(false, "version-top", "PROJ-10 is In Progress, fix versions none: not in Product.12.11.26", "taken out of it by Jane Doe", "version-umbrella")
+	if strings.Contains(out, "add it to") {
+		t.Errorf("refusal suggests adding the item back:\n%s", out)
+	}
+	d.jira.mu.Lock()
+	d.jira.changelogDown = true
+	d.jira.mu.Unlock()
+	check(false, "version-top", "Jira history not read")
 	out, code := d.graft("", "deploy", "--unapproved", "prod")
 	if code != 0 || !strings.Contains(out, "collecting approved release (--unapproved)") {
 		t.Errorf("bypass: exit %d\n%s", code, out)
@@ -259,6 +273,27 @@ func TestDeployReleaseVersionAllowsDormantTestingParentWithOpenSubtask(t *testin
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestDeployReleaseVersionOutsideDormantEntryIsLinkedToLiveVersion(t *testing.T) {
+	cfg := func(state string, q func(string) string) string {
+		base := versionGateConfig(state, q)
+		return strings.Replace(base, "approved_release: {statuses: [Ready for release, Done]}", `approved_release: {statuses: [Ready for release, Done], version: {match: '^Product'}, dormant: [{key: PROJ-60, reason: disabled checkout, disabled_by: checkout.v2 is off, outside_version: 'Product 05.11.26'}]}`, 1)
+	}
+	d := newDeployFixture(t, cfg)
+	writeFile(t, filepath.Join(d.state, "gate-sha"), d.git("rev-parse", "HEAD")+"\n")
+	d.jira.setVersions([]map[string]any{{"id": "1", "name": "Product 05.11.26"}}, map[string][]string{"PROJ-10": {"1"}})
+	d.jira.setApprovers(map[string][]string{"1": {"APPROVED", "APPROVED"}})
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-10"] = "Ready for release"
+	d.jira.statuses["PROJ-60"] = "Testing"
+	d.jira.mu.Unlock()
+	d.commitFile("live.txt", "feat: PROJ-10 release work")
+	d.commitFile("disabled.txt", "feat: PROJ-60 disabled checkout")
+	out, code := d.graft("", "deploy", "check", "prod")
+	if code != 0 || !strings.Contains(out, "ships dormant outside Product 05.11.26: PROJ-60 — disabled checkout; disabled by checkout.v2 is off") {
+		t.Fatalf("linked outside dormant item refused or not summarized: exit=%d\n%s", code, out)
 	}
 }
 

@@ -225,7 +225,7 @@ func TestShipsNothingVersionFilesOnly(t *testing.T) {
 		t.Errorf("version.file ./VERSION shipsNothing = (%t, %v), want pass", ignored, err)
 	}
 	freeze := &activeFreeze{config: &config.DeployTarget{ApprovedRelease: conf}, name: "Product 1.0.1"}
-	if err := checkFreezeCommit(t.Context(), &deployRun{repo: repo, cfg: cfg}, freeze, nil, regexp.MustCompile(`PROJ-[0-9]+`), deliveredCommit{sha: versionCommit}, ""); err != nil {
+	if err := checkFreezeCommit(t.Context(), nil, &deployRun{repo: repo, cfg: cfg}, freeze, nil, regexp.MustCompile(`PROJ-[0-9]+`), deliveredCommit{sha: versionCommit}, ""); err != nil {
 		t.Errorf("freeze refused version-only commit: %v", err)
 	}
 

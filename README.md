@@ -1912,6 +1912,7 @@ deploy:
         statuses: [Ready for release, Done]  # the item, or a subtask's parent, is in one of these
         dormant:                    # ships in an approved version with work disabled
           - {key: PROJ-123, reason: "test stand; production stays off without a live provider"}
+          - {key: PROJ-124, reason: "checkout waits for provider", disabled_by: "checkout.v2 flag is off", outside_version: "Product v16.11"}
         label_statuses:         # additionally allow these statuses for items carrying each label
           internal: [Done]
         prefix: "Product v"     # optional: and in a "Product v…" version every approver approved
@@ -1966,12 +1967,41 @@ unassigned reviewer or a reviewer hidden by the graft account; environments
 sharing one Jira version stop together. A same-pair agreement can outlive a SHA
 change, and a new check can begin between the final Jira read and the script.
 
-Use `approved_release.dormant` when work must stay in the build but its
-feature is disabled by a flag or setting. The item or its parent must be in an
-approved version; its status need not be approved. Graft leaves it and its
-subtasks open and reports the reason. Use `release_notes.jira.skip_keys` for
-umbrella items that collect work from subtasks. Remove a dormant entry once
-the feature has been enabled and the work checked, so the deploy can close it.
+Use `approved_release.dormant` when checked-in work ships while its feature is
+disabled. `{key, reason}` keeps the existing rule: the item or its parent must
+be in an approved version; its status need not be approved. Add `disabled_by`
+to describe the flag or setting. To ship outside the Jira version, add
+`outside_version` with its name and a nonblank `disabled_by`; the version must
+match `prefix` or `version.match`; an explicitly empty `outside_version` is an
+error. Such an entry applies only to its exact key: a parent's entry covers no
+subtask, a subtask's none of its parent. It stands in for one check alone,
+the item being in the selected or an approved version; every other check
+(open subtasks of a parent, the release version's tops and umbrellas, the
+freeze's history) runs as without it, and an open subtask holds its parent
+whatever entries either has. It is linked to a release only while
+live work of that version goes out in it, live meaning items with no dormant
+entry of either kind, and the version is unreleased, unarchived and approved
+by every approver: with `version`, the selected version; with `prefix`
+alone, an approved version of a live item of the same deploy (the named
+version is never looked up by its name); for the freeze, the frozen version.
+A linked item goes out without being
+in the version, is printed `ships dormant outside <version>: …` and is listed
+on the release page only under ships dormant. An entry that is not linked is
+the old form: the item must be in the selected or an approved version,
+without a status. Graft tells to drop `outside_version` for every entry whose
+item (or its parent) has the selected or an approved version of the release
+among its fix versions, whether or not the item has commits in it. A linked
+entry takes the place of the old form of the same item in the release's
+dormant list. A refusal for
+work outside the version never suggests adding it back: it names who took it
+out (from the Jira history) and gives an example entry per subtask the commits
+name, never one for their parent. No target's `fix_version` puts an item with
+an `outside_version` entry back into a version. This check does not support the `release_version` content list:
+that list can still reject dormant items without code in the range. Graft
+leaves dormant work and its subtasks open and reports the reason and disable
+mechanism. Use `release_notes.jira.skip_keys` for umbrella items that collect
+work from subtasks. Remove `outside_version` when the task enters its version;
+remove the dormant entry once the feature is enabled and checked.
 
 `graft deploy [--redeploy] [--unapproved] <target> [-- args]`:
 
@@ -2557,7 +2587,13 @@ it is frozen, so thaw and freeze again to include a new project or replace an
 older tag made without version ids.
 The version prefix is removed from `{version}`. While the tag is on a remote,
 the required target accepts only that branch and commits naming an item in the
-frozen version. Items added to the version after the freeze pass only when
+frozen version. A dormant entry whose `outside_version` names the frozen
+version makes a subtask in it by its own fix versions a member, shipping as
+the old dormant form; it lets in its exact key when neither the item nor its
+parent is in the frozen version only while that version anchors it as above
+(live work of it goes out, and it is unreleased, unarchived and approved).
+The parent's and the subtask's own additions after the freeze are checked
+first and still refuse, both when both are in the version. Items added to the version after the freeze pass only when
 their type is in `freeze.types`. Use `graft deploy --past-freeze 'reason'
 <required target>` to pass any of these checks; graft warns and records the
 bypass. A hotfix still follows the configured hotfix checks and is recorded

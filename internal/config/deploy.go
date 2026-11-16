@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // Deploy configures graft deploy: the common steps around a project's own
@@ -301,20 +303,94 @@ type ApprovedRelease struct {
 
 // DormantReleaseItem names checked-in work that ships disabled.
 type DormantReleaseItem struct {
-	Key    string `yaml:"key"`
-	Reason string `yaml:"reason"`
+	Key            string `yaml:"key"`
+	Reason         string `yaml:"reason"`
+	DisabledBy     string `yaml:"disabled_by"`
+	OutsideVersion string `yaml:"outside_version"`
+	// outsideSet tells an outside_version given empty from one left out.
+	outsideSet bool
 }
 
-// UniqueDormant combines dormant entries while keeping the first entry for a key.
+// UnmarshalYAML decodes an entry and remembers whether outside_version was
+// given, so that an empty one is refused rather than read as the old form.
+func (d *DormantReleaseItem) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.AliasNode && node.Alias != nil {
+		node = node.Alias
+	}
+	type plain DormantReleaseItem
+	var p plain
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			switch key := node.Content[i]; key.Value {
+			case "key", "reason", "disabled_by", "<<":
+			case "outside_version":
+				p.outsideSet = true
+			default:
+				return fmt.Errorf("line %d: field %s not found in type config.DormantReleaseItem", key.Line, key.Value)
+			}
+		}
+	}
+	set := p.outsideSet
+	if err := node.Decode(&p); err != nil {
+		return err
+	}
+	p.outsideSet = set
+	*d = DormantReleaseItem(p)
+	return nil
+}
+
+// HasOutside tells whether any dormant entry has outside_version.
+func (r *ApprovedRelease) HasOutside() bool {
+	return r != nil && slices.ContainsFunc(r.Dormant, func(item DormantReleaseItem) bool { return item.OutsideVersion != "" })
+}
+
+// OutsideFor returns the entry with outside_version naming key itself: such an
+// entry never covers a parent's subtasks or a subtask's parent.
+func (r *ApprovedRelease) OutsideFor(key string) (DormantReleaseItem, bool) {
+	if item, ok := r.dormant(key); ok && item.OutsideVersion != "" {
+		return item, true
+	}
+	return DormantReleaseItem{}, false
+}
+
+// Plain is the entry as the old dormant form: an outside entry not linked to
+// the release it is in ships dormant like any other and is printed so.
+func (d DormantReleaseItem) Plain() DormantReleaseItem {
+	d.OutsideVersion = ""
+	return d
+}
+
+// Line is the shared summary for work that ships with its feature disabled.
+func (d DormantReleaseItem) Line() string {
+	line := "ships dormant"
+	if d.OutsideVersion != "" {
+		line += " outside " + d.OutsideVersion
+	}
+	line += ": " + d.Key + " — " + d.Reason
+	if d.DisabledBy != "" {
+		line += "; disabled by " + d.DisabledBy
+	}
+	return line
+}
+
+// DormantExact returns only an entry for key, without inheriting from a parent.
+func (r *ApprovedRelease) DormantExact(key string) (DormantReleaseItem, bool) { return r.dormant(key) }
+
+// UniqueDormant combines dormant entries while keeping the first entry for a
+// key, except that an entry linked outside a version (outside_version set)
+// takes the place of the old form of the same key: the item ships outside.
 func UniqueDormant(groups ...[]DormantReleaseItem) []DormantReleaseItem {
-	seen := make(map[string]struct{})
+	seen := make(map[string]int)
 	var unique []DormantReleaseItem
 	for _, group := range groups {
 		for _, item := range group {
-			if _, ok := seen[item.Key]; ok {
+			if i, ok := seen[item.Key]; ok {
+				if unique[i].OutsideVersion == "" && item.OutsideVersion != "" {
+					unique[i] = item
+				}
 				continue
 			}
-			seen[item.Key] = struct{}{}
+			seen[item.Key] = len(unique)
 			unique = append(unique, item)
 		}
 	}
@@ -327,7 +403,11 @@ func (r *ApprovedRelease) DormantFor(key, parent string) (DormantReleaseItem, bo
 	if item, ok := r.dormant(key); ok {
 		return item, true
 	}
-	return r.dormant(parent)
+	item, ok := r.dormant(parent)
+	if ok && item.OutsideVersion == "" {
+		return item, true
+	}
+	return DormantReleaseItem{}, false
 }
 
 // DormantSubtask returns a configured dormant item among the given subtasks.
@@ -759,18 +839,38 @@ func (c *Config) validateApprovedDormant(where string, approved *ApprovedRelease
 	if len(approved.Dormant) > 0 && approved.Prefix == "" && approved.Version == nil {
 		return fmt.Errorf("%s.approved_release.dormant: needs prefix or version to identify approved versions", where)
 	}
-	return c.validateDormant(where, approved.Dormant)
+	return c.validateDormant(where, approved)
 }
 
-func (c *Config) validateDormant(where string, items []DormantReleaseItem) error {
+func (c *Config) validateDormant(where string, approved *ApprovedRelease) error {
 	seenDormant := map[string]bool{}
-	for i, item := range items {
+	for i, item := range approved.Dormant {
 		field := fmt.Sprintf("%s.approved_release.dormant[%d]", where, i)
 		if !c.isProjectKey(item.Key) {
 			return fmt.Errorf("%s.key: %q is not an item of release_notes.jira.project_keys, such as PROJ-123", field, item.Key)
 		}
 		if strings.TrimSpace(item.Reason) == "" {
 			return fmt.Errorf("%s.reason: blank", field)
+		}
+		if item.OutsideVersion != "" || item.outsideSet {
+			if strings.TrimSpace(item.OutsideVersion) == "" {
+				return fmt.Errorf("%s.outside_version: blank", field)
+			}
+			if strings.TrimSpace(item.DisabledBy) == "" {
+				return fmt.Errorf("%s.disabled_by: required with outside_version", field)
+			}
+			if approved.Prefix != "" && !strings.HasPrefix(item.OutsideVersion, approved.Prefix) {
+				return fmt.Errorf("%s.outside_version: %q must begin with approved_release.prefix %q", field, item.OutsideVersion, approved.Prefix)
+			}
+			if approved.Version != nil {
+				match, err := regexp.Compile(approved.Version.Match)
+				if err != nil {
+					return fmt.Errorf("%s.outside_version: cannot check version.match: %w", field, err)
+				}
+				if !match.MatchString(item.OutsideVersion) {
+					return fmt.Errorf("%s.outside_version: %q does not match approved_release.version.match %q", field, item.OutsideVersion, approved.Version.Match)
+				}
+			}
 		}
 		if seenDormant[item.Key] {
 			return fmt.Errorf("%s.key: duplicate %q", field, item.Key)

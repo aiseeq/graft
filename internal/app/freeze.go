@@ -22,6 +22,9 @@ type activeFreeze struct {
 	versionIDs                         []string
 	time                               time.Time
 	config                             *config.DeployTarget
+	// anchored: the frozen version anchors the outside_version entries naming
+	// it (approvalGate.outsideAnchor) in this check.
+	anchored bool
 }
 
 type remoteTag struct{ sha, remote string }
@@ -903,9 +906,12 @@ func (a *App) freezeIssueCheck(ctx context.Context, r *deployRun, f *activeFreez
 	if err != nil {
 		return err
 	}
+	if f.anchored, err = freezeAnchored(ctx, client, r, f, g.gate, keyRe, commits, reverted); err != nil {
+		return err
+	}
 	var refusals error
 	for _, c := range commits {
-		if err := checkFreezeCommit(ctx, r, f, g.gate, keyRe, c, reverted[c.sha]); err != nil {
+		if err := checkFreezeCommit(ctx, a, r, f, g.gate, keyRe, c, reverted[c.sha]); err != nil {
 			var refusal freezeRefusalError
 			if !errors.As(err, &refusal) {
 				return err
@@ -1048,7 +1054,7 @@ func freezeLogTags(repo *gitx.Repo, cfg *config.Config, f *activeFreeze) (map[st
 	return tags, nil
 }
 
-func checkFreezeCommit(ctx context.Context, r *deployRun, f *activeFreeze, gate *approvalGate, keyRe *regexp.Regexp, commit deliveredCommit, reverted string) error {
+func checkFreezeCommit(ctx context.Context, app *App, r *deployRun, f *activeFreeze, gate *approvalGate, keyRe *regexp.Regexp, commit deliveredCommit, reverted string) error {
 	if isRevert(commit.subject) || reverted != "" {
 		return nil
 	}
@@ -1071,6 +1077,11 @@ func checkFreezeCommit(ctx context.Context, r *deployRun, f *activeFreeze, gate 
 			refusal = errors.Join(refusal, err)
 		}
 	}
+	if refusal == nil {
+		if err := recordFreezeOutside(ctx, app, r, f, gate, matched); err != nil {
+			return err
+		}
+	}
 	// Every item of the commit's work must be in the release.
 	outside := len(matched) < len(keys)
 	if refusal == nil && !outside {
@@ -1086,32 +1097,197 @@ func checkFreezeCommit(ctx context.Context, r *deployRun, f *activeFreeze, gate 
 	if refusal != nil {
 		return freezeRefusalError{refusal}
 	}
-	return freezeRefusalError{fmt.Errorf("%s not in %s", strings.Join(slices.DeleteFunc(keys, func(k string) bool { return slices.Contains(matched, k) }), ", "), f.name)}
+	var missing []string
+	for _, key := range keys {
+		if !slices.Contains(matched, key) {
+			missing = append(missing, freezeOutsideHint(ctx, gate, f, key))
+		}
+	}
+	return freezeRefusalError{fmt.Errorf("%s", strings.Join(missing, "; "))}
 }
 
-func checkFreezeIssue(ctx context.Context, gate *approvalGate, f *activeFreeze, key string, matched *[]string) error {
-	named := key
+// freezeAnchored tells whether the frozen version anchors the outside entries
+// naming it, by the one rule of the gates (approvalGate.outsideAnchor): live
+// work of it, items without any dormant entry in the version themselves or by
+// their parent, goes out in the commits, and it is unreleased, unarchived and
+// approved. Without such an entry nothing is read.
+func freezeAnchored(ctx context.Context, client *jira.Client, r *deployRun, f *activeFreeze, gate *approvalGate, keyRe *regexp.Regexp, commits []deliveredCommit, reverted map[string]string) (bool, error) {
+	conf := f.config.ApprovedRelease
+	if !slices.ContainsFunc(conf.Dormant, func(item config.DormantReleaseItem) bool { return item.OutsideVersion == f.name }) {
+		return false, nil
+	}
+	live := false
+	for _, c := range commits {
+		if live || isRevert(c.subject) || reverted[c.sha] != "" {
+			continue
+		}
+		if ships, err := shipsLiveWork(r.repo, r.cfg, conf, c.sha); err != nil || !ships {
+			if err != nil {
+				return false, err
+			}
+			continue
+		}
+		for _, key := range itemKeys(keyRe, conf, c) {
+			in, err := freezeLiveKey(ctx, gate, conf, f, key)
+			if err != nil {
+				return false, err
+			}
+			live = live || in
+		}
+	}
+	var versions []jira.Version
+	for _, project := range r.cfg.ReleaseNotes.Jira.ProjectKeys {
+		all, err := client.ProjectVersions(ctx, project)
+		if err != nil {
+			return false, err
+		}
+		versions = append(versions, slices.DeleteFunc(all, func(v jira.Version) bool { return !slices.Contains(f.versionIDs, v.ID) })...)
+	}
+	return gate.outsideAnchor(ctx, versions, live)
+}
+
+// freezeLiveKey tells whether key is live work of the frozen version: no
+// dormant entry, and in the version by itself or its parent.
+func freezeLiveKey(ctx context.Context, gate *approvalGate, conf *config.ApprovedRelease, f *activeFreeze, key string) (bool, error) {
 	issue, err := gate.issue(ctx, key)
 	if err != nil {
-		return err
+		return false, err
 	}
-	versionIDs := issue.FixVersionIDs(f.versionIDs)
+	if _, dormant := conf.DormantFor(key, issue.Parent); dormant {
+		return false, nil
+	}
+	top := issue
 	if issue.Parent != "" {
-		issue, err = gate.issue(ctx, issue.Parent)
+		if top, err = gate.issue(ctx, issue.Parent); err != nil {
+			return false, err
+		}
+	}
+	return len(top.FixVersionIDs(f.versionIDs)) > 0, nil
+}
+
+// freezeNamedEntry is key's outside_version entry when it names the frozen
+// version, linked or not.
+func freezeNamedEntry(f *activeFreeze, key string) (config.DormantReleaseItem, bool) {
+	if f.config == nil {
+		return config.DormantReleaseItem{}, false
+	}
+	item, ok := f.config.ApprovedRelease.OutsideFor(key)
+	return item, ok && item.OutsideVersion == f.name
+}
+
+// freezeOutsideEntry is key's outside_version entry when it names the frozen
+// version and the version anchors it: linked to this freeze.
+func freezeOutsideEntry(f *activeFreeze, key string) (config.DormantReleaseItem, bool) {
+	item, ok := freezeNamedEntry(f, key)
+	return item, ok && f.anchored
+}
+
+// recordFreezeOutside lists the matched items with an entry naming the frozen
+// version that are not in it by their parent: a subtask in it by its own fix
+// versions ships as the old dormant form; an item let in by its linked entry
+// alone ships outside.
+func recordFreezeOutside(ctx context.Context, app *App, r *deployRun, f *activeFreeze, gate *approvalGate, matched []string) error {
+	for _, key := range matched {
+		item, named := freezeNamedEntry(f, key)
+		if !named {
+			continue
+		}
+		own, err := gate.issue(ctx, key)
 		if err != nil {
 			return err
 		}
-		key = issue.Key
-		versionIDs = issue.FixVersionIDs(f.versionIDs)
+		top := own
+		if own.Parent != "" {
+			if top, err = gate.issue(ctx, own.Parent); err != nil {
+				return err
+			}
+		}
+		switch {
+		case len(top.FixVersionIDs(f.versionIDs)) > 0:
+			continue
+		case len(own.FixVersionIDs(f.versionIDs)) > 0:
+			item = item.Plain()
+		}
+		r.dormantItems = config.UniqueDormant(r.dormantItems, []config.DormantReleaseItem{item})
+		app.printf("%s", item.Line())
 	}
-	if len(versionIDs) == 0 {
+	return nil
+}
+
+// freezeOutsideHint is the refusal of an item outside the frozen version.
+func freezeOutsideHint(ctx context.Context, gate *approvalGate, f *activeFreeze, key string) string {
+	top := jira.Issue{Key: key}
+	if issue, ok := gate.issues[key]; ok {
+		top = issue
+		if parent, ok := gate.issues[issue.Parent]; ok && issue.Parent != "" {
+			top = parent
+		}
+	}
+	message := key + " not in " + f.name
+	if top.Key != key {
+		message += " (goes out with its parent " + top.Key + ")"
+	}
+	message += removalTail(ctx, gate.client, top.Key, "it", func(id, _ string) bool { return slices.Contains(f.versionIDs, id) })
+	if f.config != nil {
+		if item, ok := f.config.ApprovedRelease.OutsideFor(key); ok && item.OutsideVersion != f.name {
+			message += " (its dormant entry is for " + item.OutsideVersion + ", this freeze is " + f.name + ")"
+		} else if ok && !f.anchored {
+			message += " (its dormant entry is for " + f.name + ", and no live work of " + f.name + ", unreleased and approved, goes out in this release)"
+		}
+	}
+	return message + "; " + declareHint(gate.declareKeys(top, []string{key}, f.name))
+}
+
+// checkFreezeIssue matches key against the frozen version: by its own
+// membership, a subtask by its parent's, and checks the history for a late
+// addition. With an outside_version entry naming the frozen version, a
+// subtask in it by its own fix versions is a member too, and in it with its
+// parent has both histories checked: the entry never excuses a late addition.
+// The entry lets in an item neither it nor its parent is in only while the
+// version anchors it (freezeAnchored).
+func checkFreezeIssue(ctx context.Context, gate *approvalGate, f *activeFreeze, key string, matched *[]string) error {
+	named := key
+	own, err := gate.issue(ctx, key)
+	if err != nil {
+		return err
+	}
+	top := own
+	if own.Parent != "" {
+		if top, err = gate.issue(ctx, own.Parent); err != nil {
+			return err
+		}
+	}
+	_, entry := freezeNamedEntry(f, named)
+	ownIDs := own.FixVersionIDs(f.versionIDs)
+	checkOwn := entry && own.Key != top.Key && len(ownIDs) > 0
+	if topIDs := top.FixVersionIDs(f.versionIDs); len(topIDs) > 0 {
+		*matched = append(*matched, named)
+		if err := checkFreezeJoined(ctx, gate, f, top, topIDs, named); err != nil || !checkOwn {
+			return err
+		}
+		return checkFreezeJoined(ctx, gate, f, own, ownIDs, named)
+	}
+	if checkOwn {
+		// In the version by its own fix versions: a member, not outside.
+		if err := checkFreezeJoined(ctx, gate, f, own, ownIDs, named); err != nil {
+			return err
+		}
+		*matched = append(*matched, named)
 		return nil
 	}
-	*matched = append(*matched, named)
+	if _, linked := freezeOutsideEntry(f, named); linked {
+		*matched = append(*matched, named)
+	}
+	return nil
+}
+
+// checkFreezeJoined refuses issue when it joined the frozen version after the
+// freeze, by its history or, without one, by when it was created.
+func checkFreezeJoined(ctx context.Context, gate *approvalGate, f *activeFreeze, issue jira.Issue, versionIDs []string, named string) error {
 	addedAny := false
 	missingCreated := false
 	for _, versionID := range versionIDs {
-		added, hasAddition, err := gate.fixVersionHistoryAfter(ctx, key, versionID, f.time)
+		added, hasAddition, err := gate.fixVersionHistoryAfter(ctx, issue.Key, versionID, f.time)
 		if err != nil {
 			return err
 		}
@@ -1126,10 +1302,14 @@ func checkFreezeIssue(ctx context.Context, gate *approvalGate, f *activeFreeze, 
 		}
 	}
 	if missingCreated {
-		return fmt.Errorf("%s: created time is missing; cannot check when it joined %s", key, f.name)
+		return fmt.Errorf("%s: created time is missing; cannot check when it joined %s", issue.Key, f.name)
 	}
 	if addedAny {
-		return freezeRefusalError{fmt.Errorf("%s joined %s after the freeze", key, f.name)}
+		message := fmt.Sprintf("%s joined %s after the freeze", issue.Key, f.name)
+		if item, ok := freezeNamedEntry(f, named); ok {
+			message += "; " + named + "'s dormant entry ships it outside " + item.OutsideVersion + ": take it back out of " + f.name
+		}
+		return freezeRefusalError{fmt.Errorf("%s", message)}
 	}
 	return nil
 }
