@@ -72,6 +72,10 @@ func Secrets(files []StagedFile, cfg config.Secrets) []Finding {
 		if config.Matches(cfg.Exceptions, f.Path) {
 			continue
 		}
+		if secretFilename(path.Base(f.Path)) {
+			findings = append(findings, Finding{Path: f.Path, Reason: "secret filename"})
+			continue
+		}
 		if f.Content == nil {
 			findings = append(findings, Finding{Path: f.Path, Reason: fmt.Sprintf("too large to scan for secrets (%d bytes)", f.Size)})
 			continue
@@ -88,6 +92,29 @@ func Secrets(files []StagedFile, cfg config.Secrets) []Finding {
 		}
 	}
 	return findings
+}
+
+// secretFilename recognizes common private-key and environment-file names.
+// Keep this independent of file contents so binary and oversized files are
+// covered without ever including their values in a finding.
+func secretFilename(name string) bool {
+	name = strings.ToLower(name)
+	if name == ".env" {
+		return true
+	}
+	if strings.HasPrefix(name, ".env.") &&
+		name != ".env.example" && name != ".env.sample" && name != ".env.template" {
+		return true
+	}
+	if strings.HasPrefix(name, "id_rsa") || strings.HasPrefix(name, "id_ed25519") {
+		return !strings.HasSuffix(name, ".pub")
+	}
+	for _, ext := range []string{".pem", ".key", ".p12", ".pfx"} {
+		if strings.HasSuffix(name, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // LargeFiles rejects binaries that are not an expected asset type, files

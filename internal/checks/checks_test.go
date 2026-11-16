@@ -1,6 +1,9 @@
 package checks
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -89,6 +92,84 @@ func TestSecretsUnloadedBlob(t *testing.T) {
 	got := Secrets([]StagedFile{{Path: "huge.txt", Blob: gitx.Blob{Size: maxScanBytes + 1, Head: []byte("x")}}}, cfg.Checks.Secrets)
 	if len(got) != 1 || !strings.Contains(got[0].Reason, "too large") {
 		t.Errorf("unscanned blob must be reported: %v", got)
+	}
+}
+
+func TestSecretsStagedFilenames(t *testing.T) {
+	root := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(name, contents string) {
+		t.Helper()
+		full := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(contents), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit("init", "-q")
+	runGit("config", "user.email", "test@example.invalid")
+	runGit("config", "user.name", "Test")
+	write(".env", "baseline")
+	runGit("add", ".env")
+	runGit("commit", "-qm", "baseline")
+	if err := os.Remove(filepath.Join(root, ".env")); err != nil {
+		t.Fatal(err)
+	}
+	marker := "synthetic" + "_sensitive_marker_" + "never_print"
+	for _, name := range []string{
+		"added/.env", "service/.env.production", "x.pem", "x.key", "cert.p12", "cert.pfx",
+		"id_rsa", "id_rsa_backup", "id_ed25519", "secrets/.env.excluded",
+		".env.example", ".env.sample", ".env.template", "id_ed25519.pub",
+		"upper/.ENV", "X.PEM", "ID_RSA", "ID_ED25519", ".ENV.EXAMPLE", "ID_RSA.PUB", "ID_ED25519.PUB",
+	} {
+		write(name, marker)
+	}
+	runGit("add", "-A")
+	repo, err := gitx.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := Staged(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := parse(t, "checks:\n  secrets:\n    exceptions: [{path: 'secrets/.env.excluded', reason: intentionally synthetic}]\n")
+	got := Secrets(files, cfg.Checks.Secrets)
+	findings := map[string]Finding{}
+	for _, finding := range got {
+		findings[finding.Path] = finding
+		if strings.Contains(finding.String(), marker) {
+			t.Errorf("finding echoed file contents: %s", finding)
+		}
+	}
+	want := []string{
+		"added/.env", "service/.env.production", "x.pem", "x.key", "cert.p12", "cert.pfx",
+		"id_rsa", "id_rsa_backup", "id_ed25519", "upper/.ENV", "X.PEM", "ID_RSA", "ID_ED25519",
+	}
+	for _, name := range want {
+		f, ok := findings[name]
+		if !ok || f.Reason != "secret filename" {
+			t.Errorf("%s: finding = %v, want secret filename", name, f)
+		}
+	}
+	for _, name := range []string{
+		".env.example", ".env.sample", ".env.template", "id_ed25519.pub", "secrets/.env.excluded",
+		".ENV.EXAMPLE", "ID_RSA.PUB", "ID_ED25519.PUB",
+	} {
+		if f, ok := findings[name]; ok {
+			t.Errorf("unexpected finding for %s: %v", name, f)
+		}
+	}
+	if _, ok := findings[".env"]; ok {
+		t.Fatal("staged deletion of .env should not be a finding")
 	}
 }
 

@@ -2617,7 +2617,14 @@ up to date and release again.
   (`ghp_`, `github_pat_`), Anthropic (`sk-ant-`), OpenAI project (`sk-proj-`)
   and Slack (`xoxb-`, `xoxp-`, `xapp-`, `xwfp-`, with a random part of 20 characters or more) tokens, plus `extra_patterns`,
   which a finding names by number (a literal pattern is the secret itself). Findings name the file, line and kind, never the secret.
-  Binary files are skipped. Files already committed are not rescanned.
+  Secret filenames are refused too: `.env`, `.env.*` except `.env.example`,
+  `.env.sample` and `.env.template`, `*.pem`, `*.key`, `*.p12`, `*.pfx`,
+  `id_rsa*` and `id_ed25519*` except names ending in `.pub`. These findings
+  show the path and `secret filename`; the value is not included in the output.
+  Exempt a path with the same `checks.secrets.exceptions` entries used for
+  content findings; for example, `- path: 'config/.env.production'` with a
+  required explanatory `reason` exempts that file from the secrets check.
+  Binary contents are skipped. Files already committed are not rescanned.
 - **Large files**: a binary file (NUL byte in the first 8000 bytes, git's own
   test) is refused unless its extension is in `binary_extensions`; binary
   files over `max_binary_bytes` and text files over `max_text_bytes` are
