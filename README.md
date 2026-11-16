@@ -2799,7 +2799,10 @@ up to date and release again.
 out of the directory the repositories live in, on the branch: a new one from
 `<base>`, by default the trunk (below), or the existing one. Use `--trunk` to
 select the starting ref when no `<base>` is given; `--trunk` and `<base>` cannot
-be combined. A relative path in
+be combined. A newly created branch does not track its starting ref; its first
+`graft commit` push sets the first configured push remote as its upstream. If
+the push is rejected, its retry command keeps `--set-upstream`. Existing
+branches keep their upstream. A relative path in
 go.work's `use` and `replace` or go.mod's `replace` that leads out of the
 repository (`../kit`) is linked at the same place beside the worktree, so the
 worktree builds as the repository does; a link already there must lead to the

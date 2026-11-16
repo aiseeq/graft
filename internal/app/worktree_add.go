@@ -75,7 +75,7 @@ func (a *App) WorktreeAdd(ctx context.Context, o WorktreeAddOptions) error {
 	if exists {
 		args = append(args, dir, o.Branch)
 	} else {
-		args = append(args, "-b", o.Branch, dir, base)
+		args = append(args, "--no-track", "-b", o.Branch, dir, base)
 	}
 	if _, err := repo.Git(args...); err != nil {
 		return err

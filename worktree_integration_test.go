@@ -873,17 +873,19 @@ func TestWorktreeCleanRemoteRace(t *testing.T) {
 // it, so the worktree builds as the repository does.
 func TestWorktreeAdd(t *testing.T) {
 	f := newRepo(t, map[string]string{
-		".graft.yaml": "schema: 1\nversion: {mode: file}\ngo_vet: {enabled: false, reason: the fixture has no packages}\n",
+		".graft.yaml": "schema: 1\nversion: {mode: file}\ngo_vet: {enabled: false, reason: the fixture has no packages}\npush: {remotes: [mirror, origin]}\n",
 		"VERSION":     "1.0.0\n",
 		"go.mod":      "module example.com/app\n\ngo 1.22\n",
 		"go.work":     "go 1.22\n\nuse (\n\t.\n\t../kit\n)\n",
-	}, "origin")
+	}, "origin", "mirror")
 	writeFile(t, filepath.Join(f.base, "kit", "go.mod"), "module example.com/kit\n\ngo 1.22\n")
 	f.git("checkout", "-q", "-b", "main")
 	f.write("VERSION", "1.0.1\n")
 	f.mustPlainCommit("feat: base")
 	f.git("push", "-q", "-u", "origin", "HEAD")
+	f.git("push", "-q", "mirror", "HEAD")
 	f.git("remote", "set-head", "origin", "main")
+	f.git("remote", "set-head", "mirror", "main")
 	cache := t.TempDir()
 	f.env = append(f.env, "XDG_CACHE_HOME="+cache)
 
@@ -895,11 +897,67 @@ func TestWorktreeAdd(t *testing.T) {
 	if got := f.gitIn(dir, "rev-parse", "--abbrev-ref", "HEAD"); got != "w/thing" {
 		t.Errorf("branch = %q", got)
 	}
+	if got := f.gitIn(dir, "for-each-ref", "--format=%(upstream)", "refs/heads/w/thing"); strings.TrimSpace(got) != "" {
+		t.Errorf("new branch upstream = %q, want none", got)
+	}
 	if got := f.run(dir, "go", "list", "-m"); !strings.Contains(got, "example.com/kit") {
 		t.Errorf("go.work in the worktree:\n%s", got)
 	}
 	// A second worktree reuses the link.
 	f.mustGraft("worktree", "add", "w/other")
+
+	// Adding an existing branch keeps its upstream.
+	f.git("branch", "w/existing", "origin/main")
+	f.git("branch", "--set-upstream-to=origin/main", "w/existing")
+	f.mustGraft("worktree", "add", "w/existing")
+	if got := f.git("for-each-ref", "--format=%(upstream)", "refs/heads/w/existing"); got != "refs/remotes/origin/main" {
+		t.Errorf("existing branch upstream = %q, want refs/remotes/origin/main", got)
+	}
+	existing := filepath.Join(cache, "worktrees", "work", "w-existing")
+	writeFile(t, filepath.Join(existing, "existing.txt"), "existing branch work\n")
+	if out, code := f.exec(existing, "", graftBin, "commit", "-m", "feat: existing branch work"); code != 0 {
+		t.Fatalf("graft commit on existing branch: exit %d\n%s", code, out)
+	}
+	if got := f.git("for-each-ref", "--format=%(upstream)", "refs/heads/w/existing"); got != "refs/remotes/origin/main" {
+		t.Errorf("commit changed existing branch upstream = %q", got)
+	}
+
+	// A configured merge ref remains authoritative even when the fetch
+	// refspec does not create its remote-tracking ref.
+	f.git("branch", "w/no-ref", "origin/main")
+	f.mustGraft("worktree", "add", "w/no-ref")
+	f.git("config", "branch.w/no-ref.remote", "origin")
+	f.git("config", "branch.w/no-ref.merge", "refs/heads/w/no-ref")
+	f.git("config", "--replace-all", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+	noRef := filepath.Join(cache, "worktrees", "work", "w-no-ref")
+	writeFile(t, filepath.Join(noRef, "no-ref.txt"), "configured merge without fetch ref\n")
+	if out, code := f.exec(noRef, "", graftBin, "commit", "-m", "feat: configured merge without fetch ref"); code != 0 {
+		t.Fatalf("graft commit with missing tracking ref: exit %d\n%s", code, out)
+	}
+	if got := f.git("config", "--get", "branch.w/no-ref.merge"); got != "refs/heads/w/no-ref" {
+		t.Errorf("configured branch merge changed to %q", got)
+	}
+	if got := f.git("for-each-ref", "--format=%(upstream)", "refs/heads/w/no-ref"); strings.TrimSpace(got) != "" {
+		t.Errorf("branch with an unfetched upstream now resolves to %q", got)
+	}
+
+	// The first graft commit publishes the new branch and sets its upstream.
+	writeFile(t, filepath.Join(dir, "new.txt"), "new work\n")
+	if out, code := f.exec(dir, "", graftBin, "commit", "-m", "feat: new work"); code != 0 {
+		t.Fatalf("graft commit on new branch: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/w/thing"); got != f.gitIn(dir, "rev-parse", "HEAD") {
+		t.Errorf("origin branch tip = %q, worktree HEAD = %q", got, f.gitIn(dir, "rev-parse", "HEAD"))
+	}
+	if got := f.git("for-each-ref", "--format=%(upstream)", "refs/heads/w/thing"); got != "refs/remotes/mirror/w/thing" {
+		t.Fatalf("new branch upstream = %q, want refs/remotes/mirror/w/thing", got)
+	}
+	if got := f.gitIn(f.remote("mirror"), "rev-parse", "refs/heads/w/thing"); got != f.gitIn(dir, "rev-parse", "HEAD") {
+		t.Errorf("mirror branch tip = %q, worktree HEAD = %q", got, f.gitIn(dir, "rev-parse", "HEAD"))
+	}
+	if out, code := f.exec(dir, "", graftBin, "worktree", "sync", "--push"); code != 0 {
+		t.Fatalf("sync --push after first commit: exit %d\n%s", code, out)
+	}
 
 	// A link that leads elsewhere is not replaced.
 	if err := os.Remove(filepath.Join(cache, "worktrees", "work", "kit")); err != nil {
@@ -910,6 +968,45 @@ func TestWorktreeAdd(t *testing.T) {
 	}
 	if out, code := f.graft("", "worktree", "add", "w/third"); code == 0 || !strings.Contains(out, "go.work uses ../kit, and "+filepath.Join(cache, "worktrees", "work", "kit")+" leads elsewhere") {
 		t.Errorf("a wrong link: exit %d\n%s", code, out)
+	}
+}
+
+func TestWorktreeFirstCommitRetrySetsUpstream(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\ngo_vet: {enabled: false, reason: the fixture has no packages}\n",
+		"VERSION":     "1.0.0\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
+	f.git("remote", "set-head", "origin", "main")
+	cache := t.TempDir()
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache)
+	f.mustGraft("worktree", "add", "w/retry")
+	dir := filepath.Join(cache, "worktrees", "work", "w-retry")
+	writeFile(t, filepath.Join(dir, "change.txt"), "first commit\n")
+	hook := filepath.Join(f.remote("origin"), "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho rejected >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := f.exec(dir, "", graftBin, "commit", "-m", "feat: retry push")
+	if code == 0 {
+		t.Fatalf("first push unexpectedly succeeded:\n%s", out)
+	}
+	const retryPrefix = "retry with: git push --set-upstream origin HEAD"
+	if !strings.Contains(out, retryPrefix) {
+		t.Fatalf("push failure hint lacks set-upstream command:\n%s", out)
+	}
+	_, after, _ := strings.Cut(out, "retry with: ")
+	retry := strings.TrimSpace(strings.SplitN(after, "\n", 2)[0])
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	if _, code := f.exec(dir, "", "sh", "-c", retry); code != 0 {
+		t.Fatalf("retry command failed:\n%s", out)
+	}
+	if got := f.git("config", "--get", "branch.w/retry.merge"); got != "refs/heads/w/retry" {
+		t.Fatalf("retry branch merge = %q, want refs/heads/w/retry", got)
 	}
 }
 

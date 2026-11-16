@@ -420,9 +420,9 @@ func (a *App) finishCommit(repo *gitx.Repo, cfg *config.Config, plan commitPlan,
 func (a *App) pushCommit(repo *gitx.Repo, cfg *config.Config, plan commitPlan, refs []string) error {
 	lease, noFollow := config.BranchMatches(cfg.Push.Lease, plan.branch), hasConfiguredFreeze(cfg)
 	if !plan.release || len(refs) < 2 {
-		return a.push(repo, plan.remotes, refs, lease, noFollow)
+		return a.pushCommitBranch(repo, plan, refs, lease, noFollow)
 	}
-	if err := a.push(repo, plan.remotes, refs[:1], lease, noFollow); err != nil {
+	if err := a.pushCommitBranch(repo, plan, refs[:1], lease, noFollow); err != nil {
 		if _, delErr := repo.Git("tag", "-d", plan.bump.tag); delErr != nil {
 			return errors.Join(err, fmt.Errorf("removing the local tag %s: %w", plan.bump.tag, delErr))
 		}
@@ -433,6 +433,24 @@ func (a *App) pushCommit(repo *gitx.Repo, cfg *config.Config, plan commitPlan, r
 		return fmt.Errorf("%w\nthe release commit is made here, tag %s is not: bring %s up to date with its remote, push it, then run graft release to tag the committed version", err, plan.bump.tag, plan.branch)
 	}
 	return a.push(repo, plan.remotes, refs[1:], false, noFollow)
+}
+
+// pushCommitBranch sets the new upstream as part of the first push. Git's
+// branch merge config, not the presence of a fetched tracking ref, tells us
+// whether the branch already has one.
+func (a *App) pushCommitBranch(repo *gitx.Repo, plan commitPlan, refs []string, lease, noFollow bool) error {
+	if len(plan.remotes) == 0 {
+		return a.push(repo, plan.remotes, refs, lease, noFollow)
+	}
+	merge, err := repo.Git("config", "--get", "branch."+plan.branch+".merge")
+	if err != nil && gitx.ExitCode(err) != 1 {
+		return err
+	}
+	setUpstreamRemote := ""
+	if strings.TrimSpace(merge) == "" {
+		setUpstreamRemote = plan.remotes[0]
+	}
+	return a.pushWithUpstreamRemote(repo, plan.remotes, refs, nil, lease, noFollow, setUpstreamRemote)
 }
 
 func (a *App) recordCommitAdvisoryAfterPush(repo *gitx.Repo, cfg *config.Config, frozen *activeFreeze, failed []string) error {

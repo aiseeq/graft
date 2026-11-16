@@ -841,7 +841,7 @@ func TestPushFailureOnOneRemoteStillPushesTheOthers(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("a failed remote must fail the command:\n%s", out)
 	}
-	if !strings.Contains(out, "push to alpha FAILED") || !strings.Contains(out, "1 of 2 remotes (alpha)") || !strings.Contains(out, "git push alpha HEAD") {
+	if !strings.Contains(out, "push to alpha FAILED") || !strings.Contains(out, "1 of 2 remotes (alpha)") || !strings.Contains(out, "git push --set-upstream alpha HEAD") {
 		t.Errorf("failure report:\n%s", out)
 	}
 	if got, head := f.gitIn(f.remote("zeta"), "rev-parse", "feature/PROJ-42-thing"), f.git("rev-parse", "HEAD"); got != head {

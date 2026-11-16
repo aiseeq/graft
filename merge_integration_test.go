@@ -42,6 +42,46 @@ func TestMergeFastForwardPushesAllRemotes(t *testing.T) {
 	}
 }
 
+func TestMergeAllowsSourceTrackingTheTrunk(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.git("branch", "--set-upstream-to=origin/main", "feature/PROJ-42")
+	f.git("switch", "-q", "main")
+	f.write("trunk.txt", "trunk\n")
+	f.mustPlainCommit("feat: trunk moved")
+	f.git("push", "-q", "origin", "main")
+
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code != 0 {
+		t.Fatalf("merge with trunk upstream: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "show", "main:feature.txt"); got != "source" {
+		t.Errorf("merged source content = %q", got)
+	}
+	if got := f.gitIn(f.remote("origin"), "show", "main:trunk.txt"); got != "trunk" {
+		t.Errorf("trunk content = %q", got)
+	}
+}
+
+func TestMergeStillRejectsSourceDivergedFromItsOwnUpstream(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	localTip := f.git("rev-parse", "feature/PROJ-42")
+	f.git("switch", "-q", "-c", "remote-feature", "main")
+	f.write("remote.txt", "remote\n")
+	f.mustPlainCommit("feat: remote feature update")
+	f.git("push", "-q", "origin", "HEAD:refs/heads/feature/PROJ-42")
+	f.git("switch", "-q", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("branch", "--set-upstream-to=origin/feature/PROJ-42", "feature/PROJ-42")
+
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "behind or diverged from refs/remotes/origin/feature/PROJ-42") {
+		t.Fatalf("merge behind own upstream: exit %d\n%s", code, out)
+	}
+	if got := f.git("rev-parse", "feature/PROJ-42"); got != localTip {
+		t.Errorf("local source moved: %s -> %s", localTip, got)
+	}
+}
+
 func TestMergeRefusesDirtyAndOperation(t *testing.T) {
 	f := mergeRepo(t, "origin")
 	f.write("untracked.txt", "dirty\n")

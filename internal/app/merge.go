@@ -272,7 +272,7 @@ func (s *mergeState) resolveSource() error {
 		}
 	}
 	name := strings.TrimPrefix(s.opts.Branch, "refs/remotes/")
-	s.sourceRef, err = resolveMergeSource(s.repo, name, s.allRemotes)
+	s.sourceRef, err = resolveMergeSource(s.repo, name, s.allRemotes, s.trunkRef)
 	if err != nil {
 		return err
 	}
@@ -1017,7 +1017,7 @@ func (s *mergeState) install() error {
 	return nil
 }
 
-func resolveMergeSource(repo *gitx.Repo, name string, remotes []string) (string, error) {
+func resolveMergeSource(repo *gitx.Repo, name string, remotes []string, trunkRef string) (string, error) {
 	name, forceLocal, err := normalizeMergeSourceName(name)
 	if err != nil {
 		return "", err
@@ -1027,7 +1027,7 @@ func resolveMergeSource(repo *gitx.Repo, name string, remotes []string) (string,
 			return ref, err
 		}
 	}
-	if ref, ok, err := localMergeSource(repo, name); err != nil || ok {
+	if ref, ok, err := localMergeSource(repo, name, trunkRef); err != nil || ok {
 		return ref, err
 	}
 	return remoteMergeSource(repo, name, remotes)
@@ -1062,19 +1062,19 @@ func explicitMergeRemoteSource(repo *gitx.Repo, name string, remotes []string) (
 	return "", false, nil
 }
 
-func localMergeSource(repo *gitx.Repo, name string) (string, bool, error) {
+func localMergeSource(repo *gitx.Repo, name, trunkRef string) (string, bool, error) {
 	local := "refs/heads/" + name
 	exists, err := repo.RefExists(local)
 	if err != nil || !exists {
 		return "", false, err
 	}
-	if err = validateLocalMergeUpstream(repo, name, local); err != nil {
+	if err = validateLocalMergeUpstream(repo, name, local, trunkRef); err != nil {
 		return "", false, err
 	}
 	return local, true, nil
 }
 
-func validateLocalMergeUpstream(repo *gitx.Repo, name, local string) error {
+func validateLocalMergeUpstream(repo *gitx.Repo, name, local, trunkRef string) error {
 	localOID, err := repo.Git("rev-parse", "--verify", local+"^{commit}")
 	if err != nil {
 		return err
@@ -1084,6 +1084,13 @@ func validateLocalMergeUpstream(repo *gitx.Repo, name, local string) error {
 		return err
 	}
 	upstream = strings.TrimSpace(upstream)
+	trunkFullRef, err := repo.Git("rev-parse", "--symbolic-full-name", trunkRef)
+	if err != nil {
+		return err
+	}
+	if upstream == strings.TrimSpace(trunkFullRef) {
+		return nil
+	}
 	present, err := repo.RefExists(upstream)
 	if err != nil || !present {
 		return err

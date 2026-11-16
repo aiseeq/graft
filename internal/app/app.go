@@ -343,14 +343,15 @@ func pushRemotes(repo *gitx.Repo, cfg *config.Config) ([]string, error) {
 
 // PushError reports the remotes a push did not reach.
 type PushError struct {
-	Failed       []string
-	Total        int
-	Refs         []string
-	GitConfig    []string
-	Lease        bool
-	NoFollowTags bool
-	LocalState   string
-	Advice       string
+	Failed         []string
+	Total          int
+	Refs           []string
+	GitConfig      []string
+	Lease          bool
+	NoFollowTags   bool
+	UpstreamRemote string
+	LocalState     string
+	Advice         string
 }
 
 func (e *PushError) Error() string {
@@ -364,7 +365,7 @@ func (e *PushError) Error() string {
 	}
 	var retry []string
 	for _, r := range e.Failed {
-		retry = append(retry, retryPushCommand(r, e.Refs, e.GitConfig, e.Lease, e.NoFollowTags))
+		retry = append(retry, retryPushCommand(r, e.Refs, e.GitConfig, e.Lease, e.NoFollowTags, r == e.UpstreamRemote))
 	}
 	localState := e.LocalState
 	if localState == "" {
@@ -374,9 +375,13 @@ func (e *PushError) Error() string {
 		len(e.Failed), e.Total, strings.Join(e.Failed, ", "), localState, strings.Join(retry, "; "))
 }
 
-func retryPushCommand(remote string, refs, gitConfig []string, lease, noFollowTags bool) string {
+func retryPushCommand(remote string, refs, gitConfig []string, lease, noFollowTags, setUpstream bool) string {
 	args := append([]string{"git"}, gitConfig...)
-	args = append(args, pushArgs(remote, lease, noFollowTags)...)
+	push := pushArgs(remote, lease, noFollowTags)
+	if setUpstream {
+		push = append(push[:len(push)-1], append([]string{"--set-upstream"}, push[len(push)-1:]...)...)
+	}
+	args = append(args, push...)
 	args = append(args, refs...)
 	return strings.Join(args, " ")
 }
@@ -389,6 +394,12 @@ func (a *App) push(repo *gitx.Repo, remotes, refs []string, lease, noFollowTags 
 }
 
 func (a *App) pushWithGitConfig(repo *gitx.Repo, remotes, refs, gitConfig []string, lease, noFollowTags bool) error {
+	return a.pushWithUpstreamRemote(repo, remotes, refs, gitConfig, lease, noFollowTags, "")
+}
+
+// pushWithUpstreamRemote adds --set-upstream only to the selected remote's
+// push, while retaining the normal order and failure handling for all remotes.
+func (a *App) pushWithUpstreamRemote(repo *gitx.Repo, remotes, refs, gitConfig []string, lease, noFollowTags bool, upstreamRemote string) error {
 	if len(remotes) == 0 {
 		a.printf("no remotes configured, nothing pushed")
 		return nil
@@ -396,7 +407,11 @@ func (a *App) pushWithGitConfig(repo *gitx.Repo, remotes, refs, gitConfig []stri
 	var failed []string
 	var failedErrors []error
 	for _, remote := range remotes {
-		args := append(slices.Clone(gitConfig), pushArgs(remote, lease, noFollowTags)...)
+		push := pushArgs(remote, lease, noFollowTags)
+		if remote == upstreamRemote {
+			push = append(push[:len(push)-1], append([]string{"--set-upstream"}, push[len(push)-1:]...)...)
+		}
+		args := append(slices.Clone(gitConfig), push...)
 		args = append(args, refs...)
 		if _, err := repo.Git(args...); err != nil {
 			failed = append(failed, remote)
@@ -407,8 +422,8 @@ func (a *App) pushWithGitConfig(repo *gitx.Repo, remotes, refs, gitConfig []stri
 		a.printf("pushed to %s", remote)
 	}
 	if len(failed) > 0 {
-		pushErr := &PushError{Failed: failed, Total: len(remotes), Refs: refs, GitConfig: gitConfig, Lease: lease, NoFollowTags: noFollowTags}
-		advice, adviceErr := rebasedUpstreamPushAdvice(repo, failed, failedErrors, refs, gitConfig, lease, noFollowTags)
+		pushErr := &PushError{Failed: failed, Total: len(remotes), Refs: refs, GitConfig: gitConfig, Lease: lease, NoFollowTags: noFollowTags, UpstreamRemote: upstreamRemote}
+		advice, adviceErr := rebasedUpstreamPushAdvice(repo, failed, failedErrors, refs, gitConfig, lease, noFollowTags, upstreamRemote)
 		if adviceErr != nil {
 			fmt.Fprintf(a.Stderr, "graft: could not check the failed push's upstream history: %v\n", adviceErr)
 		}
@@ -423,7 +438,7 @@ func (a *App) pushWithGitConfig(repo *gitx.Repo, remotes, refs, gitConfig []stri
 // rebasedUpstreamPushAdvice replaces the generic retry command only for
 // rejected branches whose current tips descend from an earlier local branch
 // tip recorded in that branch's reflog.
-func rebasedUpstreamPushAdvice(repo *gitx.Repo, failed []string, failures []error, refs, gitConfig []string, lease, noFollowTags bool) (string, error) {
+func rebasedUpstreamPushAdvice(repo *gitx.Repo, failed []string, failures []error, refs, gitConfig []string, lease, noFollowTags bool, setUpstreamRemote string) (string, error) {
 	if len(failed) == 0 || len(failed) != len(failures) || !slices.Contains(refs, "HEAD") {
 		return "", nil
 	}
@@ -487,7 +502,7 @@ func rebasedUpstreamPushAdvice(repo *gitx.Repo, failed []string, failures []erro
 			perRemote = append(perRemote, action)
 			continue
 		}
-		perRemote = append(perRemote, remote+": retry with `"+retryPushCommand(remote, refs, gitConfig, lease, noFollowTags)+"`")
+		perRemote = append(perRemote, remote+": retry with `"+retryPushCommand(remote, refs, gitConfig, lease, noFollowTags, remote == setUpstreamRemote)+"`")
 	}
 	return "handle each rejected remote: " + strings.Join(perRemote, "; "), errors.Join(checkErrors...)
 }
