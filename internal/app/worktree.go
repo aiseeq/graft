@@ -797,20 +797,17 @@ func (c *cleaner) dirtyWorktree(w worktree, what string, tree *gitx.Repo, change
 	if err != nil {
 		return err
 	}
-	commit, err := c.repo.GitEnv(snapshotIdentity, "commit-tree", snap, "-p", w.head, "-m", "graft worktree clean: uncommitted changes")
+	states, err := c.worktreeContentVerdicts(tree, w.head, changed, snap)
 	if err != nil {
 		return err
 	}
-	v, err := c.verdict(strings.TrimSpace(commit))
-	if err != nil {
-		return err
-	}
-	if !v.merged {
+	if !states.merged() {
+		state, v := states.firstUnmerged()
 		files, err := c.lacks(v)
 		if err != nil {
 			return err
 		}
-		c.line("in work", what, n+", not in "+c.trunk+": "+listSome(files, 5))
+		c.line("in work", what, n+", "+state+" not in "+c.trunk+": "+listSome(files, 5))
 		return nil
 	}
 	why := n + ", all in " + c.trunk
@@ -827,11 +824,71 @@ func (c *cleaner) dirtyWorktree(w worktree, what string, tree *gitx.Repo, change
 	if err != nil {
 		return err
 	}
-	if again != snap {
+	indexAgain, err := tree.Git("write-tree")
+	if err != nil {
+		return err
+	}
+	headAgain, err := tree.Git("rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return err
+	}
+	if again != snap || strings.TrimSpace(indexAgain) != states.indexTree || strings.TrimSpace(headAgain) != w.head {
 		c.line("in work", what, n+", changed while checked")
 		return nil
 	}
 	return c.removeWorktree(w, what, why, "--force")
+}
+
+// worktreeContentVerdicts compares HEAD, the index, and the work tree with the
+// trunk. snapshot may be supplied by clean so it can verify the tree did not
+// change after the verdict.
+func (c *cleaner) worktreeContentVerdicts(tree *gitx.Repo, head string, changed []string, snapshot string) (contentVerdicts, error) {
+	var states contentVerdicts
+	var err error
+	if states.head, err = c.verdict(head); err != nil {
+		return states, err
+	}
+	if len(changed) == 0 {
+		return states, nil
+	}
+	states.dirty = true
+	indexTree, err := tree.Git("write-tree")
+	if err != nil {
+		return states, fmt.Errorf("writing the index tree: %w", err)
+	}
+	states.indexTree = strings.TrimSpace(indexTree)
+	indexCommit, err := c.snapshotCommit(states.indexTree, head, "worktree clean: index")
+	if err != nil {
+		return states, err
+	}
+	if states.index, err = c.verdict(indexCommit); err != nil {
+		return states, err
+	}
+	if snapshot == "" {
+		snapshot, err = tree.WorkTreeTreeAll()
+		if err != nil {
+			return states, err
+		}
+	}
+	worktreeCommit, err := c.snapshotCommit(snapshot, head, "worktree clean: working tree")
+	if err != nil {
+		return states, err
+	}
+	states.worktree, err = c.verdict(worktreeCommit)
+	return states, err
+}
+
+func (c *cleaner) snapshotCommit(tree, head, message string) (string, error) {
+	args := []string{"commit-tree", tree}
+	if head != "" {
+		args = append(args, "-p", head)
+	}
+	args = append(args, "-m", message)
+	commit, err := c.repo.GitEnv(snapshotIdentity, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(commit), nil
 }
 
 // snapshotIdentity lets commit-tree write the commit of uncommitted changes
@@ -1457,6 +1514,32 @@ type verdict struct {
 	// it conflicts in.
 	tree      string
 	conflicts []string
+}
+
+// contentVerdicts checks each removable state separately. A work tree snapshot
+// can hide staged content or commits at HEAD, so one merged snapshot is not a
+// sufficient reason to remove the worktree.
+type contentVerdicts struct {
+	head, index, worktree verdict
+	dirty                 bool
+	indexTree             string
+}
+
+func (v contentVerdicts) merged() bool {
+	return v.head.merged && (!v.dirty || v.index.merged && v.worktree.merged)
+}
+
+func (v contentVerdicts) firstUnmerged() (string, verdict) {
+	if !v.head.merged {
+		return "HEAD", v.head
+	}
+	if v.dirty && !v.index.merged {
+		return "index", v.index
+	}
+	if v.dirty && !v.worktree.merged {
+		return "working tree", v.worktree
+	}
+	return "", verdict{}
 }
 
 // verdict tells whether merging rev into the trunk gives the trunk's tree,

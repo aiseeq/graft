@@ -129,7 +129,7 @@ func TestWorktreeClean(t *testing.T) {
 	for _, want := range []string{
 		"would remove " + wt("merged") + " (w/merged): clean, in origin/main",
 		"unmerged  " + wt("open") + " (w/open): adds +1 -0 lines to origin/main",
-		"in work   " + dirty + " (w/dirty): 2 uncommitted changes, not in origin/main: scratch.txt",
+		"in work   " + dirty + " (w/dirty): 2 uncommitted changes, working tree not in origin/main: scratch.txt",
 		"would remove " + landed + " (w/landed): 2 uncommitted changes, all in origin/main",
 		"in work   " + busy + " (w/busy): a process works in it (sleep, pid ",
 		"in work   " + held + " (w/held): a process works in it (sleep, pid ",
@@ -267,11 +267,106 @@ func TestWorktreeCleanKeepsEmptyUntrackedFile(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("clean dry run failed; exit %d:\n%s", code, out)
 	}
-	if strings.Contains(out, "would remove "+empty) || !strings.Contains(out, "in work   "+empty+" (w/empty-untracked): 1 uncommitted change, not in origin/main: empty.txt") {
+	if strings.Contains(out, "would remove "+empty) || !strings.Contains(out, "in work   "+empty+" (w/empty-untracked): 1 uncommitted change, working tree not in origin/main: empty.txt") {
 		t.Errorf("clean disagrees with check about the empty untracked file:\n%s", out)
 	}
 	if !strings.Contains(out, "would remove "+cleanTree+" (w/no-own-files): clean, in origin/main") {
 		t.Errorf("clean no longer offers a tree with no own files:\n%s", out)
+	}
+}
+
+func TestWorktreeCleanKeepsStagedStateOverriddenByWorktree(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("clean's process check reads /proc")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n", "sub/keep": "x\n",
+	})
+	path := add("staged-hidden")
+	writeFile(t, filepath.Join(path, "sub", "keep"), "valuable staged content\n")
+	f.gitIn(path, "add", "sub/keep")
+	writeFile(t, filepath.Join(path, "sub", "keep"), "x\n")
+	if staged := f.gitIn(path, "diff", "--cached", "--", "sub/keep"); !strings.Contains(staged, "valuable staged content") {
+		t.Fatalf("fixture does not contain unique staged work:\n%s", staged)
+	}
+	answer, checkCode, checkOut := worktreeCheckJSON(t, f, f.work, path)
+	if checkCode != app.ExitWorktreeHolds || answer.Clear {
+		t.Errorf("check does not name the unique staged state; exit %d:\n%s", checkCode, checkOut)
+	}
+	text, textCode := f.exec(f.work, "", graftBin, "worktree", "check", path)
+	if textCode != app.ExitWorktreeHolds || !strings.Contains(text, "index is not in origin/main") {
+		t.Errorf("text check does not name the unique staged state; exit %d:\n%s", textCode, text)
+	}
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s")
+	line := outputLineForPath(out, path)
+	if code != 0 || !strings.Contains(line, "in work") || !strings.Contains(line, "index not in origin/main") {
+		t.Errorf("clean would remove unique staged content; exit %d:\n%s", code, out)
+	}
+}
+
+func TestWorktreeCleanKeepsDetachedCommitHiddenByWorktree(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("clean's process check reads /proc")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n", "sub/keep": "x\n",
+	})
+	path := add("commit-hidden")
+	f.gitIn(path, "checkout", "-q", "--detach")
+	writeFile(t, filepath.Join(path, "sub", "keep"), "valuable committed content\n")
+	treeCommit(f, path, "feat: work only here")
+	writeFile(t, filepath.Join(path, "sub", "keep"), "x\n")
+	answer, checkCode, checkOut := worktreeCheckJSON(t, f, f.work, path)
+	if checkCode != app.ExitWorktreeHolds || answer.Clear {
+		t.Errorf("check does not name the unique HEAD state; exit %d:\n%s", checkCode, checkOut)
+	}
+	text, textCode := f.exec(f.work, "", graftBin, "worktree", "check", path)
+	if textCode != app.ExitWorktreeHolds || !strings.Contains(text, "HEAD is not in origin/main") {
+		t.Errorf("text check does not name the unique HEAD state; exit %d:\n%s", textCode, text)
+	}
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s")
+	line := outputLineForPath(out, path)
+	if code != 0 || !strings.Contains(line, "in work") || !strings.Contains(line, "HEAD not in origin/main") {
+		t.Errorf("clean would remove a unique detached commit; exit %d:\n%s", code, out)
+	}
+}
+
+func TestWorktreeCleanKeepsHeadCommitWhenIndexAndWorktreeMatchTrunk(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("clean's process check reads /proc")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n", "sub/keep": "x\n",
+	})
+	path := add("head-only")
+	f.gitIn(path, "checkout", "-q", "--detach")
+	writeFile(t, filepath.Join(path, "sub", "keep"), "unique HEAD content\n")
+	treeCommit(f, path, "feat: only in HEAD")
+	if _, code := f.exec(path, "", "git", "read-tree", "HEAD^"); code != 0 {
+		t.Fatal("resetting the index to trunk failed")
+	}
+	writeFile(t, filepath.Join(path, "sub", "keep"), "x\n")
+	if diff := f.gitIn(path, "diff", "--"); diff != "" {
+		t.Fatalf("fixture worktree differs from index: %s", diff)
+	}
+	if diff := f.gitIn(path, "diff", "--cached", "--", "sub/keep"); !strings.Contains(diff, "unique HEAD content") {
+		t.Fatalf("fixture index does not match trunk: %s", diff)
+	}
+	answer, checkCode, checkOut := worktreeCheckJSON(t, f, f.work, path)
+	if checkCode != app.ExitWorktreeHolds || answer.Clear {
+		t.Errorf("check ignored HEAD content; exit %d:\n%s", checkCode, checkOut)
+	}
+	text, textCode := f.exec(f.work, "", graftBin, "worktree", "check", path)
+	if textCode != app.ExitWorktreeHolds || !strings.Contains(text, "HEAD is not in origin/main") {
+		t.Errorf("text check omits the unique HEAD reason; exit %d:\n%s", textCode, text)
+	}
+	out, code := f.graft("", "worktree", "clean", "--min-age", "0s")
+	line := outputLineForPath(out, path)
+	if code != 0 || !strings.Contains(line, "HEAD not in origin/main") {
+		t.Errorf("clean ignored HEAD content; exit %d:\n%s", code, out)
 	}
 }
 

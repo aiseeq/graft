@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,6 +74,10 @@ type worktreeCheckResult struct {
 type worktreeHolds struct {
 	operation       string
 	detachedCommits int
+	refCommits      int
+	contentMerged   bool
+	contentReason   string
+	trunk           string
 	changes         []string
 	hidden          []string
 	nested          []string
@@ -107,7 +112,7 @@ func (a *App) WorktreeCheck(o WorktreeCheckOptions) error {
 	if err := a.requireGraft(cfg); err != nil {
 		return err
 	}
-	c := &cleaner{app: a, repo: repo, cfg: cfg, opts: WorktreeCleanOptions{Trunk: o.Trunk}, now: time.Now(), counts: map[string]int{}}
+	c := &cleaner{ctx: context.Background(), app: a, repo: repo, cfg: cfg, opts: WorktreeCleanOptions{Trunk: o.Trunk}, now: time.Now(), counts: map[string]int{}}
 	if c.remotes, err = repo.Remotes(); err != nil {
 		return err
 	}
@@ -116,6 +121,9 @@ func (a *App) WorktreeCheck(o WorktreeCheckOptions) error {
 	}
 	if c.cfg, err = c.readTrunkConfig(); err != nil {
 		return err
+	}
+	for _, f := range c.cfg.VersionFiles() {
+		c.exclude = append(c.exclude, ":(exclude)"+f)
 	}
 	holds, err := c.worktreeHolds(repo)
 	if err != nil {
@@ -182,7 +190,7 @@ func mainWorktreeConfig(repo *gitx.Repo) (*config.Config, error) {
 }
 
 func (c *cleaner) worktreeHolds(repo *gitx.Repo) (worktreeHolds, error) {
-	var holds worktreeHolds
+	holds := worktreeHolds{trunk: c.trunk}
 	var err error
 	if holds.operation, err = gitOperation(repo, repo.Root); err != nil {
 		return holds, fmt.Errorf("the state of %s not read: %w", repo.Root, err)
@@ -190,8 +198,31 @@ func (c *cleaner) worktreeHolds(repo *gitx.Repo) (worktreeHolds, error) {
 	if holds.detachedCommits, err = detachedCommits(repo); err != nil {
 		return holds, fmt.Errorf("the commits of %s not read: %w", repo.Root, err)
 	}
+	if holds.refCommits, err = worktreeRefCommits(repo); err != nil {
+		return holds, fmt.Errorf("the worktree refs of %s not read: %w", repo.Root, err)
+	}
 	if holds.changes, err = repo.ChangedFiles(); err != nil {
 		return holds, fmt.Errorf("the changes of %s not read: %w", repo.Root, err)
+	}
+	head, err := headTip(repo)
+	if err != nil {
+		return holds, fmt.Errorf("the HEAD of %s not read: %w", repo.Root, err)
+	}
+	if head == "" {
+		holds.contentMerged = len(holds.changes) == 0
+		if !holds.contentMerged {
+			holds.contentReason = "HEAD at no commit with uncommitted content"
+		}
+	} else {
+		states, err := c.worktreeContentVerdicts(repo, head, holds.changes, "")
+		if err != nil {
+			return holds, fmt.Errorf("the content of %s not compared with %s: %w", repo.Root, c.trunk, err)
+		}
+		holds.contentMerged = states.merged()
+		if !holds.contentMerged {
+			name, v := states.firstUnmerged()
+			holds.contentReason = name + " is not in " + c.trunk + ": " + v.why
+		}
 	}
 	if holds.hidden, err = hiddenChanges(repo.Root); err != nil {
 		return holds, fmt.Errorf("the marked files of %s not read: %w", repo.Root, err)
@@ -272,7 +303,7 @@ func newWorktreeCheckResult(root string, holds worktreeHolds) worktreeCheckResul
 		Changes: orEmpty(holds.changes), HiddenChanges: orEmpty(holds.hidden), NestedWorktrees: orEmpty(holds.nested),
 		Submodules: orEmpty(holds.submodules), Roots: []worktreeCheckRoot{},
 		MoreRoots: ignored.more, Files: ignored.count,
-		Clear: holds.operation == "" && holds.detachedCommits == 0 && !hasFileChanges(holds.changes) && len(holds.hidden) == 0 &&
+		Clear: holds.operation == "" && holds.contentMerged && holds.refCommits == 0 && len(holds.hidden) == 0 &&
 			len(holds.nested) == 0 && len(holds.submodules) == 0 && ignored.count == 0,
 	}
 	for _, r := range ignored.roots {
@@ -310,11 +341,18 @@ func (a *App) printWorktreeCheck(result worktreeCheckResult, holds worktreeHolds
 	if result.Operation != "" {
 		parts = append(parts, operationInProgress(result.Operation))
 	}
-	if result.DetachedCommits > 0 {
-		parts = append(parts, plural(result.DetachedCommits, "commit")+" only its HEAD reaches")
+	if holds.contentReason != "" {
+		parts = append(parts, holds.contentReason)
+	}
+	if holds.refCommits > 0 {
+		parts = append(parts, plural(holds.refCommits, "commit")+" only its refs/worktree reach")
 	}
 	if len(result.Changes) > 0 {
-		parts = append(parts, plural(len(result.Changes), "uncommitted change"))
+		changes := plural(len(result.Changes), "uncommitted change")
+		if holds.contentMerged {
+			changes += ", all in " + holds.trunk
+		}
+		parts = append(parts, changes)
 	}
 	if len(result.HiddenChanges) > 0 {
 		parts = append(parts, "files git status does not look at: "+strings.Join(result.HiddenChanges, ", "))

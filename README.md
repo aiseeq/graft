@@ -2882,9 +2882,11 @@ to remove it: exit 0 when nothing would be lost, 3 when something would go with
 it, anything else when it could not tell: a folder that is not the top of a
 linked worktree, a `.git` leading to another tree, a folder it could not read, a
 HEAD or reflog naming a missing object, a config blob a partial clone lacks. What it counts as lost:
-what `git status` shows, however it is set; ignored and submodule data by the
-rules of `clean`; a rebase, `am`, merge, cherry-pick, revert or bisect under way;
-commits only its HEAD or its own refs reach, a deleted branch's by the reflog;
+the content of HEAD and its commits, the index, and the working tree, each
+compared with the trunk by the rules of `clean` (a state already present in the
+trunk by content does not hold the tree); ignored and submodule data by the
+rules of `clean`; a rebase, `am`, merge, cherry-pick, revert or bisect under
+way; commits only its own refs reach, a deleted branch's by the reflog;
 files marked assume-unchanged or skip-worktree that are on disk; and a worktree
 inside it. It reads the rules from the trunk as last fetched, found by the main
 worktree's config: fetch first for the latest. It answers for `<path>` whatever
@@ -2894,12 +2896,15 @@ worktree's config: fetch first for the latest. It answers for `<path>` whatever
 `GIT_CONFIG_COUNT`, and objects only in `GIT_ALTERNATE_OBJECT_DIRECTORIES`, do
 not reach it. It
 takes no age: `newest` is there for the caller to weigh. A lock or a process
-working in the tree is not data. `--json` prints one object: `path`, `clear`,
-`operation`, `detached_commits`, `changes`, `hidden_changes`, `nested_worktrees`,
+working in the tree is not data. The text answer includes the hold reason.
+`--json` prints one object: `path`, `clear`, `operation`, `detached_commits`, `changes`,
+`hidden_changes`, `nested_worktrees`,
 `submodules`, `roots` (`name`, `directory`, `files`, `bytes`, `partial`),
 `more_roots`, `files`, `bytes`, `limited`, `newest`. Decide by the exit status or
-`clear`: names are for a person, with a name that is not UTF-8 blurred, and
-`submodules` holds descriptions as well as names. The walk stops at 1000 files:
+`clear`: `changes` and `detached_commits` can be nonzero when `clear` is true;
+they describe the tree, while `clear` is the verdict. Names are for a person,
+with a name that is not UTF-8 blurred, and `submodules` holds descriptions as
+well as names. The walk stops at 1000 files:
 then `limited` is true and the totals are lower bounds. `newest` is left out when
 no ignored data was found and when the walk stopped, for the age of the rest is
 unknown.

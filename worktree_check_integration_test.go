@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -51,6 +52,32 @@ func TestWorktreeCheckExitNumber(t *testing.T) {
 	writeFile(t, filepath.Join(path, "out", "file"), "x")
 	if out, code := f.exec(f.work, "", graftBin, "worktree", "check", path); code != 3 {
 		t.Fatalf("exit %d, the README promises 3:\n%s", code, out)
+	}
+}
+
+func TestWorktreeCheckJSONKeepsExistingFieldsWithoutReason(t *testing.T) {
+	f, add := newWorktreeCleanFixture(t, worktreeCheckFiles())
+	path := add("json-fields")
+	writeFile(t, filepath.Join(path, "sub", "keep"), "unique\n")
+	answer, code, out := worktreeCheckJSON(t, f, f.work, path)
+	if code != app.ExitWorktreeHolds || answer.Clear {
+		t.Fatalf("expected a held tree; exit %d:\n%s", code, out)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.NewDecoder(strings.NewReader(out)).Decode(&fields); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if _, ok := fields["reason"]; ok {
+		t.Errorf("JSON contains the unsupported reason field: %s", out)
+	}
+	for _, field := range []string{"path", "clear", "operation", "detached_commits", "changes", "hidden_changes", "nested_worktrees", "submodules", "roots", "more_roots", "files", "bytes", "limited"} {
+		if _, ok := fields[field]; !ok {
+			t.Errorf("JSON lost existing field %q: %s", field, out)
+		}
+	}
+	text, textCode := f.exec(f.work, "", graftBin, "worktree", "check", path)
+	if textCode != app.ExitWorktreeHolds || !strings.Contains(text, "is not in") {
+		t.Errorf("text output lost its hold reason; exit %d:\n%s", textCode, text)
 	}
 }
 
@@ -125,8 +152,8 @@ func TestWorktreeCheckTrunkFoundByMainWorktree(t *testing.T) {
 	}
 	// The named ref is the caller's choice.
 	out, code := f.exec(f.work, "", graftBin, "worktree", "check", "--trunk", "other/main", path)
-	if code != 0 {
-		t.Errorf("--trunk did not apply its rules; exit %d:\n%s", code, out)
+	if code != app.ExitWorktreeHolds || !strings.Contains(out, "other/main") {
+		t.Errorf("--trunk did not apply its content verdict; exit %d:\n%s", code, out)
 	}
 	out, code = f.exec(f.work, "", graftBin, "worktree", "check", "--trunk", "nosuch", path)
 	requireNoAnswer(t, "--trunk nosuch", out, code)
@@ -170,11 +197,11 @@ func TestWorktreeCheckOperationAndDetachedCommits(t *testing.T) {
 	}
 	treeCommit(f, detached, "chore: only here")
 	answer, code, out = worktreeCheckJSON(t, f, f.work, detached)
-	if code != app.ExitWorktreeHolds || answer.Clear || answer.DetachedCommits != 1 {
-		t.Errorf("a commit only HEAD reaches is not counted; exit %d:\n%s", code, out)
+	if code != 0 || !answer.Clear || answer.DetachedCommits != 1 {
+		t.Errorf("an empty commit with trunk content holds no data; exit %d:\n%s", code, out)
 	}
-	if text, code := f.exec(f.work, "", graftBin, "worktree", "check", detached); code != app.ExitWorktreeHolds || !strings.Contains(text, "1 commit only its HEAD reaches") {
-		t.Errorf("the plain answer does not count the commit; exit %d:\n%s", code, text)
+	if text, code := f.exec(f.work, "", graftBin, "worktree", "check", detached); code != 0 || !strings.Contains(text, "nothing its removal would lose") {
+		t.Errorf("the plain answer treats an empty commit as lost data; exit %d:\n%s", code, text)
 	}
 	f.gitIn(detached, "branch", "keep-it")
 	if answer, code, out := worktreeCheckJSON(t, f, f.work, detached); code != 0 || !answer.Clear {
@@ -360,13 +387,85 @@ func treeCommit(f *fixture, path, message string, flags ...string) {
 	f.gitIn(path, args...)
 }
 
+func TestWorktreeCheckAndCleanUseSameContentVerdict(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("clean's process check reads /proc")
+	}
+	for _, scenario := range []struct {
+		name, kind string
+		wantClear  bool
+	}{
+		{name: "same content as trunk", kind: "same", wantClear: true},
+		{name: "different uncommitted content", kind: "edit"},
+		{name: "untracked file outside trunk", kind: "untracked"},
+		{name: "commit outside trunk", kind: "commit"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f, add := newWorktreeCleanFixture(t, worktreeCheckFiles())
+			path := add("verdict")
+			if scenario.kind == "same" {
+				writeFile(t, filepath.Join(f.work, "sub", "keep"), "landed\n")
+				treeCommit(f, f.work, "feat: land version")
+				f.git("push", "-q", "origin", "main")
+				writeFile(t, filepath.Join(path, "sub", "keep"), "landed\n")
+			} else {
+				switch scenario.kind {
+				case "edit":
+					writeFile(t, filepath.Join(path, "sub", "keep"), "local\n")
+				case "untracked":
+					writeFile(t, filepath.Join(path, "only-here"), "local\n")
+				case "commit":
+					writeFile(t, filepath.Join(path, "only-here"), "local\n")
+					treeCommit(f, path, "feat: only here")
+				}
+			}
+
+			answer, checkCode, checkOut := worktreeCheckJSON(t, f, f.work, path)
+			cleanOut, cleanCode := f.graft("", "worktree", "clean", "--min-age", "0s")
+			line := outputLineForPath(cleanOut, path)
+			cleanClear := strings.Contains(line, "would remove")
+			if checkCode != cleanClearCode(scenario.wantClear) || answer.Clear != scenario.wantClear || cleanClear != scenario.wantClear || cleanCode != 0 {
+				t.Errorf("check and clean disagree (want clear %t); check exit %d:\n%s\nclean exit %d:\n%s", scenario.wantClear, checkCode, checkOut, cleanCode, cleanOut)
+			}
+			if scenario.kind == "same" && (len(answer.Changes) != 1 || answer.Changes[0] != "sub/keep") {
+				t.Errorf("JSON no longer explains the status change: %#v", answer.Changes)
+			}
+		})
+	}
+}
+
+func TestWorktreeCheckUsesTrunkVersionExclusions(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("clean's process check reads /proc")
+	}
+	f, add := newWorktreeCleanFixture(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n", "sub/keep": "x\n",
+	})
+	path := add("version-change")
+	writeFile(t, filepath.Join(path, "VERSION"), "9.9.9\n")
+	answer, checkCode, checkOut := worktreeCheckJSON(t, f, f.work, path)
+	cleanOut, cleanCode := f.graft("", "worktree", "clean", "--min-age", "0s")
+	line := outputLineForPath(cleanOut, path)
+	if checkCode != 0 || !answer.Clear || cleanCode != 0 || !strings.Contains(line, "would remove") {
+		t.Errorf("check did not use clean's trunk version exclusions; check %d:\n%s\nclean %d:\n%s", checkCode, checkOut, cleanCode, cleanOut)
+	}
+}
+
+func cleanClearCode(clear bool) int {
+	if clear {
+		return 0
+	}
+	return app.ExitWorktreeHolds
+}
+
 // What git status shows is lost too, whatever it is set to hide.
 func TestWorktreeCheckChanges(t *testing.T) {
 	f, add := newWorktreeCleanFixture(t, worktreeCheckFiles())
 	edited := add("edited-file")
-	writeFile(t, filepath.Join(edited, "VERSION"), "edited\n")
+	writeFile(t, filepath.Join(edited, "sub", "keep"), "edited\n")
 	answer, code, out := worktreeCheckJSON(t, f, f.work, edited)
-	if code != app.ExitWorktreeHolds || len(answer.Changes) != 1 || answer.Changes[0] != "VERSION" {
+	if code != app.ExitWorktreeHolds || len(answer.Changes) != 1 || answer.Changes[0] != "sub/keep" {
 		t.Errorf("a changed file is not named; exit %d:\n%s", code, out)
 	}
 	if text, code := f.exec(f.work, "", graftBin, "worktree", "check", edited); code != app.ExitWorktreeHolds || !strings.Contains(text, "1 uncommitted change") {
@@ -416,8 +515,8 @@ func TestWorktreeCheckCommitsThatStay(t *testing.T) {
 		path := add(strings.ReplaceAll(name, " ", "-"))
 		f.gitIn(path, "checkout", "-q", "--detach")
 		treeCommit(f, path, "chore: here for "+name)
-		if answer, code, out := worktreeCheckJSON(t, f, f.work, path); code != app.ExitWorktreeHolds || answer.DetachedCommits != 1 {
-			t.Errorf("%s: before it the commit is only here; exit %d:\n%s", name, code, out)
+		if answer, code, out := worktreeCheckJSON(t, f, f.work, path); code != 0 || !answer.Clear || answer.DetachedCommits != 1 {
+			t.Errorf("%s: an empty commit adds no content outside trunk; exit %d:\n%s", name, code, out)
 		}
 		keep(path)
 		if answer, code, out := worktreeCheckJSON(t, f, f.work, path); code != 0 || !answer.Clear {
@@ -431,6 +530,7 @@ func TestWorktreeCheckCommitsThatStay(t *testing.T) {
 func TestWorktreeCheckHeadStates(t *testing.T) {
 	f, add := newWorktreeCleanFixture(t, worktreeCheckFiles())
 	deleted := add("deleted")
+	writeFile(t, filepath.Join(deleted, "sub", "keep"), "unique reflog content\n")
 	treeCommit(f, deleted, "chore: on the branch")
 	f.gitIn(deleted, "update-ref", "-d", "refs/heads/w/deleted")
 	f.gitIn(deleted, "rm", "-rfq", ".")
@@ -472,6 +572,10 @@ func TestWorktreeOwnRefs(t *testing.T) {
 	answer, code, out := worktreeCheckJSON(t, f, f.work, path)
 	if code != app.ExitWorktreeHolds || answer.DetachedCommits != 1 {
 		t.Errorf("a commit under refs/worktree is not counted; exit %d:\n%s", code, out)
+	}
+	text, textCode := f.exec(f.work, "", graftBin, "worktree", "check", path)
+	if textCode != app.ExitWorktreeHolds || !strings.Contains(text, "refs/worktree") {
+		t.Errorf("the text answer omits the own-ref reason; exit %d:\n%s", textCode, text)
 	}
 	for _, ref := range []string{"refs/bisect/kept", "refs/rewritten/kept"} {
 		other := add(strings.ReplaceAll(ref, "/", "-"))
