@@ -2439,7 +2439,7 @@ func (r *Runner) reportFileStep(ctx context.Context, cmd *exec.Cmd, source, runn
 		once.Do(read)
 		return testreport.FailureReason(runs)
 	}
-	use, err := r.measureWithReason(ctx, cmd, source, true, true, remoteStderr, reason, nil)
+	use, err := r.measureWithReason(ctx, cmd, source, true, true, remoteStderr, reason, nil, true)
 	once.Do(read)
 	switch {
 	case errors.Is(rerr, os.ErrNotExist):
@@ -2877,7 +2877,7 @@ func (r *Runner) goTestStep(ctx context.Context, cmd *exec.Cmd, source, runner s
 // measureGoTest is measure for a go test -json step: its stdout is the
 // stream, so only stderr is kept, and reason gives the parsed failures.
 func (r *Runner) measureGoTest(ctx context.Context, cmd *exec.Cmd, source string, remoteStderr *bytes.Buffer, reason func() string, missingRunNames func() bool) (stats.Usage, error) {
-	return r.measureWithReason(ctx, cmd, source, true, false, remoteStderr, reason, missingRunNames)
+	return r.measureWithReason(ctx, cmd, source, true, false, remoteStderr, reason, missingRunNames, true)
 }
 
 // backgroundPipeWait bounds how long an inherited output pipe can keep Wait
@@ -3047,12 +3047,12 @@ func (r *Runner) finishRemoteStepLoad(sample stats.Sample, watch *remoteLoadWatc
 // measureWithCapture is measure; with capture the step's output also goes to
 // a bounded tail, the reason of its stats line when it fails.
 func (r *Runner) measureWithCapture(ctx context.Context, cmd *exec.Cmd, source string, capture bool, remoteStderr *bytes.Buffer) (stats.Usage, error) {
-	return r.measureWithReason(ctx, cmd, source, capture, capture, remoteStderr, nil, nil)
+	return r.measureWithReason(ctx, cmd, source, capture, capture, remoteStderr, nil, nil, true)
 }
 
 // measureWithReason runs and records cmd; the reason of a failed step is the
 // first useful cleaned reason from reasonSource, stderr, or stdout.
-func (r *Runner) measureWithReason(ctx context.Context, cmd *exec.Cmd, source string, captureStderr, captureStdout bool, remoteStderr *bytes.Buffer, reasonSource func() string, missingRunNames func() bool, record ...bool) (stats.Usage, error) {
+func (r *Runner) measureWithReason(ctx context.Context, cmd *exec.Cmd, source string, captureStderr, captureStdout bool, remoteStderr *bytes.Buffer, reasonSource func() string, missingRunNames func() bool, record bool) (stats.Usage, error) {
 	stdout, stderr, piped := captureStepOutput(cmd, captureStderr, captureStdout)
 	if piped && cmd.WaitDelay == 0 {
 		cmd.WaitDelay = backgroundPipeWait
@@ -3107,7 +3107,7 @@ func (r *Runner) measureWithReason(ctx context.Context, cmd *exec.Cmd, source st
 			code = 1
 		}
 	}
-	if len(record) == 0 || record[0] {
+	if record {
 		r.recordStep(source, use, code, reason)
 	}
 	return use, err

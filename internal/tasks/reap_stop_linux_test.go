@@ -74,7 +74,7 @@ func TestDaemonHoldingPipeDoesNotFailStep(t *testing.T) {
 	cmd := exec.CommandContext(context.Background(), "sh", "-c", `setsid sleep 30 & echo $! > "$1/daemon"`, "sh", dir)
 	r := &Runner{}
 	r.stopLocalCommand(cmd, true)
-	_, err := r.measureWithReason(context.Background(), cmd, "step", true, true, nil, nil, nil)
+	_, err := r.measureWithReason(context.Background(), cmd, "step", true, true, nil, nil, nil, true)
 	data, rerr := os.ReadFile(filepath.Join(dir, "daemon"))
 	if rerr != nil {
 		t.Fatal(rerr)
