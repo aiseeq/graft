@@ -124,8 +124,8 @@ func TestBusyGateCheaperHereHistory(t *testing.T) {
 	g := newGateCostFixture(t, gateCostVetConfig)
 	g.writeHistory(t, gateCostRows([]float64{0.1, 0.2, 0.3}, "", 0), gateCostRows([]float64{40, 41}, "pc", 0))
 	out, calls := runBusyCostGate(t, g, false)
-	if calls != "" || !strings.Contains(out, "cheaper here: 0.2s here, 40.0s on pc") {
-		t.Fatalf("expected vet kept here with its reason; calls=%q\n%s", calls, out)
+	if calls != "" || strings.Contains(out, "cheaper here:") {
+		t.Fatalf("built-in vet reason should be stats-only; calls=%q\n%s", calls, out)
 	}
 	if strings.Contains(out, "gate: busy here:") || !strings.Contains(out, "starting after") {
 		t.Errorf("all-local gate should wait whole, without splitting:\n%s", out)
@@ -149,8 +149,8 @@ func TestBusyGateLocalHistoryIsProfileSpecificAcrossProjects(t *testing.T) {
 	}
 	g.writeHistory(t, locals, gateCostRows([]float64{40}, "pc", 0))
 	out, calls := runBusyCostGate(t, g, false)
-	if calls != "" || !strings.Contains(out, "cheaper here: 0.2s here, 40.0s on pc") {
-		t.Fatalf("same-profile local history from another tree should keep vet here; calls=%q\n%s", calls, out)
+	if calls != "" || strings.Contains(out, "cheaper here:") {
+		t.Fatalf("built-in vet reason should be stats-only; calls=%q\n%s", calls, out)
 	}
 }
 
@@ -239,8 +239,17 @@ func TestBusyGateColdProbeThenCheaperHere(t *testing.T) {
 	if got := strings.Count(calls, "go test -run Probe"); got != 1 {
 		t.Fatalf("cold start sent %d steps, want exactly one; calls=%q\n%s", got, calls, out)
 	}
-	if strings.Count(out, "cheaper here:") != 3 {
-		t.Errorf("want three local-cost reasons after the probe:\n%s", out)
+	if strings.Count(out, "cheaper here:") != 1 {
+		t.Errorf("want one local-cost reason line for the remote task:\n%s", out)
+	}
+	localReasons := 0
+	for _, rec := range readStats(t, g.statsFile) {
+		if rec.Kind == "step" && rec.Task == "unit" && rec.Host == "" && strings.HasPrefix(rec.Here, "cheaper here:") {
+			localReasons++
+		}
+	}
+	if localReasons != 3 {
+		t.Errorf("got %d local-cost step records with reasons, want 3", localReasons)
 	}
 }
 
@@ -407,8 +416,20 @@ func TestBusyGateAllHereWithASubmodule(t *testing.T) {
 	if calls != "" || strings.Contains(out, "gate: busy here:") || strings.Count(out, "starting after") != 1 {
 		t.Fatalf("expected a whole-gate wait with no host call; calls=%q\n%s", calls, out)
 	}
-	if !strings.Contains(out, "go vet ./...: cheaper here: 0.2s here, 40.0s on pc") {
-		t.Errorf("the root's vet does not say cheaper here:\n%s", out)
+	wantRoot := "cheaper here: 0.2s here, 40.0s on pc"
+	rootHere, subHere := "", ""
+	for _, rec := range readStats(t, g.statsFile) {
+		if rec.Kind != stats.KindStep || !strings.HasPrefix(rec.Step, "go vet") {
+			continue
+		}
+		if strings.Contains(rec.Step, "(sub)") {
+			subHere = rec.Here
+		} else {
+			rootHere = rec.Here
+		}
+	}
+	if rootHere != wantRoot || !strings.Contains(subHere, "runs in sub") {
+		t.Errorf("builtin vet stats reasons: root=%q sub=%q", rootHere, subHere)
 	}
 }
 

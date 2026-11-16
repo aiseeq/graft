@@ -343,7 +343,7 @@ func TestStopCommandReapsOrphansAfterLeaderExits(t *testing.T) {
 			dir := t.TempDir()
 			s := &config.Service{
 				Run:  config.Command{Argv: []string{"sh", "-c", "exec sleep 30"}},
-				Stop: "sleep 5 & echo $! > child; exit 0", Log: "service.log", PIDFile: "service.pid", StopTimeout: 300 * time.Millisecond,
+				Stop: "sleep 5 & echo $! > child; exit 0", Log: "service.log", PIDFile: "service.pid", StopTimeout: 2 * time.Second,
 			}
 			m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
 			if err := m.start(t.Context(), "svc"); err != nil {

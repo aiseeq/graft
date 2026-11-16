@@ -468,6 +468,80 @@ func TestBusyGateBrokenPathRunsTheStepHere(t *testing.T) {
 	if !strings.Contains(out, "pc path broken") || !strings.Contains(out, "running here") {
 		t.Errorf("the broken path is not said:\n%s", out)
 	}
+	pathReason := false
+	for _, rec := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+		if rec.Kind == "step" && rec.Host == "" && strings.HasPrefix(rec.Here, "pc path broken:") {
+			pathReason = true
+		}
+	}
+	if !pathReason {
+		t.Errorf("the local fallback step stats lack the broken path reason:\n%s", out)
+	}
+}
+
+func TestBusyGateBrokenPathRetriesSingleRemoteShellHere(t *testing.T) {
+	f, state := userRemoteRepo(t, "")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none}\n"+
+		"go_vet: {enabled: false, reason: disabled in this test}\ngo_fix: {enabled: false}\ngo_fmt: {enabled: false, reason: disabled in this test}\n"+
+		"gate: [{task: lint}]\ntasks:\n"+
+		"  lint:\n    heavy: true\n    remote: true\n    run: [{sh: 'echo local > retried'}]\n")
+	writeFile(t, filepath.Join(state, "broken"), "")
+	loaded(t, state)
+	out := runUntilMachineWait(t, f, state, "gate")
+	if got := f.read("retried"); got != "local\n" {
+		t.Fatalf("single shell step was not retried here: %q\n%s", got, out)
+	}
+	if !strings.Contains(out, "graft: lint: pc path broken: run exited 125: connection to pc lost, running here") {
+		t.Errorf("the broken path was not reported for the task:\n%s", out)
+	}
+	if got := strings.Count(out, "path broken:"); got != 1 {
+		t.Errorf("got %d path-broken lines, want one:\n%s", got, out)
+	}
+	foundFallback := false
+	for _, rec := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+		if rec.Kind == stats.KindStep && rec.Task == "lint" && rec.Host == "" &&
+			rec.Here == "pc path broken: run exited 125: connection to pc lost" {
+			foundFallback = true
+		}
+	}
+	if !foundFallback {
+		t.Errorf("fallback step lacks the local path-broken reason:\n%s", out)
+	}
+}
+
+func TestBusyGateBrokenPathReportsEachLaterRemoteTask(t *testing.T) {
+	f, state := userRemoteRepo(t, "")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: none}\n"+
+		"go_vet: {enabled: false, reason: disabled in this test}\ngo_fix: {enabled: false}\ngo_fmt: {enabled: false, reason: disabled in this test}\n"+
+		"gate: [{task: first}, {task: second}]\ntasks:\n"+
+		"  first:\n    heavy: true\n    remote: true\n    run: [{sh: 'echo first > first-output'}]\n"+
+		"  second:\n    heavy: true\n    remote: true\n    run: [{sh: 'echo second > second-output'}]\n")
+	writeFile(t, filepath.Join(state, "broken"), "")
+	loaded(t, state)
+	out := runUntilMachineWait(t, f, state, "gate")
+	for _, want := range []string{
+		"graft: first: pc path broken: run exited 125: connection to pc lost, running here",
+		"graft: second: pc path broken: run exited 125: connection to pc lost, running here",
+	} {
+		if strings.Count(out, want) != 1 {
+			t.Errorf("expected one path-broken reason %q:\n%s", want, out)
+		}
+	}
+	if f.read("first-output") != "first\n" || f.read("second-output") != "second\n" {
+		t.Errorf("both steps were not rerun locally: first=%q second=%q\n%s", f.read("first-output"), f.read("second-output"), out)
+	}
+	for _, task := range []string{"first", "second"} {
+		found := false
+		for _, rec := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+			if rec.Kind == stats.KindStep && rec.Task == task && rec.Host == "" &&
+				rec.Here == "pc path broken: run exited 125: connection to pc lost" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("task %s fallback lacks its here record:\n%s", task, out)
+		}
+	}
 }
 
 // TestExecOfGraftLetsTheInnerGraftPlaceIt: graft exec --heavy of graft

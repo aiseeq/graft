@@ -399,30 +399,34 @@ with `remote: true` (the project vouches that its tests pass on the host:
 they read nothing outside the tree that only this machine has, a tool on
 `PATH` or state under the home directory), or built-in `go vet` or `go fix
 -diff` steps, runs split. Its `graft: gate: busy here: …` line names the
-built-in checks, go steps and glint checks of `remote: true` tasks sent to
-the host. It takes no admission as a whole, nor do its heavy tasks; the
-built-in `go vet` and `go fix -diff` steps, and every `go test` and `go vet`
-step that writes no file and every `glint check` step (glint by name or
-absolute path, its copy on the host the one install recorded) of a `remote:
-true` task at any depth, run on the host unless the
-task would stay here (test database, `.env` keys, a directory the host's
-`run` cannot reach). Every other step (the gofmt check, installs, scripts,
-the go steps of the other tasks) runs here under one admission: the first
+built-in checks and the task steps sent to the host. It takes no admission as
+a whole, nor do its heavy tasks. A `remote: true` task made only of eligible
+`go test`, `go vet` and `glint check` steps is placed step by step. Other
+steps of a task with `remote: true` stay here, except when that task has
+exactly one process or shell step and no deps; that one step may go to the
+host. Install, service and nested task steps stay here, but an install or
+service in a task does not hold its eligible Go checks here. A multi-step
+task's shell steps therefore remain together here, while a single shell step
+may run on the host. A one-step glint still needs its recorded host copy to
+match. Built-in `go vet` and `go fix -diff` can still go to the host. The gofmt check,
+installs, services and steps of tasks without `remote: true` run here under
+one admission: the first
 of them waits for this machine, the rest run under its admission to the
 gate's end, its reservation released when CPU use is visible, the task
 ends, or `load.settle` expires. A gate without such a step waits here whole. A host step
 whose path breaks is said and rerun here under that admission, and the
 gate's later go steps run here too. A gate whose host does not answer waits
 here whole and says why; none of its steps says `cheaper here`.
-For each eligible step, graft compares the median wall time of its last up to
-five successful local runs of the same profile and step, from any tree of the
-project and at least two of them, with the minimum wall
-time of the last up to five successful host steps for this tree. When the
-local time is known and less than the host time, the step stays here and says
-`cheaper here`; otherwise it goes to the host. If no host time is known, the
-first eligible step is a probe, and later steps in the same gate use its
-measured wall time. If every eligible step stays here, the gate waits here
-whole instead of splitting.
+For each step eligible for the host, graft compares the median wall time of
+its last up to five successful local runs of the same profile and step, from
+any tree of the project and at least two of them, with the minimum wall time
+of the last up to five successful host steps for this tree. When the local
+time is known and less than the host time, the step stays here; otherwise it
+goes to the host. If no host time is known, the first eligible step is a
+probe, and later steps in the same gate use its measured wall time. A
+`remote: true` task's local placement reason is printed once per task and
+recorded on each affected step. If every eligible step stays here, the gate
+waits here whole instead of splitting.
 Each heavy task
 says where it runs, `graft: build: heavy, on pc`, or why it stays here and
 queues as before, `graft: build: heavy, on this machine: <why>`:
@@ -884,7 +888,7 @@ tasks:
     test_db: true              # pass the test database DSN (see below)
     heavy: true                # wait while the machine is loaded (user config load), GRAFT_THREADS set
     memory_max: 12G            # heavy only: scope memory ceiling; size in binary K/M/G or 1..100% of RAM
-    remote: false              # heavy: stay on this machine though the project has remote_heavy (true: any step goes, and a busy gate sends its go steps)
+    remote: false              # heavy: stay here with remote_heavy (true: busy gates can send eligible checks or one process/shell step with no deps)
     tests: go                  # read go test -json: print plain go test output, record every test
     dotenv: [API_KEY!, 'LOG_DIR?']  # only these .env keys reach the steps; KEY? optional, KEY! must not be empty
     dotenv_sets: [db]          # plus the keys of named sets
@@ -1238,12 +1242,12 @@ graft's version, pid and command line. A
   not its steps`. Absent for a task the host ran and without a host. On a
   step line, a heavy task that stayed here gives its `here` to each step;
   a gate step's own placement reason takes priority. A heavy task sent to
-  the host gives no `here` to its steps. For a busy gate it is set only for
-  a step that could go to the
-  host and stayed here: `cheaper here: …` when its cost keeps it here (it
-  would stay with the host up, so this wins over a broken path), else
-  `<host> path broken: …` for the step run here after the path broke and
-  the gate's later steps that would have gone.
+  the host gives no `here` to its steps. In a busy gate, each step records
+  its own local reason, including why a step of a multi-step `remote: true`
+  task stays here. Built-in checks and steps of tasks without `remote: true`
+  record their reasons without printing a line for each one. Eligible steps
+  kept here for cost say `cheaper here: …`; a broken host path says
+  `<host> path broken: …` on the fallback step and later eligible steps.
 - `reserve_cores`, `reserve_s` and `reserve_end` record expected CPU use, how
   long the reservation lived, and whether it ended by CPU use (`cpu`), the
   configured maximum (`cap`), task completion (`done`) or unreadable process

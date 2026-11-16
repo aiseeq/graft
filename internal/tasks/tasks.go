@@ -168,7 +168,8 @@ type Runner struct {
 	lightRemainder bool
 	// splitLeave releases the admission the steps a split gate keeps here
 	// share, nil until the first of them takes it.
-	splitLeave func() error
+	splitLeave         func() error
+	gateReasonsPrinted map[string]bool
 	// execHeavyTask is the top-level task that graft exec --heavy of graft
 	// asked to run as heavy (ExecHeavyEnv), "" without it.
 	execHeavyTask string
@@ -229,8 +230,7 @@ type frame struct {
 	heavy  bool
 	here   string
 	// stepHere is why the running step of a busy gate stays here though it
-	// could go to the host: cheaper here, or the path broke; only its step
-	// line records it.
+	// could go to the host.
 	stepHere string
 	// program is the program a graft exec runs, which tells its kind.
 	program          string
@@ -794,12 +794,35 @@ func lastFloats(values []float64, n int) []float64 {
 }
 
 func (r *Runner) gateStepPlacement(s config.Step, t *config.Task, taskName string, builtin bool) (bool, string, error) {
-	if s.Shell != "" || !(builtin && builtinGateGoCheck(s) || remoteVouched(t) && (goCheckNoOutput(s.Argv, nil) || r.glintEligible(s.Argv, nil))) {
-		return false, "", nil
-	}
-	why, err := r.stayHere(t, r.taskDir(t))
-	if err != nil || why != "" {
-		return false, "", err
+	if builtin {
+		why, err := r.stayHere(t, r.taskDir(t))
+		if err != nil || why != "" {
+			return false, why, err
+		}
+		if !builtinGateGoCheck(s) {
+			return false, "gofmt is a local gate check", nil
+		}
+	} else {
+		why, err := r.stayHere(t, r.taskDir(t))
+		if err != nil || why != "" {
+			return false, why, err
+		}
+		if s.Install != nil {
+			return false, "install steps run on this machine", nil
+		}
+		if s.ServiceAction != "" {
+			return false, "service steps run on this machine", nil
+		}
+		if !remoteVouched(t) {
+			if taskName == stats.GateTask {
+				return false, "only built-in go vet and go fix -diff steps can use user remote_heavy", nil
+			}
+			return false, "the gate only sends steps of remote: true tasks to user remote_heavy", nil
+		}
+		eligible, reason := r.remoteGateVouchedStep(s, t)
+		if !eligible {
+			return false, reason, nil
+		}
 	}
 	if r.gateCosts == nil || !r.gateCosts.hasFee {
 		return true, "", nil
@@ -813,8 +836,50 @@ func (r *Runner) gateStepPlacement(s config.Step, t *config.Task, taskName strin
 	return false, reason, nil
 }
 
-// gateHasEligible finds a built-in Go check or a go check of a task with
-// remote: true in the gate's tasks or their deps.
+func (r *Runner) remoteGateVouchedStep(s config.Step, t *config.Task) (bool, string) {
+	goCheck := goCheckNoOutput(s.Argv, nil)
+	glintCheck := !goCheck && glintCheckNoOutput(s.Argv, nil)
+	if goCheck {
+		return true, ""
+	}
+	if glintCheck {
+		if r.glintEligible(s.Argv, nil) {
+			return true, ""
+		}
+		return false, r.glintStayReason(s.Argv[0])
+	}
+	if remoteVouchedSingleStep(t, s) {
+		return true, ""
+	}
+	return false, "a split gate sends a step of a remote: true task only when it is the whole task"
+}
+
+func remoteVouchedSingleStep(t *config.Task, s config.Step) bool {
+	return remoteVouched(t) && len(t.Deps) == 0 && len(t.Run) == 1 &&
+		t.Run[0].Task == "" && t.Run[0].Install == nil && t.Run[0].ServiceAction == "" &&
+		(s.Shell != "" || len(s.Argv) > 0)
+}
+
+func (r *Runner) reportGateReason(task, line string) {
+	if r.gateReasonsPrinted != nil && r.gateReasonsPrinted[task] {
+		return
+	}
+	r.markGateReason(task)
+	fmt.Fprintln(r.Stderr, line)
+}
+
+func (r *Runner) markGateReason(task string) {
+	if r.gateReasonsPrinted == nil {
+		r.gateReasonsPrinted = make(map[string]bool)
+	}
+	if r.gateReasonsPrinted[task] {
+		return
+	}
+	r.gateReasonsPrinted[task] = true
+}
+
+// gateHasEligible finds a built-in Go check or any remotely placeable step
+// of a task with remote: true in the gate's tasks or their deps.
 func (r *Runner) gateHasEligible(gate []gateStep) (bool, error) {
 	for i := range gate {
 		gs := &gate[i]
@@ -828,14 +893,13 @@ func (r *Runner) gateHasEligible(gate []gateStep) (bool, error) {
 			}
 		}
 	}
-	goSteps, glintSteps, err := r.remoteGateTaskKinds(gate)
-	return goSteps || glintSteps, err
+	goSteps, glintSteps, singleSteps, err := r.remoteGateTaskKinds(gate)
+	return goSteps || glintSteps || singleSteps, err
 }
 
-// remoteGateTaskKinds reports the remote task step kinds that can leave the
-// work tree, using the same command checks as placement: whether a busy gate
-// splits and what its line names.
-func (r *Runner) remoteGateTaskKinds(gate []gateStep) (goSteps, glintSteps bool, err error) {
+// remoteGateTaskKinds reports the remote-eligible step kinds in gate tasks
+// and their deps.
+func (r *Runner) remoteGateTaskKinds(gate []gateStep) (goSteps, glintSteps, singleSteps bool, err error) {
 	seen := map[string]bool{}
 	var visit func(string, *config.Task) error
 	visit = func(name string, t *config.Task) error {
@@ -851,21 +915,26 @@ func (r *Runner) remoteGateTaskKinds(gate []gateStep) (goSteps, glintSteps bool,
 			}
 		}
 		for _, s := range t.Run {
-			if s.Task != "" {
-				if !seen[s.Task] {
-					seen[s.Task] = true
-					if err := visit(s.Task, r.Config.Tasks[s.Task]); err != nil {
-						return err
-					}
+			if s.Task != "" && !seen[s.Task] {
+				seen[s.Task] = true
+				if err := visit(s.Task, r.Config.Tasks[s.Task]); err != nil {
+					return err
 				}
-				continue
 			}
-			goCheck, glintCheck, err := r.remoteGateTaskKind(name, t, s)
+		}
+		if !remoteVouched(t) {
+			return nil
+		}
+		for _, s := range t.Run {
+			goCheck := goCheckNoOutput(s.Argv, nil)
+			glintCheck := !goCheck && glintCheckNoOutput(s.Argv, nil)
+			remote, _, err := r.gateStepPlacement(s, t, name, false)
 			if err != nil {
 				return err
 			}
-			goSteps = goSteps || goCheck
-			glintSteps = glintSteps || glintCheck
+			goSteps = goSteps || goCheck && remote
+			glintSteps = glintSteps || glintCheck && remote
+			singleSteps = singleSteps || !goCheck && !glintCheck && remote
 		}
 		return nil
 	}
@@ -877,28 +946,15 @@ func (r *Runner) remoteGateTaskKinds(gate []gateStep) (goSteps, glintSteps bool,
 		if !seen[name] {
 			seen[name] = true
 			if err := visit(name, r.Config.Tasks[name]); err != nil {
-				return false, false, err
+				return false, false, false, err
 			}
 		}
 	}
-	return goSteps, glintSteps, nil
-}
-
-func (r *Runner) remoteGateTaskKind(name string, t *config.Task, s config.Step) (goCheck, glintCheck bool, err error) {
-	if !remoteVouched(t) || s.Shell != "" {
-		return false, false, nil
-	}
-	goCheck = goCheckNoOutput(s.Argv, nil)
-	glintCheck = !goCheck && r.glintEligible(s.Argv, nil)
-	if !goCheck && !glintCheck {
-		return false, false, nil
-	}
-	remote, _, err := r.gateStepPlacement(s, t, name, false)
-	return goCheck && remote, glintCheck && remote, err
+	return goSteps, glintSteps, singleSteps, nil
 }
 
 // remoteVouched reports whether the project set remote: true in the task:
-// a split gate sends its go steps to the host.
+// a split gate may send eligible steps to the host.
 func remoteVouched(t *config.Task) bool {
 	return t.Remote != nil && *t.Remote
 }
@@ -1380,6 +1436,7 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 		return nil
 	}
 	r.Stdin = nil
+	r.gateReasonsPrinted = make(map[string]bool)
 	if err := r.preflightGate(steps, advisory); err != nil {
 		return err
 	}
@@ -1607,7 +1664,7 @@ func (r *Runner) splitGateDescription(gate []gateStep) (string, error) {
 	if fix {
 		parts = append(parts, "built-in go fix -diff")
 	}
-	goSteps, glintSteps, err := r.remoteGateTaskKinds(gate)
+	goSteps, glintSteps, singleSteps, err := r.remoteGateTaskKinds(gate)
 	if err != nil {
 		return "", err
 	}
@@ -1616,6 +1673,9 @@ func (r *Runner) splitGateDescription(gate []gateStep) (string, error) {
 	}
 	if glintSteps {
 		parts = append(parts, "glint check steps of remote: true tasks")
+	}
+	if singleSteps {
+		parts = append(parts, "single-step process and shell steps of remote: true tasks")
 	}
 	if len(parts) == 2 {
 		return parts[0] + " and " + parts[1], nil
@@ -1662,10 +1722,20 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 				return err
 			}
 		}
+		var restoreHere func()
+		if r.gateSplit && s.Source == GoFmtSource && len(r.frames) > 0 {
+			frame := r.frames[len(r.frames)-1]
+			previous := frame.stepHere
+			frame.stepHere = "gofmt is a local gate check"
+			restoreHere = func() { frame.stepHere = previous }
+		}
 		if gs.measured {
 			stepErr = run()
 		} else {
 			stepErr = r.measureFunc(s.Source, run, gs.builtinCost)
+		}
+		if restoreHere != nil {
+			restoreHere()
 		}
 	} else if r.gateSplit {
 		// Where the step runs is decided in step, and its threads with it.
@@ -1706,7 +1776,7 @@ func (r *Runner) gateStepLine(gs *gateStep, s config.Step, number, total int) (s
 	}
 	frame := r.frames[len(r.frames)-1]
 	frame.stepHere = reason
-	return line + ": " + reason, func() { frame.stepHere = "" }, nil
+	return line, func() { frame.stepHere = "" }, nil
 }
 
 func reportAdvisoryFailure(task string, err error, report func(string, error)) error {
@@ -1969,12 +2039,20 @@ func (r *Runner) Confirm(ctx context.Context, name string, target bool) error {
 // what releases its admission; a split gate places each step instead.
 func (r *Runner) placeTask(ctx context.Context, f *frame, name string, t *config.Task, args []string) (func() error, error) {
 	none := func() error { return nil }
+	if r.gateSplit {
+		f.heavy = t.Heavy
+		if t.Heavy {
+			f.here = WhyGateSplit
+		}
+		if t.Heavy {
+			return none, nil
+		}
+	}
 	if !t.Heavy {
 		return none, nil
 	}
 	f.heavy = true
 	if r.gateSplit {
-		f.here = WhyGateSplit
 		return none, nil
 	}
 	remote, here, err := r.placeHeavy(ctx, name, t, r.Root, args)
@@ -2079,11 +2157,18 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 	if remote && r.remoteDown != "" {
 		// The path broke on an earlier step of this gate.
 		remote, frame.stepHere = false, r.remoteHeavy.Host+" path broken: "+r.remoteDown
+		frame.here = frame.stepHere
+		if remoteVouched(t) {
+			r.reportGateReason(frame.task, fmt.Sprintf("graft: %s: %s, running here", frame.task, frame.stepHere))
+		}
 	}
 	frame.remote = remote
 	if cheaperReason != "" && !remote {
 		frame.stepHere = cheaperReason
-		fmt.Fprintf(r.Stderr, "graft: gate: %s: %s\n", stats.StepText(s.Source), cheaperReason)
+		frame.here = cheaperReason
+		if remoteVouched(t) {
+			r.reportGateReason(frame.task, fmt.Sprintf("graft: %s: %s", frame.task, cheaperReason))
+		}
 	}
 	started := time.Now()
 	if !remote {
@@ -2106,10 +2191,12 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 			// The gate's later go steps run here: the path is broken.
 			r.remoteDown = reason
 			fmt.Fprintf(r.Stderr, "graft: %s: %s path broken: %s, running here\n", frame.task, r.remoteHeavy.Host, reason)
+			r.markGateReason(frame.task)
 			if err := r.journalRemoteBroken(frame.task, reason); err != nil {
 				stepErr = errors.Join(stepErr, err)
 			} else {
 				frame.remote, frame.stepHere = false, r.remoteHeavy.Host+" path broken: "+reason
+				frame.here = frame.stepHere
 				if err := r.enterSplit(ctx, frame.task, taskMemoryMax(t), true); err != nil {
 					stepErr = err
 				} else {
