@@ -469,7 +469,11 @@ func worktreeSyncIsRemoteHead(repo *gitx.Repo, branch, remote string) (bool, err
 	pushURLs := strings.Split(strings.TrimSuffix(urls, "\n"), "\n")
 	if len(pushURLs) > 1 {
 		flag := "--delete"
-		if set, _ := repo.Git("config", "--get-all", "remote."+remote+".pushurl"); strings.TrimSpace(set) != "" {
+		set, err := repo.Git("config", "--get-all", "remote."+remote+".pushurl")
+		if err != nil && gitx.ExitCode(err) != 1 {
+			return false, fmt.Errorf("cannot read pushurl of remote %s: %w", remote, err)
+		}
+		if strings.TrimSpace(set) != "" {
 			flag = "--delete --push"
 		}
 		return false, fmt.Errorf("remote %s has multiple push URLs (%s); refusing --push because each server's default branch must be checked separately; keep one by running `git remote set-url %s %s <url>` for each other URL, or use separate remotes", remote, strings.Join(pushURLs, ", "), flag, remote)
