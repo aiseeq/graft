@@ -35,7 +35,8 @@ func worktreeSyncPushSetup(repo *gitx.Repo, cfg *config.Config, remotes []string
 	}
 	lease, err = repo.Git("rev-parse", "--verify", trackingRef)
 	if err != nil {
-		err = fmt.Errorf("upstream tracking ref %s for branch %s is unavailable before fetch; fetch it and set the branch upstream before retrying: %w", trackingRef, branch, err)
+		fetchRefspec := "+refs/heads/" + branch + ":refs/remotes/" + remote + "/" + branch
+		err = fmt.Errorf("upstream tracking ref %s for branch %s is unavailable before fetch; add its fetch refspec with `git config --add remote.%s.fetch %s`, then run `git fetch %s` and retry: %w", trackingRef, branch, remote, fetchRefspec, remote, err)
 		return "", "", "", "", "", "", "", err
 	}
 	lease = strings.TrimSpace(lease)
@@ -101,7 +102,7 @@ func (a *App) WorktreeSync(o WorktreeSyncOptions) error {
 		if err != nil {
 			return err
 		}
-	} else if err := worktreeSyncPushTrunk(repo, trunkBranch, branch, pushRemote); err != nil {
+	} else if err := worktreeSyncPushTrunk(repo, trunk, trunkBranch, branch, pushRemote, pushRef); err != nil {
 		return err
 	}
 	if err := worktreeSyncRebase(repo, trunk); err != nil {
@@ -378,9 +379,23 @@ func worktreeSyncCheckFetchedUpstream(repo *gitx.Repo, branch, trackingRef, befo
 	return fmt.Errorf("upstream %s has commits not included in branch %s: %s (tracking tip %s before fetch, %s after fetch); include them with git rebase %s or git merge, then run graft worktree sync --push", trackingRef, branch, commits, strings.TrimSpace(beforeShort), strings.TrimSpace(afterShort), trackingRef)
 }
 
-func worktreeSyncPushTrunk(repo *gitx.Repo, trunkBranch, branch, remote string) error {
+func worktreeSyncPushTrunk(repo *gitx.Repo, trunk, trunkBranch, branch, remote, pushRef string) error {
 	if trunkBranch == branch {
 		return fmt.Errorf("worktree branch %s is the trunk branch; --push cannot update it", branch)
+	}
+	trunkRef, err := repo.Git("rev-parse", "--symbolic-full-name", trunk)
+	if err != nil {
+		return err
+	}
+	if localTrunkRef := strings.TrimSpace(trunkRef); strings.HasPrefix(localTrunkRef, "refs/heads/") {
+		upstream, err := repo.Git("for-each-ref", "--format=%(upstream:remotename) %(upstream:remoteref)", localTrunkRef)
+		if err != nil {
+			return err
+		}
+		fields := strings.Fields(upstream)
+		if len(fields) == 2 && fields[0] == remote && fields[1] == pushRef {
+			return fmt.Errorf("worktree branch %s targets the upstream of trunk %s; --push cannot update %s/%s", branch, trunk, remote, strings.TrimPrefix(pushRef, "refs/heads/"))
+		}
 	}
 	isRemoteHead, err := worktreeSyncIsRemoteHead(repo, branch, remote)
 	if err != nil {
@@ -392,7 +407,28 @@ func worktreeSyncPushTrunk(repo *gitx.Repo, trunkBranch, branch, remote string) 
 	return nil
 }
 
+func worktreeSyncTrunkHeadAlias(repo *gitx.Repo, trunk string, remotes []string) (string, bool, error) {
+	for _, remote := range remotes {
+		if trunk != remote+"/HEAD" && trunk != "refs/remotes/"+remote+"/HEAD" {
+			continue
+		}
+		target, err := repo.Git("symbolic-ref", "--quiet", "refs/remotes/"+remote+"/HEAD")
+		if err == nil {
+			branch, ok := strings.CutPrefix(strings.TrimSpace(target), "refs/remotes/"+remote+"/")
+			if ok && branch != "" && branch != "HEAD" {
+				return branch, true, nil
+			}
+		} else if gitx.ExitCode(err) != 1 {
+			return "", false, err
+		}
+	}
+	return "", false, nil
+}
+
 func worktreeSyncResolvedTrunkBranch(repo *gitx.Repo, trunk string, remotes []string) (string, bool, error) {
+	if branch, isAlias, err := worktreeSyncTrunkHeadAlias(repo, trunk, remotes); err != nil || isAlias {
+		return branch, isAlias, err
+	}
 	ref, err := repo.Git("rev-parse", "--symbolic-full-name", trunk)
 	if err != nil {
 		return "", false, err
@@ -419,12 +455,29 @@ func worktreeSyncResolvedTrunkBranch(repo *gitx.Repo, trunk string, remotes []st
 	if branchRemote == "" {
 		return "", false, nil
 	}
-	isHeadAlias := originalRef == "refs/remotes/"+branchRemote+"/HEAD" && trunk == branchRemote+"/HEAD"
-	return branch, trunk == branchRemote+"/"+branch || trunk == ref || isHeadAlias, nil
+	if branch == "HEAD" && originalRef == "refs/remotes/"+branchRemote+"/HEAD" {
+		return "", false, nil
+	}
+	return branch, trunk == branchRemote+"/"+branch || trunk == ref, nil
 }
 
 func worktreeSyncIsRemoteHead(repo *gitx.Repo, branch, remote string) (bool, error) {
-	out, err := repo.Git("ls-remote", "--symref", remote, "HEAD")
+	urls, err := repo.Git("remote", "get-url", "--push", "--all", remote)
+	if err != nil {
+		return false, fmt.Errorf("cannot inspect push URLs for remote %s: %w", remote, err)
+	}
+	pushURLs := strings.Split(strings.TrimSuffix(urls, "\n"), "\n")
+	if len(pushURLs) > 1 {
+		flag := "--delete"
+		if set, _ := repo.Git("config", "--get-all", "remote."+remote+".pushurl"); strings.TrimSpace(set) != "" {
+			flag = "--delete --push"
+		}
+		return false, fmt.Errorf("remote %s has multiple push URLs (%s); refusing --push because each server's default branch must be checked separately; keep one by running `git remote set-url %s %s <url>` for each other URL, or use separate remotes", remote, strings.Join(pushURLs, ", "), flag, remote)
+	}
+	if len(pushURLs) != 1 || pushURLs[0] == "" {
+		return false, fmt.Errorf("remote %s has no push URL to check", remote)
+	}
+	out, err := repo.Git("ls-remote", "--symref", pushURLs[0], "HEAD")
 	if err != nil {
 		return false, fmt.Errorf("git ls-remote --symref %s HEAD failed; cannot verify its default branch: %w", remote, err)
 	}
@@ -459,7 +512,17 @@ func worktreeSyncUpstream(repo *gitx.Repo, cfg *config.Config, remotes []string)
 	}
 	fields := strings.Fields(upstreamOut)
 	if len(fields) != 3 {
-		return "", "", "", "", fmt.Errorf("the upstream of %s is not set; set it with git push -u %s %s", branch, suggestRemote, branch)
+		fetchRefspec := "+refs/heads/" + branch + ":refs/remotes/" + suggestRemote + "/" + branch
+		if slices.Contains(remotes, suggestRemote) {
+			existingRemoteBranch, checkErr := repo.Git("ls-remote", "--heads", suggestRemote, "refs/heads/"+branch)
+			if checkErr != nil {
+				return "", "", "", "", fmt.Errorf("the upstream of %s is not set and its remote branch could not be checked: %w", branch, checkErr)
+			}
+			if strings.TrimSpace(existingRemoteBranch) != "" {
+				return "", "", "", "", fmt.Errorf("the upstream of %s is not set, but %s/%s already exists; add its fetch refspec with `git config --add remote.%s.fetch %s`, run `git fetch %s`, then set it with `git branch --set-upstream-to=%s/%s %s`", branch, suggestRemote, branch, suggestRemote, fetchRefspec, suggestRemote, suggestRemote, branch, branch)
+			}
+		}
+		return "", "", "", "", fmt.Errorf("the upstream of %s is not set and %s/%s does not exist yet; publish this new branch with `git push -u %s %s`, then retry", branch, suggestRemote, branch, suggestRemote, branch)
 	}
 	remote, remoteBranch, trackingRef = fields[0], fields[1], fields[2]
 	branchName, isRemoteBranch := strings.CutPrefix(remoteBranch, "refs/heads/")
