@@ -187,6 +187,164 @@ func TestShipsNothingModuleBumpAgainstShippedGraph(t *testing.T) {
 	}
 }
 
+func TestShipsNothingVersionFilesOnly(t *testing.T) {
+	root, write := moduleBumpRepo(t, "cmd/app/main.go", "package main\n\nfunc main() {}\n", "1.21", "")
+	cfg := &config.Config{Version: config.Version{
+		Mode: config.ModeFile, File: "VERSION",
+		Sync: []config.SyncFile{
+			{Path: "frontend/package.json", Format: config.FormatJSON, Key: []string{"version"}},
+			{Path: "frontend/package-lock.json", Format: config.FormatJSON, Key: []string{"version"}},
+		},
+	}}
+	write("frontend/package.json", "{\"version\":\"1.0.0\",\"dependencies\":{}}\n")
+	write("frontend/package-lock.json", "{\"version\":\"1.0.0\"}\n")
+	freezePolishGit(t, root, "add", ".")
+	freezePolishGit(t, root, "commit", "-q", "-m", "sync files base")
+	commit := func(message string) string {
+		t.Helper()
+		freezePolishGit(t, root, "add", ".")
+		freezePolishGit(t, root, "commit", "-q", "--allow-empty", "-m", message)
+		return freezePolishGit(t, root, "rev-parse", "HEAD")
+	}
+	write("VERSION", "1.0.1\n")
+	write("frontend/package.json", "{\"version\":\"1.0.1\",\"dependencies\":{}}\n")
+	write("frontend/package-lock.json", "{\"version\":\"1.0.1\"}\n")
+	versionCommit := commit("chore: bump version after merge")
+	repo, err := gitx.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := &config.ApprovedRelease{Statuses: []string{"Ready for release"}, Ignore: []*regexp.Regexp{regexp.MustCompile(`^docs/`)}}
+	ignored, why, err := shipsNothing(repo, cfg, conf, versionCommit)
+	if err != nil || !ignored || why != "changes only the version files, passes" {
+		t.Errorf("version-only shipsNothing = (%t, %q, %v), want pass with version-files reason", ignored, why, err)
+	}
+	dotPathCfg := &config.Config{Version: cfg.Version}
+	dotPathCfg.Version.File = "./VERSION"
+	if ignored, _, err := shipsNothing(repo, dotPathCfg, conf, versionCommit); err != nil || !ignored {
+		t.Errorf("version.file ./VERSION shipsNothing = (%t, %v), want pass", ignored, err)
+	}
+	freeze := &activeFreeze{config: &config.DeployTarget{ApprovedRelease: conf}, name: "Product 1.0.1"}
+	if err := checkFreezeCommit(t.Context(), &deployRun{repo: repo, cfg: cfg}, freeze, nil, regexp.MustCompile(`PROJ-[0-9]+`), deliveredCommit{sha: versionCommit}, ""); err != nil {
+		t.Errorf("freeze refused version-only commit: %v", err)
+	}
+
+	write("VERSION", "1.0.2\n")
+	write("frontend/package.json", "{\"version\":\"1.0.2\",\"dependencies\":{\"demo\":\"1.0.0\"}}\n")
+	write("frontend/package-lock.json", "{\"version\":\"1.0.2\"}\n")
+	write("src/change.go", "package change\n")
+	mixedCommit := commit("chore: bump version and change code")
+	ignored, _, err = shipsNothing(repo, cfg, conf, mixedCommit)
+	if err != nil || ignored {
+		t.Errorf("mixed version and code shipsNothing = (%t, %v), want false", ignored, err)
+	}
+	run := &gateRun{repo: repo, cfg: cfg, conf: conf, keyRe: regexp.MustCompile(`PROJ-[0-9]+`)}
+	failure, err := run.check(t.Context(), deliveredCommit{sha: mixedCommit, subject: "chore: bump version and change code"}, "mixed version commit", &gateOutcome{})
+	if err != nil || failure == nil || failure.why != "names no item" {
+		t.Errorf("mixed version commit gate = (%+v, %v), want names no item", failure, err)
+	}
+
+	write("VERSION", "1.0.3\n")
+	write("frontend/package.json", "{\"version\":\"1.0.3\",\"dependencies\":{}}\n")
+	write("frontend/package-lock.json", "{\"version\":\"1.0.3\"}\n")
+	write(" VERSION", "unexpected file\n")
+	spaceCommit := commit("chore: add a file with leading space")
+	ignored, _, err = shipsNothing(repo, cfg, conf, spaceCommit)
+	if err != nil || ignored {
+		t.Errorf("commit changing VERSION and ' VERSION' shipsNothing = (%t, %v), want false", ignored, err)
+	}
+
+	emptyCommit := commit("empty commit")
+	ignored, why, err = shipsNothing(repo, cfg, conf, emptyCommit)
+	if err != nil || ignored || why != "" {
+		t.Errorf("empty shipsNothing = (%t, %q, %v), want false with no reason", ignored, why, err)
+	}
+}
+
+func TestShipsNothingVersionOnlyBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		noStage   bool
+		wantError bool
+		edit      func(*testing.T, string)
+	}{
+		{name: "second line", wantError: true, edit: func(t *testing.T, root string) {
+			writeVersionBoundaryFile(t, root, "VERSION", "1.0.1\nextra data\n")
+		}},
+		{name: "extra blank line after bump", wantError: true, edit: func(t *testing.T, root string) {
+			writeVersionBoundaryFile(t, root, "VERSION", "1.0.2\n\n")
+		}},
+		{name: "downgrade", edit: func(t *testing.T, root string) {
+			writeVersionBoundaryFile(t, root, "VERSION", "0.9.9\n")
+		}},
+		{name: "equal version", edit: func(t *testing.T, root string) {
+			if err := os.Chmod(filepath.Join(root, "VERSION"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "invalid version", wantError: true, edit: func(t *testing.T, root string) {
+			writeVersionBoundaryFile(t, root, "VERSION", "release-candidate\n")
+		}},
+		{name: "executable mode", edit: func(t *testing.T, root string) {
+			writeVersionBoundaryFile(t, root, "VERSION", "1.0.2\n")
+			if err := os.Chmod(filepath.Join(root, "VERSION"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "symlink with version text", edit: func(t *testing.T, root string) {
+			if err := os.Remove(filepath.Join(root, "VERSION")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("1.0.2\n", filepath.Join(root, "VERSION")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "gitlink", noStage: true, edit: func(t *testing.T, root string) {
+			sub := t.TempDir()
+			freezePolishGit(t, sub, "init", "-q")
+			freezePolishGit(t, sub, "config", "user.name", "Test")
+			freezePolishGit(t, sub, "config", "user.email", "test@example.invalid")
+			writeVersionBoundaryFile(t, sub, "README", "submodule\n")
+			freezePolishGit(t, sub, "add", ".")
+			freezePolishGit(t, sub, "commit", "-q", "-m", "submodule commit")
+			oid := freezePolishGit(t, sub, "rev-parse", "HEAD")
+			freezePolishGit(t, root, "update-index", "--add", "--cacheinfo", "160000,"+oid+",VERSION")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _ := moduleBumpRepo(t, "cmd/app/main.go", "package main\n\nfunc main() {}\n", "1.21", "")
+			writeVersionBoundaryFile(t, root, "VERSION", "1.0.1\n")
+			freezePolishGit(t, root, "add", ".")
+			freezePolishGit(t, root, "commit", "-q", "-m", "version base")
+			tc.edit(t, root)
+			if !tc.noStage {
+				freezePolishGit(t, root, "add", "-A")
+			}
+			freezePolishGit(t, root, "commit", "-q", "-m", "version boundary")
+			repo, err := gitx.Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{Version: config.Version{Mode: config.ModeFile, File: "VERSION"}}
+			ships, _, err := shipsNothing(repo, cfg, &config.ApprovedRelease{}, freezePolishGit(t, root, "rev-parse", "HEAD"))
+			if ships || (err != nil) != tc.wantError {
+				t.Errorf("boundary shipsNothing = (%t, %v), want false with error=%t", ships, err, tc.wantError)
+			}
+		})
+	}
+}
+
+func writeVersionBoundaryFile(t *testing.T, root, name, contents string) {
+	t.Helper()
+	full := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestShipsNothingNestedModuleBumpReachesTheRootBinary(t *testing.T) {
 	t.Setenv("GOPROXY", "off")
 	t.Setenv("GOSUMDB", "off")

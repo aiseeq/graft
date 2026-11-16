@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -37,6 +38,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/tasks"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
+	"github.com/aiseeq/graft/v2/internal/version"
 )
 
 // Environment variables graft passes to the deploy script.
@@ -2017,14 +2019,46 @@ const (
 // shipsNothing tells whether a commit ships nothing: besides the version
 // files graft commit bumps, it changes only approved_release's ignore_paths,
 // or go.mod/go.sum too while the module graph of every main package outside
-// ignore_paths stays as it was. why says how such a go.mod change was judged.
+// ignore_paths stays as it was. why explains how the commit was judged.
 func shipsNothing(repo *gitx.Repo, cfg *config.Config, conf *config.ApprovedRelease, sha string) (bool, string, error) {
 	out, err := repo.Git("diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "-z", sha)
 	if err != nil {
 		return false, "", err
 	}
-	files, ignored := classifyShipChanges(out, cfg.VersionFiles(), conf)
+	bumped := cfg.VersionFiles()
+	versionTargets := map[string][]version.Target{}
+	for _, target := range version.Targets(cfg.Version) {
+		key := path.Clean(target.Path)
+		versionTargets[key] = append(versionTargets[key], target)
+	}
+	changedVersions := map[string]bool{}
+	for file := range strings.SplitSeq(out, "\x00") {
+		if file == "" {
+			continue
+		}
+		if key := path.Clean(file); versionTargets[key] != nil {
+			changedVersions[key] = true
+		}
+	}
+	if len(changedVersions) > 0 {
+		unchangedExceptVersion, err := versionFilesUnchangedExceptVersion(repo, sha, changedVersions, versionTargets)
+		if err != nil {
+			return false, "", err
+		}
+		if !unchangedExceptVersion {
+			return false, "", nil
+		}
+	}
+	files, ignored := classifyShipChanges(out, bumped, conf)
 	if len(files) == 0 {
+		for f := range strings.SplitSeq(out, "\x00") {
+			if f != "" && slices.ContainsFunc(bumped, func(b string) bool { return path.Clean(b) == path.Clean(f) }) {
+				if len(ignored) == 0 {
+					return true, "changes only the version files, passes", nil
+				}
+				break
+			}
+		}
 		return len(ignored) > 0, "", nil
 	}
 	if !onlyModuleFiles(files) {
@@ -2033,12 +2067,110 @@ func shipsNothing(repo *gitx.Repo, cfg *config.Config, conf *config.ApprovedRele
 	return moduleBumpIsUnshipped(repo, sha, files, conf)
 }
 
+// versionFilesUnchangedExceptVersion compares changed version targets at both
+// sides of the commit after replacing every configured target in each file
+// with the same marker. Missing files and invalid targets fail closed.
+func versionFilesUnchangedExceptVersion(repo *gitx.Repo, sha string, changed map[string]bool, targets map[string][]version.Target) (bool, error) {
+	parents, err := repo.Git("rev-list", "--parents", "-n", "1", sha)
+	if err != nil {
+		return false, fmt.Errorf("listing parents of version-only candidate %s: %w", sha, err)
+	}
+	parentFields := strings.Fields(parents)
+	if len(parentFields) < 2 {
+		return false, nil
+	}
+	parentTree, err := versionBlobTree(repo, parentFields[1])
+	if err != nil {
+		return false, fmt.Errorf("reading parent tree of version-only candidate %s: %w", sha, err)
+	}
+	commitTree, err := versionBlobTree(repo, sha)
+	if err != nil {
+		return false, fmt.Errorf("reading tree of version-only candidate %s: %w", sha, err)
+	}
+	for file := range changed {
+		isVersionBump, err := versionFileIsVersionBump(repo, file, parentTree, commitTree, targets[file])
+		if err != nil {
+			return false, err
+		}
+		if !isVersionBump {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func versionFileIsVersionBump(repo *gitx.Repo, file string, parentTree, commitTree map[string]versionTreeEntry, targets []version.Target) (bool, error) {
+	beforeEntry, beforeExists := parentTree[file]
+	afterEntry, afterExists := commitTree[file]
+	if !beforeExists || !afterExists || beforeEntry.kind != "blob" || afterEntry.kind != "blob" ||
+		beforeEntry.oid == "" || afterEntry.oid == "" || beforeEntry.mode != afterEntry.mode ||
+		(beforeEntry.mode != "100644" && beforeEntry.mode != "100755") {
+		return false, nil
+	}
+	before, err := repo.Git("cat-file", "blob", beforeEntry.oid)
+	if err != nil {
+		return false, fmt.Errorf("reading parent version file %q: %w", file, err)
+	}
+	after, err := repo.Git("cat-file", "blob", afterEntry.oid)
+	if err != nil {
+		return false, fmt.Errorf("reading version file %q: %w", file, err)
+	}
+	beforeContent, afterContent := []byte(before), []byte(after)
+	for _, target := range targets {
+		beforeVersion, err := target.ParseVersionOnly(beforeContent)
+		if err != nil {
+			return false, fmt.Errorf("parsing version in parent file %q: %w", file, err)
+		}
+		afterVersion, err := target.ParseVersionOnly(afterContent)
+		if err != nil {
+			return false, fmt.Errorf("parsing version in file %q: %w", file, err)
+		}
+		if !beforeVersion.Less(afterVersion) {
+			return false, nil
+		}
+		beforeContent, err = target.Replace(beforeContent, "__GRAFT_VERSION_VALUE__")
+		if err != nil {
+			return false, fmt.Errorf("replacing version in parent file %q: %w", file, err)
+		}
+		afterContent, err = target.Replace(afterContent, "__GRAFT_VERSION_VALUE__")
+		if err != nil {
+			return false, fmt.Errorf("replacing version in file %q: %w", file, err)
+		}
+	}
+	return bytes.Equal(beforeContent, afterContent), nil
+}
+
+// versionTreeEntry describes a path stored in a Git tree.
+type versionTreeEntry struct {
+	mode, kind, oid string
+}
+
+// versionBlobTree lists tree entries by their exact repository path.
+func versionBlobTree(repo *gitx.Repo, rev string) (map[string]versionTreeEntry, error) {
+	out, err := repo.Git("ls-tree", "-rz", "--full-tree", rev)
+	if err != nil {
+		return nil, err
+	}
+	blobs := map[string]versionTreeEntry{}
+	for entry := range strings.SplitSeq(out, "\x00") {
+		if entry == "" {
+			continue
+		}
+		meta, file, ok := strings.Cut(entry, "\t")
+		fields := strings.Fields(meta)
+		if !ok || len(fields) != 3 {
+			return nil, fmt.Errorf("malformed tree entry %q", entry)
+		}
+		blobs[file] = versionTreeEntry{mode: fields[0], kind: fields[1], oid: fields[2]}
+	}
+	return blobs, nil
+}
+
 // classifyShipChanges splits a commit's files, the version files left out,
 // into those ignore_paths names and the rest.
 func classifyShipChanges(out string, bumped []string, conf *config.ApprovedRelease) (files, ignored []string) {
 	for f := range strings.SplitSeq(out, "\x00") {
-		f = strings.TrimSpace(f)
-		if f == "" || slices.Contains(bumped, f) {
+		if f == "" || slices.ContainsFunc(bumped, func(b string) bool { return path.Clean(b) == path.Clean(f) }) {
 			continue
 		}
 		if conf.Ignored([]string{f}) {

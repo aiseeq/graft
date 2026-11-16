@@ -77,6 +77,21 @@ func TestReplacePlain(t *testing.T) {
 	}
 }
 
+func TestCurrentKeepsTrimmingPlainVersionFiles(t *testing.T) {
+	for _, content := range []string{"1.2.3 \n", "1.2.3\n\n"} {
+		t.Run(strings.ReplaceAll(content, "\n", "_"), func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "VERSION"), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got, err := Current(root, config.Version{Mode: config.ModeFile, File: "VERSION"})
+			if err != nil || got.String() != "1.2.3" {
+				t.Fatalf("Current(%q) = %v, %v; want 1.2.3", content, got, err)
+			}
+		})
+	}
+}
+
 func TestReplaceJSONKeepsFormatting(t *testing.T) {
 	in := `{
   "name": "app",

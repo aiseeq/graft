@@ -47,6 +47,36 @@ func (t Target) Extract(content []byte) (string, error) {
 	return value, nil
 }
 
+// Parse reads and parses the version carried by this target.
+func (t Target) Parse(content []byte) (Semver, error) {
+	raw, err := t.Extract(content)
+	if err != nil {
+		return Semver{}, err
+	}
+	v, err := ParseFile(raw)
+	if err != nil {
+		return Semver{}, fmt.Errorf("%s: %w", t.Path, err)
+	}
+	return v, nil
+}
+
+// ParseVersionOnly parses a target for deploy's version-only commit check.
+// Plain version files must contain exactly one version and its line ending.
+func (t Target) ParseVersionOnly(content []byte) (Semver, error) {
+	if t.sync.Format == config.FormatPlain {
+		raw, err := t.Extract(content)
+		if err != nil {
+			return Semver{}, err
+		}
+		if !bytes.Equal(content, []byte(raw)) &&
+			!bytes.Equal(content, []byte(raw+"\n")) &&
+			!bytes.Equal(content, []byte(raw+"\r\n")) {
+			return Semver{}, fmt.Errorf("%s: plain version file must contain exactly one version line", t.Path)
+		}
+	}
+	return t.Parse(content)
+}
+
 // Replace returns content with every occurrence of the version set to v.
 func (t Target) Replace(content []byte, v string) ([]byte, error) {
 	spans, err := t.locate(content)
@@ -201,15 +231,7 @@ func Current(root string, v config.Version) (Semver, error) {
 	if err != nil {
 		return Semver{}, fmt.Errorf("reading the version file: %w", err)
 	}
-	raw, err := target.Extract(content)
-	if err != nil {
-		return Semver{}, err
-	}
-	sv, err := ParseFile(raw)
-	if err != nil {
-		return Semver{}, fmt.Errorf("%s: %w", target.Path, err)
-	}
-	return sv, nil
+	return target.Parse(content)
 }
 
 // Write sets every target in the work tree to next. Nothing is written unless

@@ -12,6 +12,35 @@ func versionGateConfig(state string, q func(string) string) string {
 	return strings.Replace(cfg, "    gate:\n", "    prod:\n", 1)
 }
 
+func TestDeployVersionGateVersionOnlyBumpAfterMerge(t *testing.T) {
+	cfg := func(state string, q func(string) string) string {
+		out := strings.Replace(deployConfig(state, q), "version: {mode: file}", `version: {mode: file, file: VERSION, sync: [{path: package.json, format: json, key: [version]}]}`, 1)
+		return strings.Replace(out, "approved_release: {statuses: [Ready for release, Done]}", `approved_release: {statuses: [Ready for release, Done], ignore_paths: ["docs/**"]}`, 1)
+	}
+	d := newDeployFixture(t, cfg)
+	d.write("package.json", `{"version":"1.0.1","dependencies":{}}`+"\n")
+	d.mustPlainCommit("chore: add synced package version")
+	writeFile(t, filepath.Join(d.state, "gate-sha"), d.git("rev-parse", "HEAD")+"\n")
+
+	d.write("VERSION", "1.0.2\n")
+	d.write("package.json", `{"version":"1.0.2","dependencies":{}}`+"\n")
+	d.mustPlainCommit("chore: bump version after merge")
+	d.git("push", "-q", "origin", "HEAD")
+	out, code := d.graft("", "deploy", "check", "gate")
+	if code != 0 || !strings.Contains(out, "changes only the version files, passes") {
+		t.Fatalf("version-only deploy check: exit %d\n%s", code, out)
+	}
+
+	d.write("VERSION", "1.0.3\n")
+	d.write("package.json", `{"version":"1.0.3","dependencies":{"demo":"1.0.0"}}`+"\n")
+	d.mustPlainCommit("chore: bump version and package dependency")
+	d.git("push", "-q", "origin", "HEAD")
+	out, code = d.graft("", "deploy", "check", "gate")
+	if code == 0 || !strings.Contains(out, "names no item") {
+		t.Fatalf("mixed version and package data deploy check: exit %d, want names no item\n%s", code, out)
+	}
+}
+
 func TestDeployReleaseVersion(t *testing.T) {
 	cfg := func(state string, q func(string) string) string {
 		return strings.Replace(versionGateConfig(state, q), "approved_release: {statuses: [Ready for release, Done]}", `approved_release: {statuses: [Ready for release, Done], label_statuses: {internal: [Ready for release]}, ignore_paths: ["docs/**"], version: {match: '^Product[ .]?\d\d\.\d\d\.\d\d$', manual: ['QA smoke on TEST passed'], refs: {version-subtasks: '2.2'}}}`, 1)

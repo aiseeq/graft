@@ -2346,6 +2346,9 @@ cannot tell it from work, give such a commit the key of its own item first.
 A revert and the commits it reverts deliver nothing; a commit withheld from
 the target is not on it, though its history has it.
 
+A commit changing only the version files passes, as with the version bump after
+`graft merge`.
+
 A commit of the trunk the target does not run by history is on it by
 content when, put onto the commit the target runs, it changes no file but
 the version files and those `approved_release.ignore_paths` names: a
