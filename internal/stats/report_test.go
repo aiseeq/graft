@@ -40,6 +40,26 @@ func TestReportShowsTheDatabase(t *testing.T) {
 	}
 }
 
+func TestReportShowsLargestCgroupPeak(t *testing.T) {
+	recs := []Record{
+		{Kind: KindTask, Task: "build", WallS: 1, TreeMemMB: new(400.0), CgroupPeakMB: new(600.0)},
+		{Kind: KindTask, Task: "build", WallS: 2, TreeMemMB: new(500.0), CgroupPeakMB: new(900.0)},
+	}
+	rows, _ := Summarize(recs, Filter{})
+	if len(rows) != 1 || rows[0].CgroupPeakMB == nil || *rows[0].CgroupPeakMB != 900 {
+		t.Fatalf("largest cgroup peak = %#v; want 900", rows)
+	}
+	var b strings.Builder
+	if err := Render(&b, rows, "TASK", false); err != nil {
+		t.Fatal(err)
+	}
+	got := b.String()
+	if strings.Index(got, "TREE MEM") < 0 || strings.Index(got, "CGROUP PEAK") < strings.Index(got, "TREE MEM") ||
+		strings.Index(got, "500 MB") < 0 || strings.Index(got, "900 MB") < strings.Index(got, "500 MB") {
+		t.Fatalf("report does not show cgroup peak beside tree memory:\n%s", got)
+	}
+}
+
 func TestReportShowsDiskUse(t *testing.T) {
 	value := func(v float64) *float64 { return &v }
 	base := func(read, write *float64) Record {

@@ -46,7 +46,9 @@ type Placement struct {
 	Source  string
 	// Scope is the unit the ceiling is on; Slice, when set, the shared
 	// slice holding it, under SliceMax.
-	Scope    string
+	Scope string
+	// Own says this graft created the scope.
+	Own      bool
 	Slice    string
 	SliceMax int64
 }

@@ -1266,6 +1266,10 @@ graft's version, pid and command line. A
   counted in each. Processes that leave the tree (daemons, containers
   started through a docker daemon) are not counted. A task line has its
   largest step's. Linux only; elsewhere the field is left out.
+- `cgroup_peak_mb` is `memory.peak` for the heavy cgroup scope this graft
+  created, in MiB, read as the heavy work ends. It includes memory charged to
+  the cgroup such as page cache and tmpfs. It is absent for an inherited
+  heavy scope, and when the kernel does not expose `memory.peak`.
 - `read_mb` and `write_mb` are what the step and the descendants it waited
   for read from and wrote to the storage (`ru_inblock` and `ru_oublock` of
   `wait4`); a task line has its steps' sum. A write counts when it dirties
@@ -1394,10 +1398,12 @@ to stats.
 task, the heaviest in memory first: runs, median and maximum wall time,
 when some run waited the median and maximum wait within it (`WAIT MED`,
 `WAIT MAX`) and what the runs waited for, the longest first, with its total
-(`WAIT WHY`, from `wait_why`), median CPU time (user + system), the largest peak of the process tree
-(`TREE MEM`) and of a single process (`MEM MAX`), the share of failed
-runs, and the wall time the cache saved (`SAVED`, with the number of
-skips); a last line sums the skips, wall and CPU time. When tasks recorded
+(`WAIT WHY`, from `wait_why`), median CPU time (user + system), peak process
+tree memory (`TREE MEM`) and single-process memory (`MEM MAX`), and, if any
+run recorded it, the largest cgroup peak across runs (`CGROUP PEAK`, `-` on
+rows without a value), the share of failed runs, and the wall time the cache
+saved (`SAVED`, with the number of skips); a last line sums the skips, wall
+and CPU time. When tasks recorded
 their test database, `DB CPU` and `DB MEM` follow: its median CPU time and
 largest memory. When disk IO fields were recorded, `READ MAX` is the largest
 read amount, while `WRITE MED` and `WRITE MAX` are the median and largest

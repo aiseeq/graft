@@ -174,6 +174,8 @@ type Row struct {
 	// TreeMemMB is the largest peak of a run's process tree as a whole;
 	// nil when none was reported.
 	TreeMemMB *float64
+	// CgroupPeakMB is the largest cgroup memory peak among the runs.
+	CgroupPeakMB *float64
 	// DBCPUMed and DBMemMB are the median CPU time and the largest memory
 	// of the test database over the runs that recorded it; nil when none
 	// did.
@@ -449,6 +451,7 @@ func summarize(project, label string, all []Record, indices []int, nestedWaits m
 		row.WallMax = max(row.WallMax, r.WallS)
 		row.MaxRSSMB = larger(row.MaxRSSMB, r.MaxRSSMB)
 		row.TreeMemMB = larger(row.TreeMemMB, r.TreeMemMB)
+		row.CgroupPeakMB = larger(row.CgroupPeakMB, r.CgroupPeakMB)
 		row.DBMemMB = larger(row.DBMemMB, r.DBMemMB)
 		if r.ReadMB != nil {
 			row.ReadMBMax = larger(row.ReadMBMax, r.ReadMB)
@@ -592,6 +595,7 @@ func FormatSaved(s Saved) string {
 func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	var withDB, withWait, withRead, withWrite bool
+	withCgroupPeak := hasCgroupPeak(rows)
 	for i := range rows {
 		withDB = withDB || rows[i].DBCPUMed != nil
 		withWait = withWait || rows[i].WaitMax > 0
@@ -602,7 +606,9 @@ func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error
 	if withWait {
 		header += "\tWAIT MED\tWAIT MAX\tWAIT WHY"
 	}
-	header += "\tCPU MED\tTREE MEM\tMEM MAX\tFAILED\tSAVED"
+	header += "\tCPU MED\tTREE MEM"
+	header += cgroupPeakHeader(withCgroupPeak)
+	header += "\tMEM MAX\tFAILED\tSAVED"
 	if withProject {
 		header = "PROJECT\t" + header
 	}
@@ -629,8 +635,9 @@ func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error
 		if withWait {
 			fmt.Fprintf(tw, "\t%s\t%s\t%s", formatSeconds(r.WaitMed), formatSeconds(r.WaitMax), formatWhy(r.WaitWhy))
 		}
-		fmt.Fprintf(tw, "\t%s\t%s\t%s\t%d%%\t%s", formatSeconds(r.CPUMed),
-			formatMB(r.TreeMemMB), formatMB(r.MaxRSSMB), (r.Failed*100+r.Runs/2)/r.Runs, saved)
+		fmt.Fprintf(tw, "\t%s\t%s", formatSeconds(r.CPUMed), formatMB(r.TreeMemMB))
+		writeCgroupPeak(tw, r, withCgroupPeak)
+		fmt.Fprintf(tw, "\t%s\t%d%%\t%s", formatMB(r.MaxRSSMB), (r.Failed*100+r.Runs/2)/r.Runs, saved)
 		if withDB {
 			dbCPU := "-"
 			if r.DBCPUMed != nil {
@@ -647,6 +654,28 @@ func Render(w io.Writer, rows []Row, labelHeader string, withProject bool) error
 		fmt.Fprintln(tw)
 	}
 	return tw.Flush()
+}
+
+func hasCgroupPeak(rows []Row) bool {
+	for i := range rows {
+		if rows[i].CgroupPeakMB != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func cgroupPeakHeader(present bool) string {
+	if present {
+		return "\tCGROUP PEAK"
+	}
+	return ""
+}
+
+func writeCgroupPeak(w *tabwriter.Writer, row *Row, present bool) {
+	if present {
+		fmt.Fprintf(w, "\t%s", formatMB(row.CgroupPeakMB))
+	}
 }
 
 // ReserveSummary reports how admitted task reservations ended. Empty is

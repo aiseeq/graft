@@ -33,6 +33,32 @@ func TestHalfMode(t *testing.T) {
 	}
 }
 
+func TestMemoryPeak(t *testing.T) {
+	root := t.TempDir()
+	write := func(name, data string) {
+		t.Helper()
+		file := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("self/cgroup", "0::/user.slice/graft-heavy-7.scope\n")
+	write("cgroup/user.slice/graft-heavy-7.scope/memory.peak", "629145600\n")
+	got, err := MemoryPeakMB(root)
+	if err != nil || got != 600 {
+		t.Fatalf("MemoryPeakMB = %g, %v; want 600 MiB", got, err)
+	}
+	if err := os.Remove(filepath.Join(root, "cgroup/user.slice/graft-heavy-7.scope/memory.peak")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MemoryPeakMB(root); err == nil {
+		t.Fatal("MemoryPeakMB succeeded without memory.peak")
+	}
+}
+
 func TestDecide(t *testing.T) {
 	const scope = "/user.slice/user-1000.slice/user@1000.service/agents.slice/console.scope"
 	const session = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-probe-77-r2.scope"

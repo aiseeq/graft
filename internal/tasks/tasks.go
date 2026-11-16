@@ -132,9 +132,10 @@ type Runner struct {
 	// heavyPlace is where the heavy work of this process runs and under
 	// what memory ceiling; placeNoted holds the placement lines printed, so
 	// that each step of a split gate does not print them again.
-	heavyPlace iosched.Placement
-	halfProcs  int
-	placeNoted map[string]bool
+	heavyPlace      iosched.Placement
+	heavyScopeOwned bool
+	halfProcs       int
+	placeNoted      map[string]bool
 
 	lookup *dotenv.Lookup
 	base   []string
@@ -244,6 +245,7 @@ type frame struct {
 	mixedLoadMachine bool
 	stepLoads        stats.Usage
 	loadStepUnknown  bool
+	cgroupPeakMB     *float64
 }
 
 // TestDB is the test database of test_db tasks.
@@ -3220,7 +3222,7 @@ func taskLoad(use stats.Usage, f *frame, host string) stats.Usage {
 // what it cost; the task's error itself goes back to its caller.
 func (r *Runner) end(f *frame, err error) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
-	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, WaitedBehind: f.waitedBehind}
+	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, WaitedBehind: f.waitedBehind, CgroupPeakMB: f.cgroupPeakMB}
 	if f.reserveRelease != nil {
 		if err := f.reserveRelease(); err != nil {
 			fmt.Fprintf(r.Stderr, "graft: %s: releasing reserve: %v\n", f.task, err)
@@ -3658,6 +3660,11 @@ func (r *Runner) enterHeavy(ctx context.Context, name, memoryMax string) (leave 
 	}
 	r.heavy++
 	return func() error {
+		if r.heavy == 1 && r.heavyScopeOwned && len(r.frames) > 0 {
+			if mb, err := iosched.MemoryPeakMB(os.Getenv(loadgate.ProcEnv)); err == nil {
+				r.frames[len(r.frames)-1].cgroupPeakMB = &mb
+			}
+		}
 		r.heavy--
 		return release()
 	}, nil
@@ -3685,6 +3692,7 @@ func (r *Runner) holdCeiling(ctx context.Context, name, memoryMax string) error 
 	}
 	if place.Ceiling > 0 {
 		r.heavyPlace = place
+		r.heavyScopeOwned = r.heavyScopeOwned || place.Own
 	}
 	if place.Message != "" && !r.placeNoted[place.Message] {
 		fmt.Fprintf(r.Stderr, "graft: %s: %s\n", name, place.Message)

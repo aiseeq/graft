@@ -326,7 +326,7 @@ func place(ctx context.Context, self string, move plan, from string, pid int, to
 	cpuNote := cpuCeilingNote(move.cpuQuotaUSec, move.halfUntil)
 	return Placement{
 		Message: fmt.Sprintf("moved from %s to %s in %s (IOWeight=%d, memory ceiling %s: %s%s)%s", from, move.scope, move.slice, ioWeight, Bytes(move.ceiling), source, cpuNote, lateNote(waited)),
-		Ceiling: move.ceiling, Source: source, Scope: move.scope, Slice: move.slice, SliceMax: sliceMax,
+		Ceiling: move.ceiling, Source: source, Scope: move.scope, Own: true, Slice: move.slice, SliceMax: sliceMax,
 	}, nil
 }
 
@@ -605,6 +605,32 @@ func MemoryEvents(procRoot string) (map[string]uint64, error) {
 		out[f[0]] = n
 	}
 	return out, nil
+}
+
+// MemoryPeakMB reads memory.peak in the process's current cgroup v2, in MiB.
+func MemoryPeakMB(procRoot string) (float64, error) {
+	self := "/proc/self/cgroup"
+	if procRoot != "" {
+		self = filepath.Join(procRoot, "self", "cgroup")
+	}
+	b, err := os.ReadFile(self)
+	if err != nil {
+		return 0, fmt.Errorf("read current cgroup: %w", err)
+	}
+	cg := unifiedCgroup(string(b))
+	if cg == "" {
+		return 0, fmt.Errorf("no cgroup v2 line in %s", self)
+	}
+	file := filepath.Join(cgroupBase(procRoot, cg), "memory.peak")
+	b, err = os.ReadFile(file)
+	if err != nil {
+		return 0, fmt.Errorf("read memory.peak: %w", err)
+	}
+	n, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("memory.peak: %q: %w", strings.TrimSpace(string(b)), err)
+	}
+	return float64(n) / (1024 * 1024), nil
 }
 
 func transient(ctx context.Context, name string, mode string, args ...string) error {

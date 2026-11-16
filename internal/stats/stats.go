@@ -102,6 +102,9 @@ type Record struct {
 	// the step's processes and all their descendants, sampled (Watch).
 	// On a task line, its largest step's. Absent where it is not read.
 	TreeMemMB *float64 `json:"tree_mem_mb,omitempty"`
+	// CgroupPeakMB is memory.peak of a heavy scope this graft created.
+	// Absent when the scope belongs to an enclosing graft or is unavailable.
+	CgroupPeakMB *float64 `json:"cgroup_peak_mb,omitempty"`
 	// ReadMB and WriteMB are what the step and the descendants it waited for
 	// read from and wrote to the storage (ru_inblock, ru_oublock), a write
 	// counted when it dirties the page; on a task line, its steps' sum.

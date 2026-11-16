@@ -25,6 +25,16 @@ func writeLog(t *testing.T, path, task string, at time.Time) {
 	}
 }
 
+func TestRecordWritesCgroupPeakMB(t *testing.T) {
+	line, err := json.Marshal(Record{Kind: KindTask, Task: "build", CgroupPeakMB: new(600.0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(line), `"cgroup_peak_mb":600`) {
+		t.Fatalf("record omits cgroup_peak_mb: %s", line)
+	}
+}
+
 // TestLoadReadsTheCopiesOldestFirst: the old copies come before the file,
 // the highest number first; a copy that ends before since is left out,
 // except the oldest, which tells where the log starts.

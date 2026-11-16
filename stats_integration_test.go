@@ -35,6 +35,7 @@ type statsLine struct {
 	SysS         float64            `json:"sys_s"`
 	MaxRSSMB     *float64           `json:"max_rss_mb"`
 	TreeMB       *float64           `json:"tree_mem_mb"`
+	CgroupPeakMB *float64           `json:"cgroup_peak_mb"`
 	LoadMin      *float64           `json:"load_start"`
 	LoadMax      *float64           `json:"load_max"`
 	DBCPUS       *float64           `json:"db_cpu_s"`
