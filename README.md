@@ -521,7 +521,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft worktree add [--trunk <ref>] <branch> [<base>]` | a worktree under the user's cache, go.work's neighbours linked (see Worktrees) |
 | `graft worktree check [--trunk <ref>] [--json] <path>` | whether removing one linked worktree would lose data `git status` does not show; removes nothing (see Worktrees) |
 | `graft worktree clean [--apply] [--trunk <ref>] [--min-age 1h] [--in <directory>]...` | remove the worktrees and branches whose work is in the trunk by content; list the rest |
-| `graft worktree stale [--uncommitted 3h] [--unmerged 24h] [--trunk <ref>] [--in <directory>]...` | report old changed files and work not merged into the local trunk; does not change refs, the index or worktrees |
+| `graft worktree stale [--here] [--uncommitted 3h] [--unmerged 24h] [--trunk <ref>] [--in <directory>]...` | report old changed files and work not merged into the local trunk; `--here` limits both checks to the current worktree; does not change refs, the index or worktrees |
 | `graft worktree sync [--trunk <ref>] [--push]` | move this worktree's work onto the fresh trunk, uncommitted changes kept uncommitted; `--push` updates its upstream with a lease (see Worktrees) |
 | `graft tools [install]` | check the pinned tools; install the failing ones |
 | `graft gocache trim [--older 25h] [--apply] [--max-wait 2h] [--free-below SIZE]` | remove the Go build cache entries unused for longer than `--older`, optionally only when filesystem space is low (see [Go build cache](#go-build-cache)) |
@@ -2803,7 +2803,9 @@ for the fix and a rerun of the task there.
 
 `graft worktree stale` reports changed files older than `--uncommitted` and
 commits not merged into the local trunk older than `--unmerged`; `--trunk`
-selects the local ref when it cannot be resolved automatically. It checks the
+selects the local ref when it cannot be resolved automatically. With `--here`,
+it checks only the current Git worktree for both kinds of stale work; outside a
+Git worktree `--here` exits 2. Without `--here`, it checks the
 main worktree, registered worktrees and worktrees under
 `<user cache>/worktrees`, the same root used by `graft worktree add`; repeat
 `--in <directory>` to scan more catalogs. Its content comparison can create

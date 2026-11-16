@@ -842,6 +842,7 @@ func worktreeCleanCmd(ctx context.Context, a *app.App, args []string, usage erro
 func worktreeStaleCmd(ctx context.Context, a *app.App, args []string, usage error) error {
 	fs := newFlags(a, "worktree stale")
 	o := app.WorktreeStaleOptions{}
+	fs.BoolVar(&o.Here, "here", false, "check only the current Git worktree")
 	fs.DurationVar(&o.Uncommitted, "uncommitted", 0, "report changed files at least this old")
 	fs.DurationVar(&o.Unmerged, "unmerged", 0, "report commits not merged into the local trunk at least this old")
 	fs.StringVar(&o.Trunk, "trunk", "", "the local ref to check unmerged work against")

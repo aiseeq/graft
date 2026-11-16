@@ -19,6 +19,7 @@ import (
 type WorktreeStaleOptions struct {
 	Uncommitted, Unmerged       time.Duration
 	UncommittedSet, UnmergedSet bool
+	Here                        bool
 	Trunk                       string
 	In                          []string
 }
@@ -62,11 +63,47 @@ func (a *App) WorktreeStale(ctx context.Context, o WorktreeStaleOptions) (retErr
 			retErr = errors.Join(retErr, fmt.Errorf("restore GIT_NO_LAZY_FETCH: %w", restoreErr))
 		}
 	}()
-	trees, err := discoverStaleWorktrees(a.Dir, o.In)
+	var (
+		trees []staleWorktree
+		err   error
+	)
+	if o.Here {
+		trees, err = discoverCurrentStaleWorktree(a.Dir)
+	} else {
+		trees, err = discoverStaleWorktrees(a.Dir, o.In)
+	}
 	if err != nil {
 		return err
 	}
 	return a.reportStaleWorktrees(ctx, o, trees)
+}
+
+func discoverCurrentStaleWorktree(dir string) ([]staleWorktree, error) {
+	repo, err := gitx.Open(dir)
+	if errors.Is(err, gitx.ErrNotRepo) {
+		return nil, &ExitCodeError{Code: 2, Err: fmt.Errorf("--here requires a Git worktree")}
+	}
+	if err != nil {
+		return nil, err
+	}
+	current, err := canonicalWorktreePath(repo.Root)
+	if err != nil {
+		return nil, err
+	}
+	listed, err := listWorktrees(repo)
+	if err != nil {
+		return nil, fmt.Errorf("list worktrees in %s: %w", repo.Root, err)
+	}
+	for _, w := range listed {
+		path, err := canonicalWorktreePath(w.path)
+		if err != nil {
+			return nil, err
+		}
+		if path == current {
+			return []staleWorktree{{path: path, branch: w.branch, head: w.head, prunable: w.prunable, repo: repo}}, nil
+		}
+	}
+	return nil, fmt.Errorf("current Git worktree %s is not registered", current)
 }
 
 func discoverStaleWorktrees(dir string, extraCatalogs []string) ([]staleWorktree, error) {
