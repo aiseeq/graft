@@ -35,8 +35,8 @@ func TestGofmtFailsTheGateWithTheFiles(t *testing.T) {
 		}
 	}
 	for _, unwanted := range []string{"testdata/bad.go", "gen/x.go", "crlf.go", "formed.go", "plain.go.txt"} {
-		if strings.Contains(out, unwanted) {
-			t.Errorf("%s listed:\n%s", unwanted, out)
+		if strings.Contains(withoutCommitAdds(out), unwanted) {
+			t.Errorf("%s listed:\n%s", unwanted, withoutCommitAdds(out))
 		}
 	}
 	if n := f.commitCount(); n != 0 {

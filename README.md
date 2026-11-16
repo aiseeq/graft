@@ -2,7 +2,8 @@
 
 One command line for the development workflow of every repository you work
 in, in place of a Makefile and shell glue. `graft commit` runs the
-project's gate, bumps the version, stages everything, scans the staged changes
+project's gate, naming newly added files before it runs, bumps the version,
+stages everything, scans the staged changes
 for secrets and oversized files, commits with the work item key taken from the
 branch name, and pushes to every remote. Hooks installed by `graft init` keep
 plain `git commit` out while letting git's own merges, rebases and
@@ -594,8 +595,10 @@ refused with the form that works: `graft -C <directory> <command> …`.
    branch in `ticket.skip_branches`. The ticket check uses the staged result
    after the gate, including files the gate writes.
 4. Stage the work tree with `git add -A`, then run the gate. This makes new
-   files visible to gate steps through `git ls-files`. If the gate fails, graft
-   restores the index to its state before the command; work tree changes remain.
+   files visible to gate steps through `git ls-files`. Before the gate starts,
+   graft prints the names of newly added files (up to five, then a count and
+   the first five). If the gate fails, graft restores the index to its state
+   before the command; work tree changes remain.
    After the gate, graft stages the paths that were changed when it started,
    as the gate left them. For an amend, this includes every path changed by
    the amended commit, measured against its parent. Paths first changed while

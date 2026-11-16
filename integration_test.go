@@ -241,6 +241,19 @@ type fixture struct {
 	env []string
 }
 
+// withoutCommitAdds removes the advisory line so tests can focus on the
+// command output they were written to check.
+func withoutCommitAdds(out string) string {
+	lines := strings.Split(out, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "graft: commit adds ") {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
+}
+
 // newRepo makes a work tree on branch feature/PROJ-42-thing with bare remotes
 // named after remotes, and writes files into it (not committed).
 func newRepo(t *testing.T, files map[string]string, remotes ...string) *fixture {

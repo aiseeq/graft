@@ -271,6 +271,7 @@ func (a *App) prepareCommitGate(ctx context.Context, repo *gitx.Repo, cfg *confi
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	a.noteCommitAdds(repo)
 	var backup *version.Backup
 	if plan.bumpBeforeGate {
 		backup, err = plan.bump.apply(repo)
@@ -316,6 +317,48 @@ func (a *App) prepareCommitGate(ctx context.Context, repo *gitx.Repo, cfg *confi
 		}
 	}
 	return backup, frozen, advisoryFailed, nil
+}
+
+// noteCommitAdds names paths the index adds to HEAD before the gate runs.
+// It is an advisory: a failure to list paths must not stop the commit.
+func (a *App) noteCommitAdds(repo *gitx.Repo) {
+	var out string
+	hasHead, err := repo.HasHead()
+	if err != nil {
+		a.warn("could not list files added by commit: %v", err)
+		return
+	}
+	if hasHead {
+		out, err = repo.Git("diff", "--cached", "--name-only", "--diff-filter=A", "--find-renames", "-z", "HEAD")
+	} else {
+		out, err = repo.Git("ls-files", "--cached", "-z")
+	}
+	if err != nil {
+		a.warn("could not list files added by commit: %v", err)
+		return
+	}
+	var paths []string
+	for path := range strings.SplitSeq(out, "\x00") {
+		if path != "" {
+			paths = append(paths, oneLinePath(path))
+		}
+	}
+	if len(paths) == 0 {
+		return
+	}
+	const limit = 5
+	shown := paths
+	if len(shown) > limit {
+		shown = shown[:limit]
+		fmt.Fprintf(a.Stderr, "graft: commit adds %d new files (first %d): %s\n", len(paths), limit, strings.Join(shown, ", "))
+		return
+	}
+	fmt.Fprintf(a.Stderr, "graft: commit adds new files: %s\n", strings.Join(shown, ", "))
+}
+
+// oneLinePath keeps unusual file names from turning the advisory into several lines.
+func oneLinePath(path string) string {
+	return strings.NewReplacer("\\", "\\\\", "\n", "\\n", "\r", "\\r", "\t", "\\t").Replace(path)
 }
 
 func (a *App) finishCommit(repo *gitx.Repo, cfg *config.Config, plan commitPlan, frozen *activeFreeze, advisoryFailed []string) error {

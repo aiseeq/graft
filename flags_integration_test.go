@@ -125,7 +125,7 @@ func TestCommitShowsTheFlagOnceADay(t *testing.T) {
 		t.Errorf("first commit of the day:\n%s", out)
 	}
 	f.write("a.txt", "a\n")
-	if out := f.mustGraft("commit", "-m", "feat: a"); strings.Contains(out, "flag") || api.listings() != 1 {
+	if out := withoutCommitAdds(f.mustGraft("commit", "-m", "feat: a")); strings.Contains(out, "flag") || api.listings() != 1 {
 		t.Errorf("the flag read again within the day (%d listings):\n%s", api.listings(), out)
 	}
 }
@@ -133,7 +133,7 @@ func TestCommitShowsTheFlagOnceADay(t *testing.T) {
 func TestFlagsStatusCountsAsTheDailyLook(t *testing.T) {
 	f, api := flagsRepo(t)
 	f.mustGraft("flags")
-	if out := f.mustGraft("commit", "-m", "feat: base"); strings.Contains(out, "flag") || api.listings() != 1 {
+	if out := withoutCommitAdds(f.mustGraft("commit", "-m", "feat: base")); strings.Contains(out, "flag") || api.listings() != 1 {
 		t.Errorf("commit read the flag graft flags had just read (%d listings):\n%s", api.listings(), out)
 	}
 }

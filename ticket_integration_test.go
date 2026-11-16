@@ -116,8 +116,8 @@ func TestTicketRequiredHint(t *testing.T) {
 			f.mustPlainCommit("feat: PROJ-1 base")
 			f.write("change.txt", "change\n")
 			out, code := f.graft("", "commit", "-m", "fix: missing ticket")
-			if code == 0 || out != tc.want {
-				t.Errorf("refusal exit %d = %q, want nonzero and %q", code, out, tc.want)
+			if code == 0 || withoutCommitAdds(out) != tc.want {
+				t.Errorf("refusal exit %d = %q, want nonzero and %q", code, withoutCommitAdds(out), tc.want)
 			}
 		})
 	}
