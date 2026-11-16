@@ -4,6 +4,7 @@ package checks
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/gitx"
@@ -26,41 +27,34 @@ const maxScanBytes = 32 << 20
 // (relative to the empty tree on an unborn branch). Removals and submodules
 // have no content to inspect and are not listed.
 func Staged(repo *gitx.Repo) ([]StagedFile, error) {
-	out, err := repo.Git("diff", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=AMT", "--no-ext-diff")
+	// Raw diff includes the index mode and object ID as well as the path,
+	// so they all describe the same index snapshot without a second ls-files.
+	out, err := repo.Git("diff", "--cached", "--raw", "--no-abbrev", "-z", "--no-renames", "--diff-filter=AMT", "--no-ext-diff")
 	if err != nil {
 		return nil, err
 	}
-	changed := map[string]bool{}
-	for p := range strings.SplitSeq(out, "\x00") {
-		if p != "" {
-			changed[p] = true
+	type entry struct{ path, oid, mode string }
+	var entries []entry
+	parts := strings.Split(out, "\x00")
+	for i := 0; i < len(parts)-1; i += 2 {
+		if i+1 >= len(parts)-1 {
+			return nil, fmt.Errorf("unexpected git diff raw output %q", out)
 		}
-	}
-	if len(changed) == 0 {
-		return []StagedFile{}, nil
-	}
-	index, err := repo.Git("ls-files", "--stage", "-z")
-	if err != nil {
-		return nil, err
-	}
-	var paths, oids []string
-	var links []bool
-	for entry := range strings.SplitSeq(index, "\x00") {
-		// "<mode> <oid> <stage>\t<path>"
-		meta, p, ok := strings.Cut(entry, "\t")
-		if !ok || !changed[p] {
+		// ":<old mode> <new mode> <old oid> <new oid> <status>\0<path>\0"
+		fields := strings.Fields(parts[i])
+		if len(fields) != 5 || !strings.HasPrefix(fields[0], ":") || parts[i+1] == "" {
+			return nil, fmt.Errorf("unexpected git diff raw entry %q", parts[i])
+		}
+		if fields[1] == "160000" { // submodule
 			continue
 		}
-		fields := strings.Fields(meta)
-		if len(fields) != 3 {
-			return nil, fmt.Errorf("unexpected ls-files entry %q", entry)
-		}
-		if fields[0] == "160000" { // submodule
-			continue
-		}
-		paths = append(paths, p)
-		oids = append(oids, fields[1])
-		links = append(links, fields[0] == "120000")
+		entries = append(entries, entry{parts[i+1], fields[3], fields[1]})
+	}
+	// ls-files used to determine the order, independently of diff.orderFile.
+	slices.SortFunc(entries, func(a, b entry) int { return strings.Compare(a.path, b.path) })
+	oids := make([]string, len(entries))
+	for i, e := range entries {
+		oids[i] = e.oid
 	}
 	blobs, err := repo.ReadBlobs(oids, maxScanBytes)
 	if err != nil {
@@ -68,7 +62,7 @@ func Staged(repo *gitx.Repo) ([]StagedFile, error) {
 	}
 	files := make([]StagedFile, len(blobs))
 	for i, b := range blobs {
-		files[i] = StagedFile{Path: paths[i], Symlink: links[i], Blob: b}
+		files[i] = StagedFile{Path: entries[i].path, Symlink: entries[i].mode == "120000", Blob: b}
 	}
 	return files, nil
 }

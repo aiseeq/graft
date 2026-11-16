@@ -21,11 +21,15 @@ func (r *Repo) WorkTreeID() (string, error) {
 
 // ContentID is WorkTreeID with the paths exclude takes left out.
 func (r *Repo) ContentID(exclude func(path string) bool) (string, error) {
-	entries, err := r.headEntries()
+	hasHead, err := r.HasHead()
 	if err != nil {
 		return "", err
 	}
-	changed, err := r.changedPaths()
+	entries, err := r.headEntries(hasHead)
+	if err != nil {
+		return "", err
+	}
+	changed, err := r.changedPaths(hasHead)
 	if err != nil {
 		return "", err
 	}
@@ -47,11 +51,10 @@ func (r *Repo) ContentID(exclude func(path string) bool) (string, error) {
 }
 
 // headEntries are the files of HEAD, path to "mode object".
-func (r *Repo) headEntries() (map[string]string, error) {
+func (r *Repo) headEntries(hasHead bool) (map[string]string, error) {
 	entries := map[string]string{}
-	ok, err := r.HasHead()
-	if err != nil || !ok {
-		return entries, err
+	if !hasHead {
+		return entries, nil
 	}
 	out, err := r.Git("ls-tree", "-r", "-z", "--full-tree", "HEAD")
 	if err != nil {
@@ -73,13 +76,9 @@ func (r *Repo) headEntries() (map[string]string, error) {
 
 // changedPaths are the files that differ from HEAD (all tracked files
 // before the first commit) and the untracked files that are not ignored.
-func (r *Repo) changedPaths() ([]string, error) {
-	ok, err := r.HasHead()
-	if err != nil {
-		return nil, err
-	}
+func (r *Repo) changedPaths(hasHead bool) ([]string, error) {
 	tracked := []string{"diff", "HEAD", "--name-only", "-z", "--no-renames", "--no-ext-diff"}
-	if !ok {
+	if !hasHead {
 		tracked = []string{"ls-files", "-z"}
 	}
 	var paths []string

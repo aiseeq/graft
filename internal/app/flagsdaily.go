@@ -69,6 +69,11 @@ func (a *App) dailyFlags(ctx context.Context, repo *gitx.Repo, cfg *config.Confi
 // DailyFlags checks the project's daily flag after a successful command.
 // Commands without a project or without a flags section have nothing to read.
 func (a *App) DailyFlags(ctx context.Context) {
+	// Nested commands never report the daily flags, so they do not need to
+	// reopen the repository and reload its configuration either.
+	if a.Nested {
+		return
+	}
 	repo, cfg, err := a.open()
 	if err != nil { //nolint:silent-error-handling // Commands outside a project have no project flags to summarize.
 		return

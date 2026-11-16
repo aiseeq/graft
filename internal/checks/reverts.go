@@ -43,6 +43,7 @@ func Reverts(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, message
 	if err != nil {
 		return nil, err
 	}
+	candidates := revertPairs(recent, staged, message)
 	tree, err := repo.Git("write-tree")
 	if err != nil {
 		return nil, err
@@ -50,6 +51,11 @@ func Reverts(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, message
 	linked, err := behindLinks(repo, strings.TrimSpace(tree), staged)
 	if err != nil {
 		return nil, err
+	}
+	// Writing the tree still validates the index (including unmerged paths),
+	// even if none of the recent commits needs a temporary index comparison.
+	if len(candidates) == 0 {
+		return nil, nil
 	}
 	tmp, err := os.MkdirTemp("", "graft-reverts-")
 	if err != nil {
@@ -63,24 +69,39 @@ func Reverts(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, message
 		}
 	}
 	var findings []Finding
+	for _, candidate := range candidates {
+		c, f := candidate.commit, candidate.file
+		back, err := takesBack(repo, c, f, now, before, base, linked[f])
+		if err != nil {
+			return nil, err
+		}
+		if back {
+			findings = append(findings, Finding{Path: f, Reason: fmt.Sprintf("takes back %s %s; if that is meant, name the commit (7 characters of its hash or more) or the file in the message", gitx.Short(c.sha), c.subject)})
+		}
+	}
+	return findings, nil
+}
+
+type revertPair struct {
+	commit recentCommit
+	file   string
+}
+
+// revertPairs selects only work that needs temporary indexes. It is called
+// afresh for every check because the index and HEAD can change between them.
+func revertPairs(recent []recentCommit, staged []string, message string) []revertPair {
+	var candidates []revertPair
 	for _, c := range recent {
 		if c.parent == "" || names(message, c.sha) {
 			continue
 		}
 		for _, f := range c.files {
-			if !slices.Contains(staged, f) || strings.Contains(message, f) {
-				continue
-			}
-			back, err := takesBack(repo, c, f, now, before, base, linked[f])
-			if err != nil {
-				return nil, err
-			}
-			if back {
-				findings = append(findings, Finding{Path: f, Reason: fmt.Sprintf("takes back %s %s; if that is meant, name the commit (7 characters of its hash or more) or the file in the message", gitx.Short(c.sha), c.subject)})
+			if slices.Contains(staged, f) && !strings.Contains(message, f) {
+				candidates = append(candidates, revertPair{c, f})
 			}
 		}
 	}
-	return findings, nil
+	return candidates
 }
 
 // hashRe is a word that can be a commit hash, short as git prints it or full.
