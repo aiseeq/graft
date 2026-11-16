@@ -1036,6 +1036,30 @@ func TestWorktreeAddExplicitTrunk(t *testing.T) {
 	}
 }
 
+func TestWorktreeAddBrokenGoWorkLeavesNoBranchOrTree(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none}\n",
+		"go.work":     "go 1.22\n\nuse (\n ../kit\n",
+	})
+	f.git("checkout", "-q", "-b", "main")
+	f.mustPlainCommit("chore: base")
+	cache := t.TempDir()
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache)
+	dir := filepath.Join(cache, "worktrees", "work", "review-broken")
+	if out, code := f.graft("", "worktree", "add", "review/broken", "main"); code == 0 || !strings.Contains(out, "go.work at") {
+		t.Fatalf("broken go.work was accepted: exit %d\n%s", code, out)
+	}
+	if _, code := f.tryGit("show-ref", "--verify", "--quiet", "refs/heads/review/broken"); code == 0 {
+		t.Error("worktree add left its new branch behind")
+	}
+	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+		t.Errorf("worktree add left a directory at %s: %v", dir, err)
+	}
+	if got := strings.Count(f.git("worktree", "list", "--porcelain"), "worktree "); got != 1 {
+		t.Errorf("worktree add left a registered worktree:\n%s", f.git("worktree", "list", "--porcelain"))
+	}
+}
+
 // TestWorktreeSync: graft worktree sync puts the worktree's own commits on
 // the fresh trunk and brings its uncommitted changes, untracked files too,
 // back uncommitted, committing and pushing nothing; changes that conflict

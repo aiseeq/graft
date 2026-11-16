@@ -82,6 +82,220 @@ func TestMergeStillRejectsSourceDivergedFromItsOwnUpstream(t *testing.T) {
 	}
 }
 
+func TestMergeLinksGoWorkNeighbour(t *testing.T) {
+	skipGoToolchainInShort(t)
+	marker := filepath.Join(t.TempDir(), "merge-tree")
+	f := mergeRepo(t, "origin")
+	kit := filepath.Join(filepath.Dir(f.work), "kit")
+	f.git("switch", "-q", "feature/PROJ-42")
+	writeMergeNeighbour(t, kit)
+	f.write("go.mod", "module example.com/project\n\ngo 1.23\n")
+	f.write("go.work", "go 1.23\n\nuse (\n .\n ../kit\n)\n")
+	f.write("main.go", "package project\n\nimport _ \"example.com/kit\"\n")
+	f.write(".graft.yaml", neighbourGate(marker, false))
+	f.write("feature.txt", "source with workspace neighbour\n")
+	f.mustPlainCommit("feat: use neighbouring module")
+	f.git("switch", "-q", "main")
+
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code != 0 {
+		t.Fatalf("merge failed: exit %d\n%s", code, out)
+	}
+	treeBytes, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("gate did not record its temporary tree: %v", err)
+	}
+	tree := strings.TrimSpace(string(treeBytes))
+	tmp := mergeTempAncestor(tree)
+	if tmp == "" {
+		t.Fatalf("gate tree %s is not under a graft-merge temporary directory", tree)
+	}
+	if _, err := os.Lstat(tmp); !os.IsNotExist(err) {
+		t.Errorf("merge temporary directory remains at %s: %v", tmp, err)
+	}
+	if rel, err := filepath.Rel(tmp, tree); err != nil || len(strings.Split(rel, string(filepath.Separator))) > 2 {
+		t.Errorf("merge tree path is not short for ../kit: relative path %q, error %v", rel, err)
+	}
+	assertKitIntact(t, kit)
+}
+
+func TestMergeNestedNeighbourDoesNotWriteThroughParent(t *testing.T) {
+	skipGoToolchainInShort(t)
+	f, neighbor, _, scratch := mergeNeighbourFixturePaths(t, []string{"../kit", "../kit/new-child"}, false)
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code != 0 && !strings.Contains(out, "listing the modules of go.work") {
+		t.Fatalf("unexpected merge failure: exit %d\n%s", code, out)
+	}
+	if entries, err := os.ReadDir(scratch); err != nil || len(entries) != 0 {
+		t.Errorf("merge scratch remains: entries=%v err=%v", entries, err)
+	}
+	if got := strings.Count(f.git("worktree", "list", "--porcelain"), "worktree "); got != 1 {
+		t.Errorf("failed merge left a registered worktree:\n%s", f.git("worktree", "list", "--porcelain"))
+	}
+	assertKitIntact(t, neighbor)
+	if _, err := os.Lstat(filepath.Join(neighbor, "new-child")); !os.IsNotExist(err) {
+		t.Errorf("nested neighbour was created through the parent link: %v", err)
+	}
+}
+
+func TestMergeDeepGoWorkNeighbourCleanup(t *testing.T) {
+	skipGoToolchainInShort(t)
+	for _, failGate := range []bool{false, true} {
+		name := "success"
+		if failGate {
+			name = "gate failure"
+		}
+		t.Run(name, func(t *testing.T) {
+			f, kit, marker, scratch := mergeNeighbourFixture(t, "../../kit", failGate)
+			out, code := f.graft("", "merge", "feature/PROJ-42")
+			if failGate {
+				if code == 0 || !strings.Contains(out, "gate failed") {
+					t.Fatalf("merge should fail its gate: exit %d\n%s", code, out)
+				}
+			} else if code != 0 {
+				t.Fatalf("merge failed: exit %d\n%s", code, out)
+			}
+			assertNoMergeScratch(t, marker, scratch)
+			assertKitIntact(t, kit)
+		})
+	}
+}
+
+func TestMergeVeryDeepNeighbourLinkStaysTemporary(t *testing.T) {
+	f, _, _, scratch := mergeNeighbourFixture(t, "../../../../../../../../escape-kit", false)
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "listing the modules of go.work") {
+		t.Fatalf("merge should reach the gate with a bounded link: exit %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "linked "+filepath.Join(scratch, "graft-merge-")) {
+		t.Errorf("deep neighbour link was not placed under merge scratch:\n%s", out)
+	}
+	entries, err := os.ReadDir(scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("merge scratch was not cleaned after refusing the link: %v", entries)
+	}
+	if got := strings.Count(f.git("worktree", "list", "--porcelain"), "worktree "); got != 1 {
+		t.Errorf("failed merge left a registered worktree:\n%s", f.git("worktree", "list", "--porcelain"))
+	}
+}
+
+func TestMergeFromLinkedWorktreeUsesMainNeighbour(t *testing.T) {
+	skipGoToolchainInShort(t)
+	f, kit, marker, scratch := mergeNeighbourFixture(t, "../kit", false)
+	linked := filepath.Join(f.base, "other", "linked")
+	if err := os.MkdirAll(filepath.Dir(linked), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.git("worktree", "add", "--detach", linked, "main")
+	f.git("switch", "--detach", "main")
+	if _, code := f.exec(linked, "", "git", "switch", "main"); code != 0 {
+		t.Fatal("could not put trunk in linked worktree")
+	}
+	out, code := f.exec(linked, "", graftBin, "merge", "feature/PROJ-42")
+	if code != 0 {
+		t.Fatalf("merge from linked worktree failed: exit %d\n%s", code, out)
+	}
+	assertNoMergeScratch(t, marker, scratch)
+	assertKitIntact(t, kit)
+}
+
+func mergeNeighbourFixture(t *testing.T, usePath string, failGate bool) (*fixture, string, string, string) {
+	return mergeNeighbourFixturePaths(t, []string{usePath}, failGate)
+}
+
+func mergeNeighbourFixturePaths(t *testing.T, usePaths []string, failGate bool) (*fixture, string, string, string) {
+	t.Helper()
+	f := mergeRepo(t, "origin")
+	marker := filepath.Join(f.base, "merge-tree")
+	scratch := filepath.Join(f.base, "merge-scratch")
+	if err := os.MkdirAll(scratch, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env, "TMPDIR="+scratch)
+	kit := filepath.Clean(filepath.Join(f.work, usePaths[0]))
+	if !strings.Contains(strings.Join(usePaths, " "), "escape-kit") {
+		writeMergeNeighbour(t, kit)
+	}
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.write("go.mod", "module example.com/project\n\ngo 1.23\n")
+	var work strings.Builder
+	work.WriteString("go 1.23\n\nuse (\n .\n")
+	for _, usePath := range usePaths {
+		work.WriteString(" " + usePath + "\n")
+	}
+	work.WriteString(")\n")
+	f.write("go.work", work.String())
+	f.write("main.go", "package project\n\nimport _ \"example.com/kit\"\n")
+	f.write(".graft.yaml", neighbourGate(marker, failGate))
+	f.mustPlainCommit("feat: use neighbouring module")
+	f.git("switch", "-q", "main")
+	return f, kit, marker, scratch
+}
+
+func writeMergeNeighbour(t *testing.T, kit string) {
+	t.Helper()
+	if err := os.MkdirAll(kit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(kit, "go.mod"), []byte("module example.com/kit\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(kit, "kit.go"), []byte("package kit\n\nconst Value = \"present\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func neighbourGate(marker string, fail bool) string {
+	gate := "  - [go, list, -m, all]\n  - [sh, -c, 'pwd > " + marker + "']\n"
+	if fail {
+		gate += "  - [sh, -c, 'exit 1']\n"
+	}
+	return "schema: 1\nversion: {mode: none, reason: 'no version'}\ngate:\n" + gate
+}
+
+func mergeTempAncestor(tree string) string {
+	for p := filepath.Dir(tree); p != filepath.Dir(p); p = filepath.Dir(p) {
+		if strings.HasPrefix(filepath.Base(p), "graft-merge-") {
+			return p
+		}
+	}
+	return ""
+}
+
+func assertNoMergeScratch(t *testing.T, marker, scratch string) {
+	t.Helper()
+	treeBytes, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("gate did not record its temporary tree: %v", err)
+	}
+	tree := strings.TrimSpace(string(treeBytes))
+	tmp := mergeTempAncestor(tree)
+	if tmp == "" {
+		t.Fatalf("gate tree %s is not under a graft-merge temporary directory", tree)
+	}
+	if _, err := os.Lstat(tmp); !os.IsNotExist(err) {
+		t.Errorf("merge temporary directory remains at %s: %v", tmp, err)
+	}
+	if entries, err := os.ReadDir(scratch); err != nil || len(entries) != 0 {
+		t.Errorf("merge scratch remains: entries=%v err=%v", entries, err)
+	}
+}
+
+func assertKitIntact(t *testing.T, kit string) {
+	t.Helper()
+	for name, want := range map[string]string{
+		"go.mod": "module example.com/kit\n\ngo 1.23\n",
+		"kit.go": "package kit\n\nconst Value = \"present\"\n",
+	} {
+		if got, err := os.ReadFile(filepath.Join(kit, name)); err != nil || string(got) != want {
+			t.Errorf("neighbour %s was changed or removed: %q, %v", name, got, err)
+		}
+	}
+}
+
 func TestMergeRefusesDirtyAndOperation(t *testing.T) {
 	f := mergeRepo(t, "origin")
 	f.write("untracked.txt", "dirty\n")
@@ -101,12 +315,22 @@ func TestMergeNoDepsNeedsReason(t *testing.T) {
 // task the dead merge started may still run in it.
 func TestMergeWarnsAboutDeadTemporaryWorktree(t *testing.T) {
 	f := mergeRepo(t, "origin")
+	kit := filepath.Join(filepath.Dir(f.work), "kit")
+	f.write("go.mod", "module example.com/project\n\ngo 1.23\n")
+	f.write("go.work", "go 1.23\n\nuse (\n .\n ../kit\n)\n")
+	f.write("main.go", "package project\n\nimport _ \"example.com/kit\"\n")
+	writeMergeNeighbour(t, kit)
+	f.mustPlainCommit("chore: use neighbouring module")
+	f.git("push", "-q", "origin", "main")
 	root, err := os.MkdirTemp(os.TempDir(), "graft-merge-orphan-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
-	worktree := filepath.Join(root, "tree")
+	worktree := filepath.Join(root, filepath.Base(filepath.Dir(f.work)), filepath.Base(f.work))
+	if err := os.MkdirAll(filepath.Dir(worktree), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	f.git("worktree", "add", "--detach", "--quiet", worktree, "main")
 	commonDir := f.git("rev-parse", "--path-format=absolute", "--git-common-dir")
 	owner := filepath.Join(root, ".graft-merge-owner")
@@ -114,11 +338,29 @@ func TestMergeWarnsAboutDeadTemporaryWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := f.mustGraft("merge", "feature/PROJ-42")
-	if !strings.Contains(out, "is left by a graft merge that is gone") || !strings.Contains(out, "git worktree remove --force "+worktree) {
+	if !strings.Contains(out, "is left by a graft merge that is gone") || !strings.Contains(out, "git worktree remove --force '"+worktree+"' && rm -rf '"+root+"'") {
 		t.Errorf("missing warning about the left temporary worktree:\n%s", out)
 	}
 	if _, err := os.Stat(filepath.Join(worktree, "base.txt")); err != nil {
 		t.Errorf("the left temporary worktree was touched: %v", err)
+	}
+}
+
+func TestMergeWarnsHowToRemoveUnregisteredMergeDirectory(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	root, err := os.MkdirTemp(os.TempDir(), "graft-merge-unregistered-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	commonDir := f.git("rev-parse", "--path-format=absolute", "--git-common-dir")
+	owner := filepath.Join(root, ".graft-merge-owner")
+	if err := os.WriteFile(owner, []byte("2147483647\n"+commonDir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := f.mustGraft("merge", "feature/PROJ-42")
+	if !strings.Contains(out, "rm -rf '"+root+"'") {
+		t.Errorf("missing cleanup command for an unregistered merge directory:\n%s", out)
 	}
 }
 

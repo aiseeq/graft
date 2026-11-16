@@ -71,6 +71,10 @@ func (a *App) WorktreeAdd(ctx context.Context, o WorktreeAddOptions) error {
 	if err != nil {
 		return err
 	}
+	links, err = normalizeNeighbourLinks(links, dir)
+	if err != nil {
+		return err
+	}
 	args := []string{"worktree", "add", "--quiet"}
 	if exists {
 		args = append(args, dir, o.Branch)
@@ -89,14 +93,8 @@ func (a *App) WorktreeAdd(ctx context.Context, o WorktreeAddOptions) error {
 	if err != nil {
 		return err
 	}
-	for _, l := range links {
-		if err := os.MkdirAll(filepath.Dir(l.at), 0o755); err != nil {
-			return fmt.Errorf("the link's directory: %w", err)
-		}
-		if err := os.Symlink(l.to, l.at); err != nil {
-			return fmt.Errorf("linking %s: %w", l.at, err)
-		}
-		a.printf("linked %s -> %s", l.at, l.to)
+	if err := linkNeighbours(a, links, ""); err != nil {
+		return err
 	}
 	return a.prepareWorktree(ctx, main, dir, linkSetups)
 }
@@ -315,15 +313,252 @@ func copyLocal(main, dir, rel string) error {
 }
 
 // link is a symlink to make beside a worktree.
-type link struct{ at, to string }
+type link struct {
+	at, to string
+	exists bool
+}
+
+type neighbourReach struct{ why, rel string }
+
+// linkNeighbours creates the links a worktree needs to reach modules beside
+// the repository, as declared by go.work and go.mod. When boundary is set,
+// every link must stay inside it.
+func linkNeighbours(a *App, links []link, boundary string) error {
+	if boundary != "" {
+		if err := checkNeighbourBounds(links, boundary); err != nil {
+			return err
+		}
+	}
+	for _, l := range links {
+		if l.exists {
+			continue
+		}
+		if boundary != "" {
+			if err := checkNeighbourParents(boundary, filepath.Dir(l.at)); err != nil {
+				return err
+			}
+		}
+		if err := os.MkdirAll(filepath.Dir(l.at), 0o755); err != nil {
+			return fmt.Errorf("the link's directory: %w", err)
+		}
+		if err := os.Symlink(l.to, l.at); err != nil {
+			return fmt.Errorf("linking %s: %w", l.at, err)
+		}
+		a.printf("linked %s -> %s", l.at, l.to)
+	}
+	return nil
+}
+
+func checkNeighbourParents(root, parent string) error {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolving merge temporary directory: %w", err)
+	}
+	parent, err = filepath.Abs(parent)
+	if err != nil {
+		return fmt.Errorf("resolving neighbour parent %s: %w", parent, err)
+	}
+	rel, err := filepath.Rel(root, parent)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("neighbour parent %s would leave merge temporary directory %s", parent, root)
+	}
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		return fmt.Errorf("checking merge temporary directory %s: %w", root, err)
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
+		return fmt.Errorf("merge temporary directory %s is not a real directory", root)
+	}
+	current := root
+	if rel == "." {
+		return nil
+	}
+	for component := range strings.SplitSeq(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("checking neighbour path component %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("neighbour path component %s is a symlink", current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("neighbour path component %s is not a directory", current)
+		}
+	}
+	return nil
+}
+
+func checkNeighbourBounds(links []link, boundary string) error {
+	root, err := filepath.Abs(boundary)
+	if err != nil {
+		return fmt.Errorf("resolving merge temporary directory: %w", err)
+	}
+	for _, l := range links {
+		at, err := filepath.Abs(l.at)
+		if err != nil {
+			return fmt.Errorf("resolving neighbour path %s: %w", l.at, err)
+		}
+		rel, err := filepath.Rel(root, at)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("neighbour link %s would leave merge temporary directory %s", l.at, root)
+		}
+	}
+	return nil
+}
+
+// neighboursFor combines the external modules used at each revision, keeping
+// one link per location and refusing revisions that map it to different paths.
+func neighboursFor(repo *gitx.Repo, main, dir string, revs ...string) ([]link, error) {
+	var links []link
+	for _, rev := range revs {
+		found, err := neighbours(repo, main, dir, rev)
+		if err != nil {
+			return nil, err
+		}
+		for _, candidate := range found {
+			if i := slices.IndexFunc(links, func(existing link) bool { return existing.at == candidate.at }); i >= 0 {
+				if links[i].to != candidate.to {
+					return nil, fmt.Errorf("neighbour path %s points to both %s and %s", candidate.at, links[i].to, candidate.to)
+				}
+				continue
+			}
+			links = append(links, candidate)
+		}
+	}
+	return normalizeNeighbourLinks(links, dir)
+}
+
+func normalizeNeighbourLinks(links []link, tree string) ([]link, error) {
+	tree, err := filepath.Abs(tree)
+	if err != nil {
+		return nil, fmt.Errorf("resolving merge worktree path: %w", err)
+	}
+	for i := range links {
+		if links[i].at, err = filepath.Abs(links[i].at); err != nil {
+			return nil, fmt.Errorf("resolving neighbour link: %w", err)
+		}
+		links[i].at = filepath.Clean(links[i].at)
+		if links[i].to, err = filepath.Abs(links[i].to); err != nil {
+			return nil, fmt.Errorf("resolving neighbour target: %w", err)
+		}
+		links[i].to = filepath.Clean(links[i].to)
+	}
+	slices.SortFunc(links, func(a, b link) int { return strings.Compare(a.at, b.at) })
+	kept := make([]link, 0, len(links))
+	for _, candidate := range links {
+		if pathWithin(tree, candidate.at) {
+			continue
+		}
+		covered := false
+		for _, parent := range kept {
+			if pathWithin(parent.at, candidate.at) {
+				if parent.at == candidate.at && parent.to != candidate.to {
+					return nil, fmt.Errorf("neighbour path %s points to both %s and %s", candidate.at, parent.to, candidate.to)
+				}
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			kept = append(kept, candidate)
+		}
+	}
+	return kept, nil
+}
+
+func pathWithin(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)))
+}
+
+func maxNeighbourDepth(repo *gitx.Repo, main string, revs ...string) (int, error) {
+	depth := 0
+	for _, rev := range revs {
+		rels, err := neighbourRelPaths(repo, main, rev)
+		if err != nil {
+			return 0, err
+		}
+		for _, reach := range rels {
+			if n := leadingParentComponents(reach.rel); n > depth {
+				depth = n
+			}
+		}
+	}
+	return depth, nil
+}
+
+func leadingParentComponents(rel string) int {
+	depth := 0
+	for component := range strings.SplitSeq(filepath.Clean(filepath.FromSlash(rel)), string(filepath.Separator)) {
+		if component != ".." {
+			break
+		}
+		depth++
+	}
+	return depth
+}
+
+func mergeWorktreePath(tmp, main string, depth int) (string, error) {
+	if depth <= 0 {
+		return filepath.Join(tmp, "tree"), nil
+	}
+	main, err := filepath.Abs(main)
+	if err != nil {
+		return "", fmt.Errorf("resolving main worktree path: %w", err)
+	}
+	parts := strings.Split(strings.TrimPrefix(filepath.Clean(main), string(filepath.Separator)), string(filepath.Separator))
+	if len(parts) == 1 && parts[0] == "." {
+		parts = nil
+	}
+	name := filepath.Base(main)
+	parents := parts
+	if len(parents) > 0 {
+		parents = parents[:len(parents)-1]
+	}
+	if depth > len(parents) {
+		padding := make([]string, depth-len(parents))
+		for i := range padding {
+			padding[i] = "tree"
+		}
+		parents = append(padding, parents...)
+	} else {
+		parents = parents[len(parents)-depth:]
+	}
+	components := append(parents, name)
+	return filepath.Join(append([]string{tmp}, components...)...), nil
+}
 
 // neighbours lists the links a worktree at dir needs: every module go.work
 // uses, or go.mod replaces with, by a relative path that leads out of the
 // repository, as it is at rev. A link already there must lead where the
 // repository's path does.
 func neighbours(repo *gitx.Repo, main, dir, rev string) ([]link, error) {
-	type reach struct{ why, rel string }
-	var paths []reach
+	rels, err := neighbourRelPaths(repo, main, rev)
+	if err != nil {
+		return nil, err
+	}
+	var links []link
+	for _, reach := range rels {
+		rel := reach.rel
+		at := filepath.Join(dir, filepath.FromSlash(rel))
+		to := filepath.Join(main, filepath.FromSlash(rel))
+		ok, err := linked(at, to)
+		if err != nil {
+			return nil, fmt.Errorf("%s, and %s %w", reach.why, at, err)
+		}
+		if !containsLink(links, at) {
+			links = append(links, link{at: at, to: to, exists: ok})
+		}
+	}
+	return links, nil
+}
+
+func neighbourRelPaths(repo *gitx.Repo, main, rev string) ([]neighbourReach, error) {
+	var paths []neighbourReach
 	data, found, err := fileAt(repo, rev, "go.work")
 	if err != nil {
 		return nil, err
@@ -334,10 +569,10 @@ func neighbours(repo *gitx.Repo, main, dir, rev string) ([]link, error) {
 			return nil, fmt.Errorf("go.work at %s: %w", rev, err)
 		}
 		for _, u := range work.Use {
-			paths = append(paths, reach{"go.work uses " + u.Path, u.Path})
+			paths = append(paths, neighbourReach{"go.work uses " + u.Path, u.Path})
 		}
 		for _, r := range work.Replace {
-			paths = append(paths, reach{"go.work replaces with " + r.New.Path, r.New.Path})
+			paths = append(paths, neighbourReach{"go.work replaces with " + r.New.Path, r.New.Path})
 		}
 	}
 	if data, found, err = fileAt(repo, rev, "go.mod"); err != nil {
@@ -348,28 +583,21 @@ func neighbours(repo *gitx.Repo, main, dir, rev string) ([]link, error) {
 			return nil, fmt.Errorf("go.mod at %s: %w", rev, err)
 		}
 		for _, r := range mod.Replace {
-			paths = append(paths, reach{"go.mod replaces with " + r.New.Path, r.New.Path})
+			paths = append(paths, neighbourReach{"go.mod replaces with " + r.New.Path, r.New.Path})
 		}
 	}
-	var links []link
+	var rels []neighbourReach
 	for _, p := range paths {
-		why, rel := p.why, p.rel
+		rel := p.rel
 		if filepath.IsAbs(rel) || !strings.HasPrefix(rel, ".") {
 			continue
 		}
 		to := filepath.Join(main, filepath.FromSlash(rel))
-		if !strings.HasPrefix(to, main+string(filepath.Separator)) && to != main {
-			at := filepath.Join(dir, filepath.FromSlash(rel))
-			ok, err := linked(at, to)
-			if err != nil {
-				return nil, fmt.Errorf("%s, and %s %w", why, at, err)
-			}
-			if !ok && !containsLink(links, at) {
-				links = append(links, link{at: at, to: to})
-			}
+		if !pathWithin(main, to) {
+			rels = append(rels, p)
 		}
 	}
-	return links, nil
+	return rels, nil
 }
 
 // linked tells whether at already leads to the same place as to; nothing

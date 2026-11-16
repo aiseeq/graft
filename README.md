@@ -543,7 +543,8 @@ temporary worktree, runs the result config's gate and content checks, runs
 fast-forwards the local trunk to the accepted result (`local main moved to
 <sha>`). It runs no install task: like `graft commit`, it warns when an
 installed Go binary is behind the new trunk and names the task that updates
-it. A required primary remote must be in
+it. Go workspace and local replace neighbours are linked beside the temporary
+tree as they are for `graft worktree add`. A required primary remote must be in
 `push.remotes`; a refused primary push leaves mirrors and the local trunk
 untouched. A mirror refusal is reported after the local trunk has moved to
 the accepted primary result. A repo with replace refs or a grafts file is refused: the

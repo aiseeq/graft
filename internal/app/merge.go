@@ -356,6 +356,17 @@ func (s *mergeState) installMerged() error {
 
 func (s *mergeState) prepareWorktree() error {
 	var err error
+	trees, err := listWorktrees(s.repo)
+	if err != nil {
+		return err
+	}
+	if len(trees) == 0 {
+		return errors.New("the repository has no main worktree")
+	}
+	main, err := filepath.Abs(trees[0].path)
+	if err != nil {
+		return fmt.Errorf("resolving main worktree path: %w", err)
+	}
 	s.tmp, err = os.MkdirTemp("", "graft-merge-*")
 	if err != nil {
 		return fmt.Errorf("creating merge temporary directory: %w", err)
@@ -365,12 +376,37 @@ func (s *mergeState) prepareWorktree() error {
 		s.tmp = ""
 		return errors.Join(err, removeErr)
 	}
-	s.wt = filepath.Join(s.tmp, "tree")
+	discardTemp := func(cause error) error {
+		removeErr := os.RemoveAll(s.tmp)
+		s.tmp, s.wt = "", ""
+		return errors.Join(cause, removeErr)
+	}
+	depth, err := maxNeighbourDepth(s.repo, main, s.A, s.F)
+	if err != nil {
+		return discardTemp(err)
+	}
+	s.wt, err = mergeWorktreePath(s.tmp, main, depth)
+	if err != nil {
+		return discardTemp(err)
+	}
+	links, err := neighboursFor(s.repo, main, s.wt, s.A, s.F)
+	if err != nil {
+		return discardTemp(err)
+	}
+	if err = checkNeighbourBounds(links, s.tmp); err != nil {
+		return discardTemp(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(s.wt), 0o755); err != nil {
+		return discardTemp(fmt.Errorf("creating merge worktree parent: %w", err))
+	}
 	if _, err = s.repo.Git("worktree", "add", "--detach", "--quiet", s.wt, s.A); err != nil {
 		if rmErr := os.RemoveAll(s.tmp); rmErr != nil {
 			s.a.warn("removing merge temporary directory %s: %v", s.tmp, rmErr)
 		}
 		s.tmp, s.wt = "", ""
+		return err
+	}
+	if err = linkNeighbours(s.a, links, s.tmp); err != nil {
 		return err
 	}
 	s.cleanupCfg = s.cfg
@@ -419,6 +455,10 @@ func refuseSubstitutedObjects(repo *gitx.Repo) error {
 // graft merge that is gone. It removes none: a task the dead merge started
 // may still run in the tree, and graft cannot tell when it ends.
 func warnOrphanedMergeTrees(repo *gitx.Repo, a *App) error {
+	trees, err := listWorktrees(repo)
+	if err != nil {
+		return fmt.Errorf("listing worktrees to find orphaned merge trees: %w", err)
+	}
 	entries, err := os.ReadDir(os.TempDir())
 	if err != nil {
 		return fmt.Errorf("listing merge temporary directories: %w", err)
@@ -428,35 +468,105 @@ func warnOrphanedMergeTrees(repo *gitx.Repo, a *App) error {
 			continue
 		}
 		root := filepath.Join(os.TempDir(), entry.Name())
-		pid, commonDir, ok, ownerErr := readMergeOwner(root)
-		if ownerErr != nil {
-			a.printf("warning: cannot verify merge worktree owner in %s: %v; if orphaned, clean it with: git worktree remove --force %s/tree && rmdir %s", root, ownerErr, filepath.Join(root, "tree"), root)
-			continue
-		}
-		if !ok || filepath.Clean(commonDir) != filepath.Clean(repo.CommonDir) {
-			continue
-		}
-		alive, probeErr := proc.Alive(pid)
-		if probeErr != nil {
-			a.printf("warning: cannot tell whether merge worktree %s is still in use: %v; if orphaned, clean it with: git worktree remove --force %s/tree && rmdir %s", root, probeErr, filepath.Join(root, "tree"), root)
-			continue
-		}
-		if alive {
-			continue
-		}
-		wt := filepath.Join(root, "tree")
-		registered, err := isRegisteredWorktree(repo, wt)
-		if err != nil {
-			a.warn("checking stale merge worktree %s: %v", wt, err)
-			continue
-		}
-		if registered {
-			a.printf("warning: temporary worktree %s is left by a graft merge that is gone (pid %d); once nothing runs in it, remove it with: git worktree remove --force %s, then delete %s", wt, pid, wt, root)
-		} else {
-			a.printf("warning: temporary directory %s is left by a graft merge that is gone (pid %d); once nothing runs in it, delete it", root, pid)
+		if err := warnOrphanedMergeRoot(repo, a, root, trees); err != nil {
+			a.warn("checking merge temporary directory %s: %v", root, err)
 		}
 	}
 	return nil
+}
+
+func warnOrphanedMergeRoot(repo *gitx.Repo, a *App, root string, trees []worktree) error {
+	registered, err := worktreesInMergeRoot(root, trees)
+	if err != nil {
+		return err
+	}
+	pid, commonDir, hasOwner, ownerErr := readMergeOwner(root)
+	if ownerErr != nil {
+		warnMergeOwnerUnreadable(a, root, registered, ownerErr)
+		return nil
+	}
+	if !hasOwner {
+		for _, wt := range registered {
+			a.printf("warning: temporary worktree %s has no merge owner marker; once nothing runs in it, remove it with: %s", wt, registeredMergeCleanup(root, wt))
+		}
+		return nil
+	}
+	if filepath.Clean(commonDir) != filepath.Clean(repo.CommonDir) && len(registered) == 0 {
+		return nil
+	}
+	alive, probeErr := proc.Alive(pid)
+	if probeErr != nil {
+		warnMergeOwnerProbe(a, root, registered, probeErr)
+		return nil
+	}
+	if alive {
+		return nil
+	}
+	warnDeadMergeRoot(a, root, registered, pid)
+	return nil
+}
+
+func warnMergeOwnerUnreadable(a *App, root string, registered []string, err error) {
+	if len(registered) > 0 {
+		for _, wt := range registered {
+			a.printf("warning: cannot verify merge worktree owner in %s: %v; if no merge process is using it, remove it with: %s", root, err, registeredMergeCleanup(root, wt))
+		}
+		return
+	}
+	a.printf("warning: cannot verify merge worktree owner in %s: %v; if no merge process is using it, remove it with: %s", root, err, unregisteredMergeCleanup(root))
+}
+
+func warnMergeOwnerProbe(a *App, root string, registered []string, err error) {
+	warnMergeRootStatus(a, root, registered,
+		"warning: cannot tell whether merge worktree %s is still in use: %v; if orphaned, remove it with: %s",
+		"warning: cannot tell whether merge temporary directory %s is still in use: %v; if orphaned, remove it with: %s",
+		err,
+	)
+}
+
+func warnDeadMergeRoot(a *App, root string, registered []string, pid int) {
+	warnMergeRootStatus(a, root, registered,
+		"warning: temporary worktree %s is left by a graft merge that is gone (pid %d); once nothing runs in it, remove it with: %s",
+		"warning: temporary directory %s is left by a graft merge that is gone (pid %d); once nothing runs in it, remove it with: %s",
+		pid,
+	)
+}
+
+func warnMergeRootStatus(a *App, root string, registered []string, registeredFormat, rootFormat string, values ...any) {
+	if len(registered) > 0 {
+		for _, wt := range registered {
+			args := append([]any{wt}, values...)
+			args = append(args, registeredMergeCleanup(root, wt))
+			a.printf(registeredFormat, args...)
+		}
+		return
+	}
+	args := append([]any{root}, values...)
+	args = append(args, unregisteredMergeCleanup(root))
+	a.printf(rootFormat, args...)
+}
+
+func worktreesInMergeRoot(root string, trees []worktree) ([]string, error) {
+	var found []string
+	for _, tree := range trees {
+		path, err := filepath.Abs(tree.path)
+		if err != nil {
+			return nil, fmt.Errorf("resolving worktree path %s: %w", tree.path, err)
+		}
+		if filepath.Clean(path) != filepath.Clean(root) && pathWithin(root, path) {
+			found = append(found, path)
+		}
+	}
+	slices.Sort(found)
+	return found, nil
+}
+
+func registeredMergeCleanup(root, wt string) string {
+	return "git worktree remove --force " + shellQuote(wt) + " && rm -rf " + shellQuote(root)
+}
+
+func unregisteredMergeCleanup(root string) string {
+	return "rm -rf " + shellQuote(root)
 }
 
 func readMergeOwner(root string) (int, string, bool, error) {
@@ -479,29 +589,6 @@ func readMergeOwner(root string) (int, string, bool, error) {
 		return 0, "", false, fmt.Errorf("invalid owner pid %d", pid)
 	}
 	return pid, strings.TrimSpace(parts[1]), true, nil
-}
-
-func isRegisteredWorktree(repo *gitx.Repo, root string) (bool, error) {
-	out, err := repo.Git("worktree", "list", "--porcelain")
-	if err != nil {
-		return false, err
-	}
-	want, err := filepath.Abs(root)
-	if err != nil {
-		return false, fmt.Errorf("resolving worktree path: %w", err)
-	}
-	for line := range strings.SplitSeq(out, "\n") {
-		if candidate, ok := strings.CutPrefix(line, "worktree "); ok {
-			got, err := filepath.Abs(filepath.FromSlash(candidate))
-			if err != nil {
-				return false, fmt.Errorf("resolving listed worktree path: %w", err)
-			}
-			if filepath.Clean(got) == filepath.Clean(want) {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
 }
 
 func (s *mergeState) cleanup() {
