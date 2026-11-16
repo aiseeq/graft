@@ -158,7 +158,7 @@ func TestAppFreezePolishAmendWithoutRemotesRecordsHere(t *testing.T) {
 	freezePolishGit(t, repo.Root, "tag", "-a", old, oldHead, "-m", "target: commit", "-m", "commit: "+oldHead, "-m", "reason: lint failed")
 	var output bytes.Buffer
 	a := &App{Stdout: &output}
-	err := a.finishAmend(repo, cfg, "base, amended\n", f, oldHead, []string{"lint"}, savedIndex{})
+	err := a.finishAmend(repo, cfg, "base, amended\n", f, oldHead, []string{"lint"}, savedIndex{}, false)
 	if err == nil || !strings.Contains(err.Error(), "amend is made, but the freeze advisory record for lint is made, while the replaced commit's could not be removed") {
 		t.Fatalf("amend error = %v", err)
 	}

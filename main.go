@@ -307,7 +307,7 @@ func runError(a *app.App, err error) int {
 // parsesItsFlags names the commands whose flag set answers -h with their
 // section and flags; the others get the section from dispatch.
 var parsesItsFlags = map[string]bool{
-	"commit": true, "release": true, "version": true, "deploy": true, "flags": true, "logs": true, "stats": true,
+	"commit": true, "amend": true, "release": true, "version": true, "deploy": true, "flags": true, "logs": true, "stats": true,
 }
 
 // subcommands are the commands that parse their own arguments.
@@ -335,7 +335,12 @@ func dispatch(ctx context.Context, a *app.App, args []string) error {
 	}
 	switch cmd {
 	case "amend":
-		return noArgs(a, cmd, rest, func() error { return a.Amend(ctx) })
+		fs := newFlags(a, "amend")
+		resetAuthor := fs.Bool("reset-author", false, "use the current Git identity as the amended commit's author")
+		if err := parse(fs, rest); err != nil {
+			return err
+		}
+		return a.Amend(ctx, *resetAuthor)
 	case "init":
 		if len(rest) == 1 && rest[0] == "--global" {
 			return a.InitGlobal()

@@ -482,7 +482,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft commit -m "fix: ..."` | lock, stage work, gate, stage paths changed when it started, bump patch (version mode `file`), stage bump, checks, commit, push to every remote |
 | `graft commit --minor` / `--major` | same with a minor / major bump (version mode `file` only) |
 | `graft commit -F msg.txt` / `-F -` | message from a file / from stdin, byte for byte |
-| `graft amend` | lock, stage work before the gate, gate, stage paths changed since the amended commit's parent (including the amended commit's files), `ticket.required` on the whole amended commit, checks, `git commit --amend --no-edit`, no push; restores the original index if the gate or a later step fails or the gate leaves the amended commit as its parent has it, and refuses a commit that is already on a remote unless only on branches in `push.force_with_lease` |
+| `graft amend [--reset-author]` | lock, stage work before the gate, gate, stage paths changed since the amended commit's parent (including the amended commit's files), `ticket.required` on the whole amended commit, checks, `git commit --amend --no-edit`, no push; `--reset-author` sets the author to the current Git identity and permits an author-only amend on a clean tree; without it, a clean tree is refused; restores the original index if the gate or a later step fails or the gate leaves the amended commit as its parent has it, and refuses a commit that is already on a remote unless only on branches in `push.force_with_lease` |
 | `graft release` | check authors and committers of commits not included in any reachable version tag against `release.authors` when set; refuse a HEAD no remote has yet; push the current branch to the remotes whose branch lacks HEAD (one fast-forwarded to pushed work), tag HEAD with the version, push the tag to every remote |
 | `graft release --patch` / `--minor` / `--major` | in version mode `file`, bump, commit and tag that version in one step: on a clean tree whose HEAD carries no version tag yet, the commit holds only the version files (no module raise) and needs no work item; in `git-tag` mode `--patch` is the default |
 | `graft release --version X.Y.Z` | choose the exact next tag (version mode `git-tag` only) |
@@ -571,6 +571,8 @@ commands and tasks. `-C <directory>` after the command (before any `--`) is
 refused with the form that works: `graft -C <directory> <command> …`.
 
 ### graft commit, step by step
+
+On a first commit with no remote, `graft commit` reports the configured `user.email` (or says when it is unset or empty) and suggests adding a remote then running `graft amend --reset-author` if it is wrong. That amend also works on the clean tree left by the commit.
 
 1. Read the message (`-m`, repeatable, one paragraph each; `-F file`; `-F -`).
    An empty message is refused: there is no default subject. Warn when the

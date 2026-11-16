@@ -103,7 +103,7 @@ type registrySpec struct {
 // flags applicable to that subcommand. Manual parsers are listed explicitly.
 var registrySpecs = []registrySpec{
 	{path: "commit", rest: "none", source: "commit"},
-	{path: "amend", rest: "none"},
+	{path: "amend", rest: "none", manual: "--reset-author"},
 	{path: "release", rest: "none", source: "release"},
 	{path: "version", rest: "none", source: "version"},
 	{path: "version bump", rest: "none", source: "version bump"},

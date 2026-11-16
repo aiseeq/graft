@@ -85,6 +85,31 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 	return nil
 }
 
+// warnFirstCommitWithoutRemote explains which identity Git will use on an
+// unborn repository that has no remote to select an includeIf identity.
+func (a *App) warnFirstCommitWithoutRemote(repo *gitx.Repo, plan commitPlan) {
+	if plan.head.sha != "" {
+		return
+	}
+	remotes, err := repo.Remotes()
+	if err != nil || len(remotes) != 0 {
+		return
+	}
+	email, err := repo.Git("config", "--get", "user.email")
+	identity := "user.email is not set"
+	if err == nil {
+		email = strings.TrimSpace(email)
+		if email == "" {
+			identity = "user.email is set but empty"
+		} else {
+			identity = "user.email is " + email
+		}
+	} else if gitx.ExitCode(err) != 1 {
+		identity = fmt.Sprintf("user.email could not be read (%v)", err)
+	}
+	fmt.Fprintf(a.Stderr, "graft: no remote is configured; Git can choose the author email based on a remote URL. For this commit, %s. If that is wrong, add a remote and run graft amend --reset-author.\n", identity)
+}
+
 // commitPlan is everything a commit needs, worked out before the gate runs so
 // a bad version file or an unknown remote fails fast.
 type commitPlan struct {
@@ -225,6 +250,7 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	if plan.head, err = currentHead(repo); err != nil {
 		return err
 	}
+	a.warnFirstCommitWithoutRemote(repo, plan)
 	backup, frozen, advisoryFailed, err := a.prepareCommitGate(ctx, repo, cfg, plan)
 	if err != nil {
 		return err

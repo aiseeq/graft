@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode"
 
 	akitproc "github.com/aiseeq/akit/proc"
 	"github.com/aiseeq/graft/v2/internal/envname"
@@ -571,6 +572,99 @@ func (f *fixture) mustGraft(args ...string) string {
 		f.t.Fatalf("graft %s: exit %d\n%s", strings.Join(args, " "), code, out)
 	}
 	return out
+}
+
+func TestFirstCommitNoRemoteEmailAndResetAuthor(t *testing.T) {
+	const gateMarker = "GRAFT_GATE_STARTED"
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none}\ngate:\n" + gateStep("print", gateMarker),
+	})
+	conditional := filepath.Join(f.base, "remote-identity.gitconfig")
+	writeFile(t, conditional, "[user]\n\temail = author-b@example.com\n")
+	global := filepath.Join(f.base, "global.gitconfig")
+	writeFile(t, global, fmt.Sprintf("[user]\n\tname = Test User\n\temail = author-a@example.com\n[includeIf %s]\n\tpath = %s\n",
+		strconv.Quote("hasconfig:remote.*.url:https://example.com/**"), strconv.Quote(filepath.ToSlash(conditional))))
+	setFixtureEnv(f, "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_NOSYSTEM=1")
+	git := func(args ...string) string {
+		t.Helper()
+		out, code := f.exec(f.work, "", "git", args...)
+		if code != 0 {
+			t.Fatalf("git %s: exit %d\n%s", strings.Join(args, " "), code, out)
+		}
+		return strings.TrimSpace(out)
+	}
+
+	out, code := f.graft("", "commit", "-m", "chore: first")
+	if code != 0 {
+		t.Fatalf("first graft commit: exit %d\n%s", code, out)
+	}
+	for _, r := range out {
+		if unicode.Is(unicode.Cyrillic, r) {
+			t.Fatalf("graft output contains Russian text: %s", out)
+		}
+	}
+	warningAt := strings.Index(out, "user.email is author-a@example.com")
+	gateAt := strings.Index(out, gateMarker)
+	if warningAt < 0 || gateAt < 0 || warningAt >= gateAt {
+		t.Fatalf("first commit warning must name the configured author before the gate; warning=%d gate=%d\n%s", warningAt, gateAt, out)
+	}
+	if got := git("show", "-s", "--format=%ae", "HEAD"); got != "author-a@example.com" {
+		t.Fatalf("first commit author = %q, want author-a@example.com", got)
+	}
+
+	git("remote", "add", "origin", "https://example.com/projectA/repo.git")
+	if got := git("config", "--get", "user.email"); got != "author-b@example.com" {
+		t.Fatalf("includeIf user.email after adding remote = %q; origin=%s; remote=%s", got, git("config", "--show-origin", "--get-all", "user.email"), git("remote", "get-url", "origin"))
+	}
+	noFlagOut, noFlagCode := f.graft("", "amend")
+	if noFlagCode == 0 || !strings.Contains(noFlagOut, "nothing to amend: the work tree is clean") {
+		t.Fatalf("clean amend without --reset-author: exit %d\n%s", noFlagCode, noFlagOut)
+	}
+	if got := git("show", "-s", "--format=%ae", "HEAD"); got != "author-a@example.com" {
+		t.Fatalf("author changed after refused amend = %q", got)
+	}
+
+	out, code = f.graft("", "amend", "--reset-author")
+	if code != 0 {
+		t.Fatalf("clean amend --reset-author: exit %d\n%s", code, out)
+	}
+	if got := git("show", "-s", "--format=%ae", "HEAD"); got != "author-b@example.com" {
+		t.Fatalf("reset author = %q, want author-b@example.com\n%s", got, out)
+	}
+}
+
+func TestFirstCommitNoRemoteMissingUserEmail(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		userConfig string
+		want       string
+	}{
+		{name: "unset", userConfig: "[user]\n\tname = Test User\n", want: "user.email is not set"},
+		{name: "empty", userConfig: "[user]\n\tname = Test User\n\temail = \n", want: "user.email is set but empty"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newRepo(t, map[string]string{
+				".graft.yaml": "schema: 1\nversion: {mode: none}\ngate: []\n",
+			})
+			global := filepath.Join(f.base, "global.gitconfig")
+			writeFile(t, global, test.userConfig)
+			setFixtureEnv(f, "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_NOSYSTEM=1",
+				"GIT_AUTHOR_NAME=Test User", "GIT_AUTHOR_EMAIL=commit@example.com",
+				"GIT_COMMITTER_NAME=Test User", "GIT_COMMITTER_EMAIL=commit@example.com")
+			out, code := f.graft("", "commit", "-m", "chore: first")
+			if !strings.Contains(out, test.want) || !strings.Contains(out, "graft amend --reset-author") {
+				t.Fatalf("warning = %q, want %q and repair hint", out, test.want)
+			}
+			for _, r := range out {
+				if unicode.Is(unicode.Cyrillic, r) {
+					t.Fatalf("graft output contains Russian text: %s", out)
+				}
+			}
+			if code != 0 {
+				t.Fatalf("commit with %s user.email: exit %d\n%s", test.name, code, out)
+			}
+		})
+	}
 }
 
 // mustVersionedCommit commits the work tree of dir with plain git as graft

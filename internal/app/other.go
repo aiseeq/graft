@@ -23,16 +23,17 @@ import (
 )
 
 // Amend folds the work tree into the last commit through the same gate and
-// checks as a new commit, keeping its message. It does not push: the commit it
-// rewrites is unpublished, or published only on branches that are rewritten by
-// design (push.force_with_lease).
-func (a *App) Amend(ctx context.Context) error {
+// checks as a new commit, keeping its message. With resetAuthor it also allows
+// an author-only amend on a clean tree. It does not push: the commit it rewrites
+// is unpublished, or published only on branches rewritten by design
+// (push.force_with_lease).
+func (a *App) Amend(ctx context.Context, resetAuthor bool) error {
 	repo, cfg, err := a.open()
 	if err != nil {
 		return err
 	}
 	return a.withLock(ctx, commitLock(repo, cfg), cfg, "graft amend", func() error {
-		if err := checkAmendable(repo, cfg); err != nil {
+		if err := checkAmendable(repo, cfg, resetAuthor); err != nil {
 			return err
 		}
 		message, ticketed, branch, err := amendMessage(repo, cfg)
@@ -91,12 +92,16 @@ func (a *App) Amend(ctx context.Context) error {
 		if err != nil {
 			return errors.Join(err, restoreIndex(index))
 		}
-		return a.finishAmend(repo, cfg, message, frozen, strings.TrimSpace(previousHead), advisoryFailed, index)
+		return a.finishAmend(repo, cfg, message, frozen, strings.TrimSpace(previousHead), advisoryFailed, index, resetAuthor)
 	})
 }
 
-func (a *App) finishAmend(repo *gitx.Repo, cfg *config.Config, message string, frozen *activeFreeze, previousHead string, advisoryFailed []string, index savedIndex) error {
-	if _, err := repo.GitInput(strings.NewReader(message), markerEnv, "commit", "--amend", "--cleanup=verbatim", "-F", "-"); err != nil {
+func (a *App) finishAmend(repo *gitx.Repo, cfg *config.Config, message string, frozen *activeFreeze, previousHead string, advisoryFailed []string, index savedIndex, resetAuthor bool) error {
+	args := []string{"commit", "--amend", "--cleanup=verbatim", "-F", "-"}
+	if resetAuthor {
+		args = append(args, "--reset-author")
+	}
+	if _, err := repo.GitInput(strings.NewReader(message), markerEnv, args...); err != nil {
 		return errors.Join(err, restoreIndex(index))
 	}
 	if frozen != nil {
@@ -182,9 +187,9 @@ func amendMessage(repo *gitx.Repo, cfg *config.Config) (message string, ticketed
 	return message, ticketed, branch, nil
 }
 
-// checkAmendable refuses to amend a missing commit, one with nothing to fold
-// in, or one published on a branch outside push.force_with_lease.
-func checkAmendable(repo *gitx.Repo, cfg *config.Config) error {
+// checkAmendable refuses to amend a missing commit, a clean tree unless only
+// the author is being reset, or a commit published outside push.force_with_lease.
+func checkAmendable(repo *gitx.Repo, cfg *config.Config, resetAuthor bool) error {
 	if err := requireNormalContext(repo); err != nil {
 		return err
 	}
@@ -214,7 +219,7 @@ func checkAmendable(repo *gitx.Repo, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	if clean {
+	if clean && !resetAuthor {
 		return errors.New("nothing to amend: the work tree is clean")
 	}
 	return nil
