@@ -358,7 +358,7 @@ func TestMergeAlreadyPublishedButMirrorMissingResultGivesCatchupCommand(t *testi
 	f.mustPlainCommit("chore: enable mirror")
 	f.git("push", "-q", "origin", "main")
 	out, code := f.graft("", "merge", "feature")
-	if code == 0 || !strings.Contains(out, "mirror is missing") || !strings.Contains(out, "git push mirror origin/main:refs/heads/main") {
+	if code == 0 || !strings.Contains(out, f.remote("mirror")) || !strings.Contains(out, "git push --no-follow-tags -- "+f.remote("mirror")) {
 		t.Fatalf("mirror catch-up advice: exit %d\n%s", code, out)
 	}
 }
@@ -947,6 +947,167 @@ func TestMergePartialPushURLsSaysSo(t *testing.T) {
 	out, code := f.graft("", "merge", "feature/PROJ-42")
 	if code == 0 || strings.Contains(out, "nothing published") || !strings.Contains(out, "several push URLs") {
 		t.Errorf("partial push not reported: exit %d\n%s", code, out)
+	}
+}
+
+func mergeRepoWithSubmodule(t *testing.T) (*fixture, string) {
+	t.Helper()
+	f := mergeRepo(t, "origin")
+	subremote := filepath.Join(f.base, "submodule.git")
+	f.run(f.base, "git", "init", "-q", "--bare", "-b", "main", subremote)
+	subseed := filepath.Join(f.base, "subseed")
+	f.run(f.base, "git", "init", "-q", "-b", "main", subseed)
+	f.run(subseed, "git", "config", "user.name", "Reviewer")
+	f.run(subseed, "git", "config", "user.email", "review@example.com")
+	if err := os.WriteFile(filepath.Join(subseed, "data"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(subseed, "git", "add", ".")
+	f.run(subseed, "git", "commit", "-qm", "chore: submodule base")
+	f.run(subseed, "git", "push", "-q", subremote, "main")
+	if _, code := f.exec(f.work, "", "git", "-c", "protocol.file.allow=always", "submodule", "add", "-q", subremote, "dep"); code != 0 {
+		t.Fatal("adding submodule failed")
+	}
+	f.git("add", "dep")
+	f.mustPlainCommit("chore: add submodule")
+	f.git("push", "-q", "origin", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("switch", "-q", "-c", "feature/submodule")
+	f.run(filepath.Join(f.work, "dep"), "git", "config", "user.name", "Reviewer")
+	f.run(filepath.Join(f.work, "dep"), "git", "config", "user.email", "review@example.com")
+	if err := os.WriteFile(filepath.Join(f.work, "dep", "data"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(filepath.Join(f.work, "dep"), "git", "add", "data")
+	f.run(filepath.Join(f.work, "dep"), "git", "commit", "-qm", "feat: submodule change")
+	f.git("add", "dep")
+	f.mustPlainCommit("feat: update submodule")
+	f.git("switch", "-q", "main")
+	f.git("-C", filepath.Join(f.work, "dep"), "switch", "-q", "--detach", "origin/main")
+	return f, subremote
+}
+
+func TestMergeOnDemandChecksUnpublishedSubmodule(t *testing.T) {
+	f, subremote := mergeRepoWithSubmodule(t)
+	subBefore := f.gitIn(subremote, "rev-parse", "main")
+	mainBefore := f.gitIn(f.remote("origin"), "rev-parse", "main")
+	f.git("config", "push.recurseSubmodules", "on-demand")
+	out, code := f.graft("", "merge", "feature/submodule")
+	if code == 0 || !strings.Contains(out, "not be found on any remote") || strings.Contains(out, "must name a ref") {
+		t.Fatalf("merge did not reject the unpublished submodule through Git's check: exit %d\n%s", code, out)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != mainBefore {
+		t.Errorf("superproject remote moved despite Git's check: %s", got)
+	}
+	if got := f.gitIn(subremote, "rev-parse", "main"); got != subBefore {
+		t.Errorf("submodule remote unexpectedly moved: %s", got)
+	}
+	if got := f.git("config", "--get", "push.recurseSubmodules"); got != "on-demand" {
+		t.Errorf("user push.recurseSubmodules changed to %q", got)
+	}
+}
+
+func TestMergeOnDemandAllowsPublishedSubmodule(t *testing.T) {
+	f, subremote := mergeRepoWithSubmodule(t)
+	subTip := f.git("rev-parse", "feature/submodule:dep")
+	f.git("-C", filepath.Join(f.work, "dep"), "push", "-q", "origin", subTip+":refs/heads/main")
+	f.git("-C", filepath.Join(f.work, "dep"), "fetch", "--quiet", "origin")
+	if got := f.gitIn(subremote, "rev-parse", "main"); got != subTip {
+		t.Fatalf("submodule remote tip %s, want published source commit %s", got, subTip)
+	}
+	f.git("config", "push.recurseSubmodules", "on-demand")
+	out := f.mustGraft("merge", "feature/submodule")
+	if got, want := f.gitIn(f.remote("origin"), "rev-parse", "main"), f.git("rev-parse", "feature/submodule"); got != want {
+		t.Fatalf("superproject remote = %s, want %s:\n%s", got, want, out)
+	}
+	if got := f.git("config", "--get", "push.recurseSubmodules"); got != "on-demand" {
+		t.Errorf("user push.recurseSubmodules changed to %q", got)
+	}
+}
+
+func TestMergeOnDemandWithoutSubmodule(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.git("config", "push.recurseSubmodules", "on-demand")
+	out := f.mustGraft("merge", "feature/PROJ-42")
+	if got, want := f.gitIn(f.remote("origin"), "rev-parse", "main"), f.git("rev-parse", "feature/PROJ-42"); got != want {
+		t.Fatalf("remote main = %s, want %s:\n%s", got, want, out)
+	}
+	if got := f.git("config", "--get", "push.recurseSubmodules"); got != "on-demand" {
+		t.Errorf("user push.recurseSubmodules changed to %q", got)
+	}
+}
+
+func TestMergeRetryReportsLaggingPushURL(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	refusing := filepath.Join(f.base, "refusing.git")
+	f.run(f.base, "git", "init", "-q", "--bare", "-b", "main", refusing)
+	if err := os.WriteFile(filepath.Join(refusing, "hooks", "pre-receive"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.git("config", "--add", "remote.origin.pushurl", f.remote("origin"))
+	f.git("config", "--add", "remote.origin.pushurl", refusing)
+	if _, code := f.graft("", "merge", "feature/PROJ-42"); code == 0 {
+		t.Fatal("expected first multi-URL push to fail")
+	}
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code != 0 || !strings.Contains(out, refusing) || !strings.Contains(out, "git push") {
+		t.Fatalf("retry did not report lagging push URL and finish: exit %d\n%s", code, out)
+	}
+}
+
+func TestMergeRetryFetchesAdvancedPushURLHead(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	mirror := filepath.Join(f.base, "mirror.git")
+	f.run(f.base, "git", "clone", "-q", "--bare", f.remote("origin"), mirror)
+	if err := os.WriteFile(filepath.Join(mirror, "hooks", "pre-receive"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.git("config", "--add", "remote.origin.pushurl", f.remote("origin"))
+	f.git("config", "--add", "remote.origin.pushurl", mirror)
+	if _, code := f.graft("", "merge", "feature/PROJ-42"); code == 0 {
+		t.Fatal("expected partial push while the mirror rejects publication")
+	}
+	if err := os.Remove(filepath.Join(mirror, "hooks", "pre-receive")); err != nil {
+		t.Fatal(err)
+	}
+	f.git("push", "-q", mirror, "feature/PROJ-42:main")
+	advance := filepath.Join(f.base, "advance")
+	f.run(f.base, "git", "clone", "-q", mirror, advance)
+	f.run(advance, "git", "config", "user.name", "Reviewer")
+	f.run(advance, "git", "config", "user.email", "review@example.com")
+	if err := os.WriteFile(filepath.Join(advance, "ahead.txt"), []byte("ahead\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(advance, "git", "add", "ahead.txt")
+	f.run(advance, "git", "commit", "-qm", "chore: advance push URL")
+	f.run(advance, "git", "push", "-q", "origin", "main")
+	f.git("config", "--replace-all", "remote.origin.pushurl", mirror)
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code != 0 || !strings.Contains(out, "already merged") || strings.Contains(out, "cannot check") {
+		t.Fatalf("retry could not inspect advanced push URL with its object absent locally: exit %d\n%s", code, out)
+	}
+	if got, want := f.gitIn(mirror, "rev-parse", "main"), f.gitIn(advance, "rev-parse", "main"); got != want {
+		t.Errorf("mirror main = %s, want advanced tip %s", got, want)
+	}
+}
+
+func TestMergeRetryContinuesAfterUnreachablePushURL(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	refusing := filepath.Join(f.base, "refusing.git")
+	f.run(f.base, "git", "init", "-q", "--bare", "-b", "main", refusing)
+	if err := os.WriteFile(filepath.Join(refusing, "hooks", "pre-receive"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unreachable := filepath.Join(f.base, "unreachable.git")
+	f.git("config", "--add", "remote.origin.pushurl", f.remote("origin"))
+	f.git("config", "--add", "remote.origin.pushurl", refusing)
+	f.git("config", "--add", "remote.origin.pushurl", unreachable)
+	if _, code := f.graft("", "merge", "feature/PROJ-42"); code == 0 {
+		t.Fatal("expected partial push with rejecting and unreachable URLs")
+	}
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "cannot check "+unreachable) || !strings.Contains(out, refusing) || !strings.Contains(out, "catch it up with: git push") {
+		t.Fatalf("retry did not continue through all push URLs with address-specific diagnostics: exit %d\n%s", code, out)
 	}
 }
 

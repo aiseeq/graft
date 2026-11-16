@@ -461,12 +461,23 @@ func worktreeSyncResolvedTrunkBranch(repo *gitx.Repo, trunk string, remotes []st
 	return branch, trunk == branchRemote+"/"+branch || trunk == ref, nil
 }
 
-func worktreeSyncIsRemoteHead(repo *gitx.Repo, branch, remote string) (bool, error) {
+func remotePushURLs(repo *gitx.Repo, remote string) ([]string, error) {
 	urls, err := repo.Git("remote", "get-url", "--push", "--all", remote)
 	if err != nil {
-		return false, fmt.Errorf("cannot inspect push URLs for remote %s: %w", remote, err)
+		return nil, fmt.Errorf("cannot inspect push URLs for remote %s: %w", remote, err)
 	}
 	pushURLs := strings.Split(strings.TrimSuffix(urls, "\n"), "\n")
+	if len(pushURLs) == 0 || (len(pushURLs) == 1 && pushURLs[0] == "") {
+		return nil, fmt.Errorf("remote %s has no push URL to check", remote)
+	}
+	return pushURLs, nil
+}
+
+func worktreeSyncIsRemoteHead(repo *gitx.Repo, branch, remote string) (bool, error) {
+	pushURLs, err := remotePushURLs(repo, remote)
+	if err != nil {
+		return false, err
+	}
 	if len(pushURLs) > 1 {
 		flag := "--delete"
 		set, err := repo.Git("config", "--get-all", "remote."+remote+".pushurl")
@@ -477,9 +488,6 @@ func worktreeSyncIsRemoteHead(repo *gitx.Repo, branch, remote string) (bool, err
 			flag = "--delete --push"
 		}
 		return false, fmt.Errorf("remote %s has multiple push URLs (%s); refusing --push because each server's default branch must be checked separately; keep one by running `git remote set-url %s %s <url>` for each other URL, or use separate remotes", remote, strings.Join(pushURLs, ", "), flag, remote)
-	}
-	if len(pushURLs) != 1 || pushURLs[0] == "" {
-		return false, fmt.Errorf("remote %s has no push URL to check", remote)
 	}
 	out, err := repo.Git("ls-remote", "--symref", pushURLs[0], "HEAD")
 	if err != nil {

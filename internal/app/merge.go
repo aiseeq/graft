@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/message"
 	"github.com/aiseeq/graft/v2/internal/proc"
@@ -909,36 +910,89 @@ func (s *mergeState) checkMirrorsCanAccept(rev string) error {
 }
 
 func (s *mergeState) reportMissingMirrors(rev string) error {
+	var checkErrs []error
 	for _, remote := range s.pushTo {
-		if remote == s.primary {
+		urls, err := remotePushURLs(s.repo, remote)
+		if err != nil {
+			checkErrs = append(checkErrs, err)
 			continue
 		}
-		ref := "refs/remotes/" + remote + "/" + s.trunk
-		remoteHead, err := s.repo.Git("rev-parse", "--verify", ref+"^{commit}")
-		if err != nil {
-			return fmt.Errorf("remote %s has no trunk %s: %w", remote, s.trunk, err)
-		}
-		contains, err := s.repo.IsAncestor(rev, strings.TrimSpace(remoteHead))
-		if err != nil {
-			return err
-		}
-		if !contains {
-			cmd := fmt.Sprintf("git push %s %s/%s:refs/heads/%s", remote, s.primary, s.trunk, s.trunk)
-			return fmt.Errorf("mirror %s is missing %s; catch it up with: %s", remote, gitx.Short(rev), cmd)
+		for _, url := range urls {
+			remoteHead, err := s.repo.Git("ls-remote", url, "refs/heads/"+s.trunk)
+			if err != nil {
+				checkErrs = append(checkErrs, fmt.Errorf("cannot check %s: ls-remote failed: %w", url, err))
+				continue
+			}
+			fields := strings.Fields(remoteHead)
+			if len(fields) < 2 || fields[1] != "refs/heads/"+s.trunk {
+				msg := fmt.Sprintf("push URL %s for remote %s has no trunk %s; catch it up with: git push --no-follow-tags -- %s %s:refs/heads/%s", url, remote, s.trunk, envs.Quote(url), gitx.Short(rev), s.trunk)
+				if remote == s.primary {
+					s.a.warn("%s", msg)
+					continue
+				}
+				checkErrs = append(checkErrs, errors.New(msg))
+				continue
+			}
+			if err := fetchCommitFromPushURL(s.repo, url, "refs/heads/"+s.trunk, fields[0]); err != nil {
+				checkErrs = append(checkErrs, fmt.Errorf("cannot check %s: %w", url, err))
+				continue
+			}
+			contains, err := s.repo.IsAncestor(rev, fields[0])
+			if err != nil {
+				checkErrs = append(checkErrs, fmt.Errorf("cannot check %s: compare trunk ancestry: %w", url, err))
+				continue
+			}
+			if !contains {
+				cmd := fmt.Sprintf("git push --no-follow-tags -- %s %s:refs/heads/%s", envs.Quote(url), gitx.Short(rev), s.trunk)
+				msg := fmt.Sprintf("push URL %s for remote %s is missing %s; catch it up with: %s", url, remote, gitx.Short(rev), cmd)
+				if remote == s.primary {
+					s.a.warn("%s", msg)
+					continue
+				}
+				checkErrs = append(checkErrs, errors.New(msg))
+			}
 		}
 	}
-	return nil
+	return errors.Join(checkErrs...)
+}
+
+func fetchCommitFromPushURL(repo *gitx.Repo, url, ref, oid string) error {
+	if _, err := repo.Git("cat-file", "-e", oid+"^{commit}"); err == nil {
+		return nil
+	}
+	_, oidErr := repo.Git("fetch", "--quiet", url, oid)
+	if _, err := repo.Git("cat-file", "-e", oid+"^{commit}"); err == nil {
+		return nil
+	}
+	_, refErr := repo.Git("fetch", "--quiet", url, ref)
+	if _, err := repo.Git("cat-file", "-e", oid+"^{commit}"); err == nil {
+		return nil
+	}
+	fetchErr := errors.Join(oidErr, refErr)
+	if fetchErr == nil {
+		fetchErr = errors.New("fetched commit is still unavailable locally")
+	}
+	return fmt.Errorf("could not fetch trunk commit %s by object ID or ref %s: %w", oid, ref, fetchErr)
 }
 
 func (s *mergeState) push() error {
+	recurse, err := s.repo.Git("config", "--get", "push.recurseSubmodules")
+	if err != nil && gitx.ExitCode(err) != 1 {
+		return fmt.Errorf("cannot read push.recurseSubmodules before publishing: %w", err)
+	}
+	var gitConfig []string
+	if err == nil && strings.TrimSpace(recurse) == "on-demand" {
+		gitConfig = []string{"-c", "push.recurseSubmodules=check"}
+	}
 	// --no-follow-tags: push.followTags must not publish tags beside trunk.
-	if _, err := s.repo.Git(append(pushArgs(s.primary, false, true), s.R+":refs/heads/"+s.trunk)...); err != nil {
+	args := append(slices.Clone(gitConfig), pushArgs(s.primary, false, true)...)
+	if _, err := s.repo.Git(append(args, s.R+":refs/heads/"+s.trunk)...); err != nil {
 		return fmt.Errorf("push to %s failed: nothing pushed to the mirrors and the local trunk unchanged, but a remote with several push URLs may hold %s on some of them, as git's output below says; if the remote moved ahead: git fetch, then graft merge again: %w", s.primary, gitx.Short(s.R), err)
 	}
 	s.a.printf("pushed to %s", s.primary)
 	mirrors := slices.DeleteFunc(slices.Clone(s.pushTo), func(r string) bool { return r == s.primary })
 	if len(mirrors) > 0 {
-		s.mirrorErr = s.a.push(s.repo, mirrors, []string{s.R + ":refs/heads/" + s.trunk}, false, true)
+		s.mirrorErr = s.a.pushWithGitConfig(s.repo, mirrors, []string{s.R + ":refs/heads/" + s.trunk}, gitConfig, false, true)
 	}
 	if err := s.a.recordCommitAdvisoryAfterPush(s.w, s.resultCfg, s.frozen, s.advisoryFailed); err != nil {
 		s.mirrorErr = errors.Join(s.mirrorErr, err)

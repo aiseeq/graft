@@ -346,6 +346,7 @@ type PushError struct {
 	Failed       []string
 	Total        int
 	Refs         []string
+	GitConfig    []string
 	Lease        bool
 	NoFollowTags bool
 	LocalState   string
@@ -354,7 +355,7 @@ type PushError struct {
 func (e *PushError) Error() string {
 	var retry []string
 	for _, r := range e.Failed {
-		retry = append(retry, retryPushCommand(r, e.Refs, e.Lease, e.NoFollowTags))
+		retry = append(retry, retryPushCommand(r, e.Refs, e.GitConfig, e.Lease, e.NoFollowTags))
 	}
 	localState := e.LocalState
 	if localState == "" {
@@ -364,8 +365,9 @@ func (e *PushError) Error() string {
 		len(e.Failed), e.Total, strings.Join(e.Failed, ", "), localState, strings.Join(retry, "; "))
 }
 
-func retryPushCommand(remote string, refs []string, lease, noFollowTags bool) string {
-	args := append([]string{"git"}, pushArgs(remote, lease, noFollowTags)...)
+func retryPushCommand(remote string, refs, gitConfig []string, lease, noFollowTags bool) string {
+	args := append([]string{"git"}, gitConfig...)
+	args = append(args, pushArgs(remote, lease, noFollowTags)...)
 	args = append(args, refs...)
 	return strings.Join(args, " ")
 }
@@ -374,13 +376,18 @@ func retryPushCommand(remote string, refs []string, lease, noFollowTags bool) st
 // failed remote: the others still get the commit, and the summary names each
 // one that did not.
 func (a *App) push(repo *gitx.Repo, remotes, refs []string, lease, noFollowTags bool) error {
+	return a.pushWithGitConfig(repo, remotes, refs, nil, lease, noFollowTags)
+}
+
+func (a *App) pushWithGitConfig(repo *gitx.Repo, remotes, refs, gitConfig []string, lease, noFollowTags bool) error {
 	if len(remotes) == 0 {
 		a.printf("no remotes configured, nothing pushed")
 		return nil
 	}
 	var failed []string
 	for _, remote := range remotes {
-		args := append(pushArgs(remote, lease, noFollowTags), refs...)
+		args := append(slices.Clone(gitConfig), pushArgs(remote, lease, noFollowTags)...)
+		args = append(args, refs...)
 		if _, err := repo.Git(args...); err != nil {
 			failed = append(failed, remote)
 			fmt.Fprintf(a.Stderr, "graft: push to %s FAILED: %v\n", remote, err)
@@ -389,7 +396,7 @@ func (a *App) push(repo *gitx.Repo, remotes, refs []string, lease, noFollowTags 
 		a.printf("pushed to %s", remote)
 	}
 	if len(failed) > 0 {
-		return &PushError{Failed: failed, Total: len(remotes), Refs: refs, Lease: lease, NoFollowTags: noFollowTags}
+		return &PushError{Failed: failed, Total: len(remotes), Refs: refs, GitConfig: gitConfig, Lease: lease, NoFollowTags: noFollowTags}
 	}
 	return nil
 }
