@@ -375,7 +375,7 @@ const InnerPrefix = "task "
 func runLabel(r *Record, f Filter, runs map[string]bool) (string, bool) {
 	switch {
 	case f.Task == "" && r.Kind == KindTask:
-		return r.Task, true
+		return markedTaskLabel(r, r.Task), true
 	case r.Kind == KindTask && runs[r.Parent] && r.Task == r.Top:
 		return NestedPrefix + r.Task, true
 	case r.Kind == KindTask && f.Task != "" && r.In == f.Task && r.Task != f.Task:
@@ -383,11 +383,18 @@ func runLabel(r *Record, f Filter, runs map[string]bool) (string, bool) {
 	case f.Task == "" || r.Task != f.Task:
 		return "", false
 	case r.Kind == KindTask:
-		return TaskLabel, true
+		return markedTaskLabel(r, TaskLabel), true
 	case r.Kind == KindStep:
 		return r.Step, true
 	}
 	return "", false
+}
+
+func markedTaskLabel(r *Record, label string) string {
+	if r.Mark != "" {
+		return label + " [" + r.Mark + "]"
+	}
+	return label
 }
 
 // sortRows puts the heaviest in memory first; broken down, the whole-task

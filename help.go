@@ -73,7 +73,7 @@ var commands = []command{
 		applies: func(c *config.Config) bool { return len(c.Services) > 0 }},
 	{name: "exec", syntax: fixed(execSyntax),
 		summary: text("run a command that is not a task, recorded in the stats as exec; --heavy: queue for the machine as heavy tasks do, {threads} and GRAFT_THREADS from load.threads"),
-		details: "--local: with --heavy, run on this machine though the project has remote_heavy (GRAFT_HEAVY=local, for the grafts the command starts too).\n" +
+		details: "--local: with --heavy, keep this command on this machine though remote_heavy is configured. A nested project task still follows its own remote_heavy rule; set remote: false when it needs this machine's data. On a remote_heavy host, nested grafts keep heavy work there.\n" +
 			"--env: with --heavy, a variable of the caller's that remote_heavy's host gets too (GRAFT_PASS_ENV, for the grafts the command starts too): the host gets the task's env, the threads and GOOS, GOARCH, GOFLAGS, CGO_ENABLED, GOEXPERIMENT, not the caller's other variables, so FOO=1 graft exec --heavy -- go test does not see FOO there; pass it with --env FOO, or keep the command here with --local.\n" +
 			"--settle: with --heavy, hold a separate FIFO lock for this long after the command starts, or until it ends if sooner; only another --settle waits for it. The heavy-task queue still uses load.settle.\n" +
 			"--cores: with --heavy, reserve this many cores (above 0, at most the machine's threads) instead of the estimate from the command's history, for a command whose load runs outside its process tree; released the same way.\n\n" +

@@ -23,13 +23,62 @@ import (
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
-// HeavyEnv set to "local" keeps heavy work on this machine though the
-// project has remote_heavy, for the graft that reads it and those it starts;
-// graft exec --heavy --local sets it.
+// HeavyEnv set to "local" keeps this graft's heavy work here unless its
+// origin is exec and this is a nested project task that may place itself.
 const HeavyEnv = "GRAFT_HEAVY"
 
 // HeavyByEnv names the graft run that set HeavyEnv=local for a child.
 const HeavyByEnv = "GRAFT_HEAVY_BY"
+
+// HeavyOriginEnv says why GRAFT_HEAVY=local was set: exec's --local lets
+// nested project tasks place themselves, while a remote host must not recurse.
+const HeavyOriginEnv = "GRAFT_HEAVY_ORIGIN"
+
+// RemoteHeavySettings returns the project's setting when present, otherwise
+// the user's. user is true only for the user setting, whose eligibility rules
+// differ from a project's.
+func RemoteHeavySettings(project *config.Config) (rh *config.RemoteHeavy, user bool, err error) {
+	if project != nil && project.RemoteHeavy != nil {
+		return project.RemoteHeavy, false, nil
+	}
+	rh, err = userconfig.RemoteHeavySettings()
+	return rh, rh != nil, err
+}
+
+// LocalExecWarning returns the command label when exec --local overrides a
+// configured remote_heavy for a command that commonly should use the host.
+func LocalExecWarning(project *config.Config, local bool, argv []string) (string, error) {
+	if !local || os.Getenv(HeavyOriginEnv) == "host" || !localWarningCommand(argv) {
+		return "", nil
+	}
+	rh, _, err := RemoteHeavySettings(project)
+	if err != nil || rh == nil {
+		return "", err
+	}
+	return localWarningName(argv), nil
+}
+
+func localWarningCommand(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	name := filepath.Base(argv[0])
+	if name == "go" && len(argv) > 1 && (argv[1] == "test" || argv[1] == "vet") {
+		return true
+	}
+	if name == "mut" {
+		return true
+	}
+	return name == "graft" && len(argv) > 1 && argv[1] == "test"
+}
+
+func localWarningName(argv []string) string {
+	name := filepath.Base(argv[0])
+	if name == "graft" && len(argv) > 1 || name == "go" && len(argv) > 1 && (argv[1] == "test" || argv[1] == "vet") {
+		return name + " " + argv[1]
+	}
+	return name
+}
 
 func heavyLocalReason() string {
 	if os.Getenv(HeavyEnv) != "local" {
@@ -54,14 +103,11 @@ const remoteUpTimeout = 30 * time.Second
 // project has one; args are the arguments given to the task. here is why
 // it stays on this machine when there is a host, for the stats.
 func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, dir string, args []string) (remote bool, here string, err error) {
-	rh := r.Config.RemoteHeavy
-	if rh == nil {
-		rh, err = userconfig.RemoteHeavySettings()
-		if err != nil {
-			return false, "", fmt.Errorf("reading user remote_heavy: %w", err)
-		}
-		r.userRemote = rh != nil
+	rh, user, err := RemoteHeavySettings(r.Config)
+	if err != nil {
+		return false, "", fmt.Errorf("reading user remote_heavy: %w", err)
 	}
+	r.userRemote = user
 	if rh == nil {
 		return false, "", nil
 	}
@@ -70,7 +116,7 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 		fmt.Fprintf(r.Stderr, "graft: %s: heavy, on this machine: %s\n", name, why)
 		return false, why, nil
 	}
-	why, err := r.stayHere(t, dir)
+	why, err := r.stayHere(t, dir, name != ExecTask)
 	if err != nil {
 		return false, "", err
 	}
@@ -120,6 +166,11 @@ func (r *Runner) placeHeavy(ctx context.Context, name string, t *config.Task, di
 		fmt.Fprintf(r.Stderr, "graft: %s: heavy, on %s\n", name, rh.Host)
 	}
 	return true, "", nil
+}
+
+func inheritedExecLocal() bool {
+	by := os.Getenv(HeavyByEnv)
+	return os.Getenv(HeavyEnv) == "local" && os.Getenv(HeavyOriginEnv) == "exec" && by != "" && by != os.Getenv(stats.EnvRun)
 }
 
 // Reasons a heavy task with a host stays on this machine without saying so:
@@ -318,10 +369,13 @@ func goFixDiffNoOutput(argv []string) bool {
 // stayHere is why the heavy task stays on this machine, "" when it goes to
 // the host: what it needs here, a test database, a report file, .env
 // values, the commit message file, or a host that does not answer.
-func (r *Runner) stayHere(t *config.Task, dir string) (string, error) {
+func (r *Runner) stayHere(t *config.Task, dir string, allowInheritedExecLocal bool) (string, error) {
 	switch v := os.Getenv(HeavyEnv); v {
 	case "":
 	case "local":
+		if allowInheritedExecLocal && inheritedExecLocal() {
+			break
+		}
 		return heavyLocalReason(), nil
 	default:
 		return "", fmt.Errorf("%s=%q: want local, or leave it unset", HeavyEnv, v)
@@ -556,6 +610,8 @@ func (r *Runner) remoteCmd(ctx context.Context, cmd *exec.Cmd, t *config.Task, v
 			words = append(words, "GOMAXPROCS="+threads)
 		}
 	}
+	// Host provenance wins over --env, task env and every forwarded variable.
+	words = append(words, HeavyOriginEnv+"=host")
 	words = append(words, r.hostArgs(cmd)...)
 	remote := exec.CommandContext(ctx, words[0], words[1:]...)
 	remote.Dir, remote.Env = r.Root, cmd.Env

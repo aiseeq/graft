@@ -120,8 +120,8 @@ func TestBusyGateStepsGetTheirThreads(t *testing.T) {
 		t.Errorf("remote command missing heavy source marker: %q", calls)
 	}
 	for _, want := range []string{
-		"GOFLAGS=-p=1 -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 go vet ./...",
-		"GOFLAGS=-p=1 -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 go test -count=1 ./...",
+		"GOFLAGS=-p=1 -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 GRAFT_HEAVY_ORIGIN=host go vet ./...",
+		"GOFLAGS=-p=1 -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 GRAFT_HEAVY_ORIGIN=host go test -count=1 ./...",
 	} {
 		if !strings.Contains(calls, want) {
 			t.Errorf("run got %q, want %q\n%s", calls, want, out)

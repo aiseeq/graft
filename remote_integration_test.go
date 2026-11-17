@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -277,7 +279,7 @@ func TestHeavyTaskRunsOnRemoteHost(t *testing.T) {
 		t.Errorf("the step on the host: %q", got)
 	}
 	calls := readFile(t, filepath.Join(state, "calls"))
-	if want := "env GRAFT_HEAVY=local GRAFT_HEAVY_BY="; !strings.HasPrefix(calls, want) || !strings.Contains(calls, " MODE=fast GOFLAGS=-p=3 -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 sh -c echo threads=8") {
+	if want := "env GRAFT_HEAVY=local GRAFT_HEAVY_BY="; !strings.HasPrefix(calls, want) || !strings.Contains(calls, " MODE=fast GOFLAGS=-p=3 -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 GRAFT_HEAVY_ORIGIN=host sh -c echo threads=8") {
 		t.Errorf("run got %q, want it to start %q", calls, want)
 	}
 	hosts := map[string]string{}
@@ -329,9 +331,9 @@ func TestHeavyTaskOnHostThreads(t *testing.T) {
 		env     string
 		want    string
 	}{
-		{8, "    env: {GOFLAGS: '${GOFLAGS} -race'}\n", "GOFLAGS=-p=1 -race -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 sh"},
-		{0, "", "GOFLAGS=-tags=x sh"},
-		{0, "    env: {GOFLAGS: -p=3}\n", "GOFLAGS=-p=3 sh"},
+		{8, "    env: {GOFLAGS: '${GOFLAGS} -race'}\n", "GOFLAGS=-p=1 -race -p=8 GRAFT_THREADS=8 GOMAXPROCS=8 GRAFT_HEAVY_ORIGIN=host sh"},
+		{0, "", "GOFLAGS=-tags=x GRAFT_HEAVY_ORIGIN=host sh"},
+		{0, "    env: {GOFLAGS: -p=3}\n", "GOFLAGS=-p=3 GRAFT_HEAVY_ORIGIN=host sh"},
 	} {
 		f, state := remoteRepo(t, c.threads, "  build:\n    heavy: true\n"+c.env+"    run: [[sh, -c, 'echo ok']]\n")
 		flags := "-p=1"
@@ -460,6 +462,206 @@ func TestExecHeavyRunsOnRemoteHost(t *testing.T) {
 	if out, code := f.graft("", "exec", "--heavy", "--", "true"); code != 125 || !strings.Contains(out, "remote_heavy run") {
 		t.Errorf("a run that does not start: exit %d\n%s", code, out)
 	}
+}
+
+func TestExecLocalNestedProjectTestUsesRemotePlacement(t *testing.T) {
+	for _, mode := range []string{"host", "remote-false", "host-unavailable"} {
+		t.Run(mode, func(t *testing.T) {
+			f, state := remoteRepo(t, 8, `  test:
+    heavy: true
+    tests: go
+    run: ['go test -json {args} ./...']
+`)
+			if mode == "remote-false" {
+				f.write(".graft.yaml", strings.Replace(f.read(".graft.yaml"), "    heavy: true\n", "    heavy: true\n    remote: false\n", 1))
+				calm(t, state)
+			}
+			if mode == "host-unavailable" {
+				if err := os.Remove(filepath.Join(state, "up")); err != nil {
+					t.Fatal(err)
+				}
+				calm(t, state)
+			}
+			fakeBin := t.TempDir()
+			fakeGo := "#!/bin/sh\n[ \"$1\" = env ] && { echo -list=x; exit 0; }\n" +
+				`echo '{"Action":"run","Package":"projectA/pkg","Test":"TestReal"}'` + "\n" +
+				`echo '{"Action":"pass","Package":"projectA/pkg","Test":"TestReal"}'` + "\n" +
+				`echo '{"Action":"pass","Package":"projectA/pkg"}'` + "\n"
+			if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(fakeGo), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			f.env = append(f.env, "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			out, code := f.graft("", "exec", "--heavy", "--local", "--", graftBin, "test", "--", "-run", "TestReal")
+			if code != 0 || !strings.Contains(out, "graft: exec --local keeps graft test on this machine; remote_heavy is set") {
+				t.Fatalf("nested test (exit %d):\n%s", code, out)
+			}
+			var markedExec bool
+			for _, line := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+				if line.Kind == "task" && line.Task == "exec" && line.Mark == "--local with remote_heavy" {
+					markedExec = true
+				}
+			}
+			if !markedExec {
+				t.Errorf("warning was not reflected in exec stats:\n%s", out)
+			}
+			calls, err := os.ReadFile(filepath.Join(state, "calls"))
+			host := err == nil && len(calls) > 0
+			if mode == "host" {
+				if !host || !strings.Contains(out, "graft: test: heavy, on pc") {
+					t.Errorf("nested test did not use the host (calls=%q):\n%s", calls, out)
+				}
+			} else if host {
+				t.Errorf("nested test unexpectedly used the host (calls=%q):\n%s", calls, out)
+			}
+			if mode == "host-unavailable" && !strings.Contains(out, "pc did not answer") {
+				t.Errorf("missing unavailable-host fallback reason:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestRemoteCmdHostOriginCannotBeOverriddenByTaskEnv(t *testing.T) {
+	f, state := remoteRepo(t, 8, `  build:
+    heavy: true
+    env: {GRAFT_HEAVY_ORIGIN: exec}
+    run: [[sh, -c, '`+graftBin+` test']]
+  test:
+    heavy: true
+    tests: go
+    run: ['go test -json {args} ./...']
+`)
+	calm(t, state)
+	writeFile(t, filepath.Join(state, "run.sh"), `#!/bin/sh
+n=$(wc -l < '`+filepath.Join(state, "calls")+`' 2>/dev/null || echo 0)
+[ "$n" = 0 ] || { echo recursive-forward >> '`+filepath.Join(state, "calls")+`'; exit 90; }
+echo "$*" >> '`+filepath.Join(state, "calls")+`'
+exec "$@"
+`)
+	fakeBin := t.TempDir()
+	fakeGo := "#!/bin/sh\n[ \"$1\" = env ] && { echo -list=x; exit 0; }\n" +
+		`echo '{"Action":"run","Package":"projectA/pkg","Test":"TestReal"}'` + "\n" +
+		`echo '{"Action":"pass","Package":"projectA/pkg","Test":"TestReal"}'` + "\n" +
+		`echo '{"Action":"pass","Package":"projectA/pkg"}'` + "\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(fakeGo), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env, "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out, code := f.graft("", "build")
+	if code != 0 {
+		t.Fatalf("build failed (%d):\n%s", code, out)
+	}
+	calls, err := os.ReadFile(filepath.Join(state, "calls"))
+	if err != nil || strings.Contains(string(calls), "recursive-forward") || strings.Count(string(calls), "env ") != 1 {
+		t.Errorf("host forwarded nested graft: calls=%q err=%v\n%s", calls, err, out)
+	}
+	var nestedLocal bool
+	for _, line := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+		if line.Kind == "task" && line.Task == "test" && line.Host == "" {
+			nestedLocal = true
+		}
+	}
+	if !nestedLocal {
+		t.Errorf("nested test was not recorded as local:\n%s", out)
+	}
+}
+
+func TestExecLocalWarningAndStatsMark(t *testing.T) {
+	for _, tc := range []struct {
+		name, command, host string
+		warning             bool
+	}{
+		{name: "project go test", command: "go-test", host: "project", warning: true},
+		{name: "user go test", command: "go-test", host: "user", warning: true},
+		{name: "other command", command: "true", host: "project"},
+		{name: "no remote host", command: "go-test"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, state := remoteRepo(t, 8, "")
+			calm(t, state)
+			if tc.host != "project" {
+				f.write(".graft.yaml", "schema: 1\nversion: {mode: none}\n")
+			}
+			if tc.host == "user" {
+				var cfgHome string
+				for _, value := range f.env {
+					if cfgHome, _ = strings.CutPrefix(value, "XDG_CONFIG_HOME="); cfgHome != value {
+						break
+					}
+				}
+				if cfgHome == "" {
+					t.Fatal("XDG_CONFIG_HOME missing from fixture")
+				}
+				writeTestPressure(t, cfgHome)
+				userConfig := filepath.Join(cfgHome, "graft") + string(os.PathSeparator) + "config.yaml"
+				config := readFile(t, userConfig)
+				config += "remote_heavy: {host: pc, up: [sh, " + yamlQuote(filepath.Join(state, "up.sh")) + "], run: [sh, " + yamlQuote(filepath.Join(state, "run.sh")) + "]}\n"
+				writeFile(t, userConfig, config)
+			}
+			fakeBin := t.TempDir()
+			if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			f.env = append(f.env, "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			argv := []string{"true"}
+			if tc.command == "go-test" {
+				argv = []string{"go", "test", "./..."}
+			}
+			cmd := exec.Command(graftBin, append([]string{"exec", "--heavy", "--local", "--"}, argv...)...)
+			cmd.Dir = f.work
+			cmd.Env = append(append([]string(nil), testEnv...), f.env...)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			err := cmd.Run()
+			code := 0
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				code = exitErr.ExitCode()
+			} else if err != nil {
+				t.Fatalf("exec command: %v", err)
+			}
+			out := stdout.String() + stderr.String()
+			if code != 0 {
+				t.Fatalf("exec failed (%d):\n%s", code, out)
+			}
+			warningLine := "graft: exec --local keeps go test on this machine; remote_heavy is set — drop --local unless it reads this machine's data"
+			warningCount := 0
+			for line := range strings.SplitSeq(strings.TrimSuffix(stderr.String(), "\n"), "\n") {
+				if line == warningLine {
+					warningCount++
+				}
+			}
+			if warningCount != btoi(tc.warning) {
+				t.Errorf("stderr warning count=%d, want %d; stderr:\n%s", warningCount, btoi(tc.warning), stderr.String())
+			}
+			if strings.Contains(stdout.String(), warningLine) {
+				t.Errorf("warning was written to stdout:\n%s", stdout.String())
+			}
+			var execRecord *statsLine
+			for _, line := range readStats(t, filepath.Join(state, "cache", "graft", "stats.jsonl")) {
+				if line.Kind == "task" && line.Task == "exec" {
+					execRecord = &line
+				}
+			}
+			if execRecord == nil {
+				t.Fatal("exec stats record absent")
+			}
+			if (execRecord.Mark != "") != tc.warning {
+				t.Errorf("stats mark=%q, warning=%t", execRecord.Mark, tc.warning)
+			}
+			if tc.warning {
+				statsOut := f.mustGraft("stats", "--task", "exec")
+				if !strings.Contains(statsOut, "[--local with remote_heavy]") {
+					t.Errorf("graft stats did not show mark:\n%s", statsOut)
+				}
+			}
+		})
+	}
+}
+
+func btoi(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 // TestRemoteThreadsLeftToHost: with threads 0 a step on the host gets no

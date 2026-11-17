@@ -43,6 +43,7 @@ type statsLine struct {
 	WaitWhy      map[string]float64 `json:"wait_why"`
 	Host         string             `json:"host"`
 	Here         string             `json:"here"`
+	Mark         string             `json:"mark"`
 	Heavy        bool               `json:"heavy"`
 	Exit         int                `json:"exit"`
 	Run          string             `json:"run"`

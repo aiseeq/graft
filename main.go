@@ -924,6 +924,7 @@ func execCmd(ctx context.Context, a *app.App, args []string) error {
 	if err := exportExecEnv(pass, local); err != nil {
 		return err
 	}
+	opts.Local = local
 	return a.Exec(ctx, args[1:], opts)
 }
 
@@ -1003,12 +1004,17 @@ func exportExecEnv(pass []string, local bool) error {
 		}
 	}
 	if local {
-		// The graft the command starts stays here too.
+		// The command stays here; a project task it starts places itself.
 		if err := os.Setenv(tasks.HeavyEnv, "local"); err != nil {
 			return fmt.Errorf("exec --local: %w", err)
 		}
 		if err := os.Setenv(tasks.HeavyByEnv, os.Getenv(stats.EnvRun)); err != nil {
 			return fmt.Errorf("exec --local: %w", err)
+		}
+		if os.Getenv(tasks.HeavyOriginEnv) != "host" {
+			if err := os.Setenv(tasks.HeavyOriginEnv, "exec"); err != nil {
+				return fmt.Errorf("exec --local: %w", err)
+			}
 		}
 	}
 	return nil

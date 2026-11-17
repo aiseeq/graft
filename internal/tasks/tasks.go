@@ -129,6 +129,9 @@ type Runner struct {
 	ExecCores float64
 	// ExecMemoryMax is graft exec --memory-max, "" for the default ceiling.
 	ExecMemoryMax string
+	// ExecLocalWarning says the one-line --local warning was printed for this
+	// command; its task stats row carries the same annotation.
+	ExecLocalWarning bool
 	// heavyPlace is where the heavy work of this process runs and under
 	// what memory ceiling; placeNoted holds the placement lines printed, so
 	// that each step of a split gate does not print them again.
@@ -232,6 +235,7 @@ type frame struct {
 	// stepHere is why the running step of a busy gate stays here though it
 	// could go to the host.
 	stepHere string
+	mark     string
 	// program is the program a graft exec runs, which tells its kind.
 	program          string
 	waitedBehind     string
@@ -795,7 +799,7 @@ func lastFloats(values []float64, n int) []float64 {
 
 func (r *Runner) gateStepPlacement(s config.Step, t *config.Task, taskName string, builtin bool) (bool, string, error) {
 	if builtin {
-		why, err := r.stayHere(t, r.taskDir(t))
+		why, err := r.stayHere(t, r.taskDir(t), true)
 		if err != nil || why != "" {
 			return false, why, err
 		}
@@ -803,7 +807,7 @@ func (r *Runner) gateStepPlacement(s config.Step, t *config.Task, taskName strin
 			return false, "gofmt is a local gate check", nil
 		}
 	} else {
-		why, err := r.stayHere(t, r.taskDir(t))
+		why, err := r.stayHere(t, r.taskDir(t), true)
 		if err != nil || why != "" {
 			return false, why, err
 		}
@@ -3283,6 +3287,9 @@ func (c *tailCapture) hasOutput() bool {
 // begin opens the stats frame of a task.
 func (r *Runner) begin(task string) *frame {
 	f := &frame{task: task, start: time.Now()}
+	if task == ExecTask && r.ExecLocalWarning {
+		f.mark = "--local with remote_heavy"
+	}
 	if len(r.frames) > 0 {
 		f.in = r.frames[len(r.frames)-1].task
 	}
@@ -3322,7 +3329,7 @@ func taskLoad(use stats.Usage, f *frame, host string) stats.Usage {
 // what it cost; the task's error itself goes back to its caller.
 func (r *Runner) end(f *frame, err error) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
-	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, WaitedBehind: f.waitedBehind, CgroupPeakMB: f.cgroupPeakMB}
+	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, Mark: f.mark, WaitedBehind: f.waitedBehind, CgroupPeakMB: f.cgroupPeakMB}
 	if f.reserveRelease != nil {
 		if err := f.reserveRelease(); err != nil {
 			fmt.Fprintf(r.Stderr, "graft: %s: releasing reserve: %v\n", f.task, err)

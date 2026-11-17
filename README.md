@@ -386,7 +386,10 @@ the command starts read too), or keep the run here with `graft exec --heavy
 --local` or `GRAFT_HEAVY=local`. `graft exec` says so on the line that sends
 it: `graft: exec: heavy, on pc (the caller's variables, TMPDIR too, stay
 here: --env NAME passes one, --local runs here)`; a test that depends on the
-file system of `TMPDIR` belongs with `--local`.
+file system of `TMPDIR` belongs with `--local`. A nested project task still
+follows its own `remote_heavy` rule; set `remote: false` when it needs this
+machine's data. A graft running on a `remote_heavy` host keeps nested heavy
+work there to prevent forwarding it again.
 A graft admitted to the heavy queue after a wait prints `graft: <task>:
 heavy, admitted after <seconds>s` to stderr, `<seconds>` with three decimal
 places, here as on the host; a `run` of its own may print the same line.
@@ -431,8 +434,11 @@ Each heavy task
 says where it runs, `graft: build: heavy, on pc`, or why it stays here and
 queues as before, `graft: build: heavy, on this machine: <why>`:
 
-- `GRAFT_HEAVY=local` in the environment (any other value is an error), or
-  `graft exec --heavy --local`, which sets it for the command too;
+- `GRAFT_HEAVY=local` from the caller or from a remote_heavy host (any other
+  value is an error); `graft exec --heavy --local` keeps its command here, but
+  nested project tasks follow their own `remote_heavy` rule. Set `remote: false`
+  on a task that needs this machine's data; a graft on the remote host keeps
+  nested heavy work there;
 - `remote: false` in the task: its steps write files needed here;
 - the task uses the test database, a jest or playwright report file, `.env`
   keys (`dotenv`, `dotenv_sets`) or a `${KEY}` that is no variable of the

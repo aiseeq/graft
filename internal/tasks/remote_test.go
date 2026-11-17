@@ -172,6 +172,39 @@ func TestHeavyLocalReason(t *testing.T) {
 	}
 }
 
+func TestHeavyLocalOriginPlacement(t *testing.T) {
+	t.Setenv(HeavyEnv, "local")
+	t.Setenv(HeavyByEnv, "parent-run")
+	t.Setenv(stats.EnvRun, "nested-run")
+	t.Setenv(HeavyOriginEnv, "exec")
+	r := NewRunner(t.TempDir(), &config.Config{RemoteHeavy: &config.RemoteHeavy{Host: "hostA"}}, io.Discard, io.Discard)
+	if remote, why, err := r.placeHeavy(context.Background(), ExecTask, &config.Task{Run: []config.Step{{Argv: []string{"true"}}}}, r.Root, nil); err != nil || remote || why == "" {
+		t.Fatalf("nested exec inherits local: remote=%t why=%q err=%v", remote, why, err)
+	}
+	if why, err := r.stayHere(&config.Task{}, r.Root, true); err != nil || why != "" {
+		t.Fatalf("exec-origin inherited local: why=%q err=%v", why, err)
+	}
+	noRemote := false
+	if why, err := r.stayHere(&config.Task{Remote: &noRemote}, r.Root, true); err != nil || why != "the task has remote: false" {
+		t.Fatalf("remote false: why=%q err=%v", why, err)
+	}
+	for _, origin := range []string{"host", ""} {
+		t.Setenv(HeavyOriginEnv, origin)
+		if why, err := r.stayHere(&config.Task{}, r.Root, true); err != nil || why == "" {
+			t.Errorf("origin %q: expected local placement, why=%q err=%v", origin, why, err)
+		}
+	}
+	t.Setenv(HeavyOriginEnv, "exec")
+	t.Setenv(HeavyByEnv, "")
+	if why, err := r.stayHere(&config.Task{}, r.Root, true); err != nil || why == "" {
+		t.Fatalf("manual local with empty by: why=%q err=%v", why, err)
+	}
+	t.Setenv(HeavyByEnv, "nested-run") // this graft's own --local
+	if why, err := r.stayHere(&config.Task{}, r.Root, true); err != nil || why == "" {
+		t.Fatalf("own --local: why=%q err=%v", why, err)
+	}
+}
+
 func TestTaskLoadKeepsOneMachineOnly(t *testing.T) {
 	local := stats.Usage{LoadStart: 30, LoadMax: 30, LoadKnown: true}
 	frame := &frame{

@@ -64,6 +64,8 @@ type Record struct {
 	// this machine, is why it did not go to the host; on a step line, why a
 	// step stayed here, from its gate placement or its heavy task.
 	Here string `json:"here,omitempty"`
+	// Mark is a short annotation shown by graft stats for this task.
+	Mark string `json:"mark,omitempty"`
 	// Heavy says a step runs on the same machine as its nearest heavy task.
 	Heavy bool `json:"heavy,omitempty"`
 	// Builtin marks a step run in graft's process. Its process cost is sampled

@@ -69,6 +69,8 @@ func exitStatus(exit *exec.ExitError) int {
 type ExecOptions struct {
 	// Heavy queues the command as a heavy task.
 	Heavy bool
+	// Local pins this exec to the current machine despite remote_heavy.
+	Local bool
 	// TestDB gives the command the configured test database DSN.
 	TestDB bool
 	// Settle holds the exec settling lock for this duration after admission.
@@ -112,7 +114,15 @@ func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
 	if opts.TestDB && cfg.TestDB == nil {
 		return errors.New("exec --test-db: the config has no test_db section")
 	}
+	localWarning, err := tasks.LocalExecWarning(cfg, opts.Local, argv)
+	if err != nil {
+		return fmt.Errorf("checking remote_heavy for exec --local: %w", err)
+	}
+	if localWarning != "" {
+		fmt.Fprintf(a.Stderr, "graft: exec --local keeps %s on this machine; remote_heavy is set — drop --local unless it reads this machine's data\n", localWarning)
+	}
 	r := a.newRunner(root, cfg)
+	r.ExecLocalWarning = localWarning != ""
 	if opts.TestDB {
 		repo, err := gitx.Open(root)
 		if err != nil {
