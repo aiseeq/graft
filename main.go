@@ -1409,14 +1409,17 @@ func runDeployTarget(ctx context.Context, a *app.App, args deployCommandArgs, us
 // trackerDeployCmd is the graft deploy subcommand of pos that moves tracker
 // items, sweep or handover, nil for any other; neither takes script args.
 func trackerDeployCmd(ctx context.Context, a *app.App, args deployCommandArgs) func() error {
-	if len(args.pos) != 2 || args.scriptArgs != nil {
+	if len(args.pos) < 2 || args.scriptArgs != nil {
 		return nil
 	}
 	switch args.pos[0] {
 	case "sweep":
+		if len(args.pos) != 2 {
+			return nil
+		}
 		return func() error { return a.DeploySweep(ctx, args.pos[1], args.apply) }
 	case "handover":
-		return func() error { return a.DeployHandover(ctx, args.pos[1], args.glintTicket) }
+		return func() error { return a.DeployHandover(ctx, args.pos[1], args.glintTicket, args.pos[2:]...) }
 	}
 	return nil
 }

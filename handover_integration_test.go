@@ -2,11 +2,264 @@ package main
 
 import (
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestDeployHandoverNamedDeployedItem(t *testing.T) {
+	t.Run("accepts an ordinary configured transition without require_comment", func(t *testing.T) {
+		d := newDeployFixture(t, deployConfig)
+		d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+		d.jira.mu.Lock()
+		d.jira.statuses["PROJ-80"] = "In Progress"
+		d.jira.mu.Unlock()
+		d.write("a.txt", "work\n")
+		d.mustGraft("commit", "-m", "feat: PROJ-80 deployed work")
+		sha := d.git("rev-parse", "HEAD")
+		writeFile(t, filepath.Join(d.state, "sub-sha"), sha+"\n")
+		out := d.mustGraft("deploy", "handover", "sub", "PROJ-80")
+		d.jira.mu.Lock()
+		status := d.jira.statuses["PROJ-80"]
+		assigned := slices.Clone(d.jira.assigned)
+		d.jira.mu.Unlock()
+		if status != "Testing" || !slices.Contains(assigned, "PROJ-80 to qa") || !strings.Contains(out, "PROJ-80 moved to Testing") {
+			t.Errorf("ordinary named handover status=%q assigned=%v\n%s", status, assigned, out)
+		}
+	})
+
+	t.Run("merge and revert messages do not prove work", func(t *testing.T) {
+		for _, kind := range []string{"merge", "revert"} {
+			t.Run(kind, func(t *testing.T) {
+				d := newDeployFixture(t, deployConfig)
+				d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+				head := d.git("rev-parse", "HEAD")
+				tree := d.git("rev-parse", "HEAD^{tree}")
+				var deployed string
+				if kind == "merge" {
+					side := d.git("commit-tree", tree, "-p", head, "-m", "feat: unrelated side")
+					deployed = d.git("commit-tree", tree, "-p", head, "-p", side, "-m", "Merge PROJ-80")
+				} else {
+					deployed = d.git("commit-tree", tree, "-p", head, "-m", "revert: PROJ-80 remove change")
+				}
+				writeFile(t, filepath.Join(d.state, "sub-sha"), deployed+"\n")
+				d.jira.mu.Lock()
+				d.jira.requests = 0
+				d.jira.mu.Unlock()
+				out, code := d.graft("", "deploy", "handover", "sub", "PROJ-80")
+				d.jira.mu.Lock()
+				requests := d.jira.requests
+				d.jira.mu.Unlock()
+				if code == 0 || !strings.Contains(out, "PROJ-80 has no work commit in the deployed history of sub") || requests != 0 {
+					t.Errorf("exit=%d Jira requests=%d\n%s", code, requests, out)
+				}
+			})
+		}
+	})
+
+	t.Run("double revert restores work evidence", func(t *testing.T) {
+		d := newDeployFixture(t, deployConfig)
+		d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+		head := d.git("rev-parse", "HEAD")
+		tree := d.git("rev-parse", "HEAD^{tree}")
+		deployed := d.git("commit-tree", tree, "-p", head, "-m", `Revert "Revert "feat: PROJ-80 work""`)
+		writeFile(t, filepath.Join(d.state, "sub-sha"), deployed+"\n")
+		d.jira.mu.Lock()
+		d.jira.statuses["PROJ-80"] = "In Progress"
+		d.jira.mu.Unlock()
+		out, code := d.graft("", "deploy", "handover", "sub", "PROJ-80")
+		if code != 0 || !strings.Contains(out, "PROJ-80 moved to Testing") || d.status("PROJ-80") != "Testing" {
+			t.Errorf("double revert did not restore work evidence; exit=%d status=%s\n%s", code, d.status("PROJ-80"), out)
+		}
+	})
+
+	t.Run("a body-only mention does not count as work", func(t *testing.T) {
+		d := newDeployFixture(t, deployConfig)
+		d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+		d.mustFixtureCommit("fix: unrelated\n\nAfter this, PROJ-80 is mentioned.")
+		sha := d.git("rev-parse", "HEAD")
+		writeFile(t, filepath.Join(d.state, "sub-sha"), sha+"\n")
+		out, code := d.graft("", "deploy", "handover", "sub", "PROJ-80")
+		if code == 0 || !strings.Contains(out, "PROJ-80 has no work commit in the deployed history of sub") {
+			t.Errorf("body mention was treated as work; exit=%d:\n%s", code, out)
+		}
+	})
+
+	t.Run("a work commit after the deployed head does not count", func(t *testing.T) {
+		d := newDeployFixture(t, deployConfig)
+		d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+		deployed := d.git("rev-parse", "HEAD")
+		writeFile(t, filepath.Join(d.state, "sub-sha"), deployed+"\n")
+		d.write("a.txt", "newer work\n")
+		d.mustFixtureCommit("feat: PROJ-80 after deployment")
+		out, code := d.graft("", "deploy", "handover", "sub", "PROJ-80")
+		if code == 0 || !strings.Contains(out, "PROJ-80 has no work commit in the deployed history of sub") {
+			t.Errorf("post-deploy work was treated as deployed; exit=%d:\n%s", code, out)
+		}
+	})
+
+	t.Run("does not process a key twice when it is already held", func(t *testing.T) {
+		d := newDeployFixture(t, func(state string, q func(string) string) string {
+			return strings.Replace(deployConfig(state, q), "keep_assignee_labels: [internal]}", `keep_assignee_labels: [internal], require_comment: "How to check"}`, 1)
+		})
+		d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+		d.jira.mu.Lock()
+		d.jira.statuses["PROJ-80"] = "In Progress"
+		d.jira.entered = map[string]time.Time{"PROJ-80": time.Now().Add(-time.Hour)}
+		d.jira.mu.Unlock()
+		d.write("a.txt", "work\n")
+		d.mustGraft("commit", "-m", "feat: PROJ-80 deployed work")
+		d.mustGraft("deploy", "--unapproved", "sub")
+		d.jira.mu.Lock()
+		d.jira.written = map[string][]fakeComment{"PROJ-80": {{author: "me", created: time.Now(), text: "How to check: run it"}}}
+		d.jira.issueReads = map[string]int{}
+		d.jira.mu.Unlock()
+		d.mustGraft("deploy", "handover", "sub", "PROJ-80")
+		d.jira.mu.Lock()
+		reads := d.jira.issueReads["PROJ-80"]
+		d.jira.mu.Unlock()
+		if reads != 1 {
+			t.Errorf("Issue reads for already-held named key = %d, want 1", reads)
+		}
+	})
+
+	t.Run("moves and assigns a named deployed item with its comment", func(t *testing.T) {
+		d := newDeployFixture(t, deployConfig)
+		d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+		d.jira.mu.Lock()
+		d.jira.statuses["PROJ-80"] = "In Progress"
+		d.jira.entered = map[string]time.Time{}
+		d.jira.mu.Unlock()
+		d.write("a.txt", "work\n")
+		d.mustGraft("commit", "-m", "feat: PROJ-80 deployed work")
+		d.mustGraft("deploy", "--unapproved", "sub")
+		config := strings.Replace(d.read(".graft.yaml"), "keep_assignee_labels: [internal]}", `keep_assignee_labels: [internal], require_comment: "How to check"}`, 1)
+		d.write(".graft.yaml", config)
+		d.jira.mu.Lock()
+		d.jira.statuses["PROJ-80"] = "In Progress"
+		d.jira.entered["PROJ-80"] = time.Now().Add(-time.Hour)
+		d.jira.written = map[string][]fakeComment{"PROJ-80": {{author: "me", created: time.Now(), text: "How to check: run it"}}}
+		d.jira.mu.Unlock()
+		out := d.mustGraft("deploy", "handover", "sub", "PROJ-80")
+		d.jira.mu.Lock()
+		status := d.jira.statuses["PROJ-80"]
+		assigned := slices.Clone(d.jira.assigned)
+		d.jira.mu.Unlock()
+		if status != "Testing" || !slices.Contains(assigned, "PROJ-80 to qa") || !strings.Contains(out, "PROJ-80 moved to Testing") {
+			t.Errorf("named handover status=%q assigned=%v\n%s", status, assigned, out)
+		}
+	})
+
+	t.Run("Jira transition failure leaves the named item held and fails", func(t *testing.T) {
+		d := newDeployFixture(t, func(state string, q func(string) string) string {
+			return strings.Replace(deployConfig(state, q), "keep_assignee_labels: [internal]}", `keep_assignee_labels: [internal], require_comment: "How to check"}`, 1)
+		})
+		d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+		d.jira.mu.Lock()
+		d.jira.statuses["PROJ-80"] = "In Progress"
+		d.jira.entered = map[string]time.Time{"PROJ-80": time.Now().Add(-time.Hour)}
+		d.jira.written = map[string][]fakeComment{"PROJ-80": {{author: "me", created: time.Now(), text: "How to check: run it"}}}
+		d.jira.failTransitions = []string{"PROJ-80"}
+		d.jira.mu.Unlock()
+		d.write("a.txt", "work\n")
+		d.mustGraft("commit", "-m", "feat: PROJ-80 deployed work")
+		sha := d.git("rev-parse", "HEAD")
+		writeFile(t, filepath.Join(d.state, "sub-sha"), sha+"\n")
+		out, code := d.graft("", "deploy", "handover", "sub", "PROJ-80")
+		if code == 0 || !strings.Contains(out, "http 500") {
+			t.Fatalf("transition failure exit=%d:\n%s", code, out)
+		}
+		d.jira.mu.Lock()
+		d.jira.failTransitions = nil
+		d.jira.mu.Unlock()
+		retry := d.mustGraft("deploy", "handover", "sub")
+		if !strings.Contains(retry, "PROJ-80 moved to Testing") {
+			t.Errorf("failed named item was not saved for handover retry:\n%s", retry)
+		}
+	})
+
+	t.Run("failed named assignment fails without holding", func(t *testing.T) {
+		d := newDeployFixture(t, func(state string, q func(string) string) string {
+			return strings.Replace(deployConfig(state, q), "keep_assignee_labels: [internal]}", `keep_assignee_labels: [internal], require_comment: "How to check"}`, 1)
+		})
+		d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+		d.jira.mu.Lock()
+		d.jira.statuses["PROJ-80"] = "In Progress"
+		d.jira.entered = map[string]time.Time{"PROJ-80": time.Now().Add(-time.Hour)}
+		d.jira.written = map[string][]fakeComment{"PROJ-80": {{author: "me", created: time.Now(), text: "How to check: run it"}}}
+		d.jira.failAssign = []string{"PROJ-80"}
+		d.jira.mu.Unlock()
+		d.write("a.txt", "work\n")
+		d.mustGraft("commit", "-m", "feat: PROJ-80 deployed work")
+		sha := d.git("rev-parse", "HEAD")
+		writeFile(t, filepath.Join(d.state, "sub-sha"), sha+"\n")
+		out, code := d.graft("", "deploy", "handover", "sub", "PROJ-80")
+		d.jira.mu.Lock()
+		status := d.jira.statuses["PROJ-80"]
+		d.jira.mu.Unlock()
+		if code == 0 || status != "Testing" || !strings.Contains(out, "PROJ-80: assignee NOT SET (") || !strings.Contains(out, "400") || strings.Contains(out, "still held") || !strings.Contains(out, "the assignee is not set on PROJ-80") {
+			t.Errorf("failed assign did not fail without holding: exit=%d status=%q\n%s", code, status, out)
+		}
+	})
+
+	t.Run("rejects a key absent from deployed work before Jira access", func(t *testing.T) {
+		d := newDeployFixture(t, func(state string, q func(string) string) string {
+			return strings.Replace(deployConfig(state, q), "keep_assignee_labels: [internal]}", `keep_assignee_labels: [internal], require_comment: "How to check"}`, 1)
+		})
+		d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+		d.jira.mu.Lock()
+		d.jira.requests = 0
+		d.jira.nonGET = nil
+		d.jira.mu.Unlock()
+		out, code := d.graft("", "deploy", "handover", "sub", "PROJ-80")
+		d.jira.mu.Lock()
+		requests := d.jira.requests
+		nonGET := slices.Clone(d.jira.nonGET)
+		d.jira.mu.Unlock()
+		if code == 0 || !strings.Contains(out, "PROJ-80 has no work commit in the deployed history of sub") || requests != 0 || len(nonGET) != 0 {
+			t.Errorf("exit=%d requests=%d writes=%v\n%s", code, requests, nonGET, out)
+		}
+	})
+
+	t.Run("holds a named item that still needs its comment", func(t *testing.T) {
+		d := newDeployFixture(t, deployConfig)
+		d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+		d.jira.mu.Lock()
+		d.jira.statuses["PROJ-80"] = "In Progress"
+		d.jira.entered = map[string]time.Time{}
+		d.jira.mu.Unlock()
+		d.write("a.txt", "work\n")
+		d.mustGraft("commit", "-m", "feat: PROJ-80 deployed work")
+		d.mustGraft("deploy", "--unapproved", "sub")
+		config := strings.Replace(d.read(".graft.yaml"), "keep_assignee_labels: [internal]}", `keep_assignee_labels: [internal], require_comment: "How to check"}`, 1)
+		d.write(".graft.yaml", config)
+		d.jira.mu.Lock()
+		d.jira.statuses["PROJ-80"] = "In Progress"
+		d.jira.entered["PROJ-80"] = time.Now().Add(-time.Hour)
+		d.jira.written = map[string][]fakeComment{}
+		d.jira.mu.Unlock()
+		out, code := d.graft("", "deploy", "handover", "sub", "PROJ-80")
+		if code == 0 || !strings.Contains(out, "PROJ-80: NOT MOVED to Testing") {
+			t.Errorf("exit=%d\n%s", code, out)
+		}
+		retry, retryCode := d.graft("", "deploy", "handover", "sub")
+		if retryCode == 0 || !strings.Contains(retry, "PROJ-80: NOT MOVED to Testing") || !strings.Contains(retry, "1 of sub are still held") {
+			t.Errorf("named item was not persisted as held: exit=%d\n%s", retryCode, retry)
+		}
+	})
+
+	t.Run("keeps the no-key no-held behavior", func(t *testing.T) {
+		d := newDeployFixture(t, func(state string, q func(string) string) string {
+			return strings.Replace(deployConfig(state, q), "keep_assignee_labels: [internal]}", `keep_assignee_labels: [internal], require_comment: "How to check"}`, 1)
+		})
+		d.env = append(d.env, "XDG_CACHE_HOME="+t.TempDir())
+		if out := d.mustGraft("deploy", "handover", "sub"); !strings.Contains(out, "no item of sub is held") {
+			t.Errorf("unexpected no-key result:\n%s", out)
+		}
+	})
+}
 
 // TestDeployHandoverSubtasksWaitForTheirOwnCommits checks that handover
 // follows a parent only when each worked subtask's commits are on the target.

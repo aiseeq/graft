@@ -1004,8 +1004,11 @@ type noteMover struct {
 	// release_notes.jira.skip_keys names: no reviewer gets those, so their
 	// subtasks are handed over.
 	standing []string
-	approved *config.ApprovedRelease
-	readOnly bool
+	// namedHandover identifies explicit keys whose assignment failures must
+	// keep the handover held and fail the command.
+	namedHandover map[string]bool
+	approved      *config.ApprovedRelease
+	readOnly      bool
 }
 
 // errHeld is a move withheld for want of the comment require_comment asks
@@ -1164,7 +1167,12 @@ func (m *noteMover) move(ctx context.Context, issue jira.Issue, t *config.NoteTr
 		return nil
 	}
 	if err := m.client.Assign(ctx, issue.Key, t.Assign); err != nil {
-		m.app.assignFailed(&m.unset, issue.Key, err)
+		if m.namedHandover[issue.Key] {
+			fmt.Fprintf(m.app.Stderr, "graft: %s: assignee NOT SET (%v)\n", issue.Key, err)
+			m.unset.assignee = append(m.unset.assignee, issue.Key)
+		} else {
+			m.app.assignFailed(&m.unset, issue.Key, err)
+		}
 		return nil
 	}
 	m.app.printf("%s assigned to %s", issue.Key, t.Assign)

@@ -58,7 +58,7 @@ var commands = []command{
 		"graft deploy versions [--no-cache]",
 		"graft deploy cutoff <target> [--no-cache]",
 		"graft deploy sweep <target> [--apply] [--no-cache]",
-		"graft deploy handover <target> [--glint-ticket KEY] [--no-cache]",
+		"graft deploy handover <target> [KEY...] [--glint-ticket KEY] [--no-cache]",
 		"graft deploy check-head [--no-cache]",
 		"graft deploy check-integrations [build] [--no-cache]",
 	), summary: text("run the project's deploy script between graft's checks; status, logs, what a deploy would refuse, the versions the targets run, the release cutoff, the items git and the target contradict, the items held for their comment"),

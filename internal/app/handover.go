@@ -60,53 +60,73 @@ func (m *noteMover) uninstructed(ctx context.Context, issue jira.Issue, t *confi
 // item that has left the statuses the transitions move from, moved by hand
 // say, is held no more.
 func (a *App) retryHeld(ctx context.Context, sub *subtaskRun, held []heldItem, done []string) []heldItem {
-	m := sub.mover
+	return a.retryHeldNamed(ctx, sub, held, done, nil)
+}
+
+func (a *App) retryHeldNamed(ctx context.Context, sub *subtaskRun, held []heldItem, done []string, named map[string]bool) []heldItem {
 	var unread []heldItem
 	for _, h := range held {
-		if slices.Contains(done, h.key) || slices.ContainsFunc(m.held, func(x heldItem) bool { return x.key == h.key }) {
-			continue
-		}
-		issue, err := m.client.Issue(ctx, h.key)
-		if err != nil {
-			a.warn("%s is still held: %v", h.key, err)
-			unread = append(unread, h)
-			continue
-		}
-		if m.leaveDormant(issue) {
-			continue
-		}
-		t := m.conf.Moving(issue.Status)
-		if t == nil || issue.Done {
-			a.printf("%s is held no more: it is %s", h.key, issue.Status)
-			continue
-		}
-		reached := issue.Status
-		moveErr := m.move(ctx, issue, t, h.after)
-		if moveErr == nil {
-			reached = t.To
-		} else if !errors.Is(moveErr, errHeld) && !errors.Is(moveErr, errTypeNotAllowed) {
-			a.warn("%v", moveErr)
-		}
-		if h.after == "" && !errors.Is(moveErr, errTypeNotAllowed) {
-			sub.delivered = append(sub.delivered, issue)
-			sub.reached[issue.Key] = reached
-		}
+		unread = append(unread, a.retryHeldItem(ctx, sub, h, done, named)...)
 	}
 	return unread
 }
 
-// DeployHandover is graft deploy handover <target>: it moves the items the
+func (a *App) retryHeldItem(ctx context.Context, sub *subtaskRun, h heldItem, done []string, named map[string]bool) []heldItem {
+	m := sub.mover
+	if slices.Contains(done, h.key) || slices.ContainsFunc(m.held, func(x heldItem) bool { return x.key == h.key }) {
+		return nil
+	}
+	issue, err := m.client.Issue(ctx, h.key)
+	if err != nil {
+		a.warn("%s is still held: %v", h.key, err)
+		return []heldItem{h}
+	}
+	if m.leaveDormant(issue) {
+		return nil
+	}
+	t := m.conf.Moving(issue.Status)
+	if t == nil || issue.Done {
+		a.printf("%s is held no more: it is %s", h.key, issue.Status)
+		return nil
+	}
+	return a.moveHeldItem(ctx, sub, h, issue, t, named[h.key])
+}
+
+func (a *App) moveHeldItem(ctx context.Context, sub *subtaskRun, h heldItem, issue jira.Issue, t *config.NoteTransition, named bool) []heldItem {
+	m := sub.mover
+	reached := issue.Status
+	// A failed assignment is not held: DeployHandover fails on it, as a
+	// deploy does.
+	moveErr := m.move(ctx, issue, t, h.after)
+	if moveErr == nil {
+		reached = t.To
+	} else if !errors.Is(moveErr, errHeld) && !errors.Is(moveErr, errTypeNotAllowed) {
+		if moveErr != nil {
+			a.warn("%v", moveErr)
+		}
+		if named {
+			return []heldItem{h}
+		}
+	}
+	if h.after == "" && !errors.Is(moveErr, errTypeNotAllowed) && (!named || moveErr == nil || errors.Is(moveErr, errHeld)) {
+		sub.delivered = append(sub.delivered, issue)
+		sub.reached[issue.Key] = reached
+	}
+	return nil
+}
+
+// DeployHandover is graft deploy handover <target> [KEY...]: it moves the items the
 // target's deploys held for want of their comment, now that it is written,
 // or for the glint findings of the deployed commit, now that glint finds
 // none or ticket, --glint-ticket, takes them. Items still held make it fail.
-func (a *App) DeployHandover(ctx context.Context, target, ticket string) error {
+func (a *App) DeployHandover(ctx context.Context, target, ticket string, keys ...string) error {
 	r, err := a.deployTarget(target)
 	if err != nil {
 		return err
 	}
 	n := r.target.ReleaseNotes
-	if n == nil || n.Glint == "" && !slices.ContainsFunc(n.Transitions, func(t config.NoteTransition) bool { return t.RequireComment != "" }) {
-		return fmt.Errorf("deploy.targets.%s.release_notes: neither glint nor a transition with require_comment holds items", target)
+	if err := validateHandoverNotes(target, n, len(keys) > 0); err != nil {
+		return err
 	}
 	var deployedSHA string
 	var deployedErr error
@@ -125,9 +145,15 @@ func (a *App) DeployHandover(ctx context.Context, target, ticket string) error {
 	if err != nil {
 		return err
 	}
-	if len(held) == 0 {
+	if len(held) == 0 && len(keys) == 0 {
 		a.printf("no item of %s is held", target)
 		return nil
+	}
+	if len(keys) > 0 {
+		held, err = namedHandoverItems(ctx, r, target, keys, deployedHead, held)
+		if err != nil {
+			return err
+		}
 	}
 	client, err := jiraClient()
 	if err != nil {
@@ -139,7 +165,12 @@ func (a *App) DeployHandover(ctx context.Context, target, ticket string) error {
 	}
 	mover := &noteMover{app: a, client: client, conf: n, approved: r.target.ApprovedRelease, me: me, target: r.name, glint: r.glint, standing: r.cfg.ReleaseNotes.Jira.SkipKeys}
 	sub := &subtaskRun{mover: mover, notes: r.cfg.ReleaseNotes.Jira, me: me, reached: map[string]string{}, run: r, targetHead: deployedHead}
-	unread := a.retryHeld(ctx, sub, held, nil)
+	named := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		named[key] = true
+	}
+	mover.namedHandover = named
+	unread := a.retryHeldNamed(ctx, sub, held, nil, named)
 	if r.target.ReleaseNotes.Subtasks {
 		sub.follow(ctx)
 	}
@@ -147,10 +178,71 @@ func (a *App) DeployHandover(ctx context.Context, target, ticket string) error {
 	if err := writeHeld(r, still); err != nil {
 		return err
 	}
+	var errs []error
 	if len(still) > 0 {
-		return fmt.Errorf("%d of %s are still held (see above)", len(still), target)
+		errs = append(errs, fmt.Errorf("%d of %s are still held (see above)", len(still), target))
+	}
+	if len(mover.unset.assignee) > 0 {
+		errs = append(errs, fmt.Errorf("the assignee is not set on %s (see above)", strings.Join(mover.unset.assignee, ", ")))
+	}
+	return errors.Join(errs...)
+}
+
+func validateHandoverNotes(target string, n *config.TargetNotes, named bool) error {
+	if named {
+		if n == nil || len(n.Transitions) == 0 {
+			return fmt.Errorf("deploy.targets.%s.release_notes.transitions: required to hand over named items", target)
+		}
+		return nil
+	}
+	if n == nil || n.Glint == "" && !slices.ContainsFunc(n.Transitions, func(t config.NoteTransition) bool { return t.RequireComment != "" }) {
+		return fmt.Errorf("deploy.targets.%s.release_notes: neither glint nor a transition with require_comment holds items", target)
 	}
 	return nil
+}
+
+// namedHandoverItems adds requested keys that have work commits in the
+// deployed history, preserving any parent relationship already held.
+func namedHandoverItems(ctx context.Context, r *deployRun, target string, keys []string, deployedHead func(context.Context) (string, error), held []heldItem) ([]heldItem, error) {
+	deployed, err := deployedHead(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading the deployed commit of %s: %w", target, err)
+	}
+	keyRe := projectKeyRe(r.cfg)
+	var commits []deliveredCommit
+	if deployed != "" {
+		commits, err = logCommits(r.repo, deployed)
+		if err != nil {
+			return nil, fmt.Errorf("reading commits of deployed %s: %w", target, err)
+		}
+	}
+	worked := make(map[string]bool)
+	for _, c := range commits {
+		// isRevert treats a double revert as restored work, matching release notes.
+		if c.merge || isRevert(c.subject) {
+			continue
+		}
+		for _, key := range itemKeys(keyRe, r.target.ApprovedRelease, c) {
+			worked[key] = true
+		}
+	}
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if key == "" || keyRe.FindString(key) != key {
+			return nil, fmt.Errorf("%q is not a work item key for this project's release_notes.jira.project_keys", key)
+		}
+		if !worked[key] {
+			return nil, fmt.Errorf("%s has no work commit in the deployed history of %s", key, target)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if !slices.ContainsFunc(held, func(h heldItem) bool { return h.key == key }) {
+			held = append(held, heldItem{key: key})
+		}
+	}
+	return held, nil
 }
 
 // heldPath is the record of the items held on a target, kept with the
