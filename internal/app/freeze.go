@@ -256,8 +256,7 @@ func (a *App) cutFreeze(ctx context.Context, r *deployRun, target, versionName s
 				retErr = errors.Join(retErr, restoreErr)
 			}
 			if created {
-				_, deleteErr := r.repo.Git("branch", "-D", branch)
-				retErr = errors.Join(retErr, deleteErr)
+				retErr = errors.Join(retErr, deleteCreatedFreezeBranch(ctx, a, r.repo, r.cfg, branch))
 			}
 		}
 	}()
@@ -293,6 +292,22 @@ func (a *App) cutFreeze(ctx context.Context, r *deployRun, target, versionName s
 	}
 	a.printf("froze %s at %s on %s", target, versionName, branch)
 	return nil
+}
+
+func deleteCreatedFreezeBranch(ctx context.Context, app *App, repo *gitx.Repo, cfg *config.Config, branch string) error {
+	remotes, err := repo.Remotes()
+	if err != nil {
+		return err
+	}
+	trunk, err := trunkRef(repo, cfg, "", remotes)
+	if err != nil {
+		return err
+	}
+	deletion, err := branchDeletionCleaner(ctx, app, repo, cfg, trunk, false)
+	if err != nil {
+		return err
+	}
+	return deletion.deleteBranch(branch)
 }
 
 func findFreezeVersions(ctx context.Context, cfg *config.Config, name string) ([]jira.Version, error) {

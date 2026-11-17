@@ -218,7 +218,7 @@ func staleTreeUnmerged(ctx context.Context, tree staleWorktree, threshold time.D
 	common := filepath.Clean(tree.repo.CommonDir)
 	trunk, ok := trunks[common]
 	if !ok {
-		trunk = findLocalStaleTrunk(tree.repo, trunkFlag)
+		trunk = findLocalStaleTrunk(ctx, tree.repo, trunkFlag)
 		trunks[common] = trunk
 	}
 	if trunk.why != "" {
@@ -415,7 +415,7 @@ func staleChangedPath(repo *gitx.Repo, name, common string, visited map[string]b
 	return staleChangedFiles(sub, visited)
 }
 
-func findLocalStaleTrunk(repo *gitx.Repo, trunkFlag string) staleTrunk {
+func findLocalStaleTrunk(ctx context.Context, repo *gitx.Repo, trunkFlag string) staleTrunk {
 	cfg := &config.Config{}
 	if trunkFlag == "" {
 		mainCfg, err := mainWorktreeConfig(repo)
@@ -439,7 +439,7 @@ func findLocalStaleTrunk(repo *gitx.Repo, trunkFlag string) staleTrunk {
 	if !ok {
 		return staleTrunk{why: "local trunk " + ref + " is unavailable"}
 	}
-	c := &cleaner{repo: repo, trunk: ref}
+	c := &cleaner{ctx: ctx, app: &App{}, repo: repo, cfg: cfg, trunk: ref, counts: map[string]int{}}
 	trunkCfg, err := c.readTrunkConfig()
 	if err != nil {
 		return staleTrunk{why: "cannot read trunk rules: " + err.Error()}
@@ -471,7 +471,10 @@ func staleMergeStatus(ctx context.Context, repo *gitx.Repo, trunk staleTrunk, re
 		return false, 0, 0, fmt.Errorf("last commit date %q: %w", dateOut, err)
 	}
 	age := now.Sub(time.Unix(sec, 0))
-	c := &cleaner{ctx: ctx, repo: repo, trunk: trunk.ref, exclude: trunk.exclude}
+	c := &cleaner{ctx: ctx, app: &App{}, repo: repo, cfg: &config.Config{}, trunk: trunk.ref, exclude: trunk.exclude, counts: map[string]int{}}
+	if err := c.readSubjects(); err != nil {
+		return false, count, age, err
+	}
 	result, err := c.verdict(rev)
 	return result.merged, count, age, err
 }

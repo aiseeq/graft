@@ -159,13 +159,375 @@ func TestWorktreeClean(t *testing.T) {
 			t.Errorf("branch %s is still there", branch)
 		}
 	}
-	if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/w/merged"); code == 0 {
-		t.Error("w/merged is still on origin")
+	if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/w/merged"); code != 0 {
+		t.Error("remote w/merged was removed despite its unmerged VERSION change")
 	}
 	for _, kept := range []string{wt("open"), dirty, busy, held, locked, wt("look")} {
 		if _, err := os.Stat(kept); err != nil {
 			t.Errorf("%s is gone: %v", kept, err)
 		}
+	}
+}
+
+func TestWorktreeCleanRemoteOnlyBranches(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n",
+		"base.txt":    "base\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustVersionedCommit(f.work, "feat: base", false)
+	f.git("push", "-q", "-u", "origin", "main")
+	f.git("remote", "set-head", "origin", "main")
+	f.git("branch", "remote-merged", "main")
+	f.git("push", "-q", "origin", "remote-merged")
+	f.git("branch", "-D", "remote-merged")
+	f.git("switch", "-q", "-c", "remote-open", "main")
+	f.write("open.txt", "open\n")
+	f.mustVersionedCommit(f.work, "feat: open", false)
+	f.git("push", "-q", "origin", "remote-open")
+	f.git("switch", "-q", "main")
+	f.git("branch", "-D", "remote-open")
+
+	out := f.mustGraft("worktree", "clean", "--min-age", "0s")
+	if !strings.Contains(out, "would remove branch origin/remote-merged: in origin/main") {
+		t.Fatalf("dry run did not list remote-only merged branch:\n%s", out)
+	}
+	if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/remote-merged"); code != 0 {
+		t.Fatal("dry run removed remote-only branch")
+	}
+
+	out = f.mustGraft("worktree", "clean", "--min-age", "0s", "--apply")
+	if !strings.Contains(out, "removed   branch origin/remote-merged: in origin/main") {
+		t.Errorf("apply did not report remote-only merged branch:\n%s", out)
+	}
+	if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/remote-merged"); code == 0 {
+		t.Error("merged remote-only branch remains on origin")
+	}
+	if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/remote-open"); code != 0 {
+		t.Error("unmerged remote-only branch was removed")
+	}
+}
+
+func TestWorktreeCleanWorktreeRemovalDeletesRemoteBranch(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n",
+		"base.txt":    "base\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustVersionedCommit(f.work, "feat: base", false)
+	f.git("push", "-q", "-u", "origin", "main")
+	f.git("remote", "set-head", "origin", "main")
+	wt := filepath.Join(f.base, "wt-merged")
+	f.git("worktree", "add", "-q", "-b", "w/merged", wt, "main")
+	f.git("push", "-q", "origin", "w/merged")
+	f.git("worktree", "lock", "--reason", "age branch", wt)
+	old := time.Now().Add(-2 * time.Hour)
+	gitDir := strings.TrimSpace(f.git("-C", wt, "rev-parse", "--path-format=absolute", "--git-dir"))
+	for _, p := range []string{filepath.Join(gitDir, "HEAD"), filepath.Join(gitDir, "logs", "HEAD")} {
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.git("worktree", "unlock", wt)
+
+	out := f.mustGraft("worktree", "clean", "--min-age", "0s", "--apply")
+	if !strings.Contains(out, "removed   "+wt+" (w/merged)") {
+		t.Fatalf("worktree was not removed:\n%s", out)
+	}
+	if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/w/merged"); code == 0 {
+		t.Error("remote copy of removed worktree branch remains")
+	}
+}
+
+func reviewCleanRepo(t *testing.T) *fixture {
+	t.Helper()
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n",
+		"base.txt":    "base\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustVersionedCommit(f.work, "feat: base", false)
+	f.git("push", "-q", "-u", "origin", "main")
+	f.git("remote", "set-head", "origin", "main")
+	f.gitIn(f.remote("origin"), "config", "receive.denyDeleteCurrent", "ignore")
+	return f
+}
+
+func pushRemoteOnlyBranch(t *testing.T, f *fixture, name string, edit func()) {
+	t.Helper()
+	f.git("switch", "-q", "-c", name, "main")
+	if edit != nil {
+		edit()
+		f.mustVersionedCommit(f.work, "feat: "+name, false)
+	}
+	f.git("push", "-q", "origin", name)
+	f.git("switch", "-q", "main")
+	f.git("branch", "-D", name)
+}
+
+func TestWorktreeCleanRemoteReviewRegressions(t *testing.T) {
+	t.Run("version files are remote work", func(t *testing.T) {
+		f := reviewCleanRepo(t)
+		pushRemoteOnlyBranch(t, f, "version-only", func() {
+			f.write("VERSION", "9.9.9\n")
+		})
+		f.mustGraft("worktree", "clean", "--min-age", "0s", "--apply")
+		if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/version-only"); code != 0 {
+			t.Fatal("remote branch with an unmerged version change was deleted")
+		}
+	})
+
+	for _, trunk := range []string{"origin/main", "refs/remotes/origin/main"} {
+		t.Run("trunk ref "+trunk+" is protected", func(t *testing.T) {
+			f := reviewCleanRepo(t)
+			f.git("switch", "-q", "-c", "side", "main")
+			f.git("branch", "-D", "main")
+			f.mustGraft("worktree", "clean", "--trunk", trunk, "--min-age", "0s", "--apply")
+			if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/main"); code != 0 {
+				t.Fatal("selected trunk was deleted from origin")
+			}
+		})
+	}
+	for _, trunk := range []string{"main", "refs/heads/main"} {
+		t.Run("local trunk alias "+trunk+" is protected", func(t *testing.T) {
+			f := reviewCleanRepo(t)
+			f.mustGraft("worktree", "clean", "--trunk", trunk, "--min-age", "0s", "--apply")
+			if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/main"); code != 0 {
+				t.Fatal("selected trunk was deleted from origin")
+			}
+		})
+	}
+
+	t.Run("remote HEAD target is protected", func(t *testing.T) {
+		f := reviewCleanRepo(t)
+		mirror := f.remote("mirror")
+		f.gitIn(f.base, "init", "-q", "--bare", mirror)
+		f.addRemote("mirror", mirror)
+		f.git("push", "-q", "mirror", "main:main", "main:other-default")
+		f.gitIn(mirror, "symbolic-ref", "HEAD", "refs/heads/other-default")
+		f.git("fetch", "--quiet", "mirror")
+		f.git("remote", "set-head", "mirror", "--auto")
+		f.gitIn(mirror, "config", "receive.denyDeleteCurrent", "ignore")
+		f.mustGraft("worktree", "clean", "--min-age", "0s", "--apply")
+		if _, code := f.tryGit("ls-remote", "--exit-code", "mirror", "refs/heads/other-default"); code != 0 {
+			t.Fatal("mirror's remote HEAD target was deleted")
+		}
+	})
+
+	t.Run("local and remote copies are judged independently", func(t *testing.T) {
+		f := reviewCleanRepo(t)
+		f.git("switch", "-q", "-c", "same-name", "main")
+		f.write("local-only.txt", "unmerged\n")
+		f.mustVersionedCommit(f.work, "feat: local-only", false)
+		f.git("push", "-q", "--force", "origin", "main:refs/heads/same-name")
+		f.git("switch", "-q", "main")
+		f.mustGraft("worktree", "clean", "--min-age", "0s", "--apply")
+		if _, code := f.tryGit("show-ref", "--verify", "refs/heads/same-name"); code != 0 {
+			t.Fatal("unmerged local branch was removed")
+		}
+		if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/same-name"); code == 0 {
+			t.Fatal("merged remote copy was kept because the local copy is unmerged")
+		}
+	})
+
+	t.Run("fresh remote-only branch respects min-age", func(t *testing.T) {
+		f := reviewCleanRepo(t)
+		pushRemoteOnlyBranch(t, f, "fresh-merged", nil)
+		f.mustGraft("worktree", "clean", "--apply")
+		if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/fresh-merged"); code != 0 {
+			t.Fatal("fresh remote-only branch was removed before min-age")
+		}
+	})
+
+	t.Run("live trunk keeps branch absent after trunk rollback", func(t *testing.T) {
+		f := reviewCleanRepo(t)
+		f.git("switch", "-q", "-c", "feature/stale-trunk", "main")
+		f.write("feature.txt", "landed then rolled back\n")
+		f.mustVersionedCommit(f.work, "feat: stale trunk", false)
+		featureSHA := f.git("rev-parse", "HEAD")
+		f.git("push", "-q", "origin", "feature/stale-trunk")
+		f.git("push", "-q", "origin", "feature/stale-trunk:refs/heads/main")
+		f.git("fetch", "--quiet", "origin", "main:refs/remotes/origin/main")
+		f.git("push", "-q", "--force", "origin", "main:refs/heads/main")
+		f.git("update-ref", "refs/remotes/origin/main", featureSHA)
+		f.git("switch", "-q", "main")
+		f.git("branch", "-D", "feature/stale-trunk")
+		f.git("config", "--replace-all", "remote.origin.fetch", "+refs/heads/feature/*:refs/remotes/origin/feature/*")
+		out := f.mustGraft("worktree", "clean", "--min-age", "0s", "--apply")
+		if !strings.Contains(out, "not an ancestor of origin/main; kept on origin") {
+			t.Fatalf("live trunk ancestry was not reported:\n%s", out)
+		}
+		if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/feature/stale-trunk"); code != 0 {
+			t.Fatal("branch was deleted against a stale local trunk")
+		}
+	})
+}
+
+func TestWorktreeCleanRemoteLiveRefs(t *testing.T) {
+	t.Run("local trunk ahead of live origin does not justify deletion", func(t *testing.T) {
+		f := reviewCleanRepo(t)
+		f.git("switch", "-q", "-c", "only-copy", "main")
+		f.write("only-copy.txt", "work absent from live trunk\n")
+		f.mustVersionedCommit(f.work, "feat: only copy", false)
+		f.git("push", "-q", "origin", "only-copy")
+		f.git("switch", "-q", "main")
+		f.git("merge", "--ff-only", "-q", "only-copy")
+		f.git("branch", "-D", "only-copy")
+		f.mustGraft("worktree", "clean", "--min-age", "0s", "--apply")
+		if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/only-copy"); code != 0 {
+			t.Fatal("remote branch was deleted based on local-only trunk work")
+		}
+	})
+
+	t.Run("live mirror trunk is used despite stale origin tracking ref", func(t *testing.T) {
+		f := reviewCleanRepo(t)
+		mirror := f.remote("mirror")
+		f.gitIn(f.base, "init", "-q", "--bare", mirror)
+		f.addRemote("mirror", mirror)
+		f.git("switch", "-q", "-c", "landed", "main")
+		f.write("mirror-work.txt", "landed on mirror\n")
+		f.mustVersionedCommit(f.work, "feat: mirror work", false)
+		f.git("push", "-q", "origin", "HEAD:refs/heads/mirror-work")
+		f.git("push", "-q", "mirror", "HEAD:refs/heads/main", "HEAD:refs/heads/mirror-work")
+		f.git("switch", "-q", "main")
+		f.git("fetch", "--quiet", "mirror")
+		f.gitIn(mirror, "config", "receive.denyDeleteCurrent", "ignore")
+		f.git("branch", "-D", "landed")
+		f.mustGraft("worktree", "clean", "--min-age", "0s", "--apply")
+		if _, code := f.tryGit("ls-remote", "--exit-code", "mirror", "refs/heads/mirror-work"); code == 0 {
+			t.Fatal("branch merged into mirror's live trunk was kept")
+		}
+	})
+
+	t.Run("server HEAD change is observed without fetch", func(t *testing.T) {
+		f := reviewCleanRepo(t)
+		f.git("switch", "-q", "-c", "ahead", "main")
+		f.write("default-work.txt", "local trunk work\n")
+		f.mustVersionedCommit(f.work, "feat: default work", false)
+		f.git("push", "-q", "origin", "HEAD:refs/heads/new-default", "HEAD:refs/heads/main")
+		f.git("fetch", "--quiet", "origin", "main:refs/remotes/origin/main")
+		f.git("fetch", "--quiet", "origin", "new-default:refs/remotes/origin/new-default")
+		f.git("switch", "-q", "main")
+		f.git("merge", "--ff-only", "-q", "ahead")
+		f.git("branch", "-D", "ahead")
+		f.git("remote", "set-head", "origin", "main")
+		f.gitIn(f.remote("origin"), "symbolic-ref", "HEAD", "refs/heads/new-default")
+		f.mustGraft("worktree", "clean", "--min-age", "0s", "--apply")
+		if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/new-default"); code != 0 {
+			t.Fatal("live remote HEAD target was deleted using a stale local symbolic ref")
+		}
+	})
+
+	t.Run("held local branch does not hide its merged remote copy", func(t *testing.T) {
+		f := reviewCleanRepo(t)
+		wt := filepath.Join(f.base, "wt-held")
+		f.git("worktree", "add", "-q", "-b", "held", wt, "main")
+		f.gitIn(wt, "config", "user.name", "Test")
+		f.gitIn(wt, "config", "user.email", "test@example.com")
+		writeFile(t, filepath.Join(wt, "local-held.txt"), "local work\n")
+		f.gitIn(wt, "add", "local-held.txt")
+		f.gitIn(wt, "commit", "-qm", "feat: held local")
+		f.git("push", "-q", "origin", "main:refs/heads/held")
+		f.git("fetch", "--quiet", "origin", "held:refs/remotes/origin/held")
+		f.mustGraft("worktree", "clean", "--min-age", "0s", "--apply")
+		if _, code := f.tryGit("show-ref", "--verify", "refs/heads/held"); code != 0 {
+			t.Fatal("held local branch was removed")
+		}
+		if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/held"); code == 0 {
+			t.Fatal("merged remote copy remains because its local branch is held")
+		}
+	})
+
+	t.Run("selected trunk is protected when remote HEAD names another branch", func(t *testing.T) {
+		f := reviewCleanRepo(t)
+		f.git("push", "-q", "origin", "main:refs/heads/other-default")
+		f.gitIn(f.remote("origin"), "symbolic-ref", "HEAD", "refs/heads/other-default")
+		f.mustGraft("worktree", "clean", "--trunk", "origin/main", "--min-age", "0s", "--apply")
+		if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/main"); code != 0 {
+			t.Fatal("selected trunk was deleted when remote HEAD pointed elsewhere")
+		}
+	})
+}
+
+func TestWorktreeCleanReview4Regressions(t *testing.T) {
+	for _, trunk := range []string{"refs/heads/main", "refs/heads/origin/main"} {
+		t.Run("explicit "+trunk+" keeps remote heads and preserves base local behavior", func(t *testing.T) {
+			f := reviewCleanRepo(t)
+			pushRemoteOnlyBranch(t, f, "remote-done", nil)
+			if trunk == "refs/heads/origin/main" {
+				f.git("branch", "origin/main", "main")
+			}
+			f.git("switch", "-q", "-c", "side", "main")
+			if trunk == "refs/heads/origin/main" {
+				f.git("config", "--unset-all", "remote.origin.fetch")
+				f.git("update-ref", "-d", "refs/remotes/origin/main")
+			}
+			out := f.mustGraft("worktree", "clean", "--trunk", trunk, "--min-age", "0s", "--apply")
+			if strings.Count(out, "--trunk given: remote branches are left alone") != 1 {
+				t.Fatalf("expected one remote-skip message:\n%s", out)
+			}
+			if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/remote-done"); code != 0 {
+				t.Fatal("remote-only merged branch was removed with explicit --trunk")
+			}
+			local := "main"
+			if trunk == "refs/heads/origin/main" {
+				local = "origin/main"
+			}
+			if _, code := f.tryGit("show-ref", "--verify", "refs/heads/"+local); code == 0 {
+				t.Fatalf("local %s behavior differs from base cleanup", local)
+			}
+		})
+	}
+
+	t.Run("grafts cannot forge remote ancestry", func(t *testing.T) {
+		f := reviewCleanRepo(t)
+		f.git("switch", "-q", "-c", "grafted-feature", "main")
+		f.write("grafted-only.txt", "not in the live trunk\n")
+		f.mustVersionedCommit(f.work, "feat: grafted feature", false)
+		featureSHA := f.git("rev-parse", "HEAD")
+		f.git("push", "-q", "origin", "HEAD:refs/heads/grafted-feature")
+		f.git("switch", "-q", "main")
+		f.git("branch", "-D", "grafted-feature")
+		trunkSHA := f.git("rev-parse", "refs/remotes/origin/main")
+		grafts := f.git("rev-parse", "--git-path", "info/grafts")
+		if !filepath.IsAbs(grafts) {
+			grafts = filepath.Join(f.work, grafts)
+		}
+		writeFile(t, grafts, trunkSHA+" "+featureSHA+"\n")
+		f.mustGraft("worktree", "clean", "--min-age", "0s", "--apply")
+		if _, code := f.tryGit("ls-remote", "--exit-code", "origin", "refs/heads/grafted-feature"); code != 0 {
+			t.Fatal("local graft made an unmerged remote branch appear merged")
+		}
+	})
+}
+
+func TestWorktreeReview5DefaultAmbiguousRemote(t *testing.T) {
+	f := reviewCleanRepo(t)
+	f.addRemote("origin/team", f.remote("origin"))
+	f.git("fetch", "-q", "origin/team")
+	f.git("remote", "set-head", "origin/team", "main")
+	f.git("config", "branch.main.remote", "origin/team")
+	f.git("config", "branch.main.merge", "refs/heads/main")
+
+	// The real default trunk on origin/team is main. This similarly named
+	// remote branch makes a shortened trunk name ambiguous across remotes.
+	f.git("switch", "-q", "-c", "feature")
+	f.write("feature-only.txt", "work absent from live trunk\n")
+	f.mustVersionedCommit(f.work, "feat: feature", false)
+	f.git("push", "-q", "origin/team", "HEAD:refs/heads/feature")
+	f.git("push", "-q", "origin/team", "HEAD:refs/heads/team/main")
+	f.git("switch", "-q", "main")
+	f.git("branch", "-D", "feature")
+
+	out := f.mustGraft("worktree", "clean", "--min-age", "0s", "--apply")
+	if !strings.Contains(out, "remote name contains '/': remote branches are left alone") {
+		t.Fatalf("missing ambiguous-remote explanation:\n%s", out)
+	}
+	if _, code := f.tryGit("ls-remote", "--exit-code", "origin/team", "refs/heads/feature"); code != 0 {
+		t.Fatal("remote branch was removed with an ambiguous remote name")
 	}
 }
 
@@ -839,8 +1201,8 @@ func TestWorktreeCleanRemoteRace(t *testing.T) {
 			later := f.git("commit-tree", "-p", "HEAD", "-m", "feat: more raced work", "HEAD^{tree}")
 			f.git("push", "-q", "--no-verify", "origin", later+":refs/heads/later")
 			f.git("switch", "-q", "main")
-			f.write("raced.txt", "r\n")
-			commitSetup("feat: raced work")
+			f.git("merge", "--ff-only", "-q", "b/raced")
+			f.git("push", "-q", "origin", "main")
 
 			// The other agent acts as the push of clean reaches the remote,
 			// after its fetch.

@@ -62,7 +62,11 @@ func (a *App) WorktreeArchive(ctx context.Context, o WorktreeArchiveOptions) err
 	if err := pushWorktreeArchiveTag(a, repo, remotes, plan, o); err != nil {
 		return err
 	}
-	if err := removeArchivedWorktree(repo, plan); err != nil {
+	deletion, err := branchDeletionCleaner(ctx, a, repo, cfg, plan.trunk, o.Trunk != "")
+	if err != nil {
+		return err
+	}
+	if err := removeArchivedWorktree(repo, plan, deletion); err != nil {
 		return err
 	}
 	a.printf("archived %s with reason: %s", plan.tag, plan.reason)
@@ -70,13 +74,29 @@ func (a *App) WorktreeArchive(ctx context.Context, o WorktreeArchiveOptions) err
 		a.printf("tag is local only; no remotes configured")
 		a.printf("no remote branch %s to remove", o.Branch)
 	} else {
-		a.printf("remote branch %s remains", o.Branch)
+		remaining := false
+		for _, remote := range remotes {
+			out, err := repo.Git("ls-remote", "--heads", remote, "refs/heads/"+o.Branch)
+			if err != nil {
+				return fmt.Errorf("checking whether remote branch %s remains on %s: %w", o.Branch, remote, err)
+			}
+			if strings.TrimSpace(out) != "" {
+				remaining = true
+				break
+			}
+		}
+		if remaining {
+			a.printf("remote branch %s remains", o.Branch)
+		} else {
+			a.printf("remote branch %s removed", o.Branch)
+		}
 	}
 	return nil
 }
 
 type worktreeArchivePlan struct {
 	tag, branch, path, tagOID string
+	trunk                     string
 	reason                    string
 	continuing                bool
 	remoteNeeds               []string
@@ -125,6 +145,7 @@ func prepareWorktreeArchive(ctx context.Context, a *App, repo *gitx.Repo, cfg *c
 	if isLocalTrunkBranch(trunk, remotes, o.Branch) {
 		return plan, nil, fmt.Errorf("refusing to archive trunk branch %q; choose another --trunk or switch the main worktree", o.Branch)
 	}
+	plan.trunk = trunk
 	if filepath.Clean(target.path) == filepath.Clean(mainPath) {
 		return plan, nil, fmt.Errorf("branch %q is checked out in the main worktree %s; switch the main worktree to another branch before archiving", o.Branch, mainPath)
 	}
@@ -383,11 +404,11 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
-func removeArchivedWorktree(repo *gitx.Repo, plan worktreeArchivePlan) error {
+func removeArchivedWorktree(repo *gitx.Repo, plan worktreeArchivePlan, deletion *cleaner) error {
 	if _, err := repo.Git("worktree", "remove", plan.path); err != nil {
 		return fmt.Errorf("tag %q was pushed, but removing worktree %s failed; branch %q remains: %w", plan.tag, plan.path, plan.branch, err)
 	}
-	if _, err := repo.Git("branch", "-D", plan.branch); err != nil {
+	if err := deletion.deleteBranch(plan.branch); err != nil {
 		return fmt.Errorf("tag %q was pushed and worktree removed, but deleting branch %q failed: %w", plan.tag, plan.branch, err)
 	}
 	return nil

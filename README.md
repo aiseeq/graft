@@ -2949,12 +2949,18 @@ the trunk. On SIGTERM or SIGINT, cleanup stops between repositories:
   trunk has them by content, merged there by other commits, the worktree
   goes as a clean one, after a second look that nothing changed since the
   check;
+- with `--trunk`, remote branches are left alone; otherwise the project trunk
+  name is checked on each remote;
 - a worktree is removed with `git worktree remove` (`--force` for one whose
-  uncommitted changes are in the trunk), then its branch, and the
-  branch of the same name on every remote whose copy is in the trunk too,
-  only while it is still at the commit checked (`--force-with-lease`):
-  commits pushed there after the fetch keep it, listed as `kept`; one
-  deleted there after the fetch is listed as `already gone`, no error;
+  uncommitted changes are in the trunk), then its branch, and the branch of
+  the same name on every remote only when its live head is an ancestor of that
+  remote's live trunk. The live branch, trunk and HEAD are read together just
+  before deletion; the branch is deleted with `--force-with-lease` on its
+  checked SHA. New branch commits keep it, listed as `kept`; one deleted there
+  during the run is listed as `already gone`, no error. A force-push of trunk
+  or server-side change to symbolic HEAD between that read and the branch
+  deletion can still leave a branch deleted after its trunk or HEAD changed;
+  both races are outside this guarantee;
 - ignored files keep a worktree for a look and name the data that would go
   with it. Move the data or list regenerable paths in `worktree.disposable`;
   `node_modules` and the other build and tool caches are skipped, so a file

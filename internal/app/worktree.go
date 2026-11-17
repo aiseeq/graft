@@ -60,10 +60,12 @@ type cleaner struct {
 	subjects map[string]bool
 	// cwds maps a directory or an open file to the processes working in
 	// it or holding it.
-	cwds    map[string][]string
-	remotes []string
-	now     time.Time
-	counts  map[string]int
+	cwds                map[string][]string
+	remotes             []string
+	remoteBranchChecked map[string]bool
+	now                 time.Time
+	counts              map[string]int
+	remoteSkipReported  bool
 }
 
 type worktreeCleanResult struct {
@@ -1648,6 +1650,36 @@ func (c *cleaner) branches(held []string) error {
 			c.line("removed", what, "in "+c.trunk)
 		}
 	}
+	return c.remoteOnlyBranches()
+}
+
+// remoteOnlyBranches handles live remote heads after local cleanup.
+func (c *cleaner) remoteOnlyBranches() error {
+	if len(c.remotes) == 0 {
+		return nil
+	}
+	if c.remoteDeletionDisabled() {
+		return nil
+	}
+	for _, remote := range c.remotes {
+		out, err := c.repo.Git("ls-remote", "--heads", remote)
+		if err != nil {
+			return err
+		}
+		for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+			if err := c.ctx.Err(); err != nil {
+				return err
+			}
+			_, ref, ok := strings.Cut(line, "\t")
+			name, isBranch := strings.CutPrefix(ref, "refs/heads/")
+			if !ok || !isBranch || name == "" {
+				continue
+			}
+			if err := c.deleteRemoteCopy(remote, name); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -1667,50 +1699,234 @@ func (c *cleaner) branchUse(name string) (time.Time, error) {
 	return time.Unix(sec, 0), nil
 }
 
-// deleteBranch deletes the local branch and the branch of the same name on
-// every remote whose copy is in the trunk too. The remote deletes the branch
-// only while it is still at the commit checked: commits pushed there after
-// the fetch keep it.
+// deleteBranch deletes the local branch and applies the live ancestry rule to
+// the branch of the same name on every remote.
 func (c *cleaner) deleteBranch(name string) error {
-	for _, r := range c.remotes {
-		ref := "refs/remotes/" + r + "/" + name
-		ok, err := c.repo.RevExists(ref)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			continue
-		}
-		sha, err := c.repo.Git("rev-parse", ref)
-		if err != nil {
-			return err
-		}
-		sha = strings.TrimSpace(sha)
-		v, err := c.verdict(sha)
-		if err != nil {
-			return err
-		}
-		if !v.merged {
-			c.line(v.kind, r+"/"+name, v.why+"; kept on "+r)
-			continue
-		}
-		out, err := c.repo.Git("push", "--porcelain", r, "--force-with-lease=refs/heads/"+name+":"+sha, "--delete", name)
-		if err != nil {
-			if strings.Contains(out, "\t[rejected] (stale info)") {
-				c.line("kept", r+"/"+name, "new commits on "+r+" since the check at "+sha[:12])
-				continue
+	if !c.remoteDeletionDisabled() {
+		for _, r := range c.remotes {
+			if err := c.deleteRemoteCopy(r, name); err != nil {
+				return err
 			}
-			// Gone from the remote since the fetch: git tells only in
-			// stderr, in the user's language, so the remote is asked.
-			if _, lsErr := c.repo.Git("ls-remote", "--exit-code", r, "refs/heads/"+name); gitx.ExitCode(lsErr) == 2 {
-				c.line("already gone", r+"/"+name, "deleted on "+r+" since the fetch")
-				continue
-			}
+		}
+	}
+	if c.opts.Apply {
+		if exists, err := c.repo.RevExists("refs/heads/" + name); err != nil {
+			return err
+		} else if exists {
+			_, err = c.repo.Git("branch", "-D", name)
 			return err
 		}
 	}
-	_, err := c.repo.Git("branch", "-D", name)
-	return err
+	return nil
+}
+
+// remoteDeletionDisabled keeps remote cleanup conservative when trunk
+// selection cannot be mapped unambiguously to a branch name on every remote.
+func (c *cleaner) remoteDeletionDisabled() bool {
+	if c.opts.Trunk != "" {
+		if !c.remoteSkipReported {
+			c.app.printf("--trunk given: remote branches are left alone")
+			c.remoteSkipReported = true
+		}
+		return true
+	}
+	for _, remote := range c.remotes {
+		if strings.Contains(remote, "/") {
+			if !c.remoteSkipReported {
+				c.app.printf("remote name contains '/': remote branches are left alone")
+				c.remoteSkipReported = true
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func (c *cleaner) deleteRemoteCopy(remote, name string) error {
+	if len(c.remotes) == 0 {
+		return nil
+	}
+	key := remote + "\x00" + name
+	if c.remoteBranchChecked[key] {
+		return nil
+	}
+	if c.remoteBranchChecked == nil {
+		c.remoteBranchChecked = map[string]bool{}
+	}
+	c.remoteBranchChecked[key] = true
+	trunkName := c.trunkBranch()
+	sha, trunkSHA, ok, err := c.remoteBranchCandidate(remote, name, trunkName)
+	if err != nil || !ok {
+		return err
+	}
+	used, err := c.remoteBranchUse(sha)
+	if err != nil {
+		return err
+	}
+	if c.now.Sub(used) < c.opts.MinAge {
+		c.line("in work", "branch "+remote+"/"+name, "used less than "+c.opts.MinAge.String()+" ago")
+		return nil
+	}
+	merged, err := c.remoteBranchIsAncestor(sha, trunkSHA)
+	if err != nil {
+		return err
+	}
+	if !merged {
+		c.line("unmerged", "branch "+remote+"/"+name, "not an ancestor of "+remote+"/"+trunkName+"; kept on "+remote)
+		return nil
+	}
+	if !c.opts.Apply {
+		c.line("would remove", "branch "+remote+"/"+name, "in "+remote+"/"+trunkName)
+		return nil
+	}
+	deleted, err := c.deleteRemoteBranch(remote, name, sha)
+	if err != nil {
+		return err
+	}
+	if deleted {
+		c.line("removed", "branch "+remote+"/"+name, "in "+remote+"/"+trunkName)
+	}
+	return nil
+}
+
+func (c *cleaner) remoteBranchCandidate(remote, name, trunkName string) (string, string, bool, error) {
+	if name == trunkName {
+		return "", "", false, nil
+	}
+	branchRef := "refs/heads/" + name
+	trunkRef := "refs/heads/" + trunkName
+	if branchRef == trunkRef {
+		return "", "", false, nil
+	}
+	out, err := c.repo.Git("ls-remote", "--symref", remote, "HEAD", trunkRef, branchRef)
+	if err != nil {
+		return "", "", false, err
+	}
+	sha, trunkSHA, head := parseLiveRemoteRefs(out, branchRef, trunkRef)
+	// A remote that does not name the branch its HEAD points to may point
+	// it at this branch: nothing is deleted there.
+	if sha == "" || trunkSHA == "" || head == "" || head == branchRef {
+		return "", "", false, nil
+	}
+	if ok, err := c.remoteCommitExists(sha); err != nil || !ok {
+		return "", "", false, err
+	}
+	if ok, err := c.remoteCommitExists(trunkSHA); err != nil || !ok {
+		return "", "", false, err
+	}
+	return sha, trunkSHA, true, nil
+}
+
+func (c *cleaner) remoteBranchIsAncestor(branch, trunk string) (bool, error) {
+	_, err := c.remoteGit("merge-base", "--is-ancestor", branch, trunk)
+	if err == nil {
+		return true, nil
+	}
+	if gitx.ExitCode(err) == 1 {
+		return false, nil
+	}
+	return false, err
+}
+
+func (c *cleaner) remoteCommitExists(rev string) (bool, error) {
+	_, err := c.remoteGit("rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	if err == nil {
+		return true, nil
+	}
+	if gitx.ExitCode(err) == 1 {
+		return false, nil
+	}
+	return false, err
+}
+
+func parseLiveRemoteRefs(out, branchRef, trunkRef string) (branchSHA, trunkSHA, head string) {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == "ref:" && fields[2] == "HEAD" {
+			head = fields[1]
+			continue
+		}
+		if len(fields) != 2 {
+			continue
+		}
+		switch fields[1] {
+		case branchRef:
+			branchSHA = fields[0]
+		case trunkRef:
+			trunkSHA = fields[0]
+		}
+	}
+	return branchSHA, trunkSHA, head
+}
+
+func (c *cleaner) remoteBranchUse(sha string) (time.Time, error) {
+	out, err := c.remoteGit("log", "-1", "--format=%ct", sha)
+	if err != nil {
+		return time.Time{}, err
+	}
+	sec, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("remote branch commit time %q: %w", out, err)
+	}
+	return time.Unix(sec, 0), nil
+}
+
+func (c *cleaner) remoteGit(args ...string) (string, error) {
+	dir, err := os.MkdirTemp("", "graft-clean-no-grafts-")
+	if err != nil {
+		return "", fmt.Errorf("creating temporary graft file directory: %w", err)
+	}
+	out, gitErr := c.repo.GitEnv([]string{
+		"GIT_NO_REPLACE_OBJECTS=1",
+		"GIT_GRAFT_FILE=" + filepath.Join(dir, "grafts"),
+	}, args...)
+	return out, errors.Join(gitErr, os.RemoveAll(dir))
+}
+
+// deleteRemoteBranch deletes only the remote head at the checked SHA. A
+// concurrent push changes the lease and leaves that newer head in place.
+func (c *cleaner) deleteRemoteBranch(remote, name, sha string) (bool, error) {
+	out, err := c.repo.Git("push", "--porcelain", remote, "--force-with-lease=refs/heads/"+name+":"+sha, "--delete", name)
+	if err == nil {
+		return true, nil
+	}
+	if strings.Contains(out, "\t[rejected] (stale info)") {
+		c.line("kept", remote+"/"+name, "new commits on "+remote+" since the check at "+sha[:12])
+		return false, nil
+	}
+	// Gone from the remote since the fetch: git tells only in stderr, in the
+	// user's language, so ask the remote whether the ref still exists.
+	if _, lsErr := c.repo.Git("ls-remote", "--exit-code", remote, "refs/heads/"+name); gitx.ExitCode(lsErr) == 2 {
+		c.line("already gone", remote+"/"+name, "deleted on "+remote+" since the fetch")
+		return false, nil
+	}
+	return false, err
+}
+
+func branchDeletionCleaner(ctx context.Context, app *App, repo *gitx.Repo, cfg *config.Config, trunk string, explicitTrunk bool) (*cleaner, error) {
+	c := &cleaner{ctx: ctx, app: app, repo: repo, cfg: cfg, opts: WorktreeCleanOptions{Apply: true}, trunk: trunk, now: time.Now(), counts: map[string]int{}}
+	if explicitTrunk {
+		c.opts.Trunk = trunk
+	}
+	var err error
+	if c.remotes, err = repo.Remotes(); err != nil {
+		return nil, err
+	}
+	for _, remote := range c.remotes {
+		if _, err := repo.Git("fetch", "--quiet", "--prune", remote); err != nil {
+			return nil, fmt.Errorf("git fetch %s failed, remote branch state is unknown: %w", remote, err)
+		}
+	}
+	if c.cfg, err = c.readTrunkConfig(); err != nil {
+		return nil, err
+	}
+	for _, file := range c.cfg.VersionFiles() {
+		c.exclude = append(c.exclude, ":(exclude)"+file)
+	}
+	if err := c.readSubjects(); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 func (c *cleaner) summary() {

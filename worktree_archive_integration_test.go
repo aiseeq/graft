@@ -56,6 +56,45 @@ func TestWorktreeArchivePushesReasonThenRemovesLocalTree(t *testing.T) {
 	}
 }
 
+func TestWorktreeArchiveDeletesMergedRemoteBranch(t *testing.T) {
+	f, path := archiveFixture(t)
+	f.git("switch", "-q", "main")
+	f.git("merge", "--ff-only", "-q", "feature/archive/idea")
+	f.git("push", "-q", "origin", "main:refs/heads/main")
+	f.git("push", "-q", "origin", "feature/archive/idea:refs/heads/feature/archive/idea")
+
+	out, code := f.graft("", "worktree", "archive", "--reason", "superseded proposal", "feature/archive/idea")
+	if code != 0 || !strings.Contains(out, "remote branch feature/archive/idea removed") {
+		t.Fatalf("archive did not delete merged remote branch, exit %d:\n%s", code, out)
+	}
+	if remote := f.git("ls-remote", "origin", "refs/heads/feature/archive/idea"); strings.TrimSpace(remote) != "" {
+		t.Errorf("merged remote branch remains: %s", remote)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("archived worktree still exists: %v", err)
+	}
+}
+
+func TestWorktreeReview5ArchiveExplicitTrunk(t *testing.T) {
+	f, _ := archiveFixture(t)
+	f.addRemote("origin/team", f.remote("origin"))
+	f.git("fetch", "-q", "origin/team")
+	f.git("remote", "set-head", "origin/team", "main")
+	f.git("push", "-q", "origin/team", "feature/archive/idea:refs/heads/feature/archive/idea")
+	f.git("push", "-q", "origin/team", "feature/archive/idea:refs/heads/team/main")
+
+	out, code := f.graft("", "worktree", "archive", "--trunk", "origin/team/main", "--reason", "superseded proposal", "feature/archive/idea")
+	if code != 0 {
+		t.Fatalf("archive failed, exit %d:\n%s", code, out)
+	}
+	if !strings.Contains(out, "remote branch feature/archive/idea remains") {
+		t.Fatalf("archive did not leave remote branch alone with explicit trunk:\n%s", out)
+	}
+	if _, code := f.tryGit("ls-remote", "--exit-code", "origin/team", "refs/heads/feature/archive/idea"); code != 0 {
+		t.Fatal("archive removed remote branch with explicit --trunk")
+	}
+}
+
 func TestWorktreeArchiveRefusesUncommittedChangesAndExistingTag(t *testing.T) {
 	f, path := archiveFixture(t)
 	writeFile(t, filepath.Join(path, "scratch.txt"), "unsaved\n")
