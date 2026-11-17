@@ -58,11 +58,10 @@ func (a *App) WorktreeAdd(ctx context.Context, o WorktreeAddOptions) error {
 			return fmt.Errorf("%w; choose the base with `graft worktree add %s <base>` or `graft worktree add --trunk <ref> %s`", err, o.Branch, o.Branch)
 		}
 	}
-	cache, err := os.UserCacheDir()
+	linkRoot, dir, err := worktreeAddPaths(main, o.Branch)
 	if err != nil {
-		return fmt.Errorf("locating the cache: %w", err)
+		return err
 	}
-	dir := filepath.Join(cache, "worktrees", filepath.Base(main), strings.ReplaceAll(o.Branch, "/", "-"))
 	from := base
 	if exists {
 		from = o.Branch
@@ -73,6 +72,9 @@ func (a *App) WorktreeAdd(ctx context.Context, o WorktreeAddOptions) error {
 	}
 	links, err = normalizeNeighbourLinks(links, dir)
 	if err != nil {
+		return err
+	}
+	if err := validateWorktreeNeighbourLinks(links, linkRoot); err != nil {
 		return err
 	}
 	args := []string{"worktree", "add", "--quiet"}
@@ -93,10 +95,31 @@ func (a *App) WorktreeAdd(ctx context.Context, o WorktreeAddOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := linkNeighbours(a, links, ""); err != nil {
+	if err := linkNeighbours(a, links, linkRoot, true); err != nil {
 		return err
 	}
 	return a.prepareWorktree(ctx, main, dir, linkSetups)
+}
+
+func worktreeAddPaths(main, branch string) (linkRoot, dir string, err error) {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", "", fmt.Errorf("locating the cache: %w", err)
+	}
+	linkRoot = filepath.Join(cache, "worktrees")
+	if err := os.MkdirAll(linkRoot, 0o755); err != nil {
+		return "", "", fmt.Errorf("creating shared worktree link directory %s: %w", linkRoot, err)
+	}
+	linkRoot, err = filepath.EvalSymlinks(linkRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("resolving shared worktree link directory: %w", err)
+	}
+	projectCatalog := filepath.Join(linkRoot, filepath.Base(main))
+	dir = filepath.Join(projectCatalog, strings.ReplaceAll(branch, "/", "-"))
+	if err := validateWorktreeProjectCatalog(linkRoot, dir); err != nil {
+		return "", "", err
+	}
+	return linkRoot, dir, nil
 }
 
 // prepareWorktree copies worktree.copy from the main worktree into the one
@@ -314,28 +337,38 @@ func copyLocal(main, dir, rel string) error {
 
 // link is a symlink to make beside a worktree.
 type link struct {
-	at, to string
-	exists bool
+	at, to, skipReason string
+	exists             bool
 }
 
 type neighbourReach struct{ why, rel string }
 
+var errNeighbourPathSymlink = errors.New("neighbour path component is a symlink")
+
 // linkNeighbours creates the links a worktree needs to reach modules beside
 // the repository, as declared by go.work and go.mod. When boundary is set,
 // every link must stay inside it.
-func linkNeighbours(a *App, links []link, boundary string) error {
+func linkNeighbours(a *App, links []link, boundary string, skipSymlinkParents bool) error {
 	if boundary != "" {
 		if err := checkNeighbourBounds(links, boundary); err != nil {
 			return err
 		}
 	}
 	for _, l := range links {
+		if l.skipReason != "" {
+			a.printf("not linking %s: %s", l.at, l.skipReason)
+			continue
+		}
 		if l.exists {
 			continue
 		}
 		if boundary != "" {
-			if err := checkNeighbourParents(boundary, filepath.Dir(l.at)); err != nil {
+			skipped, err := checkNeighbourCreationParent(a, l, boundary, skipSymlinkParents)
+			if err != nil {
 				return err
+			}
+			if skipped {
+				continue
 			}
 		}
 		if err := os.MkdirAll(filepath.Dir(l.at), 0o755); err != nil {
@@ -349,10 +382,116 @@ func linkNeighbours(a *App, links []link, boundary string) error {
 	return nil
 }
 
+func checkNeighbourCreationParent(a *App, l link, root string, skipSymlink bool) (bool, error) {
+	err := checkNeighbourParents(root, filepath.Dir(l.at))
+	if err == nil {
+		return false, nil
+	}
+	if !skipSymlink || !errors.Is(err, errNeighbourPathSymlink) {
+		return false, err
+	}
+	if err := checkNeighbourParentLink(l); err != nil {
+		return false, err
+	}
+	a.printf("not linking %s: already available through symlink parent", l.at)
+	return true, nil
+}
+
+func validateWorktreeNeighbourLinks(links []link, root string) error {
+	if err := checkNeighbourBounds(links, root); err != nil {
+		return err
+	}
+	if len(links) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("creating shared worktree link directory %s: %w", root, err)
+	}
+	if err := checkNeighbourParents(root, root); err != nil {
+		return err
+	}
+	for _, l := range links {
+		if l.exists || l.skipReason != "" {
+			continue
+		}
+		if err := checkNeighbourParents(root, filepath.Dir(l.at)); err != nil {
+			if errors.Is(err, errNeighbourPathSymlink) {
+				if err := checkNeighbourParentLink(l); err != nil {
+					return err
+				}
+				continue
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func validateWorktreeProjectCatalog(root, worktreePath string) error {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolving shared worktree link directory: %w", err)
+	}
+	worktreePath, err = filepath.Abs(worktreePath)
+	if err != nil {
+		return fmt.Errorf("resolving worktree path: %w", err)
+	}
+	rel, err := filepath.Rel(root, worktreePath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("worktree path %s is outside shared link directory %s", worktreePath, root)
+	}
+	current := root
+	if rel == "." {
+		return nil
+	}
+	for component := range strings.SplitSeq(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("checking worktree path component %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, readErr := os.Readlink(current)
+			if readErr != nil {
+				return fmt.Errorf("reading neighbour link %s: %w", current, readErr)
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(current), target)
+			}
+			if resolved, evalErr := filepath.EvalSymlinks(current); evalErr == nil {
+				target = resolved
+			}
+			return fmt.Errorf("worktree path %s contains symlink %s -> %s; worktree directories below cache/worktrees must be real directories; to use another disk, move cache/worktrees as a whole", worktreePath, current, target)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("worktree path component %s is not a directory", current)
+		}
+	}
+	return nil
+}
+
+func checkNeighbourParentLink(l link) error {
+	atParent, err := filepath.EvalSymlinks(filepath.Dir(l.at))
+	if err != nil {
+		return fmt.Errorf("resolving neighbour parent %s: %w", filepath.Dir(l.at), err)
+	}
+	toParent, err := filepath.EvalSymlinks(filepath.Dir(l.to))
+	if err != nil {
+		return fmt.Errorf("neighbour path %s leads elsewhere than %s: resolving target parent: %w", l.at, l.to, err)
+	}
+	if filepath.Clean(atParent) != filepath.Clean(toParent) {
+		return fmt.Errorf("neighbour path %s leads elsewhere than %s", l.at, l.to)
+	}
+	return nil
+}
+
 func checkNeighbourParents(root, parent string) error {
 	root, err := filepath.Abs(root)
 	if err != nil {
-		return fmt.Errorf("resolving merge temporary directory: %w", err)
+		return fmt.Errorf("resolving neighbour link root: %w", err)
 	}
 	parent, err = filepath.Abs(parent)
 	if err != nil {
@@ -360,14 +499,14 @@ func checkNeighbourParents(root, parent string) error {
 	}
 	rel, err := filepath.Rel(root, parent)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("neighbour parent %s would leave merge temporary directory %s", parent, root)
+		return fmt.Errorf("neighbour parent %s would leave link root %s", parent, root)
 	}
 	rootInfo, err := os.Lstat(root)
 	if err != nil {
-		return fmt.Errorf("checking merge temporary directory %s: %w", root, err)
+		return fmt.Errorf("checking neighbour link root %s: %w", root, err)
 	}
 	if rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
-		return fmt.Errorf("merge temporary directory %s is not a real directory", root)
+		return fmt.Errorf("neighbour link root %s is not a real directory", root)
 	}
 	current := root
 	if rel == "." {
@@ -383,7 +522,7 @@ func checkNeighbourParents(root, parent string) error {
 			return fmt.Errorf("checking neighbour path component %s: %w", current, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("neighbour path component %s is a symlink", current)
+			return fmt.Errorf("%w: %s", errNeighbourPathSymlink, current)
 		}
 		if !info.IsDir() {
 			return fmt.Errorf("neighbour path component %s is not a directory", current)
@@ -395,16 +534,19 @@ func checkNeighbourParents(root, parent string) error {
 func checkNeighbourBounds(links []link, boundary string) error {
 	root, err := filepath.Abs(boundary)
 	if err != nil {
-		return fmt.Errorf("resolving merge temporary directory: %w", err)
+		return fmt.Errorf("resolving neighbour link root: %w", err)
 	}
 	for _, l := range links {
+		if l.skipReason != "" {
+			continue
+		}
 		at, err := filepath.Abs(l.at)
 		if err != nil {
 			return fmt.Errorf("resolving neighbour path %s: %w", l.at, err)
 		}
 		rel, err := filepath.Rel(root, at)
 		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("neighbour link %s would leave merge temporary directory %s", l.at, root)
+			return fmt.Errorf("neighbour link %s would leave link root %s", l.at, root)
 		}
 	}
 	return nil
@@ -451,21 +593,23 @@ func normalizeNeighbourLinks(links []link, tree string) ([]link, error) {
 	kept := make([]link, 0, len(links))
 	for _, candidate := range links {
 		if pathWithin(tree, candidate.at) {
+			candidate.skipReason = "the neighbour path resolves inside the worktree"
+			kept = append(kept, candidate)
 			continue
 		}
-		covered := false
 		for _, parent := range kept {
+			if parent.skipReason != "" {
+				continue
+			}
 			if pathWithin(parent.at, candidate.at) {
 				if parent.at == candidate.at && parent.to != candidate.to {
 					return nil, fmt.Errorf("neighbour path %s points to both %s and %s", candidate.at, parent.to, candidate.to)
 				}
-				covered = true
+				candidate.skipReason = "already available through neighbour link " + parent.at
 				break
 			}
 		}
-		if !covered {
-			kept = append(kept, candidate)
-		}
+		kept = append(kept, candidate)
 	}
 	return kept, nil
 }

@@ -971,6 +971,346 @@ func TestWorktreeAdd(t *testing.T) {
 	}
 }
 
+func TestWorktreeAddNestedNeighbourReusesParentLink(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n",
+		"go.mod":      "module example.com/projectA\n\ngo 1.23\n",
+		"go.work":     "go 1.23\n\nuse (\n .\n ../kit\n)\n",
+	}, "origin")
+	kit := filepath.Join(f.base, "kit")
+	writeFile(t, filepath.Join(kit, "go.mod"), "module example.com/kit\n\ngo 1.23\n")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustPlainCommit("chore: initial workspace")
+	f.git("push", "-q", "-u", "origin", "HEAD")
+	f.git("remote", "set-head", "origin", "main")
+	cache := t.TempDir()
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache)
+
+	if out, code := f.graft("", "worktree", "add", "b1", "main"); code != 0 {
+		t.Fatalf("first worktree add: exit %d\n%s", code, out)
+	}
+	f.write("go.work", "go 1.23\n\nuse (\n .\n ../kit/new-child\n)\n")
+	f.mustPlainCommit("chore: nest workspace neighbour")
+	if out, code := f.graft("", "worktree", "add", "b2", "main"); code != 0 {
+		t.Fatalf("second worktree add: exit %d\n%s", code, out)
+	}
+	if _, err := os.Lstat(filepath.Join(kit, "new-child")); !os.IsNotExist(err) {
+		t.Errorf("nested neighbour was created through the cache parent link: %v", err)
+	}
+}
+
+func TestWorktreeAddNeighbourTwoParentsUpStaysInSharedCatalog(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+		"VERSION":     "1.0.0\n",
+		"go.mod":      "module example.com/projectA\n\ngo 1.23\n",
+		"go.work":     "go 1.23\n\nuse (\n .\n ../../shared\n)\n",
+	}, "origin")
+	shared := filepath.Clean(filepath.Join(f.work, "../../shared"))
+	writeFile(t, filepath.Join(shared, "go.mod"), "module example.com/shared\n\ngo 1.23\n")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustPlainCommit("chore: initial workspace")
+	f.git("push", "-q", "-u", "origin", "HEAD")
+	f.git("remote", "set-head", "origin", "main")
+	cache := t.TempDir()
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache)
+
+	out, code := f.graft("", "worktree", "add", "b1", "main")
+	if code != 0 {
+		t.Fatalf("worktree add: exit %d\n%s", code, out)
+	}
+	wantLink := filepath.Join(cache, "worktrees", "shared")
+	if target, err := os.Readlink(wantLink); err != nil || target != shared {
+		t.Errorf("shared neighbour link = %q, %v; want %q", target, err, shared)
+	}
+}
+
+func TestWorktreeAddNestedNeighbourRejectsForeignParentLink(t *testing.T) {
+	cache := t.TempDir()
+	makeProject := func(neighbourPath string, withChild bool) (*fixture, string) {
+		t.Helper()
+		f := newRepo(t, map[string]string{
+			".graft.yaml": "schema: 1\nversion: {mode: file}\n",
+			"VERSION":     "1.0.0\n",
+			"go.mod":      "module example.com/projectA\n\ngo 1.23\n",
+			"go.work":     "go 1.23\n\nuse (\n .\n " + neighbourPath + "\n)\n",
+		}, "origin")
+		kit := filepath.Join(f.base, "kit")
+		writeFile(t, filepath.Join(kit, "go.mod"), "module example.com/kit\n\ngo 1.23\n")
+		if withChild {
+			writeFile(t, filepath.Join(kit, "new-child", "go.mod"), "module example.com/kit/new-child\n\ngo 1.23\n")
+		}
+		f.git("checkout", "-q", "-b", "main")
+		f.mustPlainCommit("chore: initial workspace")
+		f.git("push", "-q", "-u", "origin", "HEAD")
+		f.git("remote", "set-head", "origin", "main")
+		f.env = append(f.env, "XDG_CACHE_HOME="+cache)
+		return f, kit
+	}
+
+	first, _ := makeProject("../kit", false)
+	second, secondKit := makeProject("../kit/new-child", true)
+	if out, code := first.graft("", "worktree", "add", "b1", "main"); code != 0 {
+		t.Fatalf("first project worktree add: exit %d\n%s", code, out)
+	}
+	out, code := second.graft("", "worktree", "add", "b2", "main")
+	if code == 0 || !strings.Contains(out, "leads elsewhere") {
+		t.Fatalf("second project should reject the foreign parent link: exit %d\n%s", code, out)
+	}
+	if branches := second.git("branch", "--list", "b2"); branches != "" {
+		t.Errorf("failed neighbour validation created branch b2: %s", branches)
+	}
+	secondTree := filepath.Join(cache, "worktrees", "work", "b2")
+	if _, err := os.Lstat(secondTree); !os.IsNotExist(err) {
+		t.Errorf("failed neighbour validation created worktree %s: %v", secondTree, err)
+	}
+	if _, err := os.Stat(filepath.Join(secondKit, "new-child", "go.mod")); err != nil {
+		t.Errorf("second project's neighbour was damaged: %v", err)
+	}
+}
+
+func TestWorktreeAddRefusesProjectCatalogInsideNeighbourRepository(t *testing.T) {
+	base := t.TempDir()
+	cache := filepath.Join(base, "cache")
+	kitPath := filepath.Join(base, "kit")
+	kit := newWorktreeRepoAt(t, kitPath, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: 'test'}\n",
+		"go.mod":      "module example.com/kit\n\ngo 1.23\n",
+	})
+	orgWork := filepath.Join(base, "org", "work")
+	org := newWorktreeRepoAt(t, orgWork, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: 'test'}\n",
+		"go.mod":      "module example.com/org\n\ngo 1.23\n",
+		"go.work":     "go 1.23\n\nuse (\n .\n ../../kit\n)\n",
+	})
+	kit.env = append(kit.env, "XDG_CACHE_HOME="+cache)
+	org.env = append(org.env, "XDG_CACHE_HOME="+cache)
+
+	if out, code := org.graft("", "worktree", "add", "b1", "main"); code != 0 {
+		t.Fatalf("neighbour worktree add: exit %d\n%s", code, out)
+	}
+	projectCatalog := filepath.Join(cache, "worktrees", "kit")
+	out, code := kit.graft("", "worktree", "add", "feat", "main")
+	if code == 0 || !strings.Contains(out, projectCatalog) || !strings.Contains(out, kitPath) {
+		t.Fatalf("worktree add should refuse a project catalog inside the kit repository: exit %d\n%s", code, out)
+	}
+	if branches := kit.git("branch", "--list", "feat"); branches != "" {
+		t.Errorf("refused worktree add created branch feat: %s", branches)
+	}
+	if _, err := os.Lstat(filepath.Join(kitPath, "feat")); !os.IsNotExist(err) {
+		t.Errorf("refused worktree add created a directory in the real kit: %v", err)
+	}
+}
+
+func TestWorktreeAddRefusesSymlinkedProjectCatalog(t *testing.T) {
+	base := t.TempDir()
+	cache := filepath.Join(base, "cache")
+	shared := filepath.Join(base, "shared")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(shared, "go.mod"), "module example.com/shared\n\ngo 1.23\n")
+	org := newWorktreeRepoAt(t, filepath.Join(base, "org", "svc"), map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: 'test'}\n",
+		"go.mod":      "module example.com/svc\n\ngo 1.23\n",
+		"go.work":     "go 1.23\n\nuse (\n .\n ../../shared\n)\n",
+	})
+	project := newWorktreeRepoAt(t, filepath.Join(base, "elsewhere", "shared"), map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: 'test'}\n",
+		"go.mod":      "module example.com/other-shared\n\ngo 1.23\n",
+	})
+	org.env = append(org.env, "XDG_CACHE_HOME="+cache)
+	project.env = append(project.env, "XDG_CACHE_HOME="+cache)
+	if out, code := org.graft("", "worktree", "add", "b1", "main"); code != 0 {
+		t.Fatalf("neighbour worktree add: exit %d\n%s", code, out)
+	}
+	projectCatalog := filepath.Join(cache, "worktrees", "shared")
+	out, code := project.graft("", "worktree", "add", "feat", "main")
+	if code == 0 || !strings.Contains(out, projectCatalog) || !strings.Contains(out, shared) {
+		t.Fatalf("worktree add should refuse the symlinked project catalog and name its target: exit %d\n%s", code, out)
+	}
+	if branches := project.git("branch", "--list", "feat"); branches != "" {
+		t.Errorf("refused worktree add created branch feat: %s", branches)
+	}
+	if entries, err := os.ReadDir(shared); err != nil || len(entries) != 1 || entries[0].Name() != "go.mod" {
+		t.Errorf("refused worktree add changed the real shared directory: entries=%v err=%v", entries, err)
+	}
+}
+
+func TestWorktreeAddAllowsCacheInsideGitRepository(t *testing.T) {
+	base := t.TempDir()
+	repoPath := filepath.Join(base, "home", "repo")
+	project := newWorktreeRepoAt(t, repoPath, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: 'test'}\n",
+		"go.mod":      "module example.com/project\n\ngo 1.23\n",
+	})
+	cache := filepath.Join(repoPath, "home", ".cache")
+	project.env = append(project.env, "XDG_CACHE_HOME="+cache)
+	out, code := project.graft("", "worktree", "add", "feat", "main")
+	if code != 0 {
+		t.Fatalf("worktree add with cache inside git repository: exit %d\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(cache, "worktrees", "repo", "feat")); err != nil {
+		t.Errorf("worktree was not created inside the configured cache: %v", err)
+	}
+}
+
+func TestWorktreeAddRefusesBranchPathSymlinkToNeighbour(t *testing.T) {
+	base := t.TempDir()
+	cache := filepath.Join(base, "cache")
+	neighbour := filepath.Join(base, "feat")
+	if err := os.MkdirAll(neighbour, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project := newWorktreeRepoAt(t, filepath.Join(base, "work"), map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: 'test'}\n",
+		"go.mod":      "module example.com/work\n\ngo 1.23\n",
+		"go.work":     "go 1.23\n\nuse (\n .\n ../feat\n)\n",
+	})
+	project.env = append(project.env, "XDG_CACHE_HOME="+cache)
+	if out, code := project.graft("", "worktree", "add", "b1", "main"); code != 0 {
+		t.Fatalf("initial worktree add: exit %d\n%s", code, out)
+	}
+	link := filepath.Join(cache, "worktrees", "work", "feat")
+	if out, code := project.graft("", "worktree", "add", "feat", "main"); code == 0 || !strings.Contains(out, link) || !strings.Contains(out, neighbour) || !strings.Contains(out, "worktree directories below cache/worktrees must be real directories") || !strings.Contains(out, "move cache/worktrees as a whole") {
+		t.Fatalf("worktree add should reject the neighbour link at its destination: exit %d\n%s", code, out)
+	}
+	if branches := project.git("branch", "--list", "feat"); branches != "" {
+		t.Errorf("refused worktree add created branch feat: %s", branches)
+	}
+	if entries, err := os.ReadDir(neighbour); err != nil || len(entries) != 0 {
+		t.Errorf("refused worktree add changed the real neighbour directory: entries=%v err=%v", entries, err)
+	}
+}
+
+func TestWorktreeAddRefusesNestedBranchPathSymlinkToNeighbour(t *testing.T) {
+	base := t.TempDir()
+	cache := filepath.Join(base, "cache")
+	sharedSub := filepath.Join(base, "shared", "sub")
+	if err := os.MkdirAll(sharedSub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	service := newWorktreeRepoAt(t, filepath.Join(base, "org", "svc"), map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: 'test'}\n",
+		"go.mod":      "module example.com/svc\n\ngo 1.23\n",
+		"go.work":     "go 1.23\n\nuse (\n .\n ../../shared/sub\n)\n",
+	})
+	shared := newWorktreeRepoAt(t, filepath.Join(base, "elsewhere", "shared"), map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: 'test'}\n",
+		"go.mod":      "module example.com/shared\n\ngo 1.23\n",
+	})
+	service.env = append(service.env, "XDG_CACHE_HOME="+cache)
+	shared.env = append(shared.env, "XDG_CACHE_HOME="+cache)
+	if out, code := service.graft("", "worktree", "add", "b1", "main"); code != 0 {
+		t.Fatalf("service worktree add: exit %d\n%s", code, out)
+	}
+	link := filepath.Join(cache, "worktrees", "shared", "sub")
+	if out, code := shared.graft("", "worktree", "add", "sub", "main"); code == 0 || !strings.Contains(out, link) || !strings.Contains(out, sharedSub) || !strings.Contains(out, "worktree directories below cache/worktrees must be real directories") || !strings.Contains(out, "move cache/worktrees as a whole") {
+		t.Fatalf("shared worktree add should reject the nested neighbour link: exit %d\n%s", code, out)
+	}
+	if branches := shared.git("branch", "--list", "sub"); branches != "" {
+		t.Errorf("refused worktree add created branch sub: %s", branches)
+	}
+	if entries, err := os.ReadDir(sharedSub); err != nil || len(entries) != 0 {
+		t.Errorf("refused worktree add changed the real shared/sub directory: entries=%v err=%v", entries, err)
+	}
+}
+
+func TestWorktreeAddChecksEveryNeighbourParentBeforeCreatingTree(t *testing.T) {
+	base := t.TempDir()
+	cache := filepath.Join(base, "cache")
+	kitPath := filepath.Join(base, "kit")
+	libPath := filepath.Join(base, "lib")
+	newWorktreeRepoAt(t, kitPath, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: 'test'}\n",
+		"go.mod":      "module example.com/kit\n\ngo 1.23\n",
+	})
+	newWorktreeRepoAt(t, libPath, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: 'test'}\n",
+		"go.mod":      "module example.com/lib\n\ngo 1.23\n",
+	})
+	project := newWorktreeRepoAt(t, filepath.Join(base, "work"), map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: 'test'}\n",
+		"go.mod":      "module example.com/projectA\n\ngo 1.23\n",
+		"go.work":     "go 1.23\n\nuse (\n .\n ../kit/x\n ../lib/y\n)\n",
+	})
+	project.env = append(project.env, "XDG_CACHE_HOME="+cache)
+	projectCatalog := filepath.Join(cache, "worktrees", "work")
+	if err := os.MkdirAll(projectCatalog, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(kitPath, filepath.Join(projectCatalog, "kit")); err != nil {
+		t.Fatal(err)
+	}
+	foreign := filepath.Join(base, "foreign-lib")
+	if err := os.MkdirAll(foreign, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(foreign, filepath.Join(projectCatalog, "lib")); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code := project.graft("", "worktree", "add", "b2", "main")
+	if code == 0 || !strings.Contains(out, "leads elsewhere") || !strings.Contains(out, filepath.Join(projectCatalog, "lib", "y")) {
+		t.Fatalf("worktree add should reject the second foreign neighbour: exit %d\n%s", code, out)
+	}
+	if branches := project.git("branch", "--list", "b2"); branches != "" {
+		t.Errorf("neighbour validation created branch b2: %s", branches)
+	}
+	if _, err := os.Lstat(filepath.Join(projectCatalog, "b2")); !os.IsNotExist(err) {
+		t.Errorf("neighbour validation created worktree b2: %v", err)
+	}
+}
+
+func TestWorktreeAddAllowsSymlinkedSharedCatalog(t *testing.T) {
+	base := t.TempDir()
+	cache := filepath.Join(base, "cache")
+	actualCatalog := filepath.Join(base, "external", "worktrees")
+	if err := os.MkdirAll(actualCatalog, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(actualCatalog, filepath.Join(cache, "worktrees")); err != nil {
+		t.Fatal(err)
+	}
+	kitPath := filepath.Join(base, "projectA", "kit")
+	writeFile(t, filepath.Join(kitPath, "go.mod"), "module example.com/kit\n\ngo 1.23\n")
+	project := newWorktreeRepoAt(t, filepath.Join(base, "projectA", "work"), map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none, reason: 'test'}\n",
+		"go.mod":      "module example.com/projectA\n\ngo 1.23\n",
+		"go.work":     "go 1.23\n\nuse (\n .\n ../kit\n)\n",
+	})
+	project.env = append(project.env, "XDG_CACHE_HOME="+cache)
+	out, code := project.graft("", "worktree", "add", "b1", "main")
+	if code != 0 {
+		t.Fatalf("worktree add with symlinked shared catalog: exit %d\n%s", code, out)
+	}
+	if target, err := os.Readlink(filepath.Join(actualCatalog, "work", "kit")); err != nil || target != kitPath {
+		t.Errorf("neighbour link = %q, %v; want %q", target, err, kitPath)
+	}
+}
+
+func newWorktreeRepoAt(t *testing.T, dir string, files map[string]string) *fixture {
+	t.Helper()
+	f := &fixture{t: t, base: filepath.Dir(dir), work: dir}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := f.exec(dir, "", "git", "init", "-q"); code != 0 {
+		t.Fatalf("git init: exit %d\n%s", code, out)
+	}
+	for name, content := range files {
+		f.write(name, content)
+	}
+	f.git("add", "-A")
+	f.git("commit", "-qm", "chore: fixture")
+	f.git("branch", "-M", "main")
+	return f
+}
+
 func TestWorktreeFirstCommitRetrySetsUpstream(t *testing.T) {
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: file}\ngo_vet: {enabled: false, reason: the fixture has no packages}\n",

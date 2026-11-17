@@ -346,6 +346,38 @@ func TestMergeWarnsAboutDeadTemporaryWorktree(t *testing.T) {
 	}
 }
 
+func TestMergeFindsOrphanUnderSymlinkedTMPDIR(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "tmp-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env, "TMPDIR="+link)
+	root, err := os.MkdirTemp(target, "graft-merge-orphan-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	worktree := filepath.Join(root, "projectA", "tree")
+	if err := os.MkdirAll(filepath.Dir(worktree), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.git("worktree", "add", "--detach", "--quiet", worktree, "main")
+	resolvedWorktree, err := filepath.EvalSymlinks(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commonDir := f.git("rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err := os.WriteFile(filepath.Join(root, ".graft-merge-owner"), []byte("2147483647\n"+commonDir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := f.mustGraft("merge", "feature/PROJ-42")
+	if !strings.Contains(out, "git worktree remove --force '"+resolvedWorktree+"'") {
+		t.Errorf("missing registered worktree cleanup command:\n%s", out)
+	}
+}
+
 func TestMergeWarnsHowToRemoveUnregisteredMergeDirectory(t *testing.T) {
 	f := mergeRepo(t, "origin")
 	root, err := os.MkdirTemp(os.TempDir(), "graft-merge-unregistered-")

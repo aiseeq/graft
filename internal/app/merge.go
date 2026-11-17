@@ -406,7 +406,7 @@ func (s *mergeState) prepareWorktree() error {
 		s.tmp, s.wt = "", ""
 		return err
 	}
-	if err = linkNeighbours(s.a, links, s.tmp); err != nil {
+	if err = linkNeighbours(s.a, links, s.tmp, false); err != nil {
 		return err
 	}
 	s.cleanupCfg = s.cfg
@@ -459,7 +459,11 @@ func warnOrphanedMergeTrees(repo *gitx.Repo, a *App) error {
 	if err != nil {
 		return fmt.Errorf("listing worktrees to find orphaned merge trees: %w", err)
 	}
-	entries, err := os.ReadDir(os.TempDir())
+	tmpRoot, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		return fmt.Errorf("resolving merge temporary directory %s: %w", os.TempDir(), err)
+	}
+	entries, err := os.ReadDir(tmpRoot)
 	if err != nil {
 		return fmt.Errorf("listing merge temporary directories: %w", err)
 	}
@@ -467,7 +471,7 @@ func warnOrphanedMergeTrees(repo *gitx.Repo, a *App) error {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "graft-merge-") {
 			continue
 		}
-		root := filepath.Join(os.TempDir(), entry.Name())
+		root := filepath.Join(tmpRoot, entry.Name())
 		if err := warnOrphanedMergeRoot(repo, a, root, trees); err != nil {
 			a.warn("checking merge temporary directory %s: %v", root, err)
 		}
