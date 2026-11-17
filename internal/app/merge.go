@@ -53,7 +53,16 @@ type mergeState struct {
 const mergeOwnerFile = ".graft-merge-owner"
 
 // Merge builds and checks a trunk update in a disposable worktree before publishing it.
-func (a *App) Merge(ctx context.Context, o MergeOptions) error {
+func (a *App) Merge(ctx context.Context, o MergeOptions) (mergeErr error) {
+	restoreGitEnv, err := isolateMergeGitEnvironment()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := restoreGitEnv(); err != nil {
+			mergeErr = errors.Join(mergeErr, fmt.Errorf("restoring local git environment: %w", err))
+		}
+	}()
 	repo, err := gitx.Open(a.Dir)
 	if err != nil {
 		return err
@@ -97,6 +106,9 @@ func (a *App) mergeLocked(ctx context.Context, repo *gitx.Repo, cfg *config.Conf
 	if st.alreadyMerged {
 		return nil
 	}
+	if err := st.ensureNoDirtyMergePaths("graft merge requires a clean index and work tree"); err != nil {
+		return err
+	}
 	if err := st.checkCandidate(); err != nil {
 		return err
 	}
@@ -106,10 +118,58 @@ func (a *App) mergeLocked(ctx context.Context, repo *gitx.Repo, cfg *config.Conf
 	if err := st.push(); err != nil {
 		return err
 	}
-	if err := st.install(); err != nil {
-		return err
+	if err := st.checkoutUnchanged(); err != nil {
+		return fmt.Errorf("published %s to %s; local %s stays at %s: %w; run `git switch %s && git merge --ff-only --no-overwrite-ignore %s` once the paths are clean", st.R, st.primary, st.trunk, st.local, err, st.trunk, st.R)
 	}
+	if err := st.advanceLocal(); err != nil {
+		return fmt.Errorf("published %s to %s; local %s stays at %s: %w; run `git merge --ff-only --no-overwrite-ignore %s` once the paths are clean", st.R, st.primary, st.trunk, st.local, err, st.R)
+	}
+	st.install()
 	return st.mirrorErr
+}
+
+// isolateMergeGitEnvironment prevents a graft invocation from inheriting the
+// calling hook's repository or index. Git will provide the right local vars
+// when it invokes hooks for this repository.
+func isolateMergeGitEnvironment() (func() error, error) {
+	names, err := gitx.LocalEnvVars()
+	if err != nil {
+		return nil, fmt.Errorf("listing local git environment variables: %w", err)
+	}
+	if !slices.Contains(names, "GIT_NO_REPLACE_OBJECTS") {
+		names = append(names, "GIT_NO_REPLACE_OBJECTS")
+	}
+	type savedVar struct {
+		name, value string
+		wasSet      bool
+	}
+	var saved []savedVar
+	restore := func() error {
+		var restoreErrs []error
+		for _, entry := range saved {
+			var err error
+			if entry.wasSet {
+				err = os.Setenv(entry.name, entry.value)
+			} else {
+				err = os.Unsetenv(entry.name)
+			}
+			if err != nil {
+				restoreErrs = append(restoreErrs, fmt.Errorf("restore %s: %w", entry.name, err))
+			}
+		}
+		return errors.Join(restoreErrs...)
+	}
+	for _, name := range names {
+		value, ok := os.LookupEnv(name)
+		saved = append(saved, savedVar{name: name, value: value, wasSet: ok})
+		if ok {
+			if err := os.Unsetenv(name); err != nil {
+				restoreErr := restore()
+				return nil, errors.Join(fmt.Errorf("clearing %s: %w", name, err), restoreErr)
+			}
+		}
+	}
+	return restore, nil
 }
 
 func (s *mergeState) validateRequest() error {
@@ -153,13 +213,6 @@ func (s *mergeState) checkBeforeStart() error {
 	s.branch, err = s.repo.Branch()
 	if err != nil {
 		return err
-	}
-	clean, err := s.repo.IsClean()
-	if err != nil {
-		return err
-	}
-	if !clean {
-		return errors.New("graft merge requires a clean index and work tree, including untracked files")
 	}
 	s.trunkRef, err = trunkRef(s.repo, s.cfg, "", s.allRemotes)
 	if err != nil {
@@ -333,6 +386,7 @@ func (s *mergeState) checkSnapshotHistory() error {
 		}
 		s.a.printf("already merged %s", gitx.Short(s.F))
 		s.alreadyMerged = true
+		s.R = s.A
 		if s.local != s.A {
 			return s.installMerged()
 		}
@@ -344,10 +398,13 @@ func (s *mergeState) checkSnapshotHistory() error {
 // already holding the source, as after a push whose install did not run.
 func (s *mergeState) installMerged() error {
 	if err := s.checkoutUnchanged(); err != nil {
-		return fmt.Errorf("local %s is behind %s/%s at %s and the %w; on a clean %s install it with: git merge --ff-only %s", s.trunk, s.primary, s.trunk, gitx.Short(s.A), err, s.trunk, s.A)
+		return fmt.Errorf("local %s is behind %s/%s at %s and the %w; on a clean %s install it with: git merge --ff-only --no-overwrite-ignore %s", s.trunk, s.primary, s.trunk, gitx.Short(s.A), err, s.trunk, s.A)
 	}
-	if _, err := s.repo.GitEnv(markerEnv, "merge", "--ff-only", s.A); err != nil {
-		return fmt.Errorf("local %s is behind %s/%s; install it with: git merge --ff-only %s: %w", s.trunk, s.primary, s.trunk, s.A, err)
+	if err := s.ensureNoDirtyMergePaths("local trunk became dirty"); err != nil {
+		return fmt.Errorf("local %s is behind %s/%s; install it with: git merge --ff-only --no-overwrite-ignore %s: %w", s.trunk, s.primary, s.trunk, s.A, err)
+	}
+	if err := s.advanceLocal(); err != nil {
+		return fmt.Errorf("local %s is behind %s/%s; install it with: git merge --ff-only --no-overwrite-ignore %s: %w", s.trunk, s.primary, s.trunk, s.A, err)
 	}
 	s.a.printf("local %s moved to %s", s.trunk, gitx.Short(s.A))
 	s.a.warnInstallFreshness(s.ctx, s.repo, s.cfg)
@@ -801,6 +858,11 @@ func (s *mergeState) finishCandidate() error {
 	if err = mergeBump(s.w, s.cfg, s.trunk, s.A, s.ticketKey); err != nil {
 		return err
 	}
+	R, err = s.w.Git("rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	s.R = strings.TrimSpace(R)
 	return s.reportVersion()
 }
 
@@ -952,11 +1014,16 @@ func (s *mergeState) recheckBeforePush() error {
 	if err := s.checkoutUnchanged(); err != nil {
 		return fmt.Errorf("%w during checks; nothing published", err)
 	}
-	return s.checkMirrorsCanAccept(s.R)
+	if err := s.checkMirrorsCanAccept(s.R); err != nil {
+		return err
+	}
+	if err := s.ensureNoDirtyMergePaths("local trunk became dirty during checks"); err != nil {
+		return fmt.Errorf("%w; nothing published", err)
+	}
+	return nil
 }
 
-// checkoutUnchanged tells whether the checkout is still the clean trunk at
-// the commit the merge started from.
+// checkoutUnchanged verifies the branch and commit the merge started from.
 func (s *mergeState) checkoutUnchanged() error {
 	branch, err := s.repo.Git("symbolic-ref", "--quiet", "HEAD")
 	if err != nil || strings.TrimSpace(branch) != "refs/heads/"+s.trunk {
@@ -969,14 +1036,75 @@ func (s *mergeState) checkoutUnchanged() error {
 	if strings.TrimSpace(cur) != s.local {
 		return errors.New("local trunk moved")
 	}
-	clean, err := s.repo.IsClean()
+	return nil
+}
+
+// advanceLocal updates the trunk only after the result has been published.
+func (s *mergeState) advanceLocal() error {
+	_, err := s.repo.GitEnv(markerEnv, "merge", "--ff-only", "--no-overwrite-ignore", s.R)
+	return err
+}
+
+// skip-worktree and assume-unchanged entries are hidden from status. Treat
+// them as dirty when the result changes their path, before Git's fast-forward.
+func (s *mergeState) ensureNoDirtyMergePaths(reason string) error {
+	dirty, err := s.dirtyMergePaths()
 	if err != nil {
 		return err
 	}
-	if !clean {
-		return errors.New("local trunk became dirty")
+	changed, err := s.changedPaths(s.local, s.R)
+	if err != nil {
+		return err
 	}
-	return nil
+	conflicts := intersectPaths(dirty, changed)
+	if len(conflicts) == 0 {
+		return nil
+	}
+	slices.Sort(conflicts)
+	return fmt.Errorf("%s; merge changes dirty paths: %s", reason, strings.Join(slices.Compact(conflicts), ", "))
+}
+
+func (s *mergeState) dirtyMergePaths() ([]string, error) {
+	dirty, err := s.repo.ChangedFilesIncludingSubmodules()
+	if err != nil {
+		return nil, err
+	}
+	ignoredOut, err := s.repo.Git("ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, err
+	}
+	for path := range strings.SplitSeq(ignoredOut, "\x00") {
+		if path != "" {
+			dirty = append(dirty, path)
+		}
+	}
+	entries, err := s.repo.Git("ls-files", "-v", "-z")
+	if err != nil {
+		return nil, err
+	}
+	for entry := range strings.SplitSeq(entries, "\x00") {
+		if len(entry) >= 3 && (entry[0] == 'S' || entry[0] >= 'a' && entry[0] <= 'z') {
+			dirty = append(dirty, entry[2:])
+		}
+	}
+	return dirty, nil
+}
+
+func intersectPaths(dirty, changed []string) []string {
+	var conflicts []string
+	for _, path := range dirty {
+		for _, mergePath := range changed {
+			if pathsOverlap(path, mergePath) {
+				conflicts = append(conflicts, path)
+				break
+			}
+		}
+	}
+	return conflicts
+}
+
+func pathsOverlap(path, mergePath string) bool {
+	return path == mergePath || strings.HasPrefix(path, mergePath+"/") || strings.HasPrefix(mergePath, path+"/")
 }
 
 func (s *mergeState) checkMirrorsCanAccept(rev string) error {
@@ -1078,7 +1206,7 @@ func (s *mergeState) push() error {
 	// --no-follow-tags: push.followTags must not publish tags beside trunk.
 	args := append(slices.Clone(gitConfig), pushArgs(s.primary, false, true)...)
 	if _, err := s.repo.Git(append(args, s.R+":refs/heads/"+s.trunk)...); err != nil {
-		return fmt.Errorf("push to %s failed: nothing pushed to the mirrors and the local trunk unchanged, but a remote with several push URLs may hold %s on some of them, as git's output below says; if the remote moved ahead: git fetch, then graft merge again: %w", s.primary, gitx.Short(s.R), err)
+		return fmt.Errorf("push to %s failed; local trunk and source are unchanged, but a remote with several push URLs may hold %s on some of them, as git's output below says; if the remote moved ahead: git fetch, then graft merge again: %w", s.primary, gitx.Short(s.R), err)
 	}
 	s.a.printf("pushed to %s", s.primary)
 	mirrors := slices.DeleteFunc(slices.Clone(s.pushTo), func(r string) bool { return r == s.primary })
@@ -1091,21 +1219,26 @@ func (s *mergeState) push() error {
 	return nil
 }
 
-func (s *mergeState) install() error {
-	// The push ran the user's pre-push hook, which may switch or move the
-	// checkout: fast-forward only the trunk the merge started from.
-	if err := s.checkoutUnchanged(); err != nil {
-		return fmt.Errorf("trunk on the remote is already %s, but the %w after the push, so the local %s is left as it was; on a clean %s install it with: git merge --ff-only %s", s.R, err, s.trunk, s.trunk, s.R)
-	}
-	if _, err := s.repo.GitEnv(markerEnv, "merge", "--ff-only", s.R); err != nil {
-		return fmt.Errorf("trunk on the remote is already %s; install it with: git merge --ff-only %s: %w", s.R, s.R, err)
-	}
+func (s *mergeState) install() {
 	s.a.printf("local %s moved to %s", s.trunk, gitx.Short(s.R))
 	s.a.printf("merged %s %s into %s as %s", s.opts.Branch, gitx.Short(s.F), s.trunk, gitx.Short(s.R))
 	// The merge runs no install task: name an installed binary the new
 	// trunk left behind, as graft commit does.
 	s.a.warnInstallFreshness(s.ctx, s.repo, s.resultCfg)
-	return nil
+}
+
+func (s *mergeState) changedPaths(from, to string) ([]string, error) {
+	out, err := s.repo.Git("diff-tree", "--ignore-submodules=none", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", from, to)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for path := range strings.SplitSeq(out, "\x00") {
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths, nil
 }
 
 func resolveMergeSource(repo *gitx.Repo, name string, remotes []string, trunkRef string) (string, error) {

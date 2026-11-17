@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -298,9 +299,463 @@ func assertKitIntact(t *testing.T, kit string) {
 
 func TestMergeRefusesDirtyAndOperation(t *testing.T) {
 	f := mergeRepo(t, "origin")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.write("untracked.txt", "source\n")
+	f.mustPlainCommit("feat: add untracked collision")
+	f.git("switch", "-q", "main")
 	f.write("untracked.txt", "dirty\n")
-	if out, code := f.graft("", "merge", "feature/PROJ-42"); code == 0 || !strings.Contains(out, "clean") {
+	if out, code := f.graft("", "merge", "feature/PROJ-42"); code == 0 || !strings.Contains(out, "untracked.txt") {
 		t.Errorf("dirty tree: exit %d\n%s", code, out)
+	}
+}
+
+func TestMergeKeepsDisjointDirtyFiles(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.write("docs/tasks/X.md", "base\n")
+	f.mustPlainCommit("docs: add task journal")
+	f.git("push", "-q", "origin", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("branch", "--set-upstream-to", "origin/main", "main")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.git("merge", "-q", "main")
+	f.git("switch", "-q", "main")
+	f.write("docs/tasks/X.md", "local unstaged\n")
+	f.git("add", "docs/tasks/X.md")
+	f.write("docs/tasks/X.md", "local staged and unstaged\n")
+	f.write("loose.txt", "untracked\n")
+
+	if out, code := f.graft("", "merge", "feature/PROJ-42"); code != 0 {
+		t.Fatalf("disjoint dirty paths blocked merge: exit %d\n%s", code, out)
+	}
+	if got := f.read("docs/tasks/X.md"); got != "local staged and unstaged\n" {
+		t.Errorf("dirty journal = %q", got)
+	}
+	if got := f.read("loose.txt"); got != "untracked\n" {
+		t.Errorf("untracked file = %q", got)
+	}
+	if got := f.git("diff", "--cached", "--", "docs/tasks/X.md"); !strings.Contains(got, "+local unstaged") {
+		t.Errorf("staged journal edit was lost: %s", got)
+	}
+	if got := f.git("diff", "--", "docs/tasks/X.md"); !strings.Contains(got, "+local staged and unstaged") {
+		t.Errorf("unstaged journal edit was lost: %s", got)
+	}
+}
+
+func addMergeGateMarker(t *testing.T, f *fixture, marker string) {
+	t.Helper()
+	config := strings.Replace(f.read(".graft.yaml"), "gate: []", "gate:\n  - [sh, -c, 'touch "+marker+"']", 1)
+	if config == f.read(".graft.yaml") {
+		t.Fatal("fixture has no empty gate to replace")
+	}
+	f.write(".graft.yaml", config)
+	f.mustPlainCommit("chore: add merge gate marker")
+	f.git("push", "-q", "origin", "main")
+	f.git("fetch", "--quiet", "origin")
+}
+
+func TestMergeIgnoredUntrackedCollisionRefusesBeforeGate(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	marker := filepath.Join(f.base, "gate-ran")
+	addMergeGateMarker(t, f, marker)
+	excludes := filepath.Join(f.base, "global-excludes")
+	if err := os.WriteFile(excludes, []byte("feature.txt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.git("config", "core.excludesFile", excludes)
+	f.write("feature.txt", "private ignored content\n")
+	old := f.git("rev-parse", "HEAD")
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "feature.txt") {
+		t.Fatalf("ignored collision was not refused: exit %d\n%s", code, out)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("gate ran before ignored-path refusal: err=%v", err)
+	}
+	if got := f.read("feature.txt"); got != "private ignored content\n" {
+		t.Errorf("ignored content was lost: %q", got)
+	}
+	if got := f.git("rev-parse", "HEAD"); got != old {
+		t.Errorf("local trunk moved: %s -> %s", old, got)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != old {
+		t.Errorf("origin moved: %s -> %s", old, got)
+	}
+}
+
+func TestMergeSubmoduleIgnoreAllStillRefusesDirtyGitlink(t *testing.T) {
+	f, _ := mergeRepoWithSubmodule(t)
+	marker := filepath.Join(f.base, "gate-ran")
+	f.git("switch", "-q", "feature/submodule")
+	if err := os.WriteFile(filepath.Join(f.work, "dep", "data"), []byte("source second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.git("-C", filepath.Join(f.work, "dep"), "add", "data")
+	f.git("-C", filepath.Join(f.work, "dep"), "commit", "-qm", "feat: second submodule change")
+	f.git("add", "dep")
+	f.mustPlainCommit("feat: second gitlink update")
+	contents := strings.Replace(f.read(".graft.yaml"), "gate: []", "gate:\n  - [sh, -c, 'touch "+marker+"']", 1)
+	f.write(".graft.yaml", contents)
+	f.mustPlainCommit("chore: add source gate marker")
+	f.git("switch", "-q", "main")
+	f.git("config", "submodule.dep.ignore", "all")
+	if err := os.WriteFile(filepath.Join(f.work, "dep", "data"), []byte("private submodule data\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if status := f.git("status", "--porcelain", "--ignore-submodules=none"); !strings.Contains(status, "dep") {
+		t.Fatalf("fixture does not expose dirty gitlink with ignore=none: %q", status)
+	}
+	old := f.git("rev-parse", "HEAD")
+	changed := f.git("diff-tree", "--ignore-submodules=none", "--no-commit-id", "--name-only", "-r", old, "feature/submodule")
+	if !strings.Contains(changed, "dep") {
+		t.Fatalf("fixture result does not change gitlink: paths=%q main=%s source=%s", changed, f.git("rev-parse", "HEAD:dep"), f.git("rev-parse", "feature/submodule:dep"))
+	}
+	out, code := f.graft("", "merge", "feature/submodule")
+	if code == 0 || !strings.Contains(out, "dep") {
+		t.Fatalf("dirty gitlink hidden by ignore=all: exit %d\n%s", code, out)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("gate ran before dirty-submodule refusal: err=%v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(f.work, "dep", "data")); err != nil || string(got) != "private submodule data\n" {
+		t.Errorf("submodule dirt was lost: %q, %v", got, err)
+	}
+	if got := f.git("rev-parse", "HEAD"); got != old {
+		t.Errorf("local trunk moved: %s -> %s", old, got)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != old {
+		t.Errorf("origin moved: %s -> %s", old, got)
+	}
+}
+
+func TestMergeRefusesDirtyPathChangedByResult(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.write("docs/tasks/X.md", "branch\n")
+	f.mustPlainCommit("docs: add journal")
+	f.git("switch", "-q", "main")
+	f.write("docs/tasks/X.md", "local\n")
+	if out, code := f.graft("", "merge", "feature/PROJ-42"); code == 0 || !strings.Contains(out, "docs/tasks/X.md") {
+		t.Fatalf("overlapping dirty path was not named: exit %d\n%s", code, out)
+	}
+}
+
+func TestMergeSkipWorktreeOverlapRefusesBeforePush(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	marker := filepath.Join(f.base, "gate-ran")
+	addMergeGateMarker(t, f, marker)
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.write("base.txt", "source\n")
+	f.mustPlainCommit("feat: change base")
+	f.git("switch", "-q", "main")
+	old := f.git("rev-parse", "HEAD")
+	f.write("base.txt", "local hidden\n")
+	f.git("update-index", "--skip-worktree", "base.txt")
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "base.txt") {
+		t.Fatalf("skip-worktree overlap was not refused: exit %d\n%s", code, out)
+	}
+	if got := f.git("rev-parse", "HEAD"); got != old {
+		t.Errorf("local trunk moved: %s -> %s", old, got)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != old {
+		t.Errorf("origin moved: %s -> %s", old, got)
+	}
+	if got := f.read("base.txt"); got != "local hidden\n" {
+		t.Errorf("hidden worktree edit = %q", got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("gate ran before skip-worktree refusal: err=%v", err)
+	}
+}
+
+func TestMergeAssumeUnchangedOverlapRefusesBeforePush(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	marker := filepath.Join(f.base, "gate-ran")
+	addMergeGateMarker(t, f, marker)
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.write("base.txt", "source\n")
+	f.mustPlainCommit("feat: change base")
+	f.git("switch", "-q", "main")
+	old := f.git("rev-parse", "HEAD")
+	f.write("base.txt", "local hidden\n")
+	f.git("update-index", "--assume-unchanged", "base.txt")
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "base.txt") {
+		t.Fatalf("assume-unchanged overlap was not refused: exit %d\n%s", code, out)
+	}
+	if got := f.git("rev-parse", "HEAD"); got != old {
+		t.Errorf("local trunk moved: %s -> %s", old, got)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != old {
+		t.Errorf("origin moved: %s -> %s", old, got)
+	}
+	if got := f.read("base.txt"); got != "local hidden\n" {
+		t.Errorf("hidden worktree edit = %q", got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("gate ran before assume-unchanged refusal: err=%v", err)
+	}
+}
+
+func TestMergeSkipWorktreeDeleteOverlapRefusesBeforePush(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.write("journal.txt", "base\n")
+	f.mustPlainCommit("docs: add journal")
+	f.git("push", "-q", "origin", "main")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.git("merge", "-q", "main")
+	f.git("rm", "-q", "journal.txt")
+	f.mustPlainCommit("docs: remove journal")
+	f.git("switch", "-q", "main")
+	old := f.git("rev-parse", "HEAD")
+	f.write("journal.txt", "local hidden edit\n")
+	f.git("update-index", "--skip-worktree", "journal.txt")
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "journal.txt") {
+		t.Fatalf("skip-worktree delete overlap was not refused: exit %d\n%s", code, out)
+	}
+	if got := f.git("rev-parse", "HEAD"); got != old {
+		t.Errorf("local trunk moved: %s -> %s", old, got)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != old {
+		t.Errorf("origin moved: %s -> %s", old, got)
+	}
+	if got := f.read("journal.txt"); got != "local hidden edit\n" {
+		t.Errorf("hidden deleted-file edit = %q", got)
+	}
+}
+
+func TestMergeSkipWorktreeDirectoryToFileRefusesBeforePush(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.write("node/child.txt", "base\n")
+	f.mustPlainCommit("chore: add node directory")
+	f.git("push", "-q", "origin", "main")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.git("merge", "-q", "main")
+	f.git("rm", "-q", "node/child.txt")
+	f.write("node", "file\n")
+	f.mustPlainCommit("feat: replace directory with file")
+	f.git("switch", "-q", "main")
+	old := f.git("rev-parse", "HEAD")
+	f.write("node/child.txt", "local hidden\n")
+	f.git("update-index", "--skip-worktree", "node/child.txt")
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "node/child.txt") {
+		t.Fatalf("directory-to-file overlap was not refused: exit %d\n%s", code, out)
+	}
+	if got := f.git("rev-parse", "HEAD"); got != old {
+		t.Errorf("local trunk moved: %s -> %s", old, got)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != old {
+		t.Errorf("origin moved: %s -> %s", old, got)
+	}
+	if got := f.read("node/child.txt"); got != "local hidden\n" {
+		t.Errorf("hidden child edit = %q", got)
+	}
+}
+
+func TestMergePrePushIgnoredResultPathDoesNotOverwriteIgnoredFile(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.write(".gitignore", "late-ignored.txt\n")
+	f.mustPlainCommit("chore: ignore late merge path")
+	f.git("push", "-q", "origin", "main")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.git("merge", "-q", "main")
+	f.write("late-ignored.txt", "merged result\n")
+	f.git("add", "-f", "late-ignored.txt")
+	f.mustPlainCommit("feat: add ignored path")
+	f.git("switch", "-q", "main")
+	old := f.git("rev-parse", "HEAD")
+	hooks := f.git("rev-parse", "--path-format=absolute", "--git-path", "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooks, "pre-push"), []byte("#!/bin/sh\nprintf 'ignored hook bytes\\n' > late-ignored.txt\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "published ") || !strings.Contains(out, "git merge --ff-only --no-overwrite-ignore ") {
+		t.Fatalf("post-push ignored collision did not defer local install with a safe recovery command: exit %d\n%s", code, out)
+	}
+	local := f.git("rev-parse", "main")
+	remote := f.gitIn(f.remote("origin"), "rev-parse", "main")
+	if local != old || remote == old {
+		t.Fatalf("local/remote state after collision: old=%s local=%s origin=%s", old, local, remote)
+	}
+	if got := f.read("late-ignored.txt"); got != "ignored hook bytes\n" {
+		t.Errorf("hook-created ignored file bytes = %q", got)
+	}
+}
+
+func TestMergePushFailureLeavesLocalTrunkAndKeepsDirt(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.write("docs/tasks/X.md", "base\n")
+	f.mustPlainCommit("docs: add journal")
+	f.git("push", "-q", "origin", "main")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.git("merge", "-q", "main")
+	f.git("switch", "-q", "main")
+	old := f.git("rev-parse", "HEAD")
+	f.write("docs/tasks/X.md", "staged\n")
+	f.git("add", "docs/tasks/X.md")
+	f.write("docs/tasks/X.md", "unstaged\n")
+	marker := filepath.Join(f.base, "hook-head")
+	hooks := f.git("rev-parse", "--path-format=absolute", "--git-path", "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "#!/bin/sh\ngit rev-parse HEAD > " + marker + "\necho rejected >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(hooks, "pre-push"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "push to origin failed") {
+		t.Fatalf("rejected push succeeded: exit %d\n%s", code, out)
+	}
+	seen, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("pre-push did not record local HEAD: %v", err)
+	}
+	if strings.TrimSpace(string(seen)) != old {
+		t.Errorf("pre-push saw local trunk at %s, want old HEAD %s", strings.TrimSpace(string(seen)), old)
+	}
+	if got := f.git("rev-parse", "main"); got != old {
+		t.Errorf("local trunk was not rolled back: %s -> %s", old, got)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != old {
+		t.Errorf("origin moved on rejected push: %s -> %s", old, got)
+	}
+	if got := f.read("docs/tasks/X.md"); got != "unstaged\n" {
+		t.Errorf("unstaged dirt after rollback = %q", got)
+	}
+	if got := f.git("diff", "--cached", "--", "docs/tasks/X.md"); !strings.Contains(got, "+staged") {
+		t.Errorf("staged dirt after rollback lost: %s", got)
+	}
+	if got := f.git("diff", "--", "docs/tasks/X.md"); !strings.Contains(got, "+unstaged") {
+		t.Errorf("unstaged dirt after rollback lost: %s", got)
+	}
+}
+
+func TestMergeKeepsDirtThatAppearsDuringPushAndCanCatchUpLater(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.write("base.txt", "source change\n")
+	f.mustPlainCommit("feat: change base")
+	f.git("switch", "-q", "main")
+	old := f.git("rev-parse", "HEAD")
+	hooks := f.git("rev-parse", "--path-format=absolute", "--git-path", "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hook := "#!/bin/sh\nprintf 'staged after checks\\n' > base.txt\ngit add -- base.txt\nprintf 'unstaged after checks\\n' > base.txt\n"
+	if err := os.WriteFile(filepath.Join(hooks, "pre-push"), []byte(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "published ") || !strings.Contains(out, "local main stays at "+old) || !strings.Contains(out, "run `git merge --ff-only --no-overwrite-ignore ") {
+		t.Fatalf("merge did not report a post-push fast-forward refusal: exit %d\n%s", code, out)
+	}
+	merged := f.gitIn(f.remote("origin"), "rev-parse", "main")
+	if merged == old || !strings.Contains(out, "published "+merged+" to origin") {
+		t.Fatalf("origin was not published before local refusal: old=%s origin=%s\n%s", old, merged, out)
+	}
+	if got := f.git("rev-parse", "HEAD"); got != old {
+		t.Errorf("local trunk moved despite refused fast-forward: %s -> %s", old, got)
+	}
+	if got := f.read("base.txt"); got != "unstaged after checks\n" {
+		t.Errorf("fresh unstaged bytes changed: %q", got)
+	}
+	if got := f.git("diff", "--cached", "--", "base.txt"); !strings.Contains(got, "+staged after checks") {
+		t.Errorf("fresh staged edit was lost: %s", got)
+	}
+	if got := f.git("diff", "--", "base.txt"); !strings.Contains(got, "+unstaged after checks") {
+		t.Errorf("fresh unstaged edit was lost: %s", got)
+	}
+
+	if err := os.Remove(filepath.Join(hooks, "pre-push")); err != nil {
+		t.Fatal(err)
+	}
+	f.git("reset", "--hard", old)
+	if out, code = f.graft("", "merge", "feature/PROJ-42"); code != 0 {
+		t.Fatalf("subsequent merge could not catch up to the published trunk: exit %d\n%s", code, out)
+	}
+	if got := f.git("rev-parse", "HEAD"); got != merged {
+		t.Errorf("subsequent merge left local trunk at %s, want %s", got, merged)
+	}
+}
+
+func TestMergeAlreadyPublishedInstallsDisjointDirtOnLaggingTrunk(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	old := f.git("rev-parse", "HEAD")
+	f.mustGraft("merge", "feature/PROJ-42")
+	merged := f.git("rev-parse", "HEAD")
+	f.git("update-ref", "refs/heads/main", old, merged)
+	f.git("reset", "--hard", old)
+	f.write("base.txt", "local dirt\n")
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code != 0 {
+		t.Fatalf("could not install already-published merge with disjoint dirt: exit %d\n%s", code, out)
+	}
+	if got := f.git("rev-parse", "HEAD"); got != merged {
+		t.Errorf("local trunk = %s, want %s", got, merged)
+	}
+	if got := f.read("base.txt"); got != "local dirt\n" {
+		t.Errorf("local dirt = %q", got)
+	}
+	f.git("update-ref", "refs/heads/main", old, merged)
+	f.git("reset", "--hard", old)
+	f.write("feature.txt", "conflicting local dirt\n")
+	out, code = f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "git merge --ff-only --no-overwrite-ignore "+merged) {
+		t.Fatalf("lagging trunk did not recommend the safe fast-forward command: exit %d\n%s", code, out)
+	}
+}
+
+func TestMergeIgnoresInheritedAlternateIndex(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	f.write("base.txt", "alternate staged\n")
+	index := filepath.Join(f.base, "alternate-index")
+	indexData, err := os.ReadFile(filepath.Join(f.work, ".git", "index"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(index, indexData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Build a staged edit in a separate index while the real index stays clean.
+	cmd := exec.Command("git", "add", "base.txt")
+	cmd.Dir = f.work
+	cmd.Env = append(append([]string(nil), testEnv...), "GIT_INDEX_FILE="+index)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("stage alternate index: %v\n%s", err, out)
+	}
+	f.env = append(f.env, "GIT_INDEX_FILE="+index)
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	f.env = nil
+	if code != 0 {
+		t.Fatalf("inherited alternate index blocked disjoint merge: exit %d\n%s", code, out)
+	}
+	if got := f.git("diff", "--cached", "--", "base.txt"); got != "" {
+		t.Errorf("real index was changed by merge: %s", got)
+	}
+	cmd = exec.Command("git", "diff", "--cached", "--", "base.txt")
+	cmd.Dir = f.work
+	cmd.Env = append(append([]string(nil), testEnv...), "GIT_INDEX_FILE="+index)
+	if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), "+alternate staged") {
+		t.Errorf("alternate staged edit changed: %v\n%s", err, out)
+	}
+}
+
+func TestMergeAllowsDisjointDirtAddedDuringChecks(t *testing.T) {
+	f := mergeRepo(t, "origin")
+	addMergeTask(f, "    run: [[sh, -c, 'mkdir -p "+filepath.Join(f.work, "docs/tasks")+" && printf journal > "+filepath.Join(f.work, "docs/tasks/X.md")+"']]")
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code != 0 {
+		t.Fatalf("disjoint dirt added during checks blocked merge: exit %d\n%s", code, out)
+	}
+	if got := f.read("docs/tasks/X.md"); got != "journal" {
+		t.Errorf("check-created journal = %q", got)
 	}
 }
 
@@ -396,9 +851,8 @@ func TestMergeWarnsHowToRemoveUnregisteredMergeDirectory(t *testing.T) {
 	}
 }
 
-// A pre-push hook that switches the checkout leaves every local branch as
-// it was: the merge fast-forwards only the trunk it started from.
-func TestMergePrePushSwitchLeavesLocalBranches(t *testing.T) {
+// A pre-push hook may switch away from the trunk before its local fast-forward.
+func TestMergePrePushSwitchDoesNotAdvanceOtherBranch(t *testing.T) {
 	f := mergeRepo(t, "origin")
 	f.git("branch", "other", "main")
 	before := f.git("rev-parse", "main")
@@ -410,14 +864,17 @@ func TestMergePrePushSwitchLeavesLocalBranches(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, code := f.graft("", "merge", "feature/PROJ-42")
-	if code == 0 || !strings.Contains(out, "checkout branch changed after the push") || !strings.Contains(out, "git merge --ff-only") {
-		t.Errorf("merge did not report the switched checkout: exit %d\n%s", code, out)
+	if code == 0 || !strings.Contains(out, "published ") || !strings.Contains(out, "checkout branch changed") {
+		t.Errorf("post-push checkout change was not reported: exit %d\n%s", code, out)
 	}
 	if got := f.git("rev-parse", "main"); got != before {
-		t.Errorf("local main moved to %s", got)
+		t.Errorf("local main moved despite checkout change: %s -> %s", before, got)
 	}
 	if got := f.git("rev-parse", "other"); got != before {
 		t.Errorf("branch other moved to %s", got)
+	}
+	if got := f.git("symbolic-ref", "--short", "HEAD"); got != "other" {
+		t.Errorf("hook-selected branch changed to %s", got)
 	}
 }
 
@@ -493,6 +950,44 @@ func TestMergeRebaseVersionConflictTakesTrunk(t *testing.T) {
 	}
 	if !strings.Contains(out, "merge version: 1.2.6") {
 		t.Errorf("version report missing:\n%s", out)
+	}
+}
+
+func TestMergeChecksDirtyPathAgainstPostBumpCommitBeforeGate(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: file, file: VERSION}\ngate: []\n",
+		"VERSION":     "1.2.3\n", "base.txt": "base\n",
+	}, "origin")
+	marker := filepath.Join(f.base, "gate-ran")
+	f.write(".graft.yaml", "schema: 1\nversion: {mode: file, file: VERSION}\ngate:\n  - [sh, -c, 'touch "+marker+"']\n")
+	f.mustPlainCommit("chore: base")
+	f.git("branch", "-m", "main")
+	f.git("push", "-q", "origin", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("branch", "--set-upstream-to", "origin/main", "main")
+	f.git("remote", "set-head", "origin", "main")
+	f.git("switch", "-q", "-c", "feature/PROJ-43")
+	f.write("VERSION", "1.2.4\n")
+	f.write("source.txt", "source\n")
+	f.mustPlainCommit("feat: source version")
+	f.git("switch", "-q", "main")
+	f.write("VERSION", "1.2.5\n")
+	f.mustPlainCommit("chore: trunk version")
+	f.git("push", "-q", "origin", "main")
+	old := f.git("rev-parse", "HEAD")
+	f.git("update-index", "--skip-worktree", "VERSION")
+	out, code := f.graft("", "merge", "feature/PROJ-43")
+	if code == 0 || !strings.Contains(out, "VERSION") {
+		t.Fatalf("post-bump overlap was not refused: exit %d\n%s", code, out)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("gate ran before post-bump overlap check: err=%v", err)
+	}
+	if got := f.git("rev-parse", "HEAD"); got != old {
+		t.Errorf("local trunk moved: %s -> %s", old, got)
+	}
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "main"); got != old {
+		t.Errorf("origin moved: %s -> %s", old, got)
 	}
 }
 
@@ -983,6 +1478,10 @@ func TestMergeRefusesRemoteTrunkAsSource(t *testing.T) {
 
 func TestMergeRefusesCheckoutDirtiedByDeps(t *testing.T) {
 	f := mergeRepo(t, "origin")
+	f.git("switch", "-q", "feature/PROJ-42")
+	f.write("base.txt", "source change\n")
+	f.mustPlainCommit("feat: change base")
+	f.git("switch", "-q", "main")
 	path := filepath.ToSlash(filepath.Join(f.work, "base.txt"))
 	addMergeTask(f, "    run: [[sh, -c, 'printf changed > "+path+"']]")
 	remote := f.gitIn(f.remote("origin"), "rev-parse", "main")

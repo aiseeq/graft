@@ -300,6 +300,16 @@ func (r *Repo) ChangedFiles() ([]string, error) {
 	return parseChangedFiles(out), nil
 }
 
+// ChangedFilesIncludingSubmodules ignores user submodule.ignore settings when
+// reporting paths changed in the index or work tree.
+func (r *Repo) ChangedFilesIncludingSubmodules() ([]string, error) {
+	out, err := r.Git("status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules=none")
+	if err != nil {
+		return nil, err
+	}
+	return parseChangedFiles(out), nil
+}
+
 // ChangedFilesReadOnly lists changed paths without asking Git to refresh the
 // index stat cache. This is useful for inspection commands that must not write.
 func (r *Repo) ChangedFilesReadOnly() ([]string, error) {
