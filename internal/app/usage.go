@@ -16,14 +16,21 @@ import (
 // found is false outside a project (no repository or no .graft.yaml), where
 // graft still answers help.
 func (a *App) ProjectConfig() (cfg *config.Config, found bool, err error) {
-	_, cfg, err = a.open()
+	_, cfg, found, err = a.openProject()
+	return cfg, found, err
+}
+
+// openProject is open with no project, outside a repository or without a
+// config, not an error: found is false then.
+func (a *App) openProject() (repo *gitx.Repo, cfg *config.Config, found bool, err error) {
+	repo, cfg, err = a.open()
 	if errors.Is(err, gitx.ErrNotRepo) || errors.Is(err, config.ErrNotFound) {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
-	return cfg, true, nil
+	return repo, cfg, true, nil
 }
 
 // bumps reports whether graft commit bumps the version; without a project

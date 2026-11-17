@@ -28,7 +28,7 @@ func TestNoteCommitAdds(t *testing.T) {
 	var stderr bytes.Buffer
 	a := &App{Stderr: &stderr}
 
-	a.noteCommitAdds(repo)
+	a.noteCommitAdds(repo, true)
 	if stderr.Len() != 0 {
 		t.Fatalf("no additions: got %q", stderr.String())
 	}
@@ -37,7 +37,7 @@ func TestNoteCommitAdds(t *testing.T) {
 		t.Fatal(err)
 	}
 	git("add", "-A")
-	a.noteCommitAdds(repo)
+	a.noteCommitAdds(repo, true)
 	if got, want := stderr.String(), "graft: commit adds new files: added\n"; got != want {
 		t.Fatalf("tree addition: got %q, want %q", got, want)
 	}
@@ -47,7 +47,7 @@ func TestNoteCommitAdds(t *testing.T) {
 		t.Fatal(err)
 	}
 	git("add", "pre-added")
-	a.noteCommitAdds(repo)
+	a.noteCommitAdds(repo, true)
 	if !strings.Contains(stderr.String(), "pre-added") {
 		t.Fatalf("pre-staged addition not named: %q", stderr.String())
 	}
@@ -56,7 +56,7 @@ func TestNoteCommitAdds(t *testing.T) {
 	git("commit", "-q", "-m", "add files")
 	git("mv", "tracked", "renamed")
 	git("config", "diff.renames", "false")
-	a.noteCommitAdds(repo)
+	a.noteCommitAdds(repo, true)
 	if stderr.Len() != 0 {
 		t.Fatalf("rename should not be named as a new file: %q", stderr.String())
 	}
@@ -69,7 +69,7 @@ func TestNoteCommitAdds(t *testing.T) {
 		}
 	}
 	git("add", "-A")
-	a.noteCommitAdds(repo)
+	a.noteCommitAdds(repo, true)
 	lines := strings.Split(strings.TrimSuffix(stderr.String(), "\n"), "\n")
 	if len(lines) != 1 || !strings.Contains(lines[0], "30 new files") {
 		t.Fatalf("30 additions should produce one counted line: %q", stderr.String())
@@ -94,7 +94,7 @@ func TestNoteCommitAddsOnFirstCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stderr bytes.Buffer
-	(&App{Stderr: &stderr}).noteCommitAdds(repo)
+	(&App{Stderr: &stderr}).noteCommitAdds(repo, false)
 	if got, want := stderr.String(), "graft: commit adds new files: first, second\n"; got != want {
 		t.Fatalf("first commit: got %q, want %q", got, want)
 	}

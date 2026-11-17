@@ -340,7 +340,11 @@ func builtinGateGoCheck(s config.Step) bool {
 // build, which the build cache does not share.
 func (r *Runner) gateSteps(ctx context.Context) ([]gateStep, error) {
 	var steps []gateStep
-	lexCodices, err := r.lexOutputCodices(ctx)
+	markdown, goMods, err := r.gateFiles()
+	if err != nil {
+		return nil, err
+	}
+	lexCodices, err := r.lexOutputCodices(ctx, markdown)
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +357,7 @@ func (r *Runner) gateSteps(ctx context.Context) ([]gateStep, error) {
 	if !r.Config.GoVet.IsEnabled() && !r.Config.GoFix.Enabled && !r.Config.GoFmt.IsEnabled() {
 		return r.configSteps(steps), nil
 	}
-	mods, err := r.goModules()
+	mods, err := r.goModules(goMods)
 	if err != nil {
 		return nil, err
 	}
@@ -566,20 +570,37 @@ func lexHeaderForFile(file string, reader io.Reader) (string, bool, error) {
 	return codex, found, nil
 }
 
-func (r *Runner) lexOutputCodices(ctx context.Context) (map[string]bool, error) {
+// gateFiles lists, in one git ls-files, the files the gate's own steps look
+// at: the Markdown files (*.md, for the lex outputs) and the nested go.mod
+// files (*/go.mod, for the Go modules), each as its pathspec alone lists
+// them: a path */go.mod lists does not end in .md, in any case
+// (GIT_ICASE_PATHSPECS), and one *.md lists does.
+func (r *Runner) gateFiles() (markdown, goMods []string, err error) {
 	repo, err := r.repo()
 	if err != nil {
-		return nil, fmt.Errorf("listing Markdown files: %w", err)
+		return nil, nil, fmt.Errorf("listing Markdown files: %w", err)
 	}
-	out, err := repo.Git("ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.md")
+	out, err := repo.Git("ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.md", "*/go.mod")
 	if err != nil {
-		return nil, fmt.Errorf("listing Markdown files: %w", err)
+		return nil, nil, fmt.Errorf("listing Markdown files: %w", err)
 	}
-	codices := map[string]bool{}
 	for file := range strings.SplitSeq(out, "\x00") {
-		if file == "" {
-			continue
+		switch {
+		case file == "":
+		case strings.HasSuffix(strings.ToLower(file), ".md"):
+			markdown = append(markdown, file)
+		default:
+			goMods = append(goMods, file)
 		}
+	}
+	return markdown, goMods, nil
+}
+
+// lexOutputCodices are the codices named in the lex headers of the
+// Markdown files gateFiles listed.
+func (r *Runner) lexOutputCodices(ctx context.Context, markdown []string) (map[string]bool, error) {
+	codices := map[string]bool{}
+	for _, file := range markdown {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("checking lex outputs: %w", err)
 		}
@@ -1112,22 +1133,15 @@ func recordHostCopy(host, path, sum string) error {
 	return nil
 }
 
-// goModules lists the directories to vet, relative to the root, "." first.
-func (r *Runner) goModules() ([]string, error) {
+// goModules lists the directories to vet, relative to the root, "." first,
+// from the nested go.mod files gateFiles listed.
+func (r *Runner) goModules(goMods []string) ([]string, error) {
 	var dirs []string
 	// Any other error than a missing file leaves vet in: it fails visibly.
 	if _, err := os.Stat(filepath.Join(r.Root, "go.mod")); !errors.Is(err, os.ErrNotExist) && !vetSkipped(".", r.Config.GoVet.Exclude) {
 		dirs = append(dirs, ".")
 	}
-	repo, err := r.repo()
-	if err != nil {
-		return nil, fmt.Errorf("listing Go modules: %w", err)
-	}
-	out, err := repo.Git("ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*/go.mod")
-	if err != nil {
-		return nil, fmt.Errorf("listing Go modules: %w", err)
-	}
-	for f := range strings.SplitSeq(out, "\x00") {
+	for _, f := range goMods {
 		dir, ok := strings.CutSuffix(strings.TrimSpace(f), "/go.mod")
 		if !ok || vetSkipped(dir, r.Config.GoVet.Exclude) {
 			continue

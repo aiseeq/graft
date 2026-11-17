@@ -44,7 +44,11 @@ func (a *App) Amend(ctx context.Context, resetAuthor bool) error {
 		if err != nil {
 			return err
 		}
-		index, start, err := stageCommitStart(repo, base)
+		head, err := currentHead(repo)
+		if err != nil {
+			return err
+		}
+		index, start, err := stageCommitStart(repo, base, head)
 		if err != nil {
 			return err
 		}

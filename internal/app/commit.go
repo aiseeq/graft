@@ -271,8 +271,10 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 		}
 	}
 	// HEAD first: a move while they ran makes the checks say the merged files
-	// are taken back.
-	checksErr := runChecks(ctx, repo, cfg, plan.message, "HEAD", a.Stderr)
+	// are taken back. The revert check holds the index to the HEAD the commit
+	// started on ("" unborn), still there after the gate; headMoved checks it
+	// again once the checks are done.
+	checksErr := runChecks(ctx, repo, cfg, plan.message, plan.head.sha, a.Stderr)
 	if err := headMoved(); err != nil {
 		return err
 	}
@@ -293,11 +295,14 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 }
 
 func (a *App) prepareCommitGate(ctx context.Context, repo *gitx.Repo, cfg *config.Config, plan commitPlan) (*version.Backup, *activeFreeze, []string, error) {
-	index, start, err := stageCommitStart(repo, "")
+	// plan.head was read just now: HEAD is not read again before the gate,
+	// and a move by then stops the commit at stageGateChanges.
+	hasHead := plan.head.sha != ""
+	index, start, err := stageCommitStart(repo, "", plan.head)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	a.noteCommitAdds(repo)
+	a.noteCommitAdds(repo, hasHead)
 	var backup *version.Backup
 	if plan.bumpBeforeGate {
 		backup, err = plan.bump.apply(repo)
@@ -308,7 +313,7 @@ func (a *App) prepareCommitGate(ctx context.Context, repo *gitx.Repo, cfg *confi
 			if _, err := repo.Git(append([]string{"add", "--"}, paths...)...); err != nil {
 				return nil, nil, nil, errors.Join(err, restoreVersion(repo, backup, plan.head), restoreIndex(index))
 			}
-			start, err = saveCommitStart(repo, "")
+			start, err = saveCommitStart(repo, "", hasHead)
 			if err != nil {
 				return nil, nil, nil, errors.Join(err, restoreVersion(repo, backup, plan.head), restoreIndex(index))
 			}
@@ -324,7 +329,7 @@ func (a *App) prepareCommitGate(ctx context.Context, repo *gitx.Repo, cfg *confi
 	if err := a.stageGateChanges(repo, start, "commit", plan.head, commitAgain); err != nil {
 		return nil, nil, nil, restoreBeforeGate(err)
 	}
-	empty, err := gateLeftHead(repo)
+	empty, err := gateLeftHead(repo, plan.head)
 	if err != nil {
 		return nil, nil, nil, restoreBeforeGate(err)
 	}
@@ -345,15 +350,12 @@ func (a *App) prepareCommitGate(ctx context.Context, repo *gitx.Repo, cfg *confi
 	return backup, frozen, advisoryFailed, nil
 }
 
-// noteCommitAdds names paths the index adds to HEAD before the gate runs.
+// noteCommitAdds names paths the index adds to HEAD before the gate runs;
+// hasHead says whether HEAD has a commit, as the commit read it.
 // It is an advisory: a failure to list paths must not stop the commit.
-func (a *App) noteCommitAdds(repo *gitx.Repo) {
+func (a *App) noteCommitAdds(repo *gitx.Repo, hasHead bool) {
 	var out string
-	hasHead, err := repo.HasHead()
-	if err != nil {
-		a.warn("could not list files added by commit: %v", err)
-		return
-	}
+	var err error
 	if hasHead {
 		out, err = repo.Git("diff", "--cached", "--name-only", "--diff-filter=A", "--find-renames", "-z", "HEAD")
 	} else {
@@ -465,20 +467,13 @@ func (a *App) recordCommitAdvisoryAfterPush(repo *gitx.Repo, cfg *config.Config,
 
 // gateLeftHead says whether the staged tree is HEAD's: the gate put every
 // path the commit started with back as HEAD has it. Without HEAD there is
-// nothing to compare with.
-func gateLeftHead(repo *gitx.Repo) (bool, error) {
-	headTree, err := repo.Git("rev-parse", "--verify", "--quiet", "HEAD^{tree}")
-	if gitx.ExitCode(err) == 1 {
-		// No HEAD, or a HEAD without its tree, which is an error.
-		hasHead, hasErr := repo.HasHead()
-		if hasErr != nil || !hasHead {
-			return false, hasErr
-		}
+// nothing to compare with. head is HEAD as stageGateChanges found it still
+// after the gate; the staged tree is written from the index as it is now.
+func gateLeftHead(repo *gitx.Repo, head headState) (bool, error) {
+	if head.sha == "" {
+		return false, nil
 	}
-	if err != nil {
-		return false, fmt.Errorf("reading HEAD tree after the gate: %w", err)
-	}
-	return stagedIs(repo, strings.TrimSpace(headTree))
+	return stagedIs(repo, head.tree)
 }
 
 // stagedIs says whether the staged tree is tree.
@@ -498,12 +493,9 @@ type savedIndex struct {
 	head   headState
 }
 
-func saveIndex(repo *gitx.Repo) (savedIndex, error) {
-	s := savedIndex{repo: repo, path: filepath.Join(repo.GitDir, "index")}
-	var err error
-	if s.head, err = currentHead(repo); err != nil {
-		return s, err
-	}
+// saveIndex saves the index as it is over head, HEAD as the caller just read it.
+func saveIndex(repo *gitx.Repo, head headState) (savedIndex, error) {
+	s := savedIndex{repo: repo, path: filepath.Join(repo.GitDir, "index"), head: head}
 	data, err := os.ReadFile(s.path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return s, fmt.Errorf("saving the git index: %w", err)
@@ -541,10 +533,11 @@ func restoreIndex(s savedIndex) error {
 }
 
 // headState is where HEAD is: its branch, "" when detached, and its commit,
-// "" on an unborn branch.
+// "" on an unborn branch, with that commit's tree.
 type headState struct {
 	branch string
 	sha    string
+	tree   string
 }
 
 func (h headState) String() string {
@@ -558,11 +551,11 @@ func (h headState) String() string {
 	return sha + " on " + h.branch
 }
 
-// currentHead reads HEAD, a few times in every commit: one git for its commit
-// and its branch, which fails only on an unborn branch or a broken repository,
-// the cases headOfUnusual tells apart.
+// currentHead reads HEAD, a few times in every commit: one git for its commit,
+// its tree and its branch, which fails only on an unborn branch or a broken
+// repository, the cases headOfUnusual tells apart.
 func currentHead(repo *gitx.Repo) (headState, error) {
-	out, err := repo.Git("rev-parse", "HEAD^{commit}", "--symbolic-full-name", "HEAD")
+	out, err := repo.Git("rev-parse", "HEAD^{commit}", "HEAD^{tree}", "--symbolic-full-name", "HEAD")
 	if gitx.ExitCode(err) == 128 {
 		return headOfUnusual(repo)
 	}
@@ -570,12 +563,12 @@ func currentHead(repo *gitx.Repo) (headState, error) {
 		return headState{}, fmt.Errorf("reading HEAD: %w", err)
 	}
 	fields := strings.Fields(out)
-	if len(fields) != 2 {
-		return headState{}, fmt.Errorf("reading HEAD: git rev-parse gave %q, want a commit and a ref", out)
+	if len(fields) != 3 {
+		return headState{}, fmt.Errorf("reading HEAD: git rev-parse gave %q, want a commit, its tree and a ref", out)
 	}
-	h := headState{sha: fields[0]}
-	if fields[1] != "HEAD" {
-		h.branch = strings.TrimPrefix(fields[1], "refs/heads/")
+	h := headState{sha: fields[0], tree: fields[1]}
+	if fields[2] != "HEAD" {
+		h.branch = strings.TrimPrefix(fields[2], "refs/heads/")
 	}
 	return h, nil
 }
@@ -588,14 +581,19 @@ func headOfUnusual(repo *gitx.Repo) (headState, error) {
 		return h, fmt.Errorf("reading the branch of HEAD: %w", err)
 	}
 	h.branch = branch
-	sha, err := repo.Git("rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+	out, err := repo.Git("rev-parse", "--verify", "--quiet", "HEAD^{commit}")
 	if gitx.ExitCode(err) == 1 {
 		return h, nil
 	}
 	if err != nil {
 		return h, fmt.Errorf("reading HEAD: %w", err)
 	}
-	h.sha = strings.TrimSpace(sha)
+	h.sha = strings.TrimSpace(out)
+	tree, err := repo.Git("rev-parse", "--verify", "--quiet", h.sha+"^{tree}")
+	if err != nil {
+		return h, fmt.Errorf("reading the tree of HEAD: %w", err)
+	}
+	h.tree = strings.TrimSpace(tree)
 	return h, nil
 }
 
@@ -702,24 +700,26 @@ type commitStart struct {
 	paths map[string]bool
 }
 
-// stageCommitStart stages the initial work tree and records what the gate may update.
-func stageCommitStart(repo *gitx.Repo, base string) (savedIndex, commitStart, error) {
-	index, err := saveIndex(repo)
+// stageCommitStart stages the initial work tree and records what the gate
+// may update; head is HEAD as the caller just read it.
+func stageCommitStart(repo *gitx.Repo, base string, head headState) (savedIndex, commitStart, error) {
+	index, err := saveIndex(repo, head)
 	if err != nil {
 		return index, commitStart{}, err
 	}
 	if _, err := repo.Git("add", "-A"); err != nil {
 		return index, commitStart{}, errors.Join(fmt.Errorf("staging the work tree before the gate: %w", err), restoreIndex(index))
 	}
-	start, err := saveCommitStart(repo, base)
+	start, err := saveCommitStart(repo, base, head.sha != "")
 	if err != nil {
 		return index, commitStart{}, errors.Join(err, restoreIndex(index))
 	}
 	return index, start, nil
 }
 
-// saveCommitStart records the staged tree and paths changed from base before the gate.
-func saveCommitStart(repo *gitx.Repo, base string) (commitStart, error) {
+// saveCommitStart records the staged tree and paths changed from base before
+// the gate; with base "", from HEAD, which hasHead says has a commit.
+func saveCommitStart(repo *gitx.Repo, base string, hasHead bool) (commitStart, error) {
 	start := commitStart{paths: make(map[string]bool)}
 	tree, err := repo.Git("write-tree")
 	if err != nil {
@@ -731,10 +731,6 @@ func saveCommitStart(repo *gitx.Repo, base string) (commitStart, error) {
 	if base != "" {
 		out, err = repo.Git("diff-tree", "-r", "--name-only", "--no-renames", "-z", base, start.tree)
 	} else {
-		hasHead, headErr := repo.HasHead()
-		if headErr != nil {
-			return start, fmt.Errorf("checking HEAD before the gate: %w", headErr)
-		}
 		if hasHead {
 			out, err = repo.Git("diff-tree", "-r", "--name-only", "--no-renames", "-z", "HEAD", start.tree)
 		} else {
@@ -791,6 +787,8 @@ func (a *App) stageGateChanges(repo *gitx.Repo, start commitStart, command strin
 	if err := stageKeptGateChanges(repo, kept, after); err != nil {
 		return err
 	}
+	// The flags change no entry's content: the index read from start.tree
+	// writes it back as it is.
 	if err := restoreSkipWorktree(repo, skipped); err != nil {
 		return fmt.Errorf("restoring skip-worktree flags after the gate: %w", err)
 	}

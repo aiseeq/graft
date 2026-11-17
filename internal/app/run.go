@@ -18,25 +18,38 @@ import (
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
-// Run runs a task from .graft.yaml.
-func (a *App) Run(ctx context.Context, task string, args []string) error {
-	repo, cfg, err := a.open()
-	if err != nil {
-		return err
-	}
-
-	return a.runner(repo, cfg).Run(ctx, task, args)
+// Project is the repository of the directory graft works in with its
+// config, as one opening found them.
+type Project struct {
+	repo *gitx.Repo
+	cfg  *config.Config
 }
 
-// IsTask reports whether name is a task of the project in the current
-// directory; outside a project nothing is.
-func (a *App) IsTask(name string) (bool, error) {
-	cfg, found, err := a.ProjectConfig()
-	if err != nil || !found {
-		return false, err
+// Run runs a task from .graft.yaml. p is the project the command opened
+// already, with no other code run since; nil opens it here.
+func (a *App) Run(ctx context.Context, p *Project, task string, args []string) error {
+	if p == nil {
+		repo, cfg, err := a.open()
+		if err != nil {
+			return err
+		}
+		p = &Project{repo: repo, cfg: cfg}
 	}
-	_, ok := cfg.Tasks[name]
-	return ok, nil
+	return a.runner(p.repo, p.cfg).Run(ctx, task, args)
+}
+
+// TaskProject opens the project in the current directory and gives it when
+// name is one of its tasks, for Run to take: ok is false outside a project
+// and for a name that is no task.
+func (a *App) TaskProject(name string) (p *Project, ok bool, err error) {
+	repo, cfg, found, err := a.openProject()
+	if err != nil || !found {
+		return nil, false, err
+	}
+	if _, ok := cfg.Tasks[name]; !ok {
+		return nil, false, nil
+	}
+	return &Project{repo: repo, cfg: cfg}, true, nil
 }
 
 // ServiceAction is start, stop or restart.

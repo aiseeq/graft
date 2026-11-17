@@ -58,12 +58,12 @@ func TestCurrentHead(t *testing.T) {
 		t.Errorf("unborn: %+v, %v", got, err)
 	}
 	git("commit", "-q", "--allow-empty", "-m", "first")
-	sha := git("rev-parse", "HEAD")
-	if got, err := currentHead(repo); err != nil || got != (headState{branch: "feature/PROJ-1-x", sha: sha}) {
+	sha, tree := git("rev-parse", "HEAD"), git("rev-parse", "HEAD^{tree}")
+	if got, err := currentHead(repo); err != nil || got != (headState{branch: "feature/PROJ-1-x", sha: sha, tree: tree}) {
 		t.Errorf("on a branch: %+v, %v", got, err)
 	}
 	git("checkout", "-q", "--detach")
-	if got, err := currentHead(repo); err != nil || got != (headState{sha: sha}) {
+	if got, err := currentHead(repo); err != nil || got != (headState{sha: sha, tree: tree}) {
 		t.Errorf("detached: %+v, %v", got, err)
 	}
 	git("checkout", "-q", "feature/PROJ-1-x")

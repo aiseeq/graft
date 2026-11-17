@@ -25,15 +25,19 @@ import (
 // version files graft bumps, the exceptions and files taken out of the index
 // that stay on disk, ignored, do not count. A partial
 // take-back, part of the commit's diff of a file, is not seen: the check is
-// per file. base is the commit the staged tree is to follow: HEAD for a new
-// commit, HEAD's parent for an amend, whose own commit is the one being
-// rewritten; "" for an amend of a root commit, with nothing before it.
+// per file. base is the commit the staged tree is to follow: HEAD (by name or
+// as the commit it read) for a new commit, HEAD's parent for an amend, whose
+// own commit is the one being rewritten; "" for an amend of a root commit,
+// with nothing before it, or a commit on an unborn branch. Only HEAD by name
+// may be unborn.
 func Reverts(repo *gitx.Repo, cfg config.Reverts, versionFiles []string, message, base string) ([]Finding, error) {
 	if base == "" {
 		return nil, nil
 	}
-	if ok, err := repo.HasHead(); err != nil || !ok {
-		return nil, err
+	if base == "HEAD" {
+		if ok, err := repo.HasHead(); err != nil || !ok {
+			return nil, err
+		}
 	}
 	staged, err := revertCandidates(repo, cfg, versionFiles, base)
 	if err != nil || len(staged) == 0 {

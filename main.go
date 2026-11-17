@@ -405,7 +405,7 @@ func projectCmd(ctx context.Context, a *app.App, cmd string, rest []string) erro
 		if len(rest) == 0 {
 			return usageOf("run", "graft run")
 		}
-		return runTask(ctx, a, rest[0], rest[1:])
+		return runTask(ctx, a, nil, rest[0], rest[1:])
 	case "start", "stop", "restart":
 		return serviceCmd(ctx, a, app.ServiceAction(cmd), rest)
 	case "status":
@@ -434,19 +434,20 @@ func projectCmd(ctx context.Context, a *app.App, cmd string, rest []string) erro
 
 // taskShortcut runs graft <task> as graft run <task>.
 func taskShortcut(ctx context.Context, a *app.App, name string, args []string) error {
-	ok, err := a.IsTask(name)
+	// The project opened to find the task runs it: nothing runs in between.
+	p, ok, err := a.TaskProject(name)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return fmt.Errorf("%w: unknown command or task %q", errUsage, name)
 	}
-	return runTask(ctx, a, name, args)
+	return runTask(ctx, a, p, name, args)
 }
 
 // runTask takes the task arguments after --, so a task argument is never
-// mistaken for one of graft's.
-func runTask(ctx context.Context, a *app.App, name string, args []string) error {
+// mistaken for one of graft's. p is the project already open, nil to open it.
+func runTask(ctx context.Context, a *app.App, p *app.Project, name string, args []string) error {
 	if len(args) > 0 && args[0] == "--no-cache" {
 		a.NoCache, args = true, args[1:]
 	}
@@ -457,7 +458,7 @@ func runTask(ctx context.Context, a *app.App, name string, args []string) error 
 		args = args[1:]
 	}
 	a.Command = ""
-	return a.Run(ctx, name, args)
+	return a.Run(ctx, p, name, args)
 }
 
 func statsCmd(a *app.App, args []string) error {
