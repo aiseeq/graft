@@ -1784,9 +1784,7 @@ func excludeVersionOnlyBumps(repo *gitx.Repo, prev, head string, changed map[str
 	}
 	for _, file := range changedVersionFiles {
 		bump, err := versionFileIsVersionBump(repo, file, prevTree, headTree, targets[file])
-		if err != nil {
-			// A version file that does not parse is not a proven bump: its
-			// path stays changed and the withheld commits on it are checked.
+		if err != nil { //nolint:silent-error-handling // A version file that does not parse is not a proven bump: its path stays changed and the withheld commits on it are checked.
 			continue
 		}
 		if bump {
