@@ -1598,7 +1598,16 @@ func (a *App) approvalRun(ctx context.Context, r *deployRun) (gateOutcome, *gate
 	if err != nil {
 		return gateOutcome{}, nil, err
 	}
-	active, reverted, err := partitionWithheld(r.repo, r.head, withheld, r.cfg.VersionFiles())
+	var deployedPaths map[string]bool
+	if len(withheld) > 0 {
+		if deployedPaths, err = repoPaths(r.repo, r.prev, r.head); err != nil {
+			return gateOutcome{}, nil, fmt.Errorf("checking files changed since the deployed commit: %w", err)
+		}
+		if deployedPaths, err = excludeVersionOnlyBumps(r.repo, r.prev, r.head, deployedPaths, r.cfg.Version); err != nil {
+			return gateOutcome{}, nil, fmt.Errorf("checking version files changed since the deployed commit: %w", err)
+		}
+	}
+	active, reverted, err := partitionWithheld(r.repo, r.prev, r.head, withheld, r.cfg.VersionFiles(), deployedPaths)
 	if err != nil {
 		return gateOutcome{}, nil, err
 	}
@@ -1608,16 +1617,75 @@ func (a *App) approvalRun(ctx context.Context, r *deployRun) (gateOutcome, *gate
 	return out, g, err
 }
 
-// partitionWithheld separates commits whose changes remain reverted in the
-// deployed history. It also follows reverts of reverts, which make the
-// original change active again.
-func partitionWithheld(repo *gitx.Repo, head string, withheld, versionFiles []string) (active, reverted []string, retErr error) {
+// partitionWithheld applies the path filter only to withheld commits already
+// in the deployed history. Other commits retain the original check.
+func partitionWithheld(repo *gitx.Repo, prev, head string, withheld, versionFiles []string, deployedPaths map[string]bool) (active, reverted []string, retErr error) {
 	if len(withheld) == 0 {
 		return nil, nil, nil
 	}
-	out, err := repo.Git("log", "--reverse", "--format=%H%x00%s%x00%b%x00%x1e", head)
+	isReverted, err := withheldRevertState(repo, head, withheld)
 	if err != nil {
 		return nil, nil, err
+	}
+	active = make([]string, 0, len(withheld))
+	reverted = make([]string, 0, len(withheld))
+	versionPathSet := make(map[string]bool, len(versionFiles))
+	for _, p := range versionFiles {
+		versionPathSet[path.Clean(p)] = true
+	}
+	for _, sha := range withheld {
+		inPrev, err := repo.IsAncestor(sha, prev)
+		if err != nil {
+			return nil, nil, fmt.Errorf("checking whether withheld commit %s is in deployed history: %w", gitx.Short(sha), err)
+		}
+		if !inPrev {
+			check, err := withheldCheckAsHead(repo, head, sha, isReverted[sha], versionFiles)
+			if err != nil {
+				return nil, nil, fmt.Errorf("checking withheld commit %s in deployed history: %w", gitx.Short(sha), err)
+			}
+			if check {
+				active = append(active, sha)
+			} else {
+				reverted = append(reverted, sha)
+			}
+			continue
+		}
+		paths, err := withheldPaths(repo, sha)
+		if err != nil {
+			return nil, nil, fmt.Errorf("checking files changed by withheld commit %s: %w", gitx.Short(sha), err)
+		}
+		if len(paths) > 0 && onlyVersionPaths(paths, versionPathSet) {
+			// Version-only commits use the original check without excluding
+			// every path, which would make an empty diff vacuously present.
+			if isReverted[sha] {
+				present, err := deploy.ChangePresent(repo, head, sha)
+				if err != nil {
+					return nil, nil, fmt.Errorf("checking withheld commit %s in deployed history: %w", gitx.Short(sha), err)
+				}
+				if !present {
+					reverted = append(reverted, sha)
+					continue
+				}
+			}
+			active = append(active, sha)
+			continue
+		}
+		if len(paths) == 0 || !intersectsPaths(paths, deployedPaths) {
+			// No path this deploy can ship was touched; keep the marker intact.
+			reverted = append(reverted, sha)
+		} else {
+			// A touched path may carry any part of W, restored or not: W is
+			// checked.
+			active = append(active, sha)
+		}
+	}
+	return active, reverted, nil
+}
+
+func withheldRevertState(repo *gitx.Repo, head string, withheld []string) (map[string]bool, error) {
+	out, err := repo.Git("log", "--reverse", "--format=%H%x00%s%x00%b%x00%x1e", head)
+	if err != nil {
+		return nil, err
 	}
 	isReverted := map[string]bool{}
 	revertTargets := map[string]string{}
@@ -1633,7 +1701,7 @@ func partitionWithheld(repo *gitx.Repo, head string, withheld, versionFiles []st
 		for _, match := range revertsRe.FindAllStringSubmatch(body, -1) {
 			target, ambiguous := withheldRevertTarget(match[1], withheld, revertTargets)
 			if ambiguous {
-				return nil, nil, fmt.Errorf("%s reverts ambiguous commit prefix %s", gitx.Short(sha), match[1])
+				return nil, fmt.Errorf("%s reverts ambiguous commit prefix %s", gitx.Short(sha), match[1])
 			}
 			if target == "" {
 				continue
@@ -1642,22 +1710,90 @@ func partitionWithheld(repo *gitx.Repo, head string, withheld, versionFiles []st
 			revertTargets[sha] = target
 		}
 	}
-	active = make([]string, 0, len(withheld))
-	reverted = make([]string, 0, len(withheld))
-	for _, sha := range withheld {
-		if isReverted[sha] {
-			present, err := deploy.ChangePresentExcept(repo, head, sha, versionFiles...)
-			if err != nil {
-				return nil, nil, fmt.Errorf("checking withheld commit %s in deployed history: %w", gitx.Short(sha), err)
-			}
-			if !present {
-				reverted = append(reverted, sha)
-				continue
-			}
+	return isReverted, nil
+}
+
+func onlyVersionPaths(paths []string, versionPathSet map[string]bool) bool {
+	for _, p := range paths {
+		if !versionPathSet[path.Clean(p)] {
+			return false
 		}
-		active = append(active, sha)
 	}
-	return active, reverted, nil
+	return true
+}
+
+// withheldCheckAsHead preserves the original partition rule for commits that
+// were not ancestors of the deployed commit.
+func withheldCheckAsHead(repo *gitx.Repo, head, sha string, isReverted bool, versionFiles []string) (bool, error) {
+	if !isReverted {
+		return true, nil
+	}
+	return deploy.ChangePresentExcept(repo, head, sha, versionFiles...)
+}
+
+func repoPaths(repo *gitx.Repo, from, to string) (map[string]bool, error) {
+	out, err := repo.Git("diff", "--no-renames", "--name-only", "-z", from, to)
+	if err != nil {
+		return nil, err
+	}
+	paths := map[string]bool{}
+	for p := range strings.SplitSeq(out, "\x00") {
+		if p == "" {
+			continue
+		}
+		paths[p] = true
+	}
+	return paths, nil
+}
+
+func withheldPaths(repo *gitx.Repo, sha string) ([]string, error) {
+	out, err := repo.Git("diff-tree", "-r", "--root", "-m", "--first-parent", "--diff-merges=first-parent", "--no-commit-id", "--no-renames", "--name-only", "-z", sha)
+	if err != nil {
+		return nil, err
+	}
+	return strings.FieldsFunc(out, func(r rune) bool { return r == '\x00' }), nil
+}
+
+func intersectsPaths(paths []string, changed map[string]bool) bool {
+	for _, p := range paths {
+		if changed[p] {
+			return true
+		}
+	}
+	return false
+}
+
+func excludeVersionOnlyBumps(repo *gitx.Repo, prev, head string, changed map[string]bool, v config.Version) (map[string]bool, error) {
+	targets := versionTargetsByPath(v)
+	changedVersionFiles := make([]string, 0, len(targets))
+	for file := range targets {
+		if changed[file] {
+			changedVersionFiles = append(changedVersionFiles, file)
+		}
+	}
+	if len(changedVersionFiles) == 0 {
+		return changed, nil
+	}
+	prevTree, err := versionBlobTree(repo, prev)
+	if err != nil {
+		return nil, fmt.Errorf("reading deployed version tree: %w", err)
+	}
+	headTree, err := versionBlobTree(repo, head)
+	if err != nil {
+		return nil, fmt.Errorf("reading current version tree: %w", err)
+	}
+	for _, file := range changedVersionFiles {
+		bump, err := versionFileIsVersionBump(repo, file, prevTree, headTree, targets[file])
+		if err != nil {
+			// A version file that does not parse is not a proven bump: its
+			// path stays changed and the withheld commits on it are checked.
+			continue
+		}
+		if bump {
+			delete(changed, file)
+		}
+	}
+	return changed, nil
 }
 
 func withheldRevertTarget(prefix string, withheld []string, revertTargets map[string]string) (string, bool) {
@@ -2191,11 +2327,7 @@ func shipsNothing(repo *gitx.Repo, cfg *config.Config, conf *config.ApprovedRele
 		return false, "", err
 	}
 	bumped := cfg.VersionFiles()
-	versionTargets := map[string][]version.Target{}
-	for _, target := range version.Targets(cfg.Version) {
-		key := path.Clean(target.Path)
-		versionTargets[key] = append(versionTargets[key], target)
-	}
+	versionTargets := versionTargetsByPath(cfg.Version)
 	changedVersions := map[string]bool{}
 	for file := range strings.SplitSeq(out, "\x00") {
 		if file == "" {
@@ -2230,6 +2362,15 @@ func shipsNothing(repo *gitx.Repo, cfg *config.Config, conf *config.ApprovedRele
 		return false, "", nil
 	}
 	return moduleBumpIsUnshipped(repo, sha, files, conf)
+}
+
+func versionTargetsByPath(v config.Version) map[string][]version.Target {
+	targets := map[string][]version.Target{}
+	for _, target := range version.Targets(v) {
+		key := path.Clean(target.Path)
+		targets[key] = append(targets[key], target)
+	}
+	return targets
 }
 
 // versionFilesUnchangedExceptVersion compares changed version targets at both
