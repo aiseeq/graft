@@ -432,8 +432,16 @@ func TestServiceStubbornIsKilled(t *testing.T) {
 
 func TestServiceStalePIDFile(t *testing.T) {
 	f, _ := serviceRepo(t, "serve", "")
-	// A live process that is not the service: the pid was reused.
+	// A live process with no start record cannot safely be identified.
 	f.write("tmp/web.pid", strconv.Itoa(os.Getpid())+"\n")
+	if out, code := f.graft("", "status"); code != 1 || !strings.Contains(out, "cannot confirm process "+strconv.Itoa(os.Getpid())+" is web: no start record") {
+		t.Fatalf("unconfirmed PID: exit %d\n%s", code, out)
+	}
+	if _, err := os.Stat(f.path("tmp/web.pid")); err != nil {
+		t.Fatalf("unconfirmed PID file removed: %v", err)
+	}
+	// A matching PID with a different start time proves it was reused.
+	f.write("tmp/web.pid.start", fmt.Sprintf("%d 0\n", os.Getpid()))
 	out := f.mustGraft("status")
 	if !strings.Contains(out, "removing stale pid file") || !strings.Contains(out, "web: stopped") {
 		t.Errorf("status:\n%s", out)

@@ -369,7 +369,7 @@ func (m *Manager) stop(ctx context.Context, name string) error {
 		fmt.Fprintf(m.Log, "graft: %s is not running\n", name)
 		return nil
 	}
-	start, err := m.serviceStartRecord(name, s)
+	start, err := m.serviceStartRecord(name, s, pid)
 	if err != nil {
 		return err
 	}
@@ -453,20 +453,27 @@ func (m *Manager) removeGoneLeader(name string, s *config.Service) (bool, error)
 	if err != nil || pid <= 0 {
 		return false, fmt.Errorf("%s: not a pid: %q", s.PIDFile, strings.TrimSpace(string(data)))
 	}
-	startData, err := os.ReadFile(m.path(s.PIDFile) + ".start")
-	if errors.Is(err, os.ErrNotExist) {
+	start, err := readStartRecord(m.path(s.PIDFile), pid)
+	if err != nil {
+		return false, fmt.Errorf("reading the process start time: %w", err)
+	}
+	if start == "" {
+		gone, err := dead(pid)
+		if err != nil {
+			alive, probeErr := proc.Alive(pid)
+			if probeErr != nil {
+				return false, probeErr
+			}
+			gone = !alive
+		}
+		if !gone {
+			return false, nil
+		}
 		members, scanErr := sessionMembers(pid)
 		if scanErr != nil || len(members) == 0 {
 			return false, scanErr
 		}
 		fmt.Fprintf(m.Log, "graft: %s: session leader %d is gone; remaining session processes were not stopped: %v; inspect SID %d and stop them manually\n", name, pid, members, pid)
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("reading the process start time: %w", err)
-	}
-	start := strings.TrimSpace(string(startData))
-	if start == "" {
 		return false, nil
 	}
 	exited, err := serviceExited(pid, start)
@@ -481,19 +488,52 @@ func (m *Manager) removeGoneLeader(name string, s *config.Service) (bool, error)
 	return true, errors.Join(fmt.Errorf("%s: session leader %d is gone; remaining session processes were not stopped", name, pid), removeErr)
 }
 
-func (m *Manager) serviceStartRecord(name string, s *config.Service) (string, error) {
-	data, err := os.ReadFile(m.path(s.PIDFile) + ".start")
+func (m *Manager) serviceStartRecord(name string, s *config.Service, pid int) (string, error) {
+	start, err := readStartRecord(m.path(s.PIDFile), pid)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("%s: pid file has no process start time; stop the service manually, then remove %s", name, m.path(s.PIDFile))
-		}
 		return "", fmt.Errorf("%s: reading the process start time: %w", name, err)
 	}
-	start := strings.TrimSpace(string(data))
 	if start == "" {
-		return "", fmt.Errorf("%s: pid file has no process start time; stop the service manually, then remove %s", name, m.path(s.PIDFile))
+		return "", m.unconfirmedService(name, s, pid)
 	}
 	return start, nil
+}
+
+// readStartRecord accepts the old start-time-only format and the new format
+// binding the start time to the PID named by the PID file.
+func readStartRecord(path string, pid int) (string, error) {
+	data, err := os.ReadFile(path + ".start")
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading %s.start: %w", path, err)
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) == 1 && validStartTime(fields[0]) {
+		return fields[0], nil
+	}
+	if len(fields) != 2 {
+		return "", nil
+	}
+	if !sameRecordedPID(fields[0], pid) || !validStartTime(fields[1]) {
+		return "", nil
+	}
+	return fields[1], nil
+}
+
+func sameRecordedPID(record string, pid int) bool {
+	got, err := strconv.Atoi(record)
+	return err == nil && got == pid
+}
+
+func validStartTime(start string) bool {
+	_, err := strconv.ParseUint(start, 10, 64)
+	return err == nil
+}
+
+func (m *Manager) unconfirmedService(name string, s *config.Service, pid int) error {
+	return fmt.Errorf("cannot confirm process %d is %s: no start record; check it and remove %s", pid, name, m.path(s.PIDFile))
 }
 
 func (m *Manager) stopSession(ctx context.Context, name string, pid int, start string, s *config.Service) (akitproc.StopResult, error) {
@@ -628,7 +668,7 @@ func copyFrom(path string, offset int64, w io.Writer) (int64, error) {
 }
 
 // running returns the pid of the running service or 0. A pid file naming a
-// dead process, or a process that is now another program, is removed.
+// dead process or a different process is removed.
 func (m *Manager) running(name string) (int, error) {
 	s := m.Config.Services[name]
 	path := m.path(s.PIDFile)
@@ -652,7 +692,7 @@ func (m *Manager) running(name string) (int, error) {
 		return 0, err
 	}
 	if alive {
-		same, err := m.isService(s, pid)
+		same, err := m.isService(name, s, pid)
 		if err != nil {
 			return 0, err
 		}
@@ -664,12 +704,26 @@ func (m *Manager) running(name string) (int, error) {
 	return 0, errors.Join(fsx.Remove(path), fsx.Remove(path+".start"))
 }
 
-// isService guards against pid reuse where the platform can tell: the
-// process must still run the service's program.
-func (m *Manager) isService(s *config.Service, pid int) (bool, error) {
+// isService uses a matching start record, or checks the command line if
+// there is no record. A different program without a record is ambiguous.
+func (m *Manager) isService(name string, s *config.Service, pid int) (bool, error) {
+	start, err := readStartRecord(m.path(s.PIDFile), pid)
+	if err != nil {
+		return false, fmt.Errorf("reading the process start time: %w", err)
+	}
+	if start != "" {
+		stat, err := readServiceStat("/proc", pid)
+		if akitproc.Gone(err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("checking process %d start time: %w", pid, err)
+		}
+		return stat.Start == start && stat.State != "Z" && stat.State != "X", nil
+	}
 	cmdline, err := proc.Cmdline(pid)
 	if errors.Is(err, errors.ErrUnsupported) {
-		return true, nil
+		return false, m.unconfirmedService(name, s, pid)
 	}
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil // exited meanwhile
@@ -683,7 +737,10 @@ func (m *Manager) isService(s *config.Service, pid int) (bool, error) {
 	}
 	// A script started through its #! line shows as [interpreter, (arg),
 	// script]: the program may be any of the first three words.
-	return slices.Contains(cmdline[:min(3, len(cmdline))], argv0), nil
+	if !slices.Contains(cmdline[:min(3, len(cmdline))], argv0) {
+		return false, m.unconfirmedService(name, s, pid)
+	}
+	return true, nil
 }
 
 func sessionMembers(sid int) ([]int, error) {
@@ -819,17 +876,17 @@ func waitForUntil(ctx context.Context, deadline time.Time, done func() (bool, er
 }
 
 func writePID(path string, pid int, start string) error {
-	if err := atomicfile.Write(path, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
-		return fmt.Errorf("writing the pid file: %w", err)
-	}
 	if start != "" {
-		if err := atomicfile.Write(path+".start", []byte(start+"\n"), 0o644); err != nil {
-			return errors.Join(fmt.Errorf("writing the process start time: %w", err), fsx.Remove(path))
+		if err := atomicfile.Write(path+".start", fmt.Appendf(nil, "%d %s\n", pid, start), 0o644); err != nil {
+			return fmt.Errorf("writing the process start time: %w", err)
 		}
 	} else {
 		if err := fsx.Remove(path + ".start"); err != nil {
 			return err
 		}
+	}
+	if err := atomicfile.Write(path, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+		return errors.Join(fmt.Errorf("writing the pid file: %w", err), fsx.Remove(path+".start"))
 	}
 	return nil
 }

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 
 	akitproc "github.com/aiseeq/akit/proc"
 	"github.com/aiseeq/graft/v2/internal/config"
+	"golang.org/x/sys/unix"
 )
 
 func TestMain(m *testing.M) {
@@ -297,6 +299,177 @@ func TestStopCommandTimeoutKillsItsProcessGroup(t *testing.T) {
 	}
 }
 
+func TestStopServiceAfterExec(t *testing.T) {
+	dir := t.TempDir()
+	s := &config.Service{
+		Run:  config.Command{Argv: []string{"sh", "-c", "exec sleep 30"}},
+		Stop: "touch stop-ran", Log: "service.log", PIDFile: "service.pid", StopTimeout: 200 * time.Millisecond,
+	}
+	var log strings.Builder
+	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, &log)
+	if err := m.start(t.Context(), "svc"); err != nil {
+		t.Fatal(err)
+	}
+	pid := serviceTestPID(t, m.path(s.PIDFile))
+	stopServiceTestProcess(t, pid)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		name, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+		if err == nil && strings.TrimSpace(string(name)) == "sleep" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("service did not exec sleep: %q, %v", name, err)
+		}
+	}
+	if err := m.stop(t.Context(), "svc"); err != nil {
+		t.Fatalf("stop: %v; log: %s", err, log.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stop-ran")); err != nil {
+		t.Fatalf("stop command did not run: %v; log: %s", err, log.String())
+	}
+	if strings.Contains(log.String(), "removing stale pid file") || serviceTestRunning(pid) {
+		t.Fatalf("service %d survived or was treated as stale: %s", pid, log.String())
+	}
+}
+
+func TestStopServiceWithLegacyStartRecord(t *testing.T) {
+	dir := t.TempDir()
+	s := &config.Service{
+		Run:  config.Command{Argv: []string{"sh", "-c", "exec sleep 30"}},
+		Stop: "touch stop-ran", Log: "service.log", PIDFile: "service.pid", StopTimeout: 200 * time.Millisecond,
+	}
+	var log strings.Builder
+	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, &log)
+	if err := m.start(t.Context(), "svc"); err != nil {
+		t.Fatal(err)
+	}
+	pid := serviceTestPID(t, m.path(s.PIDFile))
+	stopServiceTestProcess(t, pid)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		name, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+		if err == nil && strings.TrimSpace(string(name)) == "sleep" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("service did not exec sleep: %q, %v", name, err)
+		}
+	}
+	stat, err := akitproc.ReadStat("/proc", pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(m.path(s.PIDFile)+".start", []byte(stat.Start+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.stop(t.Context(), "svc"); err != nil {
+		t.Fatalf("stop with legacy start record: %v; log: %s", err, log.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stop-ran")); err != nil {
+		t.Fatalf("stop command did not run: %v; log: %s", err, log.String())
+	}
+	if serviceTestRunning(pid) {
+		t.Fatalf("service %d survived stop", pid)
+	}
+}
+
+func TestLegacyStartRecordRejectsReusedPID(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = akitproc.SignalCmd(cmd, syscall.SIGKILL); _ = cmd.Wait() })
+	stat, err := akitproc.ReadStat("/proc", cmd.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	s := &config.Service{Run: config.Command{Argv: []string{"sleep", "30"}}, PIDFile: "service.pid"}
+	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
+	if err := os.WriteFile(m.path(s.PIDFile), []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(m.path(s.PIDFile)+".start", []byte(stat.Start+"0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if pid, err := m.running("svc"); err != nil || pid != 0 {
+		t.Fatalf("running = %d, %v, want stale PID removed", pid, err)
+	}
+	for _, path := range []string{m.path(s.PIDFile), m.path(s.PIDFile) + ".start"} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale record %s remains: %v", path, err)
+		}
+	}
+	if !serviceTestRunning(cmd.Process.Pid) {
+		t.Fatal("unrelated process was signaled")
+	}
+}
+
+func TestRunningRejectsReusedPIDWithMatchingArgv(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = akitproc.SignalCmd(cmd, syscall.SIGKILL); _ = cmd.Wait() })
+	stat, err := akitproc.ReadStat("/proc", cmd.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	s := &config.Service{Run: config.Command{Argv: []string{"sleep", "30"}}, PIDFile: "service.pid"}
+	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
+	if err := writePID(m.path(s.PIDFile), cmd.Process.Pid, stat.Start+"0"); err != nil {
+		t.Fatal(err)
+	}
+	if pid, err := m.running("svc"); err != nil || pid != 0 {
+		t.Fatalf("running = %d, %v, want stale PID removed", pid, err)
+	}
+	for _, path := range []string{m.path(s.PIDFile), m.path(s.PIDFile) + ".start"} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale record %s remains: %v", path, err)
+		}
+	}
+	if !serviceTestRunning(cmd.Process.Pid) {
+		t.Fatal("unrelated process was stopped")
+	}
+	if err := writePID(m.path(s.PIDFile), cmd.Process.Pid, stat.Start+"0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.stop(t.Context(), "svc"); err == nil {
+		t.Fatal("stop accepted a different process")
+	}
+	if _, err := os.Stat(m.path(s.PIDFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale PID file remains after stop: %v", err)
+	}
+	if !serviceTestRunning(cmd.Process.Pid) {
+		t.Fatal("stop signaled the unrelated process")
+	}
+	t.Run("legacy PID file", checkRunningLegacyPIDFileChecksArgv)
+}
+
+func checkRunningLegacyPIDFileChecksArgv(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = akitproc.SignalCmd(cmd, syscall.SIGKILL); _ = cmd.Wait() })
+	dir := t.TempDir()
+	s := &config.Service{Run: config.Command{Argv: []string{"sleep", "30"}}, PIDFile: "service.pid"}
+	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
+	if err := writePID(m.path(s.PIDFile), cmd.Process.Pid, ""); err != nil {
+		t.Fatal(err)
+	}
+	if pid, err := m.running("svc"); err != nil || pid != cmd.Process.Pid {
+		t.Fatalf("matching legacy PID = %d, %v", pid, err)
+	}
+	s.Run.Argv[0] = "sh"
+	if pid, err := m.running("svc"); err == nil || pid != 0 || !strings.Contains(err.Error(), "cannot confirm process") {
+		t.Fatalf("mismatched legacy PID = %d, %v, want unconfirmed error", pid, err)
+	}
+	if _, err := os.Stat(m.path(s.PIDFile)); err != nil {
+		t.Fatalf("legacy PID file was removed: %v", err)
+	}
+}
+
 func TestStopTimeoutCoversCommandAndServiceWaitTogether(t *testing.T) {
 	dir := t.TempDir()
 	signalFile := filepath.Join(dir, "signal")
@@ -324,7 +497,7 @@ func TestStopTimeoutCoversCommandAndServiceWaitTogether(t *testing.T) {
 		t.Fatalf("stop error = %v, log: %s", err, m.Log.(*strings.Builder).String())
 	}
 	if _, err := os.Stat(filepath.Join(dir, "stop-started")); err != nil {
-		t.Fatalf("stop command did not start: %v", err)
+		t.Fatalf("stop command did not start: %v; log: %s", err, m.Log.(*strings.Builder).String())
 	}
 	if _, err := os.Stat(filepath.Join(dir, "stop-finished")); err != nil {
 		t.Fatalf("stop command did not finish: %v", err)
@@ -343,17 +516,18 @@ func TestStopCommandReapsOrphansAfterLeaderExits(t *testing.T) {
 			dir := t.TempDir()
 			s := &config.Service{
 				Run:  config.Command{Argv: []string{"sh", "-c", "exec sleep 30"}},
-				Stop: "sleep 5 & echo $! > child; exit 0", Log: "service.log", PIDFile: "service.pid", StopTimeout: 2 * time.Second,
+				Stop: "sh -c 'sleep 8; touch natural-exit' & echo $! > child; exit 0", Log: "service.log", PIDFile: "service.pid", StopTimeout: 2 * time.Second,
 			}
 			m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
 			if err := m.start(t.Context(), "svc"); err != nil {
 				t.Fatal(err)
 			}
-			serviceTestPID(t, m.path(s.PIDFile))
-			stopServiceTestProcess(t, serviceTestPID(t, m.path(s.PIDFile)))
+			pid := serviceTestPID(t, m.path(s.PIDFile))
+			stopServiceTestProcess(t, pid)
 			var logFile *os.File
+			var pipeLog strings.Builder
 			if logMode == "pipe" {
-				m.Log = io.Discard
+				m.Log = &pipeLog
 			} else {
 				var err error
 				logFile, err = os.Create(filepath.Join(dir, "stop.log"))
@@ -363,10 +537,30 @@ func TestStopCommandReapsOrphansAfterLeaderExits(t *testing.T) {
 				defer logFile.Close()
 				m.Log = logFile
 			}
-			if err := m.stop(t.Context(), "svc"); err != nil {
+			result := make(chan error, 1)
+			go func() { result <- m.stop(t.Context(), "svc") }()
+			child := serviceTestPID(t, filepath.Join(dir, "child"))
+			stopServiceTestProcess(t, child)
+			if err := akitproc.SignalDescendant(pid, syscall.SIGTERM); err != nil {
 				t.Fatal(err)
 			}
-			child := serviceTestPID(t, filepath.Join(dir, "child"))
+			if err := <-result; err != nil {
+				t.Fatal(err)
+			}
+			log := pipeLog.String()
+			if logFile != nil {
+				data, err := os.ReadFile(logFile.Name())
+				if err != nil {
+					t.Fatal(err)
+				}
+				log = string(data)
+			}
+			if strings.Contains(log, "falling back to signals") {
+				t.Fatalf("stop command fell back to signals: %s", log)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "natural-exit")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("stop command child reached its natural exit: %v", err)
+			}
 			if serviceTestRunning(child) {
 				t.Fatalf("stop command child %d survived return with %s log", child, logMode)
 			}
@@ -503,6 +697,83 @@ func TestStartWithoutProcRecordsPIDOnly(t *testing.T) {
 	})
 }
 
+func TestExecServiceWithoutStartRecordIsNotDiscarded(t *testing.T) {
+	dir := t.TempDir()
+	s := &config.Service{Run: config.Command{Argv: []string{"sh", "-c", "exec sleep 30"}}, Stop: "touch stop-ran", Log: "service.log", PIDFile: "service.pid", StopTimeout: time.Second}
+	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
+	oldReadStat := readServiceStat
+	readServiceStat = func(string, int) (akitproc.Stat, error) { return akitproc.Stat{}, os.ErrPermission }
+	t.Cleanup(func() { readServiceStat = oldReadStat })
+	err := m.start(t.Context(), "svc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := serviceTestPID(t, m.path(s.PIDFile))
+	stopServiceTestProcess(t, pid)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		name, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+		if err == nil && strings.TrimSpace(string(name)) == "sleep" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("service did not exec sleep: %q, %v", name, err)
+		}
+	}
+	want := fmt.Sprintf("cannot confirm process %d is svc: no start record; check it and remove %s", pid, m.path(s.PIDFile))
+	if _, err := m.State(t.Context(), "svc"); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("state error = %v, want %q", err, want)
+	}
+	if err := m.stop(t.Context(), "svc"); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("stop error = %v, want %q", err, want)
+	}
+	if _, err := os.Stat(m.path(s.PIDFile)); err != nil {
+		t.Errorf("PID file was removed: %v", err)
+	}
+	if !serviceTestRunning(pid) {
+		t.Error("service was signaled")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stop-ran")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stop command ran: %v", err)
+	}
+}
+
+func TestMismatchedStartRecordDoesNotIdentifyPID(t *testing.T) {
+	for _, op := range []string{"state", "stop"} {
+		t.Run(op, func(t *testing.T) {
+			cmd := exec.Command("sleep", "30")
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = akitproc.SignalCmd(cmd, syscall.SIGKILL); _ = cmd.Wait() })
+			stat, err := akitproc.ReadStat("/proc", cmd.Process.Pid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			s := &config.Service{Run: config.Command{Argv: []string{"sh", "-c", "exec sleep 30"}}, PIDFile: "service.pid"}
+			m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
+			if err := os.WriteFile(m.path(s.PIDFile), fmt.Appendf(nil, "%d\n", cmd.Process.Pid), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(m.path(s.PIDFile)+".start", fmt.Appendf(nil, "%d %s\n", cmd.Process.Pid+1, stat.Start), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if op == "state" {
+				_, err = m.State(t.Context(), "svc")
+			} else {
+				err = m.stop(t.Context(), "svc")
+			}
+			want := fmt.Sprintf("cannot confirm process %d is svc: no start record; check it and remove %s", cmd.Process.Pid, m.path(s.PIDFile))
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("%s error = %v, want %q", op, err, want)
+			}
+			if _, err := os.Stat(m.path(s.PIDFile)); err != nil || !serviceTestRunning(cmd.Process.Pid) {
+				t.Errorf("PID file or process lost: %v", err)
+			}
+		})
+	}
+}
+
 func TestStartWithoutProcReportsExitedService(t *testing.T) {
 	oldReadStat := readServiceStat
 	readServiceStat = func(string, int) (akitproc.Stat, error) { return akitproc.Stat{}, errors.ErrUnsupported }
@@ -584,7 +855,44 @@ func TestWritePIDStoresLeaderStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(start) != "456\n" {
-		t.Fatalf("start record = %q, want leader start time", start)
+	if string(start) != "123 456\n" {
+		t.Fatalf("start record = %q, want PID and leader start time", start)
+	}
+}
+
+func TestWritePIDPublishesStartBeforePID(t *testing.T) {
+	dir := t.TempDir()
+	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unix.Close(fd) })
+	if _, err := unix.InotifyAddWatch(fd, dir, unix.IN_MOVED_TO); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePID(filepath.Join(dir, "service.pid"), 123, "456"); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4096)
+	n, err := unix.Read(fd, buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for pos := 0; pos+unix.SizeofInotifyEvent <= n; {
+		size := int(binary.NativeEndian.Uint32(buf[pos+12 : pos+16]))
+		end := pos + unix.SizeofInotifyEvent + size
+		if end > n {
+			t.Fatal("truncated inotify event")
+		}
+		names = append(names, strings.TrimRight(string(buf[pos+unix.SizeofInotifyEvent:end]), "\x00"))
+		pos = end
+	}
+	if len(names) != 2 || names[0] != "service.pid.start" || names[1] != "service.pid" {
+		t.Fatalf("publication order = %q, want start record then PID", names)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "service.pid.start"))
+	if err != nil || string(data) != "123 456\n" {
+		t.Fatalf("start record = %q, %v; want PID and start time", data, err)
 	}
 }
