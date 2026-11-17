@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -39,6 +40,28 @@ type Manager struct {
 	Runner *tasks.Runner
 	Log    io.Writer
 	lookup *dotenv.Lookup
+	// logMu orders writes to the log: a service started here reports its
+	// exit from its own goroutine while other commands write too. The
+	// writer must not call back into the manager, and a writer that blocks
+	// blocks the manager; graft sets Log once, tests may replace it between
+	// commands.
+	logMu sync.Mutex
+}
+
+// logWriter writes to the manager's log in turn with its other writes.
+type logWriter struct{ m *Manager }
+
+func (w logWriter) Write(p []byte) (int, error) {
+	w.m.logMu.Lock()
+	defer w.m.logMu.Unlock()
+	return w.m.Log.Write(p)
+}
+
+// logf writes one line of the manager's log.
+func (m *Manager) logf(format string, args ...any) {
+	m.logMu.Lock()
+	defer m.logMu.Unlock()
+	fmt.Fprintf(m.Log, format, args...)
 }
 
 // New prepares a manager.
@@ -159,7 +182,7 @@ func (m *Manager) start(ctx context.Context, name string) error {
 		return err
 	}
 	if pid != 0 {
-		fmt.Fprintf(m.Log, "graft: %s is already running (pid %d)\n", name, pid)
+		m.logf("graft: %s is already running (pid %d)\n", name, pid)
 		return nil
 	}
 	addr, err := m.prepareStart(ctx, name, s)
@@ -180,7 +203,7 @@ func (m *Manager) start(ctx context.Context, name string) error {
 	pid = cmd.Process.Pid
 	stat, statErr := readServiceStat("/proc", pid)
 	if statErr != nil && !errors.Is(statErr, errors.ErrUnsupported) {
-		fmt.Fprintf(m.Log, "graft: %s: warning: cannot read process start time: %v; recording PID only\n", name, statErr)
+		m.logf("graft: %s: warning: cannot read process start time: %v; recording PID only\n", name, statErr)
 	}
 	start := ""
 	if statErr == nil {
@@ -208,12 +231,17 @@ func (m *Manager) start(ctx context.Context, name string) error {
 	if start != "" {
 		go func() { waitResult <- cmd.Wait() }()
 	}
+	// The exit is reported to the log of this start: the caller may point
+	// m.Log elsewhere while the service runs.
+	startLog := m.Log
 	go func() {
 		if waitErr := <-waitResult; waitErr != nil {
-			fmt.Fprintf(m.Log, "graft: service %s exited: %v\n", name, waitErr)
+			m.logMu.Lock()
+			defer m.logMu.Unlock()
+			fmt.Fprintf(startLog, "graft: service %s exited: %v\n", name, waitErr)
 		}
 	}()
-	fmt.Fprintf(m.Log, "graft: started %s (pid %d), log %s\n", name, pid, s.Log)
+	m.logf("graft: started %s (pid %d), log %s\n", name, pid, s.Log)
 	return nil
 }
 
@@ -366,7 +394,7 @@ func (m *Manager) stop(ctx context.Context, name string) error {
 		return err
 	}
 	if pid == 0 {
-		fmt.Fprintf(m.Log, "graft: %s is not running\n", name)
+		m.logf("graft: %s is not running\n", name)
 		return nil
 	}
 	start, err := m.serviceStartRecord(name, s, pid)
@@ -379,7 +407,7 @@ func (m *Manager) stop(ctx context.Context, name string) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			fmt.Fprintf(m.Log, "graft: %s: stop command did not succeed (%v); falling back to signals\n", name, err)
+			m.logf("graft: %s: stop command did not succeed (%v); falling back to signals\n", name, err)
 		} else {
 			gone, waitErr := waitForUntil(ctx, deadline, func() (bool, error) { return dead(pid) })
 			if waitErr != nil {
@@ -388,7 +416,7 @@ func (m *Manager) stop(ctx context.Context, name string) error {
 			if gone {
 				return m.finishStop(ctx, name, s)
 			}
-			fmt.Fprintf(m.Log, "graft: %s: stop command did not stop the service in %s; falling back to signals\n", name, s.StopTimeout)
+			m.logf("graft: %s: stop command did not stop the service in %s; falling back to signals\n", name, s.StopTimeout)
 		}
 	}
 	result, err := m.stopSession(ctx, name, pid, start, s)
@@ -396,10 +424,10 @@ func (m *Manager) stop(ctx context.Context, name string) error {
 		return err
 	}
 	if result.Degraded {
-		fmt.Fprintf(m.Log, "graft: %s: session processes were not stopped because pidfd_open is unavailable\n", name)
+		m.logf("graft: %s: session processes were not stopped because pidfd_open is unavailable\n", name)
 	}
 	if result.Killed > 0 {
-		fmt.Fprintf(m.Log, "graft: %s did not stop in %s, killing it\n", name, s.StopTimeout)
+		m.logf("graft: %s did not stop in %s, killing it\n", name, s.StopTimeout)
 	}
 	gone, err := waitFor(ctx, s.StopTimeout, func() (bool, error) { return dead(pid) })
 	if err != nil {
@@ -420,11 +448,18 @@ func (m *Manager) runStopCommand(ctx context.Context, s *config.Service, deadlin
 	defer cancel()
 	cmd := exec.CommandContext(stopCtx, "sh", "-c", s.Stop)
 	cmd.Dir, cmd.Env = m.Root, env
-	cmd.Stdout, cmd.Stderr = m.Log, m.Log
+	// A log file goes to the command as is: a pipe could outlive the
+	// command in a detached descendant. Any other writer is copied in turn
+	// with the manager's own writes.
+	var out io.Writer = logWriter{m}
+	if f, ok := m.Log.(*os.File); ok {
+		out = f
+	}
+	cmd.Stdout, cmd.Stderr = out, out
 	proc.Detach(cmd)
 	proc.Reap(cmd)
 	proc.StopOnCancel(cmd, stopCommandGrace, func(err error) {
-		fmt.Fprintf(m.Log, "graft: warning stopping stop command: %v\n", err)
+		m.logf("graft: warning stopping stop command: %v\n", err)
 	})
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("running stop command: %w", err)
@@ -473,7 +508,7 @@ func (m *Manager) removeGoneLeader(name string, s *config.Service) (bool, error)
 		if scanErr != nil || len(members) == 0 {
 			return false, scanErr
 		}
-		fmt.Fprintf(m.Log, "graft: %s: session leader %d is gone; remaining session processes were not stopped: %v; inspect SID %d and stop them manually\n", name, pid, members, pid)
+		m.logf("graft: %s: session leader %d is gone; remaining session processes were not stopped: %v; inspect SID %d and stop them manually\n", name, pid, members, pid)
 		return false, nil
 	}
 	exited, err := serviceExited(pid, start)
@@ -483,7 +518,7 @@ func (m *Manager) removeGoneLeader(name string, s *config.Service) (bool, error)
 	if !exited {
 		return false, nil
 	}
-	fmt.Fprintf(m.Log, "graft: %s: session leader %d is gone; remaining session processes were not stopped; inspect SID %d and stop them manually\n", name, pid, pid)
+	m.logf("graft: %s: session leader %d is gone; remaining session processes were not stopped; inspect SID %d and stop them manually\n", name, pid, pid)
 	removeErr := errors.Join(fsx.Remove(m.path(s.PIDFile)), fsx.Remove(m.path(s.PIDFile)+".start"))
 	return true, errors.Join(fmt.Errorf("%s: session leader %d is gone; remaining session processes were not stopped", name, pid), removeErr)
 }
@@ -554,13 +589,13 @@ func (m *Manager) stopSession(ctx context.Context, name string, pid int, start s
 			if scanErr != nil {
 				return result, scanErr
 			}
-			fmt.Fprintf(m.Log, "graft: %s: session leader %d is gone; remaining session processes were not stopped: %v; inspect SID %d and stop them manually\n", name, pid, members, pid)
+			m.logf("graft: %s: session leader %d is gone; remaining session processes were not stopped: %v; inspect SID %d and stop them manually\n", name, pid, members, pid)
 			return result, fmt.Errorf("%s: session leader %d is gone; remaining session processes were not stopped: %v; stop them manually", name, pid, members)
 		}
 		err = nil
 	}
 	if errors.Is(err, akitproc.ErrPidfdUnavailable) {
-		fmt.Fprintf(m.Log, "graft: %s: session processes were not stopped because pidfd_open is unavailable\n", name)
+		m.logf("graft: %s: session processes were not stopped because pidfd_open is unavailable\n", name)
 	}
 	if err != nil {
 		return result, fmt.Errorf("%s: stopping session: %w", name, err)
@@ -586,7 +621,7 @@ func (m *Manager) stopped(ctx context.Context, name string, s *config.Service) e
 			return fmt.Errorf("%s stopped, but %s is still in use (a child it left behind?)", name, addr)
 		}
 	}
-	fmt.Fprintf(m.Log, "graft: stopped %s\n", name)
+	m.logf("graft: stopped %s\n", name)
 	return nil
 }
 
@@ -700,7 +735,7 @@ func (m *Manager) running(name string) (int, error) {
 			return pid, nil
 		}
 	}
-	fmt.Fprintf(m.Log, "graft: %s: removing stale pid file (process %d is gone)\n", name, pid)
+	m.logf("graft: %s: removing stale pid file (process %d is gone)\n", name, pid)
 	return 0, errors.Join(fsx.Remove(path), fsx.Remove(path+".start"))
 }
 

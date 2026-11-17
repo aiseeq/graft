@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -155,13 +156,13 @@ func TestStopWarnsWhenSessionLeaderExitedBeforeStop(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	m.Log = &strings.Builder{}
+	m.Log = &syncLog{}
 	err = m.stop(t.Context(), "svc")
 	if err == nil || !strings.Contains(err.Error(), "remaining session processes were not stopped") {
 		t.Fatalf("stop error = %v, want warning that session members remain", err)
 	}
-	if !strings.Contains(m.Log.(*strings.Builder).String(), "remaining session processes were not stopped") {
-		t.Fatalf("stop log lacks orphan warning: %s", m.Log.(*strings.Builder).String())
+	if !strings.Contains(m.Log.(*syncLog).String(), "remaining session processes were not stopped") {
+		t.Fatalf("stop log lacks orphan warning: %s", m.Log.(*syncLog).String())
 	}
 	if !serviceTestRunning(worker) {
 		t.Fatal("test worker unexpectedly stopped")
@@ -186,14 +187,14 @@ func TestStopFinishesSessionAfterLeaderExits(t *testing.T) {
 	}
 	leader, worker := serviceTestPID(t, leaderFile), serviceTestPID(t, workerFile)
 	stopServiceTestProcess(t, worker)
-	m.Log = &strings.Builder{}
+	m.Log = &syncLog{}
 	if err := m.stop(t.Context(), "svc"); err != nil {
-		t.Fatalf("stop error = %v, log: %s", err, m.Log.(*strings.Builder).String())
+		t.Fatalf("stop error = %v, log: %s", err, m.Log.(*syncLog).String())
 	}
 	// SIGKILL is delivered by the time stop returns, the exit may lag a little.
 	for deadline := time.Now().Add(2 * time.Second); serviceTestRunning(worker); time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatalf("worker %d of leader %d still runs after the stop; log: %s", worker, leader, m.Log.(*strings.Builder).String())
+			t.Fatalf("worker %d of leader %d still runs after the stop; log: %s", worker, leader, m.Log.(*syncLog).String())
 		}
 	}
 }
@@ -227,9 +228,9 @@ func TestStopCommandStopsServiceWithoutSignals(t *testing.T) {
 	worker := serviceTestPID(t, workerFile)
 	stopServiceTestProcess(t, pid)
 	stopServiceTestProcess(t, worker)
-	m.Log = &strings.Builder{}
+	m.Log = &syncLog{}
 	if err := m.stop(t.Context(), "svc"); err != nil {
-		t.Fatalf("stop error = %v, log: %s", err, m.Log.(*strings.Builder).String())
+		t.Fatalf("stop error = %v, log: %s", err, m.Log.(*syncLog).String())
 	}
 	if got, err := os.ReadFile(signalFile); err != nil || len(got) != 0 {
 		t.Fatalf("received signals = %q, %v", got, err)
@@ -260,11 +261,11 @@ func TestStopCommandFallsBackToSignals(t *testing.T) {
 	}
 	pid := serviceTestPID(t, m.path(s.PIDFile))
 	stopServiceTestProcess(t, pid)
-	m.Log = &strings.Builder{}
+	m.Log = &syncLog{}
 	if err := m.stop(t.Context(), "svc"); err != nil {
-		t.Fatalf("stop error = %v, log: %s", err, m.Log.(*strings.Builder).String())
+		t.Fatalf("stop error = %v, log: %s", err, m.Log.(*syncLog).String())
 	}
-	if got := m.Log.(*strings.Builder).String(); !strings.Contains(got, "stop command did not stop the service") {
+	if got := m.Log.(*syncLog).String(); !strings.Contains(got, "stop command did not stop the service") {
 		t.Fatalf("stop log lacks fallback message: %s", got)
 	}
 	if got, err := os.ReadFile(signalFile); err != nil || !strings.Contains(string(got), "TERM") {
@@ -305,7 +306,7 @@ func TestStopServiceAfterExec(t *testing.T) {
 		Run:  config.Command{Argv: []string{"sh", "-c", "exec sleep 30"}},
 		Stop: "touch stop-ran", Log: "service.log", PIDFile: "service.pid", StopTimeout: 200 * time.Millisecond,
 	}
-	var log strings.Builder
+	var log syncLog
 	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, &log)
 	if err := m.start(t.Context(), "svc"); err != nil {
 		t.Fatal(err)
@@ -338,7 +339,7 @@ func TestStopServiceWithLegacyStartRecord(t *testing.T) {
 		Run:  config.Command{Argv: []string{"sh", "-c", "exec sleep 30"}},
 		Stop: "touch stop-ran", Log: "service.log", PIDFile: "service.pid", StopTimeout: 200 * time.Millisecond,
 	}
-	var log strings.Builder
+	var log syncLog
 	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, &log)
 	if err := m.start(t.Context(), "svc"); err != nil {
 		t.Fatal(err)
@@ -492,17 +493,17 @@ func TestStopTimeoutCoversCommandAndServiceWaitTogether(t *testing.T) {
 	}
 	servicePID := serviceTestPID(t, m.path(s.PIDFile))
 	stopServiceTestProcess(t, servicePID)
-	m.Log = &strings.Builder{}
+	m.Log = &syncLog{}
 	if err := m.stop(t.Context(), "svc"); err != nil {
-		t.Fatalf("stop error = %v, log: %s", err, m.Log.(*strings.Builder).String())
+		t.Fatalf("stop error = %v, log: %s", err, m.Log.(*syncLog).String())
 	}
 	if _, err := os.Stat(filepath.Join(dir, "stop-started")); err != nil {
-		t.Fatalf("stop command did not start: %v; log: %s", err, m.Log.(*strings.Builder).String())
+		t.Fatalf("stop command did not start: %v; log: %s", err, m.Log.(*syncLog).String())
 	}
 	if _, err := os.Stat(filepath.Join(dir, "stop-finished")); err != nil {
 		t.Fatalf("stop command did not finish: %v", err)
 	}
-	if got := m.Log.(*strings.Builder).String(); !strings.Contains(got, "stop command did not stop the service in 5s") {
+	if got := m.Log.(*syncLog).String(); !strings.Contains(got, "stop command did not stop the service in 5s") {
 		t.Fatalf("stop log lacks shared-deadline fallback: %s", got)
 	}
 	if got, err := os.ReadFile(signalFile); err != nil || !strings.Contains(string(got), "TERM") {
@@ -525,7 +526,7 @@ func TestStopCommandReapsOrphansAfterLeaderExits(t *testing.T) {
 			pid := serviceTestPID(t, m.path(s.PIDFile))
 			stopServiceTestProcess(t, pid)
 			var logFile *os.File
-			var pipeLog strings.Builder
+			var pipeLog syncLog
 			if logMode == "pipe" {
 				m.Log = &pipeLog
 			} else {
@@ -584,11 +585,11 @@ func TestStopCommandFailureFallsBackToStopSession(t *testing.T) {
 	}
 	servicePID := serviceTestPID(t, m.path(s.PIDFile))
 	stopServiceTestProcess(t, servicePID)
-	m.Log = &strings.Builder{}
+	m.Log = &syncLog{}
 	if err := m.stop(t.Context(), "svc"); err != nil {
-		t.Fatalf("stop error = %v, log: %s", err, m.Log.(*strings.Builder).String())
+		t.Fatalf("stop error = %v, log: %s", err, m.Log.(*syncLog).String())
 	}
-	got := m.Log.(*strings.Builder).String()
+	got := m.Log.(*syncLog).String()
 	if !strings.Contains(got, "stop command did not succeed") {
 		t.Fatalf("stop log lacks command failure: %s", got)
 	}
@@ -830,12 +831,12 @@ func TestOldPIDWithoutStartWarnsForRemainingSessionMembers(t *testing.T) {
 	if err := os.WriteFile(m.path("service.pid"), []byte(strconv.Itoa(cmd.Process.Pid)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	m.Log = &strings.Builder{}
+	m.Log = &syncLog{}
 	if err := m.stop(t.Context(), "svc"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(m.Log.(*strings.Builder).String(), "remaining session processes were not stopped") {
-		t.Fatalf("stop log lacks warning for old PID file: %s", m.Log.(*strings.Builder).String())
+	if !strings.Contains(m.Log.(*syncLog).String(), "remaining session processes were not stopped") {
+		t.Fatalf("stop log lacks warning for old PID file: %s", m.Log.(*syncLog).String())
 	}
 }
 
@@ -895,4 +896,23 @@ func TestWritePIDPublishesStartBeforePID(t *testing.T) {
 	if err != nil || string(data) != "123 456\n" {
 		t.Fatalf("start record = %q, %v; want PID and start time", data, err)
 	}
+}
+
+// syncLog is a test log that the exit report of a started service may write
+// while the test reads it.
+type syncLog struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *syncLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *syncLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }

@@ -57,7 +57,7 @@ func (m *Manager) startUnit(ctx context.Context, name string, s *config.Service)
 		return err
 	}
 	if state == "active" {
-		fmt.Fprintf(m.Log, "graft: %s is already running (%s, pid %d)\n", name, s.SystemdUnit, pid)
+		m.logf("graft: %s is already running (%s, pid %d)\n", name, s.SystemdUnit, pid)
 		return nil
 	}
 	addr, err := m.prepareStart(ctx, name, s)
@@ -91,7 +91,7 @@ func (m *Manager) startUnit(ctx context.Context, name string, s *config.Service)
 	if !ready {
 		return fmt.Errorf("%s: %s not ready after %s (see graft logs %s)", name, s.SystemdUnit, s.StartTimeout, name)
 	}
-	fmt.Fprintf(m.Log, "graft: started %s (%s)\n", name, s.SystemdUnit)
+	m.logf("graft: started %s (%s)\n", name, s.SystemdUnit)
 	return nil
 }
 
@@ -101,7 +101,7 @@ func (m *Manager) stopUnit(ctx context.Context, name string, s *config.Service) 
 		return err
 	}
 	if state == "inactive" || state == "failed" {
-		fmt.Fprintf(m.Log, "graft: %s is not running (%s is %s)\n", name, s.SystemdUnit, state)
+		m.logf("graft: %s is not running (%s is %s)\n", name, s.SystemdUnit, state)
 		return nil
 	}
 	if _, err := systemctl(ctx, "stop", s.SystemdUnit); err != nil {
@@ -121,7 +121,7 @@ func (m *Manager) reloadIfChanged(ctx context.Context, unit string) error {
 	case "NeedDaemonReload=no":
 		return nil
 	case "NeedDaemonReload=yes":
-		fmt.Fprintf(m.Log, "graft: %s changed on disk, systemctl --user daemon-reload\n", unit)
+		m.logf("graft: %s changed on disk, systemctl --user daemon-reload\n", unit)
 		_, err := systemctl(ctx, "daemon-reload")
 		return err
 	default:
