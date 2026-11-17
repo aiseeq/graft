@@ -82,7 +82,9 @@ tasks:
     heavy: true
     tests: go
     env: {GRAFT_TEST_DOCKER: '1'}
-    run: ['go test -json -p {threads} -race -count=1 ./...']
+    # The root package alone takes ~9.5m under -race on a busy machine (17.11:
+    # 569s), past go test's default 10m; its speed is tracked in gate-over-limit.
+    run: ['go test -json -p {threads} -race -count=1 -timeout 30m ./...']
   test-gate:
     desc: the gate's tests, all but the ones that create docker containers, run the go command against modules, wait on purpose or play the release, freeze, deploy, worktree and remote host scenarios (test-race in all runs those); the PostgreSQL ones skip here and run in test-gate-db
     # They pass on the user's remote_heavy host too (01.11: go test -short on
