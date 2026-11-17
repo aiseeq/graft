@@ -1065,10 +1065,9 @@ func (m *machine) busy(ctx context.Context, fresh, priority bool) (busyness, err
 	}
 	m.runnable = float64(v.Load.Runnable)
 	m.avg1, m.avg1Known = v.Load.Avg1, !slices.Contains(v.Skipped, pressure.ErrNoLoadAvg)
-	m.runnableLimit = float64(v.Load.Threads)
-	if m.limits.Runnable > 0 {
-		m.runnableLimit = m.limits.Runnable
-	}
+	// The limit the reserves and the admitted tasks the load does not show
+	// yet are counted against: the rule's own, half the threads in half mode.
+	m.runnableLimit = m.limits.RunnableLimit(v.Load)
 	if v.Measure == pressure.CPU {
 		m.runnableLimit = v.Limit
 	}

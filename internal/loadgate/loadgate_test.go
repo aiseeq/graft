@@ -1424,3 +1424,35 @@ func TestLookPastTheDeadlineIsNoMeasure(t *testing.T) {
 		t.Fatalf("busy without a deadline: %v", err)
 	}
 }
+
+// TestHalfModeQueueDoesNotAdmitABurst: in half mode the admitted tasks the
+// load average does not show yet count against half the threads, not all of
+// them: with the load average at 8 of a half limit of 11, a queue lets in
+// one task, whose expected cores take it to the limit, not one after another up to 22.
+func TestHalfModeQueueDoesNotAdmitABurst(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(1)
+	setLoadavg(t, 8)
+	dir := filepath.Join(os.Getenv("XDG_STATE_HOME"), "akit")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "half-until"), []byte(time.Now().Add(time.Hour).Format(time.RFC3339)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "load.lock")
+	admitted := 0
+	for range 20 {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+		_, release, err := Wait(ctx, "burst", "projectA:burst", nil, testLoad, path, io.Discard)
+		cancel()
+		if err != nil {
+			break
+		}
+		admitted++
+		t.Cleanup(func() { _ = release() })
+	}
+	if admitted != 1 {
+		t.Fatalf("admitted %d tasks back to back at load average 8 in half mode (limit 11); want 1", admitted)
+	}
+}
