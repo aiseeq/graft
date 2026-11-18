@@ -152,8 +152,10 @@ or `busy --quiet DURATION` (akit) makes the machine busy until that time,
 whatever it measures: the wait says "quiet mode until HH:MM" (the date too
 when it is not today), and `busy --quiet-off` ends it sooner. A priority task
 of `graft deploy` waits for it no longer than `deploy.load_wait` allows, as
-for any busy machine. A measure akit reports and graft does not know yet
-makes the machine busy too, by its own words. A measure the system lacks (no `/proc/stat`,
+for any busy machine, using the same FIFO queue as ordinary heavy tasks. A
+priority cannot pass an earlier ordinary waiter. A measure akit reports and
+graft does not know yet makes the machine busy too, by its own words. A
+measure the system lacks (no `/proc/stat`,
 no `/proc/loadavg`, a kernel without PSI) is skipped and said. Heavy tasks of
 all projects, on a calm machine too, queue under one lock in the user cache
 (`graft/load.lock`) in ticket order. After measuring the machine, a task
@@ -184,7 +186,7 @@ and `runnable` in `pressure.yaml` there is no threshold for the reservations
 or that part to reach). A heavy task inside
 a heavy task or the gate was admitted with it, and so is a graft that the
 steps of an admitted task start (they carry `GRAFT_ADMITTED`). Priority tasks
-from `graft deploy` bypass the queue and may start ahead of queued tasks.
+from `graft deploy` use the same FIFO queue and cannot pass an earlier waiter.
 Ctrl-C, SIGTERM, or an unignored SIGHUP stops the wait and command. If both
 caller output pipes close, graft stops them too; deploy keeps its existing
 signal behavior.
@@ -491,17 +493,17 @@ heavy runs here wherever its caller runs.
 
 `graft deploy` gives its heavy tasks, and those of every graft its script
 starts, a priority (`GRAFT_LOAD_PRIORITY`, `GRAFT_LOAD_BUDGET`,
-`GRAFT_LOAD_THEN`): they skip the queue, a deploy not standing behind the
-test runs of every project, and check the machine with live reservations
-included. Once admitted, they write their own reservation. They wait out of
-one budget for the whole deploy, `deploy.load_wait`; when it is spent
-they start, or with `then: fail` fail the deploy. Only waiting spends the
-budget; overlapping waits count once by wall time while any task of the
-deploy is waiting. Overlap accounting can differ by at most one poll interval.
-A task that finds the machine calm late in a long deploy takes nothing from
-the budget. The budget lives in a file in the user cache (`graft/load-budget-*`)
-for as long as the deploy runs. The wait shows in `graft
-stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest kernel load samples recovered from consecutive `/proc/loadavg` readings, falling back to the 1-minute average until two samples are known. This avoids spending the deploy's shared wait budget on the slow tail left by its own earlier stages, while the instantaneous runnable count still blocks admission.
+`GRAFT_LOAD_THEN`): they use the same FIFO queue and load lock as other heavy
+tasks. Priority does not bypass the queue or the load limit. The deploy's
+heavy tasks and grafts its script starts share one `deploy.load_wait` budget;
+settle, FIFO queue and load waits count once by wall time across parallel
+children. When the budget is exhausted, the task fails with the last load
+average, runnable count and limit. `then: start` is accepted for compatibility, warns, and is
+treated as `fail`; the default is `fail`. A task that finds the machine calm
+can start within the budget. The budget lives in a file in the user cache
+(`graft/load-budget-*`) for as long as the deploy runs. The wait shows in
+`graft stats` (`wait_s`). Priority tasks use the same 1-minute load average
+and runnable count as ordinary heavy tasks; equality with the limit blocks.
 
 ## Commands
 
@@ -1942,7 +1944,7 @@ deploy:
   remote: origin                # HEAD must equal this remote's branch
   branch: main                  # optional: deploy only main; default: the current branch
   untracked: [backend, web]     # optional: where untracked files block; default: anywhere
-  load_wait: {budget: 10m, then: start}   # default: how long the deploy's heavy tasks wait for a busy machine in all; then start or fail
+  load_wait: {budget: 10m, then: fail}   # default: shared wait budget; then fail (start is treated as fail with a warning)
   targets:
     test:
       env: test                 # see envs

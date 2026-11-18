@@ -118,22 +118,19 @@ const (
 	// EnvBudget is the file of what is left of the deploy's budget for
 	// waiting (NewBudget).
 	EnvBudget = "GRAFT_LOAD_BUDGET"
-	// EnvThen is what a task does at the deadline: start or fail.
+	// EnvThen names the budget exhaustion behavior; start is treated as fail.
 	EnvThen = "GRAFT_LOAD_THEN"
 )
 
-// Then values: at the deadline a priority task starts, or fails.
+// Then values accepted from deploy configuration.
 const (
 	ThenStart = "start"
 	ThenFail  = "fail"
 )
 
-// Priority is what a deploy gives its heavy tasks and those of the grafts
-// its script starts: they skip the queue, a deploy not standing behind the
-// test runs of every project, and wait for the machine out of one budget for
-// the whole deploy, kept in the file Budget; when it is spent they start, or
-// with Fail fail. Only waiting spends it: a task that finds the machine calm
-// late in a long deploy takes nothing from it.
+// Priority is what a deploy gives its heavy tasks and those of grafts its
+// script starts: they share the ordinary FIFO queue and one wait budget for
+// the whole deploy, kept in Budget. Exhausting it refuses the task.
 type Priority struct {
 	For    string
 	Budget string
@@ -142,11 +139,7 @@ type Priority struct {
 
 // Env is the priority as the variables its grafts read.
 func (p Priority) Env() map[string]string {
-	then := ThenStart
-	if p.Fail {
-		then = ThenFail
-	}
-	return map[string]string{EnvPriority: p.For, EnvBudget: p.Budget, EnvThen: then}
+	return map[string]string{EnvPriority: p.For, EnvBudget: p.Budget, EnvThen: ThenFail}
 }
 
 // PriorityFromEnv reads the priority of this process; ok is false without
@@ -163,6 +156,8 @@ func PriorityFromEnv() (p Priority, ok bool, err error) {
 	p = Priority{For: name, Budget: budget}
 	switch then := os.Getenv(EnvThen); then {
 	case ThenStart:
+		p.Fail = true
+		fmt.Fprintf(os.Stderr, "graft: warning: %s=start no longer starts over the limit (user rule); treated as fail\n", EnvThen)
 	case ThenFail:
 		p.Fail = true
 	default:
@@ -248,7 +243,7 @@ func (p *Priority) spend(from, to time.Time) (left time.Duration, err error) {
 // Wait admits a heavy task and returns how long it waited and why, and the
 // release the task calls when it ends. Tasks queue under lockPath while
 // measuring the machine and writing their live expected-core reservation.
-// A task with a priority skips the queue and waits no longer than its budget.
+// A priority task uses the same FIFO queue and spends its shared wait budget.
 //
 // kind is the task's kind as the stats profile names it.
 func Wait(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (Admission, func() error, error) {
@@ -269,13 +264,45 @@ func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userc
 			m.recordAdmitted(admission, priority)
 		}
 	}()
-	if p != nil && (settleLockPath == "" || settleDuration <= 0) {
-		return reservePriority(ctx, m, name, kind, p, l, lockPath, cores, log)
-	}
 	holder := "graft " + name + " (starting a heavy task)"
-	settleLock, behind, start, err := acquireSettle(ctx, m, settleLockPath, settleDuration, holder, log)
+	settleCtx := ctx
+	var cancel context.CancelFunc
+	if p != nil {
+		if left, budgetErr := p.spend(time.Time{}, time.Time{}); budgetErr != nil {
+			return m.admission(), released, budgetErr
+		} else if left <= 0 && settleLockPath != "" && settleDuration > 0 {
+			holders, holderErr := lock.Holders(settleLockPath)
+			if holderErr != nil {
+				return m.admission(), released, holderErr
+			}
+			if len(holders) > 0 {
+				err := m.priorityFailure(ctx, p, time.Time{}, time.Time{})
+				return m.admission(), released, err
+			}
+		} else if left > 0 {
+			settleCtx, cancel = context.WithTimeout(ctx, left)
+			defer cancel()
+		}
+	}
+	settleLock, behind, start, err := acquireSettle(settleCtx, m, settleLockPath, settleDuration, holder, log)
 	if err != nil {
+		if p != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			err = m.priorityFailure(ctx, p, start, time.Now())
+		}
 		return m.admission(), released, err
+	}
+	if p != nil && behind != "" {
+		left, spendErr := p.spend(start, time.Now())
+		if spendErr != nil {
+			return m.admission(), released, errors.Join(spendErr, settleLock.Release())
+		}
+		if left <= 0 {
+			err := m.priorityFailure(ctx, p, time.Time{}, time.Time{})
+			return m.admission(), released, errors.Join(err, settleLock.Release())
+		}
+	}
+	if cancel != nil {
+		cancel()
 	}
 	return waitQueued(ctx, m, p, kind, l, lockPath, cores, settleLock, settleDuration, start, behind, log)
 }
@@ -286,95 +313,121 @@ func acquireSettle(ctx context.Context, m *machine, settleLockPath string, settl
 		return nil, "", start, nil
 	}
 	settleLock, err := lock.AcquireFIFOObserved(ctx, settleLockPath, queueTimeout, holder+" with settle", log, nil)
-	m.waits[WhyQueue] += time.Since(start)
 	if err != nil {
 		return nil, "", start, err
 	}
-	return settleLock, settleLock.WaitedBehind, time.Now(), nil
+	if settleLock.WaitedBehind != "" {
+		m.waits[WhyQueue] += time.Since(start)
+	}
+	return settleLock, settleLock.WaitedBehind, start, nil
 }
 
-func waitQueued(ctx context.Context, m *machine, p *Priority, kind string, l userconfig.MachineLoad, lockPath string, cores float64, settleLock *lock.Lock, settleDuration time.Duration, start time.Time, behind string, log io.Writer) (Admission, func() error, error) {
-	if p != nil {
-		return waitPriority(ctx, m, p, kind, l, lockPath, cores, settleLock, settleDuration, behind, log)
+func priorityQueueContext(ctx context.Context, m *machine, p *Priority, lockPath string, behind string) (context.Context, context.CancelFunc, error) {
+	if p == nil {
+		return ctx, func() {}, nil
 	}
-	quiet, err := quietMode()
+	left, err := p.spend(time.Time{}, time.Time{})
 	if err != nil {
-		if settleLock != nil {
-			err = errors.Join(err, settleLock.Release())
+		return ctx, func() {}, err
+	}
+	if left <= 0 {
+		holders, err := lock.Holders(lockPath)
+		if err != nil {
+			return ctx, func() {}, err
 		}
-		return m.behind(behind), released, err
+		if len(holders) > 0 || behind != "" {
+			return ctx, func() {}, m.priorityFailure(ctx, p, time.Time{}, time.Time{})
+		}
+		return ctx, func() {}, nil
 	}
-	holder := "graft " + m.name + " (starting a heavy task)"
-	lk, err := lock.AcquireFIFOObserved(ctx, lockPath, queueTimeout, holder, log, quiet)
-	waited := time.Since(start)
-	if lk != nil && lk.WaitedQuiet > 0 {
-		m.waits[WhyQuiet] += min(lk.WaitedQuiet, waited)
+	queueCtx, cancel := context.WithTimeout(ctx, left)
+	return queueCtx, cancel, nil
+}
+
+func queuedFailure(m *machine, behind string, err error, settleLock, queueLock *lock.Lock) (Admission, func() error, error) {
+	if settleLock != nil {
+		err = errors.Join(err, settleLock.Release())
 	}
-	m.waits[WhyQueue] += max(0, waited-m.waits[WhyQuiet])
-	if lk != nil && lk.WaitedBehind != "" {
-		behind = lk.WaitedBehind
+	if queueLock != nil {
+		err = errors.Join(err, queueLock.Release())
 	}
+	return m.behind(behind), released, err
+}
+
+func reserveQueued(ctx context.Context, m *machine, p *Priority, kind string, l userconfig.MachineLoad, lockPath string, cores float64, behind string, log io.Writer) (Admission, func() error, error) {
+	cores, err := expectedReserveCores(kind, cores)
 	if err != nil {
-		if settleLock != nil {
-			err = errors.Join(err, settleLock.Release())
-		}
-		return m.admission(), released, err
-	}
-	cores, err = expectedReserveCores(kind, cores)
-	if err != nil {
-		if settleLock != nil {
-			err = errors.Join(err, settleLock.Release())
-		}
-		return m.behind(behind), released, errors.Join(err, lk.Release())
+		return Admission{}, nil, err
 	}
 	m.candidate = cores
 	m.candidateKnown = true
-	if err := m.admitWithReserves(ctx, nil, lockPath); err != nil {
-		if settleLock != nil {
-			err = errors.Join(err, settleLock.Release())
-		}
-		return m.behind(behind), released, errors.Join(err, lk.Release())
+	if err := m.admitWithReserves(ctx, p, lockPath); err != nil {
+		return Admission{}, nil, err
 	}
 	release, since, end, stoppedAt, err := startAdmission(lockPath, m.name, cores, l.Settle, log)
 	if err != nil {
-		if settleLock != nil {
-			err = errors.Join(err, settleLock.Release())
-		}
-		return m.behind(behind), released, errors.Join(err, lk.Release())
-	}
-	if err := lk.Release(); err != nil {
-		releaseErr := release()
-		if settleLock != nil {
-			err = errors.Join(err, settleLock.Release())
-		}
-		return m.behind(behind), released, errors.Join(err, releaseErr)
+		return Admission{}, nil, err
 	}
 	adm := m.behind(behind)
 	adm.ReserveCores, adm.ReserveSince, adm.ReserveEnd, adm.ReserveStoppedAt = cores, since, end, stoppedAt
-	if settleLock != nil {
-		settleRelease := settle(settleLock, settleDuration)
-		return adm, func() error { return errors.Join(release(), settleRelease()) }, nil
-	}
 	return adm, release, nil
 }
 
-// waitPriority admits a task with a priority that took the settle lock as
-// reservePriority does: beside the machine it waits for the live reserves and
-// the admitted tasks the load average does not show yet, spending its budget
-// on them too, and leaves its own reserve. It holds the lock for its settling
-// period.
-func waitPriority(ctx context.Context, m *machine, p *Priority, kind string, l userconfig.MachineLoad, lockPath string, cores float64, settleLock *lock.Lock, settleDuration time.Duration, behind string, log io.Writer) (Admission, func() error, error) {
-	adm, release, err := reservePriority(ctx, m, m.name, kind, p, l, lockPath, cores, log)
-	adm.WaitedBehind = behind
+func acquireLoadQueue(ctx context.Context, m *machine, p *Priority, lockPath string, start time.Time, behind string, log io.Writer) (*lock.Lock, string, bool, error) {
+	quiet, err := quietMode()
 	if err != nil {
-		var releaseErr error
-		if settleLock != nil {
-			releaseErr = settleLock.Release()
-		}
-		return adm, released, errors.Join(err, releaseErr)
+		return nil, behind, false, err
 	}
-	settleRelease := settle(settleLock, settleDuration)
-	return adm, func() error { return errors.Join(release(), settleRelease()) }, nil
+	queueCtx, cancel, err := priorityQueueContext(ctx, m, p, lockPath, behind)
+	if err != nil {
+		return nil, behind, false, err
+	}
+	defer cancel()
+	holder := "graft " + m.name + " (starting a heavy task)"
+	lk, err := lock.AcquireFIFOObserved(queueCtx, lockPath, queueTimeout, holder, log, quiet)
+	if lk != nil && (lk.WaitedBehind != "" || lk.WaitedQuiet > 0) {
+		waited := time.Since(start)
+		if lk.WaitedQuiet > 0 {
+			m.waits[WhyQuiet] += min(lk.WaitedQuiet, waited)
+		}
+		m.waits[WhyQueue] += max(0, waited-m.waits[WhyQuiet]-m.waits[WhyQueue])
+	}
+	if lk != nil && lk.WaitedBehind != "" {
+		behind = lk.WaitedBehind
+	}
+	return lk, behind, lk != nil && (lk.WaitedBehind != "" || lk.WaitedQuiet > 0), err
+}
+
+func waitQueued(ctx context.Context, m *machine, p *Priority, kind string, l userconfig.MachineLoad, lockPath string, cores float64, settleLock *lock.Lock, settleDuration time.Duration, start time.Time, behind string, log io.Writer) (Admission, func() error, error) {
+	lk, behind, queueWaited, err := acquireLoadQueue(ctx, m, p, lockPath, start, behind, log)
+	if err != nil {
+		if p != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			err = m.priorityFailure(ctx, p, start, time.Now())
+		}
+		return queuedFailure(m, behind, err, settleLock, nil)
+	}
+	if p != nil && queueWaited {
+		left, spendErr := p.spend(start, time.Now())
+		if spendErr != nil {
+			return queuedFailure(m, behind, spendErr, settleLock, lk)
+		}
+		if left <= 0 && (behind != "" || lk.WaitedBehind != "" || lk.WaitedQuiet > 0) {
+			err := m.priorityFailure(ctx, p, time.Time{}, time.Time{})
+			return queuedFailure(m, behind, err, settleLock, lk)
+		}
+	}
+	adm, releaseFn, err := reserveQueued(ctx, m, p, kind, l, lockPath, cores, behind, log)
+	if err != nil {
+		return queuedFailure(m, behind, err, settleLock, lk)
+	}
+	if err := lk.Release(); err != nil {
+		return queuedFailure(m, behind, errors.Join(err, releaseFn()), settleLock, nil)
+	}
+	if settleLock != nil {
+		settleRelease := settle(settleLock, settleDuration)
+		return adm, func() error { return errors.Join(releaseFn(), settleRelease()) }, nil
+	}
+	return adm, releaseFn, nil
 }
 
 // admitWithReserves waits for the machine to be calm and to have room beside
@@ -389,7 +442,7 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 	waited := false
 	var why string
 	for {
-		b, err := m.measureOrReserve(ctx, !waited, p != nil, lockPath)
+		b, err := m.measureOrReserve(ctx, !waited, lockPath)
 		now := m.now()
 		if why == "" {
 			why = b.why
@@ -401,6 +454,16 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 		if err != nil {
 			return err
 		}
+		if p != nil && waited {
+			var finished bool
+			spent, finished, err = m.spendPriorityWait(p, spent)
+			if err != nil {
+				return err
+			}
+			if finished {
+				return m.priorityExhausted()
+			}
+		}
 		if b.why == "" {
 			if waited {
 				fmt.Fprintf(m.log, "graft: %s: runnable %.0f, starting after %s\n", m.name, m.runnable, m.now().Sub(start).Round(time.Second))
@@ -409,18 +472,15 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 		}
 		// The measure or the reserves beside it: either keeps the task waiting.
 		m.recordWait(b, p != nil)
-		if p != nil && !waited {
-			fmt.Fprintf(m.log, "graft: %s: %s, not queueing behind other heavy tasks: it runs for %s\n", m.name, b.text, p.For)
-		}
 		waited = true
 		if p != nil {
 			var finished bool
-			spent, finished, err = m.spendPriorityWait(p, start, spent, b)
+			spent, finished, err = m.spendPriorityWait(p, spent)
 			if err != nil {
 				return err
 			}
 			if finished {
-				return nil
+				return m.priorityExhausted()
 			}
 		}
 		m.waits[b.why] += 0
@@ -433,7 +493,7 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 		if err != nil {
 			return err
 		}
-		if err := m.pause(ctx, pause, p != nil); err != nil {
+		if err := m.pause(ctx, pause); err != nil {
 			if why != "" {
 				m.waits[why] += m.now().Sub(mark)
 			}
@@ -442,15 +502,15 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 	}
 }
 
-func (m *machine) measureOrReserve(ctx context.Context, fresh, priority bool, lockPath string) (busyness, error) {
-	b, err := m.busy(ctx, fresh, priority)
+func (m *machine) measureOrReserve(ctx context.Context, fresh bool, lockPath string) (busyness, error) {
+	b, err := m.busy(ctx, fresh)
 	if err != nil || b.why != "" {
 		return b, err
 	}
-	return m.reservesBusy(lockPath, priority)
+	return m.reservesBusy(lockPath)
 }
 
-func (m *machine) spendPriorityWait(p *Priority, start, spent time.Time, b busyness) (time.Time, bool, error) {
+func (m *machine) spendPriorityWait(p *Priority, spent time.Time) (time.Time, bool, error) {
 	now := m.now()
 	left, err := p.spend(spent, now)
 	if err != nil {
@@ -459,11 +519,23 @@ func (m *machine) spendPriorityWait(p *Priority, start, spent time.Time, b busyn
 	if left > 0 {
 		return now, false, nil
 	}
-	if p.Fail {
-		return now, false, fmt.Errorf("%s: %s after %s, past the wait %s allows (deploy.load_wait)", m.name, b.text, m.now().Sub(start).Round(time.Second), p.For)
-	}
-	fmt.Fprintf(m.log, "graft: %s: %s, starting after %s, all the wait %s allows (deploy.load_wait)\n", m.name, b.text, m.now().Sub(start).Round(time.Second), p.For)
 	return now, true, nil
+}
+
+func (m *machine) priorityExhausted() error {
+	return fmt.Errorf("deploy.load_wait: budget exhausted; load average 1m %.2f, runnable %.0f, limit %.0f; %s not started", m.avg1, m.runnable, m.runnableLimit, m.name)
+}
+
+func (m *machine) priorityFailure(ctx context.Context, p *Priority, from, to time.Time) error {
+	if !from.IsZero() {
+		if _, err := p.spend(from, to); err != nil {
+			return err
+		}
+	}
+	if _, err := m.busy(ctx, true); err != nil {
+		return errors.Join(m.priorityExhausted(), err)
+	}
+	return m.priorityExhausted()
 }
 
 func (m *machine) reserveWaitPause(ctx context.Context, b busyness, p *Priority) (time.Duration, error) {
@@ -484,116 +556,76 @@ func (m *machine) reserveWaitPause(ctx context.Context, b busyness, p *Priority)
 	return pause, nil
 }
 
-const prioritySampleInterval = 500 * time.Millisecond
-
-func (m *machine) pause(ctx context.Context, d time.Duration, priority bool) error {
-	if !priority {
-		return m.sleep(ctx, d)
-	}
-	for d > 0 {
-		step := min(d, prioritySampleInterval)
-		if err := m.sleep(ctx, step); err != nil {
-			return err
-		}
-		d -= step
-		if _, err := m.observeKernelSample(); err != nil {
-			m.warnKernelSampleError(err)
-		}
-	}
-	return nil
+func (m *machine) pause(ctx context.Context, d time.Duration) error {
+	return m.sleep(ctx, d)
 }
 
-func (m *machine) loadValue(priority bool) float64 {
-	if priority {
-		if a, b, ok := m.samples.lastTwo(); ok {
-			return (a + b) / 2
-		}
-	}
-	return m.avg1
-}
-
-// reservesBusy is why the machine m measured last has no room for one more
-// heavy task beside the live reserves and the admitted tasks its load average
-// does not show yet, empty when it has. Without a runnable limit (no
+// reservesBusy is why the machine m measured last has no room for the
+// candidate beside live reserves and the admitted tasks its load average does
+// not show yet, empty when it has. The candidate's expected cores are included
+// before its reservation is written under the queue lock. Without a runnable limit (no
 // /proc/stat to count the threads from, as on Windows, and no runnable in
 // pressure.yaml, a measure busy skips and tells) there is nothing to reach.
-func (m *machine) reservesBusy(lockPath string, priority bool) (busyness, error) {
+func (m *machine) reservesBusy(lockPath string) (busyness, error) {
 	m.exitHatch = false
 	if m.runnableLimit <= 0 {
 		return busyness{}, nil
 	}
-	sum, unseen, task, retryAt, err := reserveCounts(lockPath, m, priority)
+	sum, unseen, task, retryAt, err := reserveCounts(lockPath, m)
 	if err != nil {
 		return busyness{}, err
 	}
-	candidate := m.candidate
-	candidateCapped := candidate
-	if !priority {
-		candidateCapped = capCandidate(candidate, m.runnableLimit)
-	}
+	candidateCapped := capCandidate(m.candidate, m.runnableLimit)
 	m.decision.Unseen, m.decision.LiveReserve = new(unseen), new(sum)
 	m.decision.CandidateCapped = new(candidateCapped)
 	if task != "" {
 		return busyness{why: WhyReserve, text: fmt.Sprintf("waiting for the first CPU measure of %s", task), retryAt: retryAt}, nil
 	}
 	if unseen == 0 && sum == 0 {
-		return m.exitHatchBusy(priority), nil
+		return m.exitHatchBusy(), nil
 	}
-	return m.reserveForecastBusy(priority, sum, unseen, candidateCapped), nil
+	return m.reserveForecastBusy(sum, unseen, candidateCapped), nil
 }
 
-func reserveCounts(lockPath string, m *machine, priority bool) (float64, float64, string, time.Time, error) {
-	if priority {
-		if task, retryAt, pending, err := firstUnmeasuredAdmission(lockPath, time.Now(), reserveWindow+reservePollInterval); err != nil {
-			return 0, 0, "", time.Time{}, err
-		} else if pending {
-			return 0, 0, task, retryAt, nil
-		}
-	}
+func reserveCounts(lockPath string, m *machine) (float64, float64, string, time.Time, error) {
 	sum, err := liveReserveCores(lockPath)
 	if err != nil {
 		return 0, 0, "", time.Time{}, err
 	}
-	unseen, err := unseenAdmittedCores(lockPath, m.unseenShare(priority))
+	unseen, err := unseenAdmittedCores(lockPath, m.unseenShare())
 	if err != nil {
 		return 0, 0, "", time.Time{}, err
 	}
-	if !priority {
-		task, retryAt, pending, err := firstUnmeasuredAdmission(lockPath, time.Now(), reserveWindow+reservePollInterval)
-		if err != nil {
-			return 0, 0, "", time.Time{}, err
-		}
-		if pending {
-			return sum, unseen, task, retryAt, nil
-		}
+	task, retryAt, pending, err := firstUnmeasuredAdmission(lockPath, time.Now(), reserveWindow+reservePollInterval)
+	if err != nil {
+		return 0, 0, "", time.Time{}, err
+	}
+	if pending {
+		return sum, unseen, task, retryAt, nil
 	}
 	return sum, unseen, "", time.Time{}, nil
 }
 
-func (m *machine) exitHatchBusy(priority bool) busyness {
+func (m *machine) exitHatchBusy() busyness {
 	m.exitHatch = true
 	m.decision.CandidateCapped = new(float64(0))
 	if float64(m.runnable) >= m.runnableLimit {
 		return busyness{why: WhyReserve, text: fmt.Sprintf("runnable %.0f is at or above %.0f", m.runnable, m.runnableLimit)}
 	}
-	if m.avg1Known && m.loadValue(priority) >= m.runnableLimit {
+	if m.avg1Known && m.avg1 >= m.runnableLimit {
 		return busyness{why: WhyReserve, text: fmt.Sprintf("load average 1m %.2f is at or above %.0f", m.avg1, m.runnableLimit)}
 	}
 	return busyness{}
 }
 
-func (m *machine) reserveForecastBusy(priority bool, sum, unseen, candidate float64) busyness {
+func (m *machine) reserveForecastBusy(sum, unseen, candidate float64) busyness {
 	if float64(m.runnable)+sum+candidate >= m.runnableLimit {
 		return busyness{why: WhyReserve, text: fmt.Sprintf("runnable %.0f plus %.1f of the live reserves plus %.1f of this task reaches %.0f", m.runnable, sum, candidate, m.runnableLimit)}
 	}
-	if !m.avg1Known || m.loadValue(priority)+unseen+candidate < m.runnableLimit {
+	if !m.avg1Known || m.avg1+unseen+candidate < m.runnableLimit {
 		return busyness{}
 	}
-	text := fmt.Sprintf("load average 1m %.1f plus %.1f of the admitted tasks plus %.1f of this task reaches %.0f", m.avg1, unseen, candidate, m.runnableLimit)
-	if a, b, ok := m.samples.lastTwo(); priority && ok {
-		text = fmt.Sprintf("kernel load samples %.1f, %.1f plus %.1f of the admitted tasks plus %.1f of this task reach %.0f", a, b, unseen, candidate, m.runnableLimit)
-	}
-	return busyness{why: WhyReserve, text: text}
+	return busyness{why: WhyReserve, text: fmt.Sprintf("load average 1m %.1f plus %.1f of the admitted tasks plus %.1f of this task reaches %.0f", m.avg1, unseen, candidate, m.runnableLimit)}
 }
 
 // capCandidate drops an estimate that could never fit under the limit: such a
@@ -649,24 +681,9 @@ const loadAvgTau = time.Minute
 // long as the task, past its reserve.
 func admittedPattern(lockPath string) string { return filepath.Base(lockPath) + ".*.admitted" }
 
-// unseenShare is the share of an admitted task's cores the load m decides by
-// does not show yet, by the time of its admission. The 1-minute load average
-// shows c·(1 − e^(−t/τ)) of it t after; the mean of the last two kernel
-// samples a priority task decides by shows all of it in a sample taken after
-// the admission and none in one taken before, so counting the average's
-// share there would count a stage the samples already hold twice.
-func (m *machine) unseenShare(priority bool) func(admitted time.Time) float64 {
-	if a, b, ok := m.samples.lastTwoAt(); priority && ok {
-		return func(admitted time.Time) float64 {
-			var share float64
-			for _, at := range []time.Time{a, b} {
-				if !at.After(admitted) {
-					share += 0.5
-				}
-			}
-			return share
-		}
-	}
+// unseenShare is the share of an admitted task's cores the 1-minute load
+// average does not show yet, by the time of its admission.
+func (m *machine) unseenShare() func(admitted time.Time) float64 {
 	now := reserveAgeNow()
 	return func(admitted time.Time) float64 {
 		return math.Exp(-max(now.Sub(admitted), 0).Seconds() / loadAvgTau.Seconds())
@@ -746,26 +763,6 @@ func liveReserveCores(lockPath string) (float64, error) {
 		sum += d.Cores
 	}
 	return sum, nil
-}
-
-func reservePriority(ctx context.Context, m *machine, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath string, cores float64, log io.Writer) (Admission, func() error, error) {
-	var err error
-	cores, err = expectedReserveCores(kind, cores)
-	if err != nil {
-		return m.admission(), released, err
-	}
-	m.candidate = cores
-	m.candidateKnown = true
-	if err := m.admitWithReserves(ctx, p, lockPath); err != nil {
-		return m.admission(), released, err
-	}
-	rel, since, end, stoppedAt, err := startAdmission(lockPath, name, cores, l.Settle, log)
-	if err != nil {
-		return m.admission(), released, err
-	}
-	a := m.admission()
-	a.ReserveCores, a.ReserveSince, a.ReserveEnd, a.ReserveStoppedAt = cores, since, end, stoppedAt
-	return a, rel, nil
 }
 
 func expectedReserveCores(kind string, cores float64) (float64, error) {
@@ -1079,106 +1076,6 @@ func DirtyWritebackKB() (int64, error) {
 	return dirty + writeback, nil
 }
 
-const (
-	loadSampleMaxGap = time.Second
-	loadSampleStale  = 5500 * time.Millisecond
-	// loadSamplePeriod is the kernel's sampling period, 5 s and a tick
-	// (10 ms at HZ=100, the longest tick, so an estimate with margin above).
-	loadSamplePeriod = 5*time.Second + 10*time.Millisecond
-	loadFactor       = 1884.0 / 2048
-)
-
-// kernelSamples recovers kernel load samples from consecutive visible averages.
-type kernelSamples struct {
-	at, stableAt time.Time
-	avg          float64
-	have         bool
-
-	values []float64
-	// times estimate when the kernel took the last values, no later than it
-	// did, so a task admitted after the estimate counts as not in the sample
-	// (a count too many, not too few); they are appended with the values and kept
-	// to two the same way, so the last of each go together: a reset of values
-	// leaves no pair until two more are seen, and values set without times (a
-	// test's) leave the share of admitted tasks to the average's.
-	times []time.Time
-}
-
-func (s *kernelSamples) observe(at time.Time, avg float64, valid bool) {
-	if !valid {
-		*s = kernelSamples{}
-		return
-	}
-	if !s.have || at.Before(s.at) || at.Sub(s.at) > loadSampleMaxGap {
-		s.values = nil
-		s.at, s.avg, s.have = at, avg, true
-		s.stableAt = at
-		return
-	}
-	if avg != s.avg {
-		delta := (avg - loadFactor*s.avg) / (1 - loadFactor)
-		// The kernel took this sample after the last look without a
-		// change: that look is the sample's time, so a task admitted in
-		// between counts as not in it rather than as in it.
-		if delta >= 0 {
-			s.append(delta, s.at)
-		}
-		s.avg, s.at, s.stableAt = avg, at, at
-		return
-	}
-	if at.Sub(s.stableAt) > loadSampleStale {
-		// Unchanged, the last sample may be up to a period old.
-		s.append(avg, at.Add(-loadSamplePeriod))
-		s.stableAt = at
-	}
-	s.at = at
-}
-
-func (s *kernelSamples) append(sample float64, at time.Time) {
-	s.values = append(s.values, sample)
-	s.times = append(s.times, at)
-	if len(s.values) > 2 {
-		s.values = s.values[len(s.values)-2:]
-	}
-	if len(s.times) > 2 {
-		s.times = s.times[len(s.times)-2:]
-	}
-}
-
-// lastTwoAt are the estimated times the kernel took the last two samples.
-func (s *kernelSamples) lastTwoAt() (time.Time, time.Time, bool) {
-	if len(s.values) < 2 || len(s.times) < 2 {
-		return time.Time{}, time.Time{}, false
-	}
-	return s.times[len(s.times)-2], s.times[len(s.times)-1], true
-}
-
-func (s *kernelSamples) lastTwo() (float64, float64, bool) {
-	if len(s.values) < 2 {
-		return 0, 0, false
-	}
-	return s.values[len(s.values)-2], s.values[len(s.values)-1], true
-}
-
-func (m *machine) observeKernelSample() (float64, error) {
-	at := m.now()
-	avg, err := pressure.ReadLoadAvg(m.procRoot)
-	if err != nil {
-		m.samples.observe(at, 0, false)
-		return 0, fmt.Errorf("read kernel load sample: %w", err)
-	}
-	m.samples.observe(at, avg.Avg1, true)
-	return avg.Avg1, nil
-}
-
-func (m *machine) warnKernelSampleError(err error) {
-	if m.sampleReadWarned {
-		return
-	}
-	fmt.Fprintf(m.log, "graft: %s: cannot read kernel load sample: %v; using load average 1m\n", m.name, err)
-	m.sampleReadWarned = true
-}
-
 // machineMeter is the machine reading loadgate needs; tests replace it with a
 // fixed sequence of decisions.
 type machineMeter interface {
@@ -1197,12 +1094,9 @@ type machine struct {
 	haveView          bool
 	lastLoggedMeasure string
 	// admissionStart is when the admission began, the queue included.
-	admissionStart   time.Time
-	procRoot         string
-	now              func() time.Time
-	sleep            func(context.Context, time.Duration) error
-	samples          kernelSamples
-	sampleReadWarned bool
+	admissionStart time.Time
+	now            func() time.Time
+	sleep          func(context.Context, time.Duration) error
 	// runnable is the last count of the tasks ready to run.
 	runnable      float64
 	runnableLimit float64
@@ -1228,7 +1122,7 @@ func newMachine(l userconfig.MachineLoad, log io.Writer, name, kind string) *mac
 		proc = dir
 	}
 	limits, limitsErr := pressure.UserLimits()
-	return &machine{l: l, limits: limits, limitsErr: limitsErr, log: log, name: name, kind: kind, procRoot: proc, now: time.Now, sleep: sleep, meter: pressureMeterFactory(proc), waits: Waits{}, admissionStart: time.Now()}
+	return &machine{l: l, limits: limits, limitsErr: limitsErr, log: log, name: name, kind: kind, now: time.Now, sleep: sleep, meter: pressureMeterFactory(proc), waits: Waits{}, admissionStart: time.Now()}
 }
 
 func (m *machine) admission() Admission { return Admission{Waits: m.waits} }
@@ -1251,8 +1145,7 @@ func BusyNow(ctx context.Context, name, kind string, l userconfig.MachineLoad, l
 
 // BusyNowWithReserves checks the machine, its live reservations and the
 // admitted tasks its load average does not show yet without queueing. queue
-// controls whether a current queue holder also counts; a task with a
-// priority, which Wait does not queue, leaves it out.
+// controls whether a current queue holder also counts.
 func BusyNowWithReserves(ctx context.Context, name, kind string, l userconfig.MachineLoad, lockPath string, queue bool, log io.Writer) (bool, error) {
 	if queue {
 		holders, err := lock.Holders(lockPath)
@@ -1261,11 +1154,11 @@ func BusyNowWithReserves(ctx context.Context, name, kind string, l userconfig.Ma
 		}
 	}
 	m := newMachine(l, log, name, kind)
-	b, err := m.busy(ctx, true, false)
+	b, err := m.busy(ctx, true)
 	if err != nil || b.why != "" || lockPath == "" {
 		return b.why != "", err
 	}
-	b, err = m.reservesBusy(lockPath, false)
+	b, err = m.reservesBusy(lockPath)
 	return b.why != "", err
 }
 
@@ -1274,11 +1167,11 @@ func BusyNowWithReserves(ctx context.Context, name, kind string, l userconfig.Ma
 // It makes one fresh machine measurement, as BusyNowWithReserves does.
 func LoadQueueWhy(ctx context.Context, name, kind string, l userconfig.MachineLoad, lockPath string, log io.Writer) (string, error) {
 	m := newMachine(l, log, name, kind)
-	b, err := m.busy(ctx, true, false)
+	b, err := m.busy(ctx, true)
 	if err != nil || b.why != "" {
 		return b.text, err
 	}
-	b, err = m.reservesBusy(lockPath, false)
+	b, err = m.reservesBusy(lockPath)
 	return b.text, err
 }
 
@@ -1297,7 +1190,7 @@ func NewDiskBusyChecker(name, kind string, l userconfig.MachineLoad, log io.Writ
 
 // Why reports the current load rule that prevents work, or an empty string.
 func (c *BusyChecker) Why(ctx context.Context) (string, error) {
-	b, err := c.machine.busy(ctx, false, false)
+	b, err := c.machine.busy(ctx, false)
 	return b.why, err
 }
 
@@ -1326,7 +1219,7 @@ var measures = map[string]struct{ why, setting string }{
 // source the IO pressure, over the configured swap window; otherwise since
 // the last call. A measure the system lacks is
 // skipped and told once.
-func (m *machine) busy(ctx context.Context, fresh, priority bool) (busyness, error) {
+func (m *machine) busy(ctx context.Context, fresh bool) (busyness, error) {
 	m.decision = admissionDecision{}
 	m.exitHatch = false
 	if m.candidateKnown {
@@ -1337,7 +1230,6 @@ func (m *machine) busy(ctx context.Context, fresh, priority bool) (busyness, err
 	}
 	v, err := m.meter.Check(ctx, m.limits, m.kind, fresh)
 	if err != nil {
-		m.samples.observe(m.now(), 0, false)
 		return busyness{}, fmt.Errorf("measuring the machine: %w", err)
 	}
 	if m.ignoreCPUPressure {
@@ -1348,42 +1240,19 @@ func (m *machine) busy(ctx context.Context, fresh, priority bool) (busyness, err
 	// A look that the wait's end cut short is no measure: its disk source
 	// failed for the deadline, not for the machine.
 	if err := ended(ctx); err != nil {
-		m.samples.observe(m.now(), 0, false)
 		return busyness{}, err
-	}
-	if priority {
-		avg, err := m.observeKernelSample()
-		if err != nil {
-			m.warnKernelSampleError(err)
-		} else {
-			v.Load.Avg1 = avg
-		}
 	}
 	noPSI := slices.Contains(v.Skipped, pressure.ErrNoIOPressure)
 	for _, none := range v.Skipped {
 		m.skip(none, v.Load.DiskFault, noPSI)
 	}
 	m.recordLoadDecision(v)
-	var sampleMean float64
-	if priority {
-		if a, b, ok := m.samples.lastTwo(); ok {
-			sampleMean = (a + b) / 2
-			v.Load.Avg1 = sampleMean
-			v = pressure.Rule(v.Load, m.limits, v.Skipped)
-		}
-	}
 	m.lastView, m.haveView = v, true
 	var b busyness
 	if v.Busy() {
 		// A measure graft does not know yet still makes the machine busy.
 		ms, known := measures[v.Measure]
 		b = busyness{why: v.Measure, text: v.Why()}
-		if priority && v.Measure == pressure.CPU && float64(v.Load.Runnable) < v.Limit {
-			a, last, ok := m.samples.lastTwo()
-			if ok {
-				b.text = fmt.Sprintf("kernel load samples %.1f, %.1f reach %.0f", a, last, v.Limit)
-			}
-		}
 		if known {
 			b.why = ms.why
 			if b.text == v.Why() {

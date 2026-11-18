@@ -175,15 +175,16 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 	if err := r.glint.checkTicket(ctx); err != nil {
 		return err
 	}
-	// Its heavy tasks, and those of every graft its script starts, skip
-	// the queue of heavy tasks within one budget; a deploy inside a deploy
-	// keeps the outer's.
+	// Its heavy tasks, and those of every graft its script starts, use the
+	// queue of heavy tasks within one budget; a deploy inside a deploy keeps
+	// the outer's.
+	lw := r.cfg.Deploy.LoadWait
+	warnLoadWaitThenStart(a.Stderr, lw)
 	if os.Getenv(loadgate.EnvPriority) == "" {
 		cache, err := os.UserCacheDir()
 		if err != nil {
 			return fmt.Errorf("the budget for waiting: %w", err)
 		}
-		lw := r.cfg.Deploy.LoadWait
 		budget, err := loadgate.NewBudget(filepath.Join(cache, "graft"), lw.Budget)
 		if err != nil {
 			return err
@@ -195,7 +196,7 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 				}
 			}
 		}()
-		p := loadgate.Priority{For: "graft deploy " + o.Target, Budget: budget, Fail: lw.Then == loadgate.ThenFail}
+		p := loadgate.Priority{For: "graft deploy " + o.Target, Budget: budget, Fail: true}
 		for k, v := range p.Env() {
 			if err := os.Setenv(k, v); err != nil {
 				return fmt.Errorf("setting %s: %w", k, err)
@@ -236,6 +237,12 @@ func (a *App) noteDeployJournal(ctx context.Context, r *deployRun, deployErr err
 	}
 	result := map[bool]string{true: "ok", false: "failed"}[deployErr == nil]
 	a.ticketJournal(ctx, r.repo, "", fmt.Sprintf("deploy %s %s: %s", r.name, identity, result))
+}
+
+func warnLoadWaitThenStart(w io.Writer, lw config.LoadWait) {
+	if lw.ThenStartExplicit {
+		fmt.Fprintln(w, "graft: warning: deploy.load_wait.then: start no longer starts over the limit (user rule); treated as fail")
+	}
 }
 
 func beginMachineDeployment(project, target string, lk *lock.Lock) (func() error, func() error, error) {

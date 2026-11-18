@@ -593,12 +593,16 @@ deploy:
 	if got := cfg.Deploy.Targets["staging"].Deps; !slices.Equal(got, []string{"smoke"}) {
 		t.Errorf("deps = %v", got)
 	}
-	if lw := cfg.Deploy.LoadWait; lw.Budget != DefaultLoadWait || lw.Then != "start" {
+	if lw := cfg.Deploy.LoadWait; lw.Budget != DefaultLoadWait || lw.Then != "fail" {
 		t.Errorf("load_wait defaults: %+v", lw)
 	}
 	cfg, err = Parse([]byte(strings.Replace(base, "  remote: origin\n", "  remote: origin\n  load_wait: {budget: 3m, then: fail}\n", 1)))
 	if err != nil || cfg.Deploy.LoadWait.Budget != 3*time.Minute || cfg.Deploy.LoadWait.Then != "fail" {
 		t.Errorf("load_wait 3m fail: %+v, %v", cfg.Deploy.LoadWait, err)
+	}
+	cfg, err = Parse([]byte(strings.Replace(base, "  remote: origin\n", "  remote: origin\n  load_wait: {then: start}\n", 1)))
+	if err != nil || cfg.Deploy.LoadWait.Then != "start" || !cfg.Deploy.LoadWait.ThenStartExplicit {
+		t.Errorf("explicit load_wait start compatibility: %+v, %v", cfg.Deploy.LoadWait, err)
 	}
 	_, err = Parse([]byte(strings.Replace(base, "deps: [smoke]", "deps: [smoke, nope]", 1)))
 	if err == nil || !strings.Contains(err.Error(), `deploy.targets.staging.deps: unknown task "nope"`) {

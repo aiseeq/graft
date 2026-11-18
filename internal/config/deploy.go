@@ -35,9 +35,9 @@ type Deploy struct {
 type LoadWait struct {
 	// Budget is the whole deploy's; DefaultLoadWait when unset.
 	Budget time.Duration `yaml:"budget"`
-	// Then is what a heavy task does when the budget is spent: start (the
-	// default) or fail, failing the deploy.
-	Then string `yaml:"then"`
+	// Then controls what happens at budget exhaustion; start is treated as fail.
+	Then              string `yaml:"then"`
+	ThenStartExplicit bool   `yaml:"-"`
 }
 
 // DefaultLoadWait is a deploy's budget for waiting when it sets none.
@@ -590,11 +590,12 @@ func (c *Config) validateDeploy() error {
 	}
 	switch d.LoadWait.Then {
 	case "":
-		d.LoadWait.Then = "start"
+		d.LoadWait.Then = "fail"
 	case "start", "fail":
 	default:
 		return fmt.Errorf("deploy.load_wait.then: want start or fail, got %q", d.LoadWait.Then)
 	}
+	d.LoadWait.ThenStartExplicit = d.LoadWait.Then == "start"
 	// The project keys first: approved_release.attribute names their items.
 	if err := c.validateReleaseNotes(); err != nil {
 		return err

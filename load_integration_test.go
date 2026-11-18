@@ -314,10 +314,9 @@ func TestHeavyTaskWaitIsRecorded(t *testing.T) {
 	}
 }
 
-// TestDeployPrioritySkipsTheQueue: a heavy task run for a deploy does not
-// queue behind a heavy task waiting for a busy machine, and starts when the
-// deploy's budget for waiting is spent.
-func TestDeployPrioritySkipsTheQueue(t *testing.T) {
+// TestDeployPriorityWaitsInQueue: priority shares the FIFO load lock and its
+// budget expires while it waits behind an ordinary admission.
+func TestDeployPriorityWaitsInQueue(t *testing.T) {
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: none}\ntasks:\n  build:\n    heavy: true\n    run: [" + helperStep("ok") + "]\n",
 	})
@@ -350,9 +349,9 @@ func TestDeployPrioritySkipsTheQueue(t *testing.T) {
 	priority.Env = append(slices.Clone(testEnv), append(f.env, "GRAFT_LOAD_PRIORITY=graft deploy prod",
 		"GRAFT_LOAD_BUDGET="+budget, "GRAFT_LOAD_THEN=start")...)
 	out, err := priority.CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "not queueing behind other heavy tasks: it runs for graft deploy prod") ||
-		!strings.Contains(string(out), "all the wait graft deploy prod allows") {
-		t.Errorf("the priority task did not skip the queue and start when its budget was spent: %v\n%s", err, out)
+	if err == nil || !strings.Contains(string(out), "waiting for the write lock load.lock") ||
+		!strings.Contains(string(out), "deploy.load_wait: budget exhausted") || !strings.Contains(string(out), "not started") {
+		t.Errorf("the priority task did not wait in the queue and fail at its budget: %v\n%s", err, out)
 	}
 	if left, err := os.ReadFile(budget); err != nil || strings.TrimSpace(string(left)) != "0" {
 		t.Errorf("budget left: %s %v", left, err)

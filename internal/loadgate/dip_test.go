@@ -35,7 +35,7 @@ func TestQueueDipAdmitsOneAtATime(t *testing.T) {
 		dip  float64
 		want int
 	}{
-		{21, 1},   // 21 + 2 reaches 22
+		{21, 1},   // Exit hatch: no reserves of its own yet, and 21 < 22 lets one in.
 		{18.5, 1}, // 18.5 + 2 unseen + 2 candidate reaches 22.5
 	} {
 		t.Run(fmt.Sprint(c.dip), func(t *testing.T) {
@@ -185,29 +185,31 @@ func waitBriefly(path string, p *Priority) (Admission, error) {
 func TestEndedAdmittedTaskLeavesTheForecast(t *testing.T) {
 	setRunnable, _, _ := fakeMachine(t)
 	setRunnable(1)
-	setLoadavg(t, 20)
+	setLoadavg(t, 0)
 	path := filepath.Join(t.TempDir(), "load.lock")
 	release := admitOne(t, path, 8)
+	setLoadavg(t, 20)
 	if adm, err := waitBriefly(path, nil); err == nil || adm.Waits[WhyReserve] == 0 {
 		t.Fatalf("next beside a running task of 8 cores at load average 20: %+v, %v", adm, err)
 	}
 	if err := release(); err != nil {
 		t.Fatal(err)
 	}
+	setLoadavg(t, 17)
 	if adm, err := waitBriefly(path, nil); err != nil {
 		t.Fatalf("next after the task of 8 cores ended: %+v, %v", adm, err)
 	}
 }
 
-// TestPriorityCountsTheForecast: a deploy's task skips the queue but checks
-// the machine as the queue does, the admitted tasks the load average does not
-// show yet included.
+// TestPriorityCountsTheForecast: a deploy task checks admitted work not yet
+// visible in the load average, as an ordinary queued task does.
 func TestPriorityCountsTheForecast(t *testing.T) {
 	setRunnable, _, _ := fakeMachine(t)
 	setRunnable(1)
-	setLoadavg(t, 21)
+	setLoadavg(t, 0)
 	path := filepath.Join(t.TempDir(), "load.lock")
 	release := admitOne(t, path, 4)
+	setLoadavg(t, 21)
 	defer release()
 	p := &Priority{For: "deploy", Budget: filepath.Join(t.TempDir(), "budget"), Fail: true}
 	if err := os.WriteFile(p.Budget, []byte("100000000"), 0o644); err != nil {
@@ -262,10 +264,11 @@ func (l *lockedLog) String() string {
 func TestBusyNowCountsTheForecast(t *testing.T) {
 	setRunnable, _, _ := fakeMachine(t)
 	setRunnable(1)
-	setLoadavg(t, 21)
+	setLoadavg(t, 0)
 	path := filepath.Join(t.TempDir(), "load.lock")
 	release := admitOne(t, path, 4)
 	defer release()
+	setLoadavg(t, 21)
 	for _, queue := range []bool{true, false} {
 		busy, err := BusyNowWithReserves(context.Background(), "next", "projectA:next", testLoad, path, queue, io.Discard)
 		if err != nil || !busy {
@@ -279,7 +282,7 @@ func TestBusyNowCountsTheForecast(t *testing.T) {
 func TestPrioritySettleCountsTheForecast(t *testing.T) {
 	setRunnable, _, _ := fakeMachine(t)
 	setRunnable(1)
-	setLoadavg(t, 20)
+	setLoadavg(t, 0)
 	dir := t.TempDir()
 	path, settlePath := filepath.Join(dir, "load.lock"), filepath.Join(dir, "load.settle.lock")
 	p := &Priority{For: "deploy", Budget: filepath.Join(dir, "budget"), Fail: true}
@@ -290,12 +293,14 @@ func TestPrioritySettleCountsTheForecast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	setLoadavg(t, 20)
 	if adm, err := waitBriefly(path, nil); err == nil || adm.Waits[WhyReserve] == 0 {
 		t.Errorf("next beside a deploy task of 8 cores with settle at load average 20: %+v, %v", adm, err)
 	}
 	if err := release(); err != nil {
 		t.Fatal(err)
 	}
+	setLoadavg(t, 0)
 	release = admitOne(t, path, 4)
 	defer release()
 	setLoadavg(t, 21)

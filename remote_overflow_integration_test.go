@@ -685,8 +685,8 @@ func TestUserRemoteHeavyOverflowsBehindALiveReserve(t *testing.T) {
 	if out := admitted.mustGraft("exec", "--heavy", "--", "go", "vet", "./..."); strings.Contains(out, "on pc") || strings.Count(callsOf(t, state), "go vet") != 1 {
 		t.Errorf("an admitted exec went to pc behind the queue it does not wait for:\n%s\ncalls: %q", out, callsOf(t, state))
 	}
-	// A task with a priority waits for the machine, not for the queue: on a
-	// calm machine it runs here, on a busy one it goes.
+	// A priority task still uses the FIFO queue. With no earlier waiter, it
+	// runs here while calm; when busy, the overflow policy sends it to the host.
 	budget, err := loadgate.NewBudget(t.TempDir(), time.Minute)
 	if err != nil {
 		t.Fatal(err)
