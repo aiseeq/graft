@@ -819,6 +819,18 @@ func (d *deployFixture) stateFile(name string) string {
 	return string(data)
 }
 
+func (d *deployFixture) stateExists(name string) bool {
+	d.t.Helper()
+	_, err := os.Stat(filepath.Join(d.state, name))
+	if errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	if err != nil {
+		d.t.Fatalf("checking state file %s: %v", filepath.Join(d.state, name), err)
+	}
+	return true
+}
+
 func TestDeployRefusesUnpublishedWork(t *testing.T) {
 	d := deployRepo(t)
 	d.write("extra.txt", "x\n")
@@ -830,7 +842,7 @@ func TestDeployRefusesUnpublishedWork(t *testing.T) {
 	if out, code := d.graft("", "deploy", "test"); code == 0 || !strings.Contains(out, "is not origin/feature/PROJ-42-thing") {
 		t.Errorf("unpushed commit: %d\n%s", code, out)
 	}
-	if d.stateFile("test-run") != "" {
+	if d.stateExists("test-run") {
 		t.Error("the deploy script ran")
 	}
 }
@@ -1572,7 +1584,7 @@ func TestDeployScriptFailurePassesExitCode(t *testing.T) {
 	if code != 3 || !strings.Contains(out, "exit status 3") {
 		t.Errorf("exit %d:\n%s", code, out)
 	}
-	if d.stateFile("test-sha") != "" {
+	if d.stateExists("test-sha") {
 		t.Error("a failed deploy was recorded")
 	}
 }
@@ -1584,7 +1596,7 @@ func TestDeployRefusesWhenHeadMoves(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "HEAD moved during the deploy") {
 		t.Errorf("exit %d:\n%s", code, out)
 	}
-	if d.stateFile("test-sha") != "" {
+	if d.stateExists("test-sha") {
 		t.Error("recorded a commit that was not the one deployed")
 	}
 }
@@ -1646,7 +1658,7 @@ func TestDeployConfirmWithoutTerminalBySudo(t *testing.T) {
 	if !strings.Contains(out, "no terminal, touch the fingerprint reader to confirm the deploy to prod") {
 		t.Errorf("no hint about the confirmation:\n%s", out)
 	}
-	if d.stateFile("prod-run") == "" {
+	if !d.stateExists("prod-run") {
 		t.Error("prod deploy did not run after sudo confirmed it")
 	}
 	if got := readFile(t, calls); !strings.HasPrefix(got, "-k\n-n -v\n-v -p ") {
@@ -1666,7 +1678,7 @@ func TestDeployConfirmWithoutTerminalAsksTheReaderAgain(t *testing.T) {
 			t.Errorf("no %q:\n%s", want, out)
 		}
 	}
-	if d.stateFile("prod-run") == "" {
+	if !d.stateExists("prod-run") {
 		t.Error("prod deploy did not run after the reader accepted")
 	}
 	if got := strings.Count(readFile(t, calls), "\n"); got != 5 {
@@ -1684,7 +1696,7 @@ func TestDeployConfirmWithoutTerminalAsksAgainForRefusalOnStderr(t *testing.T) {
 			t.Errorf("no %q:\n%s", want, out)
 		}
 	}
-	if d.stateFile("prod-run") == "" {
+	if !d.stateExists("prod-run") {
 		t.Error("prod deploy did not run after the reader accepted")
 	}
 	if got := strings.Count(readFile(t, calls), "\n"); got != 5 {
@@ -1703,7 +1715,7 @@ func TestDeployConfirmWithoutTerminalRefused(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "deploying to prod was not confirmed") {
 		t.Errorf("exit %d:\n%s", code, out)
 	}
-	if d.stateFile("prod-run") != "" {
+	if d.stateExists("prod-run") {
 		t.Error("prod deploy ran without confirmation")
 	}
 	if got := strings.Count(readFile(t, calls), "\n"); got != 3 {
@@ -1738,7 +1750,7 @@ func TestDeployConfirmWaitsForABusyReader(t *testing.T) {
 	if !strings.Contains(out, "the fingerprint reader looks busy (attempt 1)") {
 		t.Errorf("no word about the busy reader:\n%s", out)
 	}
-	if d.stateFile("prod-run") == "" {
+	if !d.stateExists("prod-run") {
 		t.Error("prod deploy did not run after the reader was free")
 	}
 	if got := strings.Count(readFile(t, calls), "\n"); got != 4 {
@@ -1756,7 +1768,7 @@ func TestDeployConfirmNoReaderRefusedAtOnce(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "the fingerprint reader did not answer (fprintd-list: exit status 1: No devices available)") {
 		t.Errorf("exit %d:\n%s", code, out)
 	}
-	if d.stateFile("prod-run") != "" {
+	if d.stateExists("prod-run") {
 		t.Error("prod deploy ran without confirmation")
 	}
 	if got := strings.Count(readFile(t, calls), "\n"); got != 3 {

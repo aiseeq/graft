@@ -96,7 +96,7 @@ func TestDeployTakeBackCleanRollbackRecordsReason(t *testing.T) {
 	if journal := readTakeBackJournal(t, d, "test-sha"); !strings.Contains(journal, reason) {
 		t.Fatalf("clean rollback journal = %q", journal)
 	}
-	if got := d.stateFile("test-run"); got == "" {
+	if !d.stateExists("test-run") {
 		t.Fatal("deploy command did not run for the clean rollback")
 	}
 	comments, _ := d.jira.snapshot()

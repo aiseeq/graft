@@ -35,14 +35,14 @@ func TestDeployReviewGuardRefusesAndRequiresEveryReviewerPair(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "PROJ-1") || !strings.Contains(out, "PROJ-5") || !strings.Contains(out, "anna") || !strings.Contains(out, "PROJ-1@anna") || !strings.Contains(out, "PROJ-5@anna") {
 		t.Fatalf("guard refusal: exit %d\n%s", code, out)
 	}
-	if got := d.stateFile("uat-run"); got != "" {
-		t.Fatalf("deploy script ran despite review: %s", got)
+	if d.stateExists("uat-run") {
+		t.Fatalf("deploy script ran despite review: %s", d.stateFile("uat-run"))
 	}
 	out, code = d.graft("", "deploy", "--reviewer-agreed", "PROJ-1@anna,PROJ-5@anna", "uat")
 	if code != 0 || !strings.Contains(out, "deployed ") {
 		t.Fatalf("reviewer agreement: exit %d\n%s", code, out)
 	}
-	if d.stateFile("uat-run") == "" {
+	if !d.stateExists("uat-run") {
 		t.Fatal("deploy script did not run after both reviewers agreed")
 	}
 }
@@ -57,7 +57,7 @@ func TestDeployReviewGuardCheckReportsWithoutRefusing(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "PROJ-1") || !strings.Contains(out, "anna") || !strings.Contains(out, "PROJ-1@anna") || !strings.Contains(out, "would stop at the review guard") || strings.Contains(out, "passes its checks now") {
 		t.Fatalf("deploy check report: exit %d\n%s", code, out)
 	}
-	if d.stateFile("uat-run") != "" {
+	if d.stateExists("uat-run") {
 		t.Fatal("deploy check ran the script")
 	}
 }
@@ -69,7 +69,7 @@ func TestDeployReviewGuardUsesConfiguredStatuses(t *testing.T) {
 	d.jira.statuses["PROJ-1"] = "Ready for QA"
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "uat")
-	if code != 0 || d.stateFile("uat-run") == "" {
+	if code != 0 || !d.stateExists("uat-run") {
 		t.Fatalf("unconfigured status should pass: exit %d\n%s", code, out)
 	}
 }
@@ -83,7 +83,7 @@ func TestDeployReviewGuardWithoutSHAOrTargetVersionRefusesUnknown(t *testing.T) 
 	})
 	d.jira.setVersions(productVersions(), nil)
 	out, code := d.graft("", "deploy", "uat")
-	if code == 0 || !strings.Contains(strings.ToLower(out), "unknown") || d.stateFile("uat-run") != "" {
+	if code == 0 || !strings.Contains(strings.ToLower(out), "unknown") || d.stateExists("uat-run") {
 		t.Fatalf("missing target version should be unknown: exit %d\n%s", code, out)
 	}
 }
@@ -95,7 +95,7 @@ func TestDeployReviewGuardUnknownMyselfCannotBeAgreedAround(t *testing.T) {
 	d.jira.failMyself = 503
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "--reviewer-agreed", "PROJ-1@anna", "uat")
-	if code == 0 || !strings.Contains(out, "503") || d.stateFile("uat-run") != "" {
+	if code == 0 || !strings.Contains(out, "503") || d.stateExists("uat-run") {
 		t.Fatalf("unknown user must refuse: exit %d\n%s", code, out)
 	}
 }
@@ -104,14 +104,14 @@ func TestDeployReviewGuardRejectsPartialAgreementAndJiraFailure(t *testing.T) {
 	d := reviewGuardFixture(t, []string{"Testing"})
 	setupGuardVersion(d, map[string][]string{"PROJ-1": {"10010"}, "PROJ-5": {"10010"}})
 	out, code := d.graft("", "deploy", "--reviewer-agreed", "PROJ-1@anna", "uat")
-	if code == 0 || !strings.Contains(out, "PROJ-5@anna") || d.stateFile("uat-run") != "" {
+	if code == 0 || !strings.Contains(out, "PROJ-5@anna") || d.stateExists("uat-run") {
 		t.Fatalf("partial agreement passed: exit %d\n%s", code, out)
 	}
 	d.jira.mu.Lock()
 	d.jira.failIssues = map[string]int{"PROJ-5": 429}
 	d.jira.mu.Unlock()
 	out, code = d.graft("", "deploy", "--reviewer-agreed", "PROJ-1@anna,PROJ-5@anna", "uat")
-	if code == 0 || !strings.Contains(out, "429") || d.stateFile("uat-run") != "" {
+	if code == 0 || !strings.Contains(out, "429") || d.stateExists("uat-run") {
 		t.Fatalf("Jira 429 was bypassed: exit %d\n%s", code, out)
 	}
 }
@@ -124,7 +124,7 @@ func TestDeployReviewGuardRepeatsImmediatelyBeforeScript(t *testing.T) {
 	d.jira.changeAssignee = map[string]string{"PROJ-1": "boris"}
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "--reviewer-agreed", "PROJ-1@anna", "uat")
-	if code == 0 || !strings.Contains(out, "PROJ-1@boris") || !strings.Contains(out, "boris") || d.stateFile("uat-run") != "" {
+	if code == 0 || !strings.Contains(out, "PROJ-1@boris") || !strings.Contains(out, "boris") || d.stateExists("uat-run") {
 		t.Fatalf("stale reviewer agreement passed: exit %d\n%s", code, out)
 	}
 }
@@ -139,7 +139,7 @@ func TestDeployReviewGuardFindsSubtaskWithoutACommit(t *testing.T) {
 	d.jira.assignees["PROJ-10"] = "anna"
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "uat")
-	if code == 0 || !strings.Contains(out, "PROJ-10") || !strings.Contains(out, "PROJ-10@anna") || d.stateFile("uat-run") != "" {
+	if code == 0 || !strings.Contains(out, "PROJ-10") || !strings.Contains(out, "PROJ-10@anna") || d.stateExists("uat-run") {
 		t.Fatalf("subtask review was missed: exit %d\n%s", code, out)
 	}
 }
@@ -153,7 +153,7 @@ func TestDeployReviewGuardFindsReviewStartedBetweenChecks(t *testing.T) {
 	d.jira.changeStatus = map[string]string{"PROJ-1": "Testing"}
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "uat")
-	if code == 0 || !strings.Contains(out, "PROJ-1@anna") || d.stateFile("uat-run") != "" {
+	if code == 0 || !strings.Contains(out, "PROJ-1@anna") || d.stateExists("uat-run") {
 		t.Fatalf("new review was not caught by second check: exit %d\n%s", code, out)
 	}
 }
@@ -172,7 +172,7 @@ func TestDeployReviewGuardUsesTheVersionOnThisTarget(t *testing.T) {
 	d.jira.assignees["PROJ-1"] = "anna"
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "uat")
-	if code != 0 || d.stateFile("uat-run") == "" {
+	if code != 0 || !d.stateExists("uat-run") {
 		t.Fatalf("UAT was blocked by TEST version: exit %d\n%s", code, out)
 	}
 }
@@ -207,7 +207,7 @@ func TestDeployReviewGuardUsesJiraFixVersionAcrossRequiresRange(t *testing.T) {
 	d.jira.assignees["PROJ-5"] = "anna"
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "uat")
-	if code == 0 || !strings.Contains(out, "PROJ-5") || !strings.Contains(out, "Product v2.23") || d.stateFile("uat-run") != "" {
+	if code == 0 || !strings.Contains(out, "PROJ-5") || !strings.Contains(out, "Product v2.23") || d.stateExists("uat-run") {
 		t.Fatalf("Jira fix version and older version item were missed: exit %d\n%s", code, out)
 	}
 }
@@ -223,7 +223,7 @@ func TestDeployReviewGuardTemplateMatchesFullJiraVersion(t *testing.T) {
 	d.jira.assignees["PROJ-2"] = "anna"
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "uat")
-	if code == 0 || !strings.Contains(out, "Product v2.23.38") || !strings.Contains(out, "PROJ-2") || !strings.Contains(out, "anna") || d.stateFile("uat-run") != "" {
+	if code == 0 || !strings.Contains(out, "Product v2.23.38") || !strings.Contains(out, "PROJ-2") || !strings.Contains(out, "anna") || d.stateExists("uat-run") {
 		t.Fatalf("version template did not guard exact Jira release: exit %d\n%s", code, out)
 	}
 }
@@ -235,7 +235,7 @@ func TestDeployReviewGuardUnknownShowsComputedVersionAndNearbyVersions(t *testin
 	})
 	d.jira.setVersions([]map[string]any{{"id": "237", "name": "Product v2.23.37", "released": false, "archived": false}}, nil)
 	out, code := d.graft("", "deploy", "uat")
-	if code == 0 || !strings.Contains(out, "unknown") || !strings.Contains(out, "Product v2.23.38") || !strings.Contains(out, "Product v2.23.37") || d.stateFile("uat-run") != "" {
+	if code == 0 || !strings.Contains(out, "unknown") || !strings.Contains(out, "Product v2.23.38") || !strings.Contains(out, "Product v2.23.37") || d.stateExists("uat-run") {
 		t.Fatalf("unknown version diagnostic: exit %d\n%s", code, out)
 	}
 }
@@ -259,7 +259,7 @@ func TestDeployReviewGuardIncludesCommitKeysWithoutFixVersions(t *testing.T) {
 	d.jira.assignees["PROJ-1"] = "anna"
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "uat")
-	if code == 0 || !strings.Contains(out, "PROJ-1@anna") || !strings.Contains(out, "PROJ-1") || d.stateFile("uat-run") != "" {
+	if code == 0 || !strings.Contains(out, "PROJ-1@anna") || !strings.Contains(out, "PROJ-1") || d.stateExists("uat-run") {
 		t.Fatalf("commit key without fixVersions was not checked: exit %d\n%s", code, out)
 	}
 }
@@ -284,7 +284,7 @@ func TestDeployReviewGuardFindsVersionTaskBesideDoneCommitKey(t *testing.T) {
 	d.jira.assignees["PROJ-2"] = "anna"
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "uat")
-	if code == 0 || !strings.Contains(out, "PROJ-2@anna") || strings.Contains(out, "PROJ-1:") || d.stateFile("uat-run") != "" {
+	if code == 0 || !strings.Contains(out, "PROJ-2@anna") || strings.Contains(out, "PROJ-1:") || d.stateExists("uat-run") {
 		t.Fatalf("version search missed review while handling a completed range key: exit %d\n%s", code, out)
 	}
 }
@@ -346,7 +346,7 @@ func TestDeployReviewGuardSearchFindsSecondPageReview(t *testing.T) {
 	d.jira.assignees["PROJ-102"] = "anna"
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "uat")
-	if code == 0 || !strings.Contains(out, "PROJ-102@anna") || d.stateFile("uat-run") != "" {
+	if code == 0 || !strings.Contains(out, "PROJ-102@anna") || d.stateExists("uat-run") {
 		t.Fatalf("review on second page was missed: exit %d\n%s", code, out)
 	}
 	d.jira.mu.Lock()
@@ -367,7 +367,7 @@ func TestDeployReviewGuardIgnoresMyselfAndUnassigned(t *testing.T) {
 			d.jira.assignees["PROJ-1"] = assignee
 			d.jira.mu.Unlock()
 			out, code := d.graft("", "deploy", "uat")
-			if code != 0 || d.stateFile("uat-run") == "" {
+			if code != 0 || !d.stateExists("uat-run") {
 				t.Fatalf("assignee %q should not block: exit %d\n%s", assignee, code, out)
 			}
 		})
@@ -444,7 +444,7 @@ func TestDeployReviewGuardSeparatesRealTargetVersionsAndCommitKeys(t *testing.T)
 	d.jira.assignees["PROJ-1"] = "anna"
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "uat")
-	if code != 0 || d.stateFile("uat-run") == "" {
+	if code != 0 || !d.stateExists("uat-run") {
 		t.Fatalf("TEST version and commit key blocked UAT version: exit %d\n%s", code, out)
 	}
 }
@@ -470,7 +470,7 @@ func TestDeployReviewGuardChecksEveryProjectKey(t *testing.T) {
 	d.jira.assignees["OTHER-1"] = "anna"
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "uat")
-	if code == 0 || !strings.Contains(out, "OTHER-1") || d.stateFile("uat-run") != "" {
+	if code == 0 || !strings.Contains(out, "OTHER-1") || d.stateExists("uat-run") {
 		t.Fatalf("second project was ignored: exit %d\n%s", code, out)
 	}
 }
@@ -482,7 +482,7 @@ func TestDeployReviewGuardDeployRefusesInQA(t *testing.T) {
 	d.jira.statuses["PROJ-1"] = "In QA"
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "uat")
-	if code == 0 || !strings.Contains(out, "In QA") || d.stateFile("uat-run") != "" {
+	if code == 0 || !strings.Contains(out, "In QA") || d.stateExists("uat-run") {
 		t.Fatalf("deploy did not refuse In QA: exit %d\n%s", code, out)
 	}
 }
@@ -500,7 +500,7 @@ func TestDeployWithoutReviewGuardAddsNoJiraReads(t *testing.T) {
 	if requests != 0 {
 		t.Fatalf("target without review_guard made %d Jira requests", requests)
 	}
-	if d.stateFile("stage-run") == "" {
+	if !d.stateExists("stage-run") {
 		t.Fatal("deploy script did not run without review_guard")
 	}
 }
