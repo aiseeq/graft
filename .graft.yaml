@@ -1,6 +1,9 @@
 schema: 1
-# The gate runs the race-free short tests of a large tool: about 2 minutes by median.
-limits: {gate: 2m}
+# The gate runs the race-free short tests of a large tool: 141 s by median, 211 s
+# at p95 with the load below 16 (18.11). The cost is spread over some 420 root
+# scenarios, no class worth 10% of the CPU (gate-over-limit: parallel tests,
+# scenarios moved to test-scenarios, fewer git runs, a CPU breakdown).
+limits: {gate: 3m}
 version:
   mode: git-tag
 # graft release refuses a tag over commits whose author or committer is not listed.
