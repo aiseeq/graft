@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -368,6 +370,42 @@ func TestUserRemoteHeavyOverflowsWhenBusy(t *testing.T) {
 	out = f.mustGraft("exec", "--heavy", "--", "go", "vet", "./...")
 	if !strings.Contains(out, "on pc") || strings.Count(callsOf(t, state), "go vet") != 2 {
 		t.Errorf("exec --heavy of go vet on a busy machine stayed here:\n%s\ncalls: %q", out, callsOf(t, state))
+	}
+}
+
+func TestUserRemotePriorityOverflowsBehindLoadQueue(t *testing.T) {
+	f, state := userRemoteRepo(t, overflowTasks)
+	lockPath := filepath.Join(state, "cache", "graft", "load.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := lock.Acquire(context.Background(), lockPath, time.Second, "ordinary waiter", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Release()
+
+	ordinary, code := f.graft("", "vet")
+	if code != 0 || !strings.Contains(ordinary, "on pc") {
+		t.Fatalf("ordinary task did not overflow behind load.lock: exit %d\n%s", code, ordinary)
+	}
+
+	budget, err := loadgate.NewBudget(t.TempDir(), 500*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prio := *f
+	prio.env = append(slices.Clone(f.env),
+		loadgate.EnvPriority+"=graft deploy prod",
+		loadgate.EnvBudget+"="+budget,
+		loadgate.EnvThen+"="+loadgate.ThenFail,
+	)
+	priority, code := prio.graft("", "vet")
+	if code != 0 || !strings.Contains(priority, "on pc") {
+		t.Fatalf("priority task did not overflow behind load.lock: exit %d\n%s", code, priority)
+	}
+	if got := strings.Count(callsOf(t, state), "go vet ./..."); got != 2 {
+		t.Fatalf("remote go vet calls = %d; want ordinary and priority tasks", got)
 	}
 }
 

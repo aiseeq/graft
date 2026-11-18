@@ -393,6 +393,24 @@ func TestPriorityCannotPassHolderOfLoadLock(t *testing.T) {
 	}
 }
 
+func TestPriorityExhaustedBudgetRefusesBehindLoadLockHolder(t *testing.T) {
+	fakeMachine(t)
+	path := filepath.Join(t.TempDir(), "load.lock")
+	holder, err := lock.Acquire(context.Background(), path, time.Second, "ordinary waiter", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Release()
+
+	p := &Priority{For: "graft deploy prod", Budget: newBudget(t, 0)}
+	m := newMachine(testLoad, io.Discard, "deploy-step", "projectA:deploy-step")
+	_, cancel, err := priorityQueueContext(context.Background(), m, p, path, "")
+	cancel()
+	if err == nil || !strings.Contains(err.Error(), "deploy.load_wait: budget exhausted") || !strings.Contains(err.Error(), "deploy-step not started") {
+		t.Fatalf("queue context with exhausted budget and held lock = %v; want immediate budget refusal", err)
+	}
+}
+
 func TestPriorityReservationConstrainsConcurrentPriorityAndOrdinary(t *testing.T) {
 	setRunnable, _, _ := fakeMachine(t)
 	setRunnable(1)
@@ -418,37 +436,35 @@ func TestPriorityReservationConstrainsConcurrentPriorityAndOrdinary(t *testing.T
 
 	path := filepath.Join(t.TempDir(), "load.lock")
 	p := &Priority{For: "deploy", Budget: newBudget(t, time.Minute)}
+	_, firstRelease, err := WaitWithSettle(context.Background(), "priority-one", "projectA:priority-one", p, testLoad, path, "", 0, 2, io.Discard)
+	if err != nil {
+		t.Fatalf("first priority admission: %v", err)
+	}
+	defer firstRelease()
 	type result struct {
 		release func() error
 		err     error
 	}
-	results := make(chan result, 3)
-	start := make(chan struct{})
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	results := make(chan result, 2)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	for _, tc := range []struct {
 		name     string
 		priority *Priority
-	}{{"priority-one", p}, {"priority-two", p}, {"ordinary", nil}} {
+	}{{"priority-two", p}, {"ordinary", nil}} {
 		go func() {
-			<-start
 			_, release, err := WaitWithSettle(ctx, tc.name, "projectA:"+tc.name, tc.priority, testLoad, path, "", 0, 2, io.Discard)
 			results <- result{release: release, err: err}
 		}()
 	}
-	close(start)
-	admitted := 0
-	for range 3 {
+	for range 2 {
 		r := <-results
 		if r.err == nil {
-			admitted++
 			if err := r.release(); err != nil {
 				t.Error(err)
 			}
+			t.Errorf("concurrent candidate admitted at LA1 7, unseen 1, with a 2-core reservation; want it to wait")
 		}
-	}
-	if admitted != 1 {
-		t.Fatalf("admitted %d of three 2-core candidates at LA1 7, unseen 1, limit 11; want only the first reservation", admitted)
 	}
 }
 
