@@ -39,7 +39,7 @@ func TestQueueDipAdmitsOneAtATime(t *testing.T) {
 		{18.5, 2}, // 18.5 + 2 + 2 reaches 22
 	} {
 		t.Run(fmt.Sprint(c.dip), func(t *testing.T) {
-			if got := dipAdmits(t, c.dip, 2); got != c.want {
+			if got := dipAdmits(t, c.dip, 2, c.want); got != c.want {
 				t.Errorf("a dip of the load average to %v let %d of the queued tasks of 2 cores in, want %d", c.dip, got, c.want)
 			}
 		})
@@ -48,14 +48,19 @@ func TestQueueDipAdmitsOneAtATime(t *testing.T) {
 
 // dipAdmits queues five heavy tasks of the given cores at load average 30 and
 // runnable 13, dips the load average and returns how many of them it let in.
-func dipAdmits(t *testing.T, dip, cores float64) int {
+func dipAdmits(t *testing.T, dip, cores float64, want int) int {
 	t.Helper()
 	setRunnable, _, _ := fakeMachine(t)
 	oldP, oldR := reservePollInterval, reserveCPUReader
 	oldW := reserveWindow
+	oldAgeNow := reserveAgeNow
 	reservePollInterval, reserveWindow = 5*time.Millisecond, 20*time.Millisecond
 	reserveCPUReader = func(int) (float64, error) { return 0, nil }
-	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldP, oldW, oldR }()
+	frozenAge := time.Now()
+	reserveAgeNow = func() time.Time { return frozenAge }
+	defer func() {
+		reservePollInterval, reserveWindow, reserveCPUReader, reserveAgeNow = oldP, oldW, oldR, oldAgeNow
+	}()
 	setRunnable(13)
 	setLoadavg(t, 30)
 	l := testLoad
@@ -89,18 +94,20 @@ func dipAdmits(t *testing.T, dip, cores float64) int {
 		t.Fatalf("%d admitted at load average 30", n)
 	}
 	setLoadavg(t, dip)
-	// The dip lasts until the forecast holds the head of the queue or the
-	// whole queue is in: as long as a few handovers of the queue lock, as the
-	// dip of 05.11 was (eight admissions in 37 seconds at load average 19 to
-	// 21.6).
-	waitUntil(10*time.Second, func() bool {
-		return count() == 5 || strings.Contains(logw.String(), "of the admitted tasks it does not show yet")
-	})
-	time.Sleep(100 * time.Millisecond)
-	got := count()
+	// Freeze reserve-age time so scheduling delays cannot age the forecast.
+	// Keep the original queue and dip open for a fixed second after want;
+	// any delayed extra admission is counted before the queue is canceled.
+	reached := waitUntil(10*time.Second, func() bool { return count() >= want })
+	if !reached {
+		t.Errorf("only %d of %d expected tasks entered during the dip\n%s", count(), want, logw.String())
+	}
+	if reached {
+		time.Sleep(time.Second)
+	}
 	setLoadavg(t, 30)
 	cancel()
 	wg.Wait()
+	got := count()
 	for _, r := range releases {
 		if err := r(); err != nil {
 			t.Error(err)

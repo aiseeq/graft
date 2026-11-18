@@ -89,6 +89,10 @@ type reserveData struct {
 var reservePollInterval = 250 * time.Millisecond
 var reserveWindow = 2 * time.Second
 var reserveCPUReader = treeCPU
+
+// reserveAgeNow is overridden by tests to hold the admitted-core forecast at
+// a fixed age; production uses the wall clock.
+var reserveAgeNow = time.Now
 var pressureMeterFactory = func(root string) machineMeter { return pressure.NewMeter(root) }
 
 func reserveEstimateChanged(old, next float64) bool {
@@ -602,7 +606,7 @@ func (m *machine) unseenShare(priority bool) func(admitted time.Time) float64 {
 			return share
 		}
 	}
-	now := m.now()
+	now := reserveAgeNow()
 	return func(admitted time.Time) float64 {
 		return math.Exp(-max(now.Sub(admitted), 0).Seconds() / loadAvgTau.Seconds())
 	}

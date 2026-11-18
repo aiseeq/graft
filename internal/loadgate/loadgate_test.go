@@ -756,6 +756,8 @@ func TestPriorityReservesUseSamples(t *testing.T) {
 func TestPrioritySamplesCountAStageOnce(t *testing.T) {
 	fakeMachine(t)
 	setRunnableLimit(t, 23)
+	oldAgeNow := reserveAgeNow
+	defer func() { reserveAgeNow = oldAgeNow }()
 	lockPath := filepath.Join(t.TempDir(), "load.lock")
 	release := admitOne(t, lockPath, 8)
 	defer release()
@@ -763,6 +765,7 @@ func TestPrioritySamplesCountAStageOnce(t *testing.T) {
 	check := func(first, second time.Duration, sampled, background float64, priority bool, want string) {
 		t.Helper()
 		later := admitted.Add(10 * time.Second)
+		reserveAgeNow = func() time.Time { return later }
 		m := newMachine(testLoad, io.Discard, "x", "projectA:x")
 		m.runnable, m.runnableLimit = 1, 23
 		m.now = func() time.Time { return later }
@@ -1773,6 +1776,9 @@ func TestReserveTracksLateCPUIncrease(t *testing.T) {
 		t.Fatal(err)
 	}
 	virtualNow := observedAt.Add(30 * time.Second)
+	oldAgeNow := reserveAgeNow
+	reserveAgeNow = func() time.Time { return virtualNow }
+	defer func() { reserveAgeNow = oldAgeNow }()
 	m := newMachine(testLoad, io.Discard, "next", "projectA:next")
 	m.now = func() time.Time { return virtualNow }
 	m.runnable, m.avg1, m.avg1Known, m.runnableLimit = 1, 3.2, true, 7
@@ -1862,8 +1868,12 @@ func TestReserveDropsMeasuredPeakAfterLoadFalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	virtualNow := observedAt.Add(31 * time.Second)
+	oldAgeNow := reserveAgeNow
+	reserveAgeNow = func() time.Time { return virtualNow }
+	defer func() { reserveAgeNow = oldAgeNow }()
 	m := newMachine(testLoad, io.Discard, "next", "projectA:next")
-	m.now = func() time.Time { return observedAt.Add(31 * time.Second) }
+	m.now = func() time.Time { return virtualNow }
 	m.runnable, m.avg1, m.avg1Known, m.runnableLimit = 1, .4, true, 11
 	b, err := m.reservesBusy(path, false)
 	if err != nil || b.why != "" {
