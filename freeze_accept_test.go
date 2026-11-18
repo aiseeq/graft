@@ -192,7 +192,7 @@ func TestFrozenTargetTakesOnlyTheReleaseBranch(t *testing.T) {
 	d.jira.labels = map[string][]string{"PROJ-9": {"hotfix"}}
 	d.jira.mu.Unlock()
 	d.git("push", "-q", "-u", "origin", "HEAD")
-	d.mustGraft("deploy", "acc")
+	d.mustGraft("deploy", "--take-back", "--reason", "hotfix from deployed release", "acc")
 	if logs := d.remoteTags("freeze-log/prod/1.2.10/"); len(logs) != 2 {
 		t.Errorf("freeze-log after the hotfix = %q, want the bypass and the hotfix", logs)
 	}
@@ -307,7 +307,7 @@ func TestFreezeEndsWhenTheBranchReachesProd(t *testing.T) {
 	d.commitFile("two.txt", "feat: PROJ-1 trunk work after the freeze")
 	d.mustGraft("deploy", "--past-freeze", "a look at the trunk", "acc")
 	d.git("switch", "-q", "release/1.2.10")
-	d.mustGraft("deploy", "--redeploy", "acc")
+	d.mustGraft("deploy", "--redeploy", "--take-back", "--reason", "return acc to the frozen release branch", "acc")
 	writeFile(t, filepath.Join(d.state, "lint-fails"), "")
 
 	out := d.mustGraft("deploy", "prod")

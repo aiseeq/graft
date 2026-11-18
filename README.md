@@ -516,7 +516,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft flags show <id>` | one event in full; `<id>` is its id or a prefix only one open event has; a closed event takes its full UUID |
 | `graft flags ack <id> --reason R` | close an open event with a reason |
 | `graft flags mute <id> --reason R [--match S] [--in subject\|body\|key] [--all-envs]` | add an exception for the event, then close it if it is open |
-| `graft deploy [--redeploy] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] [--reviewer-agreed KEY@ACCOUNT,...] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--unapproved` collects approval results without refusing the deploy, `--past-freeze` records a reason for deploying through an active freeze, `--glint-ticket` names the item that takes the glint findings of the deployed commit (`release_notes.glint`), `--reviewer-agreed` records reviewer account IDs that answered yes |
+| `graft deploy [--redeploy] [--take-back --reason TEXT] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] [--reviewer-agreed KEY@ACCOUNT,...] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--take-back --reason` permits taking back deployed commits on targets without `approved_release` and records the reason, `--unapproved` collects approval results without refusing the deploy, `--past-freeze` records a reason for deploying through an active freeze, `--glint-ticket` names the item that takes the glint findings of the deployed commit (`release_notes.glint`), `--reviewer-agreed` records reviewer account IDs that answered yes |
 | `graft deploy freeze <target> [Jira version]` | cut and push the configured freeze branch and annotated freeze tag; without a version, show the active freeze |
 | `graft deploy thaw <target> --reason REASON` | end the active freeze and remove its freeze and journal tags from every remote |
 | `graft deploy check <target>` | what `graft deploy <target>` would refuse now, read only: unpublished work, the window, `requires`, the hold, `approved_release` with the items of the commits outside it (summary, status, fix versions); exit 1 when it would refuse |
@@ -2040,7 +2040,7 @@ mechanism. Use `release_notes.jira.skip_keys` for umbrella items that collect
 work from subtasks. Remove `outside_version` when the task enters its version;
 remove the dormant entry once the feature is enabled and checked.
 
-`graft deploy [--redeploy] [--unapproved] <target> [-- args]`:
+`graft deploy [--redeploy] [--take-back --reason TEXT] [--unapproved] <target> [-- args]`:
 
 0. Check that every required key of `dotenv` and `dotenv_sets` and every
    `${KEY}` in `run` is set, and everything the `deps` tasks need, listing all
@@ -2072,6 +2072,10 @@ remove the dormant entry once the feature is enabled and checked.
    `sudo` in the target environment before the confirmation prompt: on this
    machine it may ask for its own password there. A target without
    `deployed_sha` is deployed whatever it runs.
+   Without `approved_release`, a deploy that takes back commits already
+   deployed there stops before target actions and lists up to 20 commits.
+   Use `--take-back --reason TEXT` when taking them back is intended; the
+   reason is recorded with the deployment and added to any Jira comment.
    With `approved_release` (it needs `deployed_sha` and `release_notes.jira`),
    every commit going out, merges aside, must name an item that passes:
    with `statuses`, the item is in one of them, or in the statuses configured

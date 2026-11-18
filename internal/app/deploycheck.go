@@ -135,6 +135,9 @@ func (a *App) checkDeployed(ctx context.Context, r *deployRun, sudoRefusal error
 	if r.prev == r.head {
 		a.printf("%s already runs %s, deploying it again", r.name, gitx.Short(r.head))
 	}
+	if r.target.ApprovedRelease == nil {
+		refuse(a.checkTakeBack(r, false))
+	}
 	var listRefusals func(error)
 	listRefusals = func(err error) {
 		if joined, ok := err.(interface{ Unwrap() []error }); ok {

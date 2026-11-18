@@ -4,8 +4,10 @@
 package deploy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -588,6 +590,86 @@ func WriteDeployedSHA(ctx context.Context, env *envs.Env, rec *config.DeployedSH
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("writing %s on %s: %w: %s", rec.Path, env.Name, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// TakeBackJournal keeps the append-only journal open across the deploy.
+type TakeBackJournal struct {
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout *bufio.Reader
+	path   string
+	stderr bytes.Buffer
+}
+
+// OpenTakeBackJournal creates and opens the adjacent journal for append before
+// the target is changed. The shell keeps its append descriptor open until
+// Close, so Write cannot fail because the journal path later changes.
+func OpenTakeBackJournal(ctx context.Context, env *envs.Env, rec *config.DeployedSHA) (*TakeBackJournal, error) {
+	path := rec.Path + ".journal"
+	open := "exec 3>>" + envs.Quote(path) + " || exit; printf 'GRAFT_JOURNAL_READY\\n'; while IFS= read -r line; do printf '%s\\n' \"$line\" >&3 || exit; printf 'GRAFT_JOURNAL_WRITTEN\\n' || exit; done"
+	if rec.Sudo {
+		open = "sudo sh -c " + envs.Quote(open)
+	}
+	cmd := env.Shell(ctx, open)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("opening journal response: %w", err)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("opening journal input: %w", err)
+	}
+	reader := bufio.NewReader(stdout)
+	journal := &TakeBackJournal{cmd: cmd, stdin: stdin, stdout: reader, path: path}
+	cmd.Stderr = &journal.stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting journal opener: %w", err)
+	}
+	ready, readErr := reader.ReadString('\n')
+	if readErr != nil || ready != "GRAFT_JOURNAL_READY\n" {
+		closeErr := stdin.Close()
+		waitErr := cmd.Wait()
+		if readErr == nil {
+			readErr = fmt.Errorf("unexpected journal opener response %q", ready)
+		}
+		return nil, fmt.Errorf("opening append journal: %w: %s", errors.Join(readErr, closeErr, waitErr), strings.TrimSpace(journal.stderr.String()))
+	}
+	return journal, nil
+}
+
+// Write appends one JSON deployment record through the already-open handle
+// and waits until the opener confirms it wrote the line.
+func (j *TakeBackJournal) Write(sha, reason string) error {
+	entry, err := json.Marshal(struct {
+		SHA    string `json:"sha"`
+		Reason string `json:"take_back_reason"`
+	}{SHA: sha, Reason: reason})
+	if err != nil {
+		return fmt.Errorf("encoding take-back deployment record: %w", err)
+	}
+	_, err = io.Copy(j.stdin, bytes.NewReader(append(entry, '\n')))
+	if err != nil {
+		return fmt.Errorf("writing %s: %w", j.path, err)
+	}
+	ack, err := j.stdout.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("waiting for %s write acknowledgement: %w", j.path, err)
+	}
+	if ack != "GRAFT_JOURNAL_WRITTEN\n" {
+		return fmt.Errorf("writing %s: unexpected acknowledgement %q", j.path, ack)
+	}
+	return nil
+}
+
+// Close ends the append process and reports an error from the already-open
+// journal.
+func (j *TakeBackJournal) Close() error {
+	closeErr := j.stdin.Close()
+	waitErr := j.cmd.Wait()
+	if closeErr != nil || waitErr != nil {
+		return fmt.Errorf("closing/writing %s: %w: %s", j.path, errors.Join(closeErr, waitErr), strings.TrimSpace(j.stderr.String()))
 	}
 	return nil
 }

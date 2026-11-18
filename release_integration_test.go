@@ -902,13 +902,13 @@ func TestReleaseHotfix(t *testing.T) {
 	if v := strings.TrimSpace(d.read("VERSION")); v != "1.0.1.1" {
 		t.Errorf("hotfix build VERSION %q", v)
 	}
-	if out, code := d.graft("", "deploy", "test"); code == 0 || !strings.Contains(out, "PROJ-9 without the label hotfix") {
+	if out, code := d.graft("", "deploy", "test"); code == 0 || !strings.Contains(out, "takes back 1 deployed commits") {
 		t.Errorf("an unlabelled hotfix: exit %d\n%s", code, out)
 	}
 	d.jira.mu.Lock()
 	d.jira.labels = map[string][]string{"PROJ-9": {"backend", "hotfix"}}
 	d.jira.mu.Unlock()
-	if out := d.mustGraft("deploy", "test"); !strings.Contains(out, "a hotfix passes the hold") {
+	if out := d.mustGraft("deploy", "--take-back", "--reason", "deploy hotfix", "test"); !strings.Contains(out, "a hotfix passes the hold") {
 		t.Errorf("hotfix to test:\n%s", out)
 	}
 	out := d.mustGraft("deploy", "prod")
@@ -922,7 +922,7 @@ func TestReleaseHotfix(t *testing.T) {
 	// The window: the trunk without the hotfix would take it back.
 	d.at("2026-10-22 15:30")
 	d.git("switch", "-q", trunk)
-	d.mustGraft("deploy", "test")
+	d.mustGraft("deploy", "--take-back", "--reason", "return to trunk", "test")
 	out, code := d.graft("", "deploy", "prod")
 	if code == 0 || !strings.Contains(out, "git merge --no-ff origin/hotfix/PROJ-9   # a hotfix") {
 		t.Fatalf("a release without the hotfix: exit %d\n%s", code, out)

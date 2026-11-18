@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -807,9 +808,13 @@ func readFile(t *testing.T, path string) string {
 }
 
 func (d *deployFixture) stateFile(name string) string {
-	data, err := os.ReadFile(filepath.Join(d.state, name))
-	if err != nil {
+	path := filepath.Join(d.state, name)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
 		return ""
+	}
+	if err != nil {
+		d.t.Fatalf("reading state file %s: %v", path, err)
 	}
 	return string(data)
 }
@@ -2309,14 +2314,19 @@ func TestDeployShowsWhatTheTargetRuns(t *testing.T) {
 	d.git("switch", "-q", "-c", "side", "HEAD~1")
 	d.write("c.txt", "c\n")
 	d.mustFixtureCommit("feat: side work")
-	out = d.mustGraft("deploy", "check", "test")
+	var code int
+	out, code = d.graft("", "deploy", "check", "test")
 	for _, want := range []string{
 		"test runs version " + strings.TrimSpace(d.stateFile("test-version")) + "; commit " + runs + ", at origin/" + trunk + "\n",
 		"over it brings 1 commit and takes back 1 it runs: git log ",
+		"takes back 1 deployed commits",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q:\n%s", want, out)
 		}
+	}
+	if code == 0 {
+		t.Errorf("deploy check passed despite taking back a deployed commit:\n%s", out)
 	}
 }
 

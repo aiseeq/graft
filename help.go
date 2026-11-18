@@ -49,7 +49,7 @@ var commands = []command{
 	), summary: text("review the project's event journal: status, show, ack, mute"),
 		applies: func(c *config.Config) bool { return c.Flags != nil }},
 	{name: "deploy", syntax: fixed(
-		"graft deploy [--no-cache] [--redeploy] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] [--reviewer-agreed KEY@ACCOUNT,...] <target> [-- script args]",
+		"graft deploy [--no-cache] [--redeploy] [--take-back --reason TEXT] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] [--reviewer-agreed KEY@ACCOUNT,...] <target> [-- script args]",
 		"graft deploy freeze <target> [Jira version] [--no-cache]",
 		"graft deploy thaw <target> --reason REASON [--no-cache]",
 		"graft deploy status <target> [--no-cache] [-- args]",

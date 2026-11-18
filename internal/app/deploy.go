@@ -67,7 +67,9 @@ type DeployOptions struct {
 	// Args are passed to the deploy script after its configured arguments.
 	Args []string
 	// Redeploy deploys the commit the target already runs (deployed_sha).
-	Redeploy bool
+	Redeploy       bool
+	TakeBack       bool
+	TakeBackReason string
 	// GlintTicket is the item that takes the glint findings of the deployed
 	// commit, at a release acceptance: the items move with them
 	// (release_notes.glint).
@@ -130,6 +132,9 @@ type deployRun struct {
 	freeze                         *activeFreeze
 	freezeLogKind, freezeLogReason string
 	freezeAdvisoryFailed           []string
+	takeBackReason                 string
+	takeBackActive                 bool
+	takeBackJournal                *deploy.TakeBackJournal
 	freezePreflightDeps            []string
 	// glint holds the moves for the glint findings of the deployed commit.
 	glint *glintCheck
@@ -307,7 +312,8 @@ func (a *App) deployTarget(name string) (*deployRun, error) {
 	return &deployRun{a: a, repo: repo, cfg: cfg, name: name, target: t, env: env, tasks: a.runner(repo, cfg)}, nil
 }
 
-func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
+func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) (retErr error) {
+	r.takeBackReason = o.TakeBackReason
 	if err := deploy.CheckTree(r.repo, r.cfg.Deploy); err != nil {
 		return err
 	}
@@ -343,9 +349,11 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	if err := a.checkFreezeAdvisoryPreflight(r); err != nil {
 		return err
 	}
-	if err := a.checkIntegrations(ctx, r); err != nil {
+	closeTakeBackJournal, err := a.prepareDeployTarget(ctx, r)
+	if err != nil {
 		return err
 	}
+	defer func() { retErr = errors.Join(retErr, closeTakeBackJournal()) }()
 	// One unit: the deps' lines name it, and its line holds them, the
 	// confirmation and the script. Its name has a space no task name can
 	// have.
@@ -374,6 +382,21 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) error {
 	}
 	a.printf("deployed %s to %s", gitx.Short(r.head), r.name)
 	return a.recordDeployment(ctx, r)
+}
+
+func (a *App) prepareDeployTarget(ctx context.Context, r *deployRun) (func() error, error) {
+	if err := a.checkIntegrations(ctx, r); err != nil {
+		return nil, err
+	}
+	if !r.takeBackActive {
+		return func() error { return nil }, nil
+	}
+	journal, err := deploy.OpenTakeBackJournal(ctx, r.env, r.target.DeployedSHA)
+	if err != nil {
+		return nil, fmt.Errorf("deploy %s: nothing was deployed: opening take-back journal %s: %w", r.name, r.target.DeployedSHA.Path+".journal", err)
+	}
+	r.takeBackJournal = journal
+	return journal.Close, nil
 }
 
 func (a *App) checkTargetWithReview(ctx context.Context, r *deployRun, o DeployOptions) error {
@@ -501,7 +524,73 @@ func (a *App) checkTargetRuns(ctx context.Context, r *deployRun, o DeployOptions
 	if err := a.refuseSameCommit(r, o.Redeploy); err != nil {
 		return err
 	}
+	if r.target.ApprovedRelease == nil {
+		if err := a.checkTakeBack(r, o.TakeBack); err != nil {
+			return err
+		}
+	} else if o.TakeBack {
+		a.printf("nothing is taken back; --take-back has no effect")
+	}
 	return a.checkReleaseFlow(ctx, r, o.Unapproved)
+}
+
+func (a *App) checkTakeBack(r *deployRun, allow bool) error {
+	if r.prev == "" || r.prev == r.head {
+		if allow {
+			a.printf("nothing is taken back; --take-back has no effect")
+		}
+		return nil
+	}
+	shallow, err := r.repo.Git("rev-parse", "--is-shallow-repository")
+	if err != nil {
+		return err
+	}
+	known, err := r.repo.RevExists(r.prev)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(shallow) == "true" {
+		a.allowUncomparedTakeBack(r, allow, "shallow clone")
+		return nil
+	}
+	if !known {
+		a.allowUncomparedTakeBack(r, allow, gitx.Short(r.prev)+" not in the local repository")
+		return nil
+	}
+	out, err := r.repo.Git("rev-list", "--count", r.head+".."+r.prev)
+	if err != nil {
+		return err
+	}
+	takes, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil || takes == 0 {
+		if err == nil && allow {
+			a.printf("nothing is taken back; --take-back has no effect")
+		}
+		return err
+	}
+	if allow {
+		r.takeBackActive = true
+		a.printf("taking back %s: %s", plural(takes, "commit"), r.takeBackReason)
+		return nil
+	}
+	list, err := r.repo.Git("log", "--oneline", r.head+".."+r.prev)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(strings.TrimSpace(list), "\n")
+	if len(lines) > 20 {
+		lines = append(lines[:20], fmt.Sprintf("… and %d more", takes-20))
+	}
+	return fmt.Errorf("deploy %s: nothing was deployed: takes back %d deployed commits:\n  %s\nmerge the deployed commits into this one (a rebase or cherry-pick leaves their SHAs out and is refused again), or pass --take-back --reason TEXT", r.name, takes, strings.Join(lines, "\n  "))
+}
+
+func (a *App) allowUncomparedTakeBack(r *deployRun, allow bool, comparison string) {
+	if !allow {
+		return
+	}
+	r.takeBackActive = true
+	r.takeBackReason += " (comparison unavailable: " + comparison + ")"
+	a.printf("take-back reason recorded: %s", r.takeBackReason)
 }
 
 // showDeployed prints what the target runs and what the deploy changes
@@ -515,6 +604,14 @@ func (a *App) showDeployed(ctx context.Context, r *deployRun) error {
 	}
 	a.printf("%s runs version %s; commit %s", r.name, s.version, s.commit)
 	if r.prev == "" || r.prev == r.head {
+		return nil
+	}
+	shallow, err := r.repo.Git("rev-parse", "--is-shallow-repository")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(shallow) == "true" {
+		a.printf("shallow clone: cannot tell whether this deploy takes commits back; git fetch --unshallow")
 		return nil
 	}
 	known, err := r.repo.RevExists(r.prev)
@@ -710,6 +807,12 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 		shaRecorded = false
 		a.warn("the deployed commit is not recorded: %v", err)
 	}
+	if r.takeBackActive && r.takeBackJournal != nil {
+		if err := r.takeBackJournal.Write(r.head, r.takeBackReason); err != nil {
+			a.warn("the take-back reason is not recorded: %v", err)
+			journalErr = errors.Join(journalErr, err)
+		}
+	}
 	withheldErr := errors.Join(a.recordWithheld(ctx, r), a.mergeIntoTrunk(r))
 	a.hotfixDone(r)
 	versionsErr := a.recordVersions(ctx, r)
@@ -821,7 +924,17 @@ func noteText(r *deployRun) (string, error) {
 		}
 		values["release"] = strings.Join(names, ", ")
 	}
-	return envs.Fill(comment, values, func(s string) string { return s })
+	comment, err := envs.Fill(comment, values, func(s string) string { return s })
+	if err != nil {
+		return "", err
+	}
+	if r.takeBackActive {
+		if comment != "" {
+			comment += "\n\n"
+		}
+		comment += "Take-back reason: " + r.takeBackReason
+	}
+	return comment, nil
 }
 
 // notesUnset lists the keys of the items a deploy could not finish.

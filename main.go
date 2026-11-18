@@ -1338,6 +1338,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	lines := fs.Int("lines", 200, "logs: how many lines")
 	grep := fs.String("grep", "", "logs: keep lines matching this regexp")
 	redeploy := fs.Bool("redeploy", false, "deploy the commit the target already runs")
+	takeBack := fs.Bool("take-back", false, "allow taking back deployed commits with --reason")
 	unapproved := fs.Bool("unapproved", false, "collect approved_release results without refusing the deploy")
 	pastFreeze := fs.String("past-freeze", "", "deploy through an acceptance freeze with a reason")
 	reason := fs.String("reason", "", "thaw: why the freeze ended")
@@ -1352,7 +1353,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	return runDeployCommand(ctx, a, deployCommandArgs{
 		pos: pos, scriptArgs: scriptArgs,
 		lines: *lines, grep: *grep, redeploy: *redeploy, unapproved: *unapproved,
-		pastFreeze: *pastFreeze, reason: *reason, apply: *apply, glintTicket: *glintTicket, reviewerAgreed: *reviewerAgreed,
+		pastFreeze: *pastFreeze, reason: *reason, takeBack: *takeBack, apply: *apply, glintTicket: *glintTicket, reviewerAgreed: *reviewerAgreed,
 	})
 }
 
@@ -1361,6 +1362,7 @@ type deployCommandArgs struct {
 	lines                                           int
 	grep                                            string
 	redeploy, unapproved, apply                     bool
+	takeBack                                        bool
 	pastFreeze, reason, glintTicket, reviewerAgreed string
 }
 
@@ -1373,7 +1375,10 @@ func runDeployCommand(ctx context.Context, a *app.App, args deployCommandArgs) e
 	if deployCommandFlagsInvalid(pos[0], args) {
 		return usage
 	}
-	if args.reason != "" && pos[0] != "thaw" {
+	if args.reason != "" && pos[0] != "thaw" && !args.takeBack {
+		return usage
+	}
+	if args.takeBack && (pos[0] == "thaw" || pos[0] == "freeze" || isDeploySubcommand(pos[0])) {
 		return usage
 	}
 	if run := trackerDeployCmd(ctx, a, args); run != nil {
@@ -1393,7 +1398,7 @@ func runDeployCommand(ctx context.Context, a *app.App, args deployCommandArgs) e
 
 func deployCommandFlagsInvalid(sub string, args deployCommandArgs) bool {
 	logFlags := args.lines != 200 || args.grep != ""
-	return deployFlagsMisplaced(sub, args.scriptArgs != nil, logFlags, args.redeploy || args.unapproved || args.pastFreeze != "" || args.reviewerAgreed != "") || args.apply && sub != "sweep" ||
+	return deployFlagsMisplaced(sub, args.scriptArgs != nil, logFlags, args.redeploy || args.unapproved || args.pastFreeze != "" || args.reviewerAgreed != "" || args.takeBack) || args.apply && sub != "sweep" ||
 		args.glintTicket != "" && isDeploySubcommand(sub) && sub != "handover"
 }
 
@@ -1406,7 +1411,13 @@ func runDeployTarget(ctx context.Context, a *app.App, args deployCommandArgs, us
 		}
 		return a.DeployLogs(ctx, pos[1], args.lines, args.grep, scriptArgs)
 	case !isDeploySubcommand(pos[0]) && len(pos) == 1:
-		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs, Redeploy: args.redeploy, Unapproved: args.unapproved, GlintTicket: args.glintTicket, PastFreeze: args.pastFreeze, ReviewerAgreed: args.reviewerAgreed})
+		if args.takeBack && strings.TrimSpace(args.reason) == "" {
+			return errors.New("--take-back requires --reason TEXT")
+		}
+		if args.reason != "" && !args.takeBack {
+			return errors.New("--reason requires --take-back")
+		}
+		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs, Redeploy: args.redeploy, TakeBack: args.takeBack, TakeBackReason: args.reason, Unapproved: args.unapproved, GlintTicket: args.glintTicket, PastFreeze: args.pastFreeze, ReviewerAgreed: args.reviewerAgreed})
 	default:
 		return usage
 	}
