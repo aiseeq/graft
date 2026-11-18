@@ -166,7 +166,18 @@ four cores. The load average, IO, and swap checks still apply. The 1-minute load
 average shows a task's load only as it grows into it, c·(1 − e^(−t/60s)) for c
 cores t after its start: until the admitted task ends, the next admission adds
 the part it does not show yet, c·e^(−t/60s), to the load average it measures,
-so a queue that stood while the load average was over the threshold lets in,
+and adds the expected cores of the task being considered to both the load
+average forecast and the runnable count with live reserves. A candidate
+whose estimate reaches the limit could never fit, so it is counted as 0 and
+starts by the plain rule, one at a time: the next candidate sees its reserve. A
+new task starts only while both sums are strictly below the limit. If there are no live
+reservations or unseen cores from graft-admitted tasks, the queue uses the
+prior escape rule: measured 1-minute load and runnable count must each be below
+the limit, so one oversized task can start on an otherwise unreserved machine.
+Each `wait` and `admitted` line in `admissions.jsonl` records measured values
+among `la1`, `runnable`, `limit`, `unseen`, `live_reserve`, `candidate`,
+`candidate_capped` and `exit_hatch`; a value not measured on that path is absent.
+A queue that stood while the load average was over the threshold lets in,
 when it dips below, what the dip has room for and not every waiting task
 (without `/proc/loadavg` there is no such part to add; without `/proc/stat`
 and `runnable` in `pressure.yaml` there is no threshold for the reservations

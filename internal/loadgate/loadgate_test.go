@@ -177,7 +177,7 @@ func TestReserveSumHoldsTheHead(t *testing.T) {
 	}
 	_ = release()
 	setRunnable(8)
-	rel, err = lock.Reserve(filepath.Dir(path), filepath.Base(path)+".*.reserve", []byte(`{"cores":13,"admitted":"x","task":"first"}`))
+	rel, err = lock.Reserve(filepath.Dir(path), filepath.Base(path)+".*.reserve", []byte(`{"cores":9,"admitted":"x","task":"first"}`))
 	if err != nil {
 		t.Fatal(err)
 	}

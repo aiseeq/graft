@@ -320,14 +320,16 @@ func waitQueued(ctx context.Context, m *machine, p *Priority, kind string, l use
 		}
 		return m.admission(), released, err
 	}
-	if err := m.admitWithReserves(ctx, nil, lockPath); err != nil {
+	cores, err = expectedReserveCores(kind, cores)
+	if err != nil {
 		if settleLock != nil {
 			err = errors.Join(err, settleLock.Release())
 		}
 		return m.behind(behind), released, errors.Join(err, lk.Release())
 	}
-	cores, err = expectedReserveCores(kind, cores)
-	if err != nil {
+	m.candidate = cores
+	m.candidateKnown = true
+	if err := m.admitWithReserves(ctx, nil, lockPath); err != nil {
 		if settleLock != nil {
 			err = errors.Join(err, settleLock.Release())
 		}
@@ -516,35 +518,97 @@ func (m *machine) loadValue(priority bool) float64 {
 // /proc/stat to count the threads from, as on Windows, and no runnable in
 // pressure.yaml, a measure busy skips and tells) there is nothing to reach.
 func (m *machine) reservesBusy(lockPath string, priority bool) (busyness, error) {
+	m.exitHatch = false
 	if m.runnableLimit <= 0 {
 		return busyness{}, nil
 	}
-	if task, retryAt, pending, err := firstUnmeasuredAdmission(lockPath, time.Now(), reserveWindow+reservePollInterval); err != nil {
+	sum, unseen, task, retryAt, err := reserveCounts(lockPath, m, priority)
+	if err != nil {
 		return busyness{}, err
-	} else if pending {
+	}
+	candidate := m.candidate
+	candidateCapped := candidate
+	if !priority {
+		candidateCapped = capCandidate(candidate, m.runnableLimit)
+	}
+	m.decision.Unseen, m.decision.LiveReserve = new(unseen), new(sum)
+	m.decision.CandidateCapped = new(candidateCapped)
+	if task != "" {
 		return busyness{why: WhyReserve, text: fmt.Sprintf("waiting for the first CPU measure of %s", task), retryAt: retryAt}, nil
+	}
+	if unseen == 0 && sum == 0 {
+		return m.exitHatchBusy(priority), nil
+	}
+	return m.reserveForecastBusy(priority, sum, unseen, candidateCapped), nil
+}
+
+func reserveCounts(lockPath string, m *machine, priority bool) (float64, float64, string, time.Time, error) {
+	if priority {
+		if task, retryAt, pending, err := firstUnmeasuredAdmission(lockPath, time.Now(), reserveWindow+reservePollInterval); err != nil {
+			return 0, 0, "", time.Time{}, err
+		} else if pending {
+			return 0, 0, task, retryAt, nil
+		}
 	}
 	sum, err := liveReserveCores(lockPath)
 	if err != nil {
-		return busyness{}, err
+		return 0, 0, "", time.Time{}, err
 	}
 	unseen, err := unseenAdmittedCores(lockPath, m.unseenShare(priority))
 	if err != nil {
-		return busyness{}, err
+		return 0, 0, "", time.Time{}, err
 	}
-	switch {
-	case float64(m.runnable)+sum >= m.runnableLimit:
-		return busyness{why: WhyReserve, text: fmt.Sprintf("runnable %.0f plus reserves %.1f reaches %.0f", m.runnable, sum, m.runnableLimit)}, nil
-	case m.avg1Known && m.loadValue(priority)+unseen >= m.runnableLimit:
-		load := m.avg1
-		text := fmt.Sprintf("load average 1m %.2f plus %.1f of the admitted tasks it does not show yet reaches %.0f", load, unseen, m.runnableLimit)
-		if a, b, ok := m.samples.lastTwo(); priority && ok {
-			text = fmt.Sprintf("kernel load samples %.1f, %.1f plus %.1f of the admitted tasks it does not show yet reach %.0f", a, b, unseen, m.runnableLimit)
+	if !priority {
+		task, retryAt, pending, err := firstUnmeasuredAdmission(lockPath, time.Now(), reserveWindow+reservePollInterval)
+		if err != nil {
+			return 0, 0, "", time.Time{}, err
 		}
-		return busyness{why: WhyReserve, text: text}, nil
+		if pending {
+			return sum, unseen, task, retryAt, nil
+		}
 	}
-	return busyness{}, nil
+	return sum, unseen, "", time.Time{}, nil
 }
+
+func (m *machine) exitHatchBusy(priority bool) busyness {
+	m.exitHatch = true
+	m.decision.CandidateCapped = new(float64(0))
+	if float64(m.runnable) >= m.runnableLimit {
+		return busyness{why: WhyReserve, text: fmt.Sprintf("runnable %.0f is at or above %.0f", m.runnable, m.runnableLimit)}
+	}
+	if m.avg1Known && m.loadValue(priority) >= m.runnableLimit {
+		return busyness{why: WhyReserve, text: fmt.Sprintf("load average 1m %.2f is at or above %.0f", m.avg1, m.runnableLimit)}
+	}
+	return busyness{}
+}
+
+func (m *machine) reserveForecastBusy(priority bool, sum, unseen, candidate float64) busyness {
+	if float64(m.runnable)+sum+candidate >= m.runnableLimit {
+		return busyness{why: WhyReserve, text: fmt.Sprintf("runnable %.0f plus %.1f of the live reserves plus %.1f of this task reaches %.0f", m.runnable, sum, candidate, m.runnableLimit)}
+	}
+	if !m.avg1Known || m.loadValue(priority)+unseen+candidate < m.runnableLimit {
+		return busyness{}
+	}
+	text := fmt.Sprintf("load average 1m %.1f plus %.1f of the admitted tasks plus %.1f of this task reaches %.0f", m.avg1, unseen, candidate, m.runnableLimit)
+	if a, b, ok := m.samples.lastTwo(); priority && ok {
+		text = fmt.Sprintf("kernel load samples %.1f, %.1f plus %.1f of the admitted tasks plus %.1f of this task reach %.0f", a, b, unseen, candidate, m.runnableLimit)
+	}
+	return busyness{why: WhyReserve, text: text}
+}
+
+// capCandidate drops an estimate that could never fit under the limit: such a
+// task starts by the plain rule (load and live reserves below the limit), one
+// at a time, since the next candidate sees its reserve. Smaller estimates count
+// in full.
+func capCandidate(candidate, limit float64) float64 {
+	if limit > 0 && candidate >= limit {
+		return 0
+	}
+	return candidate
+}
+
+//go:fix inline
+func floatField(v float64) *float64 { return new(v) }
 
 // firstUnmeasuredAdmission keeps the queue closed briefly after an admission,
 // until its first CPU window should have been sampled. After that grace period
@@ -688,11 +752,14 @@ func liveReserveCores(lockPath string) (float64, error) {
 }
 
 func reservePriority(ctx context.Context, m *machine, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath string, cores float64, log io.Writer) (Admission, func() error, error) {
-	if err := m.admitWithReserves(ctx, p, lockPath); err != nil {
+	var err error
+	cores, err = expectedReserveCores(kind, cores)
+	if err != nil {
 		return m.admission(), released, err
 	}
-	cores, err := expectedReserveCores(kind, cores)
-	if err != nil {
+	m.candidate = cores
+	m.candidateKnown = true
+	if err := m.admitWithReserves(ctx, p, lockPath); err != nil {
 		return m.admission(), released, err
 	}
 	rel, since, end, stoppedAt, err := startAdmission(lockPath, name, cores, l.Settle, log)
@@ -1151,7 +1218,11 @@ type machine struct {
 	// when akit's half mode caps the configured runnable limit.
 	ignoreCPUPressure bool
 	// waits is how long admit waited, by why.
-	waits Waits
+	waits          Waits
+	candidate      float64
+	candidateKnown bool
+	decision       admissionDecision
+	exitHatch      bool
 }
 
 func newMachine(l userconfig.MachineLoad, log io.Writer, name, kind string) *machine {
@@ -1259,6 +1330,11 @@ var measures = map[string]struct{ why, setting string }{
 // the last call. A measure the system lacks is
 // skipped and told once.
 func (m *machine) busy(ctx context.Context, fresh, priority bool) (busyness, error) {
+	m.decision = admissionDecision{}
+	m.exitHatch = false
+	if m.candidateKnown {
+		m.decision.Candidate = new(m.candidate)
+	}
 	if m.limitsErr != nil {
 		return busyness{}, fmt.Errorf("reading pressure limits: %w", m.limitsErr)
 	}
@@ -1290,14 +1366,7 @@ func (m *machine) busy(ctx context.Context, fresh, priority bool) (busyness, err
 	for _, none := range v.Skipped {
 		m.skip(none, v.Load.DiskFault, noPSI)
 	}
-	m.runnable = float64(v.Load.Runnable)
-	m.avg1, m.avg1Known = v.Load.Avg1, !slices.Contains(v.Skipped, pressure.ErrNoLoadAvg)
-	// The limit the reserves and the admitted tasks the load does not show
-	// yet are counted against: the rule's own, half the threads in half mode.
-	m.runnableLimit = m.limits.RunnableLimit(v.Load)
-	if v.Measure == pressure.CPU {
-		m.runnableLimit = v.Limit
-	}
+	m.recordLoadDecision(v)
 	var sampleMean float64
 	if priority {
 		if a, b, ok := m.samples.lastTwo(); ok {
@@ -1326,6 +1395,30 @@ func (m *machine) busy(ctx context.Context, fresh, priority bool) (busyness, err
 		}
 	}
 	return b, nil
+}
+
+func (m *machine) recordLoadDecision(v pressure.Verdict) {
+	m.runnable = float64(v.Load.Runnable)
+	m.avg1, m.avg1Known = v.Load.Avg1, !slices.Contains(v.Skipped, pressure.ErrNoLoadAvg)
+	// The limit the reserves and the admitted tasks the load does not show
+	// yet are counted against: the rule's own, half the threads in half mode.
+	m.runnableLimit = m.limits.RunnableLimit(v.Load)
+	if v.Measure == pressure.CPU {
+		m.runnableLimit = v.Limit
+	}
+	m.decision = admissionDecision{}
+	if !slices.Contains(v.Skipped, pressure.ErrNoLoadAvg) {
+		m.decision.LA1 = new(v.Load.Avg1)
+	}
+	if !slices.Contains(v.Skipped, pressure.ErrNoRunnable) {
+		m.decision.Runnable = new(float64(v.Load.Runnable))
+	}
+	if m.runnableLimit > 0 {
+		m.decision.Limit = new(m.runnableLimit)
+	}
+	if m.candidateKnown {
+		m.decision.Candidate = new(m.candidate)
+	}
 }
 
 // skip says the first time that the system lacks a measure. Without the disk

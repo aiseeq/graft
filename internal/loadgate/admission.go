@@ -14,19 +14,31 @@ import (
 // informed it, and why the disk state source gave no reading when it gave
 // none. A decision taken before the first measure has no dirty fields.
 type admissionRecord struct {
-	Time         time.Time          `json:"time"`
-	Run          string             `json:"run"`
-	Kind         string             `json:"kind"`
-	Verdict      string             `json:"verdict"`
-	Measure      string             `json:"measure"`
-	Why          string             `json:"why"`
-	WaitedS      float64            `json:"waited_s"`
-	Waits        map[string]float64 `json:"waits,omitempty"`
-	Behind       string             `json:"behind,omitempty"`
-	DirtyMB      *float64           `json:"dirty_mb,omitempty"`
-	DirtyLimitMB *float64           `json:"dirty_limit_mb,omitempty"`
-	DiskFault    string             `json:"disk_fault,omitempty"`
-	Priority     bool               `json:"priority"`
+	Time            time.Time          `json:"time"`
+	Run             string             `json:"run"`
+	Kind            string             `json:"kind"`
+	Verdict         string             `json:"verdict"`
+	Measure         string             `json:"measure"`
+	Why             string             `json:"why"`
+	WaitedS         float64            `json:"waited_s"`
+	Waits           map[string]float64 `json:"waits,omitempty"`
+	Behind          string             `json:"behind,omitempty"`
+	DirtyMB         *float64           `json:"dirty_mb,omitempty"`
+	DirtyLimitMB    *float64           `json:"dirty_limit_mb,omitempty"`
+	DiskFault       string             `json:"disk_fault,omitempty"`
+	Priority        bool               `json:"priority"`
+	LA1             *float64           `json:"la1,omitempty"`
+	Runnable        *float64           `json:"runnable,omitempty"`
+	Limit           *float64           `json:"limit,omitempty"`
+	Unseen          *float64           `json:"unseen,omitempty"`
+	LiveReserve     *float64           `json:"live_reserve,omitempty"`
+	Candidate       *float64           `json:"candidate,omitempty"`
+	CandidateCapped *float64           `json:"candidate_capped,omitempty"`
+	ExitHatch       bool               `json:"exit_hatch"`
+}
+
+type admissionDecision struct {
+	LA1, Runnable, Limit, Unseen, LiveReserve, Candidate, CandidateCapped *float64
 }
 
 var admissionWriteWarning atomic.Bool
@@ -49,7 +61,10 @@ func (m *machine) appendAdmission(rec admissionRecord) {
 // start of the admission, the queue for load.lock included, for every verdict.
 func (m *machine) admissionRecord(priority bool) admissionRecord {
 	rec := admissionRecord{Time: time.Now(), Run: os.Getenv(stats.EnvRun), Kind: m.kind,
-		WaitedS: max(0, time.Since(m.admissionStart).Seconds()), Priority: priority}
+		WaitedS: max(0, time.Since(m.admissionStart).Seconds()), Priority: priority,
+		LA1: m.decision.LA1, Runnable: m.decision.Runnable, Limit: m.decision.Limit,
+		Unseen: m.decision.Unseen, LiveReserve: m.decision.LiveReserve,
+		Candidate: m.decision.Candidate, CandidateCapped: m.decision.CandidateCapped, ExitHatch: m.exitHatch}
 	if !m.haveView {
 		return rec
 	}

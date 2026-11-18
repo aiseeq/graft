@@ -36,7 +36,7 @@ func TestQueueDipAdmitsOneAtATime(t *testing.T) {
 		want int
 	}{
 		{21, 1},   // 21 + 2 reaches 22
-		{18.5, 2}, // 18.5 + 2 + 2 reaches 22
+		{18.5, 1}, // 18.5 + 2 unseen + 2 candidate reaches 22.5
 	} {
 		t.Run(fmt.Sprint(c.dip), func(t *testing.T) {
 			if got := dipAdmits(t, c.dip, 2, c.want); got != c.want {
