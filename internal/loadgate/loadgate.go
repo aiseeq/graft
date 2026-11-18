@@ -990,6 +990,19 @@ func BusyNowWithReserves(ctx context.Context, name, kind string, l userconfig.Ma
 	return b.why != "", err
 }
 
+// LoadQueueWhy reports the machine or live-reservation reason the load queue
+// would wait for now, without checking whether the queue lock itself is held.
+// It makes one fresh machine measurement, as BusyNowWithReserves does.
+func LoadQueueWhy(ctx context.Context, name, kind string, l userconfig.MachineLoad, lockPath string, log io.Writer) (string, error) {
+	m := newMachine(l, log, name, kind)
+	b, err := m.busy(ctx, true, false)
+	if err != nil || b.why != "" {
+		return b.text, err
+	}
+	b, err = m.reservesBusy(lockPath, false)
+	return b.text, err
+}
+
 // BusyChecker keeps the pressure meter across readings, so repeated checks
 // measure since the previous reading without waiting for another swap window.
 type BusyChecker struct{ machine *machine }

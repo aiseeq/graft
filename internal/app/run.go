@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/gomods"
+	"github.com/aiseeq/graft/v2/internal/loadgate"
 	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/services"
 	"github.com/aiseeq/graft/v2/internal/tools"
@@ -166,8 +168,9 @@ func (a *App) Locks() error {
 	if err != nil {
 		return fmt.Errorf("locating the cache for the load queue: %w", err)
 	}
+	loadLockPath := filepath.Join(cache, "graft", "load.lock")
 	paths = append(paths,
-		filepath.Join(cache, "graft", "load.lock"),
+		loadLockPath,
 		filepath.Join(cache, "graft", "load.settle.lock"),
 	)
 	// A worktree's own commit lock (lock: {scope: worktree}); in the main
@@ -197,6 +200,21 @@ func (a *App) Locks() error {
 		}
 		for _, h := range holders {
 			a.printf("lock %s held by %s", strings.TrimSuffix(filepath.Base(p), ".lock"), h)
+			if p == loadLockPath {
+				load, err := userconfig.LoadSettings()
+				if err != nil {
+					a.printf("the load queue: cannot measure the machine: %v", err)
+				} else {
+					why, err := loadgate.LoadQueueWhy(context.Background(), "graft locks", "graft locks", load, loadLockPath, io.Discard)
+					if err != nil {
+						a.printf("the load queue: cannot measure the machine: %v", err)
+					} else if why == "" {
+						a.printf("the machine has room: the head is starting or settling")
+					} else {
+						a.printf("the load queue waits: %s", why)
+					}
+				}
+			}
 			held++
 		}
 	}

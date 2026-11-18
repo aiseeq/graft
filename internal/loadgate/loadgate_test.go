@@ -1096,6 +1096,16 @@ func TestQuietModeOverHoldsNoTask(t *testing.T) {
 	}
 }
 
+func TestLoadQueueWhyReportsRoom(t *testing.T) {
+	fakeMachine(t)
+	setQuiet(t, time.Now().Add(-time.Minute))
+	why, err := LoadQueueWhy(context.Background(), "locks", "projectA:locks", testLoad,
+		filepath.Join(t.TempDir(), "load.lock"), io.Discard)
+	if err != nil || why != "" {
+		t.Fatalf("load queue reason = %q, %v; want room", why, err)
+	}
+}
+
 // TestBusyDiskAndSwapHoldTasks: IO pressure, write-out or swapping above its limit, or
 // the quiet mode, holds a task as the load does, and it says why.
 func TestBusyDiskAndSwapHoldTasks(t *testing.T) {

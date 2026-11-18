@@ -526,7 +526,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft exec [--heavy [--local] [--test-db] [--env <name>]... [--settle <duration>] [--cores <n>]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local`; `--test-db` gives it the configured test database DSN and keeps it on this machine; the host gets no variable of the caller's but the go command's own unless `--env <name>` names it; `--settle` holds a separate FIFO lock for this long, waited on only by another `exec --settle`; `--cores` sets the live reservation instead of using history |
 | `graft reap -- <command> [args]` | run a command as the reaper of what it leaves behind (Linux): its orphans become graft's children, not the session manager's, and those left in its session end with it, as for the local commands of tasks and `graft exec` (see Install) |
 | `graft status` | services, the test database, held locks |
-| `graft locks` | who holds graft's locks |
+| `graft locks` | who holds graft's locks; for a held `load.lock`, why the load queue waits or whether the machine has room |
 | `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |
 | `graft worktree add [--trunk <ref>] <branch> [<base>]` | a worktree under the user's cache, go.work's neighbours linked (see Worktrees) |
 | `graft worktree archive [--trunk <ref>] [--name <slug>] --reason <text> <branch>` / `graft worktree archive --list [<RE>]` | tag a rejected branch with its reason, push the tag, then remove its local worktree and branch; list archived reasons |
