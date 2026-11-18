@@ -574,6 +574,9 @@ func (a *App) printCutoffGroup(r *deployRun, c cutoff, migrations cutoffMigratio
 		fmt.Fprintln(a.Stdout, "  # A migration conflict below; keeping the whole task instead is weighed above.")
 	}
 	for _, failure := range group.failures {
+		for _, warning := range migrations.reapplyByCommit[failure.commit.sha] {
+			fmt.Fprintf(a.Stdout, "  # %s\n", warning)
+		}
 		for _, path := range migrations.staysByCommit[failure.commit.sha] {
 			if printedStays[path] {
 				continue
@@ -727,6 +730,7 @@ type cutoffMigrationPlan struct {
 	keep            map[string][]cutoffKeepOther
 	keepUnavailable map[string]string
 	staysByCommit   map[string][]string
+	reapplyByCommit map[string][]string
 	emptyByCommit   map[string]bool
 	keepRevertFails map[string][]cutoffKeepOther
 	keepHighest     map[string]uint64
@@ -737,7 +741,7 @@ type cutoffMigrationPlan struct {
 type migrationTree map[uint64]map[string]string
 
 func cutoffMigrationConflicts(repo *gitx.Repo, cfg *config.Config, candidate string, failures []gateFailure) (cutoffMigrationPlan, error) {
-	plan := cutoffMigrationPlan{conflicts: map[string][]cutoffMigration{}, keep: map[string][]cutoffKeepOther{}, keepUnavailable: map[string]string{}, staysByCommit: map[string][]string{}, emptyByCommit: map[string]bool{}, keepRevertFails: map[string][]cutoffKeepOther{}, keepHighest: map[string]uint64{}, keepEmpty: map[string]map[string]bool{}}
+	plan := cutoffMigrationPlan{conflicts: map[string][]cutoffMigration{}, keep: map[string][]cutoffKeepOther{}, keepUnavailable: map[string]string{}, staysByCommit: map[string][]string{}, reapplyByCommit: map[string][]string{}, emptyByCommit: map[string]bool{}, keepRevertFails: map[string][]cutoffKeepOther{}, keepHighest: map[string]uint64{}, keepEmpty: map[string]map[string]bool{}}
 	if cfg.TestDB == nil || cfg.TestDB.Migrations == "" || len(failures) == 0 {
 		return plan, nil
 	}
@@ -767,6 +771,17 @@ func cutoffMigrationConflicts(repo *gitx.Repo, cfg *config.Config, candidate str
 	highest := cutoffHighest(cutoffWithoutPaths(remaining, unapplied))
 	plan.highest = highest
 	plan.staysByCommit = cutoffStaysByCommit(ordered, paths, excluded, highest)
+	itemBySHA := map[string]string{}
+	for _, g := range groups {
+		for _, f := range g.failures {
+			itemBySHA[f.commit.sha] = g.what
+		}
+	}
+	plan.reapplyByCommit, err = cutoffRenameReapplications(repo, ordered, target, remaining, itemBySHA, spec, dir)
+	if err != nil {
+		plan.unavailable = err.Error()
+		return plan, nil
+	}
 	conflicts, emptyByCommit, err := cutoffBuildConflicts(repo, cfg, ordered, paths, excluded, unapplied, highest)
 	// The commits checked before a git error keep their empty-patch answer.
 	plan.emptyByCommit = emptyByCommit
@@ -775,14 +790,54 @@ func cutoffMigrationConflicts(repo *gitx.Repo, cfg *config.Config, candidate str
 		return plan, nil
 	}
 	plan.conflicts = conflicts
-	itemBySHA := map[string]string{}
-	for _, g := range groups {
-		for _, f := range g.failures {
-			itemBySHA[f.commit.sha] = g.what
-		}
-	}
 	cutoffKeepPlans(repo, cfg, candidate, dir, groups, ordered, target, paths, itemBySHA, &plan)
 	return plan, nil
+}
+
+// cutoffRenameReapplications warns when reverting a failed rename restores a
+// migration path that is still present in the release tree under its old number.
+func cutoffRenameReapplications(repo *gitx.Repo, failures []gateFailure, target, remaining migrationTree, itemBySHA map[string]string, spec, dir string) (map[string][]string, error) {
+	warnings := map[string][]string{}
+	for _, failure := range failures {
+		args := []string{"diff", "--name-status", "-z", "-M", "--ignore-submodules=none", "--no-color", "--no-ext-diff", "--no-textconv"}
+		args = append(args, failure.commit.sha+"^", failure.commit.sha)
+		if spec == "" {
+			args = append(args, "--", ".")
+		} else {
+			args = append(args, "--", spec)
+		}
+		out, err := repo.Git(args...)
+		if err != nil {
+			return nil, err
+		}
+		parts := strings.Split(out, "\x00")
+		for i := 0; i+2 < len(parts); {
+			status := parts[i]
+			i++
+			if strings.HasPrefix(status, "R") {
+				oldPath, newPath := parts[i], parts[i+1]
+				i += 2
+				if !isTopLevelMigration(oldPath, dir) || !isTopLevelMigration(newPath, dir) {
+					continue
+				}
+				oldN, oldOK := migrationNumber(filepath.Base(filepath.FromSlash(oldPath)))
+				newN, newOK := migrationNumber(filepath.Base(filepath.FromSlash(newPath)))
+				if !oldOK || !newOK || oldN == newN || target[newN][newPath] == "" || remaining[oldN][oldPath] == "" {
+					continue
+				}
+				task := itemBySHA[failure.commit.sha]
+				if task == "" {
+					task = gitx.Short(failure.commit.sha)
+				}
+				warnings[failure.commit.sha] = append(warnings[failure.commit.sha], fmt.Sprintf("%s returns in the release, trunk carries it as %s (%s): prod would apply it twice — release the task with it or rename it back", oldPath, newPath, task))
+				continue
+			}
+			if status == "A" || status == "D" || status == "M" || status == "T" {
+				i++
+			}
+		}
+	}
+	return warnings, nil
 }
 
 // cutoffStaysByCommit records excluded migrations above the remaining highest number.
