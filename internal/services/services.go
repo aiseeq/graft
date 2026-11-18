@@ -509,7 +509,7 @@ func (m *Manager) removeGoneLeader(name string, s *config.Service) (bool, error)
 			return false, scanErr
 		}
 		m.logf("graft: %s: session leader %d is gone; remaining session processes were not stopped: %v; inspect SID %d and stop them manually\n", name, pid, members, pid)
-		return false, nil
+		return true, fmt.Errorf("%s: session leader %d is gone; remaining session processes were not stopped: %v; stop them manually", name, pid, members)
 	}
 	exited, err := serviceExited(pid, start)
 	if err != nil {

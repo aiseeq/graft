@@ -832,11 +832,15 @@ func TestOldPIDWithoutStartWarnsForRemainingSessionMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.Log = &syncLog{}
-	if err := m.stop(t.Context(), "svc"); err != nil {
-		t.Fatal(err)
+	err := m.stop(t.Context(), "svc")
+	if err == nil || !strings.Contains(err.Error(), strconv.Itoa(worker)) {
+		t.Fatalf("stop error = %v, want remaining worker PID %d", err, worker)
 	}
 	if !strings.Contains(m.Log.(*syncLog).String(), "remaining session processes were not stopped") {
 		t.Fatalf("stop log lacks warning for old PID file: %s", m.Log.(*syncLog).String())
+	}
+	if _, err := os.Stat(m.path("service.pid")); err != nil {
+		t.Fatalf("stop removed PID file for live session member: %v", err)
 	}
 }
 

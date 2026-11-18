@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -84,6 +85,7 @@ func (a *App) serviceAction(ctx context.Context, m *services.Manager, action Ser
 	if action == Stop {
 		slices.Reverse(names)
 	}
+	var stopErrors []error
 	for _, n := range names {
 		switch action {
 		case Start:
@@ -96,10 +98,13 @@ func (a *App) serviceAction(ctx context.Context, m *services.Manager, action Ser
 			return fmt.Errorf("unknown service action %q", action)
 		}
 		if err != nil {
-			return err
+			if action != Stop {
+				return err
+			}
+			stopErrors = append(stopErrors, fmt.Errorf("stopping service %s: %w", n, err))
 		}
 	}
-	return nil
+	return errors.Join(stopErrors...)
 }
 
 // ServiceLogs prints the last lines of a service's log.

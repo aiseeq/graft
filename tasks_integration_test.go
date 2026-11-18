@@ -13,11 +13,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	akitproc "github.com/aiseeq/akit/proc"
 	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/stats"
+	"golang.org/x/sys/unix"
 )
 
 // helperStep is a YAML flow list that runs the helper with args.
@@ -448,6 +451,177 @@ func TestServiceStalePIDFile(t *testing.T) {
 	}
 	if _, err := os.Stat(f.path("tmp/web.pid")); !os.IsNotExist(err) {
 		t.Errorf("stale pid file kept: %v", err)
+	}
+}
+
+func TestServiceStopReportsOrphanedSessionProcess(t *testing.T) {
+	f, _ := serviceRepo(t, "serve", "")
+	for _, withChild := range []bool{true, false} {
+		name := "without session processes"
+		if withChild {
+			name = "with live session process"
+		}
+		t.Run(name, func(t *testing.T) {
+			if err := os.MkdirAll(f.path("tmp"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			workerFile := f.path("tmp/worker.pid")
+			leader := exec.Command("sh", "-c", `if [ "$1" = child ]; then sleep 60 & echo $! > "$2"; wait; else sleep 60; fi`, "sh", map[bool]string{true: "child", false: "alone"}[withChild], workerFile)
+			leader.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+			if err := leader.Start(); err != nil {
+				t.Fatal(err)
+			}
+			childPID := 0
+			leaderWaited := false
+			reapTestOrphanAtCleanup(t, leader, &leaderWaited, &childPID)
+			if withChild {
+				deadline := time.Now().Add(2 * time.Second)
+				for childPID == 0 && time.Now().Before(deadline) {
+					data, _ := os.ReadFile(workerFile)
+					childPID, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+					if childPID == 0 {
+						time.Sleep(10 * time.Millisecond)
+					}
+				}
+				if childPID == 0 {
+					t.Fatal("service session worker did not start")
+				}
+			}
+			if err := os.WriteFile(f.path("tmp/web.pid"), []byte(strconv.Itoa(leader.Process.Pid)+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := leader.Process.Signal(syscall.SIGTERM); err != nil {
+				t.Fatal(err)
+			}
+			waitErr := leader.Wait()
+			leaderWaited = true
+			if waitErr != nil {
+				if _, ok := waitErr.(*exec.ExitError); !ok {
+					t.Fatal(waitErr)
+				}
+			}
+			out, code := f.graft("", "stop", "web")
+			pidFileErr := func() error { _, err := os.Stat(f.path("tmp/web.pid")); return err }()
+			if withChild {
+				if code == 0 || !strings.Contains(out, strconv.Itoa(childPID)) {
+					t.Errorf("stop with live process: exit %d, want nonzero and child PID %d:\n%s", code, childPID, out)
+				}
+				if pidFileErr != nil {
+					t.Errorf("stop removed PID file: %v", pidFileErr)
+				}
+			} else if code != 0 || !os.IsNotExist(pidFileErr) {
+				t.Errorf("stop without session processes: exit %d, PID file stat %v:\n%s", code, pidFileErr, out)
+			}
+		})
+	}
+}
+
+func reapTestOrphanAtCleanup(t *testing.T, leader *exec.Cmd, leaderWaited *bool, descendantPID *int) {
+	t.Helper()
+	t.Cleanup(func() {
+		if !*leaderWaited {
+			stopTestChild(leader)
+			_ = leader.Wait()
+			*leaderWaited = true
+		}
+		pid := *descendantPID
+		if pid == 0 {
+			return
+		}
+		if testProcessRunning(pid) {
+			if err := akitproc.SignalDescendant(pid, syscall.SIGKILL); err != nil && !akitproc.Gone(err) {
+				t.Errorf("stop test descendant %d: %v", pid, err)
+				return
+			}
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			var status unix.WaitStatus
+			reaped, err := unix.Wait4(pid, &status, unix.WNOHANG, nil)
+			if reaped == pid {
+				return
+			}
+			if err != nil {
+				t.Errorf("wait for test descendant %d: %v", pid, err)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Errorf("test descendant %d was not reaped before cleanup deadline", pid)
+	})
+}
+
+func testProcessRunning(pid int) bool {
+	stat, err := akitproc.ReadStat("/proc", pid)
+	return err == nil && stat.State != "Z" && stat.State != "X"
+}
+
+func TestServiceStopAllContinuesAfterOrphanError(t *testing.T) {
+	f := tasksRepo(t, `services:
+  a:
+    run: `+helperStep("sleep")+`
+    pidfile: tmp/a.pid
+    log: tmp/a.log
+  z:
+    run: `+helperStep("sleep")+`
+    pidfile: tmp/z.pid
+    log: tmp/z.log
+`, nil)
+	t.Cleanup(func() { f.graft("", "stop") })
+	if out, code := f.graft("", "start", "a"); code != 0 {
+		t.Fatalf("start service a: exit %d\n%s", code, out)
+	}
+	aPID, err := strconv.Atoi(strings.TrimSpace(f.read("tmp/a.pid")))
+	if err != nil {
+		t.Fatalf("read service a PID: %v", err)
+	}
+
+	workerFile := f.path("tmp/z-worker.pid")
+	leader := exec.Command("sh", "-c", `sleep 60 & echo $! > "$1"; wait`, "sh", workerFile)
+	leader.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := leader.Start(); err != nil {
+		t.Fatal(err)
+	}
+	workerPID := 0
+	leaderWaited := false
+	reapTestOrphanAtCleanup(t, leader, &leaderWaited, &workerPID)
+	for deadline := time.Now().Add(2 * time.Second); workerPID == 0 && time.Now().Before(deadline); {
+		data, _ := os.ReadFile(workerFile)
+		workerPID, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+		if workerPID == 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if workerPID == 0 {
+		t.Fatal("service z worker did not start")
+	}
+	if err := os.WriteFile(f.path("tmp/z.pid"), []byte(strconv.Itoa(leader.Process.Pid)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := leader.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	waitErr := leader.Wait()
+	leaderWaited = true
+	if waitErr != nil {
+		if _, ok := waitErr.(*exec.ExitError); !ok {
+			t.Fatal(waitErr)
+		}
+	}
+
+	out, code := f.graft("", "stop")
+	if code == 0 || !strings.Contains(out, strconv.Itoa(workerPID)) {
+		t.Fatalf("stop all services: exit %d, want orphan PID %d:\n%s", code, workerPID, out)
+	}
+	if _, err := os.Stat(f.path("tmp/a.pid")); !os.IsNotExist(err) {
+		t.Errorf("service a PID file remains after stop all: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for testProcessRunning(aPID) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if testProcessRunning(aPID) {
+		t.Errorf("service a is still running after stop all")
 	}
 }
 
