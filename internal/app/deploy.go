@@ -1084,7 +1084,8 @@ func (m *noteMover) delivered(ctx context.Context, issue jira.Issue) string {
 	if m.leaveDormant(issue) {
 		return issue.Status
 	}
-	switch t := m.conf.Moving(issue.Status); {
+	to, t := m.conf.DeliveredStatus(issue.Status, issue.Type)
+	switch {
 	case len(m.conf.Transitions) == 0 || m.conf.Leading(issue.Status) != nil:
 	case t == nil:
 		m.app.printf("%s stays %s: release_notes.transitions move only from %s", issue.Key, issue.Status, strings.Join(m.conf.FromStatuses(), ", "))
@@ -1095,7 +1096,7 @@ func (m *noteMover) delivered(ctx context.Context, issue jira.Issue) string {
 			}
 			return issue.Status
 		}
-		return t.To
+		return to
 	}
 	return issue.Status
 }

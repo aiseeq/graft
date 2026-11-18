@@ -586,6 +586,12 @@ refused with the form that works: `graft -C <directory> <command> …`.
 
 On a first commit with no remote, `graft commit` reports the configured `user.email` (or says when it is unset or empty) and suggests adding a remote then running `graft amend --reset-author` if it is wrong. That amend also works on the clean tree left by the commit.
 
+When the commit message or branch names a Jira key in a configured
+`release_notes.jira` project, `graft commit` checks the issue before committing
+and prints a hint if it belongs to someone else. It also hints when deploying
+to a configured target would move a non-subtask issue to another status; Jira
+unavailable or slow produces a one-line notice and does not stop the commit.
+
 1. Read the message (`-m`, repeatable, one paragraph each; `-F file`; `-F -`).
    An empty message is refused: there is no default subject. Warn when the
    hooks are not what `graft init` would install now: `core.hooksPath` not

@@ -247,6 +247,20 @@ func (n *TargetNotes) Moving(status string) *NoteTransition {
 	return nil
 }
 
+// DeliveredStatus returns the status release notes leave an item in, and the
+// transition selected for that status. It observes transitions in order and
+// leaves an item alone when it is already at any configured destination.
+func (n *TargetNotes) DeliveredStatus(status, issueType string) (string, *NoteTransition) {
+	if n == nil || len(n.Transitions) == 0 || n.Leading(status) != nil {
+		return status, nil
+	}
+	t := n.Moving(status)
+	if t == nil || !t.AllowsType(issueType) {
+		return status, t
+	}
+	return t.To, t
+}
+
 // FromStatuses lists every status a transition moves from.
 func (n *TargetNotes) FromStatuses() []string {
 	var all []string

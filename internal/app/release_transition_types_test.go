@@ -30,6 +30,37 @@ func TestProjectHelpMarksConfirmedTask(t *testing.T) {
 	}
 }
 
+func TestNoteMoverDeliveredDoesNotAdvanceFromEarlierTarget(t *testing.T) {
+	transitions := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/transitions") {
+			transitions++
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	conf := &config.TargetNotes{Transitions: []config.NoteTransition{
+		{From: []string{"Open"}, To: "Testing", Types: []string{"Task"}},
+		{From: []string{"Testing"}, To: "Done", Types: []string{"Task"}},
+	}}
+	var stderr strings.Builder
+	mover := &noteMover{
+		app:    &App{Stderr: &stderr},
+		client: jira.New(jira.Credentials{BaseURL: server.URL}),
+		conf:   conf,
+		glint:  &glintCheck{},
+	}
+	issue := jira.Issue{Key: "PROJ-123", Type: "Task", Status: "Testing", Transitions: []jira.Transition{{ID: "done", To: "Done"}}}
+	if got := mover.delivered(context.Background(), issue); got != "Testing" {
+		t.Fatalf("delivered status = %q, want Testing", got)
+	}
+	if transitions != 0 || stderr.Len() != 0 {
+		t.Fatalf("deploy attempted transition %d times and printed %q; want no transition", transitions, stderr.String())
+	}
+}
+
 func TestDeploySummaryConfiguredEffects(t *testing.T) {
 	var out bytes.Buffer
 	a := &App{Stdout: &out, Stderr: io.Discard}

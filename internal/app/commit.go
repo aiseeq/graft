@@ -251,6 +251,7 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 		return err
 	}
 	a.warnFirstCommitWithoutRemote(repo, plan)
+	a.commitTicketHints(ctx, cfg, plan.message)
 	backup, frozen, advisoryFailed, err := a.prepareCommitGate(ctx, repo, cfg, plan)
 	if err != nil {
 		return err
