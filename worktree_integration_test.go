@@ -2859,7 +2859,7 @@ func TestWorktreeCleanInA(t *testing.T) {
 	good.git("push", "-q", "origin", "main")
 	good.git("worktree", "add", "-q", "-b", "b/merged", filepath.Join(good.base, "merged"), "main")
 	out, code := good.graft("", "worktree", "clean", "--in", parent, "--min-age", "0s")
-	if code != 1 || !strings.Contains(out, "repositories 2, would remove 1, in work 0, unmerged 0, to check 0, failed 1") {
+	if code != 1 || !strings.Contains(out, "repositories 2, would remove 1, kept 0, in work 0, unmerged 0, to check 0, failed 1") {
 		t.Fatalf("dry run exit %d:\n%s", code, out)
 	}
 	for run := range 3 {
@@ -2945,7 +2945,7 @@ func TestWorktreeCleanInB(t *testing.T) {
 	if out, code := good.graft("", "worktree", "clean", "--in", parent, "--min-age", "0s", "--apply"); code != 1 ||
 		!strings.Contains(out, "failed    "+broken.work+": git fetch broken failed") ||
 		!strings.Contains(out, "removed   branch b/done") ||
-		!strings.Contains(out, "repositories 2, removed 1, in work 0, unmerged 0, to check 0, failed 1") {
+		!strings.Contains(out, "repositories 2, removed 1, kept 0, in work 0, unmerged 0, to check 0, failed 1") {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 }
@@ -2973,7 +2973,7 @@ func TestWorktreeCleanInD(t *testing.T) {
 	defer lk.Release()
 	if out, code := other.graft("", "worktree", "clean", "--in", parent, "--min-age", "0s"); code != 0 ||
 		!strings.Contains(out, "skipped   "+locked.work+": another graft worktree clean runs in it") ||
-		!strings.Contains(out, "repositories 2, would remove 0, in work 0, unmerged 0, to check 0, failed 0") {
+		!strings.Contains(out, "repositories 2, would remove 0, kept 0, in work 0, unmerged 0, to check 0, failed 0") {
 		t.Fatalf("exit %d:\n%s", code, out)
 	}
 }

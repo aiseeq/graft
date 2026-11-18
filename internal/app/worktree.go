@@ -63,6 +63,7 @@ type cleaner struct {
 	cwds                map[string][]string
 	remotes             []string
 	remoteBranchChecked map[string]bool
+	readOnlyRemotes     map[string]bool
 	now                 time.Time
 	counts              map[string]int
 	remoteSkipReported  bool
@@ -296,11 +297,11 @@ func (a *App) worktreeCleanIn(ctx context.Context, o WorktreeCleanOptions) error
 		}
 	}
 	if o.Apply {
-		a.printf("repositories %d, removed %d, in work %d, unmerged %d, to check %d, failed %d",
-			total, counts["removed"]+counts["pruned"], counts["in work"], counts["unmerged"], counts["check"], len(failed))
+		a.printf("repositories %d, removed %d, kept %d, in work %d, unmerged %d, to check %d, failed %d",
+			total, counts["removed"]+counts["pruned"], counts["kept"], counts["in work"], counts["unmerged"], counts["check"], len(failed))
 	} else {
-		a.printf("repositories %d, would remove %d, in work %d, unmerged %d, to check %d, failed %d",
-			total, counts["would remove"]+counts["would prune"], counts["in work"], counts["unmerged"], counts["check"], len(failed))
+		a.printf("repositories %d, would remove %d, kept %d, in work %d, unmerged %d, to check %d, failed %d",
+			total, counts["would remove"]+counts["would prune"], counts["kept"], counts["in work"], counts["unmerged"], counts["check"], len(failed))
 	}
 	for _, item := range failed {
 		a.printf("failed    %s", item)
@@ -1779,6 +1780,10 @@ func (c *cleaner) deleteRemoteCopy(remote, name string) error {
 		c.line("would remove", "branch "+remote+"/"+name, "in "+remote+"/"+trunkName)
 		return nil
 	}
+	if c.readOnlyRemotes[remote] {
+		c.line("kept", remote+"/"+name, remote+" is read-only (archived); the branch stays")
+		return nil
+	}
 	deleted, err := c.deleteRemoteBranch(remote, name, sha)
 	if err != nil {
 		return err
@@ -1894,6 +1899,15 @@ func (c *cleaner) deleteRemoteBranch(remote, name, sha string) (bool, error) {
 		c.line("kept", remote+"/"+name, "new commits on "+remote+" since the check at "+sha[:12])
 		return false, nil
 	}
+	var gitErr *gitx.Error
+	if errors.As(err, &gitErr) && archivedReadOnlyPushResponse(gitErr.Stderr) {
+		if c.readOnlyRemotes == nil {
+			c.readOnlyRemotes = map[string]bool{}
+		}
+		c.readOnlyRemotes[remote] = true
+		c.line("kept", remote+"/"+name, remote+" is read-only (archived); the branch stays")
+		return false, nil
+	}
 	// Gone from the remote since the fetch: git tells only in stderr, in the
 	// user's language, so ask the remote whether the ref still exists.
 	if _, lsErr := c.repo.Git("ls-remote", "--exit-code", remote, "refs/heads/"+name); gitx.ExitCode(lsErr) == 2 {
@@ -1901,6 +1915,17 @@ func (c *cleaner) deleteRemoteBranch(remote, name, sha string) (bool, error) {
 		return false, nil
 	}
 	return false, err
+}
+
+func archivedReadOnlyPushResponse(stderr string) bool {
+	for line := range strings.SplitSeq(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimPrefix(line, "remote: ")
+		if strings.TrimSpace(line) == "ERROR: This repository was archived so it is read-only." {
+			return true
+		}
+	}
+	return false
 }
 
 func branchDeletionCleaner(ctx context.Context, app *App, repo *gitx.Repo, cfg *config.Config, trunk string, explicitTrunk bool) (*cleaner, error) {
@@ -1931,10 +1956,10 @@ func branchDeletionCleaner(ctx context.Context, app *App, repo *gitx.Repo, cfg *
 
 func (c *cleaner) summary() {
 	if c.opts.Apply {
-		c.app.printf("removed %d, in work %d, unmerged %d, to check %d", c.counts["removed"]+c.counts["pruned"], c.counts["in work"], c.counts["unmerged"], c.counts["check"])
+		c.app.printf("removed %d, kept %d, in work %d, unmerged %d, to check %d", c.counts["removed"]+c.counts["pruned"], c.counts["kept"], c.counts["in work"], c.counts["unmerged"], c.counts["check"])
 		return
 	}
-	c.app.printf("dry run: graft worktree clean --apply removes %d; in work %d, unmerged %d, to check %d", c.counts["would remove"]+c.counts["would prune"], c.counts["in work"], c.counts["unmerged"], c.counts["check"])
+	c.app.printf("dry run: graft worktree clean --apply removes %d; kept %d, in work %d, unmerged %d, to check %d", c.counts["would remove"]+c.counts["would prune"], c.counts["kept"], c.counts["in work"], c.counts["unmerged"], c.counts["check"])
 }
 
 func plural(n int, noun string) string {
