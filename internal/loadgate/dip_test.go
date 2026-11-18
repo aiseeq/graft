@@ -2,6 +2,7 @@ package loadgate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -51,9 +52,10 @@ func dipAdmits(t *testing.T, dip, cores float64) int {
 	t.Helper()
 	setRunnable, _, _ := fakeMachine(t)
 	oldP, oldR := reservePollInterval, reserveCPUReader
-	reservePollInterval = 5 * time.Millisecond
+	oldW := reserveWindow
+	reservePollInterval, reserveWindow = 5*time.Millisecond, 20*time.Millisecond
 	reserveCPUReader = func(int) (float64, error) { return 0, nil }
-	defer func() { reservePollInterval, reserveCPUReader = oldP, oldR }()
+	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldP, oldW, oldR }()
 	setRunnable(13)
 	setLoadavg(t, 30)
 	l := testLoad
@@ -131,8 +133,33 @@ func admitOne(t *testing.T, path string, cores float64) func() error {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// These tests model an already measured admission; the production monitor
+	// has not necessarily completed a CPU window when WaitWithSettle returns.
+	files, err := filepath.Glob(admittedFilesPattern(path))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("admitted records = %v, %v; want one", files, err)
+	}
+	data, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d reserveData
+	if err := json.Unmarshal(data, &d); err != nil {
+		t.Fatal(err)
+	}
+	d.ObservedCores = cores
+	d.ObservedAt = d.Admitted
+	data, err = json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(files[0], data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return release
 }
+
+func admittedFilesPattern(path string) string { return path + ".*.admitted" }
 
 // waitBriefly tries to admit a task for 150ms.
 func waitBriefly(path string, p *Priority) (Admission, error) {

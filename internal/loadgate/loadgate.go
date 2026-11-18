@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -78,15 +79,23 @@ func (a Admission) Waited() bool {
 }
 
 type reserveData struct {
-	Cores    float64 `json:"cores"`
-	Admitted string  `json:"admitted"`
-	Task     string  `json:"task"`
+	Cores         float64 `json:"cores"`
+	ObservedCores float64 `json:"observed_cores,omitempty"`
+	ObservedAt    string  `json:"observed_at,omitempty"`
+	Admitted      string  `json:"admitted"`
+	Task          string  `json:"task"`
 }
 
 var reservePollInterval = 250 * time.Millisecond
 var reserveWindow = 2 * time.Second
 var reserveCPUReader = treeCPU
 var pressureMeterFactory = func(root string) machineMeter { return pressure.NewMeter(root) }
+
+func reserveEstimateChanged(old, next float64) bool {
+	delta := math.Abs(next - old)
+	scale := max(math.Abs(old), math.Abs(next))
+	return delta >= 0.5 || scale > 0 && delta/scale >= 0.25
+}
 
 // Total is the whole wait.
 func (w Waits) Total() time.Duration {
@@ -374,7 +383,7 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 	waited := false
 	var why string
 	for {
-		b, err := m.busy(ctx, !waited, p != nil)
+		b, err := m.measureOrReserve(ctx, !waited, p != nil, lockPath)
 		now := m.now()
 		if why == "" {
 			why = b.why
@@ -387,15 +396,10 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 			return err
 		}
 		if b.why == "" {
-			if b, err = m.reservesBusy(lockPath, p != nil); err != nil {
-				return err
+			if waited {
+				fmt.Fprintf(m.log, "graft: %s: runnable %.0f, starting after %s\n", m.name, m.runnable, m.now().Sub(start).Round(time.Second))
 			}
-			if b.why == "" {
-				if waited {
-					fmt.Fprintf(m.log, "graft: %s: runnable %.0f, starting after %s\n", m.name, m.runnable, m.now().Sub(start).Round(time.Second))
-				}
-				return nil
-			}
+			return nil
 		}
 		// The measure or the reserves beside it: either keeps the task waiting.
 		m.recordWait(b, p != nil)
@@ -404,17 +408,12 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 		}
 		waited = true
 		if p != nil {
-			now := m.now()
-			left, err := p.spend(spent, now)
+			var finished bool
+			spent, finished, err = m.spendPriorityWait(p, start, spent, b)
 			if err != nil {
 				return err
 			}
-			spent = now
-			if left <= 0 {
-				if p.Fail {
-					return fmt.Errorf("%s: %s after %s, past the wait %s allows (deploy.load_wait)", m.name, b.text, m.now().Sub(start).Round(time.Second), p.For)
-				}
-				fmt.Fprintf(m.log, "graft: %s: %s, starting after %s, all the wait %s allows (deploy.load_wait)\n", m.name, b.text, m.now().Sub(start).Round(time.Second), p.For)
+			if finished {
 				return nil
 			}
 		}
@@ -424,13 +423,9 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 			fmt.Fprintf(m.log, "graft: %s: %s, waiting\n", m.name, b.text)
 			said = m.now()
 		}
-		pause := m.l.Poll
-		if p != nil {
-			left, err := p.spend(time.Time{}, time.Time{})
-			if err != nil {
-				return err
-			}
-			pause = min(pause, left)
+		pause, err := m.reserveWaitPause(ctx, b, p)
+		if err != nil {
+			return err
 		}
 		if err := m.pause(ctx, pause, p != nil); err != nil {
 			if why != "" {
@@ -439,6 +434,48 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 			return err
 		}
 	}
+}
+
+func (m *machine) measureOrReserve(ctx context.Context, fresh, priority bool, lockPath string) (busyness, error) {
+	b, err := m.busy(ctx, fresh, priority)
+	if err != nil || b.why != "" {
+		return b, err
+	}
+	return m.reservesBusy(lockPath, priority)
+}
+
+func (m *machine) spendPriorityWait(p *Priority, start, spent time.Time, b busyness) (time.Time, bool, error) {
+	now := m.now()
+	left, err := p.spend(spent, now)
+	if err != nil {
+		return now, false, err
+	}
+	if left > 0 {
+		return now, false, nil
+	}
+	if p.Fail {
+		return now, false, fmt.Errorf("%s: %s after %s, past the wait %s allows (deploy.load_wait)", m.name, b.text, m.now().Sub(start).Round(time.Second), p.For)
+	}
+	fmt.Fprintf(m.log, "graft: %s: %s, starting after %s, all the wait %s allows (deploy.load_wait)\n", m.name, b.text, m.now().Sub(start).Round(time.Second), p.For)
+	return now, true, nil
+}
+
+func (m *machine) reserveWaitPause(ctx context.Context, b busyness, p *Priority) (time.Duration, error) {
+	pause := m.l.Poll
+	if !b.retryAt.IsZero() {
+		pause = min(pause, max(time.Until(b.retryAt), 0))
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		pause = min(pause, max(time.Until(deadline), 0))
+	}
+	if p != nil {
+		left, err := p.spend(time.Time{}, time.Time{})
+		if err != nil {
+			return 0, err
+		}
+		pause = min(pause, left)
+	}
+	return pause, nil
 }
 
 const prioritySampleInterval = 500 * time.Millisecond
@@ -478,6 +515,11 @@ func (m *machine) reservesBusy(lockPath string, priority bool) (busyness, error)
 	if m.runnableLimit <= 0 {
 		return busyness{}, nil
 	}
+	if task, retryAt, pending, err := firstUnmeasuredAdmission(lockPath, time.Now(), reserveWindow+reservePollInterval); err != nil {
+		return busyness{}, err
+	} else if pending {
+		return busyness{why: WhyReserve, text: fmt.Sprintf("waiting for the first CPU measure of %s", task), retryAt: retryAt}, nil
+	}
 	sum, err := liveReserveCores(lockPath)
 	if err != nil {
 		return busyness{}, err
@@ -498,6 +540,40 @@ func (m *machine) reservesBusy(lockPath string, priority bool) (busyness, error)
 		return busyness{why: WhyReserve, text: text}, nil
 	}
 	return busyness{}, nil
+}
+
+// firstUnmeasuredAdmission keeps the queue closed briefly after an admission,
+// until its first CPU window should have been sampled. After that grace period
+// the expected reserve continues to protect tasks whose CPU cannot be read.
+func firstUnmeasuredAdmission(lockPath string, now time.Time, grace time.Duration) (string, time.Time, bool, error) {
+	files, err := lock.LiveData(filepath.Dir(lockPath), admittedPattern(lockPath))
+	if err != nil {
+		return "", time.Time{}, false, err
+	}
+	var firstTask string
+	var retryAt time.Time
+	for _, file := range files {
+		var d reserveData
+		if err := json.Unmarshal(file.Data, &d); err != nil {
+			return "", time.Time{}, false, fmt.Errorf("decoding admitted task %s: %w", file.Path, err)
+		}
+		if d.ObservedAt != "" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, d.Admitted)
+		if err != nil {
+			return "", time.Time{}, false, fmt.Errorf("admitted task %s: %w", file.Path, err)
+		}
+		until := at.Add(grace)
+		if now.Before(until) && (retryAt.IsZero() || until.Before(retryAt)) {
+			task := d.Task
+			if task == "" {
+				task = "unknown task"
+			}
+			firstTask, retryAt = task, until
+		}
+	}
+	return firstTask, retryAt, !retryAt.IsZero(), nil
 }
 
 // loadAvgTau is the time constant of the kernel's 1-minute load average: a
@@ -532,16 +608,24 @@ func (m *machine) unseenShare(priority bool) func(admitted time.Time) float64 {
 	}
 }
 
-// unseenAdmittedCores is how much of the expected cores of the running
-// admitted tasks the load does not show yet: c·share(admission) each. The
-// load average of a queue's dip is that of the machine before the tasks it
+// unseenAdmittedCores is how much of the expected or observed cores of the
+// running admitted tasks the load does not show yet. Expected cores decay
+// from admission; observed cores decay from when that estimate was measured.
+// The load average of a queue's dip is that of the machine before the tasks it
 // let in: the next counts them so.
 func unseenAdmittedCores(lockPath string, share func(admitted time.Time) float64) (float64, error) {
 	files, err := lock.LiveData(filepath.Dir(lockPath), admittedPattern(lockPath))
 	if err != nil {
 		return 0, err
 	}
-	var sum float64
+	type admittedEstimate struct {
+		at             time.Time
+		expected       float64
+		observed       float64
+		observedAt     time.Time
+		hasObservation bool
+	}
+	byAdmission := make(map[string]admittedEstimate, len(files))
 	for _, file := range files {
 		var d reserveData
 		if err := json.Unmarshal(file.Data, &d); err != nil {
@@ -551,7 +635,33 @@ func unseenAdmittedCores(lockPath string, share func(admitted time.Time) float64
 		if err != nil {
 			return 0, fmt.Errorf("admitted task %s: %w", file.Path, err)
 		}
-		sum += d.Cores * share(at)
+		var observedAt time.Time
+		if d.ObservedAt != "" {
+			observedAt, err = time.Parse(time.RFC3339Nano, d.ObservedAt)
+			if err != nil {
+				return 0, fmt.Errorf("observed CPU of admitted task %s: %w", file.Path, err)
+			}
+		}
+		key := d.Admitted
+		if key == "" {
+			key = file.Path
+		}
+		old, ok := byAdmission[key]
+		if !ok {
+			old.at = at
+		}
+		old.expected = max(old.expected, d.Cores)
+		if !observedAt.IsZero() && (!old.hasObservation || observedAt.After(old.observedAt)) {
+			old.observed, old.observedAt, old.hasObservation = d.ObservedCores, observedAt, true
+		}
+		byAdmission[key] = old
+	}
+	var sum float64
+	for _, key := range slices.Sorted(maps.Keys(byAdmission)) {
+		estimate := byAdmission[key]
+		expected := estimate.expected * share(estimate.at)
+		observed := estimate.observed * share(estimate.observedAt)
+		sum += max(expected, observed)
 	}
 	return sum, nil
 }
@@ -600,7 +710,8 @@ func expectedReserveCores(kind string, cores float64) (float64, error) {
 // startAdmission writes the live record of an admitted task, which the
 // forecast counts until the task's release, and starts its reserve.
 func startAdmission(lockPath, name string, cores float64, cap time.Duration, log io.Writer) (func() error, time.Time, func() string, func() time.Time, error) {
-	raw, err := json.Marshal(reserveData{Cores: cores, Admitted: time.Now().Format(time.RFC3339Nano), Task: name})
+	admitted := time.Now().Format(time.RFC3339Nano)
+	raw, err := json.Marshal(reserveData{Cores: cores, Admitted: admitted, Task: name})
 	if err != nil {
 		return released, time.Now(), nil, nil, fmt.Errorf("encoding admitted task: %w", err)
 	}
@@ -608,7 +719,35 @@ func startAdmission(lockPath, name string, cores float64, cap time.Duration, log
 	if err != nil {
 		return released, time.Now(), nil, nil, err
 	}
-	release, since, end, stoppedAt, err := startReserve(lockPath, name, cores, cap, log)
+	var observedMu sync.Mutex
+	var observedRel func() error
+	observedReleased := false
+	recordObserved := func(observed float64, observedAt time.Time) error {
+		observedMu.Lock()
+		defer observedMu.Unlock()
+		if observedReleased {
+			return nil
+		}
+		data, err := json.Marshal(reserveData{
+			Cores: cores, ObservedCores: observed, ObservedAt: observedAt.Format(time.RFC3339Nano),
+			Admitted: admitted, Task: name,
+		})
+		if err != nil {
+			return fmt.Errorf("encoding measured admitted cores: %w", err)
+		}
+		rel, err := lock.Reserve(filepath.Dir(lockPath), admittedPattern(lockPath), data)
+		if err != nil {
+			return fmt.Errorf("recording measured admitted cores: %w", err)
+		}
+		if observedRel != nil {
+			if err := observedRel(); err != nil {
+				return errors.Join(err, rel())
+			}
+		}
+		observedRel = rel
+		return nil
+	}
+	release, since, end, stoppedAt, err := startReserve(lockPath, name, cores, cap, recordObserved, log)
 	if err != nil {
 		return released, since, nil, nil, errors.Join(err, admittedRel())
 	}
@@ -616,12 +755,129 @@ func startAdmission(lockPath, name string, cores float64, cap time.Duration, log
 	var admittedErr error
 	return func() error {
 		err := release()
-		once.Do(func() { admittedErr = admittedRel() })
+		once.Do(func() {
+			observedMu.Lock()
+			observedReleased = true
+			if observedRel != nil {
+				admittedErr = observedRel()
+			}
+			admittedErr = errors.Join(admittedErr, admittedRel())
+			observedMu.Unlock()
+		})
 		return errors.Join(err, admittedErr)
 	}, since, end, stoppedAt, nil
 }
 
-func startReserve(lockPath, name string, cores float64, cap time.Duration, log io.Writer) (func() error, time.Time, func() string, func() time.Time, error) {
+type reserveSample struct {
+	at  time.Time
+	cpu float64
+}
+
+type reservePollState struct {
+	samples          []reserveSample
+	reserveDropped   bool
+	haveObserved     bool
+	observed         float64
+	readErrorLogged  bool
+	writeErrorLogged bool
+}
+
+func (state *reservePollState) readError(name string, err error, log io.Writer) {
+	if !state.readErrorLogged {
+		fmt.Fprintf(log, "graft: %s: reading reserved CPU: %v\n", name, err)
+		state.readErrorLogged = true
+	}
+	state.samples = nil
+}
+
+func (state *reservePollState) sampleSpeed(cpu float64, at time.Time, window time.Duration) (float64, bool) {
+	state.samples = append(state.samples, reserveSample{at: at, cpu: cpu})
+	for len(state.samples) > 1 && at.Sub(state.samples[1].at) >= window {
+		state.samples = state.samples[1:]
+	}
+	if len(state.samples) < 2 || at.Sub(state.samples[0].at) < window {
+		return 0, false
+	}
+	speed := max((cpu-state.samples[0].cpu)/at.Sub(state.samples[0].at).Seconds(), 0)
+	return speed, true
+}
+
+func (state *reservePollState) updateObservation(speed float64, at time.Time, onCPU func(float64, time.Time) error) (bool, error) {
+	if state.haveObserved && !reserveEstimateChanged(state.observed, speed) {
+		return true, nil
+	}
+	if onCPU != nil {
+		if err := onCPU(speed, at); err != nil {
+			return false, err
+		}
+	}
+	state.observed, state.haveObserved = speed, true
+	return true, nil
+}
+
+func (state *reservePollState) logWriteError(name string, err error, log io.Writer) {
+	if !state.writeErrorLogged {
+		fmt.Fprintf(log, "graft: %s: recording measured reserved CPU: %v\n", name, err)
+		state.writeErrorLogged = true
+	}
+}
+
+func (state *reservePollState) handleTick(name string, cores float64, window time.Duration, readCPU func(int) (float64, error), onCPU func(float64, time.Time) error, setEnd func(string), drop func(), log io.Writer) {
+	cpu, err := readCPU(os.Getpid())
+	if err != nil {
+		state.readError(name, err, log)
+		return
+	}
+	at := time.Now()
+	speed, ready := state.sampleSpeed(cpu, at, window)
+	if !ready || !state.reserveDropped && speed < cores/2 {
+		return
+	}
+	updated, err := state.updateObservation(speed, at, onCPU)
+	if err != nil {
+		state.logWriteError(name, err, log)
+		return
+	}
+	if !updated {
+		return
+	}
+	if state.reserveDropped {
+		return
+	}
+	state.reserveDropped = true
+	setEnd("cpu")
+	drop()
+}
+
+func runReservePoll(name string, cores float64, cap, interval, window time.Duration, readCPU func(int) (float64, error), onCPU func(float64, time.Time) error, log io.Writer, done <-chan struct{}, setEnd func(string), drop func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(log, "graft: %s: panic in reserve poll: %v\n", name, r)
+			setEnd("panic")
+			drop()
+		}
+	}()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	deadline := time.NewTimer(cap)
+	defer deadline.Stop()
+	deadlineC := deadline.C
+	var state reservePollState
+	for {
+		select {
+		case <-done:
+			return
+		case <-deadlineC:
+			deadlineC = nil
+			setEnd("cap")
+			drop()
+		case <-ticker.C:
+			state.handleTick(name, cores, window, readCPU, onCPU, setEnd, drop, log)
+		}
+	}
+}
+
+func startReserve(lockPath, name string, cores float64, cap time.Duration, onCPU func(float64, time.Time) error, log io.Writer) (func() error, time.Time, func() string, func() time.Time, error) {
 	now := time.Now()
 	since := now
 	raw, err := json.Marshal(reserveData{Cores: cores, Admitted: now.Format(time.RFC3339Nano), Task: name})
@@ -665,56 +921,7 @@ func startReserve(lockPath, name string, cores float64, cap time.Duration, log i
 	// The goroutine outlives the call: it reads its settings from here, not
 	// from the package variables a test may swap meanwhile.
 	interval, window, readCPU := reservePollInterval, reserveWindow, reserveCPUReader
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				fmt.Fprintf(log, "graft: %s: panic in reserve poll: %v\n", name, r)
-				setEnd("panic")
-				drop()
-			}
-		}()
-		type sample struct {
-			at  time.Time
-			cpu float64
-		}
-		samples := []sample{}
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		deadline := time.NewTimer(cap)
-		defer deadline.Stop()
-		unread := false
-		for {
-			select {
-			case <-done:
-				return
-			case <-deadline.C:
-				setEnd("cap")
-				drop()
-				return
-			case <-ticker.C:
-				if unread {
-					continue
-				}
-				cpu, err := readCPU(os.Getpid())
-				if err != nil {
-					fmt.Fprintf(log, "graft: %s: reading reserved CPU: %v\n", name, err)
-					setEnd("unread")
-					unread = true
-					continue
-				}
-				at := time.Now()
-				samples = append(samples, sample{at, cpu})
-				for len(samples) > 1 && at.Sub(samples[1].at) >= window {
-					samples = samples[1:]
-				}
-				if len(samples) > 1 && at.Sub(samples[0].at) >= window && (cpu-samples[0].cpu)/at.Sub(samples[0].at).Seconds() >= cores/2 {
-					setEnd("cpu")
-					drop()
-					return
-				}
-			}
-		}
-	}()
+	go runReservePoll(name, cores, cap, interval, window, readCPU, onCPU, log, done, setEnd, drop)
 	return func() error {
 		once.Do(func() { setEnd("done"); close(done) })
 		drop()
@@ -1024,7 +1231,10 @@ func (c *BusyChecker) Why(ctx context.Context) (string, error) {
 
 // busyness is why the machine cannot take a heavy task, one of the Why
 // constants, and the words that say it; a calm machine has neither.
-type busyness struct{ why, text string }
+type busyness struct {
+	why, text string
+	retryAt   time.Time
+}
 
 // measures are the rule's measures as the waits name them, with what sets
 // each limit.
@@ -1097,7 +1307,7 @@ func (m *machine) busy(ctx context.Context, fresh, priority bool) (busyness, err
 	if v.Busy() {
 		// A measure graft does not know yet still makes the machine busy.
 		ms, known := measures[v.Measure]
-		b = busyness{v.Measure, v.Why()}
+		b = busyness{why: v.Measure, text: v.Why()}
 		if priority && v.Measure == pressure.CPU && float64(v.Load.Runnable) < v.Limit {
 			a, last, ok := m.samples.lastTwo()
 			if ok {

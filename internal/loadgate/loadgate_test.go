@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -224,7 +225,33 @@ func TestReserveReleasedAtTheCap(t *testing.T) { testReserveEnd(t, "cap", func()
 func TestReserveReleasedWhenTheTaskEnds(t *testing.T) {
 	testReserveEnd(t, "done", func() float64 { return 0 })
 }
-func TestReserveUnreadableCPU(t *testing.T) { testReserveEnd(t, "unread", func() float64 { return 0 }) }
+func TestReserveReadErrorIsLoggedOnceAndPollingContinues(t *testing.T) {
+	oldPoll, oldWindow, oldReader := reservePollInterval, reserveWindow, reserveCPUReader
+	reservePollInterval, reserveWindow = 5*time.Millisecond, 20*time.Millisecond
+	var calls atomic.Int32
+	reserveCPUReader = func(int) (float64, error) {
+		calls.Add(1)
+		return 0, fmt.Errorf("synthetic proc read")
+	}
+	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
+	path := filepath.Join(t.TempDir(), "load.lock")
+	var log strings.Builder
+	release, _, end, _, err := startReserve(path, "task", 1, 60*time.Millisecond, nil, &log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for end() == "" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := end(); got != "cap" {
+		t.Fatalf("reserve end %q; want cap after continued read errors", got)
+	}
+	if calls.Load() < 2 || strings.Count(log.String(), "reading reserved CPU: synthetic proc read") != 1 {
+		t.Fatalf("reader calls=%d, log=%q; want retries with one warning", calls.Load(), log.String())
+	}
+	_ = release()
+}
 
 func testReserveEnd(t *testing.T, want string, reader func() float64) {
 	t.Helper()
@@ -236,12 +263,7 @@ func testReserveEnd(t *testing.T, want string, reader func() float64) {
 		reserveWindow = 20 * time.Millisecond
 	}
 	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldP, oldW, oldR }()
-	switch want {
-	case "unread":
-		reserveCPUReader = func(int) (float64, error) { return 0, fmt.Errorf("synthetic proc read") }
-	default:
-		reserveCPUReader = func(int) (float64, error) { return reader(), nil }
-	}
+	reserveCPUReader = func(int) (float64, error) { return reader(), nil }
 	path := filepath.Join(t.TempDir(), "load.lock")
 	cap := 60 * time.Millisecond
 	if want == "cpu" {
@@ -250,7 +272,7 @@ func testReserveEnd(t *testing.T, want string, reader func() float64) {
 	if want == "done" {
 		cap = time.Second
 	}
-	release, _, end, _, err := startReserve(path, "task", 1, cap, io.Discard)
+	release, _, end, _, err := startReserve(path, "task", 1, cap, nil, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,13 +357,13 @@ func TestReservePriorityWritesItsReserve(t *testing.T) {
 	}
 }
 
-func setProfileHistory(t *testing.T, profile string, value float64) {
+func setProfileHistory(t *testing.T, profile string, values ...float64) {
 	t.Helper()
 	dir := filepath.Join(os.Getenv("XDG_CACHE_HOME"), "graft")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	data, _ := json.Marshal(map[string][]float64{profile: {value}})
+	data, _ := json.Marshal(map[string][]float64{profile: values})
 	if err := os.WriteFile(filepath.Join(dir, "load.cores.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1465,4 +1487,427 @@ func TestHalfModeQueueDoesNotAdmitABurst(t *testing.T) {
 	if admitted != 1 {
 		t.Fatalf("admitted %d tasks back to back at load average 8 in half mode (limit 11); want 1", admitted)
 	}
+}
+
+func TestMeasuredCPUReplacesLowReservationInUnseenLoad(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(1)
+	setLoadavg(t, 0)
+	setRunnableLimit(t, 7)
+	setProfileHistory(t, "projectA:measured-eight", .5, .5, .5)
+	oldPoll, oldWindow, oldReader := reservePollInterval, reserveWindow, reserveCPUReader
+	reservePollInterval, reserveWindow = 5*time.Millisecond, 20*time.Millisecond
+	var readAt time.Time
+	var cpuSeconds float64
+	reserveCPUReader = func(int) (float64, error) {
+		at := time.Now()
+		if !readAt.IsZero() {
+			cpuSeconds += 8 * at.Sub(readAt).Seconds()
+		}
+		readAt = at
+		return cpuSeconds, nil
+	}
+	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
+	path := filepath.Join(t.TempDir(), "load.lock")
+	var log strings.Builder
+	adm, release, err := Wait(context.Background(), "measured-eight", "projectA:measured-eight", nil, testLoad, path, &log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	deadline := time.Now().Add(time.Second)
+	var cores float64
+	for time.Now().Before(deadline) {
+		cores, err = unseenAdmittedCores(path, func(time.Time) float64 { return 1 })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cores >= 7.9 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cores, err = unseenAdmittedCores(path, func(time.Time) float64 { return 1 })
+	if err != nil || cores < 7.9 {
+		files, _ := lock.LiveData(filepath.Dir(path), admittedPattern(path))
+		t.Fatalf("unseen admitted cores = %v, %v; reserve end %q, log %q, records %+v; want measured about 8 (expected %.1f)", cores, err, adm.ReserveEnd(), log.String(), files, adm.ReserveCores)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	nextAdm, _, err := Wait(ctx, "next", "projectA:next", nil, testLoad, path, io.Discard)
+	if err == nil || nextAdm.Waits[WhyReserve] == 0 {
+		t.Fatalf("next admission = %+v, %v; want it held by measured 8-core task", nextAdm, err)
+	}
+}
+
+func TestWaitHoldsQueueUntilFirstCPUObservation(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(1)
+	setLoadavg(t, 8)
+	setRunnableLimit(t, 11) // half mode on a 22-thread machine
+	setProfileHistory(t, "projectA:first-measure", .5, .5, .5)
+	oldPoll, oldWindow, oldReader := reservePollInterval, reserveWindow, reserveCPUReader
+	reservePollInterval, reserveWindow = 5*time.Millisecond, 80*time.Millisecond
+	var readAt time.Time
+	var cpuSeconds float64
+	reserveCPUReader = func(int) (float64, error) {
+		at := time.Now()
+		if !readAt.IsZero() {
+			cpuSeconds += 8 * at.Sub(readAt).Seconds()
+		}
+		readAt = at
+		return cpuSeconds, nil
+	}
+	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
+	path := filepath.Join(t.TempDir(), "load.lock")
+	_, release, err := Wait(context.Background(), "first-measure", "projectA:first-measure", nil, testLoad, path, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	// The first admission is live but has not completed its CPU window. Check
+	// both the reason and the public Wait path before that window can finish.
+	m := newMachine(testLoad, io.Discard, "next", "projectA:next")
+	m.runnable, m.avg1, m.avg1Known, m.runnableLimit = 1, 8, true, 11
+	b, err := m.reservesBusy(path, false)
+	if err != nil || b.why != WhyReserve || !strings.Contains(b.text, "waiting for the first CPU measure of first-measure") {
+		t.Fatalf("before first CPU observation: %+v, %v; want first-measure wait", b, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	firstNext, _, err := Wait(ctx, "next-before-measure", "projectA:next", nil, testLoad, path, io.Discard)
+	if err == nil || firstNext.Waits[WhyReserve] == 0 {
+		t.Fatalf("next admission before first CPU measure = %+v, %v; want it held", firstNext, err)
+	}
+
+	measured := waitObservedCores(t, path, func(d reserveData) bool { return d.ObservedCores >= 7.5 }, time.Second)
+	ctxAfterMeasure, cancelAfterMeasure := context.WithTimeout(context.Background(), 35*time.Millisecond)
+	defer cancelAfterMeasure()
+	secondNext, _, err := Wait(ctxAfterMeasure, "next-after-measure", "projectA:next", nil, testLoad, path, io.Discard)
+	if err == nil || secondNext.Waits[WhyReserve] == 0 {
+		t.Fatalf("next admission after %.2f measured cores = %+v, %v; want it held", measured.ObservedCores, secondNext, err)
+	}
+}
+
+func TestWaitRechecksAtFirstMeasureDeadline(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(1)
+	setLoadavg(t, 0)
+	setProfileHistory(t, "projectA:first-measure-deadline", .5, .5, .5)
+	oldPoll, oldWindow, oldReader := reservePollInterval, reserveWindow, reserveCPUReader
+	reservePollInterval, reserveWindow = 250*time.Millisecond, 2*time.Second
+	reserveCPUReader = func(int) (float64, error) { return 0, fmt.Errorf("synthetic unavailable CPU reader") }
+	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
+	path := filepath.Join(t.TempDir(), "load.lock")
+	l := testLoad
+	l.Poll, l.Settle = 5*time.Second, time.Hour
+	_, release, err := Wait(context.Background(), "first-measure", "projectA:first-measure-deadline", nil, l, path, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	started := time.Now()
+	adm, releaseNext, err := Wait(ctx, "next", "projectA:next", nil, l, path, io.Discard)
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("next admission after waiting %s: %+v, %v", elapsed, adm, err)
+	}
+	defer releaseNext()
+	if elapsed > 2500*time.Millisecond {
+		t.Fatalf("next admission waited %s; want recheck by the 2.25s first-measure deadline", elapsed)
+	}
+	if adm.Waits[WhyReserve] == 0 {
+		t.Fatalf("next admission waits = %+v; want time spent awaiting the first measurement", adm.Waits)
+	}
+}
+
+func TestReserveKeepsPollingAfterCap(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(1)
+	setProfileHistory(t, "projectA:after-cap", .5, .5, .5)
+	oldPoll, oldWindow, oldReader := reservePollInterval, reserveWindow, reserveCPUReader
+	reservePollInterval, reserveWindow = 5*time.Millisecond, 20*time.Millisecond
+	const capDuration = 120 * time.Millisecond
+	const highPhaseAfter = capDuration + 20*time.Millisecond
+	var started time.Time
+	var cpuSeconds float64
+	var readAt time.Time
+	reserveCPUReader = func(int) (float64, error) {
+		at := time.Now()
+		if started.IsZero() {
+			started = at
+		}
+		if !readAt.IsZero() {
+			rate := 0.5
+			if at.Sub(started) >= highPhaseAfter {
+				rate = 8
+			}
+			cpuSeconds += rate * at.Sub(readAt).Seconds()
+		}
+		readAt = at
+		return cpuSeconds, nil
+	}
+	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
+	path := filepath.Join(t.TempDir(), "load.lock")
+	l := testLoad
+	l.Settle = capDuration
+	_, release, err := Wait(context.Background(), "after-cap", "projectA:after-cap", nil, l, path, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	measured := waitObservedCores(t, path, func(d reserveData) bool { return d.ObservedCores >= 7.5 }, time.Second)
+	if measured.ObservedCores < 7.5 {
+		t.Fatalf("CPU after cap = %.2f; want about 8 cores", measured.ObservedCores)
+	}
+}
+
+func TestZeroCPUQueueWaitEndsAfterFirstWindowGrace(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(1)
+	setRunnableLimit(t, 7)
+	setProfileHistory(t, "projectA:idle", .5)
+	oldPoll, oldWindow, oldReader := reservePollInterval, reserveWindow, reserveCPUReader
+	reservePollInterval, reserveWindow = 5*time.Millisecond, 20*time.Millisecond
+	polled := make(chan struct{}, 1)
+	reserveCPUReader = func(int) (float64, error) {
+		select {
+		case polled <- struct{}{}:
+		default:
+		}
+		return 0, nil
+	}
+	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
+	path := filepath.Join(t.TempDir(), "load.lock")
+	_, release, err := Wait(context.Background(), "idle", "projectA:idle", nil, testLoad, path, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	select {
+	case <-polled:
+	case <-time.After(time.Second):
+		t.Fatal("reserve CPU was not sampled")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	adm, releaseNext, err := Wait(ctx, "next-idle", "projectA:next-idle", nil, testLoad, path, io.Discard)
+	if err != nil {
+		t.Fatalf("zero-CPU task held the next admission: %+v, %v", adm, err)
+	}
+	if adm.Waits[WhyReserve] <= 0 || adm.Waits[WhyReserve] > reserveWindow+reservePollInterval+40*time.Millisecond {
+		t.Fatalf("reserve wait = %s; want only first-window grace (%s)", adm.Waits[WhyReserve], reserveWindow+reservePollInterval)
+	}
+	if err := releaseNext(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWaitWithSettleHoldsNextAdmissionForDuration(t *testing.T) {
+	fakeMachine(t)
+	oldPoll, oldWindow, oldReader := reservePollInterval, reserveWindow, reserveCPUReader
+	reservePollInterval, reserveWindow = 5*time.Millisecond, 20*time.Millisecond
+	var readAt time.Time
+	var cpuSeconds float64
+	reserveCPUReader = func(int) (float64, error) {
+		at := time.Now()
+		if !readAt.IsZero() {
+			cpuSeconds += .5 * at.Sub(readAt).Seconds()
+		}
+		readAt = at
+		return cpuSeconds, nil
+	}
+	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
+	path, settlePath := filepath.Join(t.TempDir(), "load.lock"), filepath.Join(t.TempDir(), "load.settle.lock")
+	duration := 80 * time.Millisecond
+	_, release, err := WaitWithSettle(context.Background(), "head", "projectA:head", nil, testLoad, path, settlePath, duration, .5, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, releaseNext, err := WaitWithSettle(ctx, "next", "projectA:next", nil, testLoad, path, settlePath, duration, .5, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseNext()
+	if waited := time.Since(start); waited < duration-10*time.Millisecond {
+		t.Fatalf("next admission waited %s; want at least %s", waited, duration-10*time.Millisecond)
+	}
+}
+
+func TestReserveTracksLateCPUIncrease(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(1)
+	setProfileHistory(t, "projectA:late-phase", .5)
+	oldPoll, oldWindow, oldReader := reservePollInterval, reserveWindow, reserveCPUReader
+	reservePollInterval, reserveWindow = 5*time.Millisecond, 20*time.Millisecond
+	var started time.Time
+	const firstPhase = 2 * time.Second
+	reserveCPUReader = func(int) (float64, error) {
+		at := time.Now()
+		if started.IsZero() {
+			started = at
+		}
+		elapsed := at.Sub(started).Seconds()
+		if elapsed < firstPhase.Seconds() {
+			return .5 * elapsed, nil
+		}
+		return .5*firstPhase.Seconds() + 8*(elapsed-firstPhase.Seconds()), nil
+	}
+	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
+	path := filepath.Join(t.TempDir(), "load.lock")
+	_, release, err := Wait(context.Background(), "late-phase", "projectA:late-phase", nil, testLoad, path, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	measured := waitObservedCores(t, path, func(d reserveData) bool { return d.ObservedCores >= 7.5 }, 4*time.Second)
+	observedAt, err := time.Parse(time.RFC3339Nano, measured.ObservedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	virtualNow := observedAt.Add(30 * time.Second)
+	m := newMachine(testLoad, io.Discard, "next", "projectA:next")
+	m.now = func() time.Time { return virtualNow }
+	m.runnable, m.avg1, m.avg1Known, m.runnableLimit = 1, 3.2, true, 7
+	b, err := m.reservesBusy(path, false)
+	if err != nil || b.why != WhyReserve {
+		t.Fatalf("after 30s with late measured 8-core phase: %+v, %v; want next admission held", b, err)
+	}
+}
+
+func TestReserveKeepsObservationAfterReadError(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(1)
+	setProfileHistory(t, "projectA:read-error", .5)
+	oldPoll, oldWindow, oldReader := reservePollInterval, reserveWindow, reserveCPUReader
+	reservePollInterval, reserveWindow = 5*time.Millisecond, 20*time.Millisecond
+	var started time.Time
+	var failReads atomic.Bool
+	var errorsRead atomic.Int32
+	reserveCPUReader = func(int) (float64, error) {
+		if failReads.Load() {
+			errorsRead.Add(1)
+			return 0, fmt.Errorf("synthetic post-drop read")
+		}
+		at := time.Now()
+		if started.IsZero() {
+			started = at
+		}
+		return .5 * at.Sub(started).Seconds(), nil
+	}
+	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
+	path := filepath.Join(t.TempDir(), "load.lock")
+	var log strings.Builder
+	_, release, err := Wait(context.Background(), "read-error", "projectA:read-error", nil, testLoad, path, &log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	first := waitObservedCores(t, path, func(d reserveData) bool { return d.ObservedAt != "" }, time.Second)
+	if first.ObservedCores < .45 || first.ObservedCores > .55 {
+		t.Fatalf("initial measured CPU = %.3f; want about .5", first.ObservedCores)
+	}
+	failReads.Store(true) // the task now uses 8 cores, but proc reads fail
+	deadline := time.Now().Add(time.Second)
+	for errorsRead.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	last, ok := latestObservedCores(t, path)
+	if !ok || last.ObservedCores != first.ObservedCores || last.ObservedAt != first.ObservedAt {
+		t.Fatalf("observation after read errors = %+v, present=%v; want last successful sample %+v", last, ok, first)
+	}
+	if errorsRead.Load() < 3 || strings.Count(log.String(), "reading reserved CPU: synthetic post-drop read") != 1 {
+		t.Fatalf("read errors=%d, log=%q; want retries and one warning", errorsRead.Load(), log.String())
+	}
+}
+
+func TestReserveDropsMeasuredPeakAfterLoadFalls(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(1)
+	setProfileHistory(t, "projectA:short-peak", .5)
+	oldPoll, oldWindow, oldReader := reservePollInterval, reserveWindow, reserveCPUReader
+	reservePollInterval, reserveWindow = 5*time.Millisecond, 20*time.Millisecond
+	var started time.Time
+	const peakDuration = 2 * time.Second
+	reserveCPUReader = func(int) (float64, error) {
+		at := time.Now()
+		if started.IsZero() {
+			started = at
+		}
+		elapsed := at.Sub(started).Seconds()
+		if elapsed < peakDuration.Seconds() {
+			return 20 * elapsed, nil
+		}
+		return 20*peakDuration.Seconds() + .2*(elapsed-peakDuration.Seconds()), nil
+	}
+	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
+	path := filepath.Join(t.TempDir(), "load.lock")
+	_, release, err := Wait(context.Background(), "short-peak", "projectA:short-peak", nil, testLoad, path, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	measured := waitObservedCores(t, path, func(d reserveData) bool { return d.ObservedCores <= .3 }, 4*time.Second)
+	if measured.ObservedCores > .3 {
+		t.Fatalf("latest measured CPU = %.3f; want low post-peak rate", measured.ObservedCores)
+	}
+	observedAt, err := time.Parse(time.RFC3339Nano, measured.ObservedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newMachine(testLoad, io.Discard, "next", "projectA:next")
+	m.now = func() time.Time { return observedAt.Add(31 * time.Second) }
+	m.runnable, m.avg1, m.avg1Known, m.runnableLimit = 1, .4, true, 11
+	b, err := m.reservesBusy(path, false)
+	if err != nil || b.why != "" {
+		t.Fatalf("after 31s with current .2-core rate: %+v, %v; want candidate admitted", b, err)
+	}
+}
+
+func waitObservedCores(t *testing.T, path string, match func(reserveData) bool, timeout time.Duration) reserveData {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if d, ok := latestObservedCores(t, path); ok && match(d) {
+			return d
+		}
+		time.Sleep(time.Millisecond)
+	}
+	d, ok := latestObservedCores(t, path)
+	t.Fatalf("timed out waiting for observed CPU, latest=%+v present=%v", d, ok)
+	return reserveData{}
+}
+
+func latestObservedCores(t *testing.T, path string) (reserveData, bool) {
+	t.Helper()
+	files, err := lock.LiveData(filepath.Dir(path), admittedPattern(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var latest reserveData
+	var latestAt time.Time
+	for _, file := range files {
+		var d reserveData
+		if err := json.Unmarshal(file.Data, &d); err != nil {
+			t.Fatal(err)
+		}
+		if d.ObservedAt == "" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, d.ObservedAt)
+		if err != nil {
+			t.Fatalf("parsing observed CPU timestamp %q from %s: %v", d.ObservedAt, file.Path, err)
+		}
+		if latestAt.IsZero() || at.After(latestAt) {
+			latest, latestAt = d, at
+		}
+	}
+	return latest, !latestAt.IsZero()
 }
