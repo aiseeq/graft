@@ -90,23 +90,26 @@ tasks:
     # They pass on the user's remote_heavy host too (01.11: go test -short on
     # it green but one test of this machine's SELinux, fixed): a busy gate
     # may send them there.
-    # GATE_SCENARIOS: the root package's scenarios a commit does not use, most
-    # of its time (04.11, limit 60 s). test-scenarios runs them for install,
-    # test-race for all. The gate's own tests, TestBusyGate, stay here.
-    env: &gate-scenarios {GATE_SCENARIOS: '^Test(Freeze|Frozen|Release|Deploy|Merge|Worktree|Remote|UserRemoteHeavy|Round|Withheld|Advisory)'}
+    # GATE_SCENARIOS: the scenarios a commit does not use, most of the gate's
+    # time (04.11, limit 60 s); go test -skip takes them out of every package.
+    # test-scenarios runs them, in every package too, for install, test-race
+    # for all. Include the root deploy review regressions whose names
+    # omit Deploy, without skipping similarly named internal/app tests.
+    # The gate's own tests, TestBusyGate, stay here.
+    env: &gate-scenarios {GATE_SCENARIOS: '^Test(Freeze|Frozen|Release|Deploy|Merge|Worktree|Remote|UserRemoteHeavy|Round|Withheld|Advisory|Review(2OutsideParentDoesNotHideOpenSubtask|2ReleasedVersionCannotAnchorOutside|2LinkedEntryWinsOverOldForm|3VersionOutsideParentOpenSubtask|3UnlinkedSubtaskDoesNotHoldOutsideParent|3AdviceSecondApprovedVersion|3FreezeOutsideNeedsALiveApprovedAnchor|3FreezeSubtaskOwnMemberIsNoOutside|4PrefixIgnoredCommitIsNoLiveAnchor|4FreezeIgnoredCommitIsNoLiveAnchor|5EmptyOrVersionOnlyCommitIsNoLiveAnchor)|NoFreezeKeepsDeploysAsBefore|AFailedJournalStillRecordsTheDeploy)'}
     remote: true
     heavy: true
     tests: go
     run:
       - [go, test, -json, -p, '{threads}', -short, -skip, '${GATE_SCENARIOS}', ./...]
   test-scenarios:
-    desc: the root package's scenarios test-gate leaves out, so install does not take a commit whose scenarios nobody ran
+    desc: the scenarios test-gate leaves out, in every package, so install does not take a commit whose scenarios nobody ran
     env: *gate-scenarios
     remote: true
     heavy: true
     tests: go
     run:
-      - [go, test, -json, -p, '{threads}', -short, -run, '${GATE_SCENARIOS}', .]
+      - [go, test, -json, -p, '{threads}', -short, -run, '${GATE_SCENARIOS}', ./...]
   test-gate-db:
     desc: the gate's tests on the test database, the packages that read GRAFT_TEST_PG_DSN
     test_db: true
