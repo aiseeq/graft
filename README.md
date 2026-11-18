@@ -489,7 +489,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 
 | Command | What it does |
 |---|---|
-| `graft commit -m "fix: ..."` | lock, stage work, gate, stage paths changed when it started, bump patch (version mode `file`), stage bump, checks, commit, push to every remote |
+| `graft commit [--no-deps --reason TEXT] -m "fix: ..."` | lock, stage work, gate, stage paths changed when it started, bump patch (version mode `file`), stage bump, checks, commit, run `merge.deps` on trunk when configured, push to every remote |
 | `graft commit --minor` / `--major` | same with a minor / major bump (version mode `file` only) |
 | `graft commit -F msg.txt` / `-F -` | message from a file / from stdin, byte for byte |
 | `graft amend [--reset-author]` | lock, stage work before the gate, gate, stage paths changed since the amended commit's parent (including the amended commit's files), `ticket.required` on the whole amended commit, checks, `git commit --amend --no-edit`, no push; `--reset-author` sets the author to the current Git identity and permits an author-only amend on a clean tree; without it, a clean tree is refused; restores the original index if the gate or a later step fails or the gate leaves the amended commit as its parent has it, and refuses a commit that is already on a remote unless only on branches in `push.force_with_lease` |
@@ -565,6 +565,10 @@ result version is not above the trunk's, graft adds a patch bump. The result
 tree and `.graft.yaml` drive the gate and dependencies; `--no-deps` skips only
 `merge.deps` and requires a printed `--reason TEXT`.
 
+`graft commit` on the trunk also runs `merge.deps` after the gate and local
+commit, before pushing; a failure keeps the commit local.
+`--no-deps --reason TEXT` skips them with a printed reason.
+
 Dirty work, unfinished Git operations, local trunk commits absent from the
 remote, an unsupported version tag/build branch, failed checks and failed
 dependencies stop the operation. The source ref is resolved once and left
@@ -591,6 +595,12 @@ When the commit message or branch names a Jira key in a configured
 and prints a hint if it belongs to someone else. It also hints when deploying
 to a configured target would move a non-subtask issue to another status; Jira
 unavailable or slow produces a one-line notice and does not stop the commit.
+
+When `.graft.yaml` configures `merge.deps`, a trunk commit runs those tasks
+after the gate and local commit, before pushing. A failed task leaves the
+commit local; fix it and run `graft commit` again, or move the work to a branch
+and run `graft merge`. `--no-deps --reason TEXT` skips the tasks and prints the
+reason.
 
 1. Read the message (`-m`, repeatable, one paragraph each; `-F file`; `-F -`).
    An empty message is refused: there is no default subject. Warn when the

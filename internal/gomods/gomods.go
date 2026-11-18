@@ -131,9 +131,7 @@ func raiseFile(ctx context.Context, path, display, goPath string, env []string, 
 	if err != nil {
 		return goFailure(display, "go get", stderr, out, err)
 	}
-	for _, c := range upgraded {
-		fmt.Fprintf(log, "graft: %s: %s %s -> %s\n", display, c.path, c.version, latest[c.path].Version)
-	}
+	fmt.Fprintf(log, "graft: %s: raised modules: %s\n", display, formatRaisedModules(upgraded, latest))
 	out, stderr, err = execx.Run(ctx, filepath.Dir(path), goPath, env, "mod", "tidy")
 	if err != nil {
 		return goFailure(display, "go mod tidy", stderr, out, err)
@@ -148,6 +146,14 @@ func raiseFile(ctx context.Context, path, display, goPath string, env []string, 
 		return fmt.Errorf("checking %s vendor/modules.txt: %w", display, statErr)
 	}
 	return nil
+}
+
+func formatRaisedModules(upgraded []candidate, latest map[string]LatestModule) string {
+	changes := make([]string, 0, len(upgraded))
+	for _, c := range upgraded {
+		changes = append(changes, fmt.Sprintf("%s %s -> %s", c.path, c.version, latest[c.path].Version))
+	}
+	return strings.Join(changes, ", ")
 }
 
 // LatestModule is what go list -m -e says of a module@latest query.

@@ -42,9 +42,9 @@ func bumps(cfg *config.Config) bool {
 // CommitSyntax is the graft commit command line the project allows.
 func CommitSyntax(cfg *config.Config) string {
 	if bumps(cfg) {
-		return "graft commit [--minor|--major] (-m <msg>... | -F <file> | -F -) [--no-cache]"
+		return "graft commit [--minor|--major] (-m <msg>... | -F <file> | -F -) [--no-deps --reason TEXT] [--no-cache]"
 	}
-	return "graft commit (-m <msg>... | -F <file> | -F -) [--no-cache]"
+	return "graft commit (-m <msg>... | -F <file> | -F -) [--no-deps --reason TEXT] [--no-cache]"
 }
 
 // CommitSummary says what graft commit does in the project.
@@ -54,6 +54,9 @@ func CommitSummary(cfg *config.Config) string {
 		steps = append(steps, "bump the version")
 	}
 	steps = append(steps, "stage all", "check")
+	if cfg != nil && len(cfg.Merge.Deps) > 0 {
+		steps = append(steps, "run merge.deps before pushing a trunk commit")
+	}
 	switch {
 	case cfg == nil:
 		steps = append(steps, "commit with the work item key from the branch name")

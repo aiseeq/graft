@@ -2,6 +2,7 @@ package gomods
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/aiseeq/graft/v2/internal/userconfig"
@@ -46,5 +47,16 @@ replace example.com/own/replaced => ../replaced
 	want := []candidate{{"example.com/own/lib", "v1.2.0"}}
 	if len(got) != len(want) || (len(got) > 0 && got[0] != want[0]) {
 		t.Fatalf("candidates: %#v, want %#v", got, want)
+	}
+}
+
+func TestFormatRaisedModules(t *testing.T) {
+	got := formatRaisedModules(
+		[]candidate{{path: "example.com/akit", version: "v1.0.0"}, {path: "example.com/graft/v2", version: "v2.0.0"}},
+		map[string]LatestModule{"example.com/akit": {Version: "v1.1.0"}, "example.com/graft/v2": {Version: "v2.1.0"}},
+	)
+	const want = "example.com/akit v1.0.0 -> v1.1.0, example.com/graft/v2 v2.0.0 -> v2.1.0"
+	if got != want || strings.Contains(got, "\n") {
+		t.Fatalf("formatRaisedModules = %q, want one line %q", got, want)
 	}
 }

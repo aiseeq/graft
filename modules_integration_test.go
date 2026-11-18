@@ -161,9 +161,8 @@ func TestCommitRaisesOwnModulesToTheirLatest(t *testing.T) {
 		t.Fatalf("commit: exit %d\n%s", code, out)
 	}
 	for _, want := range []string{
-		"graft: go.mod: " + ownLib + " v0.1.0 -> v0.2.0",
-		"graft: go.mod: " + ownUntagged + " " + oldPseudo + " -> " + newPseudo,
-		"graft: tool/go.mod: " + ownLib + " v0.1.0 -> v0.2.0",
+		"graft: go.mod: raised modules: " + ownLib + " v0.1.0 -> v0.2.0, " + ownUntagged + " " + oldPseudo + " -> " + newPseudo,
+		"graft: tool/go.mod: raised modules: " + ownLib + " v0.1.0 -> v0.2.0",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q in:\n%s", want, out)
@@ -239,7 +238,7 @@ func TestBrokenLatestFailsTheCommitAndStaysRaised(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("a commit that does not build at the latest lib went in:\n%s", out)
 	}
-	if !strings.Contains(out, "graft: go.mod: "+ownLib+" v0.1.0 -> v0.2.0") || !strings.Contains(out, "gate failed") {
+	if !strings.Contains(out, "graft: go.mod: raised modules: "+ownLib+" v0.1.0 -> v0.2.0") || !strings.Contains(out, "gate failed") {
 		t.Errorf("output:\n%s", out)
 	}
 	if n := f.commitCount(); n != 0 {

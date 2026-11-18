@@ -1164,6 +1164,8 @@ func commitCmd(ctx context.Context, a *app.App, args []string) error {
 	var parts multiFlag
 	fs.Var(&parts, "m", "commit message paragraph (repeatable)")
 	file := fs.String("F", "", "read the commit message from a file, - for stdin")
+	noDeps := fs.Bool("no-deps", false, "skip merge.deps on trunk (requires --reason)")
+	noDepsReason := fs.String("reason", "", "reason for skipping merge.deps")
 	level := levelFlags(fs)
 	fs.BoolVar(&a.NoCache, "no-cache", false, "run the gate's tasks again, without the cache, even if they passed on this tree")
 	if err := parse(fs, args); err != nil {
@@ -1175,7 +1177,7 @@ func commitCmd(ctx context.Context, a *app.App, args []string) error {
 	}
 	return a.Commit(ctx, app.CommitOptions{
 		Message: message.Source{Parts: parts, File: *file, Stdin: a.Stdin},
-		Level:   lvl,
+		Level:   lvl, NoDeps: *noDeps, NoDepsReason: *noDepsReason,
 	})
 }
 

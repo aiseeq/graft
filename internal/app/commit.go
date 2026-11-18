@@ -22,8 +22,10 @@ import (
 
 // CommitOptions are the arguments of graft commit.
 type CommitOptions struct {
-	Message message.Source
-	Level   version.Level
+	Message      message.Source
+	Level        version.Level
+	NoDeps       bool
+	NoDepsReason string
 }
 
 // Commit is the one way a change enters the repository: gate, version bump,
@@ -68,6 +70,9 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 		if err != nil {
 			return err
 		}
+		if err := configureCommitDeps(cfg, &plan, opts); err != nil {
+			return err
+		}
 		if err := a.raiseOwnModules(ctx, repo, cfg, plan.branch); err != nil {
 			return err
 		}
@@ -82,6 +87,21 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 	}
 	a.dailyFlags(ctx, repo, cfg, "")
 	a.dailySweep(ctx, repo, cfg)
+	return nil
+}
+
+func configureCommitDeps(cfg *config.Config, plan *commitPlan, opts CommitOptions) error {
+	if opts.NoDeps && strings.TrimSpace(opts.NoDepsReason) == "" {
+		return fmt.Errorf("--no-deps requires --reason <text>")
+	}
+	if !opts.NoDeps && strings.TrimSpace(opts.NoDepsReason) != "" {
+		return fmt.Errorf("--reason requires --no-deps")
+	}
+	plan.noDeps, plan.noDepsReason = opts.NoDeps, opts.NoDepsReason
+	if len(cfg.Merge.Deps) == 0 {
+		return nil
+	}
+	plan.checkDepsRemotes = true
 	return nil
 }
 
@@ -123,7 +143,11 @@ type commitPlan struct {
 	head headState
 	// release marks the commit graft release makes: it changes only the
 	// version files and needs no work item under ticket.required.
-	release bool
+	release          bool
+	runDeps          bool
+	checkDepsRemotes bool
+	noDeps           bool
+	noDepsReason     string
 }
 
 func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level version.Level) (commitPlan, error) {
@@ -292,7 +316,7 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	if _, err := repo.GitInput(strings.NewReader(msg), markerEnv, "commit", "--cleanup=verbatim", "-F", "-"); err != nil {
 		return undo(err)
 	}
-	return a.finishCommit(repo, cfg, plan, frozen, advisoryFailed)
+	return a.finishCommit(ctx, repo, cfg, plan, frozen, advisoryFailed)
 }
 
 func (a *App) prepareCommitGate(ctx context.Context, repo *gitx.Repo, cfg *config.Config, plan commitPlan) (*version.Backup, *activeFreeze, []string, error) {
@@ -390,7 +414,43 @@ func oneLinePath(path string) string {
 	return strings.NewReplacer("\\", "\\\\", "\n", "\\n", "\r", "\\r", "\t", "\\t").Replace(path)
 }
 
-func (a *App) finishCommit(repo *gitx.Repo, cfg *config.Config, plan commitPlan, frozen *activeFreeze, advisoryFailed []string) error {
+func (a *App) finishCommit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, plan commitPlan, frozen *activeFreeze, advisoryFailed []string) error {
+	if plan.checkDepsRemotes {
+		run, err := commitDepsTrunkRemotes(repo, plan.branch, plan.remotes)
+		if err != nil {
+			var unknown *unknownCommitRemoteHead
+			if errors.As(err, &unknown) {
+				remote := unknown.remote
+				return fmt.Errorf("the trunk of %s is unknown (no refs/remotes/%s/HEAD); run git remote set-head %s --auto, then commit again; commit %s is local", remote, remote, remote, plan.branch)
+			}
+			return fmt.Errorf("checking remote trunks for merge.deps: %w", err)
+		}
+		plan.runDeps = run
+	}
+	if plan.runDeps {
+		before, err := captureCommitDepsState(repo)
+		if err != nil {
+			return fmt.Errorf("recording commit state before merge.deps: %w", err)
+		}
+		depsErr := runMergeDeps(a, ctx, repo, cfg, plan.noDeps, plan.noDepsReason)
+		after, stateErr := captureCommitDepsState(repo)
+		if stateErr != nil {
+			stateErr = fmt.Errorf("reading commit state after merge.deps: %w", stateErr)
+		} else if changed := commitDepsStateChanges(before, after); len(changed) > 0 {
+			stateErr = fmt.Errorf("merge.deps changed %s in %s", strings.Join(changed, ", "), repo.Root)
+			if before.head != after.head {
+				paths, diffErr := repo.Git("diff", "--name-only", before.head, after.head)
+				if diffErr != nil {
+					stateErr = errors.Join(stateErr, fmt.Errorf("listing changed commit paths: %w", diffErr))
+				} else if strings.TrimSpace(paths) != "" {
+					stateErr = fmt.Errorf("%w (paths: %s)", stateErr, strings.ReplaceAll(strings.TrimSpace(paths), "\n", ", "))
+				}
+			}
+		}
+		if depsErr != nil || stateErr != nil {
+			return fmt.Errorf("%w; commit %s is local: fix the failed task and run `graft commit` again, or move the work to a branch and run `graft merge`", errors.Join(depsErr, stateErr), plan.branch)
+		}
+	}
 	refs := []string{"HEAD"}
 	var postCommitErrs []error
 	if plan.bump.tag != "" {
@@ -413,6 +473,107 @@ func (a *App) finishCommit(repo *gitx.Repo, cfg *config.Config, plan commitPlan,
 		postCommitErrs = append(postCommitErrs, err)
 	}
 	return errors.Join(postCommitErrs...)
+}
+
+type unknownCommitRemoteHead struct{ remote string }
+
+func (e *unknownCommitRemoteHead) Error() string {
+	return fmt.Sprintf("remote %s has no local trunk HEAD", e.remote)
+}
+
+func commitDepsTrunkRemotes(repo *gitx.Repo, branch string, remotes []string) (bool, error) {
+	if len(remotes) == 0 {
+		return branch == "main" || branch == "master", nil
+	}
+	trunk := false
+	for _, remote := range remotes {
+		headRef := "refs/remotes/" + remote + "/HEAD"
+		exists, err := repo.RefExists(headRef)
+		if err != nil {
+			return false, err
+		}
+		if !exists {
+			return false, &unknownCommitRemoteHead{remote: remote}
+		}
+		ref, err := repo.Git("symbolic-ref", "--quiet", "--short", headRef)
+		if err != nil {
+			return false, fmt.Errorf("reading %s: %w", headRef, err)
+		}
+		name, ok := strings.CutPrefix(strings.TrimSpace(ref), remote+"/")
+		if !ok || name == "" {
+			return false, fmt.Errorf("%s points outside refs/remotes/%s: %q", headRef, remote, strings.TrimSpace(ref))
+		}
+		trunk = trunk || branch == name
+	}
+	return trunk, nil
+}
+
+type commitDepsState struct {
+	branch, head, branchTip, indexTree, worktreeDiff, untracked string
+}
+
+func captureCommitDepsState(repo *gitx.Repo) (commitDepsState, error) {
+	var state commitDepsState
+	branch, err := repo.Branch()
+	if err != nil {
+		return state, err
+	}
+	state.branch = branch
+	if state.head, err = repo.Git("rev-parse", "HEAD"); err != nil {
+		return state, err
+	}
+	state.head = strings.TrimSpace(state.head)
+	if state.branchTip, err = repo.Git("rev-parse", "--verify", "refs/heads/"+branch); err != nil {
+		return state, err
+	}
+	state.branchTip = strings.TrimSpace(state.branchTip)
+	if state.indexTree, err = repo.Git("write-tree"); err != nil {
+		return state, err
+	}
+	state.indexTree = strings.TrimSpace(state.indexTree)
+	if state.worktreeDiff, err = repo.Git("diff", "--binary", "--no-ext-diff"); err != nil {
+		return state, err
+	}
+	paths, err := repo.Git("ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return state, err
+	}
+	var untracked []string
+	for path := range strings.SplitSeq(paths, "\x00") {
+		if path == "" {
+			continue
+		}
+		hash, err := repo.Git("hash-object", "--", path)
+		if err != nil {
+			return state, fmt.Errorf("hashing untracked %s: %w", path, err)
+		}
+		untracked = append(untracked, path+"="+strings.TrimSpace(hash))
+	}
+	state.untracked = strings.Join(untracked, "\x00")
+	return state, nil
+}
+
+func commitDepsStateChanges(before, after commitDepsState) []string {
+	var changed []string
+	if before.head != after.head {
+		changed = append(changed, fmt.Sprintf("HEAD from %s to %s", gitx.Short(before.head), gitx.Short(after.head)))
+	}
+	if before.branch != after.branch {
+		changed = append(changed, fmt.Sprintf("branch from %s to %s", before.branch, after.branch))
+	}
+	if before.branchTip != after.branchTip {
+		changed = append(changed, "branch ref")
+	}
+	if before.indexTree != after.indexTree {
+		changed = append(changed, "index")
+	}
+	if before.worktreeDiff != after.worktreeDiff {
+		changed = append(changed, "work tree")
+	}
+	if before.untracked != after.untracked {
+		changed = append(changed, "untracked files")
+	}
+	return changed
 }
 
 // pushCommit pushes the commit and its tag. A release pushes the branch

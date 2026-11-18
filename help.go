@@ -30,7 +30,7 @@ func text(s string) func(*config.Config) string {
 }
 
 var commands = []command{
-	{name: "commit", syntax: func(c *config.Config) []string { return []string{app.CommitSyntax(c)} }, summary: app.CommitSummary},
+	{name: "commit", syntax: func(c *config.Config) []string { return []string{app.CommitSyntax(c)} }, summary: app.CommitSummary, details: "On the trunk, runs merge.deps after the gate and local commit, before pushing. --no-deps skips them only with a printed --reason TEXT."},
 	{name: "amend", syntax: fixed("graft amend [--reset-author]"), summary: text("gate, stage all, check, fold into the last unpushed commit"), details: "--reset-author makes Git set the amended commit's author to the current configured identity and permits an author-only amend on a clean tree."},
 	{name: "release", syntax: releaseSyntax, summary: text("tag the pushed HEAD with the version, after pushing its branch, and push the tag"),
 		applies: func(c *config.Config) bool { return c.Version.Mode != config.ModeNone }},

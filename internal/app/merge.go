@@ -997,15 +997,8 @@ func (s *mergeState) runContentChecks() error {
 }
 
 func (s *mergeState) runMergeDeps() error {
-	if s.opts.NoDeps || len(s.resultCfg.Merge.Deps) == 0 {
-		if !s.opts.NoDeps {
-			s.a.printf("merge deps: skipped (none configured)")
-		}
-		return nil
-	}
-	s.a.printf("merge deps: %s", strings.Join(s.resultCfg.Merge.Deps, ", "))
-	if err := s.a.runner(s.w, s.resultCfg).RunDeps(s.ctx, s.resultCfg.Merge.Deps); err != nil {
-		return fmt.Errorf("merge deps failed; nothing published: %w", err)
+	if err := runMergeDeps(s.a, s.ctx, s.w, s.resultCfg, s.opts.NoDeps, s.opts.NoDepsReason); err != nil {
+		return fmt.Errorf("%w; nothing published", err)
 	}
 	return mergeTreeUnchanged(s.w, s.R, s.resultCfg, "merge.deps")
 }
