@@ -490,7 +490,7 @@ func TestServiceStopReportsOrphanedSessionProcess(t *testing.T) {
 			if err := os.WriteFile(f.path("tmp/web.pid"), []byte(strconv.Itoa(leader.Process.Pid)+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := leader.Process.Signal(syscall.SIGTERM); err != nil {
+			if err := akitproc.SignalCmd(leader, syscall.SIGTERM); err != nil {
 				t.Fatal(err)
 			}
 			waitErr := leader.Wait()
@@ -598,7 +598,7 @@ func TestServiceStopAllContinuesAfterOrphanError(t *testing.T) {
 	if err := os.WriteFile(f.path("tmp/z.pid"), []byte(strconv.Itoa(leader.Process.Pid)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := leader.Process.Signal(syscall.SIGTERM); err != nil {
+	if err := akitproc.SignalCmd(leader, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	waitErr := leader.Wait()
