@@ -415,6 +415,46 @@ func oneLinePath(path string) string {
 }
 
 func (a *App) finishCommit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, plan commitPlan, frozen *activeFreeze, advisoryFailed []string) error {
+	if err := a.commitMergeDeps(ctx, repo, cfg, &plan); err != nil {
+		return err
+	}
+	refs := []string{"HEAD"}
+	var postCommitErrs []error
+	if plan.bump.tag != "" {
+		if _, err := repo.Git("tag", "-a", plan.bump.tag, "-m", plan.bump.tag); err != nil {
+			postCommitErrs = append(postCommitErrs, fmt.Errorf("commit made, but tagging it failed: %w", err))
+		} else {
+			refs = append(refs, "refs/tags/"+plan.bump.tag)
+		}
+	}
+	head, err := repo.Git("rev-parse", "--short", "HEAD")
+	if err != nil {
+		postCommitErrs = append(postCommitErrs, fmt.Errorf("commit made, but reading it back failed: %w", err))
+	} else {
+		a.printf("committed %s on %s%s", strings.TrimSpace(head), plan.branch, plan.bump.describe())
+	}
+	pushed := len(plan.remotes) == 0
+	if err := a.pushCommit(repo, cfg, plan, refs); err != nil {
+		postCommitErrs = append(postCommitErrs, err)
+	} else if len(plan.remotes) > 0 {
+		pushed = true
+	}
+	if pushed {
+		sha, shaErr := repo.Git("rev-parse", "--short=12", "HEAD")
+		if shaErr == nil {
+			first, _, _ := strings.Cut(plan.message, "\n")
+			a.ticketJournal(ctx, repo, plan.message, fmt.Sprintf("commit %s on %s: %s", strings.TrimSpace(sha), plan.branch, strings.TrimSpace(first)))
+		}
+	}
+	if err := a.recordCommitAdvisoryAfterPush(repo, cfg, frozen, advisoryFailed); err != nil {
+		postCommitErrs = append(postCommitErrs, err)
+	}
+	return errors.Join(postCommitErrs...)
+}
+
+// commitMergeDeps runs merge.deps before the push when the commit lands on a
+// trunk of a remote it pushes to; a failure keeps the commit local.
+func (a *App) commitMergeDeps(ctx context.Context, repo *gitx.Repo, cfg *config.Config, plan *commitPlan) error {
 	if plan.checkDepsRemotes {
 		run, err := commitDepsTrunkRemotes(repo, plan.branch, plan.remotes)
 		if err != nil {
@@ -451,38 +491,7 @@ func (a *App) finishCommit(ctx context.Context, repo *gitx.Repo, cfg *config.Con
 			return fmt.Errorf("%w; commit %s is local: fix the failed task and run `graft commit` again, or move the work to a branch and run `graft merge`", errors.Join(depsErr, stateErr), plan.branch)
 		}
 	}
-	refs := []string{"HEAD"}
-	var postCommitErrs []error
-	if plan.bump.tag != "" {
-		if _, err := repo.Git("tag", "-a", plan.bump.tag, "-m", plan.bump.tag); err != nil {
-			postCommitErrs = append(postCommitErrs, fmt.Errorf("commit made, but tagging it failed: %w", err))
-		} else {
-			refs = append(refs, "refs/tags/"+plan.bump.tag)
-		}
-	}
-	head, err := repo.Git("rev-parse", "--short", "HEAD")
-	if err != nil {
-		postCommitErrs = append(postCommitErrs, fmt.Errorf("commit made, but reading it back failed: %w", err))
-	} else {
-		a.printf("committed %s on %s%s", strings.TrimSpace(head), plan.branch, plan.bump.describe())
-	}
-	pushed := len(plan.remotes) == 0
-	if err := a.pushCommit(repo, cfg, plan, refs); err != nil {
-		postCommitErrs = append(postCommitErrs, err)
-	} else if len(plan.remotes) > 0 {
-		pushed = true
-	}
-	if pushed {
-		sha, shaErr := repo.Git("rev-parse", "--short=12", "HEAD")
-		if shaErr == nil {
-			first, _, _ := strings.Cut(plan.message, "\n")
-			a.ticketJournal(ctx, repo, plan.message, fmt.Sprintf("commit %s on %s: %s", strings.TrimSpace(sha), plan.branch, strings.TrimSpace(first)))
-		}
-	}
-	if err := a.recordCommitAdvisoryAfterPush(repo, cfg, frozen, advisoryFailed); err != nil {
-		postCommitErrs = append(postCommitErrs, err)
-	}
-	return errors.Join(postCommitErrs...)
+	return nil
 }
 
 type unknownCommitRemoteHead struct{ remote string }
