@@ -136,7 +136,7 @@ func (a *App) Status(ctx context.Context) error {
 			return err
 		}
 	}
-	return a.Locks()
+	return a.Locks(ctx)
 }
 
 func describeService(st services.State) string {
@@ -158,7 +158,7 @@ func describeService(st services.State) string {
 }
 
 // Locks shows the held locks: the repository lock and the named ones.
-func (a *App) Locks() error {
+func (a *App) Locks(ctx context.Context) error {
 	repo, err := gitx.Open(a.Dir)
 	if err != nil {
 		return err
@@ -201,19 +201,7 @@ func (a *App) Locks() error {
 		for _, h := range holders {
 			a.printf("lock %s held by %s", strings.TrimSuffix(filepath.Base(p), ".lock"), h)
 			if p == loadLockPath {
-				load, err := userconfig.LoadSettings()
-				if err != nil {
-					a.printf("the load queue: cannot measure the machine: %v", err)
-				} else {
-					why, err := loadgate.LoadQueueWhy(context.Background(), "graft locks", "graft locks", load, loadLockPath, io.Discard)
-					if err != nil {
-						a.printf("the load queue: cannot measure the machine: %v", err)
-					} else if why == "" {
-						a.printf("the machine has room: the head is starting or settling")
-					} else {
-						a.printf("the load queue waits: %s", why)
-					}
-				}
+				a.printf("%s", loadQueueLine(ctx, loadLockPath))
 			}
 			held++
 		}
@@ -222,6 +210,23 @@ func (a *App) Locks() error {
 		a.printf("no locks held")
 	}
 	return nil
+}
+
+// loadQueueLine says what the load queue waits for now, by the admission's
+// own measure; a measure that fails is said, not returned.
+func loadQueueLine(ctx context.Context, loadLockPath string) string {
+	load, err := userconfig.LoadSettings()
+	if err != nil {
+		return fmt.Sprintf("the load queue: cannot measure the machine: %v", err)
+	}
+	why, err := loadgate.LoadQueueWhy(ctx, "graft locks", "graft locks", load, loadLockPath, io.Discard)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("the load queue: cannot measure the machine: %v", err)
+	case why == "":
+		return "the machine has room: the head is starting or settling"
+	}
+	return "the load queue waits: " + why
 }
 
 // Tools checks the pinned tools; with install it installs those that fail.

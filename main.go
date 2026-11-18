@@ -411,7 +411,7 @@ func projectCmd(ctx context.Context, a *app.App, cmd string, rest []string) erro
 	case "status":
 		return noArgs(a, cmd, rest, func() error { return a.Status(ctx) })
 	case "locks":
-		return noArgs(a, cmd, rest, a.Locks)
+		return noArgs(a, cmd, rest, func() error { return a.Locks(ctx) })
 	case "logs":
 		return logsCmd(ctx, a, rest)
 	case "testdb":

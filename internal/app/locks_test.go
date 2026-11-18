@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,7 +44,7 @@ func TestLocksShowsLoadQueueQuietWait(t *testing.T) {
 
 	var output bytes.Buffer
 	a := &App{Dir: root, Stdout: &output}
-	if err := a.Locks(); err != nil {
+	if err := a.Locks(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), "waits: quiet mode until") {
@@ -83,7 +84,7 @@ func TestLocksReportsLoadMeasureErrorAndContinues(t *testing.T) {
 
 	var output bytes.Buffer
 	a := &App{Dir: root, Stdout: &output}
-	if err := a.Locks(); err != nil {
+	if err := a.Locks(context.Background()); err != nil {
 		t.Fatalf("Locks returned an error: %v\n%s", err, output.String())
 	}
 	for _, want := range []string{
