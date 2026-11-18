@@ -607,9 +607,6 @@ func capCandidate(candidate, limit float64) float64 {
 	return candidate
 }
 
-//go:fix inline
-func floatField(v float64) *float64 { return new(v) }
-
 // firstUnmeasuredAdmission keeps the queue closed briefly after an admission,
 // until its first CPU window should have been sampled. After that grace period
 // the expected reserve continues to protect tasks whose CPU cannot be read.
