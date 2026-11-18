@@ -354,7 +354,7 @@ func (r *Runner) gateSteps(ctx context.Context) ([]gateStep, error) {
 			run: func(ctx context.Context) error { return r.checkLexOutputs(ctx, lexCodices) }, measured: true,
 		})
 	}
-	if !r.Config.GoVet.IsEnabled() && !r.Config.GoFix.Enabled && !r.Config.GoFmt.IsEnabled() {
+	if !r.Config.GoVet.IsEnabled() && !r.Config.GoFix.Enabled && !r.Config.Staticcheck.Enabled && !r.Config.GoFmt.IsEnabled() {
 		return r.configSteps(steps), nil
 	}
 	mods, err := r.goModules(goMods)
@@ -382,6 +382,14 @@ func (r *Runner) gateSteps(ctx context.Context) ([]gateStep, error) {
 				step: config.Step{Argv: []string{"go", "fix", "-diff", "./..."}, Source: inModule(GoFixSource, dir)},
 				task: &config.Task{Dir: dir, Env: r.Config.GoVet.Env}, builtin: true,
 				hint: goFixHint,
+			})
+		}
+	}
+	if r.Config.Staticcheck.Enabled {
+		for _, dir := range mods {
+			steps = append(steps, gateStep{
+				step: config.Step{Source: inModule(StaticcheckSource, dir)}, task: &config.Task{Dir: dir, Env: r.Config.GoVet.Env},
+				run: func(ctx context.Context) error { return r.checkStaticcheck(ctx, dir) }, hint: staticcheckHint, builtinCost: true,
 			})
 		}
 	}

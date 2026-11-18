@@ -62,19 +62,20 @@ type Config struct {
 	// MinGraft is the X.Y.Z from Graft, empty when the project sets none.
 	MinGraft string `yaml:"-"`
 
-	Gate    []Step        `yaml:"gate"`
-	GoVet   GoVet         `yaml:"go_vet"`
-	GoFix   GoFix         `yaml:"go_fix"`
-	GoFmt   GoFmt         `yaml:"go_fmt"`
-	Version Version       `yaml:"version"`
-	Ticket  *Ticket       `yaml:"ticket"`
-	Push    Push          `yaml:"push"`
-	Checks  Checks        `yaml:"checks"`
-	Hooks   Hooks         `yaml:"hooks"`
-	Lock    Lock          `yaml:"lock"`
-	Limits  ProjectLimits `yaml:"limits"`
-	Commit  CommitPolicy  `yaml:"commit"`
-	Merge   Merge         `yaml:"merge"`
+	Gate        []Step        `yaml:"gate"`
+	GoVet       GoVet         `yaml:"go_vet"`
+	GoFix       GoFix         `yaml:"go_fix"`
+	Staticcheck Staticcheck   `yaml:"staticcheck"`
+	GoFmt       GoFmt         `yaml:"go_fmt"`
+	Version     Version       `yaml:"version"`
+	Ticket      *Ticket       `yaml:"ticket"`
+	Push        Push          `yaml:"push"`
+	Checks      Checks        `yaml:"checks"`
+	Hooks       Hooks         `yaml:"hooks"`
+	Lock        Lock          `yaml:"lock"`
+	Limits      ProjectLimits `yaml:"limits"`
+	Commit      CommitPolicy  `yaml:"commit"`
+	Merge       Merge         `yaml:"merge"`
 
 	Envs   map[string]*Env `yaml:"envs"`
 	DotEnv string          `yaml:"dotenv"`
@@ -233,6 +234,11 @@ func (g GoVet) IsEnabled() bool { return g.Enabled == nil || *g.Enabled }
 // the modules go vet checks: rewrites go fix would make fail the gate. It is
 // off by default: a new Go release brings new rewrites to every project.
 type GoFix struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+// Staticcheck enables the changed-line SA checks in the gate. It is off by default.
+type Staticcheck struct {
 	Enabled bool `yaml:"enabled"`
 }
 

@@ -108,6 +108,17 @@ func TestParseDefaults(t *testing.T) {
 	}
 }
 
+func TestStaticcheckConfig(t *testing.T) {
+	cfg, err := Parse([]byte(minimal + "staticcheck:\n  enabled: true\n"))
+	if err != nil || !cfg.Staticcheck.Enabled {
+		t.Fatalf("Staticcheck = %+v, err = %v", cfg.Staticcheck, err)
+	}
+	cfg, err = Parse([]byte(minimal))
+	if err != nil || cfg.Staticcheck.Enabled {
+		t.Fatalf("default Staticcheck = %+v, err = %v", cfg.Staticcheck, err)
+	}
+}
+
 func TestIgnoredSourcesConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name, yaml, want string

@@ -502,7 +502,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft init` | install the hooks and set `core.hooksPath`, create the `.env` file from `dotenv_template` when it is missing, install pinned tools that fail their check; safe to repeat |
 | `graft check [--secrets \| --ignored-sources]` | check staged content and new ignore rules; `--secrets` scans secrets alone, `--ignored-sources` audits all ignored sources. Both work without `.graft.yaml` and use its settings when present |
 | `graft leaks <revision>…` | scan commits, including merge resolutions and messages (Git 2.36 or newer for merges), for the private names and terms of the user config (`leaks`) |
-| `graft gate` | run the gate commands (`go vet ./...` in every Go module first, see `go_vet`, then `go fix -diff ./...` with `go_fix`, then `gofmt -l` with `go_fmt`) |
+| `graft gate` | run the gate commands (`go vet ./...` in every Go module first, see `go_vet`, then `go fix -diff ./...` with `go_fix`, `staticcheck` SA checks on changed lines with `staticcheck`, then `gofmt -l` with `go_fmt`) |
 | `graft merge [--mode rebase\|merge] [--no-deps --reason TEXT] [-m MESSAGE] <branch>` | build and check a trunk update in a temporary worktree, push it to configured remotes, then fast-forward the local trunk |
 | `graft hook pre-commit` / `prepare-commit-msg` / `post-merge` | what the installed hooks call |
 | `graft flags [status]` | is the flag raised: open journal events no exception mutes |
@@ -778,6 +778,13 @@ go_fmt:
 # once, whatever the change; the failure says so.
 go_fix:
   enabled: false                # default false
+
+# staticcheck runs only SA* checks in each Go module and fails only for
+# findings on lines changed against HEAD (including staged and unstaged edits).
+# Requires staticcheck in PATH; install with go install
+# honnef.co/go/tools/cmd/staticcheck@latest. Off by default.
+staticcheck:
+  enabled: false
 
 version:
   mode: file                    # required: file | git-tag | none
