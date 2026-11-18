@@ -191,6 +191,8 @@ func TestRegistryExecAccepted(t *testing.T) {
 			args = append(args, "1")
 		case "--memory-max":
 			args = append(args, "1G")
+		case "--memory-high":
+			args = append(args, "1G")
 		}
 		var opts app.ExecOptions
 		var local bool

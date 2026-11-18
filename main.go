@@ -904,7 +904,7 @@ func (s *stringListFlag) String() string         { return strings.Join(*s, ",") 
 func (s *stringListFlag) Set(value string) error { *s = append(*s, value); return nil }
 
 // execSyntax is graft exec's usage, in its error and in graft help.
-const execSyntax = "graft exec [--heavy [--local] [--test-db] [--env <name>]... [--settle <duration>] [--cores <n>] [--memory-max <value>]] -- <command> [args]"
+const execSyntax = "graft exec [--heavy [--local] [--test-db] [--env <name>]... [--settle <duration>] [--cores <n>] [--memory-max <value>] [--memory-high <value>]] -- <command> [args]"
 
 // execCmd is graft exec; its own failures, usage too, exit app.ExitGraft
 // (run).
@@ -919,7 +919,7 @@ func execCmd(ctx context.Context, a *app.App, args []string) error {
 		}
 		args = args[consumed:]
 	}
-	if len(args) < 2 || ((local || opts.TestDB || opts.Settle > 0 || opts.Cores > 0 || opts.MemoryMax != "" || len(pass) > 0) && !opts.Heavy) {
+	if len(args) < 2 || ((local || opts.TestDB || opts.Settle > 0 || opts.Cores > 0 || opts.MemoryMax != "" || opts.MemoryHigh != "" || len(pass) > 0) && !opts.Heavy) {
 		return execUsage()
 	}
 	if err := exportExecEnv(pass, local); err != nil {
@@ -969,14 +969,18 @@ func parseExecFlag(args []string, opts *app.ExecOptions, local *bool, pass *[]st
 		}
 		opts.Cores = cores
 		return 2, nil
-	case "--memory-max":
+	case "--memory-max", "--memory-high":
 		if len(args) < 2 {
 			return 0, usage
 		}
 		if _, _, err := memorymax.Parse(args[1]); err != nil {
-			return 0, fmt.Errorf("%w: exec --memory-max %q: %w", errUsage, args[1], err)
+			return 0, fmt.Errorf("%w: exec %s %q: %w", errUsage, args[0], args[1], err)
 		}
-		opts.MemoryMax = args[1]
+		if args[0] == "--memory-max" {
+			opts.MemoryMax = args[1]
+		} else {
+			opts.MemoryHigh = args[1]
+		}
 		return 2, nil
 	default:
 		return 0, usage

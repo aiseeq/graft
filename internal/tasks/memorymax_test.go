@@ -113,7 +113,7 @@ func TestSplitGateCeiling(t *testing.T) {
 	var stderr strings.Builder
 	r := &Runner{Stderr: &stderr, splitLeave: func() error { return nil }}
 	for _, step := range []struct{ task, max string }{{"lint", ""}, {"test", "6G"}, {"test", "6G"}} {
-		if err := r.enterSplit(context.Background(), step.task, step.max, false); err != nil {
+		if err := r.enterSplit(context.Background(), step.task, step.max, "", false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -122,6 +122,23 @@ func TestSplitGateCeiling(t *testing.T) {
 	}
 	if n := strings.Count(stderr.String(), "memory_max of task test not applied"); n != 1 {
 		t.Errorf("line printed %d times, want once:\n%s", n, stderr.String())
+	}
+}
+
+func TestMemoryHighFlagOverridesTask(t *testing.T) {
+	t.Setenv(ExecMemoryHighEnv, "3G")
+	var got iosched.Request
+	orig := configureHeavy
+	t.Cleanup(func() { configureHeavy = orig })
+	configureHeavy = func(_ context.Context, _ int, _ string, req iosched.Request) (iosched.Placement, error) {
+		got = req
+		return iosched.Placement{}, nil
+	}
+	if err := (&Runner{Stderr: &bytes.Buffer{}}).holdCeiling(context.Background(), "scan", "8G", "2G"); err != nil {
+		t.Fatal(err)
+	}
+	if got.High != "3G" || got.HighSource != outerMemoryHighSource {
+		t.Fatalf("memory high request = %q (%q), want flag 3G", got.High, got.HighSource)
 	}
 }
 
@@ -156,7 +173,7 @@ func TestExecPassesTheHeldScopeToItsGraft(t *testing.T) {
 		got = req
 		return iosched.Placement{}, nil
 	}
-	if err := (&Runner{Stderr: &bytes.Buffer{}}).holdCeiling(context.Background(), "inner", ""); err != nil {
+	if err := (&Runner{Stderr: &bytes.Buffer{}}).holdCeiling(context.Background(), "inner", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if got.Held != "run-7.scope" {
@@ -177,7 +194,7 @@ func TestHoldCeilingPassesHalfMode(t *testing.T) {
 		return iosched.Placement{}, nil
 	}
 	r := &Runner{Stderr: &bytes.Buffer{}}
-	if err := r.holdCeiling(context.Background(), "test", ""); err != nil {
+	if err := r.holdCeiling(context.Background(), "test", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if got.CPUQuotaUSec != 3_500_000 || !got.HalfUntil.Equal(until) || r.halfProcs != 4 {

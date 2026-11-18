@@ -64,7 +64,7 @@ func TestHeavyScopeCgroupPeakStats(t *testing.T) {
 					return loadgate.Admission{}, func() error { return nil }, nil
 				},
 			}
-			leave, err := r.enterHeavy(context.Background(), f.task, "")
+			leave, err := r.enterHeavy(context.Background(), f.task, "", "")
 			if err != nil {
 				t.Fatal(err)
 			}

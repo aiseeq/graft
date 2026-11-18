@@ -41,6 +41,7 @@ type plan struct {
 	source, slice, scope string
 	limited              string
 	ceiling              int64
+	memoryHigh           int64
 	linkSource           bool
 	cpuQuotaUSec         int64
 	halfUntil            time.Time
@@ -187,6 +188,10 @@ func scopeProperties(p plan, pid int) []string {
 	}
 	properties = append(properties, "CollectMode", "s", "inactive-or-failed", "IOAccounting", "b", "true")
 	properties = append(properties, memoryProperties(p.ceiling)...)
+	if p.memoryHigh > 0 {
+		count++
+		properties = append(properties, "MemoryHigh", "t", strconv.FormatInt(p.memoryHigh, 10))
+	}
 	return append(append([]string{strconv.Itoa(count)}, properties...), "0")
 }
 
@@ -241,21 +246,20 @@ func configure(ctx context.Context, pid int, procRoot string, req Request) (Plac
 	data, err := os.ReadFile(self)
 	if procRoot != "" && errors.Is(err, os.ErrNotExist) {
 		// A stand-in machine without cgroups has no user manager to ask.
-		return Placement{}, nil
+		return highUnavailable(procRoot, req, "no cgroup scope")
 	}
 	if err != nil {
 		return Placement{}, fmt.Errorf("read current cgroup: %w", err)
 	}
 	cg := unifiedCgroup(string(data))
 	if cg == "" {
-		return Placement{}, nil
+		return highUnavailable(procRoot, req, "no cgroup scope")
 	}
-	total, err := memorymax.Total(procRoot)
+	total, ceiling, source, high, highSource, err := memoryLimits(procRoot, req)
 	if err != nil {
 		return Placement{}, err
 	}
-	ceiling, source, err := ceilingOf(req, total)
-	if err != nil {
+	if err := validateHigh(high, ceiling, highSource, source); err != nil {
 		return Placement{}, err
 	}
 	base := cgroupBase(procRoot, cg)
@@ -271,7 +275,8 @@ func configure(ctx context.Context, pid int, procRoot string, req Request) (Plac
 	if session, ok := sessionScope(cg, os.Getuid()); ok {
 		move, ok := decideSession(cg, limits, pid, ceiling, os.Getuid())
 		if !ok {
-			return unplaced(procRoot, cg, move.limited, req.explicit(), source)
+			p, e := unplaced(procRoot, cg, move.limited, req.explicit(), source)
+			return highNotApplied(p, req, "scope cannot be moved", high), e
 		}
 		running, err := hasUserManager(procRoot, os.Getuid())
 		if err != nil {
@@ -282,21 +287,81 @@ func configure(ctx context.Context, pid int, procRoot string, req Request) (Plac
 			if err != nil {
 				return Placement{}, err
 			}
-			return noUserManager(os.Getuid(), held, req.explicit(), source), nil
+			return highNotApplied(noUserManager(os.Getuid(), held, req.explicit(), source), req, "no user manager to create a scope", high), nil
 		}
+		move.memoryHigh = high
 		return place(ctx, self, move, session, pid, total, source, req)
 	}
 	switch holds(cg, limits, sole, ownScope, req.Held) {
 	case heavyHeld:
-		return raise(ctx, cg, limits, ceiling, source, total, req.explicit())
+		p, e := raise(ctx, cg, limits, ceiling, source, total, req.explicit())
+		return highNotApplied(p, req, "scope already exists", high), e
 	case soleScope:
-		return holdSole(ctx, path.Base(cg), ceiling, source)
+		p, e := holdSole(ctx, path.Base(cg), ceiling, source)
+		return highNotApplied(p, req, "scope already exists", high), e
 	}
 	move, ok := decide(cg, limits, sole, pid, ceiling)
 	if !ok {
-		return unplaced(procRoot, cg, move.limited, req.explicit(), source)
+		p, e := unplaced(procRoot, cg, move.limited, req.explicit(), source)
+		return highNotApplied(p, req, "scope cannot be moved", high), e
 	}
+	move.memoryHigh = high
 	return place(ctx, self, move, move.source, pid, total, source, req)
+}
+
+func highUnavailable(procRoot string, req Request, reason string) (Placement, error) {
+	if req.High == "" {
+		return Placement{}, nil
+	}
+	_, ceiling, source, high, highSource, err := memoryLimits(procRoot, req)
+	if err != nil {
+		return Placement{}, err
+	}
+	if err := validateHigh(high, ceiling, highSource, source); err != nil {
+		return Placement{}, err
+	}
+	p := Placement{}
+	p.HighMessage = fmt.Sprintf("memory high %s not applied: %s", Bytes(high), reason)
+	return p, nil
+}
+
+func memoryLimits(procRoot string, req Request) (int64, int64, string, int64, string, error) {
+	total, err := memorymax.Total(procRoot)
+	if err != nil {
+		return 0, 0, "", 0, "", err
+	}
+	ceiling, source, err := ceilingOf(req, total)
+	if err != nil {
+		return 0, 0, "", 0, "", err
+	}
+	high, highSource, err := highOf(req, total)
+	return total, ceiling, source, high, highSource, err
+}
+
+func highOf(req Request, total int64) (int64, string, error) {
+	if req.High == "" {
+		return 0, "", nil
+	}
+	n, err := memorymax.Resolve(req.High, total)
+	if err != nil {
+		return 0, "", fmt.Errorf("%s %q: %w", req.HighSource, req.High, err)
+	}
+	n = n / int64(os.Getpagesize()) * int64(os.Getpagesize())
+	return max(n, int64(os.Getpagesize())), req.HighSource + " " + req.High, nil
+}
+
+func validateHigh(high, ceiling int64, highSource, ceilingSource string) error {
+	if high > ceiling {
+		return fmt.Errorf("memory high %s (%s) exceeds memory ceiling %s (%s)", Bytes(high), highSource, Bytes(ceiling), ceilingSource)
+	}
+	return nil
+}
+
+func highNotApplied(p Placement, req Request, reason string, high int64) Placement {
+	if req.High != "" && high > 0 {
+		p.HighMessage = fmt.Sprintf("memory high %s not applied: %s", Bytes(high), reason)
+	}
+	return p
 }
 
 func cpuCeilingNote(quotaUSec int64, until time.Time) string {
@@ -324,8 +389,13 @@ func place(ctx context.Context, self string, move plan, from string, pid int, to
 		return Placement{}, fmt.Errorf("%w; %s", err, unitState(ctx, move.scope))
 	}
 	cpuNote := cpuCeilingNote(move.cpuQuotaUSec, move.halfUntil)
+	message := fmt.Sprintf("moved from %s to %s in %s (IOWeight=%d, memory ceiling %s: %s%s", from, move.scope, move.slice, ioWeight, Bytes(move.ceiling), source, cpuNote)
+	if move.memoryHigh > 0 {
+		message += fmt.Sprintf(", memory high %s: %s", Bytes(move.memoryHigh), req.HighSource+" "+req.High)
+	}
+	message += ")" + lateNote(waited)
 	return Placement{
-		Message: fmt.Sprintf("moved from %s to %s in %s (IOWeight=%d, memory ceiling %s: %s%s)%s", from, move.scope, move.slice, ioWeight, Bytes(move.ceiling), source, cpuNote, lateNote(waited)),
+		Message: message,
 		Ceiling: move.ceiling, Source: source, Scope: move.scope, Own: true, Slice: move.slice, SliceMax: sliceMax,
 	}, nil
 }

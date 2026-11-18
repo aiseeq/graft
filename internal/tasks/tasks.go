@@ -64,6 +64,7 @@ const ExecHeavyEnv = "GRAFT_EXEC_HEAVY"
 // starts, which admits the work itself: the larger of it and the inner
 // task's own ceiling holds.
 const ExecMemoryMaxEnv = "GRAFT_EXEC_MEMORY_MAX"
+const ExecMemoryHighEnv = "GRAFT_EXEC_MEMORY_HIGH"
 
 // HeldScopeEnv names, to the steps of heavy work, the scope graft holds it
 // in under a memory ceiling: a graft they start may raise that ceiling.
@@ -128,7 +129,8 @@ type Runner struct {
 	// ExecCores overrides the history estimate for graft exec's reservation.
 	ExecCores float64
 	// ExecMemoryMax is graft exec --memory-max, "" for the default ceiling.
-	ExecMemoryMax string
+	ExecMemoryMax  string
+	ExecMemoryHigh string
 	// ExecLocalWarning says the one-line --local warning was printed for this
 	// command; its task stats row carries the same annotation.
 	ExecLocalWarning bool
@@ -1518,7 +1520,7 @@ func (r *Runner) enterGateMode(ctx context.Context, steps []gateStep, light, spl
 	if why == WhyNotBusy {
 		fmt.Fprintf(r.Stderr, "graft: gate: heavy, on this machine whole, its heavy tasks with it: %s\n", why)
 	}
-	return r.enterHeavy(ctx, stats.GateTask, "")
+	return r.enterHeavy(ctx, stats.GateTask, "", "")
 }
 
 func (r *Runner) enterSplitGateMode(ctx context.Context, steps []gateStep, nestedAdmitted bool) (leave func() error, err error) {
@@ -1657,7 +1659,7 @@ func (r *Runner) lightSplitRemainder(localSteps []string) bool {
 }
 
 func (r *Runner) enterLightRemainder(ctx context.Context) (func() error, error) {
-	if err := r.holdCeiling(ctx, stats.GateTask, ""); err != nil {
+	if err := r.holdCeiling(ctx, stats.GateTask, "", ""); err != nil {
 		return nil, err
 	}
 	r.heavy++
@@ -1778,7 +1780,7 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 func (r *Runner) runBuiltinGateStep(ctx context.Context, gs *gateStep, s config.Step) (entered bool, err error) {
 	run := func() error { return gs.run(ctx) }
 	if r.gateSplit {
-		if err := r.enterSplit(ctx, stats.GateTask, "", false); err != nil {
+		if err := r.enterSplit(ctx, stats.GateTask, "", "", false); err != nil {
 			return false, err
 		}
 	}
@@ -2032,7 +2034,7 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 		return err
 	}
 	err = r.steps(ctx, name, t, args)
-	if leave, fallback, herr := r.fallbackBrokenRemote(ctx, name, taskMemoryMax(t)); fallback {
+	if leave, fallback, herr := r.fallbackBrokenRemote(ctx, name, taskMemoryMax(t), taskMemoryHigh(t)); fallback {
 		if herr != nil {
 			return errors.Join(err, herr)
 		}
@@ -2094,7 +2096,9 @@ func (r *Runner) placeTask(ctx context.Context, f *frame, name string, t *config
 	if r.gateSplit {
 		return none, nil
 	}
-	remote, here, err := r.placeHeavy(ctx, name, t, r.Root, args)
+	remote, here, err := r.chooseHeavyPlacement(name, taskMemoryMax(t), taskMemoryHigh(t), func() (bool, string, error) {
+		return r.placeHeavy(ctx, name, t, r.Root, args)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -2102,7 +2106,14 @@ func (r *Runner) placeTask(ctx context.Context, f *frame, name string, t *config
 	if remote {
 		return none, nil
 	}
-	return r.enterHeavy(ctx, name, taskMemoryMax(t))
+	return r.enterHeavy(ctx, name, taskMemoryMax(t), taskMemoryHigh(t))
+}
+
+func taskMemoryHigh(t *config.Task) string {
+	if t == nil || t.MemoryHigh.Kind == 0 {
+		return ""
+	}
+	return t.MemoryHigh.Value
 }
 
 // taskMemoryMax is the task's memory_max, "" when it sets none.
@@ -2111,6 +2122,62 @@ func taskMemoryMax(t *config.Task) string {
 		return ""
 	}
 	return t.MemoryMax.Value
+}
+
+func (r *Runner) memoryRequest(name, memoryMax, memoryHigh string) iosched.Request {
+	req := iosched.Request{Value: memoryMax, Source: "memory_max of task " + name, Held: os.Getenv(HeldScopeEnv), Kind: r.kind(name)}
+	if name == ExecTask {
+		req.Source = "--memory-max"
+	}
+	outerHigh := os.Getenv(ExecMemoryHighEnv)
+	if outerHigh != "" {
+		memoryHigh = outerHigh
+	}
+	req.High, req.HighSource = memoryHigh, "memory_high of task "+name
+	if name == ExecTask && memoryHigh != "" {
+		req.HighSource = "--memory-high"
+	}
+	if outer := os.Getenv(ExecMemoryMaxEnv); outer != "" {
+		req.Outer, req.OuterSource = outer, outerMemorySource
+	}
+	if outerHigh != "" {
+		req.HighSource = outerMemoryHighSource
+	}
+	return req
+}
+
+func (r *Runner) validateMemoryHigh(name, memoryMax, memoryHigh string) (int64, error) {
+	return iosched.ValidateMemoryHigh(os.Getenv(loadgate.ProcEnv), r.memoryRequest(name, memoryMax, memoryHigh))
+}
+
+func (r *Runner) noteRemoteMemoryHigh(high int64, host string) {
+	if high == 0 {
+		return
+	}
+	message := fmt.Sprintf("memory high %s not applied: remote heavy on %s", iosched.Bytes(high), host)
+	if r.placeNoted[message] {
+		return
+	}
+	fmt.Fprintf(r.Stderr, "graft: %s\n", message)
+	if r.placeNoted == nil {
+		r.placeNoted = map[string]bool{}
+	}
+	r.placeNoted[message] = true
+}
+
+func (r *Runner) chooseHeavyPlacement(name, memoryMax, memoryHigh string, choose func() (bool, string, error)) (bool, string, error) {
+	high, err := r.validateMemoryHigh(name, memoryMax, memoryHigh)
+	if err != nil {
+		return false, "", err
+	}
+	remote, here, err := choose()
+	if err != nil {
+		return false, "", err
+	}
+	if remote && high > 0 {
+		r.noteRemoteMemoryHigh(high, r.remoteHeavy.Host)
+	}
+	return remote, here, nil
 }
 
 func (r *Runner) steps(ctx context.Context, name string, t *config.Task, args []string) error {
@@ -2144,15 +2211,15 @@ func (r *Runner) steps(ctx context.Context, name string, t *config.Task, args []
 // waits for this machine, the rest run under its admission to the gate's
 // end, so that a busy machine does not queue each cheap step again. Its
 // lock on the queue goes after load.settle as any admission's.
-func (r *Runner) enterSplit(ctx context.Context, name, memoryMax string, fallback bool) error {
+func (r *Runner) enterSplit(ctx context.Context, name, memoryMax, memoryHigh string, fallback bool) error {
 	if r.splitLeave != nil {
 		// Admitted already: a task of the gate asking for more raises the
 		// ceiling.
-		return r.holdCeiling(ctx, name, memoryMax)
+		return r.holdCeiling(ctx, name, memoryMax, memoryHigh)
 	}
 	remoteFallback := fallback
 	if r.lightRemainder && !remoteFallback {
-		return r.holdCeiling(ctx, name, memoryMax)
+		return r.holdCeiling(ctx, name, memoryMax, memoryHigh)
 	}
 	if r.lightRemainder && remoteFallback {
 		// A remote failure can move expensive host steps here. Drop the
@@ -2161,7 +2228,7 @@ func (r *Runner) enterSplit(ctx context.Context, name, memoryMax string, fallbac
 		r.heavy--
 		r.lightRemainder = false
 	}
-	leave, err := r.enterHeavy(ctx, name, memoryMax)
+	leave, err := r.enterHeavy(ctx, name, memoryMax, memoryHigh)
 	if err != nil {
 		return err
 	}
@@ -2189,13 +2256,13 @@ func (r *Runner) placeGateStep(ctx context.Context, s config.Step, t *config.Tas
 func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.Task, args []string, builtin bool) (func(error) error, error) {
 	frame := r.frames[len(r.frames)-1]
 	wasRemote := frame.remote
-	remote, cheaperReason, err := r.gateStepPlacement(s, t, frame.task, builtin)
+	remote, cheaperReason, remoteBroken, err := r.chooseGateStepPlacement(s, t, frame.task, builtin)
 	if err != nil {
 		return nil, err
 	}
-	if remote && r.remoteDown != "" {
+	if remoteBroken {
 		// The path broke on an earlier step of this gate.
-		remote, frame.stepHere = false, r.remoteHeavy.Host+" path broken: "+r.remoteDown
+		frame.stepHere = cheaperReason
 		frame.here = frame.stepHere
 		if remoteVouched(t) {
 			r.reportGateReason(frame.task, fmt.Sprintf("graft: %s: %s, running here", frame.task, frame.stepHere))
@@ -2211,7 +2278,7 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 	}
 	started := time.Now()
 	if !remote {
-		if err := r.enterSplit(ctx, frame.task, taskMemoryMax(t), false); err != nil {
+		if err := r.enterSplit(ctx, frame.task, taskMemoryMax(t), taskMemoryHigh(t), false); err != nil {
 			frame.remote = wasRemote
 			frame.stepHere = ""
 			return nil, err
@@ -2236,7 +2303,7 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 			} else {
 				frame.remote, frame.stepHere = false, r.remoteHeavy.Host+" path broken: "+reason
 				frame.here = frame.stepHere
-				if err := r.enterSplit(ctx, frame.task, taskMemoryMax(t), true); err != nil {
+				if err := r.enterSplit(ctx, frame.task, taskMemoryMax(t), taskMemoryHigh(t), true); err != nil {
 					stepErr = err
 				} else {
 					split := r.gateSplit
@@ -2250,6 +2317,19 @@ func (r *Runner) prepareGateStep(ctx context.Context, s config.Step, t *config.T
 		frame.stepHere = ""
 		return stepErr
 	}, nil
+}
+
+func (r *Runner) chooseGateStepPlacement(s config.Step, t *config.Task, taskName string, builtin bool) (bool, string, bool, error) {
+	remoteBroken := false
+	remote, reason, err := r.chooseHeavyPlacement(taskName, taskMemoryMax(t), taskMemoryHigh(t), func() (bool, string, error) {
+		remote, reason, err := r.gateStepPlacement(s, t, taskName, builtin)
+		if remote && r.remoteDown != "" {
+			remoteBroken = true
+			return false, r.remoteHeavy.Host + " path broken: " + r.remoteDown, err
+		}
+		return remote, reason, err
+	})
+	return remote, reason, remoteBroken, err
 }
 
 // stepHere runs the gate's step s on this machine, its {threads} filled
@@ -2419,7 +2499,7 @@ func (r *Runner) noteBrokenRemote(cmd *exec.Cmd, err error, stderr string) {
 // host, the user's or the project's, and run told the path broke, says
 // so, journals it and takes the heavy queue here; fallback is false when
 // nothing broke.
-func (r *Runner) fallbackBrokenRemote(ctx context.Context, name, memoryMax string) (func() error, bool, error) {
+func (r *Runner) fallbackBrokenRemote(ctx context.Context, name, memoryMax, memoryHigh string) (func() error, bool, error) {
 	if len(r.frames) == 0 || !r.frames[len(r.frames)-1].remote || r.remoteBrokenReason == "" {
 		return nil, false, nil
 	}
@@ -2431,7 +2511,7 @@ func (r *Runner) fallbackBrokenRemote(ctx context.Context, name, memoryMax strin
 	}
 	top := r.frames[len(r.frames)-1]
 	top.remote, top.here = false, r.remoteHeavy.Host+" path broken: "+reason
-	leave, err := r.enterHeavy(ctx, name, memoryMax)
+	leave, err := r.enterHeavy(ctx, name, memoryMax, memoryHigh)
 	return leave, true, err
 }
 
@@ -2673,7 +2753,9 @@ func (r *Runner) prepareExec(ctx context.Context, f *frame, t *config.Task, dir 
 		return nil, nil
 	}
 	f.heavy = true
-	remote, here, err := r.placeHeavy(ctx, ExecTask, t, dir, nil)
+	remote, here, err := r.chooseHeavyPlacement(ExecTask, r.ExecMemoryMax, r.ExecMemoryHigh, func() (bool, string, error) {
+		return r.placeHeavy(ctx, ExecTask, t, dir, nil)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -2681,7 +2763,7 @@ func (r *Runner) prepareExec(ctx context.Context, f *frame, t *config.Task, dir 
 	if remote {
 		return nil, nil
 	}
-	return r.enterHeavy(ctx, ExecTask, r.ExecMemoryMax)
+	return r.enterHeavy(ctx, ExecTask, r.ExecMemoryMax, r.ExecMemoryHigh)
 }
 
 // execCommand builds the command of an exec, on the host when remote;
@@ -2709,6 +2791,9 @@ func (r *Runner) execCommand(ctx context.Context, dir string, argv []string, t *
 		env = append(env, ExecHeavyEnv+"=1")
 		if r.ExecMemoryMax != "" {
 			env = append(env, ExecMemoryMaxEnv+"="+r.ExecMemoryMax)
+		}
+		if r.ExecMemoryHigh != "" {
+			env = append(env, ExecMemoryHighEnv+"="+r.ExecMemoryHigh)
 		}
 		// BaseEnv dropped it, and an exec that leaves admission to its graft
 		// is not counted heavy for heavyEnv to give it again: without it that
@@ -2784,7 +2869,7 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy, use
 	}
 	_, err = r.measureWithCapture(ctx, cmd, source, true, &remoteStderr)
 	r.noteBrokenRemote(cmd, err, remoteStderr.String())
-	if leave, fallback, herr := r.fallbackBrokenRemote(ctx, ExecTask, r.ExecMemoryMax); fallback {
+	if leave, fallback, herr := r.fallbackBrokenRemote(ctx, ExecTask, r.ExecMemoryMax, r.ExecMemoryHigh); fallback {
 		if herr != nil {
 			return errors.Join(err, herr)
 		}
@@ -3747,14 +3832,14 @@ func BaseEnv() ([]string, error) {
 	// it into the key of a test that calls os.Getwd, and the same code
 	// called from elsewhere would miss the test cache. A shell sets its own.
 	// Non-nil even when empty: the runner caches it and nil means not read yet.
-	return append([]string{}, gitx.Without(os.Environ(), append(gitVars, MarkerEnv, ExecHeavyEnv, ExecMemoryMaxEnv, HeldScopeEnv, "PWD"))...), nil
+	return append([]string{}, gitx.Without(os.Environ(), append(gitVars, MarkerEnv, ExecHeavyEnv, ExecMemoryMaxEnv, ExecMemoryHighEnv, HeldScopeEnv, "PWD"))...), nil
 }
 
 // enterHeavy admits a heavy task run on this machine, unless a running one
 // was admitted and took it in, counts it running, and holds it under the
 // memory ceiling memoryMax asks for ("" for the default); leave, when the
 // task ends, gives its admission up.
-func (r *Runner) enterHeavy(ctx context.Context, name, memoryMax string) (leave func() error, err error) {
+func (r *Runner) enterHeavy(ctx context.Context, name, memoryMax, memoryHigh string) (leave func() error, err error) {
 	release := func() error { return nil }
 	admittedHere := r.heavy == 0
 	if admittedHere {
@@ -3777,7 +3862,7 @@ func (r *Runner) enterHeavy(ctx context.Context, name, memoryMax string) (leave 
 			f.reserveRelease = admitted
 		}
 	}
-	if err := r.holdCeiling(ctx, name, memoryMax); err != nil {
+	if err := r.holdCeiling(ctx, name, memoryMax, memoryHigh); err != nil {
 		releaseErr := release()
 		if releaseErr != nil {
 			err = errors.Join(err, fmt.Errorf("release heavy admission: %w", releaseErr))
@@ -3799,22 +3884,16 @@ func (r *Runner) enterHeavy(ctx context.Context, name, memoryMax string) (leave 
 	}, nil
 }
 
-// holdCeiling places the heavy work of task name under the memory ceiling
-// memoryMax asks for ("" for the default), raising the one graft already
-// holds it under when that is lower.
-func (r *Runner) holdCeiling(ctx context.Context, name, memoryMax string) error {
+// holdCeiling places heavy work under its requested memory ceiling and passes
+// its optional memory.high to a newly created scope.
+func (r *Runner) holdCeiling(ctx context.Context, name, memoryMax, memoryHigh string) error {
 	quota, procs, until, err := halfMode()
 	if err != nil {
 		return fmt.Errorf("read half-mode state: %w", err)
 	}
 	r.halfProcs = procs
-	req := iosched.Request{Value: memoryMax, Source: "memory_max of task " + name, Held: os.Getenv(HeldScopeEnv), Kind: r.kind(name), CPUQuotaUSec: quota, HalfUntil: until}
-	if name == ExecTask {
-		req.Source = "--memory-max"
-	}
-	if outer := os.Getenv(ExecMemoryMaxEnv); outer != "" {
-		req.Outer, req.OuterSource = outer, outerMemorySource
-	}
+	req := r.memoryRequest(name, memoryMax, memoryHigh)
+	req.CPUQuotaUSec, req.HalfUntil = quota, until
 	place, err := configureHeavy(ctx, os.Getpid(), os.Getenv(loadgate.ProcEnv), req)
 	if err != nil {
 		return err
@@ -3830,12 +3909,20 @@ func (r *Runner) holdCeiling(ctx context.Context, name, memoryMax string) error 
 		}
 		r.placeNoted[place.Message] = true
 	}
+	if place.HighMessage != "" && !r.placeNoted[place.HighMessage] {
+		fmt.Fprintf(r.Stderr, "graft: %s: %s\n", name, place.HighMessage)
+		if r.placeNoted == nil {
+			r.placeNoted = map[string]bool{}
+		}
+		r.placeNoted[place.HighMessage] = true
+	}
 	return nil
 }
 
 // outerMemorySource names the ceiling a graft exec --memory-max asked for
 // the graft it started.
 const outerMemorySource = "--memory-max of the graft exec that started this graft"
+const outerMemoryHighSource = "--memory-high of the graft exec that started this graft"
 
 // configureHeavy places the heavy work under its memory ceiling; tests
 // replace it.
@@ -3909,7 +3996,7 @@ const lightGateWindow = 30 * 24 * time.Hour
 // enterLightGate lets a light gate run without the queue, its heavy tasks
 // with it, under the memory ceiling of any heavy work.
 func (r *Runner) enterLightGate(ctx context.Context) (func() error, error) {
-	if err := r.holdCeiling(ctx, stats.GateTask, ""); err != nil {
+	if err := r.holdCeiling(ctx, stats.GateTask, "", ""); err != nil {
 		return nil, err
 	}
 	fmt.Fprintf(r.Stderr, "graft: gate: light (its last %d runs under %g s CPU and %g MB), not waiting for the machine\n", stats.LightGateRuns, stats.LightGateCPUSec, stats.LightGateTreeMemMB)

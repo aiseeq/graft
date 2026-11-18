@@ -135,7 +135,7 @@ var registrySpecs = []registrySpec{
 	{path: "tasks", rest: "none"}, {path: "start", rest: "args"},
 	{path: "stop", rest: "args"}, {path: "restart", rest: "args"},
 	{path: "logs", rest: "args", source: "logs"},
-	{path: "exec", rest: "after-dashdash", manual: "--heavy --local --test-db --env --settle --cores --memory-max", values: "--env --settle --cores --memory-max"},
+	{path: "exec", rest: "after-dashdash", manual: "--heavy --local --test-db --env --settle --cores --memory-max --memory-high", values: "--env --settle --cores --memory-max --memory-high"},
 	{path: "reap", rest: "after-dashdash"},
 	{path: "stats", rest: "none", source: "stats"},
 	{path: "status", rest: "none"}, {path: "locks", rest: "none"},

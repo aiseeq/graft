@@ -290,6 +290,13 @@ graft sets no ceiling and nothing above its cgroup has `memory.max`, it says
 so once: `no memory ceiling: …`; an asked ceiling it cannot set (a service,
 a scope with its own limits) is named as not applied.
 
+For a heavy task that reads a lot, such as a scan or corpus pass, page cache
+can evict neighbors' cache and drive them into swap. `memory_high` on the task
+or `graft exec --heavy --memory-high 20G -- …` sets `MemoryHigh` on its new
+scope, making that task reclaim its own page cache sooner. It is unset by
+default, must not exceed the memory ceiling, and should stay above the task's
+peak anonymous memory or the kernel will throttle the task itself.
+
 A step during which the kernel killed processes of the heavy scope fails,
 even when it exited 0 (`graft exec` then exits 125), and the error says which
 limit it was:
@@ -523,7 +530,7 @@ stats` (`wait_s`). Priority tasks judge CPU load by the mean of the two latest k
 | `graft start` / `stop` / `restart [service]` | background services, all of them without a name |
 | `graft logs <service> [--lines N] [-f]` | the end of a service's log, or its journal; `-f` follows until Ctrl-C |
 | `graft stats [--failures|--refused] [--since 7d] [--until <time>] [--project <root>\|--all] [--task <name>]` | recorded resource use and recent failure reasons (see [Resource stats](#resource-stats)) |
-| `graft exec [--heavy [--local] [--test-db] [--env <name>]... [--settle <duration>] [--cores <n>]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local`; `--test-db` gives it the configured test database DSN and keeps it on this machine; the host gets no variable of the caller's but the go command's own unless `--env <name>` names it; `--settle` holds a separate FIFO lock for this long, waited on only by another `exec --settle`; `--cores` sets the live reservation instead of using history |
+| `graft exec [--heavy [--local] [--test-db] [--env <name>]... [--settle <duration>] [--cores <n>] [--memory-max <value>] [--memory-high <value>]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local`; `--test-db` gives it the configured test database DSN and keeps it on this machine; the host gets no variable of the caller's but the go command's own unless `--env <name>` names it; `--settle` holds a separate FIFO lock for this long, waited on only by another `exec --settle`; `--cores` sets the live reservation instead of using history; `--memory-high` limits page cache of the heavy scope |
 | `graft reap -- <command> [args]` | run a command as the reaper of what it leaves behind (Linux): its orphans become graft's children, not the session manager's, and those left in its session end with it, as for the local commands of tasks and `graft exec` (see Install) |
 | `graft status` | services, the test database, held locks |
 | `graft locks` | who holds graft's locks; for a held `load.lock`, why the load queue waits or whether the machine has room |
@@ -918,6 +925,7 @@ tasks:
     test_db: true              # pass the test database DSN (see below)
     heavy: true                # wait while the machine is loaded (user config load), GRAFT_THREADS set
     memory_max: 12G            # heavy only: scope memory ceiling; size in binary K/M/G or 1..100% of RAM
+    memory_high: 8G            # heavy only: reclaim page cache sooner; at or below memory_max
     remote: false              # heavy: stay here with remote_heavy (true: busy gates can send eligible checks or one process/shell step with no deps)
     tests: go                  # read go test -json: print plain go test output, record every test
     dotenv: [API_KEY!, 'LOG_DIR?']  # only these .env keys reach the steps; KEY? optional, KEY! must not be empty

@@ -397,12 +397,59 @@ func TestCeilingOf(t *testing.T) {
 	}
 }
 
+func TestMemoryHighPropertiesAndValidation(t *testing.T) {
+	req := Request{High: "2G", HighSource: "memory_high of task scan"}
+	got, source, err := highOf(req, 8<<30)
+	if err != nil || got != 2<<30 || source != "memory_high of task scan 2G" {
+		t.Fatalf("highOf = %d, %q, %v", got, source, err)
+	}
+	p := plan{source: "console.scope", slice: "agents-graft.slice", scope: "graft-heavy-42.scope", ceiling: 7, memoryHigh: 2 << 30, linkSource: true}
+	properties := scopeProperties(p, 42)
+	if properties[0] != "10" || !strings.Contains(strings.Join(properties, " "), "MemoryHigh t 2147483648") {
+		t.Fatalf("scope properties = %q", properties)
+	}
+	if _, _, err := highOf(Request{High: "9G", HighSource: "--memory-high"}, 8<<30); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateHigh(9<<30, 8<<30, "--memory-high 9G", "34% of RAM, the default"); err == nil || !strings.Contains(err.Error(), "9.0 GiB") || !strings.Contains(err.Error(), "8.0 GiB") {
+		t.Errorf("high above ceiling error = %v", err)
+	}
+}
+
 // TestEnterStandInMachine: a test's stand-in /proc without a cgroup file has
 // no user manager, so nothing moves and nothing fails.
 func TestEnterStandInMachine(t *testing.T) {
 	place, err := Configure(context.Background(), os.Getpid(), t.TempDir(), Request{})
 	if err != nil || place != (Placement{}) {
 		t.Fatalf("Configure = %+v, %v; want nothing", place, err)
+	}
+}
+
+func TestMemoryHighNotAppliedWithoutScope(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "meminfo"), []byte("MemTotal: 8388608 kB\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	place, err := Configure(context.Background(), os.Getpid(), root, Request{High: "2G", HighSource: "--memory-high"})
+	if err != nil || !strings.Contains(place.HighMessage, "memory high 2.0 GiB not applied") {
+		t.Fatalf("Configure = %+v, %v", place, err)
+	}
+}
+
+func TestMemoryHighAboveDefaultFailsBeforePlacement(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "self"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "self", "cgroup"), []byte("0::/user.slice/user-1000.slice/session-1.scope\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "meminfo"), []byte("MemTotal: 1024000 kB\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Configure(context.Background(), os.Getpid(), root, Request{High: "500M", HighSource: "memory_high of task scan"})
+	if err == nil || !strings.Contains(err.Error(), "500 MiB") || !strings.Contains(err.Error(), "340 MiB") {
+		t.Fatalf("Configure error = %v, want high above 34%% default", err)
 	}
 }
 

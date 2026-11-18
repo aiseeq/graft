@@ -164,6 +164,36 @@ func TestTaskMemoryMax(t *testing.T) {
 	}
 }
 
+func TestTaskMemoryHigh(t *testing.T) {
+	data := strings.Replace(tasksBase, "    desc: lint\n", "    desc: lint\n    heavy: true\n    memory_high: 8G\n", 1)
+	cfg, err := Parse([]byte(data))
+	if err != nil || cfg.Tasks["lint"].MemoryHigh.Value != "8G" {
+		t.Fatalf("parse memory_high: task=%+v err=%v", cfg.Tasks["lint"], err)
+	}
+	for _, value := range []string{"0", "101%", "12GB", "-1G", "''", ""} {
+		bad := strings.Replace(data, "memory_high: 8G", "memory_high: "+value, 1)
+		if _, err := Parse([]byte(bad)); err == nil || !strings.Contains(err.Error(), "tasks.lint.memory_high") {
+			t.Errorf("memory_high %s error = %v", value, err)
+		}
+	}
+	if _, err := Parse([]byte(strings.Replace(data, "    heavy: true\n", "", 1))); err == nil || !strings.Contains(err.Error(), "tasks.lint.memory_high") {
+		t.Errorf("memory_high without heavy error = %v", err)
+	}
+}
+
+func TestTaskMemoryHighDoesNotExceedExplicitMax(t *testing.T) {
+	for _, tc := range []struct {
+		high, ceiling string
+		wantErr       bool
+	}{{"2G", "1G", true}, {"40%", "30%", true}, {"1G", "1G", false}, {"30%", "40%", false}} {
+		data := strings.Replace(tasksBase, "    desc: lint\n", "    desc: lint\n    heavy: true\n    memory_max: "+tc.ceiling+"\n    memory_high: "+tc.high+"\n", 1)
+		_, err := Parse([]byte(data))
+		if (err != nil) != tc.wantErr || tc.wantErr && (!strings.Contains(err.Error(), "memory_high "+tc.high) || !strings.Contains(err.Error(), "memory_max "+tc.ceiling)) {
+			t.Errorf("high %s max %s: err=%v", tc.high, tc.ceiling, err)
+		}
+	}
+}
+
 // TestParseTestDBSocket: a socket database has no port, its socket lives
 // under the user's cache and the DSN names that directory.
 func TestParseTestDBSocket(t *testing.T) {

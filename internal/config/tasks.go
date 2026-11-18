@@ -171,6 +171,8 @@ type Task struct {
 	Heavy bool `yaml:"heavy"`
 	// MemoryMax sets the memory ceiling of heavy work started by this task.
 	MemoryMax yaml.Node `yaml:"memory_max"`
+	// MemoryHigh limits page cache reclaimed by heavy work.
+	MemoryHigh yaml.Node `yaml:"memory_high"`
 	// Remote false keeps a heavy task on this machine though the project has
 	// remote_heavy: a task whose steps write files it needs here. True sends
 	// a heavy task's every step, and lets a split gate send the go test and
@@ -552,6 +554,9 @@ func (c *Config) validateTask(name string, t *Task) error {
 	if err := validateTaskMemoryMax(name, t); err != nil {
 		return err
 	}
+	if err := validateTaskMemoryHigh(name, t); err != nil {
+		return err
+	}
 	if t.Dir != "" {
 		if err := checkRelPath(where+".dir", t.Dir); err != nil {
 			return err
@@ -611,6 +616,60 @@ func validateTaskMemoryMax(name string, t *Task) error {
 	}
 	if _, _, err := memorymax.Parse(t.MemoryMax.Value); err != nil {
 		return fmt.Errorf("tasks.%s.memory_max %q: %w", name, t.MemoryMax.Value, err)
+	}
+	return nil
+}
+
+func validateTaskMemoryHigh(name string, t *Task) error {
+	if t.MemoryHigh.Kind == 0 {
+		return nil
+	}
+	if !t.Heavy {
+		return fmt.Errorf("tasks.%s.memory_high: requires heavy: true", name)
+	}
+	if t.MemoryHigh.Tag == "!!null" || t.MemoryHigh.Kind != yaml.ScalarNode {
+		return fmt.Errorf("tasks.%s.memory_high: expected a size or percentage", name)
+	}
+	if _, _, err := memorymax.Parse(t.MemoryHigh.Value); err != nil {
+		return fmt.Errorf("tasks.%s.memory_high %q: %w", name, t.MemoryHigh.Value, err)
+	}
+	if t.MemoryMax.Kind != 0 {
+		if err := validateTaskMemoryHighMax(name, t.MemoryHigh.Value, t.MemoryMax.Value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateTaskMemoryHighMax(name, high, ceiling string) error {
+	highBytes, highPercent, err := memorymax.Parse(high)
+	if err != nil {
+		return fmt.Errorf("tasks.%s.memory_high %q: %w", name, high, err)
+	}
+	maxBytes, maxPercent, err := memorymax.Parse(ceiling)
+	if err != nil {
+		return fmt.Errorf("tasks.%s.memory_max %q: %w", name, ceiling, err)
+	}
+	if highPercent == maxPercent {
+		if highBytes > maxBytes || highPercent > maxPercent {
+			return fmt.Errorf("tasks.%s.memory_high %s exceeds memory_max %s", name, high, ceiling)
+		}
+		return nil
+	}
+	total, err := memorymax.Total("")
+	if err != nil {
+		return fmt.Errorf("compare tasks.%s.memory_high %s with memory_max %s: %w", name, high, ceiling, err)
+	}
+	resolvedHigh, err := memorymax.Resolve(high, total)
+	if err != nil {
+		return fmt.Errorf("tasks.%s.memory_high %q: %w", name, high, err)
+	}
+	resolvedMax, err := memorymax.Resolve(ceiling, total)
+	if err != nil {
+		return fmt.Errorf("tasks.%s.memory_max %q: %w", name, ceiling, err)
+	}
+	if resolvedHigh > resolvedMax {
+		return fmt.Errorf("tasks.%s.memory_high %s exceeds memory_max %s", name, high, ceiling)
 	}
 	return nil
 }

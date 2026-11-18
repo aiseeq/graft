@@ -229,7 +229,7 @@ func TestRemoteFallbackUpgradesLightRemainderToAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.enterSplit(context.Background(), stats.GateTask, "", true); err != nil {
+	if err := r.enterSplit(context.Background(), stats.GateTask, "", "", true); err != nil {
 		t.Fatal(err)
 	}
 	if admitted != 1 || r.heavy != 1 || r.lightRemainder {
@@ -282,7 +282,7 @@ func TestLightRemainderLocalStepsDoNotRequestAdmission(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := r.enterSplit(context.Background(), stats.GateTask, "", false); err != nil {
+			if err := r.enterSplit(context.Background(), stats.GateTask, "", "", false); err != nil {
 				t.Fatal(err)
 			}
 			if admitted != 0 || r.heavy != 1 || !r.lightRemainder {

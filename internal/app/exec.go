@@ -79,6 +79,8 @@ type ExecOptions struct {
 	Cores float64
 	// MemoryMax overrides the default ceiling for this heavy command.
 	MemoryMax string
+	// MemoryHigh limits reclaimable page cache for this heavy command.
+	MemoryHigh string
 }
 
 func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
@@ -136,6 +138,7 @@ func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
 	}
 	r.ExecCores = opts.Cores
 	r.ExecMemoryMax = opts.MemoryMax
+	r.ExecMemoryHigh = opts.MemoryHigh
 	if opts.Settle > 0 {
 		lockPath, err := tasks.LoadSettleLock()
 		if err != nil {
