@@ -672,6 +672,14 @@ reason.
    summary names every failure with the command to retry, and the exit status
    is non-zero.
 
+After a successful push, or when the commit has no remote to push to, graft
+asks `tk` to note the commit when its ticket is named by the message or branch,
+or there is exactly one active ticket. A failed push leaves the ticket alone;
+`tk` notes the commit after it is made, so its `docs/tasks` change stays in the
+working tree for the next commit.
+From a linked worktree, graft reads and updates the task journal in the main checkout.
+Journaling is skipped when the shared Git directory is not `<main checkout>/.git`, including separate-git-dir repositories and worktrees based on them.
+
 ### Hooks
 
 `graft init` writes small `sh` shims into `hooks.dir` (`.githooks` by
@@ -1914,6 +1922,9 @@ response body; a command transport returns the response on stdout.
 
 graft does not know how to deploy your project; your script does. graft runs
 it in the foreground and wraps it with the steps every deploy needs.
+After a deploy finishes, graft asks `tk` to note the target, version (or commit
+hash), and outcome for the matching ticket. `tk` updates `docs/tasks` after
+the operation, leaving that file change for the next commit.
 
 ```yaml
 deploy:

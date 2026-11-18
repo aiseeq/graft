@@ -466,8 +466,18 @@ func (a *App) finishCommit(ctx context.Context, repo *gitx.Repo, cfg *config.Con
 	} else {
 		a.printf("committed %s on %s%s", strings.TrimSpace(head), plan.branch, plan.bump.describe())
 	}
+	pushed := len(plan.remotes) == 0
 	if err := a.pushCommit(repo, cfg, plan, refs); err != nil {
 		postCommitErrs = append(postCommitErrs, err)
+	} else if len(plan.remotes) > 0 {
+		pushed = true
+	}
+	if pushed {
+		sha, shaErr := repo.Git("rev-parse", "--short=12", "HEAD")
+		if shaErr == nil {
+			first, _, _ := strings.Cut(plan.message, "\n")
+			a.ticketJournal(ctx, repo, plan.message, fmt.Sprintf("commit %s on %s: %s", strings.TrimSpace(sha), plan.branch, strings.TrimSpace(first)))
+		}
 	}
 	if err := a.recordCommitAdvisoryAfterPush(repo, cfg, frozen, advisoryFailed); err != nil {
 		postCommitErrs = append(postCommitErrs, err)

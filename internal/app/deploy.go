@@ -221,11 +221,21 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 	if releaseErr := lk.Release(); releaseErr != nil {
 		err = errors.Join(err, fmt.Errorf("releasing the deploy lock: %w", releaseErr))
 	}
+	a.noteDeployJournal(ctx, r, err)
 	if err != nil {
 		return err
 	}
 	a.dailyFlags(ctx, r.repo, r.cfg, r.env.Name)
 	return nil
+}
+
+func (a *App) noteDeployJournal(ctx context.Context, r *deployRun, deployErr error) {
+	identity := r.version
+	if identity == "" {
+		identity = gitx.Short(r.head)
+	}
+	result := map[bool]string{true: "ok", false: "failed"}[deployErr == nil]
+	a.ticketJournal(ctx, r.repo, "", fmt.Sprintf("deploy %s %s: %s", r.name, identity, result))
 }
 
 func beginMachineDeployment(project, target string, lk *lock.Lock) (func() error, func() error, error) {
