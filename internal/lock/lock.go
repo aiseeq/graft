@@ -86,13 +86,22 @@ func TryAcquire(path, holder string) (*Lock, error) {
 // the lock, and the tickets no process holds are removed while inspecting the
 // queue.
 func AcquireFIFOObserved(ctx context.Context, path string, timeout time.Duration, holder string, log io.Writer, quiet func() (bool, error)) (lk *Lock, retErr error) {
+	return acquireFIFOObserved(ctx, path, timeout, holder, log, quiet, false)
+}
+
+// AcquireFIFOPriorityObserved joins the FIFO ahead of ordinary tickets while
+// preserving FIFO order among priority tickets. The lock holder is unchanged.
+func AcquireFIFOPriorityObserved(ctx context.Context, path string, timeout time.Duration, holder string, log io.Writer, quiet func() (bool, error)) (lk *Lock, retErr error) {
+	return acquireFIFOObserved(ctx, path, timeout, holder, log, quiet, true)
+}
+
+func acquireFIFOObserved(ctx context.Context, path string, timeout time.Duration, holder string, log io.Writer, quiet func() (bool, error), priority bool) (lk *Lock, retErr error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("creating the lock directory: %w", err)
 	}
-	start := time.Now()
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	ticketLock, ticket, err := enqueue(waitCtx, path, holder)
+	ticketLock, ticket, err := enqueue(waitCtx, path, holder, priority)
 	if err != nil {
 		return nil, err
 	}
@@ -105,12 +114,14 @@ func AcquireFIFOObserved(ctx context.Context, path string, timeout time.Duration
 			}
 		}
 	}()
-	return waitFIFO(waitCtx, ctx, path, timeout, start, ticket, holder, log, quiet)
+	return waitFIFO(waitCtx, ctx, path, timeout, ticket, holder, log, quiet)
 }
 
-func waitFIFO(waitCtx, ctx context.Context, path string, timeout time.Duration, start time.Time, ticket, holder string, log io.Writer, quiet func() (bool, error)) (*Lock, error) {
+func waitFIFO(waitCtx, ctx context.Context, path string, timeout time.Duration, ticket, holder string, log io.Writer, quiet func() (bool, error)) (*Lock, error) {
 	var said string
 	var behind string
+	var waitedOn string
+	var lockWaitStart time.Time
 	var waitedQuiet time.Duration
 	for {
 		queue, err := queueForTicket(waitCtx, path, ticket)
@@ -121,36 +132,32 @@ func waitFIFO(waitCtx, ctx context.Context, path string, timeout time.Duration, 
 			return nil, err
 		}
 		if queue[0].path == ticket {
-			remaining := timeout - time.Since(start)
-			if remaining <= 0 {
-				return nil, fmt.Errorf("lock %s still queued after %s (%s)", filepath.Base(path), timeout, Describe(path))
-			}
-			lk, err := AcquireObserved(waitCtx, path, Exclusive, remaining, holder, log, quiet)
+			lk, acquired, err := tryAcquireFIFOHead(waitCtx, path, ticket, holder)
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+					return nil, fmt.Errorf("lock %s still queued after %s (%s)", filepath.Base(path), timeout, Describe(path))
+				}
 				return nil, err
 			}
-			waitedQuiet += lk.WaitedQuiet
-			if behind != "" {
-				lk.WaitedBehind = behind
+			if acquired {
+				if !lockWaitStart.IsZero() {
+					lk.Waited = time.Since(lockWaitStart)
+				}
+				lk.WaitedQuiet = waitedQuiet
+				if behind != "" {
+					lk.WaitedBehind = behind
+				} else {
+					lk.WaitedBehind = waitedOn
+				}
+				return lk, nil
 			}
-			lk.WaitedQuiet = waitedQuiet
-			return lk, nil
-		}
-		var ahead []string
-		for _, entry := range queue {
-			if entry.path == ticket {
-				break
+			if waitedOn == "" {
+				lockWaitStart = time.Now()
+				waitedOn = Describe(path)
+				fmt.Fprintf(log, "graft: waiting for the %s lock %s (%s), up to %s\n", Exclusive, filepath.Base(path), waitedOn, timeout)
 			}
-			ahead = append(ahead, entry.holder)
 		}
-		message := strings.Join(ahead, "; ")
-		if behind == "" && len(ahead) > 0 {
-			behind = ahead[0]
-		}
-		if message != said {
-			fmt.Fprintf(log, "graft: waiting in the %s queue behind %s\n", filepath.Base(path), message)
-			said = message
-		}
+		said, behind = logQueueAhead(queue, ticket, filepath.Base(path), said, behind, log)
 		quietWait, err := waitRetryObserved(waitCtx, quiet)
 		waitedQuiet += quietWait
 		if err != nil {
@@ -160,6 +167,61 @@ func waitFIFO(waitCtx, ctx context.Context, path string, timeout time.Duration, 
 			return nil, err
 		}
 	}
+}
+
+func logQueueAhead(queue []queueEntry, ticket, lockName, said, behind string, log io.Writer) (string, string) {
+	var ahead []string
+	for _, entry := range queue {
+		if entry.path == ticket {
+			break
+		}
+		ahead = append(ahead, entry.holder)
+	}
+	if len(ahead) == 0 {
+		return said, behind
+	}
+	message := strings.Join(ahead, "; ")
+	if behind == "" {
+		behind = ahead[0]
+	}
+	if message != said {
+		fmt.Fprintf(log, "graft: waiting in the %s queue behind %s\n", lockName, message)
+		said = message
+	}
+	return said, behind
+}
+
+// tryAcquireFIFOHead checks the queue and lock together under the queue guard.
+// A busy lock leaves the ticket queued so a later priority ticket can move
+// ahead before any waiter acquires the lock.
+func tryAcquireFIFOHead(ctx context.Context, path, ticket, holder string) (*Lock, bool, error) {
+	guard, err := queueGuard(ctx, path)
+	if err != nil {
+		return nil, false, fmt.Errorf("checking the queue for %s: %w", path, err)
+	}
+	queue, readErr := readQueue(path)
+	if readErr != nil {
+		return nil, false, errors.Join(readErr, guard.Close())
+	}
+	if len(queue) == 0 || queue[0].path != ticket {
+		return nil, false, guard.Close()
+	}
+	fl := flock.New(path)
+	ok, err := fl.TryLock()
+	if err != nil {
+		return nil, false, errors.Join(fmt.Errorf("locking %s: %w", path, err), guard.Close())
+	}
+	if !ok {
+		return nil, false, guard.Close()
+	}
+	noteLock, note, err := createLive(filepath.Dir(path), filepath.Base(path)+".*.lholder", fmt.Appendf(nil, "%s (write), pid %d, since %s", holder, os.Getpid(), time.Now().Format(time.RFC3339)))
+	if err != nil {
+		return nil, false, errors.Join(fmt.Errorf("writing lock holder note: %w", err), fl.Unlock(), guard.Close())
+	}
+	if err := guard.Close(); err != nil {
+		return nil, false, errors.Join(fmt.Errorf("closing the queue guard for %s: %w", path, err), fl.Unlock(), releaseLive(noteLock, note))
+	}
+	return &Lock{fl: fl, noteLock: noteLock, note: note}, true, nil
 }
 
 func waitRetryObserved(ctx context.Context, quiet func() (bool, error)) (time.Duration, error) {
@@ -214,7 +276,7 @@ func queueGuard(ctx context.Context, path string) (*flock.Flock, error) {
 // enqueue writes this process's ticket, holding it live until AcquireFIFO
 // is done. Tickets are .lticket files: graft before them judged a ticket by
 // its pid, which from another PID namespace finds every ticket dead.
-func enqueue(ctx context.Context, path, holder string) (ticketLock *flock.Flock, ticket string, retErr error) {
+func enqueue(ctx context.Context, path, holder string, priority bool) (ticketLock *flock.Flock, ticket string, retErr error) {
 	guard, err := queueGuard(ctx, path)
 	if err != nil {
 		return nil, "", fmt.Errorf("joining the queue for %s: %w", path, err)
@@ -247,7 +309,11 @@ func enqueue(ctx context.Context, path, holder string) (ticketLock *flock.Flock,
 	if err := writeQueueFile(sequencePath, []byte(strconv.FormatUint(sequence, 10))); err != nil {
 		return nil, "", fmt.Errorf("writing the queue sequence for %s: %w", path, err)
 	}
-	pattern := fmt.Sprintf("%s.queue.%020d.*.lticket", filepath.Base(path), sequence)
+	prefix := ""
+	if priority {
+		prefix = "-"
+	}
+	pattern := fmt.Sprintf("%s.queue.%s%020d.*.lticket", filepath.Base(path), prefix, sequence)
 	ticketLock, ticket, err = createLive(filepath.Dir(path), pattern, []byte(holder))
 	if err != nil {
 		return nil, "", fmt.Errorf("writing a queue ticket for %s: %w", path, err)

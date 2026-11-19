@@ -499,7 +499,9 @@ heavy runs here wherever its caller runs.
 `graft deploy` gives its heavy tasks, and those of every graft its script
 starts, a priority (`GRAFT_LOAD_PRIORITY`, `GRAFT_LOAD_BUDGET`,
 `GRAFT_LOAD_THEN`): they use the same FIFO queue and load lock as other heavy
-tasks. Priority does not bypass the queue or the load limit. The deploy's
+tasks, ahead of ordinary tasks but after the current lock holder. A queue head
+already waiting for the lock in an older graft version may acquire it first.
+Priority does not bypass the load limit, which stays the same. The deploy's
 heavy tasks and grafts its script starts share one `deploy.load_wait` budget;
 settle, FIFO queue and load waits count once by wall time across parallel
 children. When the budget is exhausted, the task fails with the last load

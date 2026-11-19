@@ -393,6 +393,147 @@ func TestPriorityCannotPassHolderOfLoadLock(t *testing.T) {
 	}
 }
 
+func TestPriorityQueuePassesFiveOrdinaryLoadWaiters(t *testing.T) {
+	fakeMachine(t)
+	setLoadavg(t, 23)
+	path := filepath.Join(t.TempDir(), "load.lock")
+	holder, err := lock.Acquire(context.Background(), path, time.Second, "current holder", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Release()
+	type result struct {
+		name string
+		rel  func() error
+		err  error
+	}
+	got := make(chan result, 6)
+	var cancels []context.CancelFunc
+	start := func(name string, p *Priority) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancels = append(cancels, cancel)
+		go func() {
+			_, release, err := Wait(ctx, name, "projectA:"+name, p, testLoad, path, io.Discard)
+			got <- result{name, release, err}
+		}()
+	}
+	t.Cleanup(func() {
+		for _, cancel := range cancels {
+			cancel()
+		}
+	})
+	for i := range 5 {
+		start(fmt.Sprintf("ordinary-%d", i+1), nil)
+		awaitFiles(t, path+".queue.*.lticket", i+1)
+	}
+	start("priority", &Priority{For: "deploy", Budget: newBudget(t, 3*time.Minute)})
+	awaitFiles(t, path+".queue.*.lticket", 6)
+	if err := holder.Release(); err != nil {
+		t.Fatal(err)
+	}
+	waitForLoadHolder(t, path, "priority")
+	setLoadavg(t, 0)
+	first := <-got
+	if first.err != nil {
+		t.Fatalf("first admission %s: %v", first.name, first.err)
+	}
+	if first.name != "priority" {
+		t.Fatalf("first admitted %q, want priority", first.name)
+	}
+	if err := first.rel(); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		next := <-got
+		if next.err != nil {
+			t.Errorf("admission %s: %v", next.name, next.err)
+			continue
+		}
+		if err := next.rel(); err != nil {
+			t.Errorf("release %s: %v", next.name, err)
+		}
+	}
+}
+
+func TestPriorityQueuePassesFiveOrdinarySettleWaiters(t *testing.T) {
+	fakeMachine(t)
+	dir := t.TempDir()
+	loadPath, settlePath := filepath.Join(dir, "load.lock"), filepath.Join(dir, "load.settle.lock")
+	holder, err := lock.Acquire(context.Background(), settlePath, time.Second, "current settle holder", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Release()
+	type result struct {
+		name string
+		rel  func() error
+		err  error
+	}
+	got := make(chan result, 6)
+	var cancels []context.CancelFunc
+	start := func(name string, p *Priority) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancels = append(cancels, cancel)
+		go func() {
+			_, release, err := WaitWithSettle(ctx, name, "projectA:"+name, p, testLoad, loadPath, settlePath, time.Hour, 0, io.Discard)
+			got <- result{name, release, err}
+		}()
+	}
+	t.Cleanup(func() {
+		for _, cancel := range cancels {
+			cancel()
+		}
+	})
+	for i := range 5 {
+		start(fmt.Sprintf("ordinary-%d", i+1), nil)
+		awaitFiles(t, settlePath+".queue.*.lticket", i+1)
+	}
+	start("priority", &Priority{For: "deploy", Budget: newBudget(t, 3*time.Minute)})
+	awaitFiles(t, settlePath+".queue.*.lticket", 6)
+	if err := holder.Release(); err != nil {
+		t.Fatal(err)
+	}
+	first := <-got
+	if first.err != nil {
+		t.Fatalf("first admission %s: %v", first.name, first.err)
+	}
+	if first.name != "priority" {
+		t.Fatalf("first admitted from settle queue %q, want priority", first.name)
+	}
+	if err := first.rel(); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		next := <-got
+		if next.err != nil {
+			t.Errorf("admission %s: %v", next.name, next.err)
+			continue
+		}
+		if err := next.rel(); err != nil {
+			t.Errorf("release %s: %v", next.name, err)
+		}
+	}
+}
+
+func waitForLoadHolder(t *testing.T, path, name string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		holders, err := lock.Holders(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, holder := range holders {
+			if strings.Contains(holder, name) {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	holders, _ := lock.Holders(path)
+	t.Fatalf("load lock holders = %v; want %q to hold it", holders, name)
+}
+
 func TestPriorityExhaustedBudgetRefusesBehindLoadLockHolder(t *testing.T) {
 	fakeMachine(t)
 	path := filepath.Join(t.TempDir(), "load.lock")

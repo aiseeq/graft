@@ -132,7 +132,7 @@ const (
 )
 
 // Priority is what a deploy gives its heavy tasks and those of grafts its
-// script starts: they share the ordinary FIFO queue and one wait budget for
+// script starts: they queue ahead of ordinary tickets and share one wait budget for
 // the whole deploy, kept in Budget. Exhausting it refuses the task.
 type Priority struct {
 	For    string
@@ -287,7 +287,7 @@ func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userc
 			defer cancel()
 		}
 	}
-	settleLock, behind, start, err := acquireSettle(settleCtx, m, settleLockPath, settleDuration, holder, log)
+	settleLock, behind, start, err := acquireSettle(settleCtx, m, p, settleLockPath, settleDuration, holder, log)
 	if err != nil {
 		if p != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			err = m.priorityFailure(ctx, p, start, time.Now())
@@ -310,12 +310,18 @@ func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userc
 	return waitQueued(ctx, m, p, kind, l, lockPath, cores, settleLock, settleDuration, start, behind, log)
 }
 
-func acquireSettle(ctx context.Context, m *machine, settleLockPath string, settleDuration time.Duration, holder string, log io.Writer) (*lock.Lock, string, time.Time, error) {
+func acquireSettle(ctx context.Context, m *machine, p *Priority, settleLockPath string, settleDuration time.Duration, holder string, log io.Writer) (*lock.Lock, string, time.Time, error) {
 	start := time.Now()
 	if settleLockPath == "" || settleDuration <= 0 {
 		return nil, "", start, nil
 	}
-	settleLock, err := lock.AcquireFIFOObserved(ctx, settleLockPath, queueTimeout, holder+" with settle", log, nil)
+	var settleLock *lock.Lock
+	var err error
+	if p != nil {
+		settleLock, err = lock.AcquireFIFOPriorityObserved(ctx, settleLockPath, queueTimeout, holder+" with settle", log, nil)
+	} else {
+		settleLock, err = lock.AcquireFIFOObserved(ctx, settleLockPath, queueTimeout, holder+" with settle", log, nil)
+	}
 	if err != nil {
 		return nil, "", start, err
 	}
@@ -387,7 +393,12 @@ func acquireLoadQueue(ctx context.Context, m *machine, p *Priority, lockPath str
 	}
 	defer cancel()
 	holder := "graft " + m.name + " (starting a heavy task)"
-	lk, err := lock.AcquireFIFOObserved(queueCtx, lockPath, queueTimeout, holder, log, quiet)
+	var lk *lock.Lock
+	if p != nil {
+		lk, err = lock.AcquireFIFOPriorityObserved(queueCtx, lockPath, queueTimeout, holder, log, quiet)
+	} else {
+		lk, err = lock.AcquireFIFOObserved(queueCtx, lockPath, queueTimeout, holder, log, quiet)
+	}
 	if lk != nil && (lk.WaitedBehind != "" || lk.WaitedQuiet > 0) {
 		waited := time.Since(start)
 		if lk.WaitedQuiet > 0 {

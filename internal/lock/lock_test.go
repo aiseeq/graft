@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 func TestAcquireWaitsForHolder(t *testing.T) {
@@ -204,6 +208,138 @@ func TestAcquireFIFO(t *testing.T) {
 	}
 	if err := second.lock.Release(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAcquireFIFOHeadBusyDoesNotLogEmptyQueueBehind(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "load.lock")
+	holder, err := Acquire(context.Background(), path, time.Second, "current holder", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Release()
+	firstResult := make(chan fifoResult, 1)
+	go func() {
+		lk, err := AcquireFIFOObserved(context.Background(), path, 5*time.Second, "first", io.Discard, nil)
+		firstResult <- fifoResult{lock: lk, err: err}
+	}()
+	waitForTickets(t, path, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	lines := make(chan string, 8)
+	secondResult := make(chan fifoResult, 1)
+	go func() {
+		lk, err := AcquireFIFOObserved(ctx, path, 5*time.Second, "second", logLines(lines), nil)
+		secondResult <- fifoResult{lock: lk, err: err}
+	}()
+	waitForTickets(t, path, 2)
+	select {
+	case line := <-lines:
+		if !strings.Contains(line, "queue behind first") {
+			t.Fatalf("second wait log = %q; want first ticket named", line)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("second waiter did not report the first ticket")
+	}
+
+	if err := holder.Release(); err != nil {
+		t.Fatal(err)
+	}
+	first := receiveLock(t, firstResult)
+	if first.err != nil {
+		t.Fatal(first.err)
+	}
+	defer first.lock.Release()
+	lockWaitDeadline := time.After(3 * time.Second)
+	sawLockWait := false
+	for !sawLockWait {
+		select {
+		case line := <-lines:
+			sawLockWait = strings.Contains(line, "waiting for the write lock")
+		case <-lockWaitDeadline:
+			t.Fatal("second waiter did not report the held lock")
+		}
+	}
+	quiet := time.NewTimer(250 * time.Millisecond)
+	defer quiet.Stop()
+	for {
+		select {
+		case line := <-lines:
+			if strings.HasSuffix(strings.TrimRight(line, "\n"), "queue behind ") {
+				t.Fatalf("empty queue head log: %q", line)
+			}
+		case <-quiet.C:
+			cancel()
+			result := receiveLock(t, secondResult)
+			if result.lock != nil {
+				_ = result.lock.Release()
+			}
+			if result.err == nil {
+				t.Fatal("second waiter succeeded after cancellation")
+			}
+			return
+		}
+	}
+}
+
+type logLines chan string
+
+func (lines logLines) Write(p []byte) (int, error) {
+	lines <- string(p)
+	return len(p), nil
+}
+
+func TestPriorityTicketsSortBeforeOrdinaryTickets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "load.lock")
+	type ticket struct {
+		owner  *flock.Flock
+		path   string
+		holder string
+	}
+	var tickets []ticket
+	for _, item := range []struct {
+		holder   string
+		priority bool
+	}{
+		{"O1", false}, {"P1", true}, {"O2", false}, {"P2", true},
+	} {
+		owner, name, err := enqueue(context.Background(), path, item.holder, item.priority)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tickets = append(tickets, ticket{owner, name, item.holder})
+	}
+	defer func() {
+		for _, ticket := range tickets {
+			_ = releaseLive(ticket.owner, ticket.path)
+		}
+	}()
+
+	queue, err := readQueue(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, entry := range queue {
+		got = append(got, entry.holder)
+	}
+	want := []string{"P1", "P2", "O1", "O2"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("queue order = %v, want %v", got, want)
+	}
+
+	legacyOwner, legacyPath, err := createLive(filepath.Dir(path), filepath.Base(path)+".queue.00000000000000000099.legacy.*.lticket", []byte("legacy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseLive(legacyOwner, legacyPath)
+	queue, err = readQueue(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queue[len(queue)-1].path != legacyPath || queue[len(queue)-1].holder != "legacy" {
+		t.Fatalf("legacy ticket did not remain an ordinary tail entry: %+v", queue)
 	}
 }
 
