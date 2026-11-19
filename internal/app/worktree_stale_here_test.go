@@ -258,7 +258,7 @@ func initStaleTestRepo(t *testing.T, dir string) string {
 
 func gitStaleTest(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	argv := append([]string{"-C", dir}, args...)
+	argv := append([]string{"-c", "core.hooksPath=/dev/null", "-C", dir}, args...)
 	cmd := exec.Command("git", argv...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)

@@ -257,26 +257,12 @@ func freezeGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = freezeGitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
 	}
 	return strings.TrimSpace(string(out))
 }
-
-func freezeGitEnv() []string {
-	env := make([]string, 0, len(os.Environ())+2)
-	for _, value := range os.Environ() {
-		key, _, _ := strings.Cut(value, "=")
-		if key == "GIT_CONFIG_GLOBAL" || key == "GIT_CONFIG_NOSYSTEM" || key == "GIT_CONFIG_PARAMETERS" {
-			continue
-		}
-		env = append(env, value)
-	}
-	return append(env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
-}
-
 func setFreezeGitConfig(t *testing.T) {
 	t.Helper()
 	global := filepath.Join(t.TempDir(), "gitconfig")

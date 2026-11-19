@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	akitproc "github.com/aiseeq/akit/proc"
+	"github.com/aiseeq/graft/v2/internal/gittest"
 )
 
 // TestMain makes the test binary a subreaper on Linux and gives the tests a
@@ -14,6 +15,10 @@ import (
 // work tree it runs a step in, and the tests' temporary trees would leave
 // theirs in the user's cache.
 func TestMain(m *testing.M) {
+	if err := gittest.IsolateTestProcess(); err != nil {
+		fmt.Fprintln(os.Stderr, "isolate tasks test git environment:", err)
+		os.Exit(1)
+	}
 	if err := akitproc.BecomeChildSubreaper(); err != nil {
 		panic(err)
 	}
