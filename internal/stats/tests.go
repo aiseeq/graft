@@ -633,6 +633,13 @@ func SummarizeTestFile(path string, f TestFilter, limit int) (rep TestReport, ea
 	if err != nil {
 		return TestReport{}, time.Time{}, malformed, err
 	}
+	start, err := LogStart(path, f.Since)
+	if err != nil {
+		return TestReport{}, time.Time{}, malformed, err
+	}
+	if !start.IsZero() && (earliest.IsZero() || start.Before(earliest)) {
+		earliest = start
+	}
 	return t.report(limit), earliest, malformed, nil
 }
 

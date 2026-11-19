@@ -78,8 +78,18 @@ func (a *App) Stats(o StatsOptions) error {
 	if !o.Until.IsZero() {
 		recs = beforeUntil(recs, o.Until)
 	}
+	first := earliest(recs, func(r *stats.Record) time.Time { return r.Time })
+	if o.Failures || o.Value == "" && o.By == "" {
+		start, err := stats.LogStart(path, since)
+		if err != nil {
+			return err
+		}
+		if !start.IsZero() && (first.IsZero() || start.Before(first)) {
+			first = start
+		}
+	}
 	if o.Failures {
-		return a.statsFailures(recs, f, where, since)
+		return a.statsFailures(recs, f, where, since, first)
 	}
 	if o.Value != "" {
 		return a.statsValue(recs, f, o)
@@ -87,7 +97,7 @@ func (a *App) Stats(o StatsOptions) error {
 	if o.By != "" {
 		return a.statsBy(recs, f, o, where, since)
 	}
-	return a.statsTasks(recs, path, f, o, where, since)
+	return a.statsTasks(recs, path, f, o, where, since, first)
 }
 
 func (a *App) statsRefused(project, where string, since, until time.Time) error {
@@ -242,13 +252,13 @@ func (a *App) statsFilter(o StatsOptions, since time.Time) (stats.Filter, string
 	return f, where, nil
 }
 
-func (a *App) statsTasks(recs []stats.Record, path string, f stats.Filter, o StatsOptions, where string, since time.Time) error {
+func (a *App) statsTasks(recs []stats.Record, path string, f stats.Filter, o StatsOptions, where string, since, first time.Time) error {
 	what := "tasks"
 	label := "TASK"
 	if o.Task != "" {
 		what, label = "task "+o.Task, "STEP"
 	}
-	a.printf("%s in %s%s since %s%s", what, where, calmNote(o.MaxLoad), sinceText(since, earliest(recs, func(r *stats.Record) time.Time { return r.Time })), untilText(o.Until))
+	a.printf("%s in %s%s since %s%s", what, where, calmNote(o.MaxLoad), sinceText(since, first), untilText(o.Until))
 	rows, saved := stats.Summarize(recs, f)
 	if len(rows) == 0 && saved.Hits == 0 {
 		a.printf("nothing recorded (%s)", path)
@@ -340,9 +350,9 @@ func (a *App) overLimits(rows []stats.Row, filter stats.Filter, o StatsOptions) 
 	}), nil
 }
 
-func (a *App) statsFailures(records []stats.Record, filter stats.Filter, where string, since time.Time) error {
+func (a *App) statsFailures(records []stats.Record, filter stats.Filter, where string, since, first time.Time) error {
 	failures := stats.FailureRuns(records, filter)
-	start := sinceText(since, earliest(records, func(r *stats.Record) time.Time { return r.Time }))
+	start := sinceText(since, first)
 	if len(failures) == 0 {
 		a.printf("no failures since %s", start)
 		return nil

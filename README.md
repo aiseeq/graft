@@ -1398,9 +1398,8 @@ graft's version, pid and command line. A
   copies one number up (`.2`, `.3`…, the highest the oldest); a copy whose
   last line is more than 15 days old is removed then, so two weekly windows
   can be compared; one that cannot be removed is warned about, and the line
-  still written. `graft stats` reads the copies that reach `--since` and the
-  oldest, and when the log starts after `--since`, its header names the
-  first line instead.
+  still written. `graft stats` reads the copies that reach `--since`; from an
+  older copy it reads only the first line to report when the log began.
 - A failure to record is not a failure of the task: graft warns once per run
   and goes on.
 

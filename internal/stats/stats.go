@@ -5,6 +5,7 @@
 package stats
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -702,8 +703,7 @@ func oldCopies(path string) ([]oldCopy, error) {
 
 // Files lists the old copies of path and path itself, oldest first: the
 // order to read them in. A copy whose last line (its modification time) is
-// before since holds nothing a report from since takes, and is left out;
-// all but the oldest, whose first line tells where the log starts.
+// before since holds nothing a report from since takes, and is left out.
 func Files(path string, since time.Time) ([]string, error) {
 	copies, err := oldCopies(path)
 	if err != nil {
@@ -718,12 +718,81 @@ func Files(path string, since time.Time) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", c.path, err)
 		}
-		if len(files) > 0 && st.ModTime().Before(since) {
+		if st.ModTime().Before(since) {
 			continue
 		}
 		files = append(files, c.path)
 	}
 	return append(files, path), nil
+}
+
+// LogStart returns the time of the first line in the oldest copy skipped by
+// Files. It reads only that line, so reports can name a log that began before
+// the copies in their window without scanning the stale history.
+func LogStart(path string, since time.Time) (time.Time, error) {
+	if since.IsZero() {
+		return time.Time{}, nil
+	}
+	copies, err := oldCopies(path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	for i := len(copies) - 1; i >= 0; i-- {
+		st, err := os.Stat(copies[i].path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return time.Time{}, fmt.Errorf("reading %s: %w", copies[i].path, err)
+		}
+		if !st.ModTime().Before(since) {
+			return time.Time{}, nil
+		}
+		line, err := firstLine(copies[i].path)
+		if errors.Is(err, os.ErrNotExist) {
+			return time.Time{}, nil
+		}
+		if err != nil {
+			return time.Time{}, fmt.Errorf("reading the start of %s: %w", copies[i].path, err)
+		}
+		var record struct {
+			Time time.Time `json:"time"`
+		}
+		if json.Unmarshal(line, &record) != nil {
+			return time.Time{}, nil
+		}
+		return record.Time, nil
+	}
+	return time.Time{}, nil
+}
+
+func firstLine(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening %s: %w", path, err)
+	}
+	defer f.Close()
+	var line []byte
+	var chunk [256]byte
+	for offset := int64(0); ; {
+		n, err := f.ReadAt(chunk[:], offset)
+		if n > 0 {
+			if end := bytes.IndexByte(chunk[:n], '\n'); end >= 0 {
+				return append(line, chunk[:end]...), nil
+			}
+			line = append(line, chunk[:n]...)
+			offset += int64(n)
+		}
+		if err == io.EOF {
+			return line, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading the first line of %s at byte %d: %w", path, offset, err)
+		}
+		if n == 0 {
+			return nil, io.ErrNoProgress
+		}
+	}
 }
 
 func isFull(path string, maxSize int64) (bool, error) {

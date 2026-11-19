@@ -36,8 +36,7 @@ func TestRecordWritesCgroupPeakMB(t *testing.T) {
 }
 
 // TestLoadReadsTheCopiesOldestFirst: the old copies come before the file,
-// the highest number first; a copy that ends before since is left out,
-// except the oldest, which tells where the log starts.
+// the highest number first; a copy that ends before since is left out.
 func TestLoadReadsTheCopiesOldestFirst(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "stats.jsonl")
 	now := time.Now()
@@ -60,8 +59,38 @@ func TestLoadReadsTheCopiesOldestFirst(t *testing.T) {
 	if got := tasks(time.Time{}); !slices.Equal(got, []string{"a", "b", "c", "d"}) {
 		t.Errorf("every copy: %v", got)
 	}
-	if got := tasks(now.Add(-2 * day)); !slices.Equal(got, []string{"a", "c", "d"}) {
-		t.Errorf("since 2 days ago: %v, want the oldest copy and the ones that reach it", got)
+	if got := tasks(now.Add(-2 * day)); !slices.Equal(got, []string{"c", "d"}) {
+		t.Errorf("since 2 days ago: %v, want only the copies that reach it", got)
+	}
+}
+
+func TestLoadSkipsBodyOfOldestCopyOutsideWindow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.jsonl")
+	now := time.Now()
+	day := 24 * time.Hour
+	writeLog(t, path+".2", "old", now.Add(-5*day))
+	f, err := os.OpenFile(path+".2", os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := f.WriteString(strings.Repeat("not-json\n", 128*1024))
+	closeErr := f.Close()
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	old := now.Add(-5 * day)
+	if err := os.Chtimes(path+".2", old, old); err != nil {
+		t.Fatal(err)
+	}
+	writeLog(t, path+".1", "recent-copy", now.Add(-day))
+	writeLog(t, path, "current", now)
+
+	recs, malformed, err := Load(path, now.Add(-2*day))
+	if err != nil || malformed != 0 || len(recs) != 2 || recs[0].Task != "recent-copy" || recs[1].Task != "current" {
+		t.Fatalf("Load = %v, %d malformed, %v; want only window records", recs, malformed, err)
 	}
 }
 
