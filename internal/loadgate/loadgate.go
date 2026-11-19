@@ -172,6 +172,9 @@ func PriorityFromEnv() (p Priority, ok bool, err error) {
 // NewBudget writes a budget of d for waiting into a new file in dir and
 // returns its path; the deploy removes it when it ends.
 func NewBudget(dir string, d time.Duration) (string, error) {
+	if d < 0 {
+		return "", fmt.Errorf("the budget for waiting must not be negative")
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("the budget for waiting: %w", err)
 	}
@@ -179,11 +182,327 @@ func NewBudget(dir string, d time.Duration) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("the budget for waiting: %w", err)
 	}
-	_, err = f.WriteString(strconv.FormatInt(int64(d), 10))
-	if err = errors.Join(err, f.Close()); err != nil {
+	path := f.Name()
+	if err := f.Close(); err != nil {
 		return "", fmt.Errorf("the budget for waiting: %w", err)
 	}
-	return f.Name(), nil
+	amount := []byte(strconv.FormatInt(int64(d), 10))
+	if err := writeAtomic(path, amount); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("the budget for waiting: %w", err)
+	}
+	if err := writeAtomic(path+".total", amount); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("the budget total for waiting: %w", err)
+	}
+	return path, nil
+}
+
+func writeAtomic(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return fmt.Errorf("creating atomic file for %s: %w", path, err)
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err := f.Chmod(0o644); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("setting permissions on atomic file for %s: %w", path, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("writing atomic file for %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("syncing atomic file for %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing atomic file for %s: %w", path, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("renaming atomic file to %s: %w", path, err)
+	}
+	return nil
+}
+
+func parseBudgetState(remainingData, totalData []byte, path string, hasTotal bool) (budgetState, error) {
+	remaining, err := strconv.ParseInt(strings.TrimSpace(string(remainingData)), 10, 64)
+	if err != nil {
+		var oldJSON struct {
+			Total     *int64 `json:"total"`
+			Remaining *int64 `json:"remaining"`
+		}
+		if jsonErr := json.Unmarshal(remainingData, &oldJSON); jsonErr != nil || oldJSON.Total == nil || oldJSON.Remaining == nil {
+			return budgetState{}, fmt.Errorf("budget file %s: remaining is not a number of nanoseconds", path)
+		}
+		remaining = *oldJSON.Remaining
+		if !hasTotal {
+			totalData = []byte(strconv.FormatInt(*oldJSON.Total, 10))
+			hasTotal = true
+		}
+	}
+	if remaining < 0 {
+		return budgetState{}, fmt.Errorf("budget file %s: remaining budget is negative", path)
+	}
+	total := remaining
+	if hasTotal {
+		parsedTotal, err := strconv.ParseInt(strings.TrimSpace(string(totalData)), 10, 64)
+		if err != nil || parsedTotal < 0 {
+			return budgetState{}, fmt.Errorf("budget total file %s.total: invalid number of nanoseconds", path)
+		}
+		total = parsedTotal
+	}
+	if remaining > total {
+		return budgetState{}, fmt.Errorf("budget file %s: remaining budget exceeds total", path)
+	}
+	return budgetState{Total: total, Remaining: remaining}, nil
+}
+
+type budgetState struct {
+	Total     int64
+	Remaining int64
+}
+
+func readBudgetState(path string) (budgetState, error) {
+	remainingData, err := os.ReadFile(path)
+	if err != nil {
+		return budgetState{}, fmt.Errorf("reading the budget for waiting %s: %w", path, err)
+	}
+	totalData, err := os.ReadFile(path + ".total")
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return budgetState{}, fmt.Errorf("reading the budget total %s.total: %w", path, err)
+	}
+	hasTotal := !errors.Is(err, os.ErrNotExist)
+	return parseBudgetState(remainingData, totalData, path, hasTotal)
+}
+
+func (p *Priority) budgetTotal() (total time.Duration, err error) {
+	fl := flock.New(p.Budget + ".lock")
+	if err := fl.Lock(); err != nil {
+		return 0, fmt.Errorf("locking the budget for waiting %s: %w", p.Budget, err)
+	}
+	defer func() { err = errors.Join(err, fl.Unlock()) }()
+	state, err := readBudgetState(p.Budget)
+	return time.Duration(state.Total), err
+}
+
+type budgetInterval struct {
+	From      int64 `json:"from"`
+	To        int64 `json:"to"`
+	OpenStart bool  `json:"open_start,omitempty"`
+}
+
+type budgetIntervals []budgetInterval
+
+func (spans budgetIntervals) merge(next budgetInterval) budgetIntervals {
+	spans = append(spans, next)
+	slices.SortFunc(spans, func(a, b budgetInterval) int {
+		if a.OpenStart != b.OpenStart {
+			if a.OpenStart {
+				return -1
+			}
+			return 1
+		}
+		if a.From < b.From {
+			return -1
+		}
+		if a.From > b.From {
+			return 1
+		}
+		return 0
+	})
+	merged := spans[:0]
+	for _, span := range spans {
+		if span.To <= span.From && !span.OpenStart {
+			continue
+		}
+		if len(merged) == 0 {
+			merged = append(merged, span)
+			continue
+		}
+		last := &merged[len(merged)-1]
+		if span.From <= last.To {
+			if span.To > last.To {
+				last.To = span.To
+			}
+		} else {
+			merged = append(merged, span)
+		}
+	}
+	return merged
+}
+
+const budgetIntervalLimit = 64
+
+func distance(high, low int64) uint64 {
+	return uint64(high) - uint64(low)
+}
+
+func (spans budgetIntervals) compact() (budgetIntervals, time.Duration) {
+	var charged uint64
+	for len(spans) > budgetIntervalLimit {
+		mergeAt := 0
+		minGap := distance(spans[1].From, spans[0].To)
+		for i := 1; i+1 < len(spans); i++ {
+			gap := distance(spans[i+1].From, spans[i].To)
+			if gap < minGap {
+				mergeAt, minGap = i, gap
+			}
+		}
+		gap := distance(spans[mergeAt+1].From, spans[mergeAt].To)
+		charged += gap
+		spans[mergeAt].To = spans[mergeAt+1].To
+		spans = append(spans[:mergeAt+1], spans[mergeAt+2:]...)
+	}
+	return spans, saturatedDuration(charged)
+}
+
+func saturatedDuration(n uint64) time.Duration {
+	if n > uint64(math.MaxInt64) {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(n)
+}
+
+func subtractBudget(left, spent time.Duration) time.Duration {
+	if spent > 0 && left < time.Duration(math.MinInt64)+spent {
+		return time.Duration(math.MinInt64)
+	}
+	return left - spent
+}
+
+func (spans budgetIntervals) uncovered(from, to int64) time.Duration {
+	var uncovered uint64
+	cursor := from
+	for _, span := range spans {
+		lo := span.From
+		if span.OpenStart {
+			lo = from
+		}
+		if lo < from {
+			lo = from
+		}
+		hi := min(span.To, to)
+		if hi <= cursor || hi <= lo {
+			continue
+		}
+		if lo > cursor {
+			uncovered += distance(lo, cursor)
+		}
+		if hi > cursor {
+			cursor = hi
+		}
+	}
+	if cursor < to {
+		uncovered += distance(to, cursor)
+	}
+	return saturatedDuration(uncovered)
+}
+
+func wallClockMovedBack(spans budgetIntervals, toNS int64, observedAt time.Time) bool {
+	if len(spans) == 0 {
+		return false
+	}
+	latest := spans[len(spans)-1].To
+	if !atLeastDistance(latest, toNS, uint64(time.Minute)) {
+		return false
+	}
+	// The old watermark rule protected against a wall-clock jump. Require the
+	// measured end to be close to the current clock as well, so delayed
+	// out-of-order writes keep their intervals instead of looking like a jump.
+	now := observedAt.UnixNano()
+	if now >= toNS {
+		return distance(now, toNS) < uint64(time.Minute)
+	}
+	return distance(toNS, now) < uint64(time.Minute)
+}
+
+func atLeastDistance(high, low int64, threshold uint64) bool {
+	return high > low && distance(high, low) >= threshold
+}
+
+func parseBudgetIntervals(data []byte, path string) (budgetIntervals, error) {
+	if ns, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); err == nil {
+		return budgetIntervals{{To: ns, OpenStart: true}}, nil
+	}
+	var spans budgetIntervals
+	if err := json.Unmarshal(data, &spans); err != nil {
+		return nil, fmt.Errorf("budget wall-time mark %s: invalid interval set: %w", path, err)
+	}
+	if len(spans) == 0 {
+		return nil, fmt.Errorf("budget wall-time mark %s: interval set is empty", path)
+	}
+	openStarts := 0
+	for i, span := range spans {
+		if span.OpenStart {
+			openStarts++
+			if i != 0 {
+				return nil, fmt.Errorf("budget wall-time mark %s: open-start interval must be first", path)
+			}
+		} else if span.To <= span.From {
+			return nil, fmt.Errorf("budget wall-time mark %s: interval %d is empty or reversed", path, i)
+		}
+		if i > 0 && spans[i-1].To >= span.From {
+			return nil, fmt.Errorf("budget wall-time mark %s: intervals %d and %d overlap or are not merged", path, i-1, i)
+		}
+	}
+	if openStarts > 1 {
+		return nil, fmt.Errorf("budget wall-time mark %s: multiple open-start intervals", path)
+	}
+	return spans, nil
+}
+
+func readBudgetIntervals(budget string) (budgetIntervals, string, error) {
+	intervalsPath := budget + ".intervals"
+	path := intervalsPath
+	data, err := os.ReadFile(intervalsPath)
+	if errors.Is(err, os.ErrNotExist) {
+		// Older files have only the scalar watermark; an intermediate format
+		// stored ranges there as JSON. Both remain readable during upgrade.
+		path = budget + ".until"
+		data, err = os.ReadFile(path)
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, path, nil
+	}
+	if err != nil {
+		return nil, path, fmt.Errorf("reading budget intervals %s: %w", path, err)
+	}
+	spans, err := parseBudgetIntervals(data, path)
+	return spans, path, err
+}
+
+func writeBudgetSpend(budget string, state budgetState, left time.Duration, spans budgetIntervals) error {
+	if len(spans) == 0 {
+		return nil
+	}
+	intervalsPath := budget + ".intervals"
+	encoded, err := json.Marshal(spans)
+	if err != nil {
+		return fmt.Errorf("encoding budget intervals %s: %w", intervalsPath, err)
+	}
+	state.Remaining = int64(max(left, 0))
+	if err := writeAtomic(budget, []byte(strconv.FormatInt(state.Remaining, 10))); err != nil {
+		return fmt.Errorf("writing the remaining budget %s: %w", budget, err)
+	}
+	totalPath := budget + ".total"
+	if _, err := os.Stat(totalPath); errors.Is(err, os.ErrNotExist) {
+		if err := writeAtomic(totalPath, []byte(strconv.FormatInt(state.Total, 10))); err != nil {
+			return fmt.Errorf("writing the budget total %s: %w", totalPath, err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("checking the budget total %s: %w", totalPath, err)
+	}
+	if err := writeAtomic(intervalsPath, encoded); err != nil {
+		return fmt.Errorf("writing budget intervals %s: %w", intervalsPath, err)
+	}
+	watermark := spans[len(spans)-1].To
+	untilPath := budget + ".until"
+	if err := writeAtomic(untilPath, []byte(strconv.FormatInt(watermark, 10))); err != nil {
+		return fmt.Errorf("writing budget wall-time mark %s: %w", untilPath, err)
+	}
+	return nil
 }
 
 // spend takes the part of [from, to] not already counted from the shared wall-time budget.
@@ -194,51 +513,34 @@ func (p *Priority) spend(from, to time.Time) (left time.Duration, err error) {
 		return 0, fmt.Errorf("locking the budget for waiting %s: %w", p.Budget, err)
 	}
 	defer func() { err = errors.Join(err, fl.Unlock()) }()
-	data, err := os.ReadFile(p.Budget)
+	state, err := readBudgetState(p.Budget)
 	if err != nil {
-		return 0, fmt.Errorf("the budget for waiting of %s: %w", p.For, err)
+		return 0, err
 	}
-	n, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("the budget for waiting %s: %q is not a number of nanoseconds", p.Budget, data)
-	}
-	left = time.Duration(n)
+	left = time.Duration(state.Remaining)
 	if from.IsZero() && to.IsZero() {
 		return left, nil
 	}
 	from, to = time.Unix(0, from.UnixNano()), time.Unix(0, to.UnixNano())
-	untilPath := p.Budget + ".until"
-	untilData, readErr := os.ReadFile(untilPath)
-	var until time.Time
-	haveUntil := readErr == nil
-	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-		return 0, fmt.Errorf("reading the budget wall-time mark %s: %w", untilPath, readErr)
+	spans, _, err := readBudgetIntervals(p.Budget)
+	if err != nil {
+		return 0, err
 	}
-	if haveUntil {
-		ns, err := strconv.ParseInt(strings.TrimSpace(string(untilData)), 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("budget wall-time mark %s: %q is not Unix nanoseconds", untilPath, untilData)
-		}
-		until = time.Unix(0, ns)
+	fromNS, toNS := from.UnixNano(), to.UnixNano()
+	if toNS <= fromNS && len(spans) == 0 {
+		return left, nil
 	}
-	if haveUntil && until.Sub(to) >= time.Minute {
-		until, haveUntil = to, true
-		left -= max(to.Sub(from), 0)
-	} else {
-		accountedFrom := from
-		if haveUntil && until.After(accountedFrom) {
-			accountedFrom = until
-		}
-		left -= max(to.Sub(accountedFrom), 0)
-		if !haveUntil || to.After(until) {
-			until, haveUntil = to, true
-		}
+	if toNS > fromNS && wallClockMovedBack(spans, toNS, time.Now()) {
+		spans = nil // The wall clock moved backwards; begin a fresh accounting epoch.
 	}
-	if err := os.WriteFile(untilPath, []byte(strconv.FormatInt(until.UnixNano(), 10)), 0o644); err != nil {
-		return 0, fmt.Errorf("writing the budget wall-time mark %s: %w", untilPath, err)
+	if toNS > fromNS {
+		left = subtractBudget(left, spans.uncovered(fromNS, toNS))
+		var compressed time.Duration
+		spans, compressed = spans.merge(budgetInterval{From: fromNS, To: toNS}).compact()
+		left = subtractBudget(left, compressed)
 	}
-	if err := os.WriteFile(p.Budget, []byte(strconv.FormatInt(int64(max(left, 0)), 10)), 0o644); err != nil {
-		return 0, fmt.Errorf("the budget for waiting: %w", err)
+	if err := writeBudgetSpend(p.Budget, state, left, spans); err != nil {
+		return 0, err
 	}
 	return left, nil
 }
@@ -478,7 +780,7 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 				return err
 			}
 			if finished {
-				return m.priorityExhausted()
+				return m.priorityExhausted(p)
 			}
 		}
 		if b.why == "" {
@@ -497,7 +799,7 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 				return err
 			}
 			if finished {
-				return m.priorityExhausted()
+				return m.priorityExhausted(p)
 			}
 		}
 		m.waits[b.why] += 0
@@ -539,8 +841,14 @@ func (m *machine) spendPriorityWait(p *Priority, spent time.Time) (time.Time, bo
 	return now, true, nil
 }
 
-func (m *machine) priorityExhausted() error {
-	return fmt.Errorf("deploy.load_wait: budget exhausted; load average 1m %.2f, runnable %.0f, limit %.0f; %s not started", m.avg1, m.runnable, m.runnableLimit, m.name)
+func (m *machine) priorityExhausted(p *Priority) error {
+	total, err := p.budgetTotal()
+	amount := "unknown"
+	if err == nil {
+		amount = total.String()
+	}
+	refusal := fmt.Errorf("deploy.load_wait: budget exhausted (budget %s); load average 1m %.2f, runnable %.0f, limit %.0f; %s not started", amount, m.avg1, m.runnable, m.runnableLimit, m.name)
+	return errors.Join(refusal, err)
 }
 
 func (m *machine) priorityFailure(ctx context.Context, p *Priority, from, to time.Time) error {
@@ -550,9 +858,9 @@ func (m *machine) priorityFailure(ctx context.Context, p *Priority, from, to tim
 		}
 	}
 	if _, err := m.busy(ctx, true); err != nil {
-		return errors.Join(m.priorityExhausted(), err)
+		return errors.Join(m.priorityExhausted(p), err)
 	}
-	return m.priorityExhausted()
+	return m.priorityExhausted(p)
 }
 
 func (m *machine) reserveWaitPause(ctx context.Context, b busyness, p *Priority) (time.Duration, error) {

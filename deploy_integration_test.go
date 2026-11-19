@@ -708,7 +708,7 @@ func newDeployFixture(t *testing.T, config func(state string, q func(string) str
 		// The stand-in deploy script records what it was given.
 		"deploy.sh": `set -e
 STATE=` + state + `
-{ echo "target=$GRAFT_DEPLOY_TARGET env=$GRAFT_DEPLOY_ENV version=$GRAFT_DEPLOY_VERSION"; echo "sha=$GRAFT_DEPLOY_SHA"; echo "prev=$GRAFT_DEPLOY_PREVIOUS_SHA"; echo "args=$*"; echo "priority=$GRAFT_LOAD_PRIORITY"; echo "budget=$(cat "$GRAFT_LOAD_BUDGET")"; echo "budget file=$GRAFT_LOAD_BUDGET"; } > "$STATE/$GRAFT_DEPLOY_TARGET-run"
+{ echo "target=$GRAFT_DEPLOY_TARGET env=$GRAFT_DEPLOY_ENV version=$GRAFT_DEPLOY_VERSION"; echo "sha=$GRAFT_DEPLOY_SHA"; echo "prev=$GRAFT_DEPLOY_PREVIOUS_SHA"; echo "args=$*"; echo "priority=$GRAFT_LOAD_PRIORITY"; echo "budget=$(cat "$GRAFT_LOAD_BUDGET")"; echo "budget total=$(cat "$GRAFT_LOAD_BUDGET.total")"; echo "budget file=$GRAFT_LOAD_BUDGET"; } > "$STATE/$GRAFT_DEPLOY_TARGET-run"
 if [ -n "$GRAFT_TEST_DEPLOY_RELEASE" ]; then
   echo ready > "$STATE/deploy-ready"
   # A test that fails before it lets the script go must not leave it
@@ -853,7 +853,7 @@ func TestDeployRunsScriptAndPostsReleaseNotes(t *testing.T) {
 	head := d.git("rev-parse", "HEAD")
 	run := d.stateFile("test-run")
 	for _, want := range []string{"target=test env=local version=1.0.1", "sha=" + head, "prev=\n", "args=--skip-tests two words", "priority=graft deploy test",
-		"budget=600000000000\n"} {
+		"budget=600000000000\n", "budget total=600000000000\n"} {
 		if !strings.Contains(run, want) {
 			t.Errorf("script did not get %q:\n%s", want, run)
 		}
@@ -861,8 +861,13 @@ func TestDeployRunsScriptAndPostsReleaseNotes(t *testing.T) {
 	// The budget for waiting goes with the deploy.
 	if _, file, ok := strings.Cut(run, "budget file="); !ok {
 		t.Errorf("no budget file:\n%s", run)
-	} else if _, err := os.Stat(strings.TrimSpace(file)); !os.IsNotExist(err) {
-		t.Errorf("the budget file outlived the deploy: %v", err)
+	} else {
+		budget := strings.TrimSpace(file)
+		for _, path := range []string{budget, budget + ".total", budget + ".intervals", budget + ".lock", budget + ".until"} {
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Errorf("budget file outlived the deploy at %s: %v", path, err)
+			}
+		}
 	}
 	if !strings.Contains(out, "HEAD is still") {
 		t.Errorf("check-head from the script:\n%s", out)

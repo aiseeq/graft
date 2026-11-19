@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -353,8 +354,13 @@ func TestDeployPriorityWaitsInQueue(t *testing.T) {
 		!strings.Contains(string(out), "deploy.load_wait: budget exhausted") || !strings.Contains(string(out), "not started") {
 		t.Errorf("the priority task did not wait in the queue and fail at its budget: %v\n%s", err, out)
 	}
-	if left, err := os.ReadFile(budget); err != nil || strings.TrimSpace(string(left)) != "0" {
-		t.Errorf("budget left: %s %v", left, err)
+	if data, err := os.ReadFile(budget); err != nil {
+		t.Errorf("read remaining budget: %v", err)
+	} else {
+		left, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+		if err != nil || left != 0 {
+			t.Errorf("budget remaining: %s %v; want 0", data, err)
+		}
 	}
 }
 

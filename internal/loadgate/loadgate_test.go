@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -812,8 +813,10 @@ func TestPriorityForeignLoadWaits(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "load average 1m 29.00") {
 		t.Fatalf("priority failure = %v; want LA1 reason", err)
 	}
-	if left, readErr := os.ReadFile(p.Budget); readErr != nil || string(left) != "0" {
-		t.Fatalf("remaining wait budget = %q, %v; want spent budget 0", left, readErr)
+	if _, readErr := os.ReadFile(p.Budget); readErr != nil {
+		t.Fatalf("read remaining wait budget: %v", readErr)
+	} else if state, parseErr := readBudgetState(p.Budget); parseErr != nil || state.Remaining != 0 {
+		t.Fatalf("remaining wait budget = %+v, %v; want spent budget 0", state, parseErr)
 	}
 }
 
@@ -1333,10 +1336,234 @@ func TestBudgetSequentialWaitsAddUp(t *testing.T) {
 	}
 }
 
+func TestNewBudgetKeepsConfiguredTotalWhenSpending(t *testing.T) {
+	p := &Priority{For: "projectA deploy", Budget: newBudget(t, 20*time.Second)}
+	base := time.Now().Add(time.Hour)
+	if _, err := p.spend(base, base.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	state, err := readBudgetState(p.Budget)
+	if err != nil || state.Total != int64(20*time.Second) || state.Remaining != int64(15*time.Second) {
+		t.Fatalf("budget state = %+v, %v; want total 20s and remaining 15s", state, err)
+	}
+}
+
+func TestBudgetReadsLegacyRemainingValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "budget")
+	if err := os.WriteFile(path, []byte(strconv.FormatInt(int64(20*time.Second), 10)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &Priority{For: "projectA deploy", Budget: path}
+	base := time.Now().Add(time.Hour)
+	if _, err := p.spend(base, base.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	state, err := readBudgetState(path)
+	if err != nil || state.Total != int64(20*time.Second) || state.Remaining != int64(15*time.Second) {
+		t.Fatalf("upgraded legacy state = %+v, %v; want total 20s and remaining 15s", state, err)
+	}
+}
+
+func TestNewBudgetFilesRemainReadableByOldGraft(t *testing.T) {
+	p := &Priority{For: "projectA deploy", Budget: newBudget(t, 20*time.Second)}
+	base := time.Now().Add(time.Hour).Truncate(time.Second)
+	if _, err := p.spend(base, base.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]int64{
+		p.Budget:            int64(15 * time.Second),
+		p.Budget + ".until": base.Add(5 * time.Second).UnixNano(),
+		p.Budget + ".total": int64(20 * time.Second),
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		got, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+		if err != nil || got != want {
+			t.Fatalf("old graft parses %s as %q: %d, %v; want %d", path, data, got, err, want)
+		}
+	}
+	if _, err := os.Stat(p.Budget + ".intervals"); err != nil {
+		t.Fatalf("new interval sidecar missing: %v", err)
+	}
+}
+
+func TestParseBudgetStateRejectsInvalidValues(t *testing.T) {
+	const path = "/tmp/test-budget"
+	tests := []struct {
+		name, remaining, total string
+	}{
+		{name: "missing total", remaining: `{"remaining":10}`},
+		{name: "remaining above total", remaining: "11", total: "10"},
+		{name: "negative remaining", remaining: "-1", total: "10"},
+		{name: "negative total", remaining: "1", total: "-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var total []byte
+			if tt.total != "" {
+				total = []byte(tt.total)
+			}
+			if _, err := parseBudgetState([]byte(tt.remaining), total, path, tt.total != ""); err == nil || !strings.Contains(err.Error(), path) {
+				t.Fatalf("parse invalid state = %v; want error containing %s", err, path)
+			}
+		})
+	}
+}
+
+func TestBudgetOverlappingWaitsInAnyOrder(t *testing.T) {
+	base := time.Unix(1_800_000_000, 0)
+	tests := []struct {
+		name      string
+		intervals [][2]time.Duration
+		wantSpent time.Duration
+	}{
+		{name: "nested then covering", intervals: [][2]time.Duration{{2 * time.Second, 4 * time.Second}, {0, 10 * time.Second}}, wantSpent: 10 * time.Second},
+		{name: "covering then nested", intervals: [][2]time.Duration{{0, 10 * time.Second}, {2 * time.Second, 4 * time.Second}}, wantSpent: 10 * time.Second},
+		{name: "disjoint", intervals: [][2]time.Duration{{0, 3 * time.Second}, {5 * time.Second, 8 * time.Second}}, wantSpent: 6 * time.Second},
+		{name: "partial overlap", intervals: [][2]time.Duration{{0, 5 * time.Second}, {3 * time.Second, 8 * time.Second}}, wantSpent: 8 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &Priority{For: "projectA deploy", Budget: newBudget(t, 10*time.Second)}
+			for _, interval := range tt.intervals {
+				if _, err := p.spend(base.Add(interval[0]), base.Add(interval[1])); err != nil {
+					t.Fatal(err)
+				}
+			}
+			left, err := p.spend(time.Time{}, time.Time{})
+			if err != nil || left != 10*time.Second-tt.wantSpent {
+				t.Fatalf("remaining budget = %s, %v; want %s", left, err, 10*time.Second-tt.wantSpent)
+			}
+		})
+	}
+}
+
+func TestBudgetOutOfOrderDoesNotResetClockEpoch(t *testing.T) {
+	p := &Priority{For: "projectA deploy", Budget: newBudget(t, 300*time.Second)}
+	base := time.Now().Add(time.Hour).Truncate(time.Second)
+	for _, interval := range [][2]time.Duration{
+		{120 * time.Second, 130 * time.Second},
+		{0, 10 * time.Second},
+		{120 * time.Second, 130 * time.Second},
+	} {
+		if _, err := p.spend(base.Add(interval[0]), base.Add(interval[1])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	left, err := p.spend(time.Time{}, time.Time{})
+	if err != nil || left != 280*time.Second {
+		t.Fatalf("remaining budget = %s, %v; want 280s", left, err)
+	}
+}
+
+func TestBudgetUnionsEveryPermutation(t *testing.T) {
+	base := time.Now().Add(time.Hour).Truncate(time.Second)
+	intervals := [][2]time.Duration{{0, 5 * time.Second}, {3 * time.Second, 8 * time.Second}, {10 * time.Second, 12 * time.Second}, {2 * time.Second, 4 * time.Second}}
+	var visit func([]int, []bool)
+	permutations := 0
+	visit = func(order []int, used []bool) {
+		if len(order) == len(intervals) {
+			permutations++
+			p := &Priority{For: "projectA deploy", Budget: newBudget(t, time.Minute)}
+			for _, index := range order {
+				span := intervals[index]
+				if _, err := p.spend(base.Add(span[0]), base.Add(span[1])); err != nil {
+					t.Fatalf("permutation %v spend %d: %v", order, index, err)
+				}
+			}
+			left, err := p.spend(time.Time{}, time.Time{})
+			if err != nil || left != time.Minute-10*time.Second {
+				t.Fatalf("permutation %v remaining = %s, %v; want 50s", order, left, err)
+			}
+			return
+		}
+		for i := range intervals {
+			if !used[i] {
+				used[i] = true
+				visit(append(order, i), used)
+				used[i] = false
+			}
+		}
+	}
+	visit(nil, make([]bool, len(intervals)))
+	if permutations != 24 {
+		t.Fatalf("tested %d permutations; want 24", permutations)
+	}
+}
+
+func TestBudgetProcessHelper(t *testing.T) {
+	if os.Getenv("GRAFT_TEST_BUDGET_CHILD") != "1" {
+		return
+	}
+	from, err := strconv.ParseInt(os.Getenv("GRAFT_TEST_BUDGET_FROM"), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	to, err := strconv.ParseInt(os.Getenv("GRAFT_TEST_BUDGET_TO"), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Priority{For: "projectA deploy", Budget: os.Getenv("GRAFT_TEST_BUDGET_PATH")}
+	if _, err := p.spend(time.Unix(0, from), time.Unix(0, to)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBudgetUnionsAcrossProcesses(t *testing.T) {
+	p := &Priority{For: "projectA deploy", Budget: newBudget(t, time.Minute)}
+	base := time.Now().Add(time.Hour).Truncate(time.Second)
+	intervals := [][2]time.Time{{base.Add(2 * time.Second), base.Add(4 * time.Second)}, {base, base.Add(10 * time.Second)}}
+	commands := make([]*exec.Cmd, 0, len(intervals))
+	for _, interval := range intervals {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestBudgetProcessHelper$")
+		cmd.Env = append(os.Environ(), "GRAFT_TEST_BUDGET_CHILD=1", "GRAFT_TEST_BUDGET_PATH="+p.Budget,
+			"GRAFT_TEST_BUDGET_FROM="+strconv.FormatInt(interval[0].UnixNano(), 10),
+			"GRAFT_TEST_BUDGET_TO="+strconv.FormatInt(interval[1].UnixNano(), 10))
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		commands = append(commands, cmd)
+	}
+	for _, cmd := range commands {
+		if err := cmd.Wait(); err != nil {
+			t.Fatalf("budget child failed: %v", err)
+		}
+	}
+	left, err := p.spend(time.Time{}, time.Time{})
+	if err != nil || left != time.Minute-10*time.Second {
+		t.Fatalf("remaining budget after process spends = %s, %v; want 50s", left, err)
+	}
+}
+
+func TestBudgetLegacyWatermarkKeepsUnspentGap(t *testing.T) {
+	p := &Priority{For: "projectA deploy", Budget: filepath.Join(t.TempDir(), "budget")}
+	if err := os.WriteFile(p.Budget, []byte(strconv.FormatInt(int64(60*time.Second), 10)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mark := time.Unix(1_800_000_000, 0)
+	if err := os.WriteFile(p.Budget+".until", []byte(strconv.FormatInt(mark.UnixNano(), 10)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, interval := range [][2]time.Time{
+		{mark.Add(10 * time.Second), mark.Add(20 * time.Second)},
+		{mark, mark.Add(10 * time.Second)},
+	} {
+		if _, err := p.spend(interval[0], interval[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	left, err := p.spend(time.Time{}, time.Time{})
+	if err != nil || left != 40*time.Second {
+		t.Fatalf("remaining budget after legacy gap = %s, %v; want 40s", left, err)
+	}
+}
+
 func TestBudgetClockBackwards(t *testing.T) {
 	p := &Priority{For: "projectA deploy", Budget: newBudget(t, time.Minute)}
-	base := time.Unix(1_800_000_000, 0)
-	from, to := base.Add(10*time.Second), base.Add(20*time.Second)
+	to := time.Now().Add(-2 * time.Second)
+	from := to.Add(-10 * time.Second)
 	if err := os.WriteFile(p.Budget+".until", []byte(strconv.FormatInt(to.Add(2*time.Minute).UnixNano(), 10)), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1344,9 +1571,84 @@ func TestBudgetClockBackwards(t *testing.T) {
 	if err != nil || left != time.Minute-10*time.Second {
 		t.Fatalf("remaining budget after clock reversal = %s, %v; want 50s", left, err)
 	}
-	data, err := os.ReadFile(p.Budget + ".until")
-	if err != nil || strings.TrimSpace(string(data)) != strconv.FormatInt(to.UnixNano(), 10) {
-		t.Fatalf("watermark after clock reversal = %q, %v; want to=%d", data, err, to.UnixNano())
+	data, err := os.ReadFile(p.Budget + ".intervals")
+	var spans budgetIntervals
+	if err != nil || json.Unmarshal(data, &spans) != nil || len(spans) != 1 || spans[0] != (budgetInterval{From: from.UnixNano(), To: to.UnixNano()}) {
+		t.Fatalf("intervals after clock reversal = %q, %v; want [%d,%d]", data, err, from.UnixNano(), to.UnixNano())
+	}
+}
+
+func TestWallClockMovedBackNeedsCurrentMeasurement(t *testing.T) {
+	to := time.Now()
+	if !wallClockMovedBack(budgetIntervals{{From: to.UnixNano(), To: to.Add(2 * time.Minute).UnixNano()}}, to.UnixNano(), to.Add(-2*time.Second)) {
+		t.Fatal("a current measurement after a clock rollback was not detected")
+	}
+	base := to.Add(-10 * time.Minute)
+	spans := budgetIntervals{{From: base.Add(120 * time.Second).UnixNano(), To: base.Add(130 * time.Second).UnixNano()}}
+	if wallClockMovedBack(spans, base.Add(10*time.Second).UnixNano(), base.Add(130*time.Second)) {
+		t.Fatal("a delayed out-of-order measurement was mistaken for a clock rollback")
+	}
+}
+
+func TestBudgetRejectsMalformedIntervalSets(t *testing.T) {
+	base := int64(1_800_000_000_000_000_000)
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "null", data: "null"},
+		{name: "empty", data: "[]"},
+		{name: "empty record", data: "[{}]"},
+		{name: "overlap", data: fmt.Sprintf("[{\"from\":%d,\"to\":%d},{\"from\":%d,\"to\":%d}]", base, base+5, base+4, base+8)},
+		{name: "multiple open starts", data: fmt.Sprintf("[{\"to\":%d,\"open_start\":true},{\"to\":%d,\"open_start\":true}]", base, base+5)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &Priority{For: "projectA deploy", Budget: newBudget(t, time.Minute)}
+			if err := os.WriteFile(p.Budget+".until", []byte(tt.data), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := p.spend(time.Unix(0, base), time.Unix(0, base+time.Second.Nanoseconds()))
+			if err == nil || !strings.Contains(err.Error(), p.Budget+".until") {
+				t.Fatalf("spend with invalid interval set = %v; want error containing interval file path", err)
+			}
+		})
+	}
+}
+
+func TestBudgetIntervalSetIsBoundedConservatively(t *testing.T) {
+	p := &Priority{For: "projectA deploy", Budget: newBudget(t, time.Hour)}
+	base := time.Unix(1_800_000_000, 0)
+	for i := range budgetIntervalLimit + 1 {
+		from := base.Add(time.Duration(i*2) * time.Second)
+		if _, err := p.spend(from, from.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lateFrom, lateTo := base.Add(time.Second), base.Add(2*time.Second)
+	if _, err := p.spend(lateFrom, lateTo); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(p.Budget + ".intervals")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spans, err := parseBudgetIntervals(data, p.Budget+".until")
+	if err != nil || len(spans) > budgetIntervalLimit {
+		t.Fatalf("stored intervals count = %d, %v; want at most %d", len(spans), err, budgetIntervalLimit)
+	}
+	left, err := p.spend(time.Time{}, time.Time{})
+	if err != nil || left > time.Hour-(budgetIntervalLimit+2)*time.Second {
+		t.Fatalf("remaining budget = %s, %v; compression failed to charge its gap conservatively", left, err)
+	}
+}
+
+func TestBudgetIntervalArithmeticSaturates(t *testing.T) {
+	p := &Priority{For: "projectA deploy", Budget: newBudget(t, 10*time.Second)}
+	fromNS, toNS := int64(-5_000_000_000_000_000_000), int64(5_000_000_000_000_000_000)
+	left, err := p.spend(time.Unix(0, fromNS), time.Unix(0, toNS))
+	if err != nil || left > 0 {
+		t.Fatalf("remaining budget after enormous interval = %s, %v; want exhausted", left, err)
 	}
 }
 
@@ -1465,10 +1767,14 @@ func TestPriorityZeroBudgetDoesNotStartOverLA1(t *testing.T) {
 	setRunnable(1)
 	setRunnableLimit(t, 11)
 	setLoadavg(t, 12)
-	p := &Priority{For: "graft deploy prod", Budget: newBudget(t, 0)}
+	p := &Priority{For: "graft deploy prod", Budget: newBudget(t, 10*time.Second)}
+	base := time.Now().Add(time.Hour)
+	if _, err := p.spend(base, base.Add(10*time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	var log strings.Builder
 	_, _, err := Wait(context.Background(), "deploy-step", "projectA:deploy-step", p, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log)
-	if err == nil || !strings.Contains(err.Error(), "budget exhausted; load average 1m 12.00") || !strings.Contains(err.Error(), "limit 11") || !strings.Contains(err.Error(), "deploy-step not started") {
+	if err == nil || !strings.Contains(err.Error(), "budget exhausted (budget 10s); load average 1m 12.00") || !strings.Contains(err.Error(), "limit 11") || !strings.Contains(err.Error(), "deploy-step not started") {
 		t.Fatalf("zero-budget admission error = %v; log: %s", err, log.String())
 	}
 }
