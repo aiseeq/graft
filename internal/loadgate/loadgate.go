@@ -94,6 +94,9 @@ var reserveCPUReader = treeCPU
 // a fixed age; production uses the wall clock.
 var reserveAgeNow = time.Now
 var pressureMeterFactory = func(root string) machineMeter { return pressure.NewMeter(root) }
+var loadLockAcquired = func(string) {}
+var loadLockBeforeRelease = func() {}
+var loadLockRelease = func(lk *lock.Lock) error { return lk.Release() }
 
 func reserveEstimateChanged(old, next float64) bool {
 	delta := math.Abs(next - old)
@@ -395,6 +398,9 @@ func acquireLoadQueue(ctx context.Context, m *machine, p *Priority, lockPath str
 	if lk != nil && lk.WaitedBehind != "" {
 		behind = lk.WaitedBehind
 	}
+	if lk != nil {
+		loadLockAcquired(lockPath)
+	}
 	return lk, behind, lk != nil && (lk.WaitedBehind != "" || lk.WaitedQuiet > 0), err
 }
 
@@ -420,7 +426,7 @@ func waitQueued(ctx context.Context, m *machine, p *Priority, kind string, l use
 	if err != nil {
 		return queuedFailure(m, behind, err, settleLock, lk)
 	}
-	if err := lk.Release(); err != nil {
+	if err := loadLockRelease(lk); err != nil {
 		return queuedFailure(m, behind, errors.Join(err, releaseFn()), settleLock, nil)
 	}
 	if settleLock != nil {
@@ -784,6 +790,7 @@ func startAdmission(lockPath, name string, cores float64, cap time.Duration, log
 	if err != nil {
 		return released, time.Now(), nil, nil, err
 	}
+	loadLockBeforeRelease()
 	var observedMu sync.Mutex
 	var observedRel func() error
 	observedReleased := false
