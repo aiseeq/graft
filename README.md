@@ -504,8 +504,12 @@ already waiting for the lock in an older graft version may acquire it first.
 Priority does not bypass the load limit, which stays the same. The deploy's
 heavy tasks and grafts its script starts share one `deploy.load_wait` budget;
 settle, FIFO queue and load waits count once by wall time across parallel
-children. When the budget is exhausted, the task fails with the last load
-average, runnable count and limit. `then: start` is accepted for compatibility, warns, and is
+children. When the budget is exhausted, the one-line refusal names the last
+reason that kept the task waiting: machine busyness, its FIFO queue holder, or
+quiet mode. If it did not wait, the refusal says the budget was already
+exhausted by other tasks of this deploy. It gives the wait time, the budget on
+entry, and the refusal-time sample (`now: load average 1m …, runnable …, limit …`).
+`then: start` is accepted for compatibility, warns, and is
 treated as `fail`; the default is `fail`. A task that finds the machine calm
 can start within the budget. The budget lives in a file in the user cache
 (`graft/load-budget-*`) for as long as the deploy runs. The wait shows in

@@ -1774,7 +1774,7 @@ func TestPriorityZeroBudgetDoesNotStartOverLA1(t *testing.T) {
 	}
 	var log strings.Builder
 	_, _, err := Wait(context.Background(), "deploy-step", "projectA:deploy-step", p, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log)
-	if err == nil || !strings.Contains(err.Error(), "budget exhausted (budget 10s); load average 1m 12.00") || !strings.Contains(err.Error(), "limit 11") || !strings.Contains(err.Error(), "deploy-step not started") {
+	if err == nil || !strings.Contains(err.Error(), "budget exhausted (budget 10s)") || !strings.Contains(err.Error(), "last wait: ") || strings.Contains(err.Error(), "last wait: this task did not wait") || !strings.Contains(err.Error(), "budget already exhausted by other tasks of this deploy") || !strings.Contains(err.Error(), "waited 0s; budget on entry 0s; now: load average 1m 12.00") || !strings.Contains(err.Error(), "limit 11") || !strings.Contains(err.Error(), "deploy-step not started") {
 		t.Fatalf("zero-budget admission error = %v; log: %s", err, log.String())
 	}
 }

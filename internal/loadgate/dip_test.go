@@ -220,6 +220,28 @@ func TestPriorityCountsTheForecast(t *testing.T) {
 	}
 }
 
+func TestPriorityRefusalNamesReserveForecast(t *testing.T) {
+	setRunnable, _, _ := fakeMachine(t)
+	setRunnable(1)
+	setLoadavg(t, 21)
+	path := filepath.Join(t.TempDir(), "load.lock")
+	release := admitOne(t, path, 4)
+	defer release()
+	p := &Priority{For: "deploy", Budget: newBudget(t, 30*time.Millisecond), Fail: true}
+	l := testLoad
+	l.Poll = time.Millisecond
+	_, _, err := WaitWithSettle(context.Background(), "forecast", "projectA:forecast", p, l, path, "", 0, 0, io.Discard)
+	forecast := "load average 1m 21.0 plus 4.0 of the admitted tasks"
+	if err == nil || !strings.Contains(err.Error(), forecast) || !strings.Contains(err.Error(), "now: load average 1m") {
+		t.Fatalf("priority refusal = %v; want forecast %q and a fresh now sample", err, forecast)
+	}
+	lines := readAdmissionLines(t, filepath.Join(os.Getenv("XDG_CACHE_HOME"), "graft", "admissions.jsonl"))
+	last := lines[len(lines)-1]
+	if last.Verdict != "refused" || !strings.Contains(last.Why, forecast) || !strings.Contains(last.Why, "now:") {
+		t.Fatalf("refused admission = %+v; want its reason to include the forecast and now sample", last)
+	}
+}
+
 // TestNoLoadAverageNoForecast: without a load average to read the forecast
 // has nothing to add to; the runnable count and the reserves still hold.
 func TestNoLoadAverageNoForecast(t *testing.T) {

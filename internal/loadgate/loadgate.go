@@ -575,23 +575,29 @@ func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userc
 	if p != nil {
 		if left, budgetErr := p.spend(time.Time{}, time.Time{}); budgetErr != nil {
 			return m.admission(), released, budgetErr
-		} else if left <= 0 && settleLockPath != "" && settleDuration > 0 {
-			holders, holderErr := lock.Holders(settleLockPath)
-			if holderErr != nil {
-				return m.admission(), released, holderErr
+		} else {
+			m.priorityBudget = left
+			if left <= 0 && settleLockPath != "" && settleDuration > 0 {
+				holders, holderErr := lock.Holders(settleLockPath)
+				if holderErr != nil {
+					return m.admission(), released, holderErr
+				}
+				if len(holders) > 0 {
+					m.waitedBehind = holders[0]
+					m.lastWaitText = "queued behind " + holders[0]
+					err := m.priorityFailure(ctx, p, time.Time{}, time.Time{})
+					return m.admission(), released, err
+				}
+			} else if left > 0 {
+				settleCtx, cancel = context.WithTimeout(ctx, left)
+				defer cancel()
 			}
-			if len(holders) > 0 {
-				err := m.priorityFailure(ctx, p, time.Time{}, time.Time{})
-				return m.admission(), released, err
-			}
-		} else if left > 0 {
-			settleCtx, cancel = context.WithTimeout(ctx, left)
-			defer cancel()
 		}
 	}
 	settleLock, behind, start, err := acquireSettle(settleCtx, m, p, settleLockPath, settleDuration, holder, log)
 	if err != nil {
 		if p != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			m.noteQueueWait(settleLockPath, start, time.Now())
 			err = m.priorityFailure(ctx, p, start, time.Now())
 		}
 		return m.admission(), released, err
@@ -629,6 +635,8 @@ func acquireSettle(ctx context.Context, m *machine, p *Priority, settleLockPath 
 	}
 	if settleLock.WaitedBehind != "" {
 		m.waits[WhyQueue] += time.Since(start)
+		m.waitedBehind = settleLock.WaitedBehind
+		m.lastWaitText = "queued behind " + settleLock.WaitedBehind
 	}
 	return settleLock, settleLock.WaitedBehind, start, nil
 }
@@ -647,6 +655,13 @@ func priorityQueueContext(ctx context.Context, m *machine, p *Priority, lockPath
 			return ctx, func() {}, err
 		}
 		if len(holders) > 0 || behind != "" {
+			if behind != "" {
+				m.waitedBehind = behind
+				m.lastWaitText = "queued behind " + behind
+			} else if len(holders) > 0 {
+				m.waitedBehind = holders[0]
+				m.lastWaitText = "queued behind " + holders[0]
+			}
 			return ctx, func() {}, m.priorityFailure(ctx, p, time.Time{}, time.Time{})
 		}
 		return ctx, func() {}, nil
@@ -696,25 +711,48 @@ func acquireLoadQueue(ctx context.Context, m *machine, p *Priority, lockPath str
 	defer cancel()
 	holder := "graft " + m.name + " (starting a heavy task)"
 	var lk *lock.Lock
+	queueStart := time.Now()
 	if p != nil {
 		lk, err = lock.AcquireFIFOPriorityObserved(queueCtx, lockPath, queueTimeout, holder, log, quiet)
 	} else {
 		lk, err = lock.AcquireFIFOObserved(queueCtx, lockPath, queueTimeout, holder, log, quiet)
 	}
-	if lk != nil && (lk.WaitedBehind != "" || lk.WaitedQuiet > 0) {
+	behind, queueWaited := m.loadQueueResult(ctx, p, lockPath, queueStart, start, behind, quiet, lk, err)
+	if lk != nil {
+		loadLockAcquired(lockPath)
+	}
+	return lk, behind, queueWaited, err
+}
+
+func (m *machine) loadQueueResult(ctx context.Context, p *Priority, lockPath string, queueStart, start time.Time, behind string, quiet func() (bool, error), lk *lock.Lock, err error) (string, bool) {
+	if lk == nil {
+		if p != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			m.noteQueueWait(lockPath, queueStart, time.Now())
+			quietNow, quietErr := quiet()
+			if quietErr == nil && quietNow {
+				m.lastWaitText = "quiet mode kept this task waiting"
+			}
+		}
+		return behind, false
+	}
+	queueWaited := lk.WaitedBehind != "" || lk.WaitedQuiet > 0
+	if queueWaited {
 		waited := time.Since(start)
 		if lk.WaitedQuiet > 0 {
 			m.waits[WhyQuiet] += min(lk.WaitedQuiet, waited)
 		}
 		m.waits[WhyQueue] += max(0, waited-m.waits[WhyQuiet]-m.waits[WhyQueue])
 	}
-	if lk != nil && lk.WaitedBehind != "" {
+	if lk.WaitedBehind != "" {
 		behind = lk.WaitedBehind
 	}
-	if lk != nil {
-		loadLockAcquired(lockPath)
+	if lk.WaitedQuiet > 0 {
+		m.lastWaitText = "quiet mode kept this task waiting"
+	} else if lk.WaitedBehind != "" {
+		m.waitedBehind = lk.WaitedBehind
+		m.lastWaitText = "queued behind " + lk.WaitedBehind
 	}
-	return lk, behind, lk != nil && (lk.WaitedBehind != "" || lk.WaitedQuiet > 0), err
+	return behind, queueWaited
 }
 
 func waitQueued(ctx context.Context, m *machine, p *Priority, kind string, l userconfig.MachineLoad, lockPath string, cores float64, settleLock *lock.Lock, settleDuration time.Duration, start time.Time, behind string, log io.Writer) (Admission, func() error, error) {
@@ -791,6 +829,7 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 		}
 		// The measure or the reserves beside it: either keeps the task waiting.
 		m.recordWait(b, p != nil)
+		m.lastWaitText = b.text
 		waited = true
 		if p != nil {
 			var finished bool
@@ -847,7 +886,21 @@ func (m *machine) priorityExhausted(p *Priority) error {
 	if err == nil {
 		amount = total.String()
 	}
-	refusal := fmt.Errorf("deploy.load_wait: budget exhausted (budget %s); load average 1m %.2f, runnable %.0f, limit %.0f; %s not started", amount, m.avg1, m.runnable, m.runnableLimit, m.name)
+	lastWait := m.lastWaitText
+	if lastWait == "" {
+		lastWait = "this task did not wait"
+	}
+	spentNote := ""
+	waited := m.waits.Total()
+	if m.priorityBudget <= 0 {
+		spentNote = "; budget already exhausted by other tasks of this deploy"
+		waited = 0
+	}
+	now := m.priorityNow
+	if now == "" {
+		now = fmt.Sprintf("now: load average 1m %.2f, runnable %.0f, limit %.0f", m.avg1, m.runnable, m.runnableLimit)
+	}
+	refusal := fmt.Errorf("deploy.load_wait: budget exhausted (budget %s); last wait: %s%s; waited %s; budget on entry %s; %s; %s not started", amount, lastWait, spentNote, waited.Round(time.Millisecond), m.priorityBudget.Round(time.Millisecond), now, m.name)
 	return errors.Join(refusal, err)
 }
 
@@ -857,10 +910,30 @@ func (m *machine) priorityFailure(ctx context.Context, p *Priority, from, to tim
 			return err
 		}
 	}
-	if _, err := m.busy(ctx, true); err != nil {
-		return errors.Join(m.priorityExhausted(p), err)
+	refreshErr := m.refreshPriorityNow(ctx)
+	return errors.Join(m.priorityExhausted(p), refreshErr)
+}
+
+func (m *machine) noteQueueWait(path string, from, to time.Time) {
+	waited := max(to.Sub(from), 0)
+	m.waits[WhyQueue] += waited
+	holders, err := lock.Holders(path)
+	if err == nil && len(holders) > 0 {
+		m.waitedBehind = holders[0]
+		m.lastWaitText = "queued behind " + holders[0]
+	} else {
+		m.lastWaitText = "queued in the FIFO lock"
 	}
-	return m.priorityExhausted(p)
+}
+
+func (m *machine) refreshPriorityNow(ctx context.Context) error {
+	lastView, haveView, decision, exitHatch := m.lastView, m.haveView, m.decision, m.exitHatch
+	runnable, runnableLimit, avg1, avg1Known := m.runnable, m.runnableLimit, m.avg1, m.avg1Known
+	_, err := m.busy(ctx, true)
+	m.priorityNow = fmt.Sprintf("now: load average 1m %.2f, runnable %.0f, limit %.0f", m.avg1, m.runnable, m.runnableLimit)
+	m.lastView, m.haveView, m.decision, m.exitHatch = lastView, haveView, decision, exitHatch
+	m.runnable, m.runnableLimit, m.avg1, m.avg1Known = runnable, runnableLimit, avg1, avg1Known
+	return err
 }
 
 func (m *machine) reserveWaitPause(ctx context.Context, b busyness, p *Priority) (time.Duration, error) {
@@ -1440,6 +1513,10 @@ type machine struct {
 	candidateKnown bool
 	decision       admissionDecision
 	exitHatch      bool
+	lastWaitText   string
+	priorityBudget time.Duration
+	priorityNow    string
+	waitedBehind   string
 }
 
 func newMachine(l userconfig.MachineLoad, log io.Writer, name, kind string) *machine {
@@ -1451,12 +1528,16 @@ func newMachine(l userconfig.MachineLoad, log io.Writer, name, kind string) *mac
 	return &machine{l: l, limits: limits, limitsErr: limitsErr, log: log, name: name, kind: kind, now: time.Now, sleep: sleep, meter: pressureMeterFactory(proc), waits: Waits{}, admissionStart: time.Now()}
 }
 
-func (m *machine) admission() Admission { return Admission{Waits: m.waits} }
+func (m *machine) admission() Admission {
+	return Admission{Waits: m.waits, WaitedBehind: m.waitedBehind}
+}
 
 // behind is the admission of a task that waited in a queue behind holder.
 func (m *machine) behind(holder string) Admission {
 	adm := m.admission()
-	adm.WaitedBehind = holder
+	if holder != "" {
+		adm.WaitedBehind = holder
+	}
 	return adm
 }
 
