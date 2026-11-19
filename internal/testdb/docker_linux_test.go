@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/proc/proctest"
 )
 
@@ -42,16 +43,25 @@ func TestServerWithoutDocker(t *testing.T) {
 		return
 	}
 	cfg := socketConfig(t, dsn)
-	migrations := t.TempDir()
-	if err := os.WriteFile(filepath.Join(migrations, "1_init.up.sql"), []byte("-- "+t.Name()), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg.Migrations = migrations
-	source, err := SourceFor(cfg, "/")
+	var log bytes.Buffer
+	// Up and cleanup modify the shared server, just as graft testdb does.
+	// Hold its lock throughout the test so another Up cannot sweep the source
+	// between CREATE and COMMENT, or while cleanup is removing it.
+	lockDir, err := config.TestDBDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var log bytes.Buffer
+	lockPath := filepath.Join(lockDir, cfg.Container+".lock")
+	lk, err := lock.Acquire(t.Context(), lockPath, 15*time.Minute, t.Name(), &log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := lk.Release(); err != nil {
+			t.Error(err)
+		}
+	})
+	source := sandboxTestSource(t, cfg)
 	db := &DB{Cfg: cfg, Log: &log, Source: source}
 	ctx := t.Context()
 	t.Cleanup(func() {
@@ -95,6 +105,31 @@ func TestServerWithoutDocker(t *testing.T) {
 	err = (&DB{Cfg: &gone, Log: &log, Source: gone.Database}).Up(ctx, nil)
 	if err == nil || !strings.Contains(err.Error(), "does not answer") || !strings.Contains(err.Error(), "outside the sandbox: graft testdb up") {
 		t.Errorf("up with no server: %v", err)
+	}
+}
+
+// sandboxTestSource gives each test invocation its own migration set and
+// source, so its cleanup cannot remove another invocation's database.
+func sandboxTestSource(t *testing.T, cfg *config.TestDB) string {
+	t.Helper()
+	migrations := t.TempDir()
+	if err := os.WriteFile(filepath.Join(migrations, "1_init.up.sql"), []byte("-- "+migrations), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Migrations = migrations
+	source, err := SourceFor(cfg, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return source
+}
+
+func TestSandboxTestSourcesAreDistinct(t *testing.T) {
+	cfg := &config.TestDB{Database: "graft"}
+	first := sandboxTestSource(t, cfg)
+	second := sandboxTestSource(t, cfg)
+	if first == second || first == cfg.Database || second == cfg.Database {
+		t.Fatalf("migration sources are not distinct: %q, %q", first, second)
 	}
 }
 
