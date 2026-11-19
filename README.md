@@ -685,12 +685,21 @@ reason.
    summary names every failure with the command to retry, and the exit status
    is non-zero.
 
-After a successful push, or when the commit has no remote to push to, graft
-asks `tk` to note the commit when its ticket is named by the message or branch,
-or there is exactly one active ticket. A failed push leaves the ticket alone;
-`tk` notes the commit after it is made, so its `docs/tasks` change stays in the
-working tree for the next commit.
-From a linked worktree, graft reads and updates the task journal in the main checkout.
+When the ticket file is in the repository tree (its resolved path is inside the
+checkout and Git does not ignore it), a commit in the main checkout adds
+`graft commit after <parent12> on <branch>: <subject>` to that ticket before
+committing, so the note is part of the same commit. The first commit has no
+parent clause. This selection requires the ticket slug or ticket filename ID
+in the message or branch. A failed check or commit removes the note. Push has
+no separate note.
+From a linked worktree, commits with an in-tree ticket print a `not noted`
+message and leave the main checkout unchanged.
+
+When the ticket file resolves outside the checkout or Git ignores it, graft
+keeps the existing behavior: after a successful push (or a commit with no
+remote), it asks `tk` to note the commit hash when the message or branch names
+the ticket slug or filename ID. A failed push leaves the ticket alone; an
+unnamed ticket is never selected.
 Journaling is skipped when the shared Git directory is not `<main checkout>/.git`, including separate-git-dir repositories and worktrees based on them.
 
 ### Hooks
@@ -1936,8 +1945,13 @@ response body; a command transport returns the response on stdout.
 graft does not know how to deploy your project; your script does. graft runs
 it in the foreground and wraps it with the steps every deploy needs.
 After a deploy finishes, graft asks `tk` to note the target, version (or commit
-hash), and outcome for the matching ticket. `tk` updates `docs/tasks` after
-the operation, leaving that file change for the next commit.
+hash), and outcome for the ticket named by the deployed commit message when its
+file is outside the checkout or ignored by Git. For a ticket in the repository
+tree, graft prints `not noted (docs/tasks is tracked)` and leaves the file
+unchanged. A deploy that fails its initial tree, published-head, or lock checks
+does not write a ticket note. The deployed commit message must name the ticket
+slug or filename ID; graft does not select a ticket from the current branch or
+from its work status.
 
 ```yaml
 deploy:

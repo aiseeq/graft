@@ -313,7 +313,17 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	if err := headMoved(); err != nil {
 		return err
 	}
+	var rollbackJournal func() error
+	if !plan.release {
+		rollbackJournal, err = a.prepareCommitTicketJournal(ctx, repo, plan)
+		if err != nil {
+			a.warn("ticket journal was not written: %v", err)
+		}
+	}
 	if _, err := repo.GitInput(strings.NewReader(msg), markerEnv, "commit", "--cleanup=verbatim", "-F", "-"); err != nil {
+		if rollbackJournal != nil {
+			err = errors.Join(err, rollbackJournal())
+		}
 		return undo(err)
 	}
 	return a.finishCommit(ctx, repo, cfg, plan, frozen, advisoryFailed)
@@ -439,7 +449,7 @@ func (a *App) finishCommit(ctx context.Context, repo *gitx.Repo, cfg *config.Con
 	} else if len(plan.remotes) > 0 {
 		pushed = true
 	}
-	if pushed {
+	if pushed && !plan.release {
 		sha, shaErr := repo.Git("rev-parse", "--short=12", "HEAD")
 		if shaErr == nil {
 			first, _, _ := strings.Cut(plan.message, "\n")

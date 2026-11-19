@@ -231,12 +231,20 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 }
 
 func (a *App) noteDeployJournal(ctx context.Context, r *deployRun, deployErr error) {
+	if r.head == "" {
+		return
+	}
+	message, err := r.repo.Git("show", "-s", "--format=%B", r.head)
+	if err != nil {
+		a.warn("ticket journal was not written: reading deployed commit message: %v", err)
+		return
+	}
 	identity := r.version
 	if identity == "" {
 		identity = gitx.Short(r.head)
 	}
 	result := map[bool]string{true: "ok", false: "failed"}[deployErr == nil]
-	a.ticketJournal(ctx, r.repo, "", fmt.Sprintf("deploy %s %s: %s", r.name, identity, result))
+	a.ticketJournalForMessage(ctx, r.repo, message, fmt.Sprintf("deploy %s %s: %s", r.name, identity, result))
 }
 
 func warnLoadWaitThenStart(w io.Writer, lw config.LoadWait) {

@@ -24,6 +24,9 @@ func ticketJournalRepo(t *testing.T) *gitx.Repo {
 	if err := os.MkdirAll(filepath.Join(root, "docs", "tasks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("/docs/tasks/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	repo, err := gitx.Open(root)
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +52,7 @@ func ticketJournalStub(t *testing.T, json string, failNote bool) string {
 	return log
 }
 
-func TestTicketJournalNamedSlugAndActiveSelection(t *testing.T) {
+func TestTicketJournalNamedSlugAndNoFallback(t *testing.T) {
 	t.Run("slug", func(t *testing.T) {
 		repo := ticketJournalRepo(t)
 		log := ticketJournalStub(t, `[{"path":"docs/tasks/ticket.md","slug":"proj-123-fix","status":"в работе"}]`, false)
@@ -63,12 +66,12 @@ func TestTicketJournalNamedSlugAndActiveSelection(t *testing.T) {
 			t.Fatalf("unexpected tk argv %q", got)
 		}
 	})
-	t.Run("one active and ambiguity", func(t *testing.T) {
+	t.Run("single active ticket is not a fallback", func(t *testing.T) {
 		repo := ticketJournalRepo(t)
 		log := ticketJournalStub(t, `[{"path":"docs/tasks/one.md","slug":"one","status":"в работе"}]`, false)
 		(&App{}).ticketJournal(context.Background(), repo, "unrelated", "commit abc")
-		if got, err := os.ReadFile(log); err != nil || !strings.Contains(string(got), "one\n") {
-			t.Fatalf("single active ticket: %q, %v", got, err)
+		if _, err := os.Stat(log); !os.IsNotExist(err) {
+			t.Fatalf("unnamed single active ticket received note: %v", err)
 		}
 		log = ticketJournalStub(t, `[{"path":"docs/tasks/one.md","slug":"one","status":"в работе"},{"path":"docs/tasks/two.md","slug":"two","status":"в работе"}]`, false)
 		(&App{}).ticketJournal(context.Background(), repo, "unrelated", "commit abc")
@@ -118,7 +121,7 @@ func TestTicketJournalUnavailableAndFailure(t *testing.T) {
 func TestTicketJournalDeployNote(t *testing.T) {
 	repo := ticketJournalRepo(t)
 	log := ticketJournalStub(t, `[{"path":"docs/tasks/ticket.md","slug":"proj-123-fix","status":"в работе"}]`, false)
-	(&App{}).ticketJournal(context.Background(), repo, "", "deploy staging v1.2.3: ok")
+	(&App{}).ticketJournalForMessage(context.Background(), repo, "fix: proj-123-fix deployed", "deploy staging v1.2.3: ok")
 	got, err := os.ReadFile(log)
 	if err != nil {
 		t.Fatal(err)
@@ -128,9 +131,10 @@ func TestTicketJournalDeployNote(t *testing.T) {
 	}
 }
 
-func TestDeployJournalIsWrittenAfterDeploy(t *testing.T) {
+func TestDeployTrackedTasksIsNotNotedAfterDeploy(t *testing.T) {
 	f := newSyncPushFixture(t, false)
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	f.git(f.work, "checkout", "-q", "-b", "topic/proj-123-fix")
 	config := "schema: 1\nversion: {mode: none}\nenvs:\n  local: {}\ndeploy:\n  remote: origin\n  targets:\n    stage:\n      env: local\n      run: [sh, deploy.sh]\n"
 	for path, contents := range map[string]string{
 		".graft.yaml":          config,
@@ -146,33 +150,106 @@ func TestDeployJournalIsWrittenAfterDeploy(t *testing.T) {
 		}
 	}
 	f.git(f.work, "add", ".")
-	f.git(f.work, "commit", "-q", "-m", "deploy fixture")
-	f.git(f.work, "push", "-q", "origin", "HEAD")
+	f.git(f.work, "commit", "-q", "-m", "deploy fixture proj-123-fix")
+	f.git(f.work, "push", "-q", "-u", "origin", "HEAD")
 	log := ticketJournalStub(t, `[{"path":"docs/tasks/ticket.md","slug":"proj-123-fix","status":"в работе"}]`, false)
+	var stderr bytes.Buffer
+	err := (&App{Dir: f.work, Stdout: io.Discard, Stderr: &stderr}).Deploy(context.Background(), DeployOptions{Target: "stage"})
+	if err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if _, err := os.Stat(log); !os.IsNotExist(err) {
+		t.Fatalf("tracked ticket received deploy note: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "not noted (docs/tasks is tracked)") {
+		t.Fatalf("missing tracked ticket message: %q", stderr.String())
+	}
+}
+
+func TestDeployJournalSelectsTicketFromDeployedCommitMessage(t *testing.T) {
+	f := newSyncPushFixture(t, false)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	externalTasks := filepath.Join(f.root, "external-tasks")
+	if err := os.MkdirAll(externalTasks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(f.work, "docs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalTasks, filepath.Join(f.work, "docs", "tasks")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.work, ".gitignore"), []byte("/docs/tasks\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := "schema: 1\nversion: {mode: none}\nenvs:\n  local: {}\ndeploy:\n  remote: origin\n  targets:\n    stage: {env: local, run: [sh, deploy.sh]}\n"
+	if err := os.WriteFile(filepath.Join(f.work, ".graft.yaml"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.work, "deploy.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f.git(f.work, "add", ".")
+	f.git(f.work, "commit", "-q", "-m", "feat: PROJ-123 proj-123-fix shipped")
+	f.git(f.work, "push", "-q", "-u", "origin", "HEAD")
+	json := `[{"path":"docs/tasks/proj-123-fix.md","slug":"proj-123-fix","status":"в работе"},{"path":"docs/tasks/other.md","slug":"other-ticket","status":"в работе"}]`
+	log := ticketJournalStub(t, json, false)
 	err := (&App{Dir: f.work, Stdout: io.Discard, Stderr: io.Discard}).Deploy(context.Background(), DeployOptions{Target: "stage"})
 	if err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	got, err := os.ReadFile(log)
 	if err != nil {
-		t.Fatalf("deploy did not note its ticket: %v", err)
+		t.Fatalf("deploy did not note its named ticket: %v", err)
 	}
-	if !strings.Contains(string(got), "deploy stage ") || !strings.Contains(string(got), ": ok") {
-		t.Fatalf("deploy note argv = %q", got)
+	if !strings.Contains(string(got), "proj-123-fix\n") || strings.Contains(string(got), "other-ticket\n") {
+		t.Fatalf("deploy selected the wrong ticket: %q", got)
 	}
 }
 
-func TestTicketJournalWholeWordSingleSlug(t *testing.T) {
+func TestDeployRefusedBeforeStartWritesNoNote(t *testing.T) {
+	f := newSyncPushFixture(t, false)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	config := "schema: 1\nversion: {mode: none}\nenvs:\n  local: {}\ndeploy:\n  remote: origin\n  targets:\n    stage: {env: local, run: [sh, deploy.sh]}\n"
+	for path, contents := range map[string]string{".graft.yaml": config, "deploy.sh": "#!/bin/sh\nexit 0\n", "docs/tasks/ticket.md": "synthetic ticket\n"} {
+		full := filepath.Join(f.work, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.git(f.work, "add", ".")
+	f.git(f.work, "commit", "-q", "-m", "deploy fixture")
+	f.git(f.work, "push", "-q", "origin", "HEAD")
+	log := ticketJournalStub(t, `[{"path":"docs/tasks/ticket.md","slug":"proj-123-fix","status":"в работе"}]`, false)
+	if err := os.WriteFile(filepath.Join(f.work, "dirty"), []byte("user change\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := (&App{Dir: f.work, Stdout: io.Discard, Stderr: io.Discard}).Deploy(context.Background(), DeployOptions{Target: "stage"})
+	if err == nil {
+		t.Fatal("deploy with dirty tree succeeded")
+	}
+	if _, err := os.Stat(log); !os.IsNotExist(err) {
+		t.Fatalf("refused deploy called tk note: %v", err)
+	}
+}
+
+func TestTicketJournalNamedSelectionRequiresSlugOrTicketID(t *testing.T) {
 	tickets := []journalTicket{
-		{Slug: "single", Status: "открыт"},
-		{Slug: "other-ticket", Status: "в работе"},
+		{Slug: "single", Status: "открыт", Path: "docs/tasks/20261119-0150-MED-single.md"},
+		{Slug: "other-ticket", Status: "в работе", Path: "docs/tasks/other-ticket.md"},
 	}
-	tickets[0].Path, tickets[1].Path = "docs/tasks/single.md", "docs/tasks/other.md"
-	if got := chooseJournalTicket(tickets, "fix: single", "main", "repo"); got != "single" {
-		t.Fatalf("single-word slug selected %q, want single", got)
+	if got := chooseJournalTicketNamed(tickets, "fix: single", "main", "repo"); got == nil || got.slug != "single" || got.tkID != "single" {
+		t.Fatalf("slug selection = %+v, want single slug", got)
 	}
-	if got := chooseJournalTicket(tickets, "fix: single-part", "main", "repo"); got != "other-ticket" {
-		t.Fatalf("substring match selected %q, want sole active other-ticket", got)
+	if got := chooseJournalTicketNamed(tickets, "fix: unrelated", "main", "repo"); got != nil {
+		t.Fatalf("unnamed active ticket selected: %+v", got)
+	}
+	id := filepath.Base(tickets[0].Path)
+	if got := chooseJournalTicketNamed(tickets, "fix: "+id, "main", "repo"); got == nil || got.slug != "single" || got.tkID != id {
+		t.Fatalf("ID selection = %+v, want file ID %q", got, id)
 	}
 }
 
@@ -205,6 +282,9 @@ func TestTicketJournalRealTKSlugFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 	gittest.Run(t, root, "init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("/docs/tasks/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(root, "docs", "tasks"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +325,7 @@ func TestTicketJournalRealTKSlugFormat(t *testing.T) {
 	run(child, "set", "child-item", "--text", textPath, "--by", "graft")
 	run(child, "start", "child-item", "--by", "graft")
 	var stderr bytes.Buffer
-	(&App{Stderr: &stderr}).ticketJournal(context.Background(), repo, "unrelated work", "commit abcdef123456 on main: unrelated work")
+	(&App{Stderr: &stderr}).ticketJournal(context.Background(), repo, "fix: root-item unrelated work", "commit abcdef123456 on main: unrelated work")
 	entries, err := os.ReadDir(filepath.Join(root, "docs", "tasks"))
 	if err != nil {
 		t.Fatal(err)
@@ -297,7 +377,17 @@ func TestTicketJournalCommitFromWorktreeUsesMainCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PWD", f.work)
-	if err := os.MkdirAll(filepath.Join(f.work, "docs", "tasks"), 0o700); err != nil {
+	externalTasks := filepath.Join(f.root, "tasks-outside")
+	if err := os.MkdirAll(externalTasks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(f.work, "docs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalTasks, filepath.Join(f.work, "docs", "tasks")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.work, ".gitignore"), []byte("/docs/tasks\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	textPath := filepath.Join(f.root, "ticket-text.md")
@@ -316,8 +406,8 @@ func TestTicketJournalCommitFromWorktreeUsesMainCheckout(t *testing.T) {
 	runTK(f.work, "new", "root-item", "--to", f.work, "--title", "Root ticket", "--by", "graft")
 	runTK(f.work, "set", "root-item", "--text", textPath, "--by", "graft")
 	runTK(f.work, "start", "root-item", "--by", "graft")
-	f.git(f.work, "add", "docs/tasks")
-	f.git(f.work, "commit", "-q", "-m", "add active ticket")
+	f.git(f.work, "add", ".gitignore")
+	f.git(f.work, "commit", "-q", "-m", "ignore external task journal")
 	f.git(f.work, "push", "-q", "origin", "main")
 	entries, err := os.ReadDir(filepath.Join(f.work, "docs", "tasks"))
 	if err != nil {
@@ -339,6 +429,12 @@ func TestTicketJournalCommitFromWorktreeUsesMainCheckout(t *testing.T) {
 	}
 	worktree := filepath.Join(f.root, "linked")
 	f.git(f.work, "worktree", "add", "-q", "-b", "topic/root-item", worktree, "HEAD")
+	if err := os.MkdirAll(filepath.Join(worktree, "docs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalTasks, filepath.Join(worktree, "docs", "tasks")); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(worktree, "change"), []byte("worktree change\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -354,16 +450,14 @@ func TestTicketJournalCommitFromWorktreeUsesMainCheckout(t *testing.T) {
 	if !strings.Contains(string(mainContent), "graft commit ") {
 		t.Fatalf("main checkout ticket did not receive note:\n%s", mainContent)
 	}
-	worktreeContent, err := os.ReadFile(filepath.Join(worktree, "docs", "tasks", taskName))
-	if err != nil {
-		t.Fatal(err)
+	if bytes.Equal(mainContent, baseContent) {
+		t.Fatal("outside-tree note was not written from linked worktree")
 	}
-	if !bytes.Equal(worktreeContent, baseContent) {
-		t.Fatalf("main journal note changed worktree ticket:\nbefore:\n%s\nafter:\n%s", baseContent, worktreeContent)
+	if got := f.git(worktree, "ls-tree", "-r", "--name-only", "HEAD", "--", "docs/tasks"); got != "" {
+		t.Fatalf("outside ticket path entered worktree commit: %q", got)
 	}
-	committedContent := f.git(worktree, "show", "HEAD:docs/tasks/"+taskName)
-	if strings.Contains(committedContent, "graft commit ") {
-		t.Fatalf("post-commit note entered worktree commit:\n%s", committedContent)
+	if got := f.git(f.work, "status", "--porcelain"); got != "" {
+		t.Fatalf("main checkout became dirty after outside-tree note: %q", got)
 	}
 }
 
@@ -806,7 +900,13 @@ func TestCommitJournalWithoutRemoteAndFailedPush(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newSyncPushFixture(t, false)
+			if err := os.WriteFile(filepath.Join(f.work, ".gitignore"), []byte("/docs/tasks/\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			f.git(f.work, "add", ".gitignore")
+			f.git(f.work, "commit", "-q", "-m", "ignore external ticket journal")
 			if tc.failPush {
+				f.git(f.work, "push", "-q", "origin", "main")
 				f.git(f.work, "remote", "set-url", "origin", filepath.Join(f.root, "missing.git"))
 			} else {
 				f.git(f.work, "remote", "remove", "origin")

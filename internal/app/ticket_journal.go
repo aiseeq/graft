@@ -27,8 +27,26 @@ type journalTicket struct {
 	Path     string `json:"path"`
 }
 
+type ticketJournalTarget struct {
+	id, tkID, path string
+	root           string
+	tk             string
+	env            []string
+	inTree         bool
+}
+
 func (a *App) ticketJournal(ctx context.Context, repo *gitx.Repo, msg, kind string) {
-	root, skipped, err := ticketJournalRoot(repo)
+	a.writeTicketJournal(ctx, repo, msg, kind, true)
+}
+
+func (a *App) ticketJournalForMessage(ctx context.Context, repo *gitx.Repo, msg, kind string) {
+	a.writeTicketJournal(ctx, repo, msg, kind, false)
+}
+
+func (a *App) writeTicketJournal(ctx context.Context, repo *gitx.Repo, msg, kind string, includeBranch bool) {
+	ctx, cancel := context.WithTimeout(ctx, ticketJournalTimeout)
+	defer cancel()
+	target, skipped, err := a.findTicketJournalTarget(ctx, repo, msg, includeBranch)
 	if err != nil {
 		a.warn("ticket journal was not written: finding main checkout: %v", err)
 		return
@@ -37,42 +55,205 @@ func (a *App) ticketJournal(ctx context.Context, repo *gitx.Repo, msg, kind stri
 		fmt.Fprintln(a.Stderr, "graft: ticket journal skipped: separate git dir")
 		return
 	}
-	tasks := filepath.Join(root, "docs", "tasks")
-	st, err := os.Stat(tasks)
-	if os.IsNotExist(err) || err == nil && !st.IsDir() {
+	if target == nil {
 		return
 	}
-	if err != nil {
-		a.warn("ticket journal was not written: checking docs/tasks: %v", err)
-		return
-	}
-	tk, err := journalTKPath()
-	if err != nil {
-		a.warn("ticket journal was not written: %v", err)
-		return
-	}
-	if tk == "" {
-		return
-	}
-	ctx, cancel := context.WithTimeout(ctx, ticketJournalTimeout)
-	defer cancel()
-	env, err := journalEnv()
-	if err != nil {
-		a.warn("ticket journal was not written: %v", err)
-		return
-	}
-	id, err := a.journalTicketID(ctx, repo, root, msg, tk, env)
-	if err != nil {
-		a.warn("ticket journal was not written: %v", err)
-		return
-	}
-	if id == "" {
+	if target.inTree {
+		if strings.HasPrefix(kind, "commit ") && filepath.Clean(repo.Root) == filepath.Clean(target.root) {
+			return
+		}
+		fmt.Fprintf(a.Stderr, "graft: ticket %s: not noted (docs/tasks is tracked): %s\n", target.id, kind)
 		return
 	}
 	note := fmt.Sprintf("%s graft %s", time.Now().Format("15:04 MST"), kind)
-	if _, err := runTicketCommand(ctx, root, env, tk, "note", id, note, "--by", "graft"); err != nil {
+	if _, err := runTicketCommand(ctx, target.root, target.env, target.tk, "note", target.tkID, note, "--by", "graft"); err != nil {
 		a.warn("ticket journal was not written: tk note: %v", err)
 	}
+}
+
+// prepareCommitTicketJournal writes a tracked ticket note into the index so it
+// becomes part of the commit. The returned rollback restores both file bytes
+// and the index entry if git commit fails.
+func (a *App) prepareCommitTicketJournal(ctx context.Context, repo *gitx.Repo, plan commitPlan) (func() error, error) {
+	root, skipped, err := ticketJournalRoot(repo)
+	if err != nil || skipped {
+		return nil, err
+	}
+	if filepath.Clean(repo.Root) != filepath.Clean(root) {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, ticketJournalTimeout)
+	defer cancel()
+	target, _, err := a.findTicketJournalTarget(ctx, repo, plan.message, true)
+	if err != nil || target == nil || !target.inTree || target.id == "" || plan.release {
+		return nil, err
+	}
+	first, _, _ := strings.Cut(plan.message, "\n")
+	line := fmt.Sprintf("graft commit on %s: %s", plan.branch, strings.TrimSpace(first))
+	if plan.head.sha != "" {
+		line = fmt.Sprintf("graft commit after %s on %s: %s", gitx.Short(plan.head.sha), plan.branch, strings.TrimSpace(first))
+	}
+	file, err := os.ReadFile(target.path)
+	if err != nil {
+		return nil, fmt.Errorf("reading ticket before note: %w", err)
+	}
+	info, err := os.Stat(target.path)
+	if err != nil {
+		return nil, fmt.Errorf("checking ticket before note: %w", err)
+	}
+	index, err := saveIndex(repo, plan.head)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := runTicketCommand(ctx, target.root, target.env, target.tk, "note", target.tkID, line, "--by", "graft"); err != nil {
+		return nil, errors.Join(fmt.Errorf("tk note: %w", err), restoreJournalFile(target.path, file, info.Mode()))
+	}
+	if _, err := repo.Git("add", "--", target.path); err != nil {
+		return nil, errors.Join(err, restoreJournalFile(target.path, file, info.Mode()), restoreIndex(index))
+	}
+	rollback := func() error {
+		return errors.Join(restoreJournalFile(target.path, file, info.Mode()), restoreIndex(index))
+	}
+	return rollback, nil
+}
+
+func restoreJournalFile(path string, contents []byte, mode os.FileMode) error {
+	return os.WriteFile(path, contents, mode.Perm())
+}
+
+func (a *App) findTicketJournalTarget(ctx context.Context, repo *gitx.Repo, msg string, includeBranch bool) (*ticketJournalTarget, bool, error) {
+	root, skipped, tk, env, tickets, branch, err := loadJournalCandidates(ctx, repo, includeBranch)
+	if err != nil || skipped || root == "" {
+		return nil, skipped, err
+	}
+	selected := chooseJournalTicketNamed(tickets, msg, branch, root)
+	if selected == nil {
+		return nil, false, nil
+	}
+	target, err := resolveJournalTicket(repo, root, tk, env, tickets, selected)
+	return target, false, err
+}
+
+func loadJournalCandidates(ctx context.Context, repo *gitx.Repo, includeBranch bool) (string, bool, string, []string, []journalTicket, string, error) {
+	root, skipped, err := ticketJournalRoot(repo)
+	if err != nil || skipped {
+		return "", skipped, "", nil, nil, "", err
+	}
+	tasks := filepath.Join(root, "docs", "tasks")
+	st, err := os.Stat(tasks)
+	if os.IsNotExist(err) || err == nil && !st.IsDir() {
+		return "", false, "", nil, nil, "", nil
+	}
+	if err != nil {
+		return "", false, "", nil, nil, "", fmt.Errorf("checking docs/tasks: %w", err)
+	}
+	tk, err := journalTKPath()
+	if err != nil || tk == "" {
+		return "", false, "", nil, nil, "", err
+	}
+	env, err := journalEnv()
+	if err != nil {
+		return "", false, "", nil, nil, "", err
+	}
+	out, err := runTicketCommand(ctx, root, env, tk, "ls", "--json", "--root", root)
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", false, "", nil, nil, "", fmt.Errorf("tk ls timed out")
+		}
+		return "", false, "", nil, nil, "", fmt.Errorf("tk ls: %w", err)
+	}
+	tickets, err := parseJournalTickets(out)
+	if err != nil {
+		return "", false, "", nil, nil, "", fmt.Errorf("tk ls returned invalid JSON: %w", err)
+	}
+	branch := ""
+	if includeBranch {
+		branch, err = repo.Branch()
+		if err != nil {
+			return "", false, "", nil, nil, "", fmt.Errorf("reading branch: %w", err)
+		}
+	}
+	return root, false, tk, env, tickets, branch, nil
+}
+
+type journalTicketSelection struct {
+	slug, tkID string
+}
+
+func resolveJournalTicket(repo *gitx.Repo, root, tk string, env []string, tickets []journalTicket, selected *journalTicketSelection) (*ticketJournalTarget, error) {
+	var ticket *journalTicket
+	for i := range tickets {
+		if tickets[i].Slug == selected.slug && ticketInRootTasks(tickets[i].Path, root) {
+			ticket = &tickets[i]
+			break
+		}
+	}
+	if ticket == nil {
+		return nil, fmt.Errorf("selected ticket %q is missing from tk ls output", selected.slug)
+	}
+	path := ticket.Path
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	resolved, err := resolveTicketPath(path)
+	if err != nil {
+		return nil, err
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolving repository root: %w", err)
+	}
+	within := resolved == resolvedRoot || strings.HasPrefix(resolved, resolvedRoot+string(filepath.Separator))
+	ignored, err := journalPathIgnored(repo, root, path, within)
+	if err != nil {
+		return nil, err
+	}
+	return &ticketJournalTarget{id: selected.slug, tkID: selected.tkID, path: path, root: root, tk: tk, env: env, inTree: within && !ignored}, nil
+}
+
+func resolveTicketPath(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if errors.Is(err, os.ErrNotExist) {
+		parent, parentErr := filepath.EvalSymlinks(filepath.Dir(path))
+		if parentErr == nil {
+			return filepath.Join(parent, filepath.Base(path)), nil
+		}
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolving ticket path: %w", err)
+	}
+	return resolved, nil
+}
+
+func journalPathIgnored(repo *gitx.Repo, root, path string, within bool) (bool, error) {
+	if !within {
+		return false, nil
+	}
+	_, err := repo.Git("-C", root, "check-ignore", "--quiet", "--", path)
+	if err == nil {
+		return true, nil
+	}
+	if gitx.ExitCode(err) == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("checking whether ticket is ignored: %w", err)
+}
+
+func chooseJournalTicketNamed(tickets []journalTicket, msg, branch, root string) *journalTicketSelection {
+	text := msg + "\n" + branch
+	for _, ticket := range tickets {
+		if !ticketInRootTasks(ticket.Path, root) || ticket.Slug == "" || ticketClosed(ticket.Status) {
+			continue
+		}
+		if containsWholeSlug(text, ticket.Slug) {
+			return &journalTicketSelection{slug: ticket.Slug, tkID: ticket.Slug}
+		}
+		filename := filepath.Base(ticket.Path)
+		if containsWholeSlug(text, filename) {
+			return &journalTicketSelection{slug: ticket.Slug, tkID: filename}
+		}
+	}
+	return nil
 }
 
 func ticketJournalRoot(repo *gitx.Repo) (string, bool, error) {
@@ -152,26 +333,6 @@ func hasSeparateGitDirCheckout(commonDir string) (bool, error) {
 	return false, nil
 }
 
-func (a *App) journalTicketID(ctx context.Context, repo *gitx.Repo, root, msg, tk string, env []string) (string, error) {
-	out, err := runTicketCommand(ctx, root, env, tk, "ls", "--json", "--root", root)
-	if err != nil {
-		if ctx.Err() != nil {
-			return "", fmt.Errorf("tk ls timed out")
-		} else {
-			return "", fmt.Errorf("tk ls: %w", err)
-		}
-	}
-	tickets, err := parseJournalTickets(out)
-	if err != nil {
-		return "", fmt.Errorf("tk ls returned invalid JSON: %w", err)
-	}
-	branch, branchErr := repo.Branch()
-	if branchErr != nil {
-		return "", fmt.Errorf("reading branch: %w", branchErr)
-	}
-	return chooseJournalTicket(tickets, msg, branch, root), nil
-}
-
 func runTicketCommand(ctx context.Context, dir string, env []string, tk string, args ...string) ([]byte, error) {
 	cmd, err := execx.CommandContext(ctx, 0, tk, args...)
 	if err != nil {
@@ -182,25 +343,6 @@ func runTicketCommand(ctx context.Context, dir string, env []string, tk string, 
 	cmd.Stdout, cmd.Stderr = &output, &output
 	err = cmd.Run()
 	return output.Bytes(), err
-}
-
-func chooseJournalTicket(tickets []journalTicket, msg, branch, root string) string {
-	text := msg + "\n" + branch
-	for _, ticket := range tickets {
-		if ticketInRootTasks(ticket.Path, root) && ticket.Slug != "" && !ticketClosed(ticket.Status) && containsWholeSlug(text, ticket.Slug) {
-			return ticket.Slug
-		}
-	}
-	var active []journalTicket
-	for _, ticket := range tickets {
-		if ticketInRootTasks(ticket.Path, root) && ticketInProgress(ticket.Status) {
-			active = append(active, ticket)
-		}
-	}
-	if len(active) == 1 {
-		return active[0].Slug
-	}
-	return ""
 }
 
 func ticketInRootTasks(ticketPath, root string) bool {
@@ -287,11 +429,6 @@ func parseJournalTickets(data []byte) ([]journalTicket, error) {
 	default:
 		return nil, fmt.Errorf("expected array or tickets object")
 	}
-}
-
-func ticketInProgress(status string) bool {
-	s := strings.ToLower(strings.TrimSpace(status))
-	return s == "в работе" || s == "in progress" || s == "in_progress"
 }
 
 func ticketClosed(status string) bool {
