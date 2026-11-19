@@ -97,7 +97,7 @@ func TestPriorityRefusalKeepsTheMeasureThatBlocked(t *testing.T) {
 
 func TestPriorityQuietQueueRefusalNamesQuiet(t *testing.T) {
 	fakeMachine(t)
-	setQuiet(t, time.Now().Add(time.Second))
+	setQuiet(t, quietUntil)
 	p := &Priority{For: "deploy", Budget: newBudget(t, 80*time.Millisecond), Fail: true}
 	path := filepath.Join(t.TempDir(), "load.lock")
 	holder, err := lock.Acquire(context.Background(), path, time.Second, "quiet holder", io.Discard)
