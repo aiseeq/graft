@@ -111,6 +111,7 @@ func TestCommitJournalTrackedTasksSelectsTicketByID(t *testing.T) {
 
 func TestCommitThenInstallTrackedTasks(t *testing.T) {
 	f := trackedJournalFixture(t)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	target := filepath.Join(f.root, "installed")
 	yaml := "schema: 1\nversion: {mode: none}\ngate: []\ngo_vet: {enabled: false, reason: synthetic projectA install fixture}\ngo_fmt: {enabled: false, reason: synthetic projectA install fixture}\ntasks:\n  projecta:\n    run:\n      - {install: bin/projecta, to: " + target + "}\n"
 	for path, contents := range map[string]string{
