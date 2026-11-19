@@ -394,6 +394,11 @@ exception: under `when: busy` it checks machine load without queueing or
 counting reservations, then splits eligible steps to the host; the rest runs
 under the admitted task. Project configuration keeps its existing rule: every
 heavy task can go to its host except tasks that need local files or data.
+The gate's built-in `go vet` and `go fix -diff` follow the project's
+`remote_heavy` placement too, including its local fallback on transport failure.
+With `graft exec --heavy --local -- graft gate`, those built-in checks stay here
+as part of exec's own command, while project heavy tasks follow their own
+`remote_heavy` rule.
 The host's command gets the task's `env`, `GRAFT_HEAVY=local`, the threads
 (as `-p` after `GOFLAGS` too, unless the task's `GOFLAGS` names one; a
 `GOFLAGS` sent replaces the host's go env file's)

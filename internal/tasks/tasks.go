@@ -1760,6 +1760,8 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 	} else if r.gateSplit {
 		// Where the step runs is decided in step, and its threads with it.
 		stepErr = r.step(ctx, gs.step, gs.task, nil, "", gs.builtin)
+	} else if gs.builtin && builtinGateGoCheck(gs.step) && r.Config.RemoteHeavy != nil {
+		stepErr = r.projectBuiltinGoStep(ctx, gs)
 	} else {
 		stepErr = r.step(ctx, s, gs.task, nil, threads, gs.builtin)
 	}
@@ -1773,6 +1775,36 @@ func (r *Runner) runGateStep(ctx context.Context, gs *gateStep, number, total in
 		return fmt.Errorf("gate failed at %q (see graft stats --failures): %w\n%s", s.Source, stepErr, gs.hint)
 	}
 	return fmt.Errorf("gate failed at %q (see graft stats --failures): %w", s.Source, stepErr)
+}
+
+// projectBuiltinGoStep uses the project's ordinary heavy placement, without
+// changing placement of the gate's configured tasks.
+func (r *Runner) projectBuiltinGoStep(ctx context.Context, gs *gateStep) error {
+	frame := r.frames[len(r.frames)-1]
+	var remote bool
+	var here string
+	var err error
+	if inheritedExecLocal() {
+		here = heavyLocalReason()
+	} else {
+		remote, here, err = r.placeHeavy(ctx, stats.GateTask, gs.task, r.taskDir(gs.task), nil)
+	}
+	if err != nil {
+		return err
+	}
+	wasRemote, wasHere, wasTaskHere := frame.remote, frame.stepHere, frame.here
+	frame.remote, frame.stepHere = remote, here
+	defer func() { frame.remote, frame.stepHere, frame.here = wasRemote, wasHere, wasTaskHere }()
+	err = r.stepHere(ctx, gs.step, gs.task, nil, true)
+	if leave, fallback, fallbackErr := r.fallbackBrokenRemote(ctx, stats.GateTask, "", ""); fallback {
+		if fallbackErr != nil {
+			return errors.Join(err, fallbackErr)
+		}
+		frame.stepHere = frame.here
+		err = r.stepHere(ctx, gs.step, gs.task, nil, true)
+		return errors.Join(err, leave())
+	}
+	return err
 }
 
 // runBuiltinGateStep runs a gate step given as a function. entered is false
