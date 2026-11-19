@@ -320,7 +320,7 @@ func (m *Manager) waitStarted(ctx context.Context, s *config.Service, addr strin
 	}
 	gone := func() error {
 		if start == "" {
-			return nil
+			return serviceStartExitWithoutStart(pid, waited, waitResult, addr)
 		}
 		exited, err := serviceExited(pid, start)
 		if err != nil {
@@ -331,12 +331,27 @@ func (m *Manager) waitStarted(ctx context.Context, s *config.Service, addr strin
 		}
 		return nil
 	}
+	// A process exit can be ready together with the deadline, and select
+	// picks among ready cases at random: the deadline takes the exit first
+	// rather than accept a service that has already stopped.
+	exitedNow := func() error {
+		select {
+		case waitErr := <-waited:
+			waitResult <- waitErr
+			return fmt.Errorf("%w: %v", serviceStartExitError(addr), waitErr)
+		default:
+			return nil
+		}
+	}
 	for {
 		select {
 		case waitErr := <-waited:
 			waitResult <- waitErr
 			return fmt.Errorf("%w: %v", serviceStartExitError(addr), waitErr)
 		case <-deadline.C:
+			if err := exitedNow(); err != nil {
+				return err
+			}
 			if err := gone(); err != nil {
 				return err
 			}
@@ -361,6 +376,19 @@ func (m *Manager) waitStarted(ctx context.Context, s *config.Service, addr strin
 			}
 		}
 	}
+}
+
+func serviceStartExitWithoutStart(pid int, waited <-chan error, waitResult chan error, addr string) error {
+	exited, err := serviceExitedWithoutStart(pid)
+	if err != nil {
+		return err
+	}
+	if !exited {
+		return nil
+	}
+	waitErr := <-waited
+	waitResult <- waitErr
+	return fmt.Errorf("%w: %v", serviceStartExitError(addr), waitErr)
 }
 
 func serviceStartExitError(addr string) error {

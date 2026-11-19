@@ -789,27 +789,108 @@ func TestStartWithoutProcReportsExitedService(t *testing.T) {
 	}
 }
 
-// A start timeout shorter than the 100ms tick still sees a service that
-// exited at once, with the start time or without it.
-func TestStartWithShortTimeoutReportsExitedService(t *testing.T) {
-	for _, withProc := range []bool{true, false} {
-		t.Run(fmt.Sprint("proc=", withProc), func(t *testing.T) {
-			if !withProc {
-				oldReadStat := readServiceStat
-				readServiceStat = func(string, int) (akitproc.Stat, error) { return akitproc.Stat{}, errors.ErrUnsupported }
-				t.Cleanup(func() { readServiceStat = oldReadStat })
+// A service that exits at once is reported with the start time too, as
+// TestStartWithoutProcReportsExitedService checks it without one.
+func TestStartWithProcReportsExitedService(t *testing.T) {
+	dir := t.TempDir()
+	s := &config.Service{Run: config.Command{Argv: []string{"sh", "-c", "exit 42"}}, Log: "service.log", PIDFile: "service.pid", StartTimeout: time.Second}
+	cfg := &config.Config{Services: map[string]*config.Service{"svc": s}}
+	log := &syncLog{}
+	m := New(dir, cfg, nil, log)
+	if err := m.start(t.Context(), "svc"); err == nil || !strings.Contains(err.Error(), "exited at start") {
+		t.Fatalf("start error = %v, want exited-at-start error", err)
+	}
+	if strings.Contains(log.String(), "recording PID only") {
+		t.Fatal("start did not record a process start time")
+	}
+}
+
+func TestWaitStartedDetectsZombieWithoutStartTime(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "exit 42")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Wait() })
+	pid := cmd.Process.Pid
+	var stat akitproc.Stat
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		var err error
+		if stat, err = akitproc.ReadStat("/proc", pid); err != nil {
+			t.Fatal(err)
+		}
+		if stat.State == "Z" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process %d state %q, want a zombie", pid, stat.State)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	waitResult := make(chan error, 1)
+	go func() { waitResult <- cmd.Wait() }()
+	s := &config.Service{StartTimeout: time.Nanosecond}
+	err := (&Manager{}).waitStarted(t.Context(), s, "", pid, "", waitResult)
+	if err == nil || !strings.Contains(err.Error(), "exited at start") {
+		t.Fatalf("start error = %v, want exited-at-start error", err)
+	}
+	select {
+	case waitErr := <-waitResult:
+		if waitErr == nil {
+			t.Fatal("wait result = nil, want exit status 42")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("wait result was not delivered after start error")
+	}
+}
+
+// A start timeout shorter than the 100ms tick still sees a service that has
+// already exited, with the start time or without it. The exit is made ready
+// before waitStarted runs, so the check does not depend on how fast the
+// machine forks: a real start under a 50ms timeout did (19.11, test-gate).
+func TestWaitStartedSeesExitAtDeadlineShorterThanTick(t *testing.T) {
+	s := &config.Service{StartTimeout: time.Nanosecond}
+	t.Run("proc=true", func(t *testing.T) {
+		cmd := exec.Command("sh", "-c", "exit 42")
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		pid := cmd.Process.Pid
+		t.Cleanup(func() { _ = cmd.Wait() })
+		var stat akitproc.Stat
+		for deadline := time.Now().Add(10 * time.Second); ; {
+			var err error
+			if stat, err = akitproc.ReadStat("/proc", pid); err != nil {
+				t.Fatal(err)
 			}
-			dir := t.TempDir()
-			// The service exits at once; the timeout is long enough for that
-			// and shorter than a tick.
-			s := &config.Service{Run: config.Command{Argv: []string{"sh", "-c", "exit 42"}}, Log: "service.log", PIDFile: "service.pid", StartTimeout: 50 * time.Millisecond}
-			cfg := &config.Config{Services: map[string]*config.Service{"svc": s}}
-			m := New(dir, cfg, nil, io.Discard)
-			if err := m.start(t.Context(), "svc"); err == nil || !strings.Contains(err.Error(), "exited at start") {
+			if stat.State == "Z" {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("process %d state %q, want a zombie", pid, stat.State)
+			}
+			time.Sleep(time.Millisecond)
+		}
+		m := &Manager{}
+		if err := m.waitStarted(t.Context(), s, "", pid, stat.Start, make(chan error, 1)); err == nil || !strings.Contains(err.Error(), "exited at start") {
+			t.Fatalf("start error = %v, want exited-at-start error", err)
+		}
+	})
+	// Without a start time the exit is the Wait result: ready together with
+	// the deadline, it wins the select every time, not at random.
+	t.Run("proc=false", func(t *testing.T) {
+		m := &Manager{}
+		for range 100 {
+			result := make(chan error, 1)
+			result <- errors.New("service exited")
+			if err := m.waitStarted(t.Context(), s, "", 0, "", result); err == nil || !strings.Contains(err.Error(), "exited at start") {
 				t.Fatalf("start error = %v, want exited-at-start error", err)
 			}
-		})
-	}
+			if err := <-result; err == nil || err.Error() != "service exited" {
+				t.Fatalf("wait result = %v, want service exit", err)
+			}
+		}
+	})
 }
 
 func TestOldPIDWithoutStartWarnsForRemainingSessionMembers(t *testing.T) {
