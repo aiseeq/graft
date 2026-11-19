@@ -226,12 +226,18 @@ func namedHandoverItems(ctx context.Context, r *deployRun, target string, keys [
 			worked[key] = true
 		}
 	}
-	seen := make(map[string]bool, len(keys))
 	for _, key := range keys {
 		if key == "" || keyRe.FindString(key) != key {
 			return nil, fmt.Errorf("%q is not a work item key for this project's release_notes.jira.project_keys", key)
 		}
-		if !worked[key] {
+	}
+	parentWorked, err := namedParentWork(ctx, keys, worked)
+	if err != nil {
+		return nil, fmt.Errorf("reading parents of deployed work items: %w", err)
+	}
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if !worked[key] && !parentWorked[key] {
 			return nil, fmt.Errorf("%s has no work commit in the deployed history of %s", key, target)
 		}
 		if seen[key] {
@@ -243,6 +249,44 @@ func namedHandoverItems(ctx context.Context, r *deployRun, target string, keys [
 		}
 	}
 	return held, nil
+}
+
+func namedParentWork(ctx context.Context, keys []string, worked map[string]bool) (map[string]bool, error) {
+	var missing []string
+	for _, key := range keys {
+		if !worked[key] {
+			missing = append(missing, key)
+		}
+	}
+	parentWorked := map[string]bool{}
+	if len(missing) == 0 || len(worked) == 0 {
+		return parentWorked, nil
+	}
+	client, err := jiraClient()
+	if err != nil {
+		return nil, err
+	}
+	children, err := jiraSubtasksByParent(ctx, client, missing)
+	if err != nil {
+		return nil, err
+	}
+	for child, parent := range children {
+		if worked[child] {
+			parentWorked[parent] = true
+		}
+	}
+	return parentWorked, nil
+}
+
+// jiraSubtasksByParent returns subtasks of the supplied parent keys with one
+// Jira search. The keys were validated as project issue keys.
+func jiraSubtasksByParent(ctx context.Context, client *jira.Client, keys []string) (map[string]string, error) {
+	keys = uniqueSorted(keys)
+	quoted := make([]string, len(keys))
+	for i, key := range keys {
+		quoted[i] = "\"" + key + "\""
+	}
+	return client.ReviewSearchSubtasksByParent(ctx, "parent in ("+strings.Join(quoted, ",")+")")
 }
 
 // heldPath is the record of the items held on a target, kept with the

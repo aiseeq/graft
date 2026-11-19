@@ -2250,7 +2250,8 @@ remove the dormant entry once the feature is enabled and checked.
    and goes on with its exit status unchanged, and the item waits: the next
    deploy to the target, or `graft deploy handover <target> [KEY...]` once the
    comment is written, moves it; named keys must have a work commit in the
-   deployed history. An item that has left `from` by hand
+   deployed history; for handover, a deployed subtask commit counts for its
+   parent. An item that has left `from` by hand
    waits no more. `graft deploy handover` fails while any item still waits.
    With `glint` (a severity: `low`, `medium`, `high`, `critical`) no item
    moves by the transitions while `glint check . -s <severity> -o json`

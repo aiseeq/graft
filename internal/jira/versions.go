@@ -544,3 +544,66 @@ func (c *Client) ReviewSearchIssueKeys(ctx context.Context, jql string) ([]strin
 		token = page.NextPageToken
 	}
 }
+
+// ReviewSearchSubtasksByParent returns subtask parent links selected by a
+// paginated deploy review search. Jira need not include status or other
+// review fields for this lookup.
+func (c *Client) ReviewSearchSubtasksByParent(ctx context.Context, jql string) (map[string]string, error) {
+	parents := map[string]string{}
+	token := ""
+	seenTokens := map[string]bool{}
+	for {
+		q := url.Values{"jql": {jql}, "fields": {"key,parent,issuetype"}, "maxResults": {fmt.Sprint(searchPage)}}
+		if token != "" {
+			q.Set("nextPageToken", token)
+		}
+		data, err := c.do(ctx, http.MethodGet, "/rest/api/3/search/jql?"+q.Encode(), nil, http.StatusOK)
+		if err != nil {
+			return nil, err
+		}
+		var page struct {
+			Issues        json.RawMessage `json:"issues"`
+			NextPageToken string          `json:"nextPageToken"`
+			IsLast        bool            `json:"isLast"`
+		}
+		if err := json.Unmarshal(data, &page); err != nil {
+			return nil, fmt.Errorf("subtask parent search: unexpected JSON: %w", err)
+		}
+		if len(page.Issues) == 0 || string(page.Issues) == "null" {
+			return nil, errors.New("subtask parent search: Jira response has no issues array")
+		}
+		var issues []struct {
+			Key    string `json:"key"`
+			Fields struct {
+				Parent *struct {
+					Key string `json:"key"`
+				} `json:"parent"`
+				IssueType struct {
+					Subtask bool `json:"subtask"`
+				} `json:"issuetype"`
+			} `json:"fields"`
+		}
+		if err := json.Unmarshal(page.Issues, &issues); err != nil {
+			return nil, fmt.Errorf("subtask parent search: unexpected issues: %w", err)
+		}
+		for _, issue := range issues {
+			if issue.Key == "" {
+				return nil, errors.New("subtask parent search: issue has no key")
+			}
+			if issue.Fields.IssueType.Subtask && issue.Fields.Parent != nil {
+				parents[issue.Key] = issue.Fields.Parent.Key
+			}
+		}
+		if page.IsLast {
+			return parents, nil
+		}
+		if page.NextPageToken == "" {
+			return nil, errors.New("subtask parent search: Jira marked the page incomplete without a nextPageToken")
+		}
+		if seenTokens[page.NextPageToken] {
+			return nil, fmt.Errorf("subtask parent search: Jira repeated nextPageToken %q", page.NextPageToken)
+		}
+		seenTokens[page.NextPageToken] = true
+		token = page.NextPageToken
+	}
+}
