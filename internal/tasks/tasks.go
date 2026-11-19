@@ -2346,6 +2346,7 @@ func (r *Runner) stepHere(ctx context.Context, s config.Step, t *config.Task, ar
 // heavy task passes as GRAFT_THREADS.
 func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args []string, threads string, builtin bool) (err error) {
 	if s.Task != "" {
+		r.reportNestedGateReason(s, t)
 		return r.run(ctx, s.Task, nil)
 	}
 	if r.gateSplit {
@@ -2428,6 +2429,18 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	_, err = r.measureWithCapture(ctx, cmd, s.Source, true, &remoteStderr)
 	r.noteBrokenRemote(cmd, err, remoteStderr.String())
 	return err
+}
+
+func (r *Runner) reportNestedGateReason(s config.Step, t *config.Task) {
+	if !r.gateSplit || !remoteVouched(t) || len(r.frames) == 0 {
+		return
+	}
+	_, reason := r.remoteGateVouchedStep(s, t)
+	if reason == "" {
+		return
+	}
+	task := r.frames[len(r.frames)-1].task
+	r.reportGateReason(task, fmt.Sprintf("graft: %s: %s", task, reason))
 }
 
 // checkRunWords hands the report the go test command line as go reads it:

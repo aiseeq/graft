@@ -223,6 +223,29 @@ exec "$@"
 	}
 }
 
+func TestBusySplitGateReportsNestedRemoteTaskReason(t *testing.T) {
+	f, state := userRemoteRepo(t, "")
+	f.write(".graft.yaml", strings.Replace(splitGateConfig,
+		"gate:\n  - task: unit\n", "gate:\n  - task: parent\n  - task: unit\n", 1)+
+		"  parent:\n    heavy: true\n    remote: true\n    run: [{task: child}]\n"+
+		"  child:\n    run: [{sh: 'echo child > child-output'}]\n")
+	loaded(t, state)
+	out := runUntilMachineWait(t, f, state, "gate")
+	const want = "graft: parent: a split gate sends a step of a remote: true task only when it is the whole task"
+	var parentLines []string
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.HasPrefix(line, "graft: parent: ") && line != "graft: parent: task child" {
+			parentLines = append(parentLines, line)
+		}
+	}
+	if len(parentLines) != 1 || parentLines[0] != want {
+		t.Errorf("parent reason lines = %q, want exactly [%q]:\n%s", parentLines, want, out)
+	}
+	if got := f.read("child-output"); got != "child\n" {
+		t.Errorf("nested child did not run locally: %q\n%s", got, out)
+	}
+}
+
 func TestBusyGateRemoteGoCheckWithInstallStillGoesToHost(t *testing.T) {
 	f, state := userRemoteRepo(t, "")
 	f.write("cmd/tool/main.go", "package main\nfunc main() {}\n")
