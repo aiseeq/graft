@@ -3,7 +3,11 @@ schema: 1
 # at p95 with the load below 16 (18.11). The cost is spread over some 420 root
 # scenarios, no class worth 10% of the CPU (gate-over-limit: parallel tests,
 # scenarios moved to test-scenarios, fewer git runs, a CPU breakdown).
-limits: {gate: 3m}
+# all (gate, then test-race) takes 10m49s by median with the load below 16
+# (19.11). Its root suite spends 46% of its CPU in 65 thousand git children of
+# the integration scenarios; shared fixtures would save a few percent and
+# -race costs no extra time (all-over-limit: a CPU and child-process profile).
+limits: {gate: 3m, task: 12m}
 version:
   mode: git-tag
 # graft release refuses a tag over commits whose author or committer is not listed.
