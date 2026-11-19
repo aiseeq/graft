@@ -306,33 +306,77 @@ func removeCreatedLinks(paths []string) error {
 	return errors.Join(errs...)
 }
 
-// copyLocal copies the file at rel from the main worktree into the one at
-// dir, with its permissions.
+// copyLocal copies the file or directory at rel from the main worktree into
+// the one at dir, preserving permissions and symbolic links.
 func copyLocal(main, dir, rel string) error {
 	from, to := filepath.Join(main, filepath.FromSlash(rel)), filepath.Join(dir, filepath.FromSlash(rel))
-	info, err := os.Stat(from)
+	info, err := os.Lstat(from)
 	if errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("not in the main worktree %s", main)
 	}
 	if err != nil {
 		return fmt.Errorf("reading the main worktree's: %w", err)
 	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a file", from)
-	}
 	if _, err := os.Lstat(to); err == nil {
-		return errors.New("the checkout has it: worktree.copy is for files git does not track")
+		return errors.New("the checkout has it: worktree.copy is for paths git does not track")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("the new worktree's: %w", err)
-	}
-	data, err := os.ReadFile(from)
-	if err != nil {
-		return fmt.Errorf("reading the main worktree's: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
 		return fmt.Errorf("its directory: %w", err)
 	}
-	return atomicfile.Write(to, data, info.Mode().Perm())
+	return copyLocalEntry(from, to, info)
+}
+
+func copyLocalEntry(from, to string, info os.FileInfo) (retErr error) {
+	switch {
+	case info.Mode().IsRegular():
+		data, err := os.ReadFile(from)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", from, err)
+		}
+		return atomicfile.Write(to, data, info.Mode().Perm())
+	case info.IsDir():
+		if err := os.Mkdir(to, 0o700); err != nil {
+			return fmt.Errorf("creating %s: %w", to, err)
+		}
+		defer func() {
+			if retErr != nil {
+				if err := os.RemoveAll(to); err != nil {
+					retErr = errors.Join(retErr, fmt.Errorf("removing partial copy %s: %w", to, err))
+				}
+			}
+		}()
+		entries, err := os.ReadDir(from)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", from, err)
+		}
+		for _, entry := range entries {
+			childFrom, childTo := filepath.Join(from, entry.Name()), filepath.Join(to, entry.Name())
+			childInfo, err := os.Lstat(childFrom)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", childFrom, err)
+			}
+			if err := copyLocalEntry(childFrom, childTo, childInfo); err != nil {
+				return err
+			}
+		}
+		if err := os.Chmod(to, info.Mode().Perm()); err != nil {
+			return fmt.Errorf("setting permissions on %s: %w", to, err)
+		}
+		return nil
+	case info.Mode()&os.ModeSymlink != 0:
+		target, err := os.Readlink(from)
+		if err != nil {
+			return fmt.Errorf("reading symbolic link %s: %w", from, err)
+		}
+		if err := os.Symlink(target, to); err != nil {
+			return fmt.Errorf("creating symbolic link %s: %w", to, err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("%s is a special file", from)
+	}
 }
 
 // link is a symlink to make beside a worktree.

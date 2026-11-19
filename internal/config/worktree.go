@@ -9,8 +9,8 @@ import (
 // Worktree is what graft worktree add puts in a new worktree besides the
 // checkout, so that the gate and the tasks run there as in the main one.
 type Worktree struct {
-	// Copy are files of the main worktree git does not track, the local
-	// setup (.env), copied into the new worktree.
+	// Copy are files or directories of the main worktree git does not track,
+	// the local setup (.env), copied into the new worktree.
 	Copy []string `yaml:"copy"`
 	// Setup are tasks run in the new worktree after the copy, such as
 	// generating the files the project needs and does not track.
@@ -125,6 +125,7 @@ func disposableMatch(pattern, name string, directory bool) (bool, error) {
 }
 
 func cleanWorktreePath(p string) bool {
-	return p != "" && !path.IsAbs(p) && path.Clean(p) == p && p != ".." && !strings.HasPrefix(p, "../") &&
-		p != ".git" && !strings.HasPrefix(p, ".git/") && !strings.Contains(p, `\`)
+	clean := strings.TrimSuffix(p, "/")
+	return clean != "" && !path.IsAbs(clean) && path.Clean(clean) == clean && clean != ".." && !strings.HasPrefix(clean, "../") &&
+		clean != ".git" && !strings.HasPrefix(clean, ".git/") && !strings.Contains(clean, `\`)
 }

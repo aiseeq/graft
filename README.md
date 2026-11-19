@@ -2946,7 +2946,7 @@ the main one:
 
 ```yaml
 worktree:
-  copy: [.env]               # files of the main worktree, copied with their permissions
+  copy: [.env, oracle/]      # files or folders of the main worktree, copied with permissions
   setup: [generate-config]   # tasks run in the new worktree after the copy
   link:
     - key: [frontend/package-lock.json] # matching files identify shared dependencies
@@ -2967,6 +2967,12 @@ roots a name: `/config.yaml` is that file at the root only. A pattern ending in
 with the tree only while it matches the main worktree's: one changed since, or
 one the main worktree lacks, is the tree's own data, and a tree whose setup
 rewrites a copy names it in `disposable` too. `disposable` comes first.
+
+`worktree.copy` accepts an untracked file or folder, with or without a trailing
+`/`; folders are copied recursively with file permissions and symbolic links
+preserved. Special files such as sockets and FIFOs cannot be copied. A copied
+file counts as tree data only when it differs from the main worktree or the
+main worktree no longer has it.
 
 For each `link` group, `add` links its untracked directories to the main
 worktree when all key files match and all directories exist there. Otherwise,
@@ -2998,7 +3004,12 @@ main worktree, registered worktrees and worktrees under
 `--in <directory>` to scan more catalogs. Its content comparison can create
 unreachable Git objects, as the `worktree clean` report does; it does not
 change refs, the index or worktrees. Deleted files have no current mtime and are skipped; files inside
-submodules are checked using the submodule's own status. If no local trunk can
+submodules are checked using the submodule's own status. Files copied by
+`worktree.copy`, ignored by Git, count as changed when they differ from the
+main worktree's copy or were added inside a copied directory, unless
+`worktree.disposable` names them; when the main worktree's `.graft.yaml`
+cannot be read, this check is skipped for that repository with a note and the
+command exits 2. If no local trunk can
 be resolved, unmerged work is skipped for that repository with a note and the
 command exits 2. It prints `nothing stale` and exits 0 when there are no
 findings, or exits 1 when it finds stale work.

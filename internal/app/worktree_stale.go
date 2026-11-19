@@ -181,7 +181,7 @@ func (a *App) reportStaleWorktrees(ctx context.Context, o WorktreeStaleOptions, 
 		}
 	}
 	if verificationIssue {
-		return &ExitCodeError{Code: 2, Err: fmt.Errorf("unmerged check incomplete; resolve the trunk or specify --trunk <ref>")}
+		return &ExitCodeError{Code: 2, Err: fmt.Errorf("stale checks incomplete; see checked worktrees above")}
 	}
 	if found == 0 {
 		a.printf("nothing stale")
@@ -195,7 +195,11 @@ func staleWorktreeDetails(ctx context.Context, tree staleWorktree, o WorktreeSta
 	if o.UncommittedSet && !tree.prunable {
 		count, oldest, err := staleFileCount(tree.path, o.Uncommitted)
 		if err != nil {
-			return nil, nil, err
+			if errors.Is(err, errStaleMainWorktreeConfig) {
+				notes = append(notes, "uncommitted check skipped: "+err.Error())
+			} else {
+				return nil, nil, err
+			}
 		}
 		if count > 0 {
 			details = append(details, fmt.Sprintf("%d uncommitted files, oldest %s; commit or discard the changes", count, oldest.Round(time.Second)))
@@ -345,9 +349,10 @@ func staleFileCount(root string, threshold time.Duration) (int, time.Duration, e
 		return 0, 0, fmt.Errorf("open worktree %s: %w", root, err)
 	}
 	files, err := staleChangedFiles(repo, map[string]bool{})
-	if err != nil {
+	if err != nil && !errors.Is(err, errStaleMainWorktreeConfig) {
 		return 0, 0, err
 	}
+	copyConfigErr := err
 	now := time.Now()
 	count := 0
 	var oldest time.Duration
@@ -358,13 +363,15 @@ func staleFileCount(root string, threshold time.Duration) (int, time.Duration, e
 			oldest = max(oldest, age)
 		}
 	}
-	return count, oldest, nil
+	return count, oldest, copyConfigErr
 }
 
 type staleFile struct {
 	path  string
 	mtime time.Time
 }
+
+var errStaleMainWorktreeConfig = errors.New("cannot read the main worktree config")
 
 func staleChangedFiles(repo *gitx.Repo, visited map[string]bool) ([]staleFile, error) {
 	common := filepath.Clean(repo.CommonDir)
@@ -384,7 +391,97 @@ func staleChangedFiles(repo *gitx.Repo, visited map[string]bool) ([]staleFile, e
 		}
 		files = append(files, changed...)
 	}
+	seen := make(map[string]bool, len(files))
+	for _, file := range files {
+		if rel, err := filepath.Rel(repo.Root, file.path); err == nil {
+			seen[filepath.Clean(rel)] = true
+		}
+	}
+	copyFiles, err := staleChangedCopyFiles(repo, seen)
+	if err != nil {
+		return files, err
+	}
+	files = append(files, copyFiles...)
 	return files, nil
+}
+
+func staleChangedCopyFiles(repo *gitx.Repo, seen map[string]bool) ([]staleFile, error) {
+	main, err := mainWorktreePath(repo)
+	if err != nil {
+		return nil, err
+	}
+	if filepath.Clean(main) == filepath.Clean(repo.Root) {
+		return nil, nil
+	}
+	cfg, err := config.Load(main)
+	if errors.Is(err, config.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errStaleMainWorktreeConfig, err)
+	}
+	var files []staleFile
+	for _, copyPath := range cfg.Worktree.Copy {
+		root := filepath.Join(repo.Root, filepath.FromSlash(copyPath))
+		walkErr := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if errors.Is(walkErr, os.ErrNotExist) {
+				return nil
+			}
+			if walkErr != nil {
+				return walkErr
+			}
+			file, err := staleCopiedFile(repo, main, cfg, path, entry, seen)
+			if file != nil {
+				files = append(files, *file)
+			}
+			return err
+		})
+		if walkErr != nil && !errors.Is(walkErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("scan worktree.copy %s: %w", copyPath, walkErr)
+		}
+	}
+	return files, nil
+}
+
+func staleCopiedFile(repo *gitx.Repo, main string, cfg *config.Config, path string, entry os.DirEntry, seen map[string]bool) (*staleFile, error) {
+	if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() {
+		return nil, nil
+	}
+	info, err := entry.Info()
+	if err != nil {
+		return nil, fmt.Errorf("read metadata for copied file %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil
+	}
+	rel, err := filepath.Rel(repo.Root, path)
+	if err != nil {
+		return nil, fmt.Errorf("locate copied file %s: %w", path, err)
+	}
+	cleanRel := filepath.Clean(rel)
+	if seen[cleanRel] {
+		return nil, nil
+	}
+	name := filepath.ToSlash(rel)
+	disposable, err := cfg.Worktree.DisposablePath(name, false)
+	if err != nil {
+		return nil, err
+	}
+	if disposable || disposableDirectoryPath(name) {
+		return nil, nil
+	}
+	if coveredByWorktreePath(name, cfg.Worktree.Copy) {
+		checker := cleaner{ctx: context.Background(), app: &App{}, repo: repo, cfg: cfg, mainPath: main}
+		same, err := checker.sameAsCopySource(path, name)
+		if err != nil {
+			return nil, err
+		}
+		if same {
+			return nil, nil
+		}
+	}
+	seen[cleanRel] = true
+	return &staleFile{path: path, mtime: info.ModTime()}, nil
 }
 
 func staleChangedPath(repo *gitx.Repo, name, common string, visited map[string]bool) ([]staleFile, error) {

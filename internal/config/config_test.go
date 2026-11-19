@@ -548,6 +548,9 @@ deploy:
 			t.Errorf("%s: want an error", name)
 		}
 	}
+	if _, err := Parse([]byte(base + "worktree: {copy: [oracle/]}\n")); err != nil {
+		t.Errorf("worktree.copy folder: %v", err)
+	}
 }
 
 func TestConfigWorktreeDisposablePath(t *testing.T) {

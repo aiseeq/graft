@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aiseeq/graft/v2/internal/gitx"
 )
 
 func TestWorktreeStaleHereLimitsToCurrentWorktree(t *testing.T) {
@@ -52,6 +54,112 @@ func TestWorktreeStaleHereLimitsToCurrentWorktree(t *testing.T) {
 	err = app.WorktreeStale(context.Background(), WorktreeStaleOptions{Uncommitted: time.Hour, UncommittedSet: true, Here: true})
 	if err != nil || out.String() != "graft: nothing stale\n" {
 		t.Fatalf("--here with a young change: output %q, error %v", out.String(), err)
+	}
+}
+
+func TestWorktreeStaleCountsChangedAndAddedFilesUnderCopyDirectory(t *testing.T) {
+	base := t.TempDir()
+	main := initStaleTestRepo(t, filepath.Join(base, "project"))
+	if err := os.WriteFile(filepath.Join(main, ".graft.yaml"), []byte("schema: 1\nversion: {mode: none}\nworktree:\n  copy: [data/]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(main, ".gitignore"), []byte("data/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitStaleTest(t, main, "add", ".graft.yaml", ".gitignore")
+	gitStaleTest(t, main, "commit", "-m", "configure copied data")
+	worktree := filepath.Join(base, "feature")
+	gitStaleTest(t, main, "worktree", "add", "-b", "feature", worktree)
+	if err := os.MkdirAll(filepath.Join(main, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(worktree, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeOldStaleTestFile(t, filepath.Join(main, "data", "same.txt"))
+	writeOldStaleTestFile(t, filepath.Join(worktree, "data", "same.txt"))
+	if count, _, err := staleFileCount(worktree, time.Hour); err != nil || count != 0 {
+		t.Fatalf("matching copied files: count %d, error %v; want 0", count, err)
+	}
+	changed := filepath.Join(worktree, "data", "same.txt")
+	if err := os.WriteFile(changed, []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(changed, old, old); err != nil {
+		t.Fatal(err)
+	}
+	writeOldStaleTestFile(t, filepath.Join(worktree, "data", "added.txt"))
+	if count, _, err := staleFileCount(worktree, time.Hour); err != nil || count != 2 {
+		t.Fatalf("changed and added copied files: count %d, error %v; want 2", count, err)
+	}
+}
+
+func TestWorktreeStaleIgnoresDisposableCopiedFile(t *testing.T) {
+	base := t.TempDir()
+	main := initStaleTestRepo(t, filepath.Join(base, "project"))
+	if err := os.WriteFile(filepath.Join(main, ".graft.yaml"), []byte("schema: 1\nversion: {mode: none}\nworktree:\n  copy: [.env]\n  disposable: [.env]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(main, ".gitignore"), []byte(".env\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitStaleTest(t, main, "add", ".graft.yaml", ".gitignore")
+	gitStaleTest(t, main, "commit", "-m", "configure copied disposable file")
+	worktree := filepath.Join(base, "feature")
+	gitStaleTest(t, main, "worktree", "add", "-b", "feature", worktree)
+	writeOldStaleTestFile(t, filepath.Join(main, ".env"))
+	writeOldStaleTestFile(t, filepath.Join(worktree, ".env"))
+	changed := filepath.Join(worktree, ".env")
+	if err := os.WriteFile(changed, []byte("changed env\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-3 * time.Hour)
+	if err := os.Chtimes(changed, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if count, _, err := staleFileCount(worktree, time.Hour); err != nil || count != 0 {
+		t.Fatalf("disposable copied .env: count %d, error %v; want 0", count, err)
+	}
+}
+
+func TestWorktreeStaleMainConfigErrorIsANoteAndContinues(t *testing.T) {
+	base := t.TempDir()
+	main := initStaleTestRepo(t, filepath.Join(base, "project"))
+	if err := os.WriteFile(filepath.Join(main, ".graft.yaml"), []byte("schema: 1\nversion: {mode: none}\nworktree:\n  copy: [.env]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitStaleTest(t, main, "add", ".graft.yaml")
+	gitStaleTest(t, main, "commit", "-m", "configure copied file")
+	aPath, bPath := filepath.Join(base, "a"), filepath.Join(base, "b")
+	gitStaleTest(t, main, "worktree", "add", "-b", "feature/a", aPath)
+	gitStaleTest(t, main, "worktree", "add", "-b", "feature/b", bPath)
+	if err := os.WriteFile(filepath.Join(main, ".graft.yaml"), []byte("schema: [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeOldStaleTestFile(t, filepath.Join(aPath, "tracked.txt"))
+	repoA, err := gitx.Open(aPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoB, err := gitx.Open(bPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	app := &App{Stdout: &out}
+	err = app.reportStaleWorktrees(context.Background(), WorktreeStaleOptions{Uncommitted: time.Hour, UncommittedSet: true}, []staleWorktree{
+		{path: aPath, branch: "feature/a", repo: repoA},
+		{path: bPath, branch: "feature/b", repo: repoB},
+	})
+	var codeErr *ExitCodeError
+	if !errors.As(err, &codeErr) || codeErr.Code != 2 {
+		t.Fatalf("stale report error = %v, want incomplete-check exit 2", err)
+	}
+	for _, want := range []string{aPath, bPath, "uncommitted check skipped", "1 uncommitted files"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("stale output lacks %q:\n%s", want, out.String())
+		}
 	}
 }
 

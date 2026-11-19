@@ -2568,6 +2568,78 @@ func TestWorktreeAddCopiesAndSetsUp(t *testing.T) {
 	}
 }
 
+func TestWorktreeAddCopiesDirectoryAndCleanChecksItsFiles(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none}\nworktree:\n  copy: [data/]\n",
+		".gitignore":  "data/\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
+	f.git("remote", "set-head", "origin", "main")
+	writeFile(t, filepath.Join(f.work, "data", "a"), "a\n")
+	writeFile(t, filepath.Join(f.work, "data", "sub", "b"), "b\n")
+	if err := os.Chmod(filepath.Join(f.work, "data", "sub", "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("a", filepath.Join(f.work, "data", "l")); err != nil {
+		t.Fatal(err)
+	}
+	cache := t.TempDir()
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache)
+	f.mustGraft("worktree", "add", "copydirs")
+	worktree := filepath.Join(cache, "worktrees", "work", "copydirs")
+	for _, name := range []string{"data/a", "data/sub/b"} {
+		if got := readFile(t, filepath.Join(worktree, name)); got != string(filepath.Base(name)[0])+"\n" {
+			t.Errorf("%s = %q", name, got)
+		}
+	}
+	if info, err := os.Stat(filepath.Join(worktree, "data/sub/b")); err != nil || info.Mode().Perm() != 0o755 {
+		t.Errorf("copied mode = %v, error %v", info, err)
+	}
+	if target, err := os.Readlink(filepath.Join(worktree, "data/l")); err != nil || target != "a" {
+		t.Errorf("copied symlink = %q, error %v", target, err)
+	}
+	clean := f.mustGraft("worktree", "clean", "--min-age", "0s")
+	if !strings.Contains(clean, "would remove "+worktree+" (copydirs): clean, in origin/main") {
+		t.Errorf("matching copied directory was not clean:\n%s", clean)
+	}
+	writeFile(t, filepath.Join(worktree, "data", "sub", "b"), "changed\n")
+	clean = f.mustGraft("worktree", "clean", "--min-age", "0s")
+	if !strings.Contains(clean, "check     "+worktree+" (copydirs): clean, in origin/main, but ignored data would go with it: data/ (1 file, ") {
+		t.Errorf("changed copied file was not treated as tree data:\n%s", clean)
+	}
+}
+
+func TestWorktreeAddRemovesPartialDirectoryCopyOnSpecialFile(t *testing.T) {
+	f := newRepo(t, map[string]string{
+		".graft.yaml": "schema: 1\nversion: {mode: none}\nworktree:\n  copy: [data/]\n",
+		".gitignore":  "data/\n",
+	}, "origin")
+	f.git("checkout", "-q", "-b", "main")
+	f.mustPlainCommit("feat: base")
+	f.git("push", "-q", "-u", "origin", "HEAD")
+	f.git("remote", "set-head", "origin", "main")
+	writeFile(t, filepath.Join(f.work, "data", "a"), "copied before the fifo\n")
+	if err := os.MkdirAll(filepath.Join(f.work, "data", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pipe := filepath.Join(f.work, "data", "sub", "pipe")
+	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cache := t.TempDir()
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache)
+	out, code := f.graft("", "worktree", "add", "fifo-copy")
+	if code == 0 || !strings.Contains(out, pipe+" is a special file") {
+		t.Fatalf("copying special file: exit %d\n%s", code, out)
+	}
+	partial := filepath.Join(cache, "worktrees", "work", "fifo-copy", "data")
+	if _, err := os.Lstat(partial); !os.IsNotExist(err) {
+		t.Errorf("partial directory copy remains at %s: %v", partial, err)
+	}
+}
+
 // TestWorktreeCleanNoRemote: without a remote the trunk is a local branch:
 // main or master when only one is there, else the branch of the main
 // worktree; both there with the main worktree on another branch is

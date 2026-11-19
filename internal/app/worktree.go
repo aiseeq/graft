@@ -1196,7 +1196,6 @@ func (c *cleaner) ignoredData(root string) (ignoredSummary, error) {
 	for _, group := range c.cfg.Worktree.Link {
 		linkPaths = append(linkPaths, group.Paths...)
 	}
-	templated := slices.Concat(c.cfg.Worktree.Copy, linkPaths)
 	for listed := range strings.SplitSeq(out, "\x00") {
 		isDirectory := strings.HasSuffix(listed, "/")
 		listed = strings.TrimSuffix(listed, "/")
@@ -1211,7 +1210,7 @@ func (c *cleaner) ignoredData(root string) (ignoredSummary, error) {
 			if dispErr != nil {
 				return ignoredSummary{}, dispErr
 			}
-			if disposable || disposableDirectoryPath(listed) || coveredByWorktreePath(listed, templated) {
+			if disposable || disposableDirectoryPath(listed) || coveredByWorktreePath(listed, linkPaths) {
 				continue
 			}
 			last = listed
