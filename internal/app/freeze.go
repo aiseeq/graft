@@ -1070,7 +1070,11 @@ func freezeLogTags(repo *gitx.Repo, cfg *config.Config, f *activeFreeze) (map[st
 }
 
 func checkFreezeCommit(ctx context.Context, app *App, r *deployRun, f *activeFreeze, gate *approvalGate, keyRe *regexp.Regexp, commit deliveredCommit, reverted string) error {
-	if isRevert(commit.subject) || reverted != "" {
+	takesWork, err := isWorkRemovingRevert(r.repo, commit, nil, unknownRevertTargetUsesSubject)
+	if err != nil {
+		return err
+	}
+	if takesWork || reverted != "" {
 		return nil
 	}
 	keys := itemKeys(keyRe, f.config.ApprovedRelease, commit)
@@ -1133,7 +1137,11 @@ func freezeAnchored(ctx context.Context, client *jira.Client, r *deployRun, f *a
 	}
 	live := false
 	for _, c := range commits {
-		if live || isRevert(c.subject) || reverted[c.sha] != "" {
+		takesWork, err := isWorkRemovingRevert(r.repo, c, commits, unknownRevertTargetUsesSubject)
+		if err != nil {
+			return false, err
+		}
+		if live || takesWork || reverted[c.sha] != "" {
 			continue
 		}
 		if ships, err := shipsLiveWork(r.repo, r.cfg, conf, c.sha); err != nil || !ships {

@@ -2078,10 +2078,16 @@ type gateOutcome struct {
 
 var revertsRe = regexp.MustCompile(`(?m)^This reverts commit ([0-9a-f]{7,40})\b`)
 
-// approvedReleaseRevert says whether a commit takes work out for
-// approved_release. A revert whose body names another revert returns that
-// work, so it must be checked by its own key.
-func approvedReleaseRevert(repo *gitx.Repo, c deliveredCommit, commits []deliveredCommit) (bool, error) {
+type unknownRevertTargetPolicy uint8
+
+const (
+	unknownRevertTargetUsesSubject unknownRevertTargetPolicy = iota
+	unknownRevertTargetIsError
+)
+
+// isWorkRemovingRevert says whether a commit takes work out. A revert whose
+// body names another revert returns that work, so it must be checked itself.
+func isWorkRemovingRevert(repo *gitx.Repo, c deliveredCommit, commits []deliveredCommit, unknownPolicy unknownRevertTargetPolicy) (bool, error) {
 	if !isRevert(c.subject) {
 		return false, nil
 	}
@@ -2092,7 +2098,10 @@ func approvedReleaseRevert(repo *gitx.Repo, c deliveredCommit, commits []deliver
 	for _, m := range revertsRe.FindAllStringSubmatch(c.body, -1) {
 		sha, err := repo.Git("rev-parse", "--verify", "--quiet", m[1]+"^{commit}")
 		if err != nil {
-			return false, fmt.Errorf("%s reverts %s, which is unknown here (git fetch?)", gitx.Short(c.sha), m[1])
+			if unknownPolicy == unknownRevertTargetIsError {
+				return false, fmt.Errorf("%s reverts %s, which is unknown here (git fetch?)", gitx.Short(c.sha), m[1])
+			}
+			continue
 		}
 		sha = strings.TrimSpace(sha)
 		subject, ok := bySHA[sha]
@@ -2107,6 +2116,20 @@ func approvedReleaseRevert(repo *gitx.Repo, c deliveredCommit, commits []deliver
 		}
 	}
 	return true, nil
+}
+
+func workRemovingReverts(repo *gitx.Repo, commits []deliveredCommit) (map[string]bool, error) {
+	removing := make(map[string]bool)
+	for _, c := range commits {
+		takesWork, err := isWorkRemovingRevert(repo, c, commits, unknownRevertTargetUsesSubject)
+		if err != nil {
+			return nil, err
+		}
+		if takesWork {
+			removing[c.sha] = true
+		}
+	}
+	return removing, nil
 }
 
 // run checks the commits of prev..head and the commits withheld before.
@@ -2129,7 +2152,7 @@ func (g *gateRun) run(ctx context.Context, prev, head string, withheld []string,
 	}
 	for _, c := range all {
 		line := gitx.Short(c.sha) + " " + c.subject
-		takesWork, err := approvedReleaseRevert(g.repo, c, all)
+		takesWork, err := isWorkRemovingRevert(g.repo, c, all, unknownRevertTargetIsError)
 		if err != nil {
 			return out, err
 		}
@@ -2214,7 +2237,7 @@ func (g *gateRun) linkOutside(ctx context.Context) ([]gateFailure, error) {
 func (g *gateRun) reverted(commits []deliveredCommit) (map[string]string, error) {
 	reverted := map[string]string{}
 	for _, c := range commits {
-		takesWork, err := approvedReleaseRevert(g.repo, c, commits)
+		takesWork, err := isWorkRemovingRevert(g.repo, c, commits, unknownRevertTargetIsError)
 		if err != nil {
 			return nil, err
 		}
@@ -3667,7 +3690,7 @@ func undoneBy(repo *gitx.Repo, commits []deliveredCommit) (func(deliveredCommit)
 	var undone []string
 	takingWork := map[string]bool{}
 	for _, c := range commits {
-		takesWork, err := approvedReleaseRevert(repo, c, commits)
+		takesWork, err := isWorkRemovingRevert(repo, c, commits, unknownRevertTargetIsError)
 		if err != nil {
 			return nil, err
 		}

@@ -483,10 +483,18 @@ func (s *sweepRun) judge(ctx context.Context, items map[string][]sweptCommit) {
 
 // revertedIn names the commits the reverts among commits revert; a name that
 // resolves to no commit counts for nothing.
-func revertedIn(r *deployRun, commits []loggedCommit) map[string]bool {
+func revertedIn(r *deployRun, commits []loggedCommit) (map[string]bool, error) {
 	reverted := map[string]bool{}
+	plain := make([]deliveredCommit, len(commits))
+	for i := range commits {
+		plain[i] = commits[i].deliveredCommit
+	}
+	removing, err := workRemovingReverts(r.repo, plain)
+	if err != nil {
+		return nil, err
+	}
 	for _, c := range commits {
-		if !isRevert(c.subject) {
+		if !removing[c.sha] {
 			continue
 		}
 		for _, m := range revertsRe.FindAllStringSubmatch(c.body, -1) {
@@ -495,7 +503,7 @@ func revertedIn(r *deployRun, commits []loggedCommit) map[string]bool {
 			}
 		}
 	}
-	return reverted
+	return reverted, nil
 }
 
 // sweepItems groups the commits of the window, on any remote branch or on
@@ -509,19 +517,14 @@ func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.
 	if err != nil {
 		return nil, nil, err
 	}
-	onTarget, err := revSet(r.repo, head, since.Add(-sweepMargin))
+	onTarget, inTrunk, sameHeadTrunk, err := sweepCommitSets(r, head, trunk, since)
 	if err != nil {
 		return nil, nil, err
 	}
-	inTrunk, err := revSet(r.repo, trunk, since.Add(-sweepMargin))
+	reverted, err := revertedIn(r, commits)
 	if err != nil {
 		return nil, nil, err
 	}
-	sameHeadTrunk, err := sameCommit(r, head, trunk)
-	if err != nil {
-		return nil, nil, err
-	}
-	reverted := revertedIn(r, commits)
 	picks, err := pickedOnto(r, commits, onTarget, withheld)
 	if err != nil {
 		return nil, nil, err
@@ -529,9 +532,17 @@ func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.
 	keyRe := projectKeyRe(r.cfg)
 	items := map[string][]sweptCommit{}
 	revertedKeys := map[string]bool{}
+	plain := make([]deliveredCommit, len(commits))
+	for i := range commits {
+		plain[i] = commits[i].deliveredCommit
+	}
+	removing, err := workRemovingReverts(r.repo, plain)
+	if err != nil {
+		return nil, nil, err
+	}
 	for _, c := range commits {
 		keys := workKeys(keyRe, r.target.ApprovedRelease, c.deliveredCommit)
-		if isRevert(c.subject) || reverted[c.sha] {
+		if removing[c.sha] || reverted[c.sha] {
 			for _, key := range keys {
 				revertedKeys[key] = true
 			}
@@ -554,6 +565,22 @@ func sweepItems(r *deployRun, head, trunk string, withheld []string, since time.
 		}
 	}
 	return items, revertedKeys, nil
+}
+
+func sweepCommitSets(r *deployRun, head, trunk string, since time.Time) (map[string]bool, map[string]bool, bool, error) {
+	onTarget, err := revSet(r.repo, head, since.Add(-sweepMargin))
+	if err != nil {
+		return nil, nil, false, err
+	}
+	inTrunk, err := revSet(r.repo, trunk, since.Add(-sweepMargin))
+	if err != nil {
+		return nil, nil, false, err
+	}
+	sameHeadTrunk, err := sameCommit(r, head, trunk)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	return onTarget, inTrunk, sameHeadTrunk, nil
 }
 
 func sameCommit(r *deployRun, a, b string) (bool, error) {

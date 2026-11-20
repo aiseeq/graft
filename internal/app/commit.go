@@ -187,7 +187,12 @@ func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level versio
 		msg = message.WithKey(msg, message.BranchKey(branch, cfg.Ticket.Regexp))
 	}
 	if cfg.Ticket != nil {
-		if subject, _, _ := strings.Cut(msg, "\n"); !isRevert(subject) {
+		subject, _, _ := strings.Cut(msg, "\n")
+		takesWork, err := isWorkRemovingRevert(repo, deliveredCommit{subject: subject, body: msg}, nil, unknownRevertTargetUsesSubject)
+		if err != nil {
+			return plan, err
+		}
+		if !takesWork {
 			if token := smartCommitToken(msg); token != "" && cfg.Ticket.Regexp != nil && len(message.WordKeys(msg, cfg.Ticket.Regexp)) > 0 {
 				return plan, fmt.Errorf("commit message contains Smart Commit token %s: change ticket transitions and comments in the ticket itself, not through a commit; rewrite the message without # (for example, %s)", token, strings.TrimPrefix(token, "#"))
 			}
@@ -220,7 +225,12 @@ func requireTicketWithVersion(repo *gitx.Repo, cfg *config.Config, msg, base str
 	if !cfg.Ticket.Required || hasTicketKey(cfg, msg) {
 		return nil
 	}
-	if subject, _, _ := strings.Cut(msg, "\n"); isRevert(subject) {
+	subject, _, _ := strings.Cut(msg, "\n")
+	takesWork, err := isWorkRemovingRevert(repo, deliveredCommit{subject: subject, body: msg}, nil, unknownRevertTargetUsesSubject)
+	if err != nil {
+		return err
+	}
+	if takesWork {
 		return nil
 	}
 	changed, err := repo.StagedFiles(base)

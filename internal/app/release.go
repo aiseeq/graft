@@ -148,15 +148,23 @@ func hotfixBase(ctx context.Context, r *deployRun) (string, error) {
 // unlabelled lists the hotfix commits that name no item with the hotfix
 // label, and the labelled items the others name.
 func unlabelled(ctx context.Context, r *deployRun, commits []deliveredCommit) (outside, items []string, err error) {
-	h := r.cfg.Deploy.Hotfix
 	client, err := jiraClient()
 	if err != nil {
 		return nil, nil, err
 	}
+	return unlabelledWithClient(ctx, r, commits, client)
+}
+
+func unlabelledWithClient(ctx context.Context, r *deployRun, commits []deliveredCommit, client *jira.Client) (outside, items []string, err error) {
+	h := r.cfg.Deploy.Hotfix
 	keyRe := projectKeyRe(r.cfg)
 	conf := r.cfg.Deploy.Targets[h.Base].ApprovedRelease
 	for _, c := range commits {
-		if isRevert(c.subject) {
+		takesWork, err := isWorkRemovingRevert(r.repo, c, commits, unknownRevertTargetUsesSubject)
+		if err != nil {
+			return nil, nil, err
+		}
+		if takesWork {
 			continue
 		}
 		keys := itemKeys(keyRe, conf, c)
@@ -336,7 +344,11 @@ func (a *App) outsideHold(r *deployRun, wt *config.DeployTarget, candidate, rele
 	}
 	var bad []string
 	for _, c := range commits {
-		if isRevert(c.subject) {
+		takesWork, err := isWorkRemovingRevert(r.repo, c, commits, unknownRevertTargetUsesSubject)
+		if err != nil {
+			return nil, err
+		}
+		if takesWork {
 			continue
 		}
 		if released != "" {
