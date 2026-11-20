@@ -103,7 +103,7 @@ tasks:
     # for all. Include the root deploy review regressions whose names
     # omit Deploy, without skipping similarly named internal/app tests.
     # The gate's own tests, TestBusyGate, stay here.
-    env: &gate-scenarios {GATE_SCENARIOS: '^Test(Freeze|Frozen|Release|Deploy|Merge|Worktree|Remote|UserRemoteHeavy|Round|Withheld|Advisory|Review(2OutsideParentDoesNotHideOpenSubtask|2ReleasedVersionCannotAnchorOutside|2LinkedEntryWinsOverOldForm|3VersionOutsideParentOpenSubtask|3UnlinkedSubtaskDoesNotHoldOutsideParent|3AdviceSecondApprovedVersion|3FreezeOutsideNeedsALiveApprovedAnchor|3FreezeSubtaskOwnMemberIsNoOutside|4PrefixIgnoredCommitIsNoLiveAnchor|4FreezeIgnoredCommitIsNoLiveAnchor|5EmptyOrVersionOnlyCommitIsNoLiveAnchor)|NoFreezeKeepsDeploysAsBefore|AFailedJournalStillRecordsTheDeploy)'}
+    env: &gate-scenarios {GATE_SCENARIOS: '^Test(Freeze|Frozen|Release|Deploy|Merge|Worktree|Remote|UserRemoteHeavy|Round|Withheld|Advisory|GateModulesHold|GateRaisesModulesWithoutHold|CommitIgnoresModulesHold|Review(2OutsideParentDoesNotHideOpenSubtask|2ReleasedVersionCannotAnchorOutside|2LinkedEntryWinsOverOldForm|3VersionOutsideParentOpenSubtask|3UnlinkedSubtaskDoesNotHoldOutsideParent|3AdviceSecondApprovedVersion|3FreezeOutsideNeedsALiveApprovedAnchor|3FreezeSubtaskOwnMemberIsNoOutside|4PrefixIgnoredCommitIsNoLiveAnchor|4FreezeIgnoredCommitIsNoLiveAnchor|5EmptyOrVersionOnlyCommitIsNoLiveAnchor)|NoFreezeKeepsDeploysAsBefore|AFailedJournalStillRecordsTheDeploy)'}
     remote: true
     heavy: true
     tests: go

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/checks"
@@ -1141,7 +1142,7 @@ func (a *App) Gate(ctx context.Context) error {
 	if err != nil && !errors.Is(err, gitx.ErrDetachedHead) {
 		return err
 	}
-	if err := a.raiseOwnModules(ctx, repo, cfg, branch); err != nil {
+	if err := a.raiseGateModules(ctx, repo, cfg, branch); err != nil {
 		return err
 	}
 	if err := a.gate(ctx, repo, cfg); err != nil {
@@ -1149,6 +1150,30 @@ func (a *App) Gate(ctx context.Context) error {
 	}
 	a.printf("gate passed")
 	return nil
+}
+
+func (a *App) raiseGateModules(ctx context.Context, repo *gitx.Repo, cfg *config.Config, branch string) error {
+	held, err := modulesHoldEnabled()
+	if err != nil {
+		return err
+	}
+	if held {
+		a.printf("modules.latest: held by GRAFT_MODULES_HOLD")
+		return nil
+	}
+	return a.raiseOwnModules(ctx, repo, cfg, branch)
+}
+
+func modulesHoldEnabled() (bool, error) {
+	value, set := os.LookupEnv("GRAFT_MODULES_HOLD")
+	if !set || value == "" {
+		return false, nil
+	}
+	held, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("GRAFT_MODULES_HOLD: %w", err)
+	}
+	return held, nil
 }
 
 // raiseOwnModules raises the modules of the user's modules.latest to their

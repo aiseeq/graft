@@ -73,7 +73,7 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 		if err := configureCommitDeps(cfg, &plan, opts); err != nil {
 			return err
 		}
-		if err := a.raiseOwnModules(ctx, repo, cfg, plan.branch); err != nil {
+		if err := a.raiseCommitModules(ctx, repo, cfg, plan.branch); err != nil {
 			return err
 		}
 		if err := a.commit(ctx, repo, cfg, plan); err != nil {
@@ -88,6 +88,14 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 	a.dailyFlags(ctx, repo, cfg, "")
 	a.dailySweep(ctx, repo, cfg)
 	return nil
+}
+
+func (a *App) raiseCommitModules(ctx context.Context, repo *gitx.Repo, cfg *config.Config, branch string) error {
+	value, set := os.LookupEnv("GRAFT_MODULES_HOLD")
+	if set && len(value) != 0 {
+		a.warn("GRAFT_MODULES_HOLD is ignored by commit")
+	}
+	return a.raiseOwnModules(ctx, repo, cfg, branch)
 }
 
 func configureCommitDeps(cfg *config.Config, plan *commitPlan, opts CommitOptions) error {

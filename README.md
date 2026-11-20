@@ -100,7 +100,8 @@ bump, and nothing is pushed. Merging the branch brings the gate (see Hooks).
 `graft commit` runs its gate and before a manual `graft gate`, graft raises
 matching requirements in tracked `go.mod` files to the latest versions visible
 through the user's Go proxy settings, then tidies the module and refreshes an
-existing vendor tree. It also raises npm dependencies in `package.json` whose
+existing vendor tree. Set `GRAFT_MODULES_HOLD=1` to skip these raises during
+`graft gate`. It also raises npm dependencies in `package.json` whose
 git URL is under one of those prefixes and ends in a `#vX.Y.Z` semver tag; npm
 ranges, shorthand specs, branches, and commit hashes stay as they are. When a
 `package-lock.json` covers the package, graft refreshes its resolved commit
