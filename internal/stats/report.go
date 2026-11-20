@@ -24,8 +24,9 @@ func Load(path string, since time.Time) (recs []Record, malformed int, err error
 	if err != nil {
 		return nil, 0, err
 	}
+	sweepHistoryGZ(path)
 	for _, p := range files {
-		r, m, err := loadFile(p)
+		r, m, err := readHistory(p, decodeRecords)
 		if err != nil {
 			return nil, 0, err
 		}

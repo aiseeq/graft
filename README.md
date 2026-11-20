@@ -1436,6 +1436,8 @@ graft's version, pid and command line. A
   can be compared; one that cannot be removed is warned about, and the line
   still written. `graft stats` reads the copies that reach `--since`; from an
   older copy it reads only the first line to report when the log began.
+  Reports may use a gzip copy of a rotated file; its edge-hash key is an
+  identity heuristic rather than a full content hash, and only reports use it.
 - A failure to record is not a failure of the task: graft warns once per run
   and goes on.
 

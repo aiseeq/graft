@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"hash/maphash"
 	"io"
-	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -193,36 +193,38 @@ func ReadTests(path string, since time.Time, visit func(PackageRun) error) (malf
 	if err != nil {
 		return malformed, err
 	}
+	sweepHistoryGZ(filepath.Join(filepath.Dir(path), "stats.jsonl"))
 	var readErr error
 	for _, p := range files {
-		f, err := os.Open(p)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
+		runs, bad, err := readHistory(p, decodePackageRuns)
+		malformed += bad
 		if err != nil {
-			readErr = errors.Join(readErr, fmt.Errorf("reading the tests: %w", err))
+			readErr = errors.Join(readErr, err)
 			continue
 		}
-		sc := bufio.NewScanner(f)
-		sc.Buffer(make([]byte, 64*1024), 64<<20)
-		for sc.Scan() {
-			var r PackageRun
-			if json.Unmarshal(sc.Bytes(), &r) != nil || r.Package == "" || r.Result == "" {
-				malformed++
-				continue
-			}
-			if err := visit(r); err != nil {
-				f.Close()
+		for i := range runs {
+			if err := visit(runs[i]); err != nil {
 				return malformed, err
 			}
 		}
-		err = sc.Err()
-		f.Close()
-		if err != nil {
-			readErr = errors.Join(readErr, fmt.Errorf("reading %s: %w", p, err))
-		}
 	}
 	return malformed, readErr
+}
+
+func decodePackageRuns(reader io.Reader) ([]PackageRun, int, error) {
+	var runs []PackageRun
+	malformed := 0
+	sc := bufio.NewScanner(reader)
+	sc.Buffer(make([]byte, 64*1024), 64<<20)
+	for sc.Scan() {
+		var r PackageRun
+		if json.Unmarshal(sc.Bytes(), &r) != nil || r.Package == "" || r.Result == "" {
+			malformed++
+			continue
+		}
+		runs = append(runs, r)
+	}
+	return runs, malformed, sc.Err()
 }
 
 // TestFilter selects the package runs a report covers.
