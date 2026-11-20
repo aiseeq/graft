@@ -2592,7 +2592,10 @@ deploy:
   In any deploy, a previously withheld commit that remains reverted in the
   deployed history and is absent from its tree stays in `.withheld` and is not
   checked again. Once its change is present in the deployed tree, it is checked
-  again.
+  again. graft matches neither content nor file renames: when a commit of
+  another item brings that code back, or it returns under another file name,
+  the withheld commit may go unchecked, and the restoring commit passes the
+  usual release rules, exceptions included.
   Release notes leave out withheld commits and the reverts that withheld
   them; a withheld commit that a later release lets out gets its notes
   there, though it is outside that release's range.
