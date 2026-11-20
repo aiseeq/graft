@@ -101,9 +101,53 @@ type Config struct {
 	RemoteHeavy  *RemoteHeavy        `yaml:"remote_heavy"`
 }
 
-// Merge configures tasks that run before graft merge publishes a trunk.
+// Merge configures tasks that run around graft merge.
 type Merge struct {
-	Deps []string `yaml:"deps"`
+	Deps    []string      `yaml:"deps"`
+	After   []string      `yaml:"after"`
+	Timeout time.Duration `yaml:"-"`
+}
+
+func (m *Merge) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return errors.New("merge: must be a mapping")
+	}
+	seen := map[string]bool{}
+	for i := 0; i < len(node.Content); i += 2 {
+		key, value := node.Content[i].Value, node.Content[i+1]
+		if key != "deps" && key != "after" && key != "after_timeout" {
+			return fmt.Errorf("merge.%s: unknown key", key)
+		}
+		if seen[key] {
+			return fmt.Errorf("merge.%s: given twice", key)
+		}
+		seen[key] = true
+		switch key {
+		case "deps":
+			if err := value.Decode(&m.Deps); err != nil {
+				return fmt.Errorf("merge.deps: %w", err)
+			}
+		case "after":
+			if err := value.Decode(&m.After); err != nil {
+				return fmt.Errorf("merge.after: %w", err)
+			}
+		case "after_timeout":
+			if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+				return errors.New("merge.after_timeout: must be a duration string")
+			}
+			d, err := time.ParseDuration(value.Value)
+			if err != nil {
+				return fmt.Errorf("merge.after_timeout: %w", err)
+			}
+			m.Timeout = d
+		}
+	}
+	if !seen["after_timeout"] {
+		m.Timeout = 10 * time.Minute
+	} else if m.Timeout <= 0 {
+		return errors.New("merge.after_timeout: must be positive")
+	}
+	return nil
 }
 
 // ProjectLimits override the user's run limits, one key at a time.

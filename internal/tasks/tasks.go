@@ -124,6 +124,8 @@ type Runner struct {
 	GraftVersion string
 	// NoCache runs the tasks with cache as if they had none.
 	NoCache bool
+	// LocalOnly keeps heavy tasks on this machine, including their deps.
+	LocalOnly bool
 	// ExecSettleLock and ExecSettle hold the separate settling period for
 	// graft exec --settle.
 	ExecSettleLock string

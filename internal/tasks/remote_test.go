@@ -70,6 +70,27 @@ func TestLoadCheckWaitAccounting(t *testing.T) {
 	}
 }
 
+func TestMergeAfterHeavyTaskStaysLocal(t *testing.T) {
+	t.Setenv(HeavyEnv, "")
+	t.Setenv(HeavyOriginEnv, "")
+	t.Setenv(HeavyByEnv, "")
+	t.Setenv(AdmittedEnv, "")
+	root := t.TempDir()
+	remoteMarker := filepath.Join(root, "remote-used")
+	r := NewRunner(root, &config.Config{RemoteHeavy: &config.RemoteHeavy{
+		Host: "hostA", Up: []string{"true"}, Run: []string{"sh", "-c", "touch " + remoteMarker + "; exec \"$@\"", "sh"},
+	}}, io.Discard, io.Discard)
+	r.LocalOnly = true
+	task := &config.Task{Heavy: true, Run: []config.Step{{Argv: []string{"sh", "-c", "true"}}}}
+	remote, why, err := r.placeHeavy(context.Background(), "projectA", task, root, nil)
+	if err != nil || remote || why == "" {
+		t.Fatalf("placement remote=%t why=%q err=%v; want local", remote, why, err)
+	}
+	if _, err := os.Stat(remoteMarker); !os.IsNotExist(err) {
+		t.Fatalf("remote command ran: %v", err)
+	}
+}
+
 func TestTaskConfirmationChain(t *testing.T) {
 	for _, refusal := range []bool{false, true} {
 		t.Run(fmt.Sprint(refusal), func(t *testing.T) {

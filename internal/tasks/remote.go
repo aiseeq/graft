@@ -379,6 +379,9 @@ func (r *Runner) stayHere(t *config.Task, dir string, allowInheritedExecLocal bo
 	if r.snapshotHead != "" {
 		return WhyClone, nil
 	}
+	if r.LocalOnly {
+		return "the task must run on this machine", nil
+	}
 	switch v := os.Getenv(HeavyEnv); v {
 	case "":
 	case "local":

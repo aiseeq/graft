@@ -588,6 +588,19 @@ untouched. A mirror refusal is reported after the local trunk has moved to
 the accepted primary result. A repo with replace refs or a grafts file is refused: the
 checks would read the substitutes while the push sends the originals.
 
+After the local trunk moves, `merge.after` runs its named tasks in this tree,
+under `graft-locks/merge-after.lock`, without the task cache and on this
+machine (dependencies too). `merge.after_timeout` limits each task and defaults
+to 10 minutes. A task failure leaves the merge in place and prints a command
+to rerun it. These tasks must write only their own generated outputs; graft
+does not require a clean tree. `git pull`, `graft worktree sync` and
+`graft commit` do not run `merge.after`. The last HEAD wins: if another merge
+moves it during a task, the after runner repeats the tasks for the new HEAD.
+It takes the after lock without waiting; when another runner holds it, that
+runner picks up the new HEAD. After releasing the lock, it checks HEAD again
+and reacquires if needed. The final generated output comes from the last HEAD;
+an intermediate output may come from an earlier one.
+
 The default `rebase` mode replays source commits onto the trunk; commits empty
 by content, including originally empty commits, are skipped. `--mode merge`
 preserves the source commits and creates a two-parent merge commit. Conflicts
@@ -605,7 +618,8 @@ Dirty work, unfinished Git operations, local trunk commits absent from the
 remote, an unsupported version tag/build branch, failed checks and failed
 dependencies stop the operation. The source ref is resolved once and left
 alone. The repository lock stays held through the gate and dependencies, so
-`graft commit` in the same repository waits for those checks.
+`graft commit` in the same repository waits for those checks. `merge.after`
+runs after that lock is released.
 
 ```yaml
 merge:
@@ -797,7 +811,10 @@ schema: 1                       # required
 graft: '>=0.5.0'                # optional: the oldest graft this config works with
 limits: {gate: 30s, task: 8m}   # project overrides user config, then built-in defaults
 commit: {conventional: false}   # project override of user config
-merge: {deps: [test]}           # optional tasks after graft merge's checks
+merge:
+  deps: [test]                  # optional tasks after graft merge's checks
+  after: [generate-types]       # optional tasks in the tree after its trunk moves
+  after_timeout: 10m            # optional limit per task (default 10m)
 
 # Commands run before every commit, in order, stopping at the first failure.
 # A string is split into words by shell quoting rules but is NOT run by a

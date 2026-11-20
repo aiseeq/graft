@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/message"
 	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
@@ -48,6 +50,7 @@ type mergeState struct {
 	mirrorErr           error
 	frozen              *activeFreeze
 	advisoryFailed      []string
+	moved               *string
 }
 
 const mergeOwnerFile = ".graft-merge-owner"
@@ -74,16 +77,218 @@ func (a *App) Merge(ctx context.Context, o MergeOptions) (mergeErr error) {
 	if err = requireNormalContext(repo); err != nil {
 		return err
 	}
-	return a.withLock(ctx, repoLock(repo), cfg, "graft merge", func() error { return a.mergeLocked(ctx, repo, cfg, o) })
+	before, err := repo.Git("rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return err
+	}
+	before = strings.TrimSpace(before)
+	var moved string
+	mergeErr = a.withLock(ctx, repoLock(repo), cfg, "graft merge", func() error { return a.mergeLocked(ctx, repo, cfg, o, &moved) })
+	if moved != "" && moved != before {
+		a.runMergeAfter(ctx, repo, moved)
+	}
+	return mergeErr
 }
 
-func (a *App) mergeLocked(ctx context.Context, repo *gitx.Repo, cfg *config.Config, o MergeOptions) error {
+func (a *App) runMergeAfter(ctx context.Context, repo *gitx.Repo, merged string) {
+	a.runMergeAfterWithHooks(ctx, repo, merged, mergeAfterHooks{})
+}
+
+type mergeAfterHooks struct {
+	afterTask    func()
+	afterRelease func()
+}
+
+func (a *App) runMergeAfterWithHooks(ctx context.Context, repo *gitx.Repo, merged string, hooks mergeAfterHooks) {
+	preflightCfg, err := mergeAfterConfig(repo, merged)
+	if err != nil {
+		a.warn("merge.after: loading %s from %s: %v", config.FileName, gitx.Short(merged), err)
+		return
+	}
+	if len(preflightCfg.Merge.After) == 0 {
+		return
+	}
+	path := filepath.Join(repo.CommonDir, "graft-locks", "merge-after.lock")
+	lk, err := lock.TryAcquire(path, "graft merge.after")
+	if err != nil {
+		for _, name := range preflightCfg.Merge.After {
+			a.mergeAfterFailure(repo.Root, name, err, "")
+		}
+		return
+	}
+	if lk == nil {
+		a.mergeAfterBusy(repo)
+		return
+	}
+	a.runMergeAfterLocked(ctx, repo, path, lk, hooks)
+}
+
+func mergeAfterConfig(repo *gitx.Repo, head string) (*config.Config, error) {
+	data, err := repo.Git("show", head+":"+config.FileName)
+	if err != nil {
+		return nil, err
+	}
+	return config.Parse([]byte(data))
+}
+
+func (a *App) mergeAfterBusy(repo *gitx.Repo) {
+	head, err := repo.Git("rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		a.warn("merge.after: reading HEAD: %v", err)
+		return
+	}
+	fmt.Fprintf(a.Stderr, "graft: merge.after: another merge is running the tasks; it picks up %s\n", gitx.Short(strings.TrimSpace(head)))
+}
+
+func (a *App) runMergeAfterLocked(ctx context.Context, repo *gitx.Repo, path string, lk *lock.Lock, hooks mergeAfterHooks) {
+	passes := 0
+	retryTask := ""
+	for {
+		if passes == 5 {
+			a.releaseMergeAfterLock(lk)
+			a.mergeAfterPassLimit(repo)
+			return
+		}
+		passes++
+		head, err := mergeAfterHead(repo)
+		if err != nil {
+			a.releaseMergeAfterLock(lk)
+			a.warn("merge.after: reading HEAD: %v", err)
+			return
+		}
+		cfg, err := mergeAfterConfig(repo, head)
+		if err != nil {
+			a.releaseMergeAfterLock(lk)
+			a.warn("merge.after: loading %s from %s: %v", config.FileName, gitx.Short(head), err)
+			return
+		}
+		restart := false
+		for _, name := range cfg.Merge.After {
+			retryTask = name
+			current, err := mergeAfterHead(repo)
+			if err != nil {
+				a.releaseMergeAfterLock(lk)
+				a.warn("merge.after: reading HEAD: %v", err)
+				return
+			}
+			if current != head {
+				restart = true
+				break
+			}
+			taskCtx, cancel := context.WithTimeout(ctx, cfg.Merge.Timeout)
+			r := a.runner(repo, cfg)
+			r.NoCache = true
+			r.LocalOnly = true
+			var taskStderr bytes.Buffer
+			r.Stderr = &taskStderr
+			err = r.Run(taskCtx, name, nil)
+			cancel()
+			if err != nil {
+				a.mergeAfterFailure(repo.Root, name, err, taskStderr.String())
+			}
+			if hooks.afterTask != nil {
+				hooks.afterTask()
+			}
+			current, err = mergeAfterHead(repo)
+			if err != nil {
+				a.releaseMergeAfterLock(lk)
+				a.warn("merge.after: reading HEAD: %v", err)
+				return
+			}
+			if current != head {
+				restart = true
+				break
+			}
+		}
+		if restart {
+			continue
+		}
+		a.releaseMergeAfterLock(lk)
+		if hooks.afterRelease != nil {
+			hooks.afterRelease()
+		}
+		current, err := mergeAfterHead(repo)
+		if err != nil {
+			a.warn("merge.after: reading HEAD: %v", err)
+			return
+		}
+		if current == head {
+			return
+		}
+		if passes == 5 {
+			a.mergeAfterPassLimit(repo)
+			return
+		}
+		lk, err = lock.TryAcquire(path, "graft merge.after")
+		if err != nil {
+			a.mergeAfterFailure(repo.Root, retryTask, err, "")
+			return
+		}
+		if lk == nil {
+			a.mergeAfterBusy(repo)
+			return
+		}
+	}
+}
+
+func mergeAfterHead(repo *gitx.Repo) (string, error) {
+	head, err := repo.Git("rev-parse", "--verify", "HEAD^{commit}")
+	return strings.TrimSpace(head), err
+}
+
+func (a *App) releaseMergeAfterLock(lk *lock.Lock) {
+	if err := lk.Release(); err != nil {
+		a.warn("merge.after: releasing lock: %v", err)
+	}
+}
+
+// mergeAfterPassLimit names the tasks of the tree as it is now: the HEAD kept
+// moving, so the tasks of an earlier pass may no longer exist.
+func (a *App) mergeAfterPassLimit(repo *gitx.Repo) {
+	head, err := mergeAfterHead(repo)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "graft: merge.after: stopped after 5 passes; reading HEAD: %v\n", err)
+		return
+	}
+	cfg, err := mergeAfterConfig(repo, head)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "graft: merge.after: stopped after 5 passes; loading %s from %s: %v\n", config.FileName, gitx.Short(head), err)
+		return
+	}
+	var reruns []string
+	for _, name := range cfg.Merge.After {
+		reruns = append(reruns, "graft -C "+shellQuote(repo.Root)+" "+shellQuote(name))
+	}
+	if len(reruns) == 0 {
+		fmt.Fprintf(a.Stderr, "graft: merge.after: stopped after 5 passes; %s has no tasks now\n", gitx.Short(head))
+		return
+	}
+	fmt.Fprintf(a.Stderr, "graft: merge.after: stopped after 5 passes; rerun: %s\n", strings.Join(reruns, " && "))
+}
+
+func (a *App) mergeAfterFailure(root, task string, err error, taskStderr string) {
+	message := strings.ReplaceAll(strings.ReplaceAll(err.Error(), "\r\n", "\n"), "\n", "; ")
+	fmt.Fprintf(a.Stderr, "graft: merge.after: %s failed: %s; rerun: graft -C %s %s\n", task, message, shellQuote(root), shellQuote(task))
+	trimmed := strings.TrimRight(taskStderr, "\r\n")
+	if trimmed == "" {
+		return
+	}
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) > 10 {
+		lines = lines[len(lines)-10:]
+	}
+	for _, line := range lines {
+		fmt.Fprintln(a.Stderr, line)
+	}
+}
+
+func (a *App) mergeLocked(ctx context.Context, repo *gitx.Repo, cfg *config.Config, o MergeOptions, moved *string) error {
 	// A replace ref would show the checks one tree and push another: the
 	// merge and its tasks see the objects the remote gets.
 	if err := os.Setenv("GIT_NO_REPLACE_OBJECTS", "1"); err != nil {
 		return fmt.Errorf("setting GIT_NO_REPLACE_OBJECTS: %w", err)
 	}
-	st := &mergeState{a: a, ctx: ctx, repo: repo, cfg: cfg, opts: o}
+	st := &mergeState{a: a, ctx: ctx, repo: repo, cfg: cfg, opts: o, moved: moved}
 	if err := st.validateRequest(); err != nil {
 		return err
 	}
@@ -1035,6 +1240,9 @@ func (s *mergeState) checkoutUnchanged() error {
 // advanceLocal updates the trunk only after the result has been published.
 func (s *mergeState) advanceLocal() error {
 	_, err := s.repo.GitEnv(markerEnv, "merge", "--ff-only", "--no-overwrite-ignore", s.R)
+	if err == nil && s.moved != nil {
+		*s.moved = s.R
+	}
 	return err
 }
 
