@@ -116,6 +116,7 @@ func TestCommitThenInstallTrackedTasks(t *testing.T) {
 	yaml := "schema: 1\nversion: {mode: none}\ngate: []\ngo_vet: {enabled: false, reason: synthetic projectA install fixture}\ngo_fmt: {enabled: false, reason: synthetic projectA install fixture}\ntasks:\n  projecta:\n    run:\n      - {install: bin/projecta, to: " + target + "}\n"
 	for path, contents := range map[string]string{
 		".graft.yaml": yaml,
+		".gitignore":  "bin/\n",
 		"go.mod":      "module projectA\n\ngo 1.23\n",
 		"main.go":     "package main\nfunc main() {}\n",
 	} {

@@ -469,3 +469,58 @@ while :; do sleep 0.05; done`)
 		t.Errorf("the reaper took %v after SIGTERM: it gave the orphans their grace", took)
 	}
 }
+
+// TestReapHoldsOnlyItsDescriptor: the descriptor HoldInReaper gives stays
+// with the reaper, and its lock lives while the reaper does; a descriptor the
+// caller passes the command (ExtraFiles) reaches it, as without the reaper.
+func TestReapHoldsOnlyItsDescriptor(t *testing.T) {
+	dir := t.TempDir()
+	open := func(name string) *os.File {
+		f, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = f.Close() })
+		return f
+	}
+	passed, held := open("passed"), open("held")
+	if err := unix.Flock(int(held.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "-c", `for f in /proc/$$/fd/*; do readlink "$f"; done >"$1/fds.tmp"
+env >"$1/env"; mv "$1/fds.tmp" "$1/fds"; echo $$ >"$1/pid"; exec sleep 30`, "sh", dir)
+	t.Setenv("PROJECTA_PROBE", "inherited")
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	cmd.ExtraFiles = []*os.File{passed}
+	Reap(cmd)
+	HoldInReaper(cmd, held)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := pidIn(t, filepath.Join(dir, "pid"))
+	stopAfter(t, pid)
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fds := waitFile(t, filepath.Join(dir, "fds"))
+	if !strings.Contains(fds, filepath.Join(dir, "passed")) {
+		t.Errorf("the descriptor passed in ExtraFiles does not reach the command; its descriptors:\n%s", fds)
+	}
+	if strings.Contains(fds, filepath.Join(dir, "held")) {
+		t.Errorf("the command gets the reaper's descriptor; its descriptors:\n%s", fds)
+	}
+	if env := waitFile(t, filepath.Join(dir, "env")); strings.Contains(env, reapHoldEnv) || !strings.Contains(env, "PROJECTA_PROBE=inherited") {
+		t.Errorf("the command gets %s or not graft's environment:\n%s", reapHoldEnv, env)
+	}
+	probe := open("held")
+	if err := unix.Flock(int(probe.Fd()), unix.LOCK_EX|unix.LOCK_NB); !errors.Is(err, unix.EWOULDBLOCK) {
+		t.Fatalf("lock while the reaper lives: %v, want it held", err)
+	}
+	if err := akitproc.SignalDescendant(pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	if err := unix.Flock(int(probe.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatalf("lock after the reaper ended: %v, want it free", err)
+	}
+}

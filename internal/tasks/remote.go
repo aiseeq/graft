@@ -178,7 +178,11 @@ func inheritedExecLocal() bool {
 const (
 	WhyInsideHeavy = "inside an admitted heavy task, which waits for the machine"
 	WhyNotBusy     = "this machine would not make it wait"
-	WhyGateSplit   = "in a gate split by step, each step placed for itself"
+	// The steps of a task moved to a clean clone of HEAD stay here: a
+	// Runner field, not a variable, so a graft a step starts (a pilot's
+	// gate) places its own tasks as it would without the clone.
+	WhyClone     = "it runs in a clean clone of HEAD, which the host does not have"
+	WhyGateSplit = "in a gate split by step, each step placed for itself"
 	// A busy gate stays here whole when none of its steps may go to the host,
 	// or each that may is cheaper here.
 	WhyGateNoStepForHost = "no step of the gate may go to the host"
@@ -370,6 +374,11 @@ func goFixDiffNoOutput(argv []string) bool {
 // the host: what it needs here, a test database, a report file, .env
 // values, the commit message file, or a host that does not answer.
 func (r *Runner) stayHere(t *config.Task, dir string, allowInheritedExecLocal bool) (string, error) {
+	// Before the environment: whatever GRAFT_HEAVY* came from outside, the
+	// host has no clone.
+	if r.snapshotHead != "" {
+		return WhyClone, nil
+	}
 	switch v := os.Getenv(HeavyEnv); v {
 	case "":
 	case "local":

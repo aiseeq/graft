@@ -141,7 +141,9 @@ func (a *App) runner(repo *gitx.Repo, cfg *config.Config) *tasks.Runner {
 		return a.serviceAction(ctx, services.New(repo.Root, cfg, r, a.Stdout), ServiceAction(action), name)
 	}
 	r.Version = func() (string, bool, error) {
-		v, err := describeVersion(repo, cfg)
+		// r.Repo: a task with an install step may run in a clean clone of
+		// HEAD, whose version has no -dirty.
+		v, err := describeVersion(r.Repo, cfg)
 		if errors.Is(err, errNoCommits) {
 			return "", false, nil
 		}

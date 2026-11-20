@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -38,7 +39,9 @@ func init() {
 // "$PPID" of such an orphan ends this command, not the user's session, and
 // the orphans still in the command's session end with it. Call it before
 // Start. A cmd that failed to resolve, or a path that is no executable
-// file, is left as it is: Start reports it as it would.
+// file, is left as it is: Start reports it as it would. A reapHoldEnv the
+// caller's environment has is dropped: only HoldInReaper names a descriptor
+// for the reaper.
 func Reap(cmd *exec.Cmd) {
 	if cmd.Err != nil || cmd.Process != nil {
 		return
@@ -52,8 +55,24 @@ func Reap(cmd *exec.Cmd) {
 	if len(args) == 0 {
 		args = []string{cmd.Path}
 	}
+	dropHoldEnv(cmd)
 	cmd.Args = append([]string{reapArg0, cmd.Path}, args...)
 	cmd.Path = "/proc/self/exe"
+}
+
+// dropHoldEnv removes reapHoldEnv from cmd's environment, its own or, when
+// it has none, graft's.
+func dropHoldEnv(cmd *exec.Cmd) {
+	env := cmd.Env
+	if env == nil {
+		if _, ok := os.LookupEnv(reapHoldEnv); !ok {
+			return
+		}
+		env = os.Environ()
+	}
+	cmd.Env = slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
+		return strings.HasPrefix(kv, reapHoldEnv+"=")
+	})
 }
 
 // startable is why cmd's path, a relative one from cmd's directory, names
@@ -133,6 +152,13 @@ func RunReaper(path string, argv []string) int {
 			signal.Notify(sigs, sig)
 		}
 	}
+	// The descriptor graft gave the reaper alone (HoldInReaper) stays its:
+	// the command and its daemons, which may outlive the reaper, do not get
+	// it. Every other inherited descriptor reaches the command.
+	if err := keepHeld(); err != nil {
+		fmt.Fprintf(os.Stderr, "graft: reaper: %v\n", err)
+		return ExitReaper
+	}
 	pid, err := syscall.ForkExec(path, argv, &syscall.ProcAttr{
 		Env:   os.Environ(),
 		Files: []uintptr{0, 1, 2},
@@ -191,6 +217,46 @@ func RunReaper(path string, argv []string) int {
 		akitproc.ExitWithSignal(r.status.Signal())
 	}
 	return r.status.ExitStatus()
+}
+
+// reapHoldEnv names, for the reaper only, the descriptor it holds and the
+// command does not get (HoldInReaper).
+const reapHoldEnv = "GRAFT_REAP_HOLD_FD"
+
+// HoldInReaper passes f to cmd's reaper (Reap) and to no process below it:
+// a lock f holds lives while the reaper does, however long what the command
+// started (a daemon) lives on. Call it after Reap; a cmd Reap left as it
+// was gets nothing.
+func HoldInReaper(cmd *exec.Cmd, f *os.File) {
+	if len(cmd.Args) == 0 || cmd.Args[0] != reapArg0 {
+		return
+	}
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+		dropHoldEnv(cmd)
+	}
+	cmd.ExtraFiles = append(cmd.ExtraFiles, f)
+	cmd.Env = append(cmd.Env, reapHoldEnv+"="+strconv.Itoa(2+len(cmd.ExtraFiles)))
+}
+
+// keepHeld marks the descriptor reapHoldEnv names close-on-exec and drops
+// the variable from the environment the command gets.
+func keepHeld() error {
+	v, ok := os.LookupEnv(reapHoldEnv)
+	if !ok {
+		return nil
+	}
+	if err := os.Unsetenv(reapHoldEnv); err != nil {
+		return fmt.Errorf("dropping %s: %w", reapHoldEnv, err)
+	}
+	fd, err := strconv.Atoi(v)
+	if err != nil || fd < 3 {
+		return fmt.Errorf("%s=%q: want a descriptor above 2", reapHoldEnv, v)
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
+		return fmt.Errorf("keeping descriptor %d from the command: %w", fd, err)
+	}
+	return nil
 }
 
 // reapedName is the reaper's name once its command ended and only its

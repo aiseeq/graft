@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -351,14 +352,24 @@ func TestInstallStep(t *testing.T) {
 		t.Errorf("a refused install changed %s", installed)
 	}
 
-	// Uncommitted changes in the build: refused, the installed one stays.
+	// Uncommitted changes: a prebuilt bin/tool is not in the clean clone of
+	// HEAD, so install-only refuses and the installed one stays; install
+	// builds HEAD there and installs it, without the change.
 	f.write("main.go", "package main\n\nfunc main() { println(\"three\") }\n")
-	out, code = f.graft("", "install")
-	if code == 0 || !strings.Contains(out, "uncommitted") {
+	f.mustGraft("build")
+	out, code = f.graft("", "install-only")
+	if code == 0 || !strings.Contains(out, "clean clone of HEAD "+newHead) {
 		t.Errorf("a build from uncommitted changes is installed: exit %d\n%s", code, out)
 	}
 	if !bytes.Equal(readBytes(t, installed), before) {
 		t.Errorf("a refused install changed %s", installed)
+	}
+	out = f.mustGraft("install")
+	if !strings.Contains(out, "building HEAD "+newHead+" in a clean clone") || !strings.Contains(out, "graft: install: tool "+newHead+" -> "+installed) {
+		t.Errorf("install did not build HEAD in a clean clone:\n%s", out)
+	}
+	if ran, err := exec.Command(installed).CombinedOutput(); err != nil || strings.TrimSpace(string(ran)) != "two" {
+		t.Errorf("the installed binary is not HEAD's: %v %q", err, ran)
 	}
 	f.git("checkout", "--", "main.go")
 
@@ -369,7 +380,8 @@ func TestInstallStep(t *testing.T) {
 }
 
 // A file without Go build info has no revision of its own: it installs
-// only from a clean work tree and is named by HEAD.
+// from a clean work tree and is named by HEAD; from a dirty one it is HEAD's
+// copy, taken from a clean clone of HEAD.
 func TestInstallStepNonGoFile(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "bin")
 	f := installRepo(t, dest)
@@ -379,9 +391,13 @@ func TestInstallStepNonGoFile(t *testing.T) {
 		t.Errorf("script install output:\n%s", out)
 	}
 	f.write("notes.txt", "draft\n")
-	out, code := f.graft("", "install-script")
-	if code == 0 || !strings.Contains(out, "clean") {
-		t.Errorf("a non-Go file installs from a dirty tree: exit %d\n%s", code, out)
+	f.write("scripts/run.sh", "#!/bin/sh\necho edited\n")
+	out = f.mustGraft("install-script")
+	if !strings.Contains(out, "building HEAD "+head+" in a clean clone") {
+		t.Errorf("a non-Go file from a dirty tree did not come from a clean clone:\n%s", out)
+	}
+	if got := string(readBytes(t, filepath.Join(dest, "run.sh"))); got != "#!/bin/sh\necho run\n" {
+		t.Errorf("installed run.sh is not HEAD's: %q", got)
 	}
 }
 
@@ -469,5 +485,34 @@ func TestInstallStepRefusesLinkedWorktreeGoBinary(t *testing.T) {
 	f.mustGraft("install")
 	if _, err := os.Stat(filepath.Join(dest, "tool")); err != nil {
 		t.Errorf("the main tree must still install: %v", err)
+	}
+}
+
+// From a dirty tree the build runs in a clean clone of HEAD: its
+// GRAFT_VERSION is HEAD's tag, without -dirty.
+func TestInstallFromDirtyTreeStampsHeadVersion(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "bin")
+	f := tasksRepo(t, `tasks:
+  build:
+    run: [[go, build, -ldflags, '-X main.version=${GRAFT_VERSION}', -o, bin/tool, .]]
+  install:
+    deps: [build]
+    run: [{install: bin/tool, to: `+yamlQuote(dest)+`}]
+`, map[string]string{
+		".gitignore":      "bin/\n",
+		"go.mod":          "module example.com/tool\n\ngo 1.22\n",
+		"main.go":         "package main\n\nvar version string\n\nfunc main() { println(version) }\n",
+		"docs/tasks/x.md": "# PROJ-123\n",
+	})
+	f.git("add", "-A")
+	f.git("commit", "-q", "-m", "tool")
+	f.git("tag", "-a", "v1.0.0", "-m", "v1.0.0")
+	f.write("docs/tasks/x.md", "# PROJ-123\n- note\n")
+	out := f.mustGraft("install")
+	if !strings.Contains(out, "in a clean clone") {
+		t.Errorf("install did not build in a clean clone:\n%s", out)
+	}
+	if ran, err := exec.Command(filepath.Join(dest, "tool")).CombinedOutput(); err != nil || strings.TrimSpace(string(ran)) != "v1.0.0" {
+		t.Errorf("the installed binary's version is not HEAD's: %v %q", err, ran)
 	}
 }

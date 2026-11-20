@@ -197,6 +197,18 @@ type Runner struct {
 	// fails; nested failed frames share that snapshot.
 	failureHistory       []stats.Record
 	failureHistoryLoaded bool
+	// snapshotHead is the commit whose clean clone Root is while a task
+	// with an install step runs there (enterInstallSnapshot), "" otherwise.
+	snapshotHead string
+	// snapshotOwner is the clone's locked owner file, passed to every step
+	// so that the lock outlives graft while a step lives (cloneOwnerFile).
+	snapshotOwner *os.File
+	// snapshotTree is the work tree a clean clone stands in for, the
+	// project of the stats its tasks write.
+	snapshotTree string
+	// inGate is set while the gate runs: the changes it guards are the
+	// tree's, so its tasks never move to a clone of HEAD.
+	inGate bool
 }
 
 type gateStepCost struct {
@@ -1477,6 +1489,9 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 	if err := r.preflightGate(steps, advisory); err != nil {
 		return err
 	}
+	previousInGate := r.inGate
+	r.inGate = true
+	defer func() { r.inGate = previousInGate }()
 	f := r.begin(stats.GateTask)
 	previousHistory := r.gateHistory
 	r.gateHistory = &gateHistory{}
@@ -2018,12 +2033,7 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 	if r.done[name] {
 		return nil
 	}
-	t := r.Config.Tasks[name]
-	if name == r.execHeavyTask {
-		heavyTask := *t
-		heavyTask.Heavy = true
-		t = &heavyTask
-	}
+	t := r.task(name)
 	var key string
 	if t.Cache != nil && !r.NoCache {
 		k, hit, cerr := r.cached(ctx, name, args)
@@ -2043,6 +2053,12 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 			r.keep(ctx, key, name, args, use)
 		}
 	}()
+	leaveSnapshot, err := r.enterInstallSnapshot(name, t)
+	if err != nil {
+		return err
+	}
+	defer func() { err = leaveSnapshot(err) }()
+	t = r.task(name) // the clone's, once the task moved there
 	// Before the deps too: one of them may install into the group's paths.
 	if err := r.unlinkWorktreeLinks(name); err != nil {
 		return err
@@ -2075,6 +2091,17 @@ func (r *Runner) run(ctx context.Context, name string, args []string) (err error
 	}
 	r.done[name] = true
 	return errors.Join(err, release())
+}
+
+// task is the named task as it runs: heavy when graft exec --heavy asked so.
+func (r *Runner) task(name string) *config.Task {
+	t := r.Config.Tasks[name]
+	if name == r.execHeavyTask {
+		heavyTask := *t
+		heavyTask.Heavy = true
+		t = &heavyTask
+	}
+	return t
 }
 
 // Confirm asks once per runner, sharing confirmation between tasks and deploy.
@@ -2441,7 +2468,9 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	}
 	cmd.Dir = r.taskDir(t)
 	cmd.Env = env
-	r.stopLocalCommand(cmd, !r.frames[len(r.frames)-1].remote)
+	local := !r.frames[len(r.frames)-1].remote
+	r.stopLocalCommand(cmd, local)
+	r.holdSnapshot(cmd, local)
 	if r.frames[len(r.frames)-1].remote {
 		cmd = r.remoteCmd(ctx, cmd, t, vars, threads)
 	}
@@ -2764,7 +2793,7 @@ func (r *Runner) recordTests(runs []stats.PackageRun, tree, runner string, use s
 	}
 	for i := range runs {
 		run := &runs[i]
-		run.Project, run.Task, run.Top = r.Root, r.frames[len(r.frames)-1].task, r.top(r.frames[0].task)
+		run.Project, run.Task, run.Top = r.project(), r.frames[len(r.frames)-1].task, r.top(r.frames[0].task)
 		run.Tree, run.Runner = tree, runner
 		run.LoadStart, run.LoadMax = use.Loads()
 		r.Stats.WriteTests(*run)
@@ -3500,7 +3529,7 @@ func (r *Runner) end(f *frame, err error) stats.Usage {
 	}
 	if err != nil {
 		rec.Time = time.Now()
-		rec.Project = r.Root
+		rec.Project = r.project()
 		// A failure outside the processes (a missing key, a lock timeout)
 		// has no exit status of its own.
 		rec.Exit = f.exit
@@ -3583,7 +3612,7 @@ func (r *Runner) write(rec stats.Record, use stats.Usage, outermost string) {
 		return
 	}
 	rec.Time = time.Now()
-	rec.Project = r.Root
+	rec.Project = r.project()
 	rec.Top = r.top(outermost)
 	use.Fill(&rec)
 	r.Stats.Write(rec)
@@ -3711,17 +3740,23 @@ func (r *Runner) env(t *config.Task, vars map[string]string) (env, own []string,
 		}
 	}
 	env = gitx.Without(env, []string{lintcache.Env})
-	if r.lintCache == "" && r.lintCacheErr == nil {
-		r.lintCache, r.lintCacheErr = lintcache.Dir(r.Root)
-		if r.lintCacheErr != nil {
-			// Once: a failover, which tasks without golangci-lint need not stop on.
-			fmt.Fprintf(r.Stderr, "graft: no golangci-lint cache of this work tree, steps share golangci-lint's own: %v\n", r.lintCacheErr)
-		}
-	}
+	r.lookLintCache()
 	if r.lintCacheErr != nil {
 		return env, own, nil
 	}
 	return append(env, lintcache.Env+"="+r.lintCache), own, nil
+}
+
+// lookLintCache finds the work tree's golangci-lint cache, once.
+func (r *Runner) lookLintCache() {
+	if r.lintCache != "" || r.lintCacheErr != nil {
+		return
+	}
+	r.lintCache, r.lintCacheErr = lintcache.Dir(r.Root)
+	if r.lintCacheErr != nil {
+		// Once: a failover, which tasks without golangci-lint need not stop on.
+		fmt.Fprintf(r.Stderr, "graft: no golangci-lint cache of this work tree, steps share golangci-lint's own: %v\n", r.lintCacheErr)
+	}
 }
 
 const goFlagsEnv = "GOFLAGS"

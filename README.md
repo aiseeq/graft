@@ -1028,7 +1028,42 @@ dotenv_sets:                   # key lists several tasks and services share
   file without it needs a clean work tree. A Go binary without
   `vcs.revision` built in a linked worktree is refused because `go build`
   does not embed VCS metadata there; install it from the main worktree after
-  merging. The copy is atomic and
+  merging.
+
+  When the main worktree has uncommitted changes, untracked files among
+  them, a task with an install step runs, its deps included, in a clean
+  local clone of HEAD under the temporary directory (its objects hard
+  links, or copies on another file system: some 35 MB and a tenth of a
+  second for graft itself), removed when the task ends or fails: graft
+  prints `graft: <task>: the tree has uncommitted changes; building HEAD
+  <sha> in a clean clone (what its steps write there goes with it)`, and
+  what it installs is HEAD's, whatever is written to the tree before or
+  during the build (a ticket journal, an edit). A clone, not a linked
+  worktree: `go build` stamps the revision only where `.git` is a
+  directory, so the binary passes the check above as built from HEAD. Its
+  tasks are the clone's `.graft.yaml`; the steps run there, `sh` steps with
+  the clone as `PWD`, and what they write relative to it is gone with the
+  clone. Files git ignores (generated ones, `.env`, `worktree.copy`) are not
+  in the clone: a build that needs them fails naming the clone of HEAD;
+  commit what it needs or clean the tree. The deps run again in the clone,
+  without the task cache and only on this machine, whatever `GRAFT_HEAVY`
+  says (the `remote_heavy` host has no clone; a graft a step starts, a
+  pilot's gate, places its own tasks as it would without the clone); the
+  task's
+  `dotenv` keys still come from the tree's `.env`, and `GRAFT_VERSION` is
+  HEAD's, without `-dirty`. Where a plain clone would not build what HEAD
+  builds, a line says why and the task runs in the tree, whose binary is
+  refused as uncommitted: a `.graft.yaml` with uncommitted changes,
+  submodules or LFS files at HEAD, a shallow repository, a sparse checkout.
+  A graft killed with its clone (SIGKILL, or SIGTERM in `graft deploy`,
+  which does not catch it) leaves it behind; the clone's lock file is held
+  by graft and by the reaper of each step (an inherited descriptor the
+  command and its daemons do not get), and the next clone removes it once
+  none of them lives. A clean tree, a linked
+  worktree and the gate,
+  which guards the changes of the tree, run in place as before.
+
+  The copy is atomic and
   executable, a running program keeps its old file, an identical file is
   left alone (a symlink there, say to the build output, is replaced with a
   file), and each file prints `graft: install: <name> <revision> ->
