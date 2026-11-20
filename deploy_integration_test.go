@@ -29,13 +29,16 @@ import (
 // project PROJ, fixVersions the version ids each item has; failEdit lists keys
 // whose edit Jira refuses.
 type fakeJira struct {
-	mu                   sync.Mutex
-	comments             map[string][]string
-	moved                []string
-	statuses             map[string]string
-	assignees            map[string]string
-	handedOver           []string
-	failAll              bool
+	mu         sync.Mutex
+	comments   map[string][]string
+	moved      []string
+	statuses   map[string]string
+	assignees  map[string]string
+	handedOver []string
+	failAll    bool
+	// noTransitionCategory leaves the category out of the statuses the
+	// transitions lead to.
+	noTransitionCategory bool
 	failMyself           int
 	failIssues           map[string]int
 	issueReads           map[string]int
@@ -313,7 +316,14 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fields["subtasks"] = subtasks
 		transitions := []any{}
 		for _, id := range slices.Sorted(maps.Keys(fakeTransitions)) {
-			transitions = append(transitions, map[string]any{"id": id, "to": map[string]string{"name": fakeTransitions[id]}})
+			to := map[string]any{"name": fakeTransitions[id], "statusCategory": map[string]string{"key": "indeterminate"}}
+			if fakeTransitions[id] == "Done" {
+				to["statusCategory"] = map[string]string{"key": "done"}
+			}
+			if j.noTransitionCategory {
+				delete(to, "statusCategory")
+			}
+			transitions = append(transitions, map[string]any{"id": id, "to": to})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"fields": fields, "transitions": transitions})
 	case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "transitions":

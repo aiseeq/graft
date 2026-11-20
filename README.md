@@ -2491,14 +2491,27 @@ to them now or once), not in `skip_keys` (a subtask of an item there is
 judged by its own key):
 
 - an item in the `from` of the target's transition to `done`, all of whose
-  commits the target runs, moves to `done`; with `approved_release`, only
+  commits the target runs, moves to `done` by that transition, with its
+  `assign` and `require_comment` as a deploy: one without the comment stays
+  held, listed, until `graft deploy handover`, where the sweep once moved
+  it without either; with `approved_release`, only
   when it passes as a commit of it would (`statuses`, a version every
   approver approved), otherwise it is listed with the reason;
 - a parent all of whose subtasks are done, whose work and its subtasks'
-  the target runs in full, moves to `done`; with `approved_release.prefix`,
-  only in an approved version. A parent not started, or in a status no
-  transition or `approved_release` names (Paused), is listed instead: it
-  was put aside by hand;
+  the target runs in full, moves by the target's transition from its
+  status, with its `assign` and `require_comment`, as a deploy moves an
+  item, or else to `done` where Jira's move there is of the done category
+  (a move whose category Jira does not give is listed, not made):
+  `done: Testing` on a target before the last moves a parent whose code is
+  all in its subtasks to Testing. With `approved_release.prefix`, only in
+  an approved version. Work the sweep cannot place keeps the parent with a
+  line: a subtask without a commit of the window, work a revert of the
+  window took out, work older than `days` or only on a local branch; a
+  withheld commit is not on the target whatever its content. A held parent
+  is judged so again before any move, a deploy of its own commit too; one
+  not held moves at a deploy of its own commit as any delivered item does.
+  A parent not started, or in a status no transition or `approved_release`
+  names (Paused), is listed instead: it was put aside by hand;
 - listed by hand, nothing moved: a done item with a commit outside the
   trunk or not on the target yet; an item not started (To Do), or in
   `skip_statuses` (put aside by hand: Blocked, On Hold), with commits in
@@ -2514,7 +2527,15 @@ runs with `sudo -n`, the record below standing in when that needs a
 password; the daily sweep reads no server
 and takes the commit the last deploy or `graft deploy sweep` from this
 repository recorded (in the user cache), so it waits for one of them. A
-failed sweep is a warning: the deploy and the commit go on.
+failed sweep is a warning: the deploy and the commit go on. The release
+notes of a deploy with its sweep, `graft deploy handover` and a sweep that
+moves take turns on a target: each holds the target's lock of its moves
+(within `lock.timeout`) from reading the commit the target runs, the
+statuses and the held items to recording what stays held, so none moves
+by what a deploy it waited for changed, moves an item another moved or
+drops what another held. Only such a run records the commit for the daily
+sweep; a daily sweep that cannot take the lock in time says so and stays
+due for the next commit.
 
 ### Release windows and hotfixes
 

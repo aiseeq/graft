@@ -140,10 +140,13 @@ func (i Issue) FixVersionIDs(ids []string) []string {
 	return matching
 }
 
-// Transition is a move available from the item's current status.
+// Transition is a move available from the item's current status; Category
+// is the key of the category of the status it leads to ("done" for Done),
+// "" when Jira does not say.
 type Transition struct {
-	ID string
-	To string
+	ID       string
+	To       string
+	Category string
 }
 
 // Issue reads an item's status, assignee, fix versions and available
@@ -183,7 +186,10 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 		Transitions []struct {
 			ID string `json:"id"`
 			To struct {
-				Name string `json:"name"`
+				Name     string `json:"name"`
+				Category struct {
+					Key string `json:"key"`
+				} `json:"statusCategory"`
 			} `json:"to"`
 		} `json:"transitions"`
 	}
@@ -208,7 +214,7 @@ func (c *Client) Issue(ctx context.Context, key string) (Issue, error) {
 		issue.AssigneeID, issue.AssigneeName = a.AccountID, a.DisplayName
 	}
 	for _, t := range raw.Transitions {
-		issue.Transitions = append(issue.Transitions, Transition{ID: t.ID, To: t.To.Name})
+		issue.Transitions = append(issue.Transitions, Transition{ID: t.ID, To: t.To.Name, Category: t.To.Category.Key})
 	}
 	if raw.Fields.IssueType.Subtask && raw.Fields.Parent != nil {
 		issue.Parent = raw.Fields.Parent.Key

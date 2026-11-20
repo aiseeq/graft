@@ -138,6 +138,11 @@ type deployRun struct {
 	freezePreflightDeps            []string
 	// glint holds the moves for the glint findings of the deployed commit.
 	glint *glintCheck
+	// sweepWindow is the sweep's reading of the window, once a run.
+	sweepWindow *sweepWindow
+	// movesLocked is set while the run holds the target's lock of its
+	// moves (withMoves).
+	movesLocked bool
 }
 
 // readSHA reads a commit record of an environment, without a sudo prompt
@@ -846,8 +851,16 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 	if r.target.ReleaseNotes == nil {
 		return withheldErr
 	}
-	unset := a.releaseNotes(ctx, r)
-	a.deploySweep(ctx, r)
+	// The release notes and the sweep move under the target's lock of its
+	// moves, taken last.
+	var unset notesUnset
+	if err := a.withMoves(ctx, r, func() error {
+		unset = a.releaseNotes(ctx, r)
+		a.deploySweep(ctx, r)
+		return nil
+	}); err != nil {
+		return errors.Join(withheldErr, fmt.Errorf("release notes skipped: %w", err))
+	}
 	var missing []string
 	if len(unset.fixVersion) > 0 {
 		missing = append(missing, "the fix version is not set on "+strings.Join(unset.fixVersion, ", "))
@@ -1016,8 +1029,14 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 	}
 	mover := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, approved: r.target.ApprovedRelease, me: me, target: r.name, glint: r.glint, standing: notes.SkipKeys}
 	sub := &subtaskRun{mover: mover, notes: notes, me: me, reached: map[string]string{}, run: r,
-		targetHead: func(context.Context) (string, error) { return r.head, nil }}
-	items := &noteItems{app: a, run: r, client: client, me: me, text: text, fix: fix, mover: mover, sub: sub}
+		targetHead: func(context.Context) (string, error) { return r.head, nil },
+		parents:    a.heldParents(r, func(context.Context) (string, []string, error) { return r.head, r.withheld, nil })}
+	items := &noteItems{app: a, run: r, client: client, me: me, text: text, fix: fix, mover: mover, sub: sub, heldParents: map[string]bool{}}
+	for _, h := range held {
+		if h.parent {
+			items.heldParents[h.key] = true
+		}
+	}
 	for _, key := range keys {
 		items.post(ctx, key)
 	}
@@ -1046,6 +1065,9 @@ type noteItems struct {
 	// before stays held, moved when it may be.
 	unsure           []string
 	fallbackReported map[string]bool
+	// heldParents are the parents the sweep held for their handover: their
+	// move waits for the handover's retry, which judges their work again.
+	heldParents map[string]bool
 }
 
 // notifyFallback reports once per task that Jira refused notifyUsers=false.
@@ -1117,6 +1139,12 @@ func (n *noteItems) post(ctx context.Context, key string) {
 		return
 	}
 	n.fix.add(ctx, issue, quietReason != "", func() { n.notifyFallback(key) })
+	if n.heldParents[key] {
+		// Its own commit is not all its work: the retry of the held
+		// items judges it as the sweep does.
+		n.unsure = append(n.unsure, key)
+		return
+	}
 	if posted || quietReason != "" {
 		n.sub.reached[issue.Key] = n.mover.delivered(ctx, issue)
 	}
@@ -1374,6 +1402,10 @@ type subtaskRun struct {
 	commits    map[string][]loggedCommit
 	landed     map[string]bool
 	loaded     bool
+	// parents judges a parent the sweep held as the sweep does, nil
+	// without release_notes.sweep: the transition it goes on by, nil for
+	// none, or the line why it stays.
+	parents func(context.Context, jira.Issue) (*config.NoteTransition, string, error)
 }
 
 // follow moves the subtasks of the delivered items that are in a status a

@@ -18,6 +18,7 @@ import (
 func TestSweepLeavesDormantItemAndMovesOrdinaryItem(t *testing.T) {
 	var moved []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
 		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/transitions") {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 			return
@@ -35,7 +36,7 @@ func TestSweepLeavesDormantItemAndMovesOrdinaryItem(t *testing.T) {
 	s := &sweepRun{app: app, r: run, conf: &config.Sweep{Days: 30, StaleDays: 3, Done: "Done"}, notes: &config.JiraNotes{}, client: client, me: "owner", now: time.Now(), apply: true,
 		issues: map[string]jira.Issue{
 			"PROJ-123": {Key: "PROJ-123", Status: "Testing", AssigneeID: "owner"},
-			"PROJ-124": {Key: "PROJ-124", Status: "Ready for release", AssigneeID: "owner", Transitions: []jira.Transition{{ID: "1", To: "Done"}}},
+			"PROJ-124": {Key: "PROJ-124", Status: "Ready for release", AssigneeID: "owner", Transitions: []jira.Transition{{ID: "1", To: "Done", Category: "done"}}},
 		}, judged: map[string]bool{}, glint: &glintCheck{},
 	}
 	now := time.Now()
@@ -135,9 +136,8 @@ func TestDormantParentSweepAndDormantChildKeepParentsOpen(t *testing.T) {
 			"PROJ-126": {Key: "PROJ-126", Status: "Done", Done: true, AssigneeID: "owner", Parent: "PROJ-125"},
 		}, judged: map[string]bool{}, glint: &glintCheck{},
 	}
-	allOn := func(string) bool { return true }
-	s.finishParent(context.Background(), s.issues["PROJ-123"], allOn)
-	s.finishParent(context.Background(), s.issues["PROJ-125"], allOn)
+	s.finishParent(context.Background(), s.issues["PROJ-123"])
+	s.finishParent(context.Background(), s.issues["PROJ-125"])
 	if len(moved) != 0 {
 		t.Fatalf("a parent with dormant work moved: %v", moved)
 	}

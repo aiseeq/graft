@@ -13,14 +13,22 @@ import (
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/fsx"
 	"github.com/aiseeq/graft/v2/internal/jira"
+	"github.com/aiseeq/graft/v2/internal/lock"
 )
 
 // heldItem is an item a deploy left where it was for want of the comment
 // require_comment asks for, or for the glint findings; after is the parent it
-// followed, "" for an item delivered by its own key.
+// followed, "" for an item delivered by its own key. parent marks a parent
+// the sweep moved for its subtasks' work: its handover judges that work
+// again first.
 type heldItem struct {
 	key, after string
+	parent     bool
 }
+
+// heldParentMark marks a parent the sweep held, in place of the parent it
+// followed: no key reads so.
+const heldParentMark = "+subtasks"
 
 // uninstructed says why the item may not be handed over yet, "" when a
 // comment of the token owner written since the item came into the
@@ -84,12 +92,48 @@ func (a *App) retryHeldItem(ctx context.Context, sub *subtaskRun, h heldItem, do
 	if m.leaveDormant(issue) {
 		return nil
 	}
+	if h.parent {
+		return a.retryHeldParent(ctx, sub, h, issue, named[h.key])
+	}
 	t := m.conf.Moving(issue.Status)
 	if t == nil || issue.Done {
 		a.printf("%s is held no more: it is %s", h.key, issue.Status)
 		return nil
 	}
 	return a.moveHeldItem(ctx, sub, h, issue, t, named[h.key])
+}
+
+// retryHeldParent moves a parent the sweep held only when the sweep would
+// move it now: its subtasks or their work may have changed since. One it
+// would not stays held, saying why.
+func (a *App) retryHeldParent(ctx context.Context, sub *subtaskRun, h heldItem, issue jira.Issue, named bool) []heldItem {
+	m := sub.mover
+	if issue.Done {
+		a.printf("%s is held no more: it is %s", h.key, issue.Status)
+		return nil
+	}
+	if sub.parents == nil {
+		a.printf("%s is held no more: only release_notes.sweep moves it for its subtasks' work, and %s has none", h.key, m.target)
+		return nil
+	}
+	t, line, err := sub.parents(ctx, issue)
+	switch {
+	case err != nil:
+		a.warn("%s is still held: its work is not judged: %v", h.key, err)
+		return []heldItem{h}
+	case line != "":
+		a.printf("%s is still held: %s", h.key, line)
+		return []heldItem{h}
+	case t == nil:
+		a.printf("%s is held no more: it is %s", h.key, issue.Status)
+		return nil
+	}
+	n := len(m.held)
+	unread := a.moveHeldItem(ctx, sub, h, issue, t, named)
+	for i := n; i < len(m.held); i++ {
+		m.held[i].parent = m.held[i].key == h.key
+	}
+	return unread
 }
 
 func (a *App) moveHeldItem(ctx context.Context, sub *subtaskRun, h heldItem, issue jira.Issue, t *config.NoteTransition, named bool) []heldItem {
@@ -141,6 +185,13 @@ func (a *App) DeployHandover(ctx context.Context, target, ticket string, keys ..
 	if r.glint, err = newGlintCheck(r, ticket, deployedHead); err != nil {
 		return err
 	}
+	return a.withMoves(ctx, r, func() error { return a.handoverMoves(ctx, r, target, keys, deployedHead) })
+}
+
+// handoverMoves moves the held items of the target, and those keys names,
+// under the target's lock of its moves.
+func (a *App) handoverMoves(ctx context.Context, r *deployRun, target string, keys []string, deployedHead func(context.Context) (string, error)) error {
+	n := r.target.ReleaseNotes
 	held, err := readHeld(r)
 	if err != nil {
 		return err
@@ -164,7 +215,8 @@ func (a *App) DeployHandover(ctx context.Context, target, ticket string, keys ..
 		return err
 	}
 	mover := &noteMover{app: a, client: client, conf: n, approved: r.target.ApprovedRelease, me: me, target: r.name, glint: r.glint, standing: r.cfg.ReleaseNotes.Jira.SkipKeys}
-	sub := &subtaskRun{mover: mover, notes: r.cfg.ReleaseNotes.Jira, me: me, reached: map[string]string{}, run: r, targetHead: deployedHead}
+	sub := &subtaskRun{mover: mover, notes: r.cfg.ReleaseNotes.Jira, me: me, reached: map[string]string{}, run: r, targetHead: deployedHead,
+		parents: a.heldParents(r, func(ctx context.Context) (string, []string, error) { return a.sweepHead(ctx, r) })}
 	named := make(map[string]bool, len(keys))
 	for _, key := range keys {
 		named[key] = true
@@ -312,13 +364,40 @@ func readHeld(r *deployRun) ([]heldItem, error) {
 	for line := range strings.Lines(string(data)) {
 		if f := strings.Fields(line); len(f) > 0 {
 			h := heldItem{key: f[0]}
-			if len(f) > 1 {
+			switch {
+			case len(f) > 1 && f[1] == heldParentMark:
+				h.parent = true
+			case len(f) > 1:
 				h.after = f[1]
 			}
 			held = append(held, h)
 		}
 	}
 	return held, nil
+}
+
+// withMoves runs fn holding the target's lock of its moves: the release
+// notes of a deploy with its sweep, a handover and a sweep that moves read
+// the statuses and the held items, move and record what stays held in turn,
+// so none moves an item another moved meanwhile or drops what another held.
+// A deploy takes it last, under its own locks; its sweep, run under it,
+// does not take it again.
+func (a *App) withMoves(ctx context.Context, r *deployRun, fn func() error) error {
+	if r.movesLocked {
+		return fn()
+	}
+	path := filepath.Join(r.repo.CommonDir, "graft-locks", "moves-"+r.name+".lock")
+	lk, err := lock.Acquire(ctx, path, r.cfg.Lock.Timeout, "graft moves "+r.name, a.Stderr)
+	if err != nil {
+		return fmt.Errorf("the moves of %s: %w", r.name, err)
+	}
+	r.movesLocked = true
+	err = fn()
+	r.movesLocked = false
+	if releaseErr := lk.Release(); releaseErr != nil {
+		err = errors.Join(err, fmt.Errorf("releasing the lock of the moves of %s: %w", r.name, releaseErr))
+	}
+	return err
 }
 
 // writeHeld records the items held on the target, a line each: the key and
@@ -336,7 +415,11 @@ func writeHeld(r *deployRun, held []heldItem) error {
 	}
 	var b strings.Builder
 	for _, h := range held {
-		b.WriteString(strings.TrimSpace(h.key + " " + h.after))
+		after := h.after
+		if h.parent {
+			after = heldParentMark
+		}
+		b.WriteString(strings.TrimSpace(h.key + " " + after))
 		b.WriteString("\n")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
