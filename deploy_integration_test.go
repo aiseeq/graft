@@ -2441,12 +2441,45 @@ func TestDeploySweep(t *testing.T) {
 		t.Errorf("moved = %v\n%s", moved, out)
 	}
 
-	// A commit sweeps by the commit the last deploy recorded, once a day.
+	// The lists-only mode runs at most once per day.
 	d.write("i.txt", "x\n")
-	if out := d.mustGraft("commit", "-m", "feat: PROJ-16 still later"); strings.Contains(out, "sweep swept") {
-		t.Errorf("swept again within a day of the deploy:\n%s", out)
+	if out := d.mustGraft("commit", "-m", "feat: PROJ-16 still later"); strings.Contains(out, "sweep swept:") {
+		t.Errorf("lists-only sweep repeated within a day:\n%s", out)
 	}
+
+	// Enabling apply after a lists-only pass runs immediately.
+	d.write(".graft.yaml", strings.Replace(d.read(".graft.yaml"), "sweep: {}", "sweep: {apply: true}", 1))
+	d.write("j.txt", "x\n")
+	if out := d.mustGraft("commit", "-m", "feat: PROJ-16 apply enabled .graft.yaml"); !strings.Contains(out, "sweep swept:") {
+		t.Errorf("the first daily sweep after enabling apply did not run immediately:\n%s", out)
+	}
+
+	// Both directions of a mode change bypass the day's interval.
+	d.write(".graft.yaml", strings.Replace(d.read(".graft.yaml"), "sweep: {apply: true}", "sweep: {}", 1))
+	d.write("k.txt", "x\n")
+	if out := d.mustGraft("commit", "-m", "feat: PROJ-16 apply disabled .graft.yaml"); !strings.Contains(out, "sweep swept:") {
+		t.Errorf("turning apply off did not run a sweep immediately:\n%s", out)
+	}
+	// A deploy without apply after an apply deploy must replace the true stamp
+	// with false; otherwise the next apply sweep can be skipped for a day.
 	stamps, err := filepath.Glob(filepath.Join(cache, "graft", "sweep", "*"))
+	if err != nil || len(stamps) != 1 {
+		t.Fatalf("stamps = %v, %v", stamps, err)
+	}
+	if err := os.WriteFile(stamps[0], []byte("true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.mustGraft("deploy", "swept")
+	d.write(".graft.yaml", strings.Replace(d.read(".graft.yaml"), "sweep: {}", "sweep: {apply: true}", 1))
+	d.write("o.txt", "x\n")
+	if out := d.mustGraft("commit", "-m", "feat: PROJ-16 apply after deploy .graft.yaml"); !strings.Contains(out, "sweep swept:") {
+		t.Errorf("apply sweep was skipped after a deploy without apply:\n%s", out)
+	}
+	d.write("l.txt", "x\n")
+	if out := d.mustGraft("commit", "-m", "feat: PROJ-16 still apply enabled"); strings.Contains(out, "sweep swept:") {
+		t.Errorf("apply sweep repeated within a day after re-enabling:\n%s", out)
+	}
+	stamps, err = filepath.Glob(filepath.Join(cache, "graft", "sweep", "*"))
 	if err != nil || len(stamps) != 1 {
 		t.Fatalf("stamps = %v, %v", stamps, err)
 	}
@@ -2454,7 +2487,7 @@ func TestDeploySweep(t *testing.T) {
 	if err := os.Chtimes(stamps[0], day, day); err != nil {
 		t.Fatal(err)
 	}
-	d.write("j.txt", "x\n")
+	d.write("m.txt", "x\n")
 	if out := d.mustGraft("commit", "-m", "feat: PROJ-16 a day on"); !strings.Contains(out, "PROJ-16 is Done, but "+d.git("rev-parse", "--short=12", "HEAD")+" is not on swept yet") {
 		t.Errorf("no daily sweep:\n%s", out)
 	}

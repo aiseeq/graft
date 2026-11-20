@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aiseeq/graft/v2/internal/atomicfile"
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/jira"
@@ -99,7 +100,7 @@ func (a *App) deploySweep(ctx context.Context, r *deployRun) {
 	}
 	if stamp, err := sweepPath(r.repo, "sweep", r.name); err != nil {
 		a.warn("sweep %s: %v", r.name, err)
-	} else if err := touch(stamp); err != nil {
+	} else if err := writeSweepStamp(stamp, conf.Apply); err != nil {
 		a.warn("sweep %s: %v", r.name, err)
 	}
 }
@@ -132,10 +133,9 @@ func (a *App) dailySweepTarget(ctx context.Context, r *deployRun) {
 		a.warn("sweep %s: %v", r.name, err)
 		return
 	}
-	if fi, err := os.Stat(stamp); err == nil && time.Since(fi.ModTime()) < sweepEvery {
-		return
-	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		a.warn("sweep %s: %v", r.name, err)
+	if fresh, err := sweepStampFresh(stamp, r.target.ReleaseNotes.Sweep.Apply); err != nil {
+		a.warn("sweep %s: %v; sweeping anyway", r.name, err)
+	} else if fresh {
 		return
 	}
 	if head, _, err := readSweepRecord(r.repo, r.name); err != nil {
@@ -160,9 +160,39 @@ func (a *App) dailySweepTarget(ctx context.Context, r *deployRun) {
 		a.warn("sweep %s: %v; the daily sweep is not done, the next commit tries it again", r.name, err)
 		return
 	}
-	if err := touch(stamp); err != nil {
+	if err := writeSweepStamp(stamp, r.target.ReleaseNotes.Sweep.Apply); err != nil {
 		a.warn("sweep %s: %v", r.name, err)
 	}
+}
+
+// sweepStampFresh tells whether the daily sweep in this apply mode ran less
+// than a day ago. A stamp of the other mode, an old format or a stamp that
+// cannot be read is not fresh: the sweep runs and writes it anew.
+func sweepStampFresh(path string, apply bool) (bool, error) {
+	fi, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading sweep stamp: %w", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("reading sweep stamp: %w", err)
+	}
+	mode, err := strconv.ParseBool(strings.TrimSpace(string(data)))
+	return err == nil && mode == apply && time.Since(fi.ModTime()) < sweepEvery, nil
+}
+
+func writeSweepStamp(path string, apply bool) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating sweep stamp directory: %w", err)
+	}
+	if err := atomicfile.Write(path, []byte(strconv.FormatBool(apply)+"\n"), 0o644); err != nil {
+		return fmt.Errorf("writing sweep stamp: %w", err)
+	}
+	now := time.Now()
+	return os.Chtimes(path, now, now)
 }
 
 // sweepPath is a file of the sweep of a target, kept in the user cache per
@@ -184,7 +214,7 @@ func writeSweepRecord(repo *gitx.Repo, target, head string, withheld []string) e
 		err = os.MkdirAll(filepath.Dir(path), 0o700)
 	}
 	if err == nil {
-		err = os.WriteFile(path, []byte(strings.Join(append([]string{head}, withheld...), "\n")+"\n"), 0o600)
+		err = atomicfile.Write(path, []byte(strings.Join(append([]string{head}, withheld...), "\n")+"\n"), 0o600)
 	}
 	if err != nil {
 		return fmt.Errorf("the commit %s runs is not recorded for the daily sweep: %w", target, err)
