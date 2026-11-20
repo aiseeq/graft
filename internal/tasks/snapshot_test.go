@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -375,7 +376,7 @@ func TestInstallCloneStepsStayHere(t *testing.T) {
 // sweep leaves the clone until the step ends.
 func TestInstallCloneLockOutlivesGraft(t *testing.T) {
 	root, _, tmp, _ := snapshotProject(t, map[string]string{
-		".graft.yaml": installConfig + "  wait:\n    run:\n      - sh: 'for f in /proc/self/fd/*; do readlink \"$f\"; done > ROOT.fds; echo started > ROOT.started; exec sleep 60'\n",
+		".graft.yaml": installConfig + "  wait:\n    run:\n      - sh: 'echo started > ROOT.started; for f in /proc/self/fd/*; do readlink \"$f\"; done > ROOT.fds; echo graft-fds-complete >> ROOT.fds; exec sleep 60'\n",
 	})
 	writeFile(t, filepath.Join(root, "docs/tasks/x.md"), "# PROJ-123\n- note\n")
 	var out bytes.Buffer
@@ -388,26 +389,43 @@ func TestInstallCloneLockOutlivesGraft(t *testing.T) {
 		t.Fatalf("clones in %s: %q\n%s", tmp, clones, out.String())
 	}
 	owner := r.snapshotOwner
+	started := make(chan struct{})
+	r.stepStarted = func() { close(started) }
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- r.run(ctx, "wait", nil) }()
-	for start := time.Now(); ; time.Sleep(20 * time.Millisecond) {
-		if _, err := os.Stat(root + ".started"); err == nil {
-			break
-		}
-		if time.Since(start) > 30*time.Second {
-			cancel()
-			t.Fatalf("the step did not start:\n%s", out.String())
-		}
-	}
-	// Only the reaper holds the lock: the command and what it starts (a
-	// daemon outliving the reaper) do not get the descriptor.
-	if fds, err := os.ReadFile(root + ".fds"); err != nil || !strings.Contains(string(fds), root+".fds") || strings.Contains(string(fds), cloneOwnerFile) {
-		t.Errorf("the step's command holds the clone's owner file: %v\n%s", err, fds)
+	select {
+	case <-started:
+	case <-time.After(30 * time.Second):
+		cancel()
+		t.Fatalf("the step did not start:\n%s", out.String())
 	}
 	// graft dies: its own descriptor of the owner file goes.
 	if err := owner.Close(); err != nil {
 		t.Fatal(err)
+	}
+	// This file check is data validation; the channel above is what orders
+	// Close after cmd.Start's reads of the owner descriptor.
+	fdsPath := root + ".fds"
+	fdsDeadline := time.NewTimer(30 * time.Second)
+	defer fdsDeadline.Stop()
+	var fds []byte
+	for {
+		if data, err := os.ReadFile(fdsPath); err == nil && strings.HasSuffix(string(data), "graft-fds-complete\n") {
+			fds = data
+			break
+		}
+		select {
+		case <-fdsDeadline.C:
+			cancel()
+			<-done
+			t.Fatalf("the step did not finish writing its fd data:\n%s", out.String())
+		default:
+			runtime.Gosched()
+		}
+	}
+	if !strings.Contains(string(fds), root+".fds") || strings.Contains(string(fds), cloneOwnerFile) {
+		t.Errorf("the step's command holds the clone's owner file:\n%s", fds)
 	}
 	old := time.Now().Add(-2 * time.Hour)
 	if err := os.Chtimes(filepath.Join(clones[0], cloneOwnerFile), old, old); err != nil {

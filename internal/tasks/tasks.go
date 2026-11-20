@@ -84,6 +84,8 @@ type gateHistory struct {
 // Runner runs tasks of one project.
 type Runner struct {
 	gateHistory *gateHistory
+	// stepStarted is a test hook called after cmd.Start has returned.
+	stepStarted func()
 	// admitTask overrides heavy-task admission in tests.
 	admitTask func(context.Context, string) (loadgate.Admission, func() error, error)
 	Root      string
@@ -3246,6 +3248,9 @@ func (r *Runner) measureWithReason(ctx context.Context, cmd *exec.Cmd, source st
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		return stats.Usage{}, fmt.Errorf("start %s: %w", cmd.Path, err)
+	}
+	if r.stepStarted != nil {
+		r.stepStarted()
 	}
 	watch := stats.WatchProcess(cmd.Process.Pid)
 	remoteLoad, remoteLoadFailed := r.remoteStepLoad(ctx)
