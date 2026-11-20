@@ -2078,6 +2078,37 @@ type gateOutcome struct {
 
 var revertsRe = regexp.MustCompile(`(?m)^This reverts commit ([0-9a-f]{7,40})\b`)
 
+// approvedReleaseRevert says whether a commit takes work out for
+// approved_release. A revert whose body names another revert returns that
+// work, so it must be checked by its own key.
+func approvedReleaseRevert(repo *gitx.Repo, c deliveredCommit, commits []deliveredCommit) (bool, error) {
+	if !isRevert(c.subject) {
+		return false, nil
+	}
+	bySHA := make(map[string]string, len(commits))
+	for _, commit := range commits {
+		bySHA[commit.sha] = commit.subject
+	}
+	for _, m := range revertsRe.FindAllStringSubmatch(c.body, -1) {
+		sha, err := repo.Git("rev-parse", "--verify", "--quiet", m[1]+"^{commit}")
+		if err != nil {
+			return false, fmt.Errorf("%s reverts %s, which is unknown here (git fetch?)", gitx.Short(c.sha), m[1])
+		}
+		sha = strings.TrimSpace(sha)
+		subject, ok := bySHA[sha]
+		if !ok {
+			subject, err = repo.Git("log", "-1", "--format=%s", sha)
+			if err != nil {
+				return false, fmt.Errorf("read subject of reverted commit %s: %w", gitx.Short(sha), err)
+			}
+		}
+		if isRevert(strings.TrimSpace(subject)) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // run checks the commits of prev..head and the commits withheld before.
 // From a build branch (a release branch cut at the cutoff) a commit reverted
 // in the range is withheld rather than gone.
@@ -2098,7 +2129,11 @@ func (g *gateRun) run(ctx context.Context, prev, head string, withheld []string,
 	}
 	for _, c := range all {
 		line := gitx.Short(c.sha) + " " + c.subject
-		if isRevert(c.subject) {
+		takesWork, err := approvedReleaseRevert(g.repo, c, all)
+		if err != nil {
+			return out, err
+		}
+		if takesWork {
 			g.app.printf("approved release: %s: a revert, passes", line)
 			continue
 		}
@@ -2179,7 +2214,11 @@ func (g *gateRun) linkOutside(ctx context.Context) ([]gateFailure, error) {
 func (g *gateRun) reverted(commits []deliveredCommit) (map[string]string, error) {
 	reverted := map[string]string{}
 	for _, c := range commits {
-		if !isRevert(c.subject) {
+		takesWork, err := approvedReleaseRevert(g.repo, c, commits)
+		if err != nil {
+			return nil, err
+		}
+		if !takesWork {
 			continue
 		}
 		for _, m := range revertsRe.FindAllStringSubmatch(c.body, -1) {
@@ -3555,7 +3594,10 @@ func deliveredKeys(r *deployRun) (keys, reverted, quiet []string, err error) {
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	isUndone := undoneBy(commits)
+	isUndone, err := undoneBy(r.repo, commits)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	keyRe := projectKeyRe(r.cfg)
 	// merged are the keys merge commits name: a merge brings what its
 	// branch's commits do, so the commits naming the key decide, and when
@@ -3621,18 +3663,25 @@ func goingOut(r *deployRun) ([]deliveredCommit, error) {
 
 // undoneBy tells which commits take work out: a revert, and the commits a
 // revert among commits reverts.
-func undoneBy(commits []deliveredCommit) func(deliveredCommit) bool {
+func undoneBy(repo *gitx.Repo, commits []deliveredCommit) (func(deliveredCommit) bool, error) {
 	var undone []string
+	takingWork := map[string]bool{}
 	for _, c := range commits {
-		if isRevert(c.subject) {
-			for _, m := range revertsRe.FindAllStringSubmatch(c.body, -1) {
-				undone = append(undone, m[1])
-			}
+		takesWork, err := approvedReleaseRevert(repo, c, commits)
+		if err != nil {
+			return nil, err
+		}
+		if !takesWork {
+			continue
+		}
+		takingWork[c.sha] = true
+		for _, m := range revertsRe.FindAllStringSubmatch(c.body, -1) {
+			undone = append(undone, m[1])
 		}
 	}
 	return func(c deliveredCommit) bool {
-		return isRevert(c.subject) || slices.ContainsFunc(undone, func(p string) bool { return strings.HasPrefix(c.sha, p) })
-	}
+		return takingWork[c.sha] || slices.ContainsFunc(undone, func(p string) bool { return strings.HasPrefix(c.sha, p) })
+	}, nil
 }
 
 // mergeChanges tells whether a merge brings a commit the target has not run

@@ -2138,7 +2138,8 @@ remove the dormant entry once the feature is enabled and checked.
    version does not count. With both, both. Every
    item the commit names must pass. A commit let out by
    a done-category item gets a line of its own: it may only refer to old
-   work. A revert (`Revert "…"`, `revert:`) passes, but a revert of a revert
+   work. A revert (`Revert "…"`, `revert:`) passes; a Conventional revert
+   whose body names a revert commit is checked by its own key. A git revert of a revert
    (`Revert "Revert "…""`, `Reapply "…"`) brings the work back and is checked
    like any commit. A commit that changes only `ignore_paths` passes too
    (globs as in exceptions; the version file and `sync` files that graft
