@@ -471,6 +471,38 @@ func checkRunningLegacyPIDFileChecksArgv(t *testing.T) {
 	}
 }
 
+func TestRunningLegacyPIDExitsBeforeCmdline(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = akitproc.SignalCmd(cmd, syscall.SIGKILL); _ = cmd.Wait() })
+	dir := t.TempDir()
+	s := &config.Service{Run: config.Command{Argv: []string{"sleep", "30"}}, PIDFile: "service.pid"}
+	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
+	if err := writePID(m.path(s.PIDFile), cmd.Process.Pid, ""); err != nil {
+		t.Fatal(err)
+	}
+	old := readServiceCmdline
+	readServiceCmdline = func(pid int) ([]string, error) {
+		if err := akitproc.SignalCmd(cmd, syscall.SIGKILL); err != nil {
+			t.Fatal(err)
+		}
+		var info unix.Siginfo
+		if err := unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT, nil); err != nil {
+			t.Fatal(err)
+		}
+		return old(pid)
+	}
+	t.Cleanup(func() { readServiceCmdline = old })
+	if pid, err := m.running("svc"); err != nil || pid != 0 {
+		t.Fatalf("running after exit = %d, %v, want stale PID removed", pid, err)
+	}
+	if _, err := os.Stat(m.path(s.PIDFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale PID file remains: %v", err)
+	}
+}
+
 func TestStopTimeoutCoversCommandAndServiceWaitTogether(t *testing.T) {
 	dir := t.TempDir()
 	signalFile := filepath.Join(dir, "signal")

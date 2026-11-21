@@ -31,6 +31,7 @@ import (
 )
 
 var readServiceStat = akitproc.ReadStat
+var readServiceCmdline = proc.Cmdline
 
 // Manager runs the services of one project.
 type Manager struct {
@@ -784,7 +785,7 @@ func (m *Manager) isService(name string, s *config.Service, pid int) (bool, erro
 		}
 		return stat.Start == start && stat.State != "Z" && stat.State != "X", nil
 	}
-	cmdline, err := proc.Cmdline(pid)
+	cmdline, err := readServiceCmdline(pid)
 	if errors.Is(err, errors.ErrUnsupported) {
 		return false, m.unconfirmedService(name, s, pid)
 	}
@@ -801,6 +802,11 @@ func (m *Manager) isService(name string, s *config.Service, pid int) (bool, erro
 	// A script started through its #! line shows as [interpreter, (arg),
 	// script]: the program may be any of the first three words.
 	if !slices.Contains(cmdline[:min(3, len(cmdline))], argv0) {
+		// A process can exit after Alive: a zombie has an empty cmdline but
+		// still responds to signal 0. Do not leave its PID file as ambiguous.
+		if gone, err := dead(pid); err == nil && gone {
+			return false, nil
+		}
 		return false, m.unconfirmedService(name, s, pid)
 	}
 	return true, nil
