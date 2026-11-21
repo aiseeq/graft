@@ -129,6 +129,87 @@ func decideSession(cgroup string, limits map[string]string, pid int, ceiling int
 	return plan{source: unit, slice: "app-graft.slice", scope: fmt.Sprintf("graft-heavy-%d.scope", pid), ceiling: ceiling}, true
 }
 
+// ShadowPlace reports whether decide could move the current process into a
+// heavy scope, using the same read-only cgroup inputs as Configure. It never
+// asks systemd to create, move, or change a scope.
+func ShadowPlace(procRoot string, pid int) (string, error) {
+	self := "/proc/self/cgroup"
+	if procRoot != "" {
+		self = path.Join(procRoot, "self", "cgroup")
+	}
+	data, err := os.ReadFile(self)
+	if err != nil {
+		return "unknown", fmt.Errorf("read current cgroup: %w", err)
+	}
+	cg := unifiedCgroup(string(data))
+	if cg == "" {
+		return "unknown", nil
+	}
+	base := cgroupBase(procRoot, cg)
+	limits, err := readLimits(base)
+	if err != nil {
+		return "unknown", err
+	}
+	procs, err := os.ReadFile(path.Join(base, "cgroup.procs"))
+	if err != nil {
+		return "unknown", fmt.Errorf("read the processes of the scope: %w", err)
+	}
+	sole := soleProcess(string(procs), pid)
+	if unit, parent, ok := userScope(cg); ok {
+		return shadowUserPlace(cg, unit, parent, limits, sole, pid), nil
+	}
+	if _, ok := sessionScope(cg, os.Getuid()); ok {
+		return shadowSessionPlace(procRoot, cg, limits, pid)
+	}
+	return "unknown", nil
+}
+
+func shadowUserPlace(cg, unit, parent string, limits map[string]string, sole bool, pid int) string {
+	if strings.HasSuffix(parent, "-graft.slice") {
+		return "unknown"
+	}
+	if sole {
+		return "sole"
+	}
+	limited := ""
+	if agentSession(unit, parent) {
+		if value, ok := limits["cpu.max"]; ok && firstField(value) != "max" {
+			limited = "cpu.max"
+		}
+	} else {
+		limited = limitedBy(limits)
+	}
+	if limited == "cpu.max" {
+		return "cpu.max"
+	}
+	if limited != "" {
+		return "memory"
+	}
+	if _, ok := decide(cg, limits, sole, pid, 1); !ok {
+		return "unknown"
+	}
+	return "ok"
+}
+
+func shadowSessionPlace(procRoot, cg string, limits map[string]string, pid int) (string, error) {
+	if limited := limitedBy(limits); limited == "cpu.max" {
+		return "cpu.max", nil
+	} else if limited != "" {
+		return "memory", nil
+	}
+	running, err := hasUserManager(procRoot, os.Getuid())
+	if err != nil {
+		return "unknown", err
+	}
+	if !running {
+		return "no user manager", nil
+	}
+	if _, ok := decideSession(cg, limits, pid, 1, os.Getuid()); ok {
+		return "ok", nil
+	}
+	return "unknown", nil
+}
+
 // limitedBy is the first limit file that limits, "" for none.
 func limitedBy(limits map[string]string) string {
 	for _, key := range limitFiles {

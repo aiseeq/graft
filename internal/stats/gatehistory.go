@@ -21,12 +21,16 @@ func LoadGateHistory(path, project string, since time.Time) ([]Record, error) {
 	return loadGateHistory(path, project, since, nil)
 }
 
-func loadGateHistory(path, project string, since time.Time, betweenPasses func()) ([]Record, error) {
+func openHistoryWindow(path string, since time.Time) ([]gateFile, error) {
 	files, err := Files(path, since)
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := openGateFiles(files)
+	return openGateFiles(files)
+}
+
+func loadGateHistory(path, project string, since time.Time, betweenPasses func()) ([]Record, error) {
+	snapshot, err := openHistoryWindow(path, since)
 	if err != nil {
 		return nil, err
 	}

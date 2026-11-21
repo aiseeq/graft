@@ -181,7 +181,9 @@ type Runner struct {
 	gateReasonsPrinted map[string]bool
 	// execHeavyTask is the top-level task that graft exec --heavy of graft
 	// asked to run as heavy (ExecHeavyEnv), "" without it.
-	execHeavyTask string
+	execHeavyTask       string
+	execHistoryWarned   bool
+	execPlacementWarned bool
 	// remoteDown is why remote_heavy's host did not answer, once asked:
 	// remoteAsked; "" when it did.
 	remoteAsked        bool
@@ -268,6 +270,10 @@ type frame struct {
 	stepLoads        stats.Usage
 	loadStepUnknown  bool
 	cgroupPeakMB     *float64
+	execCmdKey       string
+	execWouldCheap   *bool
+	execCheapPlace   string
+	execShadowLocal  bool
 }
 
 // TestDB is the test database of test_db tasks.
@@ -2931,7 +2937,18 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy, use
 	}
 	f := r.begin(ExecTask)
 	f.program = filepath.Base(argv[0])
-	defer func() { r.end(f, err) }()
+	var execKey string
+	var wouldCheap bool
+	var cheapPlace string
+	shadow := heavy && !innerGraft && os.Getenv(AdmittedEnv) == ""
+	var shadowRanHere bool
+	defer func() {
+		r.recordExecShadow(f, shadow && shadowRanHere, execKey, wouldCheap, cheapPlace)
+		r.end(f, err)
+	}()
+	if shadow {
+		execKey, wouldCheap, cheapPlace = r.execShadow(r.project(), argv)
+	}
 	leave, err := r.prepareExec(ctx, f, t, dir, heavy && !innerGraft)
 	if err != nil {
 		return err
@@ -2939,6 +2956,10 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy, use
 	if leave != nil {
 		defer func() { err = errors.Join(err, leave()) }()
 	}
+	return r.runExecCommand(ctx, dir, argv, t, f, heavy, innerGraft, shadow, &shadowRanHere)
+}
+
+func (r *Runner) runExecCommand(ctx context.Context, dir string, argv []string, t *config.Task, f *frame, heavy, innerGraft, shadow bool, shadowRanHere *bool) error {
 	source := strings.Join(argv, " ")
 	var remoteStderr bytes.Buffer
 	cmd, err := r.execCommand(ctx, dir, argv, t, source, f.remote, heavy && innerGraft, &remoteStderr)
@@ -2946,6 +2967,7 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy, use
 		return err
 	}
 	_, err = r.measureWithCapture(ctx, cmd, source, true, &remoteStderr)
+	*shadowRanHere = shadow && !f.remote && cmd.Process != nil
 	r.noteBrokenRemote(cmd, err, remoteStderr.String())
 	if leave, fallback, herr := r.fallbackBrokenRemote(ctx, ExecTask, r.ExecMemoryMax, r.ExecMemoryHigh); fallback {
 		if herr != nil {
@@ -2956,6 +2978,7 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy, use
 			return errors.Join(err, runErr, leave())
 		}
 		_, err = r.measure(ctx, localCmd, source)
+		*shadowRanHere = shadow && localCmd.Process != nil
 		return errors.Join(commandError(localCmd, err), leave())
 	}
 	switch {
@@ -2966,6 +2989,55 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv []string, heavy, use
 		return fmt.Errorf("remote_heavy run: %w", err)
 	}
 	return commandError(cmd, err)
+}
+
+func (r *Runner) recordExecShadow(f *frame, eligible bool, key string, cheap bool, place string) {
+	if eligible && !f.remote {
+		f.execCmdKey, f.execCheapPlace = key, place
+		f.execWouldCheap = &cheap
+		f.execShadowLocal = true
+	}
+}
+
+func (r *Runner) execShadow(project string, argv []string) (string, bool, string) {
+	key := stats.ExecCommandKey(project, argv)
+	var cheap bool
+	path, err := stats.Path()
+	if err != nil {
+		r.warnExecHistory(fmt.Errorf("locating journal: %w", err))
+	} else {
+		since := time.Now().Add(-stats.CheapHistoryWindow)
+		history, err := stats.LoadExecHistory(stats.ExecHistoryPath(path), since)
+		if err != nil {
+			r.warnExecHistory(err)
+		} else {
+			cheap = stats.WouldCheap(history, key, since)
+		}
+	}
+	place, err := iosched.ShadowPlace(os.Getenv(loadgate.ProcEnv), os.Getpid())
+	if err != nil {
+		r.warnExecPlacement(err)
+		place = "unknown"
+	}
+	return key, cheap, place
+}
+
+func (r *Runner) warnExecHistory(err error) {
+	r.warnExecShadow(err, &r.execHistoryWarned, "graft: exec history unreadable: %v\n")
+}
+
+func (r *Runner) warnExecPlacement(err error) {
+	r.warnExecShadow(err, &r.execPlacementWarned, "graft: exec placement unknown: %v\n")
+}
+
+func (r *Runner) warnExecShadow(err error, warned *bool, format string) {
+	if *warned {
+		return
+	}
+	*warned = true
+	if r.Stderr != nil {
+		fmt.Fprintf(r.Stderr, format, err)
+	}
 }
 
 func commandError(cmd *exec.Cmd, err error) error {
@@ -3517,7 +3589,8 @@ func taskLoad(use stats.Usage, f *frame, host string) stats.Usage {
 // what it cost; the task's error itself goes back to its caller.
 func (r *Runner) end(f *frame, err error) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
-	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, Mark: f.mark, WaitedBehind: f.waitedBehind, CgroupPeakMB: f.cgroupPeakMB}
+	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, Mark: f.mark, WaitedBehind: f.waitedBehind, CgroupPeakMB: f.cgroupPeakMB,
+		CmdKey: f.execCmdKey, WouldCheap: f.execWouldCheap, CheapPlace: f.execCheapPlace}
 	if f.reserveRelease != nil {
 		if err := f.reserveRelease(); err != nil {
 			fmt.Fprintf(r.Stderr, "graft: %s: releasing reserve: %v\n", f.task, err)
@@ -3571,10 +3644,20 @@ func (r *Runner) end(f *frame, err error) stats.Usage {
 		outermost = r.frames[0].task
 	}
 	r.write(rec, use, outermost)
+	if history, ok := completedExecShadowRecord(f, time.Now(), use, rec.Exit); ok && r.Stats != nil {
+		r.Stats.WriteExecHistory(history)
+	}
 	if len(r.frames) == 0 {
 		r.overLimit(f.task, use)
 	}
 	return use
+}
+
+func completedExecShadowRecord(f *frame, at time.Time, use stats.Usage, exit int) (stats.ExecHistoryRecord, bool) {
+	if !f.execShadowLocal || f.steps == 0 {
+		return stats.ExecHistoryRecord{}, false
+	}
+	return stats.ExecHistoryFromUsage(at, f.execCmdKey, use, exit, false, false), true
 }
 
 func (r *Runner) sameFailure(current stats.Record) (time.Duration, int, bool) {
