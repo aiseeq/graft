@@ -466,7 +466,7 @@ func TestServiceStopReportsOrphanedSessionProcess(t *testing.T) {
 				t.Fatal(err)
 			}
 			workerFile := f.path("tmp/worker.pid")
-			leader := exec.Command("sh", "-c", `if [ "$1" = child ]; then sleep 60 & echo $! > "$2"; wait; else sleep 60; fi`, "sh", map[bool]string{true: "child", false: "alone"}[withChild], workerFile)
+			leader := exec.Command("sh", "-c", `if [ "$1" = child ]; then sleep 60 & echo $! > "$2"; wait; else exec sleep 60; fi`, "sh", map[bool]string{true: "child", false: "alone"}[withChild], workerFile)
 			leader.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 			if err := leader.Start(); err != nil {
 				t.Fatal(err)
