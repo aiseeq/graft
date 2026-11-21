@@ -57,6 +57,14 @@ func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, 
 	var options gocache.Options
 	options.Apply = apply
 	if apply {
+		options.OnStart = func() { startTrimProbe(a.Stderr) }
+		var reportedWait time.Duration
+		options.OnBatch = func(number, entries int, bytes int64, started time.Time, unlink, syncTime time.Duration) {
+			waited := waitTotal(waits) - reportedWait
+			reportedWait = waitTotal(waits)
+			fmt.Fprintf(a.Stderr, "graft: gocache trim: batch %d: started %s, %d entries, %s, unlink %dms, syncfs %dms, waited %dms\n",
+				number, started.Format(time.RFC3339Nano), entries, checks.FormatSize(bytes), unlink.Milliseconds(), syncTime.Milliseconds(), waited.Milliseconds())
+		}
 		load, err := userconfig.LoadSettings()
 		if err != nil {
 			return fmt.Errorf("load machine pressure settings: %w", err)

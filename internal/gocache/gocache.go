@@ -41,6 +41,9 @@ type Result struct {
 type Options struct {
 	Apply       bool
 	BeforeBatch func() (bool, error)
+	OnStart     func()
+	OnBatch     func(number, entries int, bytes int64, started time.Time, unlink, sync time.Duration)
+	RemoveEntry func(path string, directory bool) error
 }
 
 // TrimWithOptions trims a cache with optional admission before each batch.
@@ -57,6 +60,9 @@ func TrimWithOptions(dir string, older time.Duration, now time.Time, opts Option
 	cutoff := now.Add(-older)
 	if !opts.Apply {
 		return trimDryRun(dir, cutoff, r)
+	}
+	if opts.OnStart != nil {
+		opts.OnStart()
 	}
 	return trimApply(dir, cutoff, r, opts)
 }
@@ -90,11 +96,16 @@ type trimBatch struct {
 	result        *Result
 	entries       int
 	bytes         int64
+	number        int
+	unlink        time.Duration
+	batchAt       time.Time
+	remove        func(string, bool) error
+	onBatch       func(int, int, int64, time.Time, time.Duration, time.Duration)
 	started, stop bool
 }
 
 func trimApply(dir string, cutoff time.Time, r Result, opts Options) (Result, error) {
-	batch := trimBatch{dir: dir, before: opts.BeforeBatch, result: &r}
+	batch := trimBatch{dir: dir, before: opts.BeforeBatch, result: &r, remove: opts.RemoveEntry, onBatch: opts.OnBatch}
 	for i := range 256 {
 		if err := batch.trimSubdir(filepath.Join(dir, fmt.Sprintf("%02x", i)), cutoff); err != nil {
 			return r, err
@@ -149,8 +160,13 @@ func (b *trimBatch) trimEntry(sub string, e fs.DirEntry, cutoff time.Time) error
 		b.result.RemainingBytes += size
 		return nil
 	}
-	removed, err := b.result.remove(sub, e, size)
+	started := time.Now()
+	removed, err := b.result.removeWith(sub, e, size, b.remove)
+	b.unlink += time.Since(started)
 	if removed {
+		if b.entries == 0 {
+			b.batchAt = started
+		}
 		b.entries++
 		b.bytes += size
 	}
@@ -178,10 +194,18 @@ func (b *trimBatch) finish() error {
 	if b.entries == 0 {
 		return nil
 	}
+	started := time.Now()
 	if err := syncCacheFS(b.dir); err != nil {
 		return fmt.Errorf("sync the cache after trimming: %w", err)
 	}
+	syncTime := time.Since(started)
+	b.number++
+	if b.onBatch != nil {
+		b.onBatch(b.number, b.entries, b.bytes, b.batchAt, b.unlink, syncTime)
+	}
 	b.entries, b.bytes, b.started = 0, 0, false
+	b.unlink = 0
+	b.batchAt = time.Time{}
 	return nil
 }
 
@@ -222,10 +246,23 @@ func (r *Result) count(size int64, old bool) {
 	r.KeptBytes += size
 }
 
-func (r *Result) remove(sub string, e fs.DirEntry, size int64) (bool, error) {
+func (r *Result) removeWith(sub string, e fs.DirEntry, size int64, removeEntry func(string, bool) error) (bool, error) {
 	path := filepath.Join(sub, e.Name())
+	directory := e.IsDir() && strings.HasSuffix(e.Name(), "-d")
+	if removeEntry != nil {
+		err := removeEntry(path, directory)
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		r.Removed++
+		r.RemovedBytes += size
+		return true, nil
+	}
 	remove := os.Remove
-	if e.IsDir() && strings.HasSuffix(e.Name(), "-d") {
+	if directory {
 		remove = os.RemoveAll
 	}
 	err := remove(path)

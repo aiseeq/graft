@@ -10,6 +10,48 @@ import (
 	"time"
 )
 
+func TestTrimApplyReportsBatchAfterStubbedRemoval(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte(readme), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	shard := filepath.Join(dir, "00")
+	if err := os.Mkdir(shard, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(shard, strings.Repeat("a", 64)+"-a")
+	if err := os.WriteFile(entry, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(entry, time.Now().Add(-48*time.Hour), time.Now().Add(-48*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		number, entries int
+		bytes           int64
+		unlink, sync    time.Duration
+	}
+	r, err := TrimWithOptions(dir, 25*time.Hour, time.Now(), Options{Apply: true,
+		RemoveEntry: func(string, bool) error { return nil },
+		OnBatch: func(n, entries int, bytes int64, _ time.Time, unlink, sync time.Duration) {
+			got = struct {
+				number, entries int
+				bytes           int64
+				unlink, sync    time.Duration
+			}{n, entries, bytes, unlink, sync}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Removed != 1 || got.number != 1 || got.entries != 1 || got.bytes != 3 || got.unlink < 0 || got.sync < 0 {
+		t.Fatalf("result %+v, batch %+v", r, got)
+	}
+	if _, err := os.Stat(entry); err != nil {
+		t.Fatalf("stub removal touched entry: %v", err)
+	}
+}
+
 // cacheDir makes a Go build cache with entries of the given ages and the
 // cache's own files, all as old as the oldest entry.
 func cacheDir(t *testing.T, now time.Time, ages map[string]time.Duration) string {

@@ -3290,8 +3290,12 @@ memory pressure while swapping, and `busy --quiet`; CPU is not a constraint
 because trimming is already-running work whose added load is on the disk.
 `--max-wait` (2h by default) bounds the total wait; when it expires, graft
 reports what remains for the next run. Without `--apply` it reports the
-would-be removals immediately. Run it daily from a timer, for instance a
-systemd user unit with `ExecStart=` the absolute path of graft and `gocache
+would-be removals immediately. Each applied batch logs its start time, entry
+and byte counts, unlink and syncfs times, and time spent waiting to stderr.
+Trim also starts a normal-priority write probe in a separate systemd user unit;
+it logs operations over 250ms, reports stuck writes each second, and prints a
+latency summary. Set `GRAFT_GOCACHE_PROBE=off` to disable it, or set a program path to replace `systemd-run` with that program and the same arguments. Run it daily from a timer,
+for instance a systemd user unit with `ExecStart=` the absolute path of graft and `gocache
 trim --apply`, and `OnCalendar=daily` with `Persistent=true` and
 `OnStartupSec=15min`, as for the worktree cleanup: systemd does not look in `~/bin`. Set
 `TimeoutStartSec=12h` as well: a timer does not start a unit that is still

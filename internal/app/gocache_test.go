@@ -45,6 +45,7 @@ func TestGocacheFreeBelowSkipsCacheWalkWhenSpaceIsEnough(t *testing.T) {
 }
 
 func TestGocacheFreeBelowMeasuresBeforeAndAfterTrim(t *testing.T) {
+	noTrimProbe(t)
 	dir, old := makeTrimCache(t)
 	t.Setenv("GOCACHE", dir)
 	trimProc(t, 1, 1)
@@ -319,6 +320,7 @@ func TestTrimStopsAtMaxWait(t *testing.T) {
 }
 
 func TestGocacheTrimReportsPartialResultWhenContextIsCanceled(t *testing.T) {
+	noTrimProbe(t)
 	trimProc(t, 1, 1)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("This directory holds cached build artifacts from the Go build system.\n"), 0o644); err != nil {
@@ -377,6 +379,7 @@ func TestGocacheTrimReportsPartialResultWhenContextIsCanceled(t *testing.T) {
 }
 
 func TestGocacheTrimReportsZeroRemovedWhenCanceledInFirstWait(t *testing.T) {
+	noTrimProbe(t)
 	trimProc(t, maxDirtyWritebackKB, 1)
 	dir, _ := makeTrimCache(t)
 	quietConfigHome(t)
@@ -393,6 +396,13 @@ func TestGocacheTrimReportsZeroRemovedWhenCanceledInFirstWait(t *testing.T) {
 	if !strings.Contains(out.String(), "removed 0 entries") || !strings.Contains(out.String(), "remain") || !strings.Contains(out.String(), "interrupted: context canceled") {
 		t.Fatalf("error %v, output %q", err, out.String())
 	}
+}
+
+func noTrimProbe(t *testing.T) {
+	t.Helper()
+	previous := startProbeUnit
+	startProbeUnit = func(string, string, int, string, string) error { return nil }
+	t.Cleanup(func() { startProbeUnit = previous })
 }
 
 func serveTrimDisk(t *testing.T, ioFullMS int) {

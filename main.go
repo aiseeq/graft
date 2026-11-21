@@ -689,10 +689,16 @@ func testDBCmd(ctx context.Context, a *app.App, args []string) error {
 	return err
 }
 
-// gocacheCmd is graft gocache trim [--older 25h] [--apply] [--max-wait 2h] [--free-below SIZE].
+// gocacheCmd trims the Go build cache or runs the independent write probe.
 func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
 	usage := usageOf("gocache", "")
-	if len(args) == 0 || args[0] != "trim" {
+	if len(args) == 0 {
+		return usage
+	}
+	if args[0] == "probe" {
+		return gocacheProbeCmd(ctx, a, args[1:])
+	}
+	if args[0] != "trim" {
 		return usage
 	}
 	fs := newFlags(a, "gocache trim")
@@ -730,6 +736,27 @@ func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
 		}
 	}
 	return a.GocacheTrim(ctx, *older, *apply, *maxWait, freeBelowBytes)
+}
+
+func gocacheProbeCmd(ctx context.Context, a *app.App, args []string) error {
+	usage := usageOf("gocache", "")
+	fs := newFlags(a, "gocache probe")
+	while := fs.String("while", "", "trim process PID and start ticks to watch")
+	dir := fs.String("dir", "", "directory for the probe file")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	pidText, start, found := strings.Cut(*while, ":")
+	pid, pidErr := strconv.Atoi(pidText)
+	_, startErr := strconv.ParseUint(start, 10, 64)
+	if fs.NArg() != 0 || !found || pid <= 0 || pidErr != nil || startErr != nil || !filepath.IsAbs(*dir) {
+		return usage
+	}
+	err := a.GocacheProbe(ctx, pid, start, *dir)
+	if errors.Is(err, app.ErrGocacheProbeWriteStuck) {
+		os.Exit(0)
+	}
+	return err
 }
 
 func checkCmd(ctx context.Context, a *app.App, args []string) error {

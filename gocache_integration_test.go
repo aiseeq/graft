@@ -32,6 +32,7 @@ func TestGocacheTrimTakesTheCacheOfGoEnv(t *testing.T) {
 		}
 	}
 	f.env = append(f.env, "GOCACHE="+cache)
+	probeArgs, probeDir := installGocacheProbeStub(t, f)
 
 	out := f.mustGraft("gocache", "trim")
 	if want := "graft: dry run: graft gocache trim --apply removes 1 entries, 5 B, unused for 25h0m0s in " + cache + "; 1 entries, 5 B kept\n"; out != want {
@@ -49,6 +50,7 @@ func TestGocacheTrimTakesTheCacheOfGoEnv(t *testing.T) {
 	if _, err := os.Stat(fresh); err != nil {
 		t.Errorf("the fresh entry removed: %v", err)
 	}
+	assertGocacheProbeArgs(t, probeArgs, probeDir)
 
 	if out, code := f.graft("", "gocache", "trim", "--older", "1h"); code != 2 || !strings.Contains(out, "want more than 1h0m0s") {
 		t.Errorf("--older 1h: exit %d\n%s", code, out)
@@ -107,11 +109,43 @@ func TestGocacheTrimApplyWaitsForTheMachine(t *testing.T) {
 		}
 	}
 	f.env = append(f.env, "GOCACHE="+cache, "GRAFT_PROC="+machine)
+	probeArgs, probeDir := installGocacheProbeStub(t, f)
 	out := f.mustGraft("gocache", "trim", "--apply", "--max-wait", "1s")
 	if !strings.Contains(out, "graft: removed 0 entries") || !strings.Contains(out, "1 entries, 5 B remain") || !strings.Contains(out, "waited 1s") {
 		t.Errorf("a busy machine's trim:\n%s", out)
 	}
 	if _, err := os.Stat(old); err != nil {
 		t.Errorf("the trim removed an entry while the machine was busy: %v", err)
+	}
+	assertGocacheProbeArgs(t, probeArgs, probeDir)
+}
+
+func installGocacheProbeStub(t *testing.T, f *fixture) (string, string) {
+	t.Helper()
+	home := t.TempDir()
+	bin := filepath.Join(t.TempDir(), "gocache-probe-stub")
+	argsFile := filepath.Join(t.TempDir(), "probe-args")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GRAFT_GOCACHE_PROBE_ARGS_FILE\"\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env, "HOME="+home, "GRAFT_GOCACHE_PROBE="+bin, "GRAFT_GOCACHE_PROBE_ARGS_FILE="+argsFile)
+	return argsFile, filepath.Join(home, ".local", "state", "graft")
+}
+
+func assertGocacheProbeArgs(t *testing.T, argsFile, probeDir string) {
+	t.Helper()
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read probe stub args: %v", err)
+	}
+	args := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if len(args) != 12 || args[0] != "--user" || args[1] != "--collect" || args[2] != "--unit" || !strings.HasPrefix(args[3], "graft-gocache-trim-probe-") || args[4] != "--" || args[6] != "gocache" || args[7] != "probe" || args[8] != "--while" || args[10] != "--dir" {
+		t.Fatalf("unexpected probe args: %#v", args)
+	}
+	unitPID := strings.TrimPrefix(args[3], "graft-gocache-trim-probe-")
+	whilePID, startTicks, found := strings.Cut(args[9], ":")
+	if !found || whilePID != unitPID || startTicks == "" || !filepath.IsAbs(args[5]) || args[11] != probeDir {
+		t.Fatalf("unexpected probe identity or directory: %#v", args)
 	}
 }
