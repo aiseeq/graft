@@ -460,7 +460,7 @@ func checkRunningLegacyPIDFileChecksArgv(t *testing.T) {
 		t.Fatal(err)
 	}
 	if pid, err := m.running("svc"); err != nil || pid != cmd.Process.Pid {
-		t.Fatalf("matching legacy PID = %d, %v", pid, err)
+		t.Fatalf("matching legacy PID = %d, %v; the process now: %s", pid, err, describeTestProcess(cmd.Process.Pid))
 	}
 	s.Run.Argv[0] = "sh"
 	if pid, err := m.running("svc"); err == nil || pid != 0 || !strings.Contains(err.Error(), "cannot confirm process") {
@@ -683,6 +683,15 @@ func serviceTestPID(t *testing.T, path string) int {
 	}
 	t.Fatalf("%s contains no process ID", path)
 	return 0
+}
+
+// describeTestProcess tells the state, start time and argv of pid, so a
+// failure shows whether the process had exited, was another one or was
+// read in an unexpected state.
+func describeTestProcess(pid int) string {
+	stat, statErr := akitproc.ReadStat("/proc", pid)
+	argv, argvErr := readServiceCmdline(pid)
+	return fmt.Sprintf("stat %+v (%v), argv %q (%v)", stat, statErr, argv, argvErr)
 }
 
 func serviceTestRunning(pid int) bool {
