@@ -51,3 +51,19 @@ func TestTrimPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestTrimVetPaths(t *testing.T) {
+	for _, c := range []struct {
+		argv, env, want []string
+	}{
+		{[]string{"go", "vet", "./..."}, nil, []string{"go", "vet", "-trimpath", "./..."}},
+		{[]string{"go", "vet", "-trimpath=false", "./..."}, nil, []string{"go", "vet", "-trimpath=false", "./..."}},
+		{[]string{"go", "vet", "./..."}, []string{"GOFLAGS=-tags=x -trimpath=false"}, []string{"go", "vet", "./..."}},
+		{[]string{"go", "vet", "./..."}, []string{"GOFLAGS=-trimpath"}, []string{"go", "vet", "./..."}},
+		{[]string{"go", "build", "./..."}, nil, []string{"go", "build", "./..."}},
+	} {
+		if got := trimVetPaths(c.argv, c.env); !slices.Equal(got, c.want) {
+			t.Errorf("trimVetPaths(%q, %q) = %q, want %q", c.argv, c.env, got, c.want)
+		}
+	}
+}

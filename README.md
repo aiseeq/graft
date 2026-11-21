@@ -1150,7 +1150,8 @@ dotenv_sets:                   # key lists several tasks and services share
   gone.
 - `go build`, `go install`, `go run` and `go test`, as a step's argv or a
   `graft exec` command, get `-trimpath` after the subcommand unless their
-  flags or `GOFLAGS` name it already, `-trimpath=false` included: without it
+  flags or `GOFLAGS` of the environment name it already, `-trimpath=false`
+  included; graft does not read the `GOFLAGS` setting of `go env -w`: without it
   the go command keys each package of the module by its directory, and every
   worktree of a repository fills the build cache with its own copy of what
   the others built. A test that finds files through `runtime.Caller` gets a
@@ -1164,10 +1165,25 @@ dotenv_sets:                   # key lists several tasks and services share
   not get this machine's environment, `go run` and `go test` go without
   `-trimpath`. A binary `go build` or `go install` made
   reports no `GOROOT` where it runs unless the environment sets it.
-  `go vet` and `go fix` go without, and
-  `GOFLAGS` is left alone for the commands steps start themselves: under
-  `-trimpath` both replay a result another worktree cached with that
-  tree's paths, and `go fix` rewrites the files there.
+  The gate's built-in `go vet ./...` run on this machine gets `-trimpath`
+  by the same rule, `GOFLAGS` read from the environment it runs with. Under
+  `-trimpath` vet can replay what another worktree of the revision cached,
+  with that tree's paths (`../other/pkg/p.go`), so graft holds the output of
+  that run, its own lines too, and its stats record: when vet exits non-zero
+  by itself or prints anything, graft says `graft: go vet reported; rerun
+  without -trimpath for this tree's paths` and runs it again without
+  `-trimpath` on the same machine; the step, its output, exit, reason and
+  the record of `graft stats` and `--failures`, is that run, its CPU and
+  time both runs'; either run not starting is the step's failure, recorded
+  with the cost of what ran. A clean vet prints nothing and is not run
+  again; nor is one cancelled, stopped by a signal or not started, or one
+  during which the kernel killed processes of the heavy scope, which fails
+  the step: the held output is then shown. Vet sent to the host of
+  `remote_heavy` goes without `-trimpath`: the host's `GOFLAGS` and the paths a rerun there shows are
+  not known here. `go fix` goes without, and `GOFLAGS` is left alone for
+  project steps that run `go vet` or `go fix` and for the commands steps
+  start themselves: `go fix` under `-trimpath` rewrites the files of the
+  worktree whose cached result it replays.
 - Before the first step, deps included, graft fits the arguments into the
   steps and checks every required key and `${KEY}` the task and all its deps
   need, listing everything missing at once. An optional `KEY?` set nowhere is

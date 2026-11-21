@@ -1,6 +1,9 @@
 package main
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -32,6 +35,106 @@ func TestGoProjectGateRunsVetAndItsFailureFailsTheGate(t *testing.T) {
 	if n := f.commitCount(); n != 0 {
 		t.Errorf("%d commits made", n)
 	}
+}
+
+// TestBuiltinVetTrimpathShowsThisTreesPaths is the measurement the change
+// stands on: two copies of one revision share a Go build cache, and go vet
+// -trimpath in the second replays what the first cached, with
+// ../<first>/pkg/p.go for its path. The gate of the second copy fails on its
+// own path: the trimmed run reported, vet ran again without -trimpath.
+func TestBuiltinVetTrimpathShowsThisTreesPaths(t *testing.T) {
+	skipGoToolchainInShort(t)
+	f := vetRepo(t, "", map[string]string{
+		"go.mod":   "module example.com/projecta\n\ngo 1.26\n",
+		"pkg/p.go": "package pkg\n\nimport \"fmt\"\n\nfunc F() { fmt.Printf(\"%d\", \"bad\") }\n",
+	})
+	second := vetCopy(t, f)
+	f.env = append(f.env, "GOCACHE="+t.TempDir(), "GOFLAGS=")
+	if out, code := f.graft("", "gate"); code == 0 || !strings.Contains(out, "pkg/p.go:5:") {
+		t.Fatalf("first copy's vet did not fail on pkg/p.go (exit %d):\n%s", code, out)
+	}
+	// The scenario holds: go vet -trimpath in the second copy replays the
+	// first copy's finding, with the first copy's path.
+	first := "../" + filepath.Base(f.work) + "/"
+	if out, code := f.exec(second, "", "go", "vet", "-trimpath", "./..."); code == 0 || !strings.Contains(out, first+"pkg/p.go:5:") {
+		t.Fatalf("go vet -trimpath in the second copy did not show %spkg/p.go (exit %d):\n%s", first, code, out)
+	}
+	out, code := f.exec(second, "", graftBin, "gate")
+	if code == 0 || !strings.Contains(out, "pkg/p.go:5:") || strings.Contains(out, first) {
+		t.Fatalf("second copy's gate must fail on its own pkg/p.go, not %spkg/p.go (exit %d):\n%s", first, code, out)
+	}
+	if n := strings.Count(out, "graft: go vet reported; rerun without -trimpath for this tree's paths"); n != 1 {
+		t.Fatalf("rerun notice said %d times, want once:\n%s", n, out)
+	}
+}
+
+// TestBuiltinVetTrimpathSharesTheCache: a clean second copy of a revision
+// adds next to nothing to the build cache its first copy filled, unless
+// GOFLAGS turns -trimpath off, which graft keeps.
+func TestBuiltinVetTrimpathSharesTheCache(t *testing.T) {
+	skipGoToolchainInShort(t)
+	growth := func(goflags string) int64 {
+		f := vetRepo(t, "", map[string]string{
+			"go.mod":        "module example.com/projecta\n\ngo 1.26\n",
+			"pkg/p.go":      "package pkg\n\nimport \"fmt\"\n\nfunc F() string { return fmt.Sprint(1) }\n",
+			"cmd/a/main.go": "package main\n\nimport (\n\t\"fmt\"\n\n\t\"example.com/projecta/pkg\"\n)\n\nfunc main() { fmt.Println(pkg.F()) }\n",
+		})
+		second := vetCopy(t, f)
+		cache := t.TempDir()
+		f.env = append(f.env, "GOCACHE="+cache, "GOFLAGS="+goflags)
+		if out, code := f.graft("", "gate"); code != 0 {
+			t.Fatalf("clean first copy, GOFLAGS=%q: exit %d\n%s", goflags, code, out)
+		}
+		before := vetCacheBytes(t, cache)
+		out, code := f.exec(second, "", graftBin, "gate")
+		if code != 0 {
+			t.Fatalf("clean second copy, GOFLAGS=%q: exit %d\n%s", goflags, code, out)
+		}
+		if strings.Contains(out, "rerun without -trimpath") {
+			t.Errorf("a clean vet was run again:\n%s", out)
+		}
+		return vetCacheBytes(t, cache) - before
+	}
+	trimmed, untrimmed := growth(""), growth("-trimpath=false")
+	t.Logf("GOCACHE growth of the second copy's gate: %d bytes with -trimpath, %d bytes with GOFLAGS=-trimpath=false", trimmed, untrimmed)
+	if trimmed >= 5<<20 {
+		t.Errorf("the clean second copy grew the shared GOCACHE by %d bytes, want < 5 MiB", trimmed)
+	}
+	if untrimmed <= trimmed {
+		t.Errorf("GOFLAGS=-trimpath=false grew the cache by %d bytes, no more than -trimpath's %d: was -trimpath added?", untrimmed, trimmed)
+	}
+}
+
+// vetCopy copies f's work tree, .git included, next to it.
+func vetCopy(t *testing.T, f *fixture) string {
+	t.Helper()
+	second := filepath.Join(f.base, "copy2")
+	if err := os.CopyFS(second, os.DirFS(f.work)); err != nil {
+		t.Fatalf("copying the project: %v", err)
+	}
+	return second
+}
+
+func vetCacheBytes(t *testing.T, root string) int64 {
+	t.Helper()
+	var total int64
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err == nil {
+			total += info.Size()
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return total
 }
 
 func TestGoProjectGatePassesCleanVetBeforeConfigSteps(t *testing.T) {

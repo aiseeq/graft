@@ -197,6 +197,10 @@ type Runner struct {
 	glintMu            sync.Mutex
 	glintCopies        map[string]glintCopyCheck
 
+	// heldRecords, when set, takes the step records recordStep gets instead
+	// of the frames and the stats: those of the gate's trimmed go vet probe.
+	heldRecords *[]heldRecord
+
 	// frames are the tasks running now, outermost first; every process a
 	// step runs counts in all of them.
 	frames []*frame
@@ -1360,6 +1364,10 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int, reason str
 	if len(r.frames) == 0 {
 		return
 	}
+	if r.heldRecords != nil {
+		*r.heldRecords = append(*r.heldRecords, heldRecord{source: source, use: use, code: code, reason: reason, builtin: builtin})
+		return
+	}
 	if code == 0 {
 		reason = ""
 	}
@@ -2457,15 +2465,8 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		defer os.RemoveAll(dir)
 		report = filepath.Join(dir, "report.json")
 	}
-	vars, err := r.vars(ctx, t, report)
+	vars, env, err := r.stepEnv(ctx, t, report, threads)
 	if err != nil {
-		return err
-	}
-	env, own, err := r.env(t, vars)
-	if err != nil {
-		return err
-	}
-	if env, err = r.heavyEnv(env, own, t, threads); err != nil {
 		return err
 	}
 	var cmd *exec.Cmd
@@ -2490,15 +2491,24 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		cmd = exec.CommandContext(ctx, argv[0], argv[1:]...)
 		words = argv
 	}
-	cmd.Dir = r.taskDir(t)
-	cmd.Env = env
-	local := !r.frames[len(r.frames)-1].remote
-	r.stopLocalCommand(cmd, local)
-	r.holdSnapshot(cmd, local)
-	if r.frames[len(r.frames)-1].remote {
-		cmd = r.remoteCmd(ctx, cmd, t, vars, threads)
+	prepare := func(cmd *exec.Cmd) *exec.Cmd {
+		cmd.Dir = r.taskDir(t)
+		cmd.Env = env
+		local := !r.frames[len(r.frames)-1].remote
+		r.stopLocalCommand(cmd, local)
+		r.holdSnapshot(cmd, local)
+		if r.frames[len(r.frames)-1].remote {
+			cmd = r.remoteCmd(ctx, cmd, t, vars, threads)
+		}
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
+		return cmd
 	}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
+	if trimmed := r.builtinVetTrim(s, t, builtin, words, env); trimmed != nil {
+		return r.builtinVetStep(ctx, s.Source, trimmed, words, func(argv []string) *exec.Cmd {
+			return prepare(exec.CommandContext(ctx, argv[0], argv[1:]...))
+		})
+	}
+	cmd = prepare(cmd)
 	var remoteStderr bytes.Buffer
 	if r.frames[len(r.frames)-1].remote {
 		cmd.Stderr = io.MultiWriter(r.Stderr, &remoteStderr)
@@ -2514,6 +2524,215 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	_, err = r.measureWithCapture(ctx, cmd, s.Source, true, &remoteStderr)
 	r.noteBrokenRemote(cmd, err, remoteStderr.String())
 	return err
+}
+
+// builtinVetTrim is the gate's built-in go vet with -trimpath, nil when the
+// step is another one, goes to remote_heavy's host, or the go command's flags
+// or GOFLAGS in env, the environment it runs with, name -trimpath already;
+// what go env -w set for GOFLAGS is not read.
+// The host gets none of this environment: its GOFLAGS, and the paths a rerun
+// would show, are not known here, so vet goes there as it is written.
+func (r *Runner) builtinVetTrim(s config.Step, t *config.Task, builtin bool, argv, env []string) []string {
+	if !builtin || t.Tests != "" || s.Shell != "" || r.frames[len(r.frames)-1].remote || !isBuiltinGoVet(s) {
+		return nil
+	}
+	trimmed := trimVetPaths(argv, env)
+	if len(trimmed) == len(argv) {
+		return nil
+	}
+	return trimmed
+}
+
+// vetRerunNotice is the line a reported trimmed vet is rerun with.
+const vetRerunNotice = "graft: go vet reported; rerun without -trimpath for this tree's paths"
+
+// builtinVetStep runs the gate's built-in go vet first as trimmed, which
+// shares the build cache between the work trees of a repository but can
+// replay what another tree cached, with that tree's paths. That run is a
+// probe: its output, graft's lines included, and its stats record are held.
+// A vet that reported, that exited by itself non-zero or printed anything,
+// runs again as argv, on the same machine, and the step is that run: its
+// output, its exit, its reason, the CPU of both; either run not starting is
+// the step's failure, recorded with the cost of what ran. A clean vet prints
+// nothing, so it shows no paths; a probe that did not finish by itself
+// (cancelled, stopped by a signal, not started) or during which the kernel
+// killed processes of the heavy scope is not rerun either: the probe's output
+// and record stand for the step, which a memory failure fails.
+func (r *Runner) builtinVetStep(ctx context.Context, source string, trimmed, argv []string, command func([]string) *exec.Cmd) error {
+	probe := &vetProbe{}
+	stdout, stderr := r.Stdout, r.Stderr
+	r.Stdout, r.Stderr = probe.stream(false, false), probe.stream(true, false)
+	held := r.holdRecords()
+	cmd := command(trimmed)
+	cmd.Stdout, cmd.Stderr = probe.stream(false, true), probe.stream(true, true)
+	_, err := r.measureWithCapture(ctx, cmd, source, true, nil)
+	r.Stdout, r.Stderr = stdout, stderr
+	first := held()
+	if len(first) == 0 && cmd.ProcessState == nil && err != nil {
+		// It did not start: the step is that failure, recorded as a rerun
+		// that does not start is.
+		first = []heldRecord{{source: source, code: stepExit(err), reason: err.Error()}}
+	}
+	if !vetReported(ctx, cmd, probe.reported()) || isMemoryFailure(err) {
+		for i := range first {
+			rec := &first[i]
+			r.recordStep(rec.source, rec.use, rec.code, rec.reason, rec.builtin...)
+		}
+		return errors.Join(err, probe.replay(stdout, stderr))
+	}
+	fmt.Fprintln(stderr, vetRerunNotice)
+	held = r.holdRecords()
+	cmd = command(argv)
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	_, err = r.measureWithCapture(ctx, cmd, source, true, nil)
+	again := held()
+	if len(again) == 0 && len(first) > 0 {
+		// The rerun did not start: the step is that failure, its cost the
+		// trimmed run's.
+		again = []heldRecord{{source: source, code: stepExit(err), reason: err.Error(), builtin: first[len(first)-1].builtin}}
+	}
+	for i := range again {
+		rec := &again[i]
+		if i == len(again)-1 {
+			parts := make([]stats.Usage, 0, len(first)+1)
+			for j := range first {
+				parts = append(parts, first[j].use)
+			}
+			rec.use = stats.SequentialUsage(append(parts, rec.use))
+		}
+		r.recordStep(rec.source, rec.use, rec.code, rec.reason, rec.builtin...)
+	}
+	return err
+}
+
+// vetReported tells whether a finished vet run reported: it exited by itself,
+// its context still live, with a non-zero status or after printing.
+func vetReported(ctx context.Context, cmd *exec.Cmd, printed bool) bool {
+	if ctx.Err() != nil || cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
+		return false
+	}
+	return cmd.ProcessState.ExitCode() != 0 || printed
+}
+
+// heldRecord is a step record recordStep held back.
+type heldRecord struct {
+	source  string
+	use     stats.Usage
+	code    int
+	reason  string
+	builtin []bool
+}
+
+// holdRecords makes recordStep hold the step records it gets, touching
+// neither the frames nor the stats, until the returned func, which gives
+// them back and ends the hold.
+func (r *Runner) holdRecords() func() []heldRecord {
+	held := &[]heldRecord{}
+	r.heldRecords = held
+	return func() []heldRecord {
+		r.heldRecords = nil
+		return *held
+	}
+}
+
+// vetProbeLimit bounds the output of a probe vet graft holds, as tailCapture
+// bounds a step's reason.
+const vetProbeLimit = 64 << 10
+
+// vetProbe holds the output of a probe vet run in the order it came, the
+// latest vetProbeLimit bytes of it.
+type vetProbe struct {
+	mu      sync.Mutex
+	chunks  []vetChunk
+	size    int
+	dropped int
+	printed bool
+}
+
+type vetChunk struct {
+	stderr bool
+	data   []byte
+}
+
+type vetStream struct {
+	probe           *vetProbe
+	stderr, process bool
+}
+
+// stream is a writer into the probe: stderr's or stdout's, the process's own
+// or graft's.
+func (p *vetProbe) stream(stderr, process bool) io.Writer {
+	return vetStream{probe: p, stderr: stderr, process: process}
+}
+
+func (w vetStream) Write(b []byte) (int, error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
+	p := w.probe
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if w.process {
+		p.printed = true
+	}
+	p.chunks = append(p.chunks, vetChunk{stderr: w.stderr, data: bytes.Clone(b)})
+	p.size += len(b)
+	for p.size > vetProbeLimit && len(p.chunks) > 0 {
+		over := p.size - vetProbeLimit
+		head := &p.chunks[0]
+		if len(head.data) <= over {
+			p.size -= len(head.data)
+			p.dropped += len(head.data)
+			p.chunks = p.chunks[1:]
+			continue
+		}
+		head.data = head.data[over:]
+		p.size -= over
+		p.dropped += over
+	}
+	return len(b), nil
+}
+
+func (p *vetProbe) reported() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.printed
+}
+
+// replay writes the held output to stdout and stderr, saying first how much
+// of its start the limit dropped.
+func (p *vetProbe) replay(stdout, stderr io.Writer) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var errs []error
+	if p.dropped > 0 {
+		_, err := fmt.Fprintf(stderr, "graft: go vet: the first %d bytes of its output were dropped\n", p.dropped)
+		errs = append(errs, err)
+	}
+	for _, c := range p.chunks {
+		w := stdout
+		if c.stderr {
+			w = stderr
+		}
+		_, err := w.Write(c.data)
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// stepEnv is the variables and the environment of a step of t, threads its
+// heavy thread count.
+func (r *Runner) stepEnv(ctx context.Context, t *config.Task, report, threads string) (map[string]string, []string, error) {
+	vars, err := r.vars(ctx, t, report)
+	if err != nil {
+		return nil, nil, err
+	}
+	env, own, err := r.env(t, vars)
+	if err != nil {
+		return nil, nil, err
+	}
+	env, err = r.heavyEnv(env, own, t, threads)
+	return vars, env, err
 }
 
 func (r *Runner) reportNestedGateReason(s config.Step, t *config.Task) {
@@ -3434,9 +3653,24 @@ func (r *Runner) memoryFailure(before map[string]uint64, source string) error {
 	}
 	after, err := iosched.MemoryEvents(os.Getenv(loadgate.ProcEnv))
 	if err != nil {
-		return fmt.Errorf("memory ceiling of %s: %w", source, err)
+		return memoryError{fmt.Errorf("memory ceiling of %s: %w", source, err)}
 	}
-	return memoryKills(r.heavyPlace, before, after, currentTask(r))
+	if err := memoryKills(r.heavyPlace, before, after, currentTask(r)); err != nil {
+		return memoryError{err}
+	}
+	return nil
+}
+
+// memoryError is memoryFailure's error: the kernel killed processes of the
+// heavy scope during the step, or its memory events could not be read after.
+type memoryError struct{ error }
+
+func (e memoryError) Unwrap() error { return e.error }
+
+// isMemoryFailure tells whether err holds a step's memoryFailure.
+func isMemoryFailure(err error) bool {
+	var memory memoryError
+	return errors.As(err, &memory)
 }
 
 // memoryKills says what the growth of memory.events from before to after

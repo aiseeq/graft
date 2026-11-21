@@ -333,7 +333,7 @@ func TestBusyGateBuiltinVetBackHereWhenThePathBreaks(t *testing.T) {
 	if !strings.Contains(out, "pc path broken") || !strings.Contains(out, "running here") {
 		t.Errorf("the broken built-in vet path is not said:\n%s", out)
 	}
-	if got := readFile(t, log); !strings.Contains(got, "vet ./...") {
+	if got := readFile(t, log); !strings.Contains(got, "vet -trimpath ./...") {
 		t.Errorf("go vet was not repeated here after the path broke: go calls = %q\n%s", got, out)
 	}
 	// go vet ran here after the path broke, go fix after it did not try pc.

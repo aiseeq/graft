@@ -75,11 +75,23 @@ var trimBuilds = []string{"build", "install", "run", "test"}
 // program's.
 // Without it the go command keys a package of the module by its directory,
 // and every worktree of a repository fills the build cache with its own copy
-// of what the others built. go vet and go fix go without: under -trimpath they
-// replay a result another worktree cached with that tree's paths, and go fix
-// rewrites the files there.
+// of what the others built. go vet and go fix are not here: under -trimpath
+// both replay a result another worktree cached, with that tree's paths. The
+// gate's built-in vet gets it from trimVetPaths, rerun without it when it
+// reports (builtinVetStep); go fix goes without, for it rewrites the files of
+// that other tree.
 func trimPaths(argv, env []string) []string {
-	if len(argv) < 2 || argv[0] != "go" || !slices.Contains(trimBuilds, argv[1]) {
+	return addTrimPath(argv, env, trimBuilds)
+}
+
+// trimVetPaths is trimPaths for go vet, the gate's built-in one only.
+func trimVetPaths(argv, env []string) []string {
+	return addTrimPath(argv, env, []string{"vet"})
+}
+
+// addTrimPath is trimPaths for the go commands of commands.
+func addTrimPath(argv, env []string, commands []string) []string {
+	if len(argv) < 2 || argv[0] != "go" || !slices.Contains(commands, argv[1]) {
 		return argv
 	}
 	flags, _ := lookupEnv(env, "GOFLAGS")
