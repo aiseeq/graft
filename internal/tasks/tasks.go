@@ -323,7 +323,7 @@ const LexOutputsSource = "lex check --codex <path> --outputs-under <root>"
 const lexOutputsHint = "run lex absorb for the named files, then commit the generated outputs"
 
 // goFixHint follows a failing go_fix step.
-const goFixHint = "go fix has rewrites to make: run go fix ./... in the module, again until go fix -diff ./... is empty (one pass leaves rewrites that overlap), and commit them. " +
+const goFixHint = "go fix has rewrites to make: run go fix ./... in the module, again until go fix -diff ./... is empty (one pass leaves rewrites that overlap), and commit them; a //go:fix inline function left without calls is dead, delete it (glint unused-symbol). " +
 	"A new Go release brings new rewrites: after a Go upgrade this step fails in every project that turns it on, whatever the change"
 
 const goFmtHint = "run gofmt -w <files> and commit them"
