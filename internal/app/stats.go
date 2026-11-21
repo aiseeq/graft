@@ -68,7 +68,10 @@ func (a *App) Stats(o StatsOptions) error {
 	if o.Tests {
 		return a.statsTests(path, stats.TestFilter{Since: since, Until: o.Until, Project: f.Project, Task: o.Task, MaxLoad: o.MaxLoad}, where+calmNote(o.MaxLoad))
 	}
-	recs, malformed, err := stats.Load(path, since)
+	var recs []stats.Record
+	var malformed int
+	var journalStart time.Time
+	recs, malformed, journalStart, err = loadStatsRecords(path, since, f.Project, o)
 	if err != nil {
 		return err
 	}
@@ -78,15 +81,9 @@ func (a *App) Stats(o StatsOptions) error {
 	if !o.Until.IsZero() {
 		recs = beforeUntil(recs, o.Until)
 	}
-	first := earliest(recs, func(r *stats.Record) time.Time { return r.Time })
-	if o.Failures || o.Value == "" && o.By == "" {
-		start, err := stats.LogStart(path, since)
-		if err != nil {
-			return err
-		}
-		if !start.IsZero() && (first.IsZero() || start.Before(first)) {
-			first = start
-		}
+	first, err := statsReportStart(path, since, recs, journalStart, o)
+	if err != nil {
+		return err
 	}
 	if o.Failures {
 		return a.statsFailures(recs, f, where, since, first)
@@ -98,6 +95,34 @@ func (a *App) Stats(o StatsOptions) error {
 		return a.statsBy(recs, f, o, where, since)
 	}
 	return a.statsTasks(recs, path, f, o, where, since, first)
+}
+
+func loadStatsRecords(path string, since time.Time, project string, o StatsOptions) ([]stats.Record, int, time.Time, error) {
+	if o.Value != "" {
+		recs, malformed, err := stats.Load(path, since)
+		return recs, malformed, time.Time{}, err
+	}
+	if o.Failures && o.In != "" {
+		project = ""
+	}
+	return stats.LoadProjectWithStart(path, since, project)
+}
+
+func statsReportStart(path string, since time.Time, recs []stats.Record, journalStart time.Time, o StatsOptions) (time.Time, error) {
+	first := earliest(recs, func(r *stats.Record) time.Time { return r.Time })
+	if !journalStart.IsZero() && (first.IsZero() || journalStart.Before(first)) {
+		first = journalStart
+	}
+	if o.Failures || o.Value == "" && o.By == "" {
+		start, err := stats.LogStart(path, since)
+		if err != nil {
+			return first, err
+		}
+		if !start.IsZero() && (first.IsZero() || start.Before(first)) {
+			first = start
+		}
+	}
+	return first, nil
 }
 
 func (a *App) statsRefused(project, where string, since, until time.Time) error {
@@ -463,7 +488,7 @@ func (a *App) statsTests(statsPath string, f stats.TestFilter, where string) err
 	if malformed > 0 {
 		fmt.Fprintf(a.Stderr, "graft: %s: %d malformed line(s) left out\n", path, malformed)
 	}
-	recs, malformed, err := stats.Load(statsPath, f.Since)
+	recs, malformed, err := stats.LoadProject(statsPath, f.Since, f.Project)
 	if err != nil {
 		return err
 	}

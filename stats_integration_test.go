@@ -406,6 +406,93 @@ func TestStatsCommand(t *testing.T) {
 	}
 }
 
+func TestStatsProjectPrefilterCLICompatibility(t *testing.T) {
+	f, statsFile := statsRepo(t, "")
+	root := realRoot(t, f)
+	other := filepath.Join(f.base, "other")
+	now := time.Now().Truncate(time.Second)
+	old := now.Add(-2 * time.Hour)
+	appendRecord := func(dst *strings.Builder, record stats.Record, spacedProject bool) {
+		t.Helper()
+		line, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if spacedProject {
+			line = []byte(strings.Replace(string(line), `"project":`, `"project": `, 1))
+		}
+		dst.Write(line)
+		dst.WriteByte('\n')
+	}
+	var journal strings.Builder
+	appendRecord(&journal, stats.Record{Time: old, Kind: stats.KindTask, Project: other, Task: "foreign", Top: "foreign", WallS: 1}, false)
+	appendRecord(&journal, stats.Record{Time: old.Add(time.Hour), Kind: stats.KindTask, Project: root, Task: "build", Top: "build", WallS: 2}, true)
+	appendRecord(&journal, stats.Record{Time: old.Add(time.Hour + time.Minute), Kind: stats.KindStep, Project: root, Task: "child", Top: "child", Step: "compile", Run: "shared-run", Exit: 1}, false)
+	appendRecord(&journal, stats.Record{Time: old.Add(time.Minute), Kind: stats.KindTask, Project: other, Task: "child", Top: "child", In: "outer", Run: "shared-run", WallS: 1}, false)
+	journal.WriteString("{torn line\n")
+	writeFile(t, statsFile, journal.String())
+
+	testJournal := strings.Builder{}
+	for i, run := range []stats.PackageRun{
+		{Time: old, Project: other, Task: "foreign", Top: "foreign", Runner: "go", Package: "example/foreign", Result: stats.ResultPass, WallS: 1},
+		{Time: old.Add(time.Hour), Project: root, Task: "build", Top: "build", Runner: "go", Package: "example/root", Result: stats.ResultPass, WallS: 2},
+	} {
+		line, err := json.Marshal(run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 1 {
+			line = []byte(strings.Replace(string(line), `"project":`, `"project": `, 1))
+		}
+		testJournal.Write(line)
+		testJournal.WriteByte('\n')
+	}
+	testJournal.WriteString("{torn line\n")
+	writeFile(t, stats.TestsPath(statsFile), testJournal.String())
+
+	headerTime := func(output, marker string) string {
+		t.Helper()
+		for line := range strings.SplitSeq(output, "\n") {
+			if strings.Contains(line, marker) {
+				_, value, ok := strings.Cut(line, " since ")
+				if ok {
+					return value
+				}
+			}
+		}
+		t.Fatalf("no %q report header in:\n%s", marker, output)
+		return ""
+	}
+	rootTasks := f.mustGraft("stats", "--since", "7d")
+	allTasks := f.mustGraft("stats", "--all", "--since", "7d")
+	if got, want := headerTime(rootTasks, "tasks in "), headerTime(allTasks, "tasks in "); got != want {
+		t.Errorf("project task header start = %q, all-project start = %q", got, want)
+	}
+	if !strings.Contains(rootTasks, "1 malformed line(s) left out") {
+		t.Errorf("malformed line without a project needle was not counted:\n%s", rootTasks)
+	}
+	if !strings.Contains(rootTasks, "build") || !strings.Contains(f.mustGraft("stats", "--task", "build", "--since", "7d"), "build") {
+		t.Errorf("root record with whitespace after project colon was lost:\n%s", rootTasks)
+	}
+
+	rootTests := f.mustGraft("stats", "--tests", "--since", "7d")
+	allTests := f.mustGraft("stats", "--tests", "--all", "--since", "7d")
+	if got, want := headerTime(rootTests, "tests in "), headerTime(allTests, "tests in "); got != want {
+		t.Errorf("project test header start = %q, all-project start = %q", got, want)
+	}
+	if strings.Count(rootTests, "malformed line(s) left out") != 2 {
+		t.Errorf("tests report did not count malformed lines in both journals:\n%s", rootTests)
+	}
+	if !strings.Contains(rootTests, "example/root") {
+		t.Errorf("test record with whitespace after project colon was lost:\n%s", rootTests)
+	}
+
+	failures := f.mustGraft("stats", "--failures", "--task", "child", "--in", "outer", "--since", "7d")
+	if !strings.Contains(failures, "child") || !strings.Contains(failures, "compile") {
+		t.Errorf("--failures --in lost a root failure matched by another project's taskInputs:\n%s", failures)
+	}
+}
+
 // TestStatsNestedGraft: a graft a task step starts records the run of the
 // outer graft as its parent, and the breakdown of the outer task shows the
 // inner graft's outermost task as a row of its own.

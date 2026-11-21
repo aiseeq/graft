@@ -1,12 +1,147 @@
 package stats
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestProjectPrefilterMatchesMarshalEncodingAndReports(t *testing.T) {
+	root := `/work/project"\\<&>雪`
+	when := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	records := []Record{
+		{Time: when, Kind: KindTask, Project: root, Task: "build", WallS: 4, Run: "ours"},
+		{Time: when, Kind: KindTask, Project: "/work/projectB", Task: "other", WallS: 8},
+		{Time: when, Kind: KindTask, Project: root, Task: "failed", Exit: 1, Reason: "broken", Run: "failed"},
+		{Time: when, Kind: KindTask, Project: "/work/projectB", Task: "other-failed", Exit: 1, Run: "other-failed"},
+	}
+	var journal bytes.Buffer
+	for _, record := range records {
+		line, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal.Write(line)
+		journal.WriteByte('\n')
+	}
+	needle, _ := json.Marshal(root)
+	journal.WriteString(`{"project":` + string(needle) + `, broken` + "\n")
+	journal.WriteString("{torn line\n")
+
+	all, allBad, err := decodeRecords(bytes.NewReader(journal.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	filtered, filteredBad, err := decodeRecordsProject(bytes.NewReader(journal.Bytes()), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allBad != 2 || filteredBad != allBad {
+		t.Fatalf("malformed counts: all=%d filtered=%d, want both 2", allBad, filteredBad)
+	}
+	want := []Record{records[0], records[2]}
+	if !reflect.DeepEqual(filtered, want) {
+		t.Fatalf("filtered records = %#v, want %#v", filtered, want)
+	}
+	selectRoot := func(rows []Record) []Record {
+		var selected []Record
+		for _, row := range rows {
+			if row.Project == root {
+				selected = append(selected, row)
+			}
+		}
+		return selected
+	}
+	render := func(rows []Record) string {
+		taskRows, _ := Summarize(selectRoot(rows), Filter{Project: root})
+		var out strings.Builder
+		if err := Render(&out, taskRows, "TASK", false); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	if got, want := render(all), render(filtered); got != want {
+		t.Fatalf("filtered task report differs:\n%s\nwant:\n%s", got, want)
+	}
+	taskReport := func(rows []Record, malformed int) string {
+		taskRows, _ := Summarize(selectRoot(rows), Filter{Project: root, Task: "build"})
+		var out strings.Builder
+		fmt.Fprintf(&out, "malformed=%d\n", malformed)
+		if err := Render(&out, taskRows, "STEP", false); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	if got, want := taskReport(all, allBad), taskReport(filtered, filteredBad); got != want {
+		t.Fatalf("filtered task breakdown differs:\n%s\nwant:\n%s", got, want)
+	}
+	failureReport := func(rows []Record, malformed int) string {
+		selected := selectRoot(rows)
+		failures := FailureRuns(selected, Filter{Project: root})
+		var out strings.Builder
+		fmt.Fprintf(&out, "malformed=%d\n", malformed)
+		for _, failure := range failures {
+			fmt.Fprintf(&out, "%s %d %s\n", failure.Task, failure.Exit, failure.Reason)
+		}
+		return out.String()
+	}
+	if got, want := failureReport(all, allBad), failureReport(filtered, filteredBad); got != want {
+		t.Fatalf("filtered failures differ:\n%s\nwant:\n%s", got, want)
+	}
+
+	runs := []PackageRun{
+		{Time: when, Project: root, Package: "example/p", Result: ResultPass, WallS: 3},
+		{Time: when, Project: "/work/projectB", Package: "other/p", Result: ResultPass, WallS: 9},
+	}
+	journal.Reset()
+	for _, run := range runs {
+		line, err := json.Marshal(run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal.Write(line)
+		journal.WriteByte('\n')
+	}
+	journal.WriteString(`{"project":` + string(needle) + `, broken` + "\n")
+	journal.WriteString("{torn line\n")
+	allRuns, allBad, err := decodePackageRuns(bytes.NewReader(journal.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	filteredRuns, filteredBad, err := decodePackageRunsProject(bytes.NewReader(journal.Bytes()), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allBad != 2 || filteredBad != allBad || len(filteredRuns) != 1 || filteredRuns[0].Project != root {
+		t.Fatalf("test prefilter: malformed all/filtered=%d/%d, records=%+v", allBad, filteredBad, filteredRuns)
+	}
+	selectTestRoot := func(rows []PackageRun) []PackageRun {
+		var selected []PackageRun
+		for _, row := range rows {
+			if row.Project == root {
+				selected = append(selected, row)
+			}
+		}
+		return selected
+	}
+	testReport := func(rows []PackageRun, malformed int) string {
+		rep := summarizeTests(selectTestRoot(rows), TestFilter{Project: root}, 20)
+		var out strings.Builder
+		fmt.Fprintf(&out, "malformed=%d\n", malformed)
+		if err := RenderTests(&out, rep, false); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	if got, want := testReport(allRuns, allBad), testReport(filteredRuns, filteredBad); got != want {
+		t.Fatalf("filtered test report differs:\n%s\nwant:\n%s", got, want)
+	}
+}
 
 // TestReportShowsTheDatabase: the DB CPU and DB MEM columns appear when a
 // task recorded its test database, the median CPU and the largest memory of

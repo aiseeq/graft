@@ -20,20 +20,46 @@ import (
 // itself, oldest first. Lines that are not records (a torn write of a
 // crashed graft) are counted in malformed and left out.
 func Load(path string, since time.Time) (recs []Record, malformed int, err error) {
+	recs, malformed, _, err = load(path, since, "")
+	return recs, malformed, err
+}
+
+// LoadProject reads only records whose project field can match project. The
+// report still applies its normal exact project filter after decoding.
+func LoadProject(path string, since time.Time, project string) (recs []Record, malformed int, err error) {
+	recs, malformed, _, err = load(path, since, project)
+	return recs, malformed, err
+}
+
+// LoadProjectWithStart also returns the earliest valid record time across all
+// projects, for report headers that describe the whole journal.
+func LoadProjectWithStart(path string, since time.Time, project string) (recs []Record, malformed int, first time.Time, err error) {
+	return load(path, since, project)
+}
+
+func load(path string, since time.Time, project string) (recs []Record, malformed int, first time.Time, err error) {
 	files, err := Files(path, since)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, time.Time{}, err
 	}
 	sweepHistoryGZ(path)
 	for _, p := range files {
-		r, m, err := readHistory(p, decodeRecords)
+		decode := decodeRecords
+		if project != "" {
+			decode = func(reader io.Reader) ([]Record, int, error) {
+				r, bad, start, decodeErr := decodeRecordsProjectWithStart(reader, project)
+				first = earlierTime(first, start)
+				return r, bad, decodeErr
+			}
+		}
+		r, m, err := readHistory(p, decode)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, time.Time{}, err
 		}
 		recs = append(recs, r...)
 		malformed += m
 	}
-	return recs, malformed, nil
+	return recs, malformed, first, nil
 }
 
 // LoadTail reads at most maxBytes from the newest end of the stats journal,
@@ -97,23 +123,193 @@ func loadTailFile(path string, maxBytes int64) ([]Record, int, int64, error) {
 }
 
 func decodeRecords(reader io.Reader) (recs []Record, malformed int, err error) {
+	return decodeRecordsMatching(reader, nil)
+}
+
+func decodeRecordsProject(reader io.Reader, project string) ([]Record, int, error) {
+	encoded, err := json.Marshal(project)
+	if err != nil {
+		return nil, 0, fmt.Errorf("encoding project needle: %w", err)
+	}
+	return decodeRecordsMatching(reader, encoded)
+}
+
+func decodeRecordsMatching(reader io.Reader, needle []byte) (recs []Record, malformed int, err error) {
+	recs, malformed, _, err = decodeRecordsMatchingWithStart(reader, needle)
+	return recs, malformed, err
+}
+
+func decodeRecordsProjectWithStart(reader io.Reader, project string) ([]Record, int, time.Time, error) {
+	encoded, err := json.Marshal(project)
+	if err != nil {
+		return nil, 0, time.Time{}, fmt.Errorf("encoding project needle: %w", err)
+	}
+	return decodeRecordsMatchingWithStart(reader, encoded)
+}
+
+func decodeRecordsMatchingWithStart(reader io.Reader, needle []byte) (recs []Record, malformed int, first time.Time, err error) {
 	sc := bufio.NewScanner(reader)
 	sc.Buffer(make([]byte, 64*1024), 1<<20)
 	for sc.Scan() {
+		line := sc.Bytes()
+		if needle != nil && !bytes.Contains(line, needle) {
+			start, valid := filteredRecordTime(line, "kind", "task")
+			if !valid {
+				malformed++
+				continue
+			}
+			first = earlierTime(first, start)
+			continue
+		}
 		var r Record
-		if json.Unmarshal(sc.Bytes(), &r) != nil || r.Kind == "" || r.Task == "" {
+		if json.Unmarshal(line, &r) != nil || r.Kind == "" || r.Task == "" {
 			malformed++
 			continue
 		}
+		first = earlierTime(first, r.Time)
 		recs = append(recs, r)
 	}
 	if err := sc.Err(); err != nil {
-		return recs, malformed, fmt.Errorf("scanning stats records: %w", err)
+		return recs, malformed, first, fmt.Errorf("scanning stats records: %w", err)
 	}
-	return recs, malformed, nil
+	return recs, malformed, first, nil
+}
+
+// filteredRecordTime handles writer-shaped foreign records without validating
+// or decoding their full JSON. appendUnderLock writes json.Marshal output as a
+// single newline-terminated object, so incomplete writes fail the framing or
+// required-field checks. Suspicious lines take the full validation path to
+// retain the malformed count for other input shapes.
+func filteredRecordTime(line []byte, required ...string) (time.Time, bool) {
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' || bytes.Contains(trimmed, []byte("}{")) {
+		return decodeSuspiciousRecordTime(line, required...)
+	}
+	stamp, timeOK := jsonTimeField(trimmed)
+	fieldsOK := timeOK
+	for _, name := range required {
+		if !jsonNonemptyStringField(trimmed, name) {
+			fieldsOK = false
+			break
+		}
+	}
+	if fieldsOK {
+		return stamp, true
+	}
+	return decodeSuspiciousRecordTime(line, required...)
+}
+
+func decodeSuspiciousRecordTime(line []byte, required ...string) (time.Time, bool) {
+	if !json.Valid(line) {
+		return time.Time{}, false
+	}
+	var meta struct {
+		Time    time.Time `json:"time"`
+		Kind    string    `json:"kind"`
+		Task    string    `json:"task"`
+		Package string    `json:"package"`
+		Result  string    `json:"result"`
+	}
+	if json.Unmarshal(line, &meta) != nil {
+		return time.Time{}, false
+	}
+	for _, name := range required {
+		var value string
+		switch name {
+		case "kind":
+			value = meta.Kind
+		case "task":
+			value = meta.Task
+		case "package":
+			value = meta.Package
+		case "result":
+			value = meta.Result
+		}
+		if value == "" {
+			return time.Time{}, false
+		}
+	}
+	return meta.Time, true
+}
+
+func jsonTimeField(line []byte) (time.Time, bool) {
+	value, ok := jsonStringField(line, "time")
+	if !ok {
+		return time.Time{}, false
+	}
+	var stamp time.Time
+	if stamp.UnmarshalJSON(value) != nil {
+		return time.Time{}, false
+	}
+	return stamp, true
+}
+
+func jsonNonemptyStringField(line []byte, name string) bool {
+	value, ok := jsonStringField(line, name)
+	return ok && len(value) > 2
+}
+
+func jsonStringField(line []byte, name string) ([]byte, bool) {
+	var key [32]byte
+	keyLen := copy(key[:], `"`)
+	keyLen += copy(key[keyLen:], name)
+	keyLen += copy(key[keyLen:], `"`)
+	for search := 0; search < len(line); {
+		rel := bytes.Index(line[search:], key[:keyLen])
+		if rel < 0 {
+			return nil, false
+		}
+		i := search + rel + keyLen
+		search = search + rel + 1
+		for i < len(line) && jsonSpace(line[i]) {
+			i++
+		}
+		if i == len(line) || line[i] != ':' {
+			continue
+		}
+		i++
+		for i < len(line) && jsonSpace(line[i]) {
+			i++
+		}
+		if i == len(line) || line[i] != '"' {
+			continue
+		}
+		if value, ok := jsonQuotedString(line, i); ok {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func jsonQuotedString(line []byte, start int) ([]byte, bool) {
+	for i := start + 1; i < len(line); i++ {
+		if line[i] == '\\' {
+			i++
+			continue
+		}
+		if line[i] == '"' {
+			return line[start : i+1], true
+		}
+	}
+	return nil, false
+}
+
+func jsonSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+}
+
+func earlierTime(current, candidate time.Time) time.Time {
+	if candidate.IsZero() || !current.IsZero() && !candidate.Before(current) {
+		return current
+	}
+	return candidate
 }
 
 func loadFile(path string) (recs []Record, malformed int, err error) {
+	return loadFileProject(path, "")
+}
+
+func loadFileProject(path, project string) (recs []Record, malformed int, err error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, 0, nil
@@ -122,7 +318,11 @@ func loadFile(path string) (recs []Record, malformed int, err error) {
 		return nil, 0, fmt.Errorf("reading the stats: %w", err)
 	}
 	defer f.Close()
-	recs, malformed, err = decodeRecords(f)
+	if project == "" {
+		recs, malformed, err = decodeRecords(f)
+	} else {
+		recs, malformed, err = decodeRecordsProject(f, project)
+	}
 	if err != nil {
 		return nil, 0, fmt.Errorf("reading %s: %w", path, err)
 	}

@@ -2,6 +2,7 @@ package stats
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -186,45 +187,97 @@ func trimJSONSpace(data []byte) []byte {
 	return data[start:end]
 }
 
-// ReadTests visits valid package runs in the old copies and the file,
-// oldest first, as Load reads the stats.
-func ReadTests(path string, since time.Time, visit func(PackageRun) error) (malformed int, err error) {
+// readTestsProject skips journal lines that cannot match the selected project
+// before decoding them, while retaining the journal-wide first record time.
+func readTestsProject(path string, since time.Time, project string, visit func(PackageRun) error) (malformed int, first time.Time, err error) {
+	return readTestsWithStart(path, since, project, visit)
+}
+
+func readTests(path string, since time.Time, project string, visit func(PackageRun) error) (malformed int, err error) {
+	malformed, _, err = readTestsWithStart(path, since, project, visit)
+	return malformed, err
+}
+
+func readTestsWithStart(path string, since time.Time, project string, visit func(PackageRun) error) (malformed int, first time.Time, err error) {
 	files, err := Files(path, since)
 	if err != nil {
-		return malformed, err
+		return malformed, time.Time{}, err
 	}
 	sweepHistoryGZ(filepath.Join(filepath.Dir(path), "stats.jsonl"))
 	var readErr error
 	for _, p := range files {
-		runs, bad, err := readHistory(p, decodePackageRuns)
+		decode := decodePackageRuns
+		if project != "" {
+			decode = func(reader io.Reader) ([]PackageRun, int, error) {
+				runs, bad, start, decodeErr := decodePackageRunsProjectWithStart(reader, project)
+				first = earlierTime(first, start)
+				return runs, bad, decodeErr
+			}
+		}
+		runs, bad, err := readHistory(p, decode)
 		malformed += bad
 		if err != nil {
 			readErr = errors.Join(readErr, err)
 			continue
 		}
 		for i := range runs {
+			first = earlierTime(first, runs[i].Time)
 			if err := visit(runs[i]); err != nil {
-				return malformed, err
+				return malformed, first, err
 			}
 		}
 	}
-	return malformed, readErr
+	return malformed, first, readErr
 }
 
 func decodePackageRuns(reader io.Reader) ([]PackageRun, int, error) {
-	var runs []PackageRun
-	malformed := 0
+	return decodePackageRunsMatching(reader, nil)
+}
+
+func decodePackageRunsProject(reader io.Reader, project string) ([]PackageRun, int, error) {
+	encoded, err := json.Marshal(project)
+	if err != nil {
+		return nil, 0, fmt.Errorf("encoding project needle: %w", err)
+	}
+	return decodePackageRunsMatching(reader, encoded)
+}
+
+func decodePackageRunsMatching(reader io.Reader, needle []byte) ([]PackageRun, int, error) {
+	runs, malformed, _, err := decodePackageRunsMatchingWithStart(reader, needle)
+	return runs, malformed, err
+}
+
+func decodePackageRunsProjectWithStart(reader io.Reader, project string) ([]PackageRun, int, time.Time, error) {
+	encoded, err := json.Marshal(project)
+	if err != nil {
+		return nil, 0, time.Time{}, fmt.Errorf("encoding project needle: %w", err)
+	}
+	return decodePackageRunsMatchingWithStart(reader, encoded)
+}
+
+func decodePackageRunsMatchingWithStart(reader io.Reader, needle []byte) (runs []PackageRun, malformed int, first time.Time, err error) {
 	sc := bufio.NewScanner(reader)
 	sc.Buffer(make([]byte, 64*1024), 64<<20)
 	for sc.Scan() {
+		line := sc.Bytes()
+		if needle != nil && !bytes.Contains(line, needle) {
+			start, valid := filteredRecordTime(line, "package", "result")
+			if !valid {
+				malformed++
+				continue
+			}
+			first = earlierTime(first, start)
+			continue
+		}
 		var r PackageRun
-		if json.Unmarshal(sc.Bytes(), &r) != nil || r.Package == "" || r.Result == "" {
+		if json.Unmarshal(line, &r) != nil || r.Package == "" || r.Result == "" {
 			malformed++
 			continue
 		}
+		first = earlierTime(first, r.Time)
 		runs = append(runs, r)
 	}
-	return runs, malformed, sc.Err()
+	return runs, malformed, first, sc.Err()
 }
 
 // TestFilter selects the package runs a report covers.
@@ -618,7 +671,7 @@ func summarizeTests(runs []PackageRun, f TestFilter, limit int) TestReport {
 // files, including runs excluded by the filter.
 func SummarizeTestFile(path string, f TestFilter, limit int) (rep TestReport, earliest time.Time, malformed int, err error) {
 	t := newTestTally()
-	malformed, err = ReadTests(path, f.Since, func(r PackageRun) error {
+	malformed, earliest, err = readTestsProject(path, f.Since, f.Project, func(r PackageRun) error {
 		if earliest.IsZero() || r.Time.Before(earliest) {
 			earliest = r.Time
 		}

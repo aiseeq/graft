@@ -68,7 +68,7 @@ func reportOutput(t *testing.T, records []Record) string {
 func testsOutput(t *testing.T, path string) string {
 	t.Helper()
 	var runs []PackageRun
-	malformed, err := ReadTests(path, time.Time{}, func(r PackageRun) error { runs = append(runs, r); return nil })
+	malformed, err := readTests(path, time.Time{}, "", func(r PackageRun) error { runs = append(runs, r); return nil })
 	if err != nil || malformed != 1 {
 		t.Fatalf("ReadTests: malformed=%d err=%v", malformed, err)
 	}
@@ -382,7 +382,7 @@ func TestReadTestsCorruptGZFallsBackWithoutPartialRuns(t *testing.T) {
 				t.Fatal(err)
 			}
 			var runs []PackageRun
-			malformed, err := ReadTests(testsPath, time.Time{}, func(r PackageRun) error {
+			malformed, err := readTests(testsPath, time.Time{}, "", func(r PackageRun) error {
 				runs = append(runs, r)
 				return nil
 			})
