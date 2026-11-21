@@ -144,6 +144,7 @@ type commitPlan struct {
 	branch         string
 	remotes        []string
 	message        string
+	ticketHints    commitTicketHintBatch
 	bump           bumpPlan
 	bumpBeforeGate bool
 	// head is HEAD when the commit starts: what the gate is about to check the
@@ -293,8 +294,9 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 		return err
 	}
 	a.warnFirstCommitWithoutRemote(repo, plan)
-	a.commitTicketHints(ctx, cfg, plan.message)
-	backup, frozen, advisoryFailed, err := a.prepareCommitGate(ctx, repo, cfg, plan)
+	plan.ticketHints = a.readCommitTicketHints(ctx, cfg, plan.message)
+	a.writeCommitTicketHints(cfg, plan.ticketHints)
+	backup, frozen, advisoryFailed, err := a.prepareCommitGate(ctx, repo, cfg, &plan)
 	if err != nil {
 		return err
 	}
@@ -338,6 +340,9 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 			a.warn("ticket journal was not written: %v", err)
 		}
 	}
+	if paths, pathsErr := repo.StagedFiles(plan.head.sha); pathsErr == nil {
+		a.writeNonReleaseParentHints(cfg, plan.ticketHints, paths)
+	}
 	if _, err := repo.GitInput(strings.NewReader(msg), markerEnv, "commit", "--cleanup=verbatim", "-F", "-"); err != nil {
 		if rollbackJournal != nil {
 			err = errors.Join(err, rollbackJournal())
@@ -347,7 +352,7 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 	return a.finishCommit(ctx, repo, cfg, plan, frozen, advisoryFailed)
 }
 
-func (a *App) prepareCommitGate(ctx context.Context, repo *gitx.Repo, cfg *config.Config, plan commitPlan) (*version.Backup, *activeFreeze, []string, error) {
+func (a *App) prepareCommitGate(ctx context.Context, repo *gitx.Repo, cfg *config.Config, plan *commitPlan) (*version.Backup, *activeFreeze, []string, error) {
 	// plan.head was read just now: HEAD is not read again before the gate,
 	// and a move by then stops the commit at stageGateChanges.
 	hasHead := plan.head.sha != ""

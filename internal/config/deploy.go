@@ -315,6 +315,9 @@ type ApprovedRelease struct {
 	IgnorePaths []string `yaml:"ignore_paths"`
 	// Ignore is IgnorePaths compiled.
 	Ignore []*regexp.Regexp `yaml:"-"`
+	// NonReleaseParents are task keys whose subtasks contain work that does
+	// not ship in this release.
+	NonReleaseParents []string `yaml:"non_release_parents"`
 	// Attribute ties commits whose messages name no item to their items.
 	Attribute []Attribution `yaml:"attribute"`
 	// Attributed maps the full commit hashes of Attribute to their entries.
@@ -862,15 +865,41 @@ func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {
 	if err := validateLabelStatuses(where+".approved_release.label_statuses", t.ApprovedRelease.LabelStatuses); err != nil {
 		return err
 	}
-	t.ApprovedRelease.Ignore = nil
-	for i, g := range t.ApprovedRelease.IgnorePaths {
+	if err := c.validateNonReleaseParents(where, t.ApprovedRelease); err != nil {
+		return err
+	}
+	if err := compileApprovedIgnorePaths(where, t.ApprovedRelease); err != nil {
+		return err
+	}
+	return c.validateAttribute(where+".approved_release.attribute", t.ApprovedRelease)
+}
+
+func compileApprovedIgnorePaths(where string, approved *ApprovedRelease) error {
+	approved.Ignore = nil
+	for i, g := range approved.IgnorePaths {
 		re, err := CompileGlob(g)
 		if err != nil {
 			return fmt.Errorf("%s.approved_release.ignore_paths[%d]: %w", where, i, err)
 		}
-		t.ApprovedRelease.Ignore = append(t.ApprovedRelease.Ignore, re)
+		approved.Ignore = append(approved.Ignore, re)
 	}
-	return c.validateAttribute(where+".approved_release.attribute", t.ApprovedRelease)
+	return nil
+}
+
+func (c *Config) validateNonReleaseParents(where string, approved *ApprovedRelease) error {
+	for i, key := range approved.NonReleaseParents {
+		if key == "" {
+			return fmt.Errorf("%s.approved_release.non_release_parents[%d]: blank", where, i)
+		}
+		if c.Ticket == nil || c.Ticket.Regexp == nil {
+			continue
+		}
+		match := c.Ticket.Regexp.FindStringIndex(key)
+		if match == nil || match[0] != 0 || match[1] != len(key) {
+			return fmt.Errorf("%s.approved_release.non_release_parents[%d]: %q does not match ticket.pattern", where, i, key)
+		}
+	}
+	return nil
 }
 
 func (c *Config) validateApprovedDormant(where string, approved *ApprovedRelease) error {

@@ -580,6 +580,33 @@ deploy:
 	}
 }
 
+func TestApprovedReleaseNonReleaseParentsMatchTicketPattern(t *testing.T) {
+	base := `schema: 1
+version: {mode: file}
+ticket: {pattern: 'PROJ-[0-9]+'}
+envs: {local: {}}
+release_notes: {jira: {project_keys: [PROJ]}}
+deploy:
+  remote: origin
+  targets:
+    test: {env: local, run: [sh, deploy.sh], deployed_sha: {path: /tmp/deployed}, approved_release: {prefix: Product, non_release_parents: [PROJ-1]}}
+`
+	if _, err := Parse([]byte(base)); err != nil {
+		t.Fatalf("valid non_release_parents: %v", err)
+	}
+	for _, key := range []string{"OTHER-1", "PROJ-1-extra"} {
+		bad := strings.Replace(base, "[PROJ-1]", "["+key+"]", 1)
+		if _, err := Parse([]byte(bad)); err == nil || !strings.Contains(err.Error(), "approved_release.non_release_parents[0]") {
+			t.Errorf("invalid non_release_parent %s error = %v", key, err)
+		}
+	}
+	blankWithoutTicket := strings.Replace(base, "ticket: {pattern: 'PROJ-[0-9]+'}\n", "", 1)
+	blankWithoutTicket = strings.Replace(blankWithoutTicket, "[PROJ-1]", `[""]`, 1)
+	if _, err := Parse([]byte(blankWithoutTicket)); err == nil || !strings.Contains(err.Error(), "approved_release.non_release_parents[0]") {
+		t.Fatalf("blank non_release_parent without ticket pattern error = %v", err)
+	}
+}
+
 func TestConfigWorktreeDisposablePath(t *testing.T) {
 	w := Worktree{Disposable: []string{"*.stamp", "logs", "frontend/dist/", "/config.yaml", "/root-only/", "any/"}}
 	for _, name := range []string{"build.stamp", "frontend/build.stamp", "logs/a.txt", "frontend/dist/app.js", "config.yaml", "root-only/a", "any/a", "sub/any/a"} {

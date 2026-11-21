@@ -2061,6 +2061,7 @@ deploy:
           internal: [Done]
         prefix: "Product v"     # optional: and in a "Product v…" version every approver approved
         ignore_paths: ["docs/**", "*.md"]   # a commit changing only these ships nothing and passes
+        non_release_parents: [PROJ-123] # subtasks of these tasks contain work that does not ship
         attribute:              # optional: a commit whose message names no item, or the wrong one, as a commit of the item
           - {commit: 0123456789abcdef0123456789abcdef01234567, item: PROJ-123, reason: "the key was left out of the message"}
 
@@ -2492,6 +2493,16 @@ approved_release:
     manual: ["QA smoke on TEST passed"]
     refs: {version-subtasks: "2.2"}
 ```
+
+`approved_release.non_release_parents` is an optional list of Jira task keys
+that are used as umbrellas for work that does not ship in this target's
+release. When `ticket.pattern` is configured, each key must match it. During
+`graft commit`, if the commit key is a subtask of one of these tasks and any
+changed path is outside this target's `ignore_paths`, graft prints a warning:
+release code belongs under a subtask of the release task. The warning uses the
+parent already returned with the Jira issue; it does not make another Jira
+request. Commits changing only ignored paths remain quiet. Jira commit hints
+check at most five keys across the message and branch together.
 
 The gate takes active commits since the deployed commit, including previously
 withheld work, excluding reverts, reverted work and commits changing only

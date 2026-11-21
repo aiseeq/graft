@@ -29,27 +29,50 @@ type commitHintMyself struct {
 	err     error
 }
 
+type commitTicketHintBatch struct {
+	keys    []string
+	issues  map[string]commitHintRead
+	myself  commitHintMyself
+	failure string
+}
+
 // commitTicketHints gives advisory Jira hints for the keys named by the
 // prepared commit message. It never changes whether the commit can proceed.
-func (a *App) commitTicketHints(ctx context.Context, cfg *config.Config, msg string) {
+func (a *App) commitTicketHints(ctx context.Context, cfg *config.Config, msg string, paths []string) {
+	batch := a.readCommitTicketHints(ctx, cfg, msg)
+	a.writeCommitTicketHints(cfg, batch)
+	a.writeNonReleaseParentHints(cfg, batch, paths)
+}
+
+func (a *App) readCommitTicketHints(ctx context.Context, cfg *config.Config, msg string) commitTicketHintBatch {
+	var batch commitTicketHintBatch
 	if cfg.ReleaseNotes == nil || cfg.ReleaseNotes.Jira == nil || cfg.Ticket == nil || cfg.Ticket.Regexp == nil {
-		return
+		return batch
 	}
 	keys := commitHintKeys(cfg, msg)
 	if len(keys) == 0 {
-		return
+		return batch
 	}
+	batch.keys = keys
 	client, err := jiraClient()
 	if err != nil {
-		writeCommitHintFailures(a, keys, commitHintFailure(err, true))
-		return
+		batch.failure = commitHintFailure(err, true)
+		return batch
 	}
 
 	readCtx, cancel := context.WithTimeout(ctx, commitTicketHintTimeout)
 	defer cancel()
-	issues, me := readCommitHintBatch(readCtx, client, keys)
-	for _, key := range keys {
-		read, ok := issues[key]
+	batch.issues, batch.myself = readCommitHintBatch(readCtx, client, keys)
+	return batch
+}
+
+func (a *App) writeCommitTicketHints(cfg *config.Config, batch commitTicketHintBatch) {
+	if batch.failure != "" {
+		writeCommitHintFailures(a, batch.keys, batch.failure)
+		return
+	}
+	for _, key := range batch.keys {
+		read, ok := batch.issues[key]
 		if !ok {
 			fmt.Fprintf(a.Stderr, "graft: %s not checked in Jira: timeout\n", key)
 			continue
@@ -58,12 +81,12 @@ func (a *App) commitTicketHints(ctx context.Context, cfg *config.Config, msg str
 			fmt.Fprintf(a.Stderr, "graft: %s not checked in Jira: %s\n", key, commitHintFailure(read.err, false))
 			continue
 		}
-		if me.err != nil {
-			fmt.Fprintf(a.Stderr, "graft: %s not checked in Jira: %s\n", key, commitHintFailure(me.err, false))
+		if batch.myself.err != nil {
+			fmt.Fprintf(a.Stderr, "graft: %s not checked in Jira: %s\n", key, commitHintFailure(batch.myself.err, false))
 			a.commitTicketIssueHints(cfg, key, read.issue, "", false)
 			continue
 		}
-		a.commitTicketIssueHints(cfg, key, read.issue, me.account, true)
+		a.commitTicketIssueHints(cfg, key, read.issue, batch.myself.account, true)
 	}
 }
 
@@ -155,6 +178,35 @@ func (a *App) commitTicketIssueHints(cfg *config.Config, key string, issue jira.
 		if to != issue.Status {
 			fmt.Fprintf(a.Stderr, "graft: deploying to %s moves %s to %s; an intermediate commit goes under a subtask key\n", name, key, to)
 		}
+	}
+}
+
+func (a *App) writeNonReleaseParentHints(cfg *config.Config, batch commitTicketHintBatch, paths []string) {
+	if cfg.Deploy == nil || len(paths) == 0 || batch.failure != "" {
+		return
+	}
+	for _, key := range batch.keys {
+		read, ok := batch.issues[key]
+		if !ok {
+			continue
+		}
+		if read.err != nil {
+			continue
+		}
+		if !read.issue.Subtask || read.issue.Parent == "" {
+			continue
+		}
+		var targets []string
+		for _, name := range slices.Sorted(maps.Keys(cfg.Deploy.Targets)) {
+			approved := cfg.Deploy.Targets[name].ApprovedRelease
+			if approved != nil && slices.Contains(approved.NonReleaseParents, read.issue.Parent) && !approved.Ignored(paths) {
+				targets = append(targets, name)
+			}
+		}
+		if len(targets) == 0 {
+			continue
+		}
+		fmt.Fprintf(a.Stderr, "graft: %s is a subtask of %s, which does not go to release (approved_release.non_release_parents of %s); code for the release goes under a subtask of the release task\n", key, read.issue.Parent, strings.Join(targets, ", "))
 	}
 }
 
