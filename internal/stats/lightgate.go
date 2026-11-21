@@ -72,6 +72,16 @@ const (
 // bar too: one over the limits, or whose memory was not read, keeps the gate
 // in the queue.
 func LightGate(recs []Record, project string, since time.Time) bool {
+	return lightGate(recs, project, since, "", time.Time{})
+}
+
+// LightGateForKey also stops at the first run made with another gate key. A
+// record without a key is usable only when it is newer than the config change.
+func LightGateForKey(recs []Record, project string, since, configSince time.Time, key string) bool {
+	return lightGate(recs, project, since, key, configSince)
+}
+
+func lightGate(recs []Record, project string, since time.Time, key string, configSince time.Time) bool {
 	cached := runsNotCostedHere(recs)
 	var runs []*Record
 	for i := range recs {
@@ -85,17 +95,14 @@ func LightGate(recs []Record, project string, since time.Time) bool {
 	slices.SortFunc(runs, func(a, b *Record) int { return cmp.Compare(b.Time.UnixNano(), a.Time.UnixNano()) })
 	passed := 0
 	for _, r := range runs {
-		if cached[r.Run] {
-			if len(localSteps[r.Run]) == 0 {
-				continue
-			}
-			if !stepsAreLight(localSteps[r.Run]) {
-				return false
-			}
-		} else if r.TreeMemMB == nil || r.UserS+r.SysS > LightGateCPUSec || *r.TreeMemMB > LightGateTreeMemMB {
+		if gateKeyStopsHistory(r, key, configSince) {
 			return false
 		}
-		if r.Exit == 0 && !cached[r.Run] {
+		light, counts := lightGateRunCost(r, cached[r.Run], localSteps[r.Run])
+		if !light {
+			return false
+		}
+		if counts {
 			passed++
 		}
 		if passed == LightGateRuns {
@@ -103,6 +110,17 @@ func LightGate(recs []Record, project string, since time.Time) bool {
 		}
 	}
 	return false
+}
+
+func lightGateRunCost(run *Record, cached bool, localSteps []*Record) (light, counts bool) {
+	if cached {
+		if len(localSteps) == 0 {
+			return true, false
+		}
+		return stepsAreLight(localSteps), false
+	}
+	light = run.TreeMemMB != nil && run.UserS+run.SysS <= LightGateCPUSec && *run.TreeMemMB <= LightGateTreeMemMB
+	return light, light && run.Exit == 0
 }
 
 // SplitLightGate says whether the local remainder of a split gate is light.
@@ -114,6 +132,16 @@ func LightGate(recs []Record, project string, since time.Time) bool {
 // ran exactly the remainder here, none of it from the cache, and passed
 // counts towards LightGateRuns.
 func SplitLightGate(recs []Record, project string, since time.Time, localSteps []string) bool {
+	return splitLightGate(recs, project, since, time.Time{}, "", localSteps)
+}
+
+// SplitLightGateForKey applies the same key and timestamp boundaries as
+// LightGateForKey to the local remainder of a split gate.
+func SplitLightGateForKey(recs []Record, project string, since, configSince time.Time, key string, localSteps []string) bool {
+	return splitLightGate(recs, project, since, configSince, key, localSteps)
+}
+
+func splitLightGate(recs []Record, project string, since, configSince time.Time, key string, localSteps []string) bool {
 	if len(localSteps) == 0 {
 		return false
 	}
@@ -122,6 +150,9 @@ func SplitLightGate(recs []Record, project string, since time.Time, localSteps [
 	runs := splitGateRuns(recs, project, since)
 	passed := 0
 	for _, run := range runs {
+		if gateKeyStopsHistory(run.gate, key, configSince) {
+			return false
+		}
 		if !splitGateStepsAreLight(run.steps, want) {
 			return false
 		}
@@ -136,6 +167,16 @@ func SplitLightGate(recs []Record, project string, since time.Time, localSteps [
 		}
 	}
 	return false
+}
+
+func gateKeyStopsHistory(run *Record, key string, configSince time.Time) bool {
+	if key == "" {
+		return false
+	}
+	if run.GateKey != "" {
+		return run.GateKey != key
+	}
+	return !run.Time.After(configSince)
 }
 
 type splitGateRun struct {

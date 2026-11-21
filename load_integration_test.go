@@ -469,8 +469,8 @@ func TestGateQueuesForTheMachine(t *testing.T) {
 }
 
 // TestLightGateDoesNotWaitForTheMachine: a gate whose last runs cost next to
-// nothing runs on a busy machine at once, its heavy task with it; a change of .graft.yaml sends it
-// back to the queue until it has runs again.
+// nothing runs on a busy machine at once, its heavy task with it. Comments do
+// not reset that history; changing the gate definition does.
 func TestLightGateDoesNotWaitForTheMachine(t *testing.T) {
 	config := "schema: 1\nversion: {mode: none}\ngate:\n  - task: lightstep\ntasks:\n  lightstep:\n    heavy: true\n    run:\n" +
 		"      - [" + yamlQuote(helperBin) + ", ok]\n"
@@ -494,9 +494,21 @@ func TestLightGateDoesNotWaitForTheMachine(t *testing.T) {
 	}
 
 	f.write(".graft.yaml", config+"# changed\n")
+	comment := startGraft(t, f, "gate")
+	select {
+	case <-comment.done:
+	case <-time.After(20 * time.Second):
+		comment.kill()
+		t.Fatalf("a config comment reset the light gate:\n%s", comment.out.String())
+	}
+	if out := comment.out.String(); !strings.Contains(out, "not waiting for the machine") || strings.Contains(out, ", waiting\n") {
+		t.Errorf("a config comment reset the light gate:\n%s", out)
+	}
+	changedGate := strings.Replace(config, "- task: lightstep", "- [\"/bin/true\"]", 1)
+	f.write(".graft.yaml", changedGate)
 	waiting := startWaitingForMachine(t, f, "gate")
 	setRunnable(t, proc, 1)
 	if out := waiting.end(t); strings.Contains(out, "not waiting for the machine") {
-		t.Errorf("a gate just reconfigured was taken for light:\n%s", out)
+		t.Errorf("a changed gate definition was taken for light:\n%s", out)
 	}
 }

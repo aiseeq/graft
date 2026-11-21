@@ -121,6 +121,56 @@ func TestLightGate(t *testing.T) {
 	}
 }
 
+func TestLightGateKeyHistoryBoundaries(t *testing.T) {
+	now := time.Now()
+	mem := 20.0
+	makeRun := func(i int, key string, at time.Time) Record {
+		return Record{Kind: KindTask, Task: GateTask, Project: "/p", Run: string(rune('a' + i)), Steps: 1, UserS: .1, TreeMemMB: &mem, GateKey: key, Time: at, Exit: 0}
+	}
+	var aRuns []Record
+	for i := range LightGateRuns {
+		aRuns = append(aRuns, makeRun(i, "A", now.Add(time.Duration(i)*time.Second)))
+	}
+	if !LightGateForKey(aRuns, "/p", now.Add(-time.Hour), now, "A") {
+		t.Fatal("current key history should be light")
+	}
+	withB := append(slices.Clone(aRuns), makeRun(8, "B", now.Add(time.Minute)))
+	if LightGateForKey(withB, "/p", now.Add(-time.Hour), now, "A") {
+		t.Fatal("A to B to A history crossed a different-key barrier")
+	}
+	makeSplit := func(gates []Record) []Record {
+		out := make([]Record, 0, len(gates)*2)
+		for _, gate := range gates {
+			out = append(out, gate, Record{Kind: KindStep, Run: gate.Run, Step: "check", UserS: .1, TreeMemMB: &mem})
+		}
+		return out
+	}
+	if !SplitLightGateForKey(makeSplit(aRuns), "/p", now.Add(-time.Hour), now, "A", []string{"check"}) {
+		t.Fatal("current split-gate key history should be light")
+	}
+	if SplitLightGateForKey(makeSplit(withB), "/p", now.Add(-time.Hour), now, "A", []string{"check"}) {
+		t.Fatal("split-gate history crossed a different-key barrier")
+	}
+
+	legacy := slices.Clone(aRuns[:4])
+	legacy = append(legacy, makeRun(8, "", now.Add(-30*time.Second)), makeRun(9, "A", now.Add(-time.Minute)))
+	if LightGateForKey(legacy, "/p", now.Add(-time.Hour), now, "A") {
+		t.Fatal("legacy run older than config mtime did not stop history")
+	}
+	legacy[4].Time = now.Add(time.Second)
+	if !LightGateForKey(legacy, "/p", now.Add(-time.Hour), now, "A") {
+		t.Fatal("legacy run newer than config mtime should count")
+	}
+	legacySplit := slices.Clone(legacy)
+	legacySplit[4].Time = now.Add(-30 * time.Second)
+	for _, gate := range legacySplit {
+		legacySplit = append(legacySplit, Record{Kind: KindStep, Run: gate.Run, Step: "check", UserS: .1, TreeMemMB: &mem})
+	}
+	if SplitLightGateForKey(legacySplit, "/p", now.Add(-time.Hour), now, "A", []string{"check"}) {
+		t.Fatal("split-gate legacy run older than config mtime did not stop history")
+	}
+}
+
 func TestWouldCheapExecHistory(t *testing.T) {
 	now := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
 	since := now.Add(-CheapHistoryWindow)

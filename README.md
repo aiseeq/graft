@@ -125,7 +125,10 @@ and the raised files stay in the work tree for repair. Without this setting,
 module and npm dependency versions are left alone.
 
 A gate whose last 5 runs that really ran their steps each stayed under 2 s CPU
-and 300 MB, since `.graft.yaml` last changed, does not wait for a busy machine:
+and 300 MB, since the last change to the parts of the config the gate depends
+on, does not wait for a busy machine. Changes to `version`, `ticket`, `push`,
+`checks`, `commit`, `merge`, `deploy`, `release_notes`, `release`, `flags`,
+`limits` and `worktree` do not reset that history:
 it says so, its heavy tasks run with it, under the same memory ceiling. When a
 busy gate splits steps between this machine and its host, the local remainder
 can also skip the queue after five matching runs whose local steps stay under

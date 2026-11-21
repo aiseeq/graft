@@ -85,6 +85,7 @@ type Record struct {
 	WouldCheap *bool  `json:"would_cheap,omitempty"`
 	CheapPlace string `json:"cheap_place,omitempty"`
 	Task       string `json:"task"`
+	GateKey    string `json:"gate_key,omitempty"`
 	// CacheChanged names the key components that differ from the last pass.
 	CacheChanged []string `json:"cache_changed,omitempty"`
 	// WaitedBehind names the command and task holding the queue or lock.

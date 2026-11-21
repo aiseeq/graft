@@ -70,6 +70,7 @@ func TestGateWithAdvisoryHistoryLifecycle(t *testing.T) {
 			}
 			cfg := &config.Config{GoFmt: config.GoFmt{Enabled: new(false)}}
 			r := NewRunner(root, cfg, io.Discard, io.Discard)
+			r.Stats = stats.NewRecorder(io.Discard)
 			r.Load = func() (userconfig.MachineLoad, error) { return userconfig.MachineLoad{Threads: 1}, nil }
 			r.admitTask = func(context.Context, string) (loadgate.Admission, func() error, error) {
 				if mode == "admission-error" {
@@ -97,7 +98,9 @@ func TestGateWithAdvisoryHistoryLifecycle(t *testing.T) {
 					}
 				}
 			}}
-			err := r.GateWithAdvisory(context.Background(), nil, nil)
+			err := r.Unit("commit advisory gate", func() error {
+				return r.GateWithAdvisory(context.Background(), nil, nil)
+			})
 			if mode == "admission-error" && (err == nil || !strings.Contains(err.Error(), "admission failed")) {
 				t.Fatalf("admission error: %v", err)
 			}
@@ -115,6 +118,52 @@ func TestGateWithAdvisoryHistoryLifecycle(t *testing.T) {
 			}
 			if r.gateHistory != previous {
 				t.Error("previous history not restored after gate")
+			}
+			statsPath, err := stats.Path()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(statsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var gateRecord stats.Record
+			for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
+				var rec stats.Record
+				if json.Unmarshal([]byte(line), &rec) == nil && rec.Kind == stats.KindTask && rec.Task == stats.GateTask {
+					gateRecord = rec
+				}
+			}
+			if gateRecord.GateKey == "" || gateRecord.Parent != "" {
+				t.Fatalf("advisory gate record = %+v, want gate_key and no parent", gateRecord)
+			}
+			cfg.Checks.LargeFiles.Exceptions = []config.Exception{{Path: "vendor/**", Reason: "generated"}}
+			key, err := lightGateKey(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if key != gateRecord.GateKey {
+				t.Fatal("excluded checks change made the advisory gate key stale")
+			}
+			mem := 20.0
+			now := time.Now()
+			history := make([]stats.Record, stats.LightGateRuns)
+			for i := range history {
+				history[i] = gateRecord
+				history[i].Run = string(rune('a' + i))
+				history[i].Time = now.Add(time.Duration(i) * time.Second)
+				history[i].Steps = 1
+				history[i].UserS = .1
+				history[i].TreeMemMB = &mem
+				history[i].Exit = 0
+				history[i].Parent = ""
+			}
+			configInfo, err := os.Stat(filepath.Join(root, ".graft.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !stats.LightGateForKey(history, root, now.Add(-time.Hour), configInfo.ModTime(), key) {
+				t.Fatal("excluded checks change reset advisory gate history")
 			}
 		})
 	}

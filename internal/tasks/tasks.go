@@ -84,6 +84,7 @@ type gateHistory struct {
 // Runner runs tasks of one project.
 type Runner struct {
 	gateHistory *gateHistory
+	gateKey     string
 	// stepStarted is a test hook called after cmd.Start has returned.
 	stepStarted func()
 	// admitTask overrides heavy-task admission in tests.
@@ -234,7 +235,8 @@ type gateStepCosts struct {
 
 // frame is a running task as the stats see it.
 type frame struct {
-	task string
+	task    string
+	gateKey string
 	// in is the task or unit it runs in; "" for the outermost.
 	in    string
 	start time.Time
@@ -1503,7 +1505,14 @@ func (r *Runner) GateWithAdvisory(ctx context.Context, advisory func(string) boo
 	previousInGate := r.inGate
 	r.inGate = true
 	defer func() { r.inGate = previousInGate }()
+	previousGateKey := r.gateKey
+	r.gateKey, err = lightGateKey(r.Config)
+	if err != nil {
+		return fmt.Errorf("encoding gate config key: %w", err)
+	}
+	defer func() { r.gateKey = previousGateKey }()
 	f := r.begin(stats.GateTask)
+	f.gateKey = r.gateKey
 	previousHistory := r.gateHistory
 	r.gateHistory = &gateHistory{}
 	defer func() { r.gateHistory = previousHistory }()
@@ -1681,7 +1690,11 @@ func (r *Runner) lightSplitRemainder(localSteps []string) bool {
 	if err != nil {
 		return note(err)
 	}
-	return stats.SplitLightGate(recs, filepath.Clean(r.Root), since, localSteps)
+	info, err := os.Stat(filepath.Join(r.Root, ".graft.yaml"))
+	if err != nil {
+		return note(err)
+	}
+	return stats.SplitLightGateForKey(recs, filepath.Clean(r.Root), since, info.ModTime(), r.gateKey, localSteps)
 }
 
 func (r *Runner) enterLightRemainder(ctx context.Context) (func() error, error) {
@@ -3592,6 +3605,7 @@ func (r *Runner) end(f *frame, err error) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
 	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, Mark: f.mark, WaitedBehind: f.waitedBehind, CgroupPeakMB: f.cgroupPeakMB,
 		CmdKey: f.execCmdKey, WouldCheap: f.execWouldCheap, CheapPlace: f.execCheapPlace}
+	rec.GateKey = gateKeyForFrame(f)
 	if f.reserveRelease != nil {
 		if err := f.reserveRelease(); err != nil {
 			fmt.Fprintf(r.Stderr, "graft: %s: releasing reserve: %v\n", f.task, err)
@@ -3652,6 +3666,15 @@ func (r *Runner) end(f *frame, err error) stats.Usage {
 		r.overLimit(f.task, use)
 	}
 	return use
+}
+
+// gateKeyForFrame keys every gate record: light-gate history selects roots by
+// the recorded Parent field, which is independent of the task's In label.
+func gateKeyForFrame(f *frame) string {
+	if f.task == stats.GateTask {
+		return f.gateKey
+	}
+	return ""
 }
 
 func completedExecShadowRecord(f *frame, at time.Time, use stats.Usage, exit int) (stats.ExecHistoryRecord, bool) {
@@ -4104,8 +4127,8 @@ var (
 
 // lightGate says whether this gate need not wait for a busy machine: one this
 // machine would make wait, whose last runs cost next to nothing
-// (stats.LightGate), since .graft.yaml last changed. A journal it cannot read
-// is said and leaves the gate in the queue.
+// (stats.LightGate), since the gate-relevant config last changed. If it cannot
+// read the journal, it leaves the gate in the queue.
 func (r *Runner) lightGate(ctx context.Context) bool {
 	if r.heavy > 0 || os.Getenv(AdmittedEnv) != "" {
 		return false
@@ -4125,12 +4148,16 @@ func (r *Runner) lightGate(ctx context.Context) bool {
 	if err != nil {
 		return note(err)
 	}
-	return stats.LightGate(recs, filepath.Clean(r.Root), since)
+	info, err := os.Stat(filepath.Join(r.Root, ".graft.yaml"))
+	if err != nil {
+		return note(fmt.Errorf("config age: %w", err))
+	}
+	return stats.LightGateForKey(recs, filepath.Clean(r.Root), since, info.ModTime(), r.gateKey)
 }
 
 // lightGateRecords loads the journal runs a light gate is judged by: those of
-// the last lightGateWindow, or since .graft.yaml last changed if later, with
-// the moment they start from.
+// the last lightGateWindow. The config mtime is retained separately as the
+// compatibility boundary for journal records written before gate keys.
 func (r *Runner) lightGateRecords() ([]stats.Record, time.Time, error) {
 	if h := r.gateHistory; h != nil {
 		if !h.loaded {
@@ -4146,12 +4173,9 @@ var loadGateHistory = stats.LoadGateHistory
 
 func (r *Runner) readLightGateRecords() ([]stats.Record, time.Time, error) {
 	since := time.Now().Add(-lightGateWindow)
-	info, err := os.Stat(filepath.Join(r.Root, ".graft.yaml"))
+	_, err := os.Stat(filepath.Join(r.Root, ".graft.yaml"))
 	if err != nil {
 		return nil, since, fmt.Errorf("config age: %w", err)
-	}
-	if info.ModTime().After(since) {
-		since = info.ModTime()
 	}
 	path, err := stats.Path()
 	if err != nil {
