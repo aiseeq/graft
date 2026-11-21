@@ -47,6 +47,105 @@ func (a *App) reviewGuard(ctx context.Context, r *deployRun) ([]reviewUnderWay, 
 	return reviewGuardIssues(issues, r.target.ReviewGuard.Statuses, me, versionLabel)
 }
 
+// reviewerReminder reports work that is already on the target but was not
+// named by the deployment whose release notes just ran.
+func (a *App) reviewerReminder(ctx context.Context, r *deployRun) ([]reviewUnderWay, error) {
+	if r.target.ReviewerReminder == nil || r.name == "prod" {
+		return nil, nil
+	}
+	keys, err := reviewCommitKeysThrough(ctx, r, r.head)
+	if err != nil {
+		return nil, fmt.Errorf("read deployed commit keys: %w", err)
+	}
+	deployedKeys, err := reviewCommitKeysInRange(r, r.prev, r.head)
+	if err != nil {
+		return nil, fmt.Errorf("read this deployment's commit keys: %w", err)
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	deployed := make(map[string]bool, len(deployedKeys))
+	for _, key := range deployedKeys {
+		deployed[key] = true
+	}
+	client, err := jiraClient()
+	if err != nil {
+		return nil, fmt.Errorf("Jira unavailable: %w", err)
+	}
+	issues, err := reviewReminderIssues(ctx, client, keys)
+	if err != nil {
+		return nil, err
+	}
+	issues = filterReminderIssues(issues, deployed)
+	if len(issues) == 0 {
+		return nil, nil
+	}
+	me, err := client.Myself(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("identify Jira user: %w", err)
+	}
+	return reviewGuardIssues(issues, r.target.ReviewerReminder.Statuses, me, "")
+}
+
+func reviewReminderIssues(ctx context.Context, client *jira.Client, keys []string) ([]*jira.Issue, error) {
+	all := map[string]*jira.Issue{}
+	parents := make([]string, 0, len(keys))
+	for _, batch := range reviewGuardBatches(keys, 100) {
+		items, err := client.ReviewSearchIssues(ctx, "key in ("+strings.Join(batch, ",")+")")
+		if err != nil {
+			return nil, fmt.Errorf("read deployed Jira tasks: %w", err)
+		}
+		for i := range items {
+			issue := &items[i]
+			all[issue.Key] = issue
+			if issue.Parent != "" {
+				parents = append(parents, issue.Parent)
+			}
+		}
+	}
+	for _, batch := range reviewGuardBatches(uniqueSorted(parents), 100) {
+		items, err := client.ReviewSearchIssues(ctx, "key in ("+strings.Join(batch, ",")+")")
+		if err != nil {
+			return nil, fmt.Errorf("read parent Jira tasks: %w", err)
+		}
+		for i := range items {
+			issue := &items[i]
+			all[issue.Key] = issue
+		}
+	}
+	result := make([]*jira.Issue, 0, len(all))
+	for _, issue := range all {
+		result = append(result, issue)
+	}
+	slices.SortFunc(result, func(a, b *jira.Issue) int { return strings.Compare(a.Key, b.Key) })
+	return result, nil
+}
+
+func filterReminderIssues(issues []*jira.Issue, excluded map[string]bool) []*jira.Issue {
+	filtered := issues[:0]
+	for _, issue := range issues {
+		if !excluded[issue.Key] {
+			filtered = append(filtered, issue)
+		}
+	}
+	return filtered
+}
+
+func reviewCommitKeysInRange(r *deployRun, lower, upper string) ([]string, error) {
+	if lower == "" {
+		return nil, nil
+	}
+	return reviewCommitKeysBetween(r, lower, upper)
+}
+
+func reviewCommitKeysBetween(r *deployRun, lower, upper string) ([]string, error) {
+	output, err := r.repo.Git("log", "--format=%B", lower+".."+upper)
+	if err != nil {
+		return nil, err
+	}
+	return uniqueSorted(projectKeyRe(r.cfg).FindAllString(output, -1)), nil
+}
+
 func reviewGuardScope(ctx context.Context, r *deployRun, client *jira.Client) (string, []*jira.Issue, error) {
 	if r.target.DeployedSHA != nil {
 		current, err := r.readSHA(ctx, r.env, r.target.DeployedSHA)
@@ -199,16 +298,23 @@ func reviewGuardVersions(ctx context.Context, r *deployRun, client *jira.Client,
 func reviewGuardIssues(issues []*jira.Issue, statuses []string, me, versionName string) ([]reviewUnderWay, error) {
 	var active []reviewUnderWay
 	for _, issue := range issues {
-		if issue.AssigneeID == "" || issue.AssigneeID == me || !slices.Contains(statuses, issue.Status) {
-			continue
+		if item, ok := reviewGuardReviewer(issue, statuses, me); ok {
+			item.version = versionName
+			active = append(active, item)
 		}
-		name := issue.AssigneeName
-		if name == "" {
-			name = issue.AssigneeID
-		}
-		active = append(active, reviewUnderWay{key: issue.Key, status: issue.Status, account: issue.AssigneeID, name: name, version: versionName})
 	}
 	return active, nil
+}
+
+func reviewGuardReviewer(issue *jira.Issue, statuses []string, me string) (reviewUnderWay, bool) {
+	if issue.AssigneeID == "" || issue.AssigneeID == me || !slices.Contains(statuses, issue.Status) {
+		return reviewUnderWay{}, false
+	}
+	name := issue.AssigneeName
+	if name == "" {
+		name = issue.AssigneeID
+	}
+	return reviewUnderWay{key: issue.Key, status: issue.Status, account: issue.AssigneeID, name: name}, true
 }
 
 func reviewGuardJQLStatuses(statuses []string) string {
@@ -271,6 +377,10 @@ func reviewGuardCommitKeys(ctx context.Context, r *deployRun) ([]string, error) 
 	if r.prev == "" {
 		return nil, nil
 	}
+	return reviewCommitKeysThrough(ctx, r, r.prev)
+}
+
+func reviewCommitKeysThrough(ctx context.Context, r *deployRun, upper string) ([]string, error) {
 	base := ""
 	if r.target.Requires != "" {
 		req := r.cfg.Deploy.Targets[r.target.Requires]
@@ -297,41 +407,34 @@ func reviewGuardCommitKeys(ctx context.Context, r *deployRun) ([]string, error) 
 		}
 	}
 	pattern := projectKeyRe(r.cfg)
-	var output string
-	var err error
 	if base != "" {
-		output, err = r.repo.Git("log", "--format=%B", base+".."+r.prev)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		// With no reference target, inspect ancestors newest first and retain
-		// at most the first 500 commits that contain a project key.
-		out, e := r.repo.Git("rev-list", r.prev)
+		return reviewCommitKeysBetween(r, base, upper)
+	}
+	// With no reference target, inspect ancestors newest first and retain
+	// at most the first 500 commits that contain a project key.
+	out, e := r.repo.Git("rev-list", upper)
+	if e != nil {
+		return nil, e
+	}
+	commits := strings.Fields(out)
+	var keys []string
+	keyedCommits := 0
+	for _, sha := range commits {
+		body, e := r.repo.Git("show", "-s", "--format=%B", sha)
 		if e != nil {
 			return nil, e
 		}
-		commits := strings.Fields(out)
-		var keys []string
-		keyedCommits := 0
-		for _, sha := range commits {
-			body, e := r.repo.Git("show", "-s", "--format=%B", sha)
-			if e != nil {
-				return nil, e
-			}
-			found := pattern.FindAllString(body, -1)
-			if len(found) == 0 {
-				continue
-			}
-			keyedCommits++
-			keys = append(keys, found...)
-			if keyedCommits >= 500 {
-				break
-			}
+		found := pattern.FindAllString(body, -1)
+		if len(found) == 0 {
+			continue
 		}
-		return uniqueSorted(keys), nil
+		keyedCommits++
+		keys = append(keys, found...)
+		if keyedCommits >= 500 {
+			break
+		}
 	}
-	return uniqueSorted(pattern.FindAllString(output, -1)), nil
+	return uniqueSorted(keys), nil
 }
 
 func deployEnv(r *deployRun, name string) (*envs.Env, error) {

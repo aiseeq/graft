@@ -2032,6 +2032,7 @@ deploy:
       version: "cat /opt/app/VERSION"              # prints what the target runs
       deployed_sha: {path: /opt/app/DEPLOYED_SHA, sudo: true}
       review_guard: {jira_version: "Product v{version}", statuses: [Testing, In QA]} # block while another Jira account reviews this target's Jira release
+      reviewer_reminder: {statuses: [Testing]} # after non-prod deploys, remind other reviewers to record the result
       release_notes:
         transitions:            # In Progress moves to Testing and goes to the reviewer
           - {from: [In Progress], to: Testing, types: [Story, Task, Bug], assign: "<reviewer accountId>", keep_assignee_labels: [internal], require_comment: "How to check"}   # optional: types limits the issue types that move; items labelled internal move but stay with their assignee; the others wait for a comment with "How to check"
@@ -2106,6 +2107,14 @@ deps immediately before the deploy script. The guard cannot identify an
 unassigned reviewer or a reviewer hidden by the graft account; environments
 sharing one Jira version stop together. A same-pair agreement can outlive a SHA
 change, and a new check can begin between the final Jira read and the script.
+
+`reviewer_reminder` is opt in per target and requires
+`release_notes.jira.project_keys`. After a successful deploy to a non-prod
+target, it checks tasks and their parent/subtasks whose keys appear in commits
+already on that target, excluding keys named by this deploy. Tasks in the
+configured statuses assigned to another Jira account get a one-line reminder
+to record what changed in the task. Jira errors produce a warning and do not
+change the deploy result.
 
 Use `approved_release.dormant` when checked-in work ships while its feature is
 disabled. `{key, reason}` keeps the existing rule: the item or its parent must

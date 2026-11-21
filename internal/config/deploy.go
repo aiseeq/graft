@@ -61,10 +61,11 @@ type DeployTarget struct {
 	Freeze *Freeze `yaml:"freeze"`
 	// Confirm is "sudo": a sudo prompt in the foreground after the checks
 	// and deps, before the deploy script runs.
-	Confirm      string       `yaml:"confirm"`
-	ReviewGuard  *ReviewGuard `yaml:"review_guard"`
-	DeployedSHA  *DeployedSHA `yaml:"deployed_sha"`
-	ReleaseNotes *TargetNotes `yaml:"release_notes"`
+	Confirm          string            `yaml:"confirm"`
+	ReviewGuard      *ReviewGuard      `yaml:"review_guard"`
+	ReviewerReminder *ReviewerReminder `yaml:"reviewer_reminder"`
+	DeployedSHA      *DeployedSHA      `yaml:"deployed_sha"`
+	ReleaseNotes     *TargetNotes      `yaml:"release_notes"`
 	// ApprovedRelease lets out only commits that name an item in one of the
 	// statuses, of a version every approver approved, or both.
 	ApprovedRelease *ApprovedRelease `yaml:"approved_release"`
@@ -99,6 +100,11 @@ type DeployTarget struct {
 type ReviewGuard struct {
 	Statuses    []string `yaml:"statuses"`
 	JiraVersion string   `yaml:"jira_version"`
+}
+
+// ReviewerReminder reports issues still under review after deployment.
+type ReviewerReminder struct {
+	Statuses []string `yaml:"statuses"`
 }
 
 // Freeze configures a release freeze on a target that requires the acceptance target.
@@ -656,6 +662,9 @@ func (c *Config) validateTargetOptions(where string, t *DeployTarget) error {
 			return fmt.Errorf("%s.review_guard: needs release_notes.jira.project_keys", where)
 		}
 	}
+	if err := c.validateReviewerReminder(where, t); err != nil {
+		return err
+	}
 	for _, d := range t.Deps {
 		if _, ok := c.Tasks[d]; !ok {
 			return fmt.Errorf("%s.deps: unknown task %q", where, d)
@@ -677,6 +686,20 @@ func (c *Config) validateTargetOptions(where string, t *DeployTarget) error {
 		if err := c.checkRemoteArgv(where+"."+field, t.Env, cmd); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (c *Config) validateReviewerReminder(where string, t *DeployTarget) error {
+	reminder := t.ReviewerReminder
+	if reminder == nil {
+		return nil
+	}
+	if len(reminder.Statuses) == 0 {
+		return fmt.Errorf("%s.reviewer_reminder.statuses: required", where)
+	}
+	if c.ReleaseNotes == nil || c.ReleaseNotes.Jira == nil || len(c.ReleaseNotes.Jira.ProjectKeys) == 0 {
+		return fmt.Errorf("%s.reviewer_reminder: needs release_notes.jira.project_keys", where)
 	}
 	return nil
 }

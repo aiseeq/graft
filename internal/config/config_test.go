@@ -108,6 +108,33 @@ func TestParseDefaults(t *testing.T) {
 	}
 }
 
+func TestReviewerReminderConfigValidation(t *testing.T) {
+	base := minimal + `envs:
+  local: {}
+deploy:
+  remote: origin
+  targets:
+    test:
+      env: local
+      run: [sh, deploy.sh]
+      reviewer_reminder: {statuses: [Testing]}
+release_notes:
+  jira:
+    project_keys: [PROJ]
+`
+	if _, err := Parse([]byte(base)); err != nil {
+		t.Fatalf("valid reviewer_reminder config: %v", err)
+	}
+	noStatuses := strings.Replace(base, "reviewer_reminder: {statuses: [Testing]}", "reviewer_reminder: {}", 1)
+	if _, err := Parse([]byte(noStatuses)); err == nil || !strings.Contains(err.Error(), "deploy.targets.test.reviewer_reminder.statuses: required") {
+		t.Fatalf("missing statuses error = %v", err)
+	}
+	noProjectKeys := strings.Replace(base, "release_notes:\n  jira:\n    project_keys: [PROJ]\n", "", 1)
+	if _, err := Parse([]byte(noProjectKeys)); err == nil || !strings.Contains(err.Error(), "deploy.targets.test.reviewer_reminder: needs release_notes.jira.project_keys") {
+		t.Fatalf("missing project keys error = %v", err)
+	}
+}
+
 func TestStaticcheckConfig(t *testing.T) {
 	cfg, err := Parse([]byte(minimal + "staticcheck:\n  enabled: true\n"))
 	if err != nil || !cfg.Staticcheck.Enabled {

@@ -411,7 +411,22 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) (retErr
 		return errors.Join(err, a.recordFreezeJournal(r))
 	}
 	a.printf("deployed %s to %s", gitx.Short(r.head), r.name)
-	return a.recordDeployment(ctx, r)
+	recordErr := a.recordDeployment(ctx, r)
+	a.reportReviewerReminder(ctx, r)
+	return recordErr
+}
+
+func (a *App) reportReviewerReminder(ctx context.Context, r *deployRun) {
+	if r.target.ReviewerReminder != nil && r.name != "prod" {
+		active, err := a.reviewerReminder(ctx, r)
+		if err != nil {
+			a.warn("reviewer reminder skipped: %s", strings.Join(strings.Fields(err.Error()), " "))
+		} else {
+			for _, item := range active {
+				a.printf("%s: under review by %s (%s); post what changed on %s in the task", item.key, item.name, item.status, r.name)
+			}
+		}
+	}
 }
 
 func (a *App) prepareDeployTarget(ctx context.Context, r *deployRun) (func() error, error) {
