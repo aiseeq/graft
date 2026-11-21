@@ -5,9 +5,35 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
+
+func TestChangedParts(t *testing.T) {
+	parts := map[string]string{"tree": "tree-1", "definition": "definition-1", "inputs": "inputs-1", "graft": "graft-1"}
+	tests := []struct {
+		name string
+		prev map[string]string
+		curr map[string]string
+		want []string
+	}{
+		{name: "unchanged", prev: parts, curr: parts},
+		{name: "tree", prev: parts, curr: map[string]string{"tree": "tree-2", "definition": "definition-1", "inputs": "inputs-1", "graft": "graft-1"}, want: []string{"tree"}},
+		{name: "definition", prev: parts, curr: map[string]string{"tree": "tree-1", "definition": "definition-2", "inputs": "inputs-1", "graft": "graft-1"}, want: []string{"definition"}},
+		{name: "inputs", prev: parts, curr: map[string]string{"tree": "tree-1", "definition": "definition-1", "inputs": "inputs-2", "graft": "graft-1"}, want: []string{"inputs"}},
+		{name: "graft", prev: parts, curr: map[string]string{"tree": "tree-1", "definition": "definition-1", "inputs": "inputs-1", "graft": "graft-2"}, want: []string{"graft"}},
+		{name: "missing current part", prev: parts, curr: map[string]string{"tree": "tree-1", "definition": "definition-1", "graft": "graft-1"}, want: []string{"inputs"}},
+		{name: "missing previous part", prev: map[string]string{"tree": "tree-1", "definition": "definition-1", "graft": "graft-1"}, curr: parts, want: []string{"inputs"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ChangedParts(tt.prev, tt.curr); !slices.Equal(got, tt.want) {
+				t.Errorf("ChangedParts = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestPreviousReadsOnlyLastPass(t *testing.T) {
 	dir := t.TempDir()
