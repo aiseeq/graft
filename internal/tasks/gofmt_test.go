@@ -3,6 +3,7 @@ package tasks
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"os"
@@ -170,5 +171,55 @@ func TestBuiltinGofmtStepIsMarkedInStats(t *testing.T) {
 	}
 	if records[0].UserS == 0 {
 		t.Fatalf("built-in CPU = %g, want a measured process cost", records[0].UserS)
+	}
+}
+
+func TestBuiltinStepRecordsChildCPU(t *testing.T) {
+	if os.Getenv("GRAFT_CPU_CHILD") == "1" {
+		var data [32]byte
+		for {
+			for range 10000 {
+				data = sha256.Sum256(data[:])
+			}
+			user, system, err := stats.ProcessCPU()
+			if err != nil {
+				os.Exit(2)
+			}
+			if user+system >= 1.05 {
+				break
+			}
+		}
+		os.Exit(0)
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	r := &Runner{
+		Root: t.TempDir(), Stats: stats.NewRecorder(io.Discard),
+		frames: []*frame{{task: stats.GateTask}}, noRepoName: true,
+	}
+	err := r.measureFunc("builtin child CPU", func() error {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		cmd := exec.Command(exe, "-test.run=^TestBuiltinStepRecordsChildCPU$")
+		cmd.Env = append(os.Environ(), "GRAFT_CPU_CHILD=1")
+		return cmd.Run()
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := stats.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, _, err := stats.Load(path, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %+v, want one built-in step", records)
+	}
+	if got := records[0].UserS + records[0].SysS; got < .8 {
+		t.Fatalf("built-in child CPU = %.3fs, want at least 0.8s", got)
 	}
 }

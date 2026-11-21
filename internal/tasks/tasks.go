@@ -1303,12 +1303,12 @@ func goFmtInModule(file string, dirs, selected map[string]bool) bool {
 func (r *Runner) measureFunc(source string, run func() error, builtin bool) error {
 	start := time.Now()
 	isBuiltin := builtin
-	var cpuStart float64
+	var cpuUserStart, cpuSysStart float64
 	var cpuKnown bool
 	var watch *stats.Watch
 	if isBuiltin {
 		var cpuErr error
-		cpuStart, cpuErr = stats.ProcessCPU()
+		cpuUserStart, cpuSysStart, cpuErr = stats.ProcessCPU()
 		cpuKnown = cpuErr == nil
 		watch = stats.WatchProcess(os.Getpid())
 	}
@@ -1324,8 +1324,9 @@ func (r *Runner) measureFunc(source string, run func() error, builtin bool) erro
 				r.Stats.Warn(werr)
 			}
 		}
-		if cpuEnd, cpuErr := stats.ProcessCPU(); cpuKnown && cpuErr == nil && cpuEnd >= cpuStart {
-			use.User = time.Duration((cpuEnd - cpuStart) * float64(time.Second))
+		if cpuUserEnd, cpuSysEnd, cpuErr := stats.ProcessCPU(); cpuKnown && cpuErr == nil && cpuUserEnd >= cpuUserStart && cpuSysEnd >= cpuSysStart {
+			use.User = time.Duration((cpuUserEnd - cpuUserStart) * float64(time.Second))
+			use.Sys = time.Duration((cpuSysEnd - cpuSysStart) * float64(time.Second))
 		} else {
 			cpuKnown = false
 		}
