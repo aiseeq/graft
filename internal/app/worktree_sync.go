@@ -2,9 +2,12 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -13,7 +16,9 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
 // WorktreeSyncOptions are the arguments of graft worktree sync.
@@ -66,7 +71,7 @@ func worktreeSyncPushTrunkRef(repo *gitx.Repo, cfg *config.Config, remotes []str
 // is committed. With Push, the branch is pushed to its upstream with a lease.
 // Changes that conflict with the trunk are left with their conflict markers
 // and kept in the stash too.
-func (a *App) WorktreeSync(o WorktreeSyncOptions) error {
+func (a *App) WorktreeSync(ctx context.Context, o WorktreeSyncOptions) error {
 	repo, cfg, err := a.open()
 	if err != nil {
 		return err
@@ -105,15 +110,18 @@ func (a *App) WorktreeSync(o WorktreeSyncOptions) error {
 	} else if err := worktreeSyncPushTrunk(repo, trunk, trunkBranch, branch, pushRemote, pushRef); err != nil {
 		return err
 	}
-	if err := worktreeSyncRebase(repo, trunk); err != nil {
+	if err := worktreeSyncRebase(ctx, repo, trunk, a.Stderr); err != nil {
 		return err
 	}
+	return worktreeSyncFinish(a, repo, o, trunk, pushRemote, pushRef, trackingRef, lease)
+}
+
+func worktreeSyncFinish(a *App, repo *gitx.Repo, o WorktreeSyncOptions, trunk, pushRemote, pushRef, trackingRef, lease string) error {
 	if !o.Push {
 		if err := worktreeSyncStaleUpstreamHint(a, repo); err != nil {
 			return err
 		}
-	}
-	if o.Push {
+	} else {
 		if _, err := repo.Git("push", "--force-with-lease="+pushRef+":"+lease, pushRemote, "HEAD:"+pushRef); err != nil {
 			return fmt.Errorf("git push --force-with-lease to %s/%s failed; inspect the remote branch and include any new commits with git rebase %s or git merge before syncing again: %w", pushRemote, strings.TrimPrefix(pushRef, "refs/heads/"), trackingRef, err)
 		}
@@ -159,16 +167,46 @@ func worktreeSyncStaleUpstreamHint(a *App, repo *gitx.Repo) error {
 	return nil
 }
 
-func worktreeSyncRebase(repo *gitx.Repo, trunk string) error {
+func worktreeSyncRebase(ctx context.Context, repo *gitx.Repo, trunk string, stderr io.Writer) error {
 	beforeStashes, err := worktreeSyncStashes(repo)
 	if err != nil {
 		return err
 	}
 	rebaseOutput, rebaseErr := repo.Git("rebase", "--autostash", trunk)
-	for _, dir := range []string{"rebase-merge", "rebase-apply"} {
-		if _, serr := os.Stat(filepath.Join(repo.GitDir, dir)); serr == nil {
-			return fmt.Errorf("a commit of the branch conflicts with %s: resolve and git rebase --continue, or git rebase --abort; the uncommitted changes come back when the rebase ends: %w", trunk, rebaseErr)
+	for worktreeSyncRebaseStopped(repo) {
+		resolved, note, resolveErr := worktreeSyncResolveLatestConflict(ctx, repo)
+		if !resolved {
+			err := worktreeSyncRebaseConflictError(trunk, rebaseErr)
+			if resolveErr != nil {
+				return fmt.Errorf("%w: %s", err, resolveErr)
+			}
+			return err
 		}
+		conflictsOut, err := repo.Git("diff", "--name-only", "--diff-filter=U")
+		if err != nil {
+			return worktreeSyncRebaseConflictError(trunk, rebaseErr)
+		}
+		conflicts := strings.Fields(conflictsOut)
+		moduleDir := filepath.Dir(conflicts[0])
+		var paths []string
+		for _, name := range []string{"go.mod", "go.sum"} {
+			path := filepath.ToSlash(filepath.Join(moduleDir, name))
+			if _, err := os.Stat(filepath.Join(repo.Root, filepath.FromSlash(path))); err == nil || slices.Contains(conflicts, path) {
+				paths = append(paths, path)
+			}
+		}
+		if _, err := repo.Git(append([]string{"add", "--"}, paths...)...); err != nil {
+			return worktreeSyncRebaseConflictError(trunk, rebaseErr)
+		}
+		fmt.Fprintln(stderr, note)
+		if _, err := repo.GitEnv([]string{"GIT_EDITOR=true"}, "rebase", "--continue"); err != nil {
+			rebaseErr = err
+			if worktreeSyncRebaseStopped(repo) {
+				continue
+			}
+			break
+		}
+		rebaseErr = nil
 	}
 	out, diffErr := repo.Git("diff", "--name-only", "--diff-filter=U")
 	if diffErr != nil {
@@ -191,6 +229,425 @@ func worktreeSyncRebase(repo *gitx.Repo, trunk string) error {
 	}
 	if rebaseErr != nil {
 		return fmt.Errorf("git rebase --autostash %s failed, the worktree is as it was: %w", trunk, rebaseErr)
+	}
+	return nil
+}
+
+type worktreeSyncModuleChange struct {
+	path, onto, commit, version string
+	bothSidesChanged            bool
+}
+
+func worktreeSyncLatestGoModChanges(baseText, ontoText, commitText string, isLatest func(string) bool) ([]worktreeSyncModuleChange, bool, error) {
+	base, err := modfile.Parse("go.mod", []byte(baseText), nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("parsing base go.mod: %w", err)
+	}
+	onto, err := modfile.Parse("go.mod", []byte(ontoText), nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("parsing onto go.mod: %w", err)
+	}
+	commit, err := modfile.Parse("go.mod", []byte(commitText), nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("parsing commit go.mod: %w", err)
+	}
+	ontoChanges, ok, err := worktreeSyncLatestSideChanges(base, onto, isLatest)
+	if err != nil {
+		return nil, false, fmt.Errorf("checking onto go.mod: %w", err)
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	commitChanges, ok, err := worktreeSyncLatestSideChanges(base, commit, isLatest)
+	if err != nil {
+		return nil, false, fmt.Errorf("checking commit go.mod: %w", err)
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	return worktreeSyncCombineLatestGoModChanges(base, ontoChanges, commitChanges)
+}
+
+func worktreeSyncCombineLatestGoModChanges(base *modfile.File, ontoChanges, commitChanges map[string]string) ([]worktreeSyncModuleChange, bool, error) {
+	changes := make([]worktreeSyncModuleChange, 0, len(ontoChanges)+len(commitChanges))
+	paths := make([]string, 0, len(ontoChanges)+len(commitChanges))
+	for path := range ontoChanges {
+		paths = append(paths, path)
+	}
+	for path := range commitChanges {
+		if _, exists := ontoChanges[path]; !exists {
+			paths = append(paths, path)
+		}
+	}
+	slices.Sort(paths)
+	for _, path := range paths {
+		ontoVersion, exists := ontoChanges[path]
+		if !exists {
+			ontoVersion = baseRequireVersion(base, path)
+		}
+		changes = append(changes, worktreeSyncModuleChange{path: path, onto: ontoVersion, commit: baseRequireVersion(base, path), version: ontoVersion})
+	}
+	for i := range changes {
+		if version, exists := commitChanges[changes[i].path]; exists {
+			changes[i].commit = version
+		}
+		_, ontoChanged := ontoChanges[changes[i].path]
+		_, commitChanged := commitChanges[changes[i].path]
+		changes[i].bothSidesChanged = ontoChanged && commitChanged
+	}
+	if len(ontoChanges) == 0 || len(commitChanges) == 0 {
+		return nil, false, nil
+	}
+	var differing int
+	for i := range changes {
+		if changes[i].bothSidesChanged && changes[i].onto != changes[i].commit {
+			differing++
+		}
+		if semver.Compare(changes[i].onto, changes[i].commit) > 0 {
+			changes[i].version = changes[i].onto
+		} else {
+			changes[i].version = changes[i].commit
+		}
+	}
+	if differing == 0 {
+		return nil, false, nil
+	}
+	return changes, true, nil
+}
+
+func worktreeSyncLatestSideChanges(base, side *modfile.File, isLatest func(string) bool) (map[string]string, bool, error) {
+	baseVersions := map[string]string{}
+	for _, req := range base.Require {
+		baseVersions[req.Mod.Path] = req.Mod.Version
+	}
+	changes := map[string]string{}
+	for _, req := range side.Require {
+		old, exists := baseVersions[req.Mod.Path]
+		if !exists {
+			continue
+		}
+		if req.Mod.Version == old {
+			continue
+		}
+		if !isLatest(req.Mod.Path) || !semver.IsValid(old) || !semver.IsValid(req.Mod.Version) || semver.Compare(req.Mod.Version, old) <= 0 {
+			return nil, false, nil
+		}
+		changes[req.Mod.Path] = req.Mod.Version
+	}
+	if len(changes) == 0 {
+		return nil, false, nil
+	}
+	sideData, err := side.Format()
+	if err != nil {
+		return nil, false, fmt.Errorf("formatting go.mod: %w", err)
+	}
+	check, err := modfile.Parse("go.mod", sideData, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("parsing formatted go.mod: %w", err)
+	}
+	for path := range changes {
+		if err := worktreeSyncSetRequireVersion(check, path, baseVersions[path]); err != nil {
+			return nil, false, err
+		}
+	}
+	equal, err := worktreeSyncGoModFilesEqual(check, base)
+	if err != nil {
+		return nil, false, fmt.Errorf("comparing normalized go.mod: %w", err)
+	}
+	return changes, equal, nil
+}
+
+func baseRequireVersion(file *modfile.File, path string) string {
+	for _, req := range file.Require {
+		if req.Mod.Path == path {
+			return req.Mod.Version
+		}
+	}
+	return ""
+}
+
+func worktreeSyncMergeLatestGoMod(ontoText string, changes []worktreeSyncModuleChange) ([]byte, []worktreeSyncModuleChange, error) {
+	file, err := modfile.Parse("go.mod", []byte(ontoText), nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parsing onto go.mod: %w", err)
+	}
+	for _, change := range changes {
+		if err := worktreeSyncSetRequireVersion(file, change.path, change.version); err != nil {
+			return nil, nil, err
+		}
+	}
+	data, err := file.Format()
+	return data, changes, err
+}
+
+func worktreeSyncRebaseStopped(repo *gitx.Repo) bool {
+	for _, dir := range []string{"rebase-merge", "rebase-apply"} {
+		if _, err := os.Stat(filepath.Join(repo.GitDir, dir)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func worktreeSyncRebaseConflictError(trunk string, rebaseErr error) error {
+	return fmt.Errorf("a commit of the branch conflicts with %s: resolve and git rebase --continue, or git rebase --abort; the uncommitted changes come back when the rebase ends: %w", trunk, rebaseErr)
+}
+
+func worktreeSyncResolveLatestConflict(ctx context.Context, repo *gitx.Repo) (bool, string, error) {
+	conflictsOut, err := repo.Git("diff", "--name-only", "--diff-filter=U")
+	if err != nil {
+		return false, "", fmt.Errorf("listing rebase conflicts: %w", err)
+	}
+	conflicts := strings.Fields(conflictsOut)
+	moduleDir, ok := worktreeSyncConflictModuleDir(conflicts)
+	if !ok {
+		return false, "", nil
+	}
+	settings, err := userconfig.ModulesSettings()
+	if err != nil {
+		return false, "", fmt.Errorf("reading modules.latest: %w", err)
+	}
+	baseGoMod, ontoGoMod, commitGoMod, err := worktreeSyncConflictGoMods(repo, moduleDir)
+	if err != nil {
+		return false, "", err
+	}
+	changes, ok, err := worktreeSyncLatestGoModChanges(baseGoMod, ontoGoMod, commitGoMod, settings.IsLatest)
+	if err != nil || !ok {
+		return false, "", err
+	}
+	return worktreeSyncApplyLatestConflict(ctx, repo, moduleDir, ontoGoMod, changes)
+}
+
+func worktreeSyncConflictModuleDir(conflicts []string) (string, bool) {
+	if len(conflicts) == 0 {
+		return "", false
+	}
+	moduleDir := ""
+	for _, path := range conflicts {
+		dir := filepath.Dir(path)
+		if filepath.Base(path) != "go.mod" && filepath.Base(path) != "go.sum" || moduleDir != "" && dir != moduleDir {
+			return "", false
+		}
+		moduleDir = dir
+	}
+	return moduleDir, true
+}
+
+func worktreeSyncConflictGoMods(repo *gitx.Repo, moduleDir string) (baseGoMod, ontoGoMod, commitGoMod string, err error) {
+	base, err := repo.Git("rev-parse", "REBASE_HEAD^")
+	if err != nil {
+		return "", "", "", fmt.Errorf("finding parent of rebased commit: %w", err)
+	}
+	path := filepath.ToSlash(filepath.Join(moduleDir, "go.mod"))
+	baseGoMod, err = repo.Git("show", strings.TrimSpace(base)+":"+path)
+	if err != nil {
+		return "", "", "", fmt.Errorf("reading base go.mod: %w", err)
+	}
+	ontoGoMod, err = repo.Git("show", "HEAD:"+path)
+	if err != nil {
+		return "", "", "", fmt.Errorf("reading onto go.mod: %w", err)
+	}
+	commitGoMod, err = repo.Git("show", "REBASE_HEAD:"+path)
+	if err != nil {
+		return "", "", "", fmt.Errorf("reading commit go.mod: %w", err)
+	}
+	return baseGoMod, ontoGoMod, commitGoMod, nil
+}
+
+func worktreeSyncApplyLatestConflict(ctx context.Context, repo *gitx.Repo, moduleDir, ontoGoMod string, changes []worktreeSyncModuleChange) (bool, string, error) {
+	vendorManifest := filepath.Join(repo.Root, filepath.FromSlash(filepath.Join(moduleDir, "vendor", "modules.txt")))
+	if _, err := os.Stat(vendorManifest); err == nil {
+		return false, "", nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, "", fmt.Errorf("checking vendor/modules.txt: %w", err)
+	}
+	paths := []string{filepath.Join(repo.Root, filepath.FromSlash(filepath.Join(moduleDir, "go.mod"))), filepath.Join(repo.Root, filepath.FromSlash(filepath.Join(moduleDir, "go.sum")))}
+	backups, err := worktreeSyncBackupFiles(paths)
+	if err != nil {
+		return false, "", err
+	}
+	rollback := func(cause error) (bool, string, error) {
+		if restoreErr := worktreeSyncRestoreFiles(backups); restoreErr != nil {
+			return false, "", fmt.Errorf("%w; restoring conflicted files: %v", cause, restoreErr)
+		}
+		return false, "", cause
+	}
+	merged, reports, err := worktreeSyncMergeLatestGoMod(ontoGoMod, changes)
+	if err != nil {
+		return rollback(fmt.Errorf("merging raised requirements: %w", err))
+	}
+	goModPath := paths[0]
+	if err := os.WriteFile(goModPath, merged, 0o666); err != nil {
+		return rollback(fmt.Errorf("writing merged go.mod: %w", err))
+	}
+	if err := worktreeSyncResetGoSumToOnto(repo, moduleDir, paths[1]); err != nil {
+		return rollback(err)
+	}
+	if err := worktreeSyncGoModDownloadAndTidy(ctx, filepath.Dir(goModPath), reports); err != nil {
+		return rollback(err)
+	}
+
+	tidied, err := os.ReadFile(goModPath)
+	if err != nil {
+		return rollback(fmt.Errorf("reading tidied go.mod: %w", err))
+	}
+	if err := worktreeSyncCheckTidyGoMod(merged, tidied, reports); err != nil {
+		return rollback(err)
+	}
+	var differing []worktreeSyncModuleChange
+	for _, item := range reports {
+		if item.bothSidesChanged && item.onto != item.commit {
+			differing = append(differing, item)
+		}
+	}
+	var modules []string
+	for _, item := range differing {
+		modules = append(modules, fmt.Sprintf("%s (%s vs %s), took %s", item.path, item.onto, item.commit, item.version))
+	}
+	note := "graft: worktree sync resolved " + strings.Join(modules, "; ")
+	return true, note, nil
+}
+
+type worktreeSyncFileBackup struct {
+	path   string
+	data   []byte
+	mode   os.FileMode
+	exists bool
+}
+
+func worktreeSyncBackupFiles(paths []string) ([]worktreeSyncFileBackup, error) {
+	backups := make([]worktreeSyncFileBackup, 0, len(paths))
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			backups = append(backups, worktreeSyncFileBackup{path: path})
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("stat %s: %w", path, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", path, err)
+		}
+		backups = append(backups, worktreeSyncFileBackup{path: path, data: data, mode: info.Mode().Perm(), exists: true})
+	}
+	return backups, nil
+}
+
+func worktreeSyncRestoreFiles(backups []worktreeSyncFileBackup) error {
+	var errs []error
+	for _, backup := range backups {
+		if !backup.exists {
+			if err := os.Remove(backup.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("removing %s: %w", backup.path, err))
+			}
+			continue
+		}
+		if err := os.WriteFile(backup.path, backup.data, backup.mode); err != nil {
+			errs = append(errs, fmt.Errorf("writing %s: %w", backup.path, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func worktreeSyncResetGoSumToOnto(repo *gitx.Repo, moduleDir, sumPath string) error {
+	relative := filepath.ToSlash(filepath.Join(moduleDir, "go.sum"))
+	if _, err := repo.Git("cat-file", "-e", "HEAD:"+relative); err != nil {
+		if gitx.ExitCode(err) == 1 {
+			if err := os.Remove(sumPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("removing go.sum absent from onto: %w", err)
+			}
+			return nil
+		}
+		return fmt.Errorf("checking onto go.sum: %w", err)
+	}
+	data, err := repo.Git("show", "HEAD:"+relative)
+	if err != nil {
+		return fmt.Errorf("reading onto go.sum: %w", err)
+	}
+	if err := os.WriteFile(sumPath, []byte(data), 0o666); err != nil {
+		return fmt.Errorf("writing onto go.sum: %w", err)
+	}
+	return nil
+}
+
+func worktreeSyncGoModDownloadAndTidy(ctx context.Context, dir string, reports []worktreeSyncModuleChange) error {
+	goPath, err := exec.LookPath("go")
+	if err != nil {
+		return fmt.Errorf("looking up go: %w", err)
+	}
+	drop, err := gitx.LocalEnvVars()
+	if err != nil {
+		return fmt.Errorf("listing git environment variables: %w", err)
+	}
+	env := gitx.Without(os.Environ(), drop)
+	env = append(env, "GOWORK=off")
+	for _, item := range reports {
+		out, stderr, err := execx.Run(ctx, dir, goPath, env, "mod", "download", item.path+"@"+item.version)
+		if err != nil {
+			reason := strings.Join(strings.Fields(stderr+"\n"+out), " ")
+			if reason == "" {
+				reason = err.Error()
+			}
+			return fmt.Errorf("go mod download %s@%s failed: %s", item.path, item.version, reason)
+		}
+	}
+	out, stderr, err := execx.Run(ctx, dir, goPath, env, "mod", "tidy")
+	if err != nil {
+		reason := strings.Join(strings.Fields(stderr+"\n"+out), " ")
+		if reason == "" {
+			reason = err.Error()
+		}
+		return fmt.Errorf("go mod tidy failed: %s", reason)
+	}
+	return nil
+}
+
+func worktreeSyncCheckTidyGoMod(beforeText, afterText []byte, allowed []worktreeSyncModuleChange) error {
+	before, err := modfile.Parse("go.mod", beforeText, nil)
+	if err != nil {
+		return fmt.Errorf("parsing pre-tidy go.mod: %w", err)
+	}
+	after, err := modfile.Parse("go.mod", afterText, nil)
+	if err != nil {
+		return fmt.Errorf("parsing tidied go.mod: %w", err)
+	}
+	for _, change := range allowed {
+		var beforeReq, afterReq *modfile.Require
+		for _, req := range before.Require {
+			if req.Mod.Path == change.path {
+				beforeReq = req
+			}
+		}
+		for _, req := range after.Require {
+			if req.Mod.Path == change.path {
+				afterReq = req
+			}
+		}
+		if beforeReq == nil || afterReq == nil {
+			return fmt.Errorf("go mod tidy removed require %s", change.path)
+		}
+		if err := before.DropRequire(change.path); err != nil {
+			return fmt.Errorf("excluding raised require from pre-tidy comparison: %w", err)
+		}
+		if err := after.DropRequire(change.path); err != nil {
+			return fmt.Errorf("excluding raised require from tidy comparison: %w", err)
+		}
+	}
+	beforeData, err := before.Format()
+	if err != nil {
+		return fmt.Errorf("formatting pre-tidy go.mod: %w", err)
+	}
+	afterData, err := after.Format()
+	if err != nil {
+		return fmt.Errorf("formatting tidied go.mod: %w", err)
+	}
+	beforeData = bytes.ReplaceAll(beforeData, []byte("\n\nrequire (\n\n)\n"), []byte("\n"))
+	afterData = bytes.ReplaceAll(afterData, []byte("\n\nrequire (\n\n)\n"), []byte("\n"))
+	equal := bytes.Equal(beforeData, afterData)
+	if !equal {
+		return errors.New("go mod tidy changed go.mod outside the raised require lines")
 	}
 	return nil
 }

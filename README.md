@@ -3310,6 +3310,12 @@ too (resolve, then `git stash drop`); a commit of the branch that conflicts
 stops the rebase (`git rebase --continue` or `--abort`); an untracked file
 the trunk adds stops it before anything changes.
 
+When a rebase conflict is only in one module's `go.mod` and `go.sum`, sync
+resolves it if both sides raised the same `modules.latest` requirement, taking
+the higher version. It starts `go.sum` from onto, then runs `go mod download`
+and `go mod tidy`; a vendor manifest or tidy changes outside the raised require
+lines leave the rebase stopped.
+
 ## Go build cache
 
 The go command keeps a build cache entry for five days after its last use and

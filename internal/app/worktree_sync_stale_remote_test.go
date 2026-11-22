@@ -29,7 +29,7 @@ func TestWorktreeSyncStaleRemoteCommitCanBePushed(t *testing.T) {
 	syncStaleRemoteBranch(t, f)
 	var out bytes.Buffer
 	a := &App{Dir: f.work, Stdout: &out, Stderr: io.Discard}
-	if err := a.WorktreeSync(WorktreeSyncOptions{Trunk: "origin/main"}); err != nil {
+	if err := a.WorktreeSync(context.Background(), WorktreeSyncOptions{Trunk: "origin/main"}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "the next graft commit will not overwrite it") || !strings.Contains(out.String(), "graft worktree sync --push") || !strings.Contains(out.String(), "graft merge feature") {
@@ -43,7 +43,7 @@ func TestWorktreeSyncStaleRemoteCommitCanBePushed(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "graft worktree sync --push") || strings.Contains(err.Error(), "retry with: git push") {
 		t.Fatalf("graft commit output = %q, error = %v", commitOut.String(), err)
 	}
-	if err := (&App{Dir: f.work, Stdout: io.Discard, Stderr: io.Discard}).WorktreeSync(WorktreeSyncOptions{Push: true, Trunk: "origin/main"}); err != nil {
+	if err := (&App{Dir: f.work, Stdout: io.Discard, Stderr: io.Discard}).WorktreeSync(context.Background(), WorktreeSyncOptions{Push: true, Trunk: "origin/main"}); err != nil {
 		t.Fatalf("sync --push: %v", err)
 	}
 	if got, want := f.git(f.work, "rev-parse", "HEAD"), f.git(f.remote, "rev-parse", "refs/heads/feature"); got != want {
@@ -92,7 +92,7 @@ func TestWorktreeSyncDoesNotCallForeignTipOldHistory(t *testing.T) {
 	f.commit(foreign, "foreign-change")
 	f.git(foreign, "push", "-q", "origin", "HEAD:feature")
 	var out bytes.Buffer
-	err := (&App{Dir: f.work, Stdout: &out, Stderr: io.Discard}).WorktreeSync(WorktreeSyncOptions{Trunk: "origin/main"})
+	err := (&App{Dir: f.work, Stdout: &out, Stderr: io.Discard}).WorktreeSync(context.Background(), WorktreeSyncOptions{Trunk: "origin/main"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestCommitAndSyncDoNotAdviseForDifferentUpstreamBranch(t *testing.T) {
 	f.git(f.work, "push", "-q", "origin", "refs/heads/feature:refs/heads/other")
 	f.git(f.work, "branch", "--set-upstream-to=origin/other", "feature")
 	var syncOut bytes.Buffer
-	if err := (&App{Dir: f.work, Stdout: &syncOut, Stderr: io.Discard}).WorktreeSync(WorktreeSyncOptions{Trunk: "origin/main"}); err != nil {
+	if err := (&App{Dir: f.work, Stdout: &syncOut, Stderr: io.Discard}).WorktreeSync(context.Background(), WorktreeSyncOptions{Trunk: "origin/main"}); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(syncOut.String(), "graft worktree sync --push") || strings.Contains(syncOut.String(), "holds the old history") {
@@ -140,7 +140,7 @@ func TestCommitAdviceNamesEveryStaleRemote(t *testing.T) {
 	f.git(f.work, "branch", "--set-upstream-to=second/feature", "feature")
 	oldTip := f.git(f.work, "rev-parse", "refs/remotes/origin/feature")
 	var syncOut bytes.Buffer
-	if err := (&App{Dir: f.work, Stdout: &syncOut, Stderr: io.Discard}).WorktreeSync(WorktreeSyncOptions{Trunk: "origin/main"}); err != nil {
+	if err := (&App{Dir: f.work, Stdout: &syncOut, Stderr: io.Discard}).WorktreeSync(context.Background(), WorktreeSyncOptions{Trunk: "origin/main"}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(syncOut.String(), "graft worktree sync --push") {
@@ -158,7 +158,7 @@ func TestCommitAdviceNamesEveryStaleRemote(t *testing.T) {
 	if !strings.Contains(err.Error(), wantUpstream) || !strings.Contains(err.Error(), wantOther) {
 		t.Fatalf("multi-remote advice = %v; want %q and %q", err, wantUpstream, wantOther)
 	}
-	if err := (&App{Dir: f.work, Stdout: io.Discard, Stderr: io.Discard}).WorktreeSync(WorktreeSyncOptions{Push: true, Trunk: "origin/main"}); err != nil {
+	if err := (&App{Dir: f.work, Stdout: io.Discard, Stderr: io.Discard}).WorktreeSync(context.Background(), WorktreeSyncOptions{Push: true, Trunk: "origin/main"}); err != nil {
 		t.Fatalf("sync --push upstream: %v", err)
 	}
 	f.git(f.work, "push", "--force-with-lease=refs/heads/feature:"+oldTip, "origin", "HEAD:refs/heads/feature")
@@ -194,7 +194,7 @@ func TestCommitAdviceKeepsRetryForForeignRemoteInMixedFailure(t *testing.T) {
 	f.commit(foreign, "foreign-change")
 	f.git(foreign, "push", "-q", "origin", "HEAD:feature")
 	foreignTip := f.git(foreign, "rev-parse", "HEAD")
-	if err := (&App{Dir: f.work, Stdout: io.Discard, Stderr: io.Discard}).WorktreeSync(WorktreeSyncOptions{Trunk: "origin/main"}); err != nil {
+	if err := (&App{Dir: f.work, Stdout: io.Discard, Stderr: io.Discard}).WorktreeSync(context.Background(), WorktreeSyncOptions{Trunk: "origin/main"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(f.work, "local-change"), []byte("local-change\n"), 0o600); err != nil {

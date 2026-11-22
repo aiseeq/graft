@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"io"
 	"os"
 	"os/exec"
@@ -92,7 +93,7 @@ func (f *syncPushFixture) commit(dir, name string) {
 
 func (f *syncPushFixture) sync(trunk string) error {
 	f.t.Helper()
-	return (&App{Dir: f.work, Stdout: io.Discard, Stderr: io.Discard}).WorktreeSync(WorktreeSyncOptions{Push: true, Trunk: trunk})
+	return (&App{Dir: f.work, Stdout: io.Discard, Stderr: io.Discard}).WorktreeSync(context.Background(), WorktreeSyncOptions{Push: true, Trunk: trunk})
 }
 
 func TestWorktreeSyncPushRejectsTrunkUpstreamBeforeRebase(t *testing.T) {
@@ -105,7 +106,7 @@ func TestWorktreeSyncPushRejectsTrunkUpstreamBeforeRebase(t *testing.T) {
 	f.git(wt, "config", "user.email", "test@example.invalid")
 	f.commit(wt, "work")
 	head := f.git(wt, "rev-parse", "HEAD")
-	if err := (&App{Dir: wt, Stdout: io.Discard, Stderr: io.Discard}).WorktreeSync(WorktreeSyncOptions{Push: true, Trunk: "trunk"}); err == nil || !strings.Contains(err.Error(), "upstream of trunk") {
+	if err := (&App{Dir: wt, Stdout: io.Discard, Stderr: io.Discard}).WorktreeSync(context.Background(), WorktreeSyncOptions{Push: true, Trunk: "trunk"}); err == nil || !strings.Contains(err.Error(), "upstream of trunk") {
 		t.Fatalf("sync error = %v, want trunk upstream refusal", err)
 	}
 	if got := f.git(wt, "rev-parse", "HEAD"); got != head {

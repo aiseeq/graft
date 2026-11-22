@@ -802,7 +802,7 @@ func worktreeCmd(ctx context.Context, a *app.App, args []string) error {
 	}
 	switch args[0] {
 	case "sync":
-		return worktreeSyncCmd(a, args[1:], usage)
+		return worktreeSyncCmd(ctx, a, args[1:], usage)
 	case "stale":
 		return worktreeStaleCmd(ctx, a, args[1:], usage)
 	case "add":
@@ -844,7 +844,7 @@ func worktreeArchiveCmd(ctx context.Context, a *app.App, args []string, usage er
 	return a.WorktreeArchive(ctx, o)
 }
 
-func worktreeSyncCmd(a *app.App, args []string, usage error) error {
+func worktreeSyncCmd(ctx context.Context, a *app.App, args []string, usage error) error {
 	fs := newFlags(a, "worktree sync")
 	o := app.WorktreeSyncOptions{}
 	fs.StringVar(&o.Trunk, "trunk", "", "the ref to sync onto (default: the HEAD branch of the deploy remote or of the only remote)")
@@ -856,7 +856,7 @@ func worktreeSyncCmd(a *app.App, args []string, usage error) error {
 	if len(pos) != 0 {
 		return usage
 	}
-	return a.WorktreeSync(o)
+	return a.WorktreeSync(ctx, o)
 }
 
 func worktreeAddCmd(ctx context.Context, a *app.App, args []string, usage error) error {
