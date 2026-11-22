@@ -367,14 +367,14 @@ func TestGocacheTrimProbeLaunchFailureIsLoggedAndTrimContinues(t *testing.T) {
 	startProbeUnit = func(string, string, int, string, string) error { return errors.New("systemd-run unavailable") }
 	t.Cleanup(func() { startProbeUnit = previous })
 	var stderr bytes.Buffer
-	err := (&App{Stdout: &bytes.Buffer{}, Stderr: &stderr}).GocacheTrim(context.Background(), 25*time.Hour, true, time.Second, 0)
+	err := (&App{Stdout: &bytes.Buffer{}, Stderr: &stderr}).GocacheTrim(context.Background(), 25*time.Hour, true, time.Second, 0, "fs")
 	if err != nil {
 		t.Fatalf("trim failed: %v; stderr %q", err, stderr.String())
 	}
 	if strings.Count(stderr.String(), "probe skipped:") != 1 || !strings.Contains(stderr.String(), "systemd-run unavailable") {
 		t.Fatalf("stderr %q", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "batch 1: started ") || !strings.Contains(stderr.String(), "1 entries, 5 B, unlink ") || !strings.Contains(stderr.String(), "syncfs ") || !strings.Contains(stderr.String(), "waited ") {
+	if !strings.Contains(stderr.String(), "batch 1: started ") || !strings.Contains(stderr.String(), "1 entries, 5 B, unlink ") || !strings.Contains(stderr.String(), "sync fs, syncfs ") || !strings.Contains(stderr.String(), "waited ") {
 		t.Fatalf("batch journal line missing: %q", stderr.String())
 	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {

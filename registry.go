@@ -150,7 +150,7 @@ var registrySpecs = []registrySpec{
 	{path: "worktree check", rest: "args", source: "worktree check"},
 	{path: "worktree clean", rest: "none", source: "worktree clean"},
 	{path: "worktree stale", rest: "none", source: "worktree stale"},
-	{path: "gocache", rest: "none"}, {path: "gocache trim", rest: "none", source: "gocache trim", manual: "--free-below", values: "--free-below"},
+	{path: "gocache", rest: "none"}, {path: "gocache trim", rest: "none", source: "gocache trim", manual: "--free-below --batch-sync", values: "--free-below --batch-sync"},
 	{path: "guide", rest: "args"}, {path: "help", rest: "args", manual: "--json"},
 }
 

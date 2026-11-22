@@ -32,7 +32,7 @@ func TestGocacheFreeBelowSkipsCacheWalkWhenSpaceIsEnough(t *testing.T) {
 	}
 	t.Cleanup(func() { freeSpace = previous })
 	var out bytes.Buffer
-	err := (&App{Stdout: &out}).GocacheTrim(context.Background(), 6*time.Hour, true, 0, 80<<30)
+	err := (&App{Stdout: &out}).GocacheTrim(context.Background(), 6*time.Hour, true, 0, 80<<30, "fs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestGocacheFreeBelowMeasuresBeforeAndAfterTrim(t *testing.T) {
 	}
 	t.Cleanup(func() { freeSpace = previous })
 	var out bytes.Buffer
-	err := (&App{Stdout: &out, Stderr: &bytes.Buffer{}}).GocacheTrim(context.Background(), 25*time.Hour, true, time.Second, 80<<30)
+	err := (&App{Stdout: &out, Stderr: &bytes.Buffer{}}).GocacheTrim(context.Background(), 25*time.Hour, true, time.Second, 80<<30, "fs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +306,7 @@ func TestTrimStopsAtMaxWait(t *testing.T) {
 		}
 	}
 	started := time.Now()
-	result, err := gocache.TrimWithOptions(dir, 25*time.Hour, time.Now(), gocache.Options{Apply: true, BeforeBatch: func() (bool, error) {
+	result, err := gocache.TrimWithOptions(dir, 25*time.Hour, time.Now(), gocache.Options{BatchSync: "fs", Apply: true, BeforeBatch: func() (bool, error) {
 		ok, _, err := waitForTrimBatch(context.Background(), 20*time.Millisecond, 5*time.Millisecond,
 			trimMemoryCalm, func(context.Context) (string, error) { return loadgate.WhyIO, nil })
 		return ok, err
@@ -369,7 +369,7 @@ func TestGocacheTrimReportsPartialResultWhenContextIsCanceled(t *testing.T) {
 
 	t.Setenv("GOCACHE", dir)
 	var out bytes.Buffer
-	err = (&App{Stdout: &out, Stderr: &bytes.Buffer{}}).GocacheTrim(ctx, 25*time.Hour, true, time.Second, 0)
+	err = (&App{Stdout: &out, Stderr: &bytes.Buffer{}}).GocacheTrim(ctx, 25*time.Hour, true, time.Second, 0, "fs")
 	if err == nil {
 		t.Fatal("GocacheTrim returned nil after context cancellation")
 	}
@@ -389,7 +389,7 @@ func TestGocacheTrimReportsZeroRemovedWhenCanceledInFirstWait(t *testing.T) {
 	time.AfterFunc(time.Second, cancel)
 
 	var out bytes.Buffer
-	err := (&App{Stdout: &out, Stderr: &bytes.Buffer{}}).GocacheTrim(ctx, 25*time.Hour, true, time.Minute, 0)
+	err := (&App{Stdout: &out, Stderr: &bytes.Buffer{}}).GocacheTrim(ctx, 25*time.Hour, true, time.Minute, 0, "fs")
 	if err == nil {
 		t.Fatal("GocacheTrim returned nil after context cancellation")
 	}
@@ -436,7 +436,7 @@ func TestGocacheFreeBelowDryRunKeepsEntries(t *testing.T) {
 	freeSpace = func(string) (int64, error) { return 40 << 30, nil }
 	t.Cleanup(func() { freeSpace = previous })
 	var out bytes.Buffer
-	if err := (&App{Stdout: &out, Stderr: &bytes.Buffer{}}).GocacheTrim(context.Background(), 25*time.Hour, false, 0, 80<<30); err != nil {
+	if err := (&App{Stdout: &out, Stderr: &bytes.Buffer{}}).GocacheTrim(context.Background(), 25*time.Hour, false, 0, 80<<30, "fs"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "dry run: graft gocache trim --apply removes 1 entries") {
@@ -462,4 +462,39 @@ func quietConfigHome(t *testing.T) string {
 	}
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	return dir
+}
+
+func TestGocacheTrimBatchSyncReachesFilesystem(t *testing.T) {
+	for _, tc := range []struct {
+		mode     string
+		calls    int
+		duration string
+	}{{"fs", 1, "syncfs "}, {"none", 0, "syncfs -"}} {
+		t.Run(tc.mode, func(t *testing.T) {
+			noTrimProbe(t)
+			dir, _ := makeTrimCache(t)
+			t.Setenv("GOCACHE", dir)
+			trimProc(t, 1, 1)
+			serveTrimDisk(t, 0)
+			quietConfigHome(t)
+			calls := 0
+			previous := trimSyncFS
+			trimSyncFS = func(path string) error {
+				if path != dir {
+					t.Errorf("sync path %q, want %q", path, dir)
+				}
+				calls++
+				return nil
+			}
+			t.Cleanup(func() { trimSyncFS = previous })
+			var stdout, stderr bytes.Buffer
+			err := (&App{Stdout: &stdout, Stderr: &stderr}).GocacheTrim(context.Background(), 25*time.Hour, true, time.Second, 0, tc.mode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != tc.calls || !strings.Contains(stdout.String(), "; sync "+tc.mode) || !strings.Contains(stderr.String(), "sync "+tc.mode+", "+tc.duration) {
+				t.Fatalf("sync calls %d, want %d; stdout %q; stderr %q", calls, tc.calls, stdout.String(), stderr.String())
+			}
+		})
+	}
 }

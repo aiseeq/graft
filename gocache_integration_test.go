@@ -149,3 +149,43 @@ func assertGocacheProbeArgs(t *testing.T, argsFile, probeDir string) {
 		t.Fatalf("unexpected probe identity or directory: %#v", args)
 	}
 }
+
+func TestGocacheBatchSyncFlagAndEnvironment(t *testing.T) {
+	f := newRepo(t, map[string]string{".graft.yaml": "schema: 1\nversion: {mode: none}\n"})
+	cache := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cache, "README"), []byte("This directory holds cached build artifacts from the Go build system.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env, "GOCACHE="+cache, "GRAFT_GOCACHE_PROBE=off")
+	for _, tc := range []struct {
+		name, env, flag, want string
+		setEnv, setFlag       bool
+		code                  int
+	}{
+		{"default", "", "", "sync fs", false, false, 0},
+		{"env none", "none", "", "sync none", true, false, 0},
+		{"flag overrides env", "none", "fs", "sync fs", true, true, 0},
+		{"flag overrides invalid env", "bad", "none", "sync none", true, true, 0},
+		{"bad env", "bad", "", "GRAFT_GOCACHE_BATCH_SYNC \"bad\": want fs or none", true, false, 2},
+		{"empty env", "", "", "sync fs", true, false, 0},
+		{"bad flag", "fs", "bad", "--batch-sync \"bad\": want fs or none", true, true, 2},
+		{"empty flag", "fs", "", "--batch-sync \"\": want fs or none", true, true, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oldEnv := f.env
+			f.env = append([]string{}, oldEnv...)
+			if tc.setEnv {
+				f.env = append(f.env, "GRAFT_GOCACHE_BATCH_SYNC="+tc.env)
+			}
+			t.Cleanup(func() { f.env = oldEnv })
+			args := []string{"gocache", "trim", "--apply"}
+			if tc.setFlag {
+				args = append(args, "--batch-sync", tc.flag)
+			}
+			out, code := f.graft("", args...)
+			if code != tc.code || !strings.Contains(out, tc.want) {
+				t.Fatalf("exit %d, want %d and %q:\n%s", code, tc.code, tc.want, out)
+			}
+		})
+	}
+}

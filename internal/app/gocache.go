@@ -20,11 +20,12 @@ const maxDirtyWritebackKB = 64 * 1024
 const trimKind = "gocache-trim"
 
 var freeSpace = availableFreeSpace
+var trimSyncFS func(string) error
 
 // GocacheTrim removes, with apply, the entries of the Go build cache of
 // go env GOCACHE not used for longer than older, or tells how many it
 // would; it needs no project.
-func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, maxWait time.Duration, freeBelow int64) error {
+func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, maxWait time.Duration, freeBelow int64, batchSync string) error {
 	cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "go", "env", "GOCACHE")
 	if err != nil {
 		return err
@@ -56,14 +57,20 @@ func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, 
 	remainingWait := maxWait
 	var options gocache.Options
 	options.Apply = apply
+	options.BatchSync = batchSync
+	options.SyncFS = trimSyncFS
 	if apply {
 		options.OnStart = func() { startTrimProbe(a.Stderr) }
 		var reportedWait time.Duration
 		options.OnBatch = func(number, entries int, bytes int64, started time.Time, unlink, syncTime time.Duration) {
 			waited := waitTotal(waits) - reportedWait
 			reportedWait = waitTotal(waits)
-			fmt.Fprintf(a.Stderr, "graft: gocache trim: batch %d: started %s, %d entries, %s, unlink %dms, syncfs %dms, waited %dms\n",
-				number, started.Format(time.RFC3339Nano), entries, checks.FormatSize(bytes), unlink.Milliseconds(), syncTime.Milliseconds(), waited.Milliseconds())
+			syncDuration := "-"
+			if options.BatchSync == "fs" {
+				syncDuration = fmt.Sprintf("%dms", syncTime.Milliseconds())
+			}
+			fmt.Fprintf(a.Stderr, "graft: gocache trim: batch %d: started %s, %d entries, %s, unlink %dms, sync %s, syncfs %s, waited %dms\n",
+				number, started.Format(time.RFC3339Nano), entries, checks.FormatSize(bytes), unlink.Milliseconds(), options.BatchSync, syncDuration, waited.Milliseconds())
 		}
 		load, err := userconfig.LoadSettings()
 		if err != nil {
@@ -93,7 +100,7 @@ func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, 
 					freeAfter = &measured
 				}
 			}
-			a.printf("%s", formatTrimSummary(dir, older, apply, r, waits, freeBelow > 0, freeBefore, freeAfter, freeAfterErr, err))
+			a.printf("%s", formatTrimSummary(dir, older, apply, options.BatchSync, r, waits, freeBelow > 0, freeBefore, freeAfter, freeAfterErr, err))
 		}
 		return err
 	}
@@ -105,11 +112,11 @@ func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, 
 		}
 		freeAfter = &measured
 	}
-	a.printf("%s", formatTrimSummary(dir, older, apply, r, waits, freeBelow > 0, freeBefore, freeAfter, nil, nil))
+	a.printf("%s", formatTrimSummary(dir, older, apply, options.BatchSync, r, waits, freeBelow > 0, freeBefore, freeAfter, nil, nil))
 	return nil
 }
 
-func formatTrimSummary(dir string, older time.Duration, apply bool, r gocache.Result, waits loadgate.Waits, measureFree bool, freeBefore int64, freeAfter *int64, freeAfterErr, interrupted error) string {
+func formatTrimSummary(dir string, older time.Duration, apply bool, batchSync string, r gocache.Result, waits loadgate.Waits, measureFree bool, freeBefore int64, freeAfter *int64, freeAfterErr, interrupted error) string {
 	verb := "removed"
 	if !apply {
 		verb = "dry run: graft gocache trim --apply removes"
@@ -138,7 +145,7 @@ func formatTrimSummary(dir string, older time.Duration, apply bool, r gocache.Re
 		}
 	}
 	if apply {
-		fmt.Fprintf(&summary, "; waited %s%s", waitTotal(waits).Round(time.Second), formatTrimWaits(waits))
+		fmt.Fprintf(&summary, "; waited %s%s; sync %s", waitTotal(waits).Round(time.Second), formatTrimWaits(waits), batchSync)
 	}
 	if interrupted != nil {
 		fmt.Fprintf(&summary, "; interrupted: %v", interrupted)

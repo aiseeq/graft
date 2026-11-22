@@ -40,6 +40,8 @@ type Result struct {
 // later run. A nil callback removes entries without waiting.
 type Options struct {
 	Apply       bool
+	BatchSync   string             // "fs" syncs the filesystem; "none" skips it.
+	SyncFS      func(string) error // nil uses syncfs; may be supplied for testing.
 	BeforeBatch func() (bool, error)
 	OnStart     func()
 	OnBatch     func(number, entries int, bytes int64, started time.Time, unlink, sync time.Duration)
@@ -49,6 +51,9 @@ type Options struct {
 // TrimWithOptions trims a cache with optional admission before each batch.
 func TrimWithOptions(dir string, older time.Duration, now time.Time, opts Options) (Result, error) {
 	var r Result
+	if opts.BatchSync != "fs" && opts.BatchSync != "none" {
+		return r, fmt.Errorf("batch sync %q: want fs or none", opts.BatchSync)
+	}
 	data, err := os.ReadFile(filepath.Join(dir, "README"))
 	if err != nil {
 		return r, fmt.Errorf("%s is not a Go build cache: %w", dir, err)
@@ -92,6 +97,8 @@ func trimDryRun(dir string, cutoff time.Time, r Result) (Result, error) {
 
 type trimBatch struct {
 	dir           string
+	batchSync     string
+	syncFS        func(string) error
 	before        func() (bool, error)
 	result        *Result
 	entries       int
@@ -105,7 +112,7 @@ type trimBatch struct {
 }
 
 func trimApply(dir string, cutoff time.Time, r Result, opts Options) (Result, error) {
-	batch := trimBatch{dir: dir, before: opts.BeforeBatch, result: &r, remove: opts.RemoveEntry, onBatch: opts.OnBatch}
+	batch := trimBatch{dir: dir, batchSync: opts.BatchSync, syncFS: opts.SyncFS, before: opts.BeforeBatch, result: &r, remove: opts.RemoveEntry, onBatch: opts.OnBatch}
 	for i := range 256 {
 		if err := batch.trimSubdir(filepath.Join(dir, fmt.Sprintf("%02x", i)), cutoff); err != nil {
 			return r, err
@@ -194,11 +201,18 @@ func (b *trimBatch) finish() error {
 	if b.entries == 0 {
 		return nil
 	}
-	started := time.Now()
-	if err := syncCacheFS(b.dir); err != nil {
-		return fmt.Errorf("sync the cache after trimming: %w", err)
+	var syncTime time.Duration
+	if b.batchSync != "none" {
+		started := time.Now()
+		syncFS := b.syncFS
+		if syncFS == nil {
+			syncFS = syncCacheFS
+		}
+		if err := syncFS(b.dir); err != nil {
+			return fmt.Errorf("sync the cache after trimming: %w", err)
+		}
+		syncTime = time.Since(started)
 	}
-	syncTime := time.Since(started)
 	b.number++
 	if b.onBatch != nil {
 		b.onBatch(b.number, b.entries, b.bytes, b.batchAt, b.unlink, syncTime)

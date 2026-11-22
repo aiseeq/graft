@@ -31,7 +31,7 @@ func TestTrimApplyReportsBatchAfterStubbedRemoval(t *testing.T) {
 		bytes           int64
 		unlink, sync    time.Duration
 	}
-	r, err := TrimWithOptions(dir, 25*time.Hour, time.Now(), Options{Apply: true,
+	r, err := TrimWithOptions(dir, 25*time.Hour, time.Now(), Options{BatchSync: "fs", Apply: true,
 		RemoveEntry: func(string, bool) error { return nil },
 		OnBatch: func(n, entries int, bytes int64, _ time.Time, unlink, sync time.Duration) {
 			got = struct {
@@ -117,7 +117,7 @@ func TestTrimRemovesTheEntriesUnusedForLongerThanTheAge(t *testing.T) {
 	}
 	old = append(old, "5c/"+strings.Repeat("5", 64)+"-d")
 	kept = append(kept, "5c/"+strings.Repeat("6", 64)+"-d/prog", "5c/"+strings.Repeat("7", 64)+"-a/prog")
-	r, err := TrimWithOptions(dir, 25*time.Hour, now, Options{})
+	r, err := TrimWithOptions(dir, 25*time.Hour, now, Options{BatchSync: "fs"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestTrimRemovesTheEntriesUnusedForLongerThanTheAge(t *testing.T) {
 		}
 	}
 
-	r, err = TrimWithOptions(dir, 25*time.Hour, now, Options{Apply: true})
+	r, err = TrimWithOptions(dir, 25*time.Hour, now, Options{BatchSync: "fs", Apply: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestTrimRemovesTheEntriesUnusedForLongerThanTheAge(t *testing.T) {
 			t.Errorf("%s removed: %v", rel, err)
 		}
 	}
-	if r, err := TrimWithOptions(dir, 25*time.Hour, now, Options{Apply: true}); err != nil || r != (Result{Kept: 3, KeptBytes: 17, CacheValidated: true}) {
+	if r, err := TrimWithOptions(dir, 25*time.Hour, now, Options{BatchSync: "fs", Apply: true}); err != nil || r != (Result{Kept: 3, KeptBytes: 17, CacheValidated: true}) {
 		t.Errorf("second trim: %+v, %v", r, err)
 	}
 }
@@ -171,7 +171,7 @@ func TestTrimRefusesADirectoryThatIsNotAGoCache(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if _, err := TrimWithOptions(dir, 25*time.Hour, now, Options{Apply: true}); err == nil || !strings.Contains(err.Error(), "not a Go build cache") {
+		if _, err := TrimWithOptions(dir, 25*time.Hour, now, Options{BatchSync: "fs", Apply: true}); err == nil || !strings.Contains(err.Error(), "not a Go build cache") {
 			t.Errorf("README %q: %v", data, err)
 		}
 		if _, err := os.Stat(entry); err != nil {
@@ -196,7 +196,7 @@ func TestTrimBatchesAndLeavesTheRemainderWhenAdmissionStops(t *testing.T) {
 		}
 	}
 	var batches int
-	r, err := TrimWithOptions(dir, 25*time.Hour, now, Options{Apply: true, BeforeBatch: func() (bool, error) {
+	r, err := TrimWithOptions(dir, 25*time.Hour, now, Options{BatchSync: "fs", Apply: true, BeforeBatch: func() (bool, error) {
 		batches++
 		return batches == 1, nil
 	}})
@@ -232,7 +232,7 @@ func TestTrimPutsAnEntryOverTheByteBoundInABatchOfItsOwn(t *testing.T) {
 		}
 	}
 	var batches int
-	r, err := TrimWithOptions(dir, 25*time.Hour, now, Options{Apply: true, BeforeBatch: func() (bool, error) {
+	r, err := TrimWithOptions(dir, 25*time.Hour, now, Options{BatchSync: "fs", Apply: true, BeforeBatch: func() (bool, error) {
 		batches++
 		return true, nil
 	}})
@@ -241,5 +241,47 @@ func TestTrimPutsAnEntryOverTheByteBoundInABatchOfItsOwn(t *testing.T) {
 	}
 	if batches != 3 || r.Removed != 3 || r.RemovedBytes != BatchBytes+7 {
 		t.Errorf("batches %d, result %+v; want 3 batches, the big entry alone", batches, r)
+	}
+}
+
+func TestTrimBatchSyncSelection(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want int
+	}{{"fs", 1}, {"none", 0}} {
+		t.Run(tc.mode, func(t *testing.T) {
+			now := time.Now()
+			dir := cacheDir(t, now, map[string]time.Duration{"00/entry-a": 48 * time.Hour})
+			calls := 0
+			result, err := TrimWithOptions(dir, 25*time.Hour, now, Options{
+				Apply: true, BatchSync: tc.mode,
+				SyncFS: func(path string) error {
+					if path != dir {
+						t.Errorf("sync path %q, want %q", path, dir)
+					}
+					calls++
+					return nil
+				},
+			})
+			if err != nil || result.Removed != 1 || calls != tc.want {
+				t.Fatalf("removed %d, sync calls %d, want %d, error %v", result.Removed, calls, tc.want, err)
+			}
+		})
+	}
+}
+
+func TestTrimRejectsInvalidBatchSync(t *testing.T) {
+	now := time.Now()
+	dir := cacheDir(t, now, map[string]time.Duration{"00/entry-a": 48 * time.Hour})
+	for _, mode := range []string{"", "bad"} {
+		for _, apply := range []bool{false, true} {
+			_, err := TrimWithOptions(dir, 25*time.Hour, now, Options{BatchSync: mode, Apply: apply})
+			if err == nil || !strings.Contains(err.Error(), "want fs or none") {
+				t.Errorf("mode %q apply %v: %v", mode, apply, err)
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "00", "entry-a")); err != nil {
+		t.Fatal(err)
 	}
 }

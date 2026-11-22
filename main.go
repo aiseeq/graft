@@ -709,6 +709,7 @@ func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
 	older := fs.Duration("older", 25*time.Hour, "remove the entries unused for longer than this")
 	maxWait := fs.Duration("max-wait", 2*time.Hour, "stop waiting for a quiet machine after this long")
 	freeBelow := fs.String("free-below", "", "trim only when filesystem free space is below this size (binary K/M/G)")
+	batchSync := fs.String("batch-sync", "fs", "sync after each batch: fs or none")
 	pos, err := parseInterspersed(fs, args[1:])
 	if err != nil {
 		return err
@@ -725,12 +726,25 @@ func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
 		return fmt.Errorf("%w: --max-wait %s: want zero or more", errUsage, *maxWait)
 	}
 	var freeBelowBytes int64
-	freeBelowSet := false
+	freeBelowSet, batchSyncSet := false, false
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "free-below" {
+		switch f.Name {
+		case "free-below":
 			freeBelowSet = true
+		case "batch-sync":
+			batchSyncSet = true
 		}
 	})
+	syncSource := "--batch-sync"
+	if !batchSyncSet {
+		if value := os.Getenv("GRAFT_GOCACHE_BATCH_SYNC"); value != "" {
+			*batchSync = value
+			syncSource = "GRAFT_GOCACHE_BATCH_SYNC"
+		}
+	}
+	if *batchSync != "fs" && *batchSync != "none" {
+		return fmt.Errorf("%w: %s %q: want fs or none", errUsage, syncSource, *batchSync)
+	}
 	if freeBelowSet {
 		var percent int
 		freeBelowBytes, percent, err = memorymax.Parse(*freeBelow)
@@ -738,7 +752,7 @@ func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
 			return fmt.Errorf("%w: --free-below %q: want a size above zero such as 80G (binary K, M, G)", errUsage, *freeBelow)
 		}
 	}
-	return a.GocacheTrim(ctx, *older, *apply, *maxWait, freeBelowBytes)
+	return a.GocacheTrim(ctx, *older, *apply, *maxWait, freeBelowBytes, *batchSync)
 }
 
 func gocacheProbeCmd(ctx context.Context, a *app.App, args []string) error {

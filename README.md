@@ -3319,7 +3319,11 @@ keeps. A removed entry is a cache miss: go rebuilds the package the next time
 it is needed, so a project not built for a day builds cold once, and a
 project in use stays warm. With `--apply`, graft removes entries in batches
 of up to 1000 entries or 256 MiB (an entry bigger than that is a batch
-of its own), syncing the cache filesystem after each batch. Before a batch it waits until `Dirty` plus `Writeback` in
+of its own), syncing the cache filesystem after each batch. Set
+`--batch-sync none` or `GRAFT_GOCACHE_BATCH_SYNC=none` to skip this sync;
+`fs` is the default, an empty environment variable uses the default, and the
+flag overrides the environment. Before a batch it waits until `Dirty` plus
+`Writeback` in
 `/proc/meminfo` is below 64 MiB (where the system reports it: Linux) and
 the machine is calm by the busy check for disk pressure, writeback,
 memory pressure while swapping, and `busy --quiet`; CPU is not a constraint
@@ -3327,7 +3331,8 @@ because trimming is already-running work whose added load is on the disk.
 `--max-wait` (2h by default) bounds the total wait; when it expires, graft
 reports what remains for the next run. Without `--apply` it reports the
 would-be removals immediately. Each applied batch logs its start time, entry
-and byte counts, unlink and syncfs times, and time spent waiting to stderr.
+and byte counts, unlink and syncfs times, the sync mode, and time spent
+waiting to stderr; the final summary also reports the sync mode.
 Trim also starts a normal-priority write probe in a separate systemd user unit;
 it logs operations over 250ms, reports stuck writes each second, and prints a
 latency summary. Set `GRAFT_GOCACHE_PROBE=off` to disable it, or set a program path to replace `systemd-run` with that program and the same arguments. Run it daily from a timer,
