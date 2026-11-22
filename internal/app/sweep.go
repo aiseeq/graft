@@ -745,8 +745,8 @@ func changesOnlyIgnored(r *deployRun, sha, parent string, conf *config.ApprovedR
 	if err != nil {
 		return false, err
 	}
-	files := slices.DeleteFunc(strings.Split(out, "\x00"), func(f string) bool { return f == "" || slices.Contains(r.cfg.VersionFiles(), f) })
-	return conf.Ignored(files), nil
+	files, ignored := classifyShipChanges(strings.Split(out, "\x00"), r.cfg.VersionFiles(), conf)
+	return len(files) == 0 && len(ignored) > 0, nil
 }
 
 // landed tells whether rev has the change of commit sha by content: put onto
@@ -765,13 +765,8 @@ func landed(r *deployRun, rev, sha, parent string, conf *config.ApprovedRelease)
 	if err != nil {
 		return false, err
 	}
-	versions := r.cfg.VersionFiles()
-	for _, f := range slices.Concat(strings.Split(conflicts, "\x00"), strings.Split(diff, "\x00")) {
-		if f != "" && !slices.Contains(versions, f) && (conf == nil || !conf.Ignored([]string{f})) {
-			return false, nil
-		}
-	}
-	return true, nil
+	files, _ := classifyShipChanges(slices.Concat(strings.Split(conflicts, "\x00"), strings.Split(diff, "\x00")), r.cfg.VersionFiles(), conf)
+	return len(files) == 0, nil
 }
 
 // revSet is the set of commits rev reaches, back to since.

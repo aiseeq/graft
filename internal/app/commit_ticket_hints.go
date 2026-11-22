@@ -36,14 +36,6 @@ type commitTicketHintBatch struct {
 	failure string
 }
 
-// commitTicketHints gives advisory Jira hints for the keys named by the
-// prepared commit message. It never changes whether the commit can proceed.
-func (a *App) commitTicketHints(ctx context.Context, cfg *config.Config, msg string, paths []string) {
-	batch := a.readCommitTicketHints(ctx, cfg, msg)
-	a.writeCommitTicketHints(cfg, batch)
-	a.writeNonReleaseParentHints(cfg, batch, paths)
-}
-
 func (a *App) readCommitTicketHints(ctx context.Context, cfg *config.Config, msg string) commitTicketHintBatch {
 	var batch commitTicketHintBatch
 	if cfg.ReleaseNotes == nil || cfg.ReleaseNotes.Jira == nil || cfg.Ticket == nil || cfg.Ticket.Regexp == nil {
@@ -181,10 +173,12 @@ func (a *App) commitTicketIssueHints(cfg *config.Config, key string, issue jira.
 	}
 }
 
-func (a *App) writeNonReleaseParentHints(cfg *config.Config, batch commitTicketHintBatch, paths []string) {
+func (a *App) writeNonReleaseParentHints(cfg *config.Config, batch commitTicketHintBatch, paths []string, loadBumped func() ([]string, error)) {
 	if cfg.Deploy == nil || len(paths) == 0 || batch.failure != "" {
 		return
 	}
+	var bumped []string
+	loaded := false
 	for _, key := range batch.keys {
 		read, ok := batch.issues[key]
 		if !ok {
@@ -199,7 +193,19 @@ func (a *App) writeNonReleaseParentHints(cfg *config.Config, batch commitTicketH
 		var targets []string
 		for _, name := range slices.Sorted(maps.Keys(cfg.Deploy.Targets)) {
 			approved := cfg.Deploy.Targets[name].ApprovedRelease
-			if approved != nil && slices.Contains(approved.NonReleaseParents, read.issue.Parent) && !approved.Ignored(paths) {
+			if approved == nil || !slices.Contains(approved.NonReleaseParents, read.issue.Parent) {
+				continue
+			}
+			if !loaded {
+				loaded = true
+				var err error
+				bumped, err = loadBumped()
+				if err != nil {
+					a.warn("cannot classify staged version files for release hint: %v", err)
+				}
+			}
+			files, _ := classifyShipChanges(paths, bumped, approved)
+			if len(files) > 0 {
 				targets = append(targets, name)
 			}
 		}

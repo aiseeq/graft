@@ -18,9 +18,19 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gittest"
+	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/jira"
 	"github.com/aiseeq/graft/v2/internal/message"
 	"github.com/aiseeq/graft/v2/internal/tasks"
 )
+
+// commitTicketHints runs the advisory path without a repository for tests that
+// only exercise Jira hints and ordinary code paths.
+func (a *App) commitTicketHints(ctx context.Context, cfg *config.Config, msg string, paths []string) {
+	batch := a.readCommitTicketHints(ctx, cfg, msg)
+	a.writeCommitTicketHints(cfg, batch)
+	a.writeNonReleaseParentHints(cfg, batch, paths, func() ([]string, error) { return nil, nil })
+}
 
 func commitHintConfig() *config.Config {
 	return &config.Config{
@@ -334,16 +344,17 @@ func TestCommitContinuesWhenJiraIsUnavailable(t *testing.T) {
 
 func TestGraftCommitNonReleaseParentHintsUseFinalIndexPaths(t *testing.T) {
 	for _, test := range []struct {
-		name        string
-		branch      string
-		files       map[string]string
-		remove      []string
-		renameFrom  string
-		renameTo    string
-		message     string
-		wantKeys    []string
-		wantWarning bool
-		versionBump bool
+		name              string
+		branch            string
+		files             map[string]string
+		remove            []string
+		renameFrom        string
+		renameTo          string
+		message           string
+		wantKeys          []string
+		wantWarning       bool
+		versionBump       bool
+		versionDependency bool
 	}{
 		{
 			name:        "deleted code path",
@@ -404,11 +415,20 @@ func TestGraftCommitNonReleaseParentHintsUseFinalIndexPaths(t *testing.T) {
 			wantWarning: false,
 		},
 		{
-			name:        "version bump is included in final paths",
+			name:              "version file with dependency change warns",
+			files:             map[string]string{"ignored/only.md": "before\n"},
+			message:           "feat: dependency work PROJ-2",
+			wantKeys:          []string{"PROJ-2"},
+			wantWarning:       true,
+			versionBump:       true,
+			versionDependency: true,
+		},
+		{
+			name:        "version bump in final paths is not release code",
 			files:       map[string]string{"ignored/only.md": "before\n"},
 			message:     "feat: ignored work PROJ-2",
 			wantKeys:    []string{"PROJ-2"},
-			wantWarning: true,
+			wantWarning: false,
 			versionBump: true,
 		},
 	} {
@@ -453,6 +473,12 @@ func TestGraftCommitNonReleaseParentHintsUseFinalIndexPaths(t *testing.T) {
 			if test.versionBump {
 				versionConfig = "version: {mode: file, file: VERSION}\n"
 				if err := os.WriteFile(filepath.Join(root, "VERSION"), []byte("1.0.0\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.versionDependency {
+				versionConfig = "version: {mode: file, file: VERSION, sync: [{path: package.json, format: json, key: [version]}]}\n"
+				if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"version":"1.0.0","dependencies":{"projectA":"1.0.0"}}`+"\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -518,6 +544,11 @@ tasks:
 					t.Fatal(err)
 				}
 			}
+			if test.versionDependency {
+				if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"version":"1.0.0","dependencies":{"projectA":"2.0.0"}}`+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			git("add", "-A")
 			var output bytes.Buffer
 			err := (&App{Dir: root, Stdout: &output, Stderr: &output}).Commit(context.Background(), CommitOptions{
@@ -541,6 +572,81 @@ tasks:
 				if seen[key] != 1 {
 					t.Errorf("Jira read count for %s = %d, want one", key, seen[key])
 				}
+			}
+		})
+	}
+}
+
+func TestCommitHintStagedVersionDependency(t *testing.T) {
+	root := t.TempDir()
+	git := func(args ...string) string { return gittest.Run(t, root, args...) }
+	git("init", "-q", "-b", "main")
+	git("config", "user.name", "Test")
+	git("config", "user.email", "test@example.invalid")
+	write := func(name, data string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, name), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("VERSION", "1.0.0\n")
+	write("package.json", `{"name":"projectA","version":"1.0.0","dependencies":{"projectA":"1.0.0"}}`+"\n")
+	git("add", ".")
+	git("commit", "-q", "-m", "base")
+	head := strings.TrimSpace(git("rev-parse", "HEAD"))
+	repo, err := gitx.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := commitHintConfig()
+	cfg.Version = config.Version{Mode: config.ModeFile, File: "VERSION", Sync: []config.SyncFile{{Path: "package.json", Format: config.FormatJSON, Key: []string{"version"}}}}
+	cfg.Deploy.Targets["prod"] = &config.DeployTarget{ApprovedRelease: &config.ApprovedRelease{NonReleaseParents: []string{"PROJ-1"}}}
+	batch := commitTicketHintBatch{keys: []string{"PROJ-2"}, issues: map[string]commitHintRead{"PROJ-2": {issue: jira.Issue{Subtask: true, Parent: "PROJ-1"}}}}
+	for _, tc := range []struct {
+		name, dependency string
+		warn             bool
+	}{{"only version", "1.0.0", false}, {"dependency", "2.0.0", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			write("VERSION", "1.0.1\n")
+			write("package.json", `{"name":"projectA","version":"1.0.1","dependencies":{"projectA":"`+tc.dependency+`"}}`+"\n")
+			git("add", ".")
+			paths := []string{"VERSION", "package.json"}
+			var stderr bytes.Buffer
+			bumped, err := stagedVersionBumps(repo, cfg, head, paths)
+			if err != nil {
+				t.Fatal(err)
+			}
+			(&App{Stderr: &stderr}).writeNonReleaseParentHints(cfg, batch, paths, func() ([]string, error) { return bumped, nil })
+			if got := strings.Contains(stderr.String(), "does not go to release"); got != tc.warn {
+				t.Fatalf("warning = %v, want %v: %s", got, tc.warn, stderr.String())
+			}
+		})
+	}
+}
+
+func TestNonReleaseParentHintsLoadVersionFilesOnlyWhenNeeded(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		parents []string
+		subtask bool
+		parent  string
+		want    int
+	}{
+		{name: "no non release parents", subtask: true, parent: "PROJ-1"},
+		{name: "other parent", parents: []string{"PROJ-3"}, subtask: true, parent: "PROJ-1"},
+		{name: "not a subtask", parents: []string{"PROJ-1"}, parent: "PROJ-1"},
+		{name: "matching parent", parents: []string{"PROJ-1"}, subtask: true, parent: "PROJ-1", want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := commitHintConfig()
+			cfg.Version = config.Version{Mode: config.ModeFile, File: "VERSION"}
+			cfg.Deploy.Targets["prod"] = &config.DeployTarget{ApprovedRelease: &config.ApprovedRelease{NonReleaseParents: tc.parents}}
+			batch := commitTicketHintBatch{keys: []string{"PROJ-2"}, issues: map[string]commitHintRead{"PROJ-2": {issue: jira.Issue{Subtask: tc.subtask, Parent: tc.parent}}}}
+			calls := 0
+			var stderr bytes.Buffer
+			(&App{Stderr: &stderr}).writeNonReleaseParentHints(cfg, batch, []string{"VERSION"}, func() ([]string, error) { calls++; return []string{"VERSION"}, nil })
+			if calls != tc.want {
+				t.Fatalf("version comparison called %d times, want %d", calls, tc.want)
 			}
 		})
 	}

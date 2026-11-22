@@ -2592,7 +2592,7 @@ func shipsNothing(repo *gitx.Repo, cfg *config.Config, conf *config.ApprovedRele
 			return false, "", nil
 		}
 	}
-	files, ignored := classifyShipChanges(out, bumped, conf)
+	files, ignored := classifyShipChanges(strings.Split(out, "\x00"), bumped, conf)
 	if len(files) == 0 {
 		for f := range strings.SplitSeq(out, "\x00") {
 			if f != "" && slices.ContainsFunc(bumped, func(b string) bool { return path.Clean(b) == path.Clean(f) }) {
@@ -2639,16 +2639,8 @@ func versionFilesUnchangedExceptVersion(repo *gitx.Repo, sha string, changed map
 	if err != nil {
 		return false, fmt.Errorf("reading tree of version-only candidate %s: %w", sha, err)
 	}
-	for file := range changed {
-		isVersionBump, err := versionFileIsVersionBump(repo, file, parentTree, commitTree, targets[file])
-		if err != nil {
-			return false, err
-		}
-		if !isVersionBump {
-			return false, nil
-		}
-	}
-	return true, nil
+	bumps, err := versionBumpsInTrees(repo, parentTree, commitTree, slices.Collect(maps.Keys(changed)), targets)
+	return len(bumps) == len(changed), err
 }
 
 func versionFileIsVersionBump(repo *gitx.Repo, file string, parentTree, commitTree map[string]versionTreeEntry, targets []version.Target) (bool, error) {
@@ -2720,12 +2712,12 @@ func versionBlobTree(repo *gitx.Repo, rev string) (map[string]versionTreeEntry, 
 
 // classifyShipChanges splits a commit's files, the version files left out,
 // into those ignore_paths names and the rest.
-func classifyShipChanges(out string, bumped []string, conf *config.ApprovedRelease) (files, ignored []string) {
-	for f := range strings.SplitSeq(out, "\x00") {
+func classifyShipChanges(paths []string, bumped []string, conf *config.ApprovedRelease) (files, ignored []string) {
+	for _, f := range paths {
 		if f == "" || slices.ContainsFunc(bumped, func(b string) bool { return path.Clean(b) == path.Clean(f) }) {
 			continue
 		}
-		if conf.Ignored([]string{f}) {
+		if conf != nil && conf.Ignored([]string{f}) {
 			ignored = append(ignored, f)
 			continue
 		}
@@ -3965,4 +3957,48 @@ func shippedFixVersion(issue jira.Issue, approved map[string]bool) string {
 		}
 	}
 	return ""
+}
+
+// stagedVersionBumps names version files whose staged changes contain only a
+// version increase. An unreadable tree or malformed file stays release code.
+func stagedVersionBumps(repo *gitx.Repo, cfg *config.Config, head string, paths []string) ([]string, error) {
+	if head == "" || cfg.Version.Mode != config.ModeFile {
+		return nil, nil
+	}
+	targets := versionTargetsByPath(cfg.Version)
+	if !slices.ContainsFunc(paths, func(file string) bool { return len(targets[path.Clean(file)]) > 0 }) {
+		return nil, nil
+	}
+	before, err := versionBlobTree(repo, head)
+	if err != nil {
+		return nil, fmt.Errorf("reading HEAD tree: %w", err)
+	}
+	tree, err := repo.Git("write-tree")
+	if err != nil {
+		return nil, fmt.Errorf("writing index tree: %w", err)
+	}
+	after, err := versionBlobTree(repo, strings.TrimSpace(tree))
+	if err != nil {
+		return nil, fmt.Errorf("reading index tree: %w", err)
+	}
+	return versionBumpsInTrees(repo, before, after, paths, targets)
+}
+
+// versionBumpsInTrees selects configured files changed only by a version increase.
+func versionBumpsInTrees(repo *gitx.Repo, before, after map[string]versionTreeEntry, paths []string, targets map[string][]version.Target) ([]string, error) {
+	var bumped []string
+	for _, file := range paths {
+		key := path.Clean(file)
+		if len(targets[key]) == 0 {
+			continue
+		}
+		ok, err := versionFileIsVersionBump(repo, key, before, after, targets[key])
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			bumped = append(bumped, file)
+		}
+	}
+	return bumped, nil
 }

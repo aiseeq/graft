@@ -319,3 +319,33 @@ func TestDeployReleaseVersionHotfix(t *testing.T) {
 		t.Errorf("hotfix: exit %d\n%s", code, out)
 	}
 }
+
+func TestDeployCheckParentVersionFiles(t *testing.T) {
+	cfg := func(state string, q func(string) string) string {
+		out := strings.Replace(deployConfig(state, q), "version: {mode: file}", `version: {mode: file, file: VERSION, sync: [{path: frontend/package.json, format: json, key: [version]}, {path: frontend/package-lock.json, format: json, key: [version]}, {path: frontend/package-lock.json, format: json, key: [packages, '', version]}]}`, 1)
+		return strings.Replace(out, "approved_release: {statuses: [Ready for release, Done]}", `approved_release: {statuses: [Ready for release, Done], ignore_paths: [".graft.yaml", "docs/**", "*.md", ".claude/**"], non_release_parents: [PROJ-1]}`, 1)
+	}
+	d := newDeployFixture(t, cfg)
+	d.write("frontend/package.json", `{"version":"1.0.1","name":"projectA"}`+"\n")
+	d.write("frontend/package-lock.json", `{"name":"projectA","version":"1.0.1","packages":{"":{"name":"projectA","version":"1.0.1","dependencies":{"projectA":"1.0.0"}}}}`+"\n")
+	d.mustPlainCommit("chore: setup")
+	writeFile(t, filepath.Join(d.state, "gate-sha"), d.git("rev-parse", "HEAD")+"\n")
+	d.statuses(map[string]string{"PROJ-1": "In Progress", "PROJ-2": "Done"}, map[string]string{"PROJ-2": "PROJ-1"})
+	d.write(".graft.yaml", d.read(".graft.yaml")+"\n# update\n")
+	d.write("VERSION", "1.0.2\n")
+	d.write("frontend/package.json", `{"version":"1.0.2","name":"projectA"}`+"\n")
+	d.write("frontend/package-lock.json", `{"name":"projectA","version":"1.0.2","packages":{"":{"name":"projectA","version":"1.0.2","dependencies":{"projectA":"1.0.0"}}}}`+"\n")
+	d.mustPlainCommit("docs: PROJ-2 configuration")
+	d.git("push", "-q", "origin", "HEAD")
+	out, code := d.graft("", "deploy", "check", "gate")
+	if code != 0 || strings.Contains(out, "goes out with its parent") {
+		t.Fatalf("ignored and version files: exit %d\n%s", code, out)
+	}
+	d.write("src.go", "package projectA\n")
+	d.mustPlainCommit("feat: PROJ-2 code")
+	d.git("push", "-q", "origin", "HEAD")
+	out, code = d.graft("", "deploy", "check", "gate")
+	if code == 0 || !strings.Contains(out, "PROJ-2 goes out with its parent PROJ-1") {
+		t.Fatalf("code: exit %d\n%s", code, out)
+	}
+}

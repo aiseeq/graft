@@ -21,7 +21,7 @@ func shipsLiveWork(repo *gitx.Repo, cfg *config.Config, conf *config.ApprovedRel
 	if err != nil {
 		return false, err
 	}
-	if files, _ := classifyShipChanges(out, cfg.VersionFiles(), conf); len(files) == 0 {
+	if files, _ := classifyShipChanges(strings.Split(out, "\x00"), cfg.VersionFiles(), conf); len(files) == 0 {
 		return false, nil
 	}
 	ignored, _, err := shipsNothing(repo, cfg, conf, sha)

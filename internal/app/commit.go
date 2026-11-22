@@ -341,7 +341,9 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 		}
 	}
 	if paths, pathsErr := repo.StagedFiles(plan.head.sha); pathsErr == nil {
-		a.writeNonReleaseParentHints(cfg, plan.ticketHints, paths)
+		a.writeNonReleaseParentHints(cfg, plan.ticketHints, paths, func() ([]string, error) {
+			return stagedVersionBumps(repo, cfg, plan.head.sha, paths)
+		})
 	}
 	if _, err := repo.GitInput(strings.NewReader(msg), markerEnv, "commit", "--cleanup=verbatim", "-F", "-"); err != nil {
 		if rollbackJournal != nil {
