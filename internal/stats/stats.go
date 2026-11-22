@@ -61,6 +61,8 @@ type Record struct {
 	Kind string    `json:"kind"`
 	// Project is the absolute root of the project.
 	Project string `json:"project"`
+	// Repo is the absolute shared Git directory, identical for every worktree.
+	Repo string `json:"repo,omitempty"`
 	// Here, on the line of a heavy task with a remote_heavy host that ran on
 	// this machine, is why it did not go to the host; on a step line, why a
 	// step stayed here, from its gate placement or its heavy task.

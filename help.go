@@ -92,9 +92,9 @@ var commands = []command{
 			"  125  graft itself: not Linux, no subreaper\n" +
 			"  126  the command was found but not started\n" +
 			"  127  the command was not found"},
-	{name: "stats", syntax: fixed("graft stats [--failures | --refused | --tests | --value wall-p50|wall-p95|wait-p95 [--min-runs N] | --by here|profile-task] [--since 7d] [--until <time>] [--project <root>|--all] [--task <name> [--in <task>]] [--max-load N]"),
+	{name: "stats", syntax: fixed("graft stats [--failures | --refused | --tests | --value wall-p50|wall-p95|wait-p95 [--min-runs N] | --by here|profile-task|repo] [--since 7d] [--until <time>] [--project <root>|--all] [--task <name> [--in <task>]] [--max-load N]"),
 		summary: text("resource use recorded for tasks: runs, wall and CPU time, peak memory, failures; --failures: recent failed steps and their reasons; --refused: the raw git commits the hook refused; --tests: the slowest tests, the skipped and the flaky ones"),
-		details: "--failures lists failed runs newest first with time, project tree, task, step, exit code and the captured reason; filter it with --task, --since, --until, --project or --all, and --in <task> with --task. --until ends the [since, until) window; since and until take an age such as 7d or 12h, or an RFC3339 time. --by here|profile-task sums task waits and counts waited and total runs; nested records with parent are shown separately as already included in parents."},
+		details: "--failures lists failed runs newest first with time, project tree, task, step, exit code and the captured reason; filter it with --task, --since, --until, --project or --all, and --in <task> with --task. --until ends the [since, until) window; since and until take an age such as 7d or 12h, or an RFC3339 time. --by here|profile-task sums task waits and counts waited and total runs; nested records with parent are shown separately as already included in parents. --by repo with --all combines task records from copies sharing a repository profile."},
 	{name: "status", syntax: fixed("graft status"), summary: text("show services, the test database and held locks")},
 	{name: "locks", syntax: fixed("graft locks"), summary: text("show who holds graft's locks")},
 	{name: "testdb", syntax: fixed(app.TestDBUsage()), summary: text("manage the disposable test PostgreSQL in docker"),

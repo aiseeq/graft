@@ -1581,6 +1581,12 @@ their wall time part of the task's own.
 seconds, the number of runs that waited, and all runs, sorted by total wait.
 Records with `parent` appear in `nested (already in parents)`: their wait is
 included in the parent graft's task record and is excluded from the groups.
+Use `graft stats --all --by repo` to combine copies of each repository into one
+row. New records use their absolute shared Git directory, while older records
+use live `.git`/`commondir` metadata. For removed copies, Profile matches only
+when exactly one known common directory has that repository name; a deleted
+graft worktree without Profile uses the repository directory in its worktree
+path the same way. Ambiguous matches remain separate as `name (?)`.
 
 Under the table a line `over the limit: <task> takes 1m12s by median without
 waits, above 1m0s (user config limits.gate)` marks the gate over

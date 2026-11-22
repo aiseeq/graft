@@ -110,17 +110,17 @@ func (r *Runner) enterInstallSnapshot(name string, t *config.Task) (leave func(e
 	fmt.Fprintf(r.Stderr, "graft: %s: the tree has uncommitted changes; building HEAD %s in a clean clone (what its steps write there goes with it)\n", name, shortRevision(head))
 	// The main tree's golangci-lint cache: the clone's path is new each time.
 	r.lookLintCache()
-	savedRoot, savedRepo, savedConfig, savedDone, savedVersion, savedNoCache := r.Root, r.Repo, r.Config, r.done, r.version, r.NoCache
+	savedRoot, savedRepo, savedConfig, savedDone, savedVersion, savedNoCache, savedSnapshotRepo := r.Root, r.Repo, r.Config, r.done, r.version, r.NoCache, r.snapshotRepo
 	gitDir := filepath.Join(root, ".git")
 	// Deps run again in the clone: what they made in the tree is not there.
 	// The task cache neither skips them, which would leave their outputs out
 	// of the clone, nor keeps their passes under its path.
 	r.Root, r.Repo, r.Config, r.done, r.version, r.NoCache = root, &gitx.Repo{Root: root, GitDir: gitDir, CommonDir: gitDir}, cfg, map[string]bool{}, nil, true
-	r.snapshotHead, r.snapshotOwner, r.snapshotTree = head, owner, savedRoot
+	r.snapshotHead, r.snapshotOwner, r.snapshotTree, r.snapshotRepo = head, owner, savedRoot, repo.CommonDir
 	return func(err error) error {
 		ran := r.done[name]
 		r.Root, r.Repo, r.Config, r.done, r.version, r.NoCache = savedRoot, savedRepo, savedConfig, savedDone, savedVersion, savedNoCache
-		r.snapshotHead, r.snapshotOwner, r.snapshotTree = "", nil, ""
+		r.snapshotHead, r.snapshotOwner, r.snapshotTree, r.snapshotRepo = "", nil, "", savedSnapshotRepo
 		r.done[name] = ran
 		if err != nil {
 			err = fmt.Errorf("%w (task %s ran in a clean clone of HEAD %s, without the uncommitted changes and the files git ignores, generated ones, .env and worktree.copy among them: commit what it needs or clean the tree)", err, name, shortRevision(head))

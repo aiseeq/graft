@@ -1,0 +1,4 @@
+graft: tasks in every project since 2025-01-02 01:00 (the log starts there, after the 2025-01-01 00:00 asked)
+PROJECT                        TASK   RUNS  WALL MED  WALL MAX  CPU MED  TREE MEM  MEM MAX  FAILED  SAVED
+/tmp/worktrees/projectA/topic  build  1     7s        7s        3s       200 MB    -        0%      -
+/tmp/projectA                  build  1     5s        5s        2s       100 MB    -        0%      -

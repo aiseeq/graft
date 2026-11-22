@@ -20,6 +20,7 @@ type statsLine struct {
 	Time         time.Time          `json:"time"`
 	Kind         string             `json:"kind"`
 	Project      string             `json:"project"`
+	Repo         string             `json:"repo"`
 	Task         string             `json:"task"`
 	Profile      string             `json:"profile"`
 	CacheChanged []string           `json:"cache_changed"`
@@ -490,6 +491,57 @@ func TestStatsProjectPrefilterCLICompatibility(t *testing.T) {
 	failures := f.mustGraft("stats", "--failures", "--task", "child", "--in", "outer", "--since", "7d")
 	if !strings.Contains(failures, "child") || !strings.Contains(failures, "compile") {
 		t.Errorf("--failures --in lost a root failure matched by another project's taskInputs:\n%s", failures)
+	}
+}
+
+func TestStatsAllByRepoCombinesCopiesFromRecords(t *testing.T) {
+	f, statsFile := statsRepo(t, "")
+	now := time.Now().Truncate(time.Second)
+	mem := func(value float64) *float64 { return &value }
+	records := []stats.Record{
+		{Time: now.Add(-time.Minute), Kind: stats.KindTask, Project: "/src/projectA", Repo: "/src/projectA/.git", Profile: "projectA:build", Task: "build", Top: "build", Run: "main", WallS: 10, UserS: 4, TreeMemMB: mem(100)},
+		{Time: now.Add(-time.Minute), Kind: stats.KindTask, Project: "/home/test/.cache/worktrees/projectA/topic", Repo: "/src/projectA/.git", Profile: "projectA:build", Task: "build", Top: "build", Run: "worktree", WallS: 20, UserS: 8, TreeMemMB: mem(300)},
+		{Time: now.Add(-time.Minute), Kind: stats.KindTask, Project: "/tmp/graft-merge-123/projectA", Repo: "/src/projectA/.git", Profile: "projectA:build", Task: "build", Top: "build", Run: "merge", WallS: 100, UserS: 40, TreeMemMB: mem(900)},
+		{Time: now.Add(-time.Minute), Kind: stats.KindTask, Project: "/src/projectB", Repo: "/src/projectB/.git", Profile: "projectB:test", Task: "test", Top: "test", Run: "other", WallS: 5, UserS: 2, TreeMemMB: mem(50)},
+	}
+	var journal strings.Builder
+	for _, record := range records {
+		line, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal.Write(line)
+		journal.WriteByte('\n')
+	}
+	writeFile(t, statsFile, journal.String())
+	outputRows := func(out string) []string {
+		var result []string
+		for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+			if !strings.HasPrefix(line, "graft:") {
+				result = append(result, strings.Join(strings.Fields(line), " "))
+			}
+		}
+		return result
+	}
+
+	defaultOutput := f.mustGraft("stats", "--all", "--since", "7d")
+	defaultRows := outputRows(defaultOutput)
+	if len(defaultRows) != 5 || !strings.HasPrefix(defaultRows[0], "PROJECT TASK") {
+		t.Fatalf("default --all output changed; want header plus four path rows, got:\n%s", defaultOutput)
+	}
+	grouped := f.mustGraft("stats", "--all", "--by", "repo", "--since", "7d")
+	groupedRows := outputRows(grouped)
+	if len(groupedRows) != 3 || groupedRows[0] != "PROJECT TASK RUNS WALL MED WALL MAX CPU MED TREE MEM MEM MAX FAILED SAVED" {
+		t.Fatalf("--by repo should produce two repository rows:\n%s", grouped)
+	}
+	if !strings.Contains(groupedRows[1], "projectA build 3 20s 1m40s") || !strings.Contains(groupedRows[1], "900 MB") {
+		t.Errorf("projectA copies were not summarized from their combined records:\n%s", grouped)
+	}
+	if !strings.Contains(groupedRows[2], "projectB test 1 5s 5s") {
+		t.Errorf("projectB row missing:\n%s", grouped)
+	}
+	if out, code := f.graft("", "stats", "--by", "repo", "--since", "7d"); code != 2 || !strings.Contains(out, "requires --all") {
+		t.Errorf("--by repo without --all: exit %d\n%s", code, out)
 	}
 }
 

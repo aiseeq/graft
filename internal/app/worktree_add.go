@@ -106,7 +106,7 @@ func worktreeAddPaths(main, branch string) (linkRoot, dir string, err error) {
 	if err != nil {
 		return "", "", fmt.Errorf("locating the cache: %w", err)
 	}
-	linkRoot = filepath.Join(cache, "worktrees")
+	linkRoot = graftWorktreeRoot(cache)
 	if err := os.MkdirAll(linkRoot, 0o755); err != nil {
 		return "", "", fmt.Errorf("creating shared worktree link directory %s: %w", linkRoot, err)
 	}
@@ -120,6 +120,12 @@ func worktreeAddPaths(main, branch string) (linkRoot, dir string, err error) {
 		return "", "", err
 	}
 	return linkRoot, dir, nil
+}
+
+// graftWorktreeRoot is shared by worktree creation and stats recognition of
+// deleted worktrees, keeping the latter aligned with the actual cache path.
+func graftWorktreeRoot(cache string) string {
+	return filepath.Join(cache, "worktrees")
 }
 
 // prepareWorktree copies worktree.copy from the main worktree into the one

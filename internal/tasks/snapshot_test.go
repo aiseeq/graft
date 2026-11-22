@@ -371,6 +371,35 @@ func TestInstallCloneStepsStayHere(t *testing.T) {
 	}
 }
 
+func TestInstallSnapshotStatsKeepOriginalRepositoryIdentity(t *testing.T) {
+	root, _, _, _ := snapshotProject(t, nil)
+	writeFile(t, filepath.Join(root, "docs/tasks/x.md"), "# PROJ-123\n- note\n")
+	var out bytes.Buffer
+	r := snapshotRunner(t, root, &out)
+	repo, err := r.repo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalRepo := repo.CommonDir
+	leave, err := r.enterInstallSnapshot("install", r.Config.Tasks["install"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := leave(nil); err != nil {
+			t.Error(err)
+		}
+	}()
+	if r.Repo.CommonDir == originalRepo {
+		t.Fatal("test did not enter a distinct clean clone")
+	}
+	record := r.recordForFrame(stats.KindTask, &frame{task: "install"})
+	record.Project = r.project()
+	if record.Repo != originalRepo || record.Project != root {
+		t.Fatalf("snapshot record identifies the clone instead of its source: Project=%q Repo=%q want %q %q", record.Project, record.Repo, root, originalRepo)
+	}
+}
+
 // A step that outlives graft killed under it (its reaper after SIGTERM)
 // holds the clone's lock through its reaper, never through the command: a
 // sweep leaves the clone until the step ends.

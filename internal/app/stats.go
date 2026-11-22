@@ -91,6 +91,12 @@ func (a *App) Stats(o StatsOptions) error {
 	if o.Value != "" {
 		return a.statsValue(recs, f, o)
 	}
+	if o.By == "repo" {
+		if !o.All {
+			return fmt.Errorf("--by repo requires --all")
+		}
+		return a.statsTasks(recs, path, f, o, where, since, first)
+	}
 	if o.By != "" {
 		return a.statsBy(recs, f, o, where, since)
 	}
@@ -284,7 +290,14 @@ func (a *App) statsTasks(recs []stats.Record, path string, f stats.Filter, o Sta
 		what, label = "task "+o.Task, "STEP"
 	}
 	a.printf("%s in %s%s since %s%s", what, where, calmNote(o.MaxLoad), sinceText(since, first), untilText(o.Until))
-	rows, saved := stats.Summarize(recs, f)
+	rows, saved, err := summarizeStatsRows(recs, f, o.By == "repo")
+	if err != nil {
+		return fmt.Errorf("grouping stats by repository: %w", err)
+	}
+	return a.renderStatsTaskRows(recs, path, f, o, label, rows, saved)
+}
+
+func (a *App) renderStatsTaskRows(recs []stats.Record, path string, f stats.Filter, o StatsOptions, label string, rows []stats.Row, saved stats.Saved) error {
 	if len(rows) == 0 && saved.Hits == 0 {
 		a.printf("nothing recorded (%s)", path)
 		return nil
@@ -366,7 +379,11 @@ func (a *App) overLimits(rows []stats.Row, filter stats.Filter, o StatsOptions) 
 		case filter.Project != "":
 			selection = selectionOf(filter.Project)
 		case o.All && row.Project != "":
-			selection = selectionOf(row.Project)
+			root := row.Project
+			if row.LimitProject != "" {
+				root = row.LimitProject
+			}
+			selection = selectionOf(root)
 		}
 		if row.Label == stats.GateTask {
 			return selection.Values.Gate, selection.GateSource

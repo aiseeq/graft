@@ -217,6 +217,9 @@ type Runner struct {
 	// snapshotTree is the work tree a clean clone stands in for, the
 	// project of the stats its tasks write.
 	snapshotTree string
+	// snapshotRepo is the original repository identity used by stats while
+	// tasks run in the clean install clone.
+	snapshotRepo string
 	// inGate is set while the gate runs: the changes it guards are the
 	// tree's, so its tasks never move to a clone of HEAD.
 	inGate bool
@@ -1409,7 +1412,23 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int, reason str
 	}
 	isBuiltin := len(builtin) > 0 && builtin[0]
 	builtinCostKnown := len(builtin) > 1 && builtin[1]
-	r.write(stats.Record{Kind: stats.KindStep, Task: inner.task, Profile: r.profile(inner), Step: stats.StepText(source), Exit: code, Reason: reason, Host: r.hostOf(inner), Here: stepHere, Heavy: heavy, Builtin: isBuiltin, BuiltinCostKnown: builtinCostKnown}, use, r.frames[0].task)
+	rec := r.recordForFrame(stats.KindStep, inner)
+	rec.Step, rec.Exit, rec.Reason = stats.StepText(source), code, reason
+	rec.Host, rec.Here, rec.Heavy = r.hostOf(inner), stepHere, heavy
+	rec.Builtin, rec.BuiltinCostKnown = isBuiltin, builtinCostKnown
+	r.write(rec, use, r.frames[0].task)
+}
+
+// recordForFrame centralizes the fields shared by every task, step, and cache
+// record so profile metadata is present consistently.
+func (r *Runner) recordForFrame(kind string, f *frame) stats.Record {
+	record := stats.Record{Kind: kind, Task: f.task, Profile: r.profile(f)}
+	if r.snapshotHead != "" && r.snapshotRepo != "" {
+		record.Repo = r.snapshotRepo
+	} else if r.Repo != nil {
+		record.Repo = r.Repo.CommonDir
+	}
+	return record
 }
 
 // profile is the kind of a run the admission of heavy tasks knows it by:
@@ -3837,8 +3856,10 @@ func taskLoad(use stats.Usage, f *frame, host string) stats.Usage {
 // what it cost; the task's error itself goes back to its caller.
 func (r *Runner) end(f *frame, err error) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
-	rec := stats.Record{Kind: stats.KindTask, Task: f.task, Profile: r.profile(f), In: f.in, Steps: f.steps, Host: r.hostOf(f), Here: f.here, Mark: f.mark, WaitedBehind: f.waitedBehind, CgroupPeakMB: f.cgroupPeakMB,
-		CmdKey: f.execCmdKey, WouldCheap: f.execWouldCheap, CheapPlace: f.execCheapPlace}
+	rec := r.recordForFrame(stats.KindTask, f)
+	rec.In, rec.Steps, rec.Host, rec.Here = f.in, f.steps, r.hostOf(f), f.here
+	rec.Mark, rec.WaitedBehind, rec.CgroupPeakMB = f.mark, f.waitedBehind, f.cgroupPeakMB
+	rec.CmdKey, rec.WouldCheap, rec.CheapPlace = f.execCmdKey, f.execWouldCheap, f.execCheapPlace
 	rec.GateKey = gateKeyForFrame(f)
 	if f.reserveRelease != nil {
 		if err := f.reserveRelease(); err != nil {

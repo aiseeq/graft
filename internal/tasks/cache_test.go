@@ -9,7 +9,18 @@ import (
 	"testing"
 
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/stats"
 )
+
+func TestRecordForFrameIncludesCommonGitDirectory(t *testing.T) {
+	common := filepath.Join(t.TempDir(), "projectA", ".git")
+	runner := &Runner{Root: filepath.Dir(filepath.Dir(common)), Repo: &gitx.Repo{CommonDir: common}}
+	record := runner.recordForFrame(stats.KindTask, &frame{task: "build"})
+	if record.Repo != common || record.Profile != "projectA:build" {
+		t.Fatalf("record identity = repo %q, profile %q", record.Repo, record.Profile)
+	}
+}
 
 func TestCacheVersionSyncKey(t *testing.T) {
 	for what, c := range map[string]syncCase{

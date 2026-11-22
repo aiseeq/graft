@@ -134,19 +134,37 @@ func TestTaskCacheSkipsOnlyAnUnchangedRun(t *testing.T) {
 
 	// The skips are in the stats with the time they saved.
 	var hits int
+	sawStepRepo, sawHitRepo := false, false
+	wantRepo := filepath.Join(f.work, ".git")
 	for _, l := range readStats(t, statsFile) {
+		if l.Kind == "step" {
+			if l.Repo != wantRepo {
+				t.Errorf("step repo = %q, want %q", l.Repo, wantRepo)
+			}
+			sawStepRepo = true
+		}
 		if l.Kind == "cache-hit" {
 			hits++
-			if l.Task != "verify" || l.WallS <= 0 {
+			if l.Task != "verify" || l.Profile == "" || l.WallS <= 0 {
 				t.Errorf("cache-hit line: %+v", l)
 			}
+			if l.Repo != wantRepo {
+				t.Errorf("cache-hit repo = %q, want %q", l.Repo, wantRepo)
+			}
+			sawHitRepo = true
 		}
 	}
 	if hits != 5 {
 		t.Errorf("want 5 cache-hit lines, got %d", hits)
 	}
+	if !sawStepRepo || !sawHitRepo {
+		t.Errorf("stats lack repo identity: step=%t cache-hit=%t", sawStepRepo, sawHitRepo)
+	}
 	if report := f.mustGraft("stats"); !strings.Contains(report, "SAVED") || !strings.Contains(report, "5 runs skipped by the cache") {
 		t.Errorf("graft stats:\n%s", report)
+	}
+	if report := f.mustGraft("stats", "--all", "--by", "repo"); !strings.Contains(report, " in 5") {
+		t.Errorf("repository row did not include its cache-hit saves:\n%s", report)
 	}
 }
 

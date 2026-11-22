@@ -465,7 +465,7 @@ func statsCmd(a *app.App, args []string) error {
 	fs := newFlags(a, "stats")
 	since := fs.String("since", "7d", "how far back: days (7d), or a duration such as 12h or 30m")
 	until := fs.String("until", "", "end of the report window (exclusive): RFC3339 time or duration back")
-	by := fs.String("by", "", "sum waits by here or profile-task")
+	by := fs.String("by", "", "sum waits by here or profile-task, or group all task stats by repo")
 	project := fs.String("project", "", "`root` of the project to report (default: the current one)")
 	all := fs.Bool("all", false, "report every project")
 	task := fs.String("task", "", "break this `task` down into its steps; with --tests, only its tests")
@@ -516,6 +516,9 @@ func validateStatsFlags(fs *flag.FlagSet, by, project string, all bool, task, in
 	if all && project != "" {
 		return fmt.Errorf("%w: --all and --project exclude each other", errUsage)
 	}
+	if by == "repo" && !all {
+		return fmt.Errorf("%w: --by repo requires --all", errUsage)
+	}
 	if set.value && value == "" {
 		return fmt.Errorf("%w: --value: want wall-p50, wall-p95 or wait-p95", errUsage)
 	}
@@ -553,8 +556,8 @@ func visitedStatsFlags(fs *flag.FlagSet) (set statsFlagPresence) {
 }
 
 func validateStatsBy(by string, set, failures, refused, tests bool, value, task, in string, maxLoad float64) error {
-	if set && by != "here" && by != "profile-task" {
-		return fmt.Errorf("%w: unknown --by %q (want here or profile-task)", errUsage, by)
+	if set && by != "here" && by != "profile-task" && by != "repo" {
+		return fmt.Errorf("%w: unknown --by %q (want here, profile-task or repo)", errUsage, by)
 	}
 	if by != "" && (failures || refused || tests || value != "" || task != "" || in != "" || maxLoad != 0) {
 		return fmt.Errorf("%w: --by cannot be combined with report mode flags", errUsage)

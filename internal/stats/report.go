@@ -357,10 +357,12 @@ const TaskLabel = "(task)"
 // Row is one line of a report: the runs of a task, or of a step.
 type Row struct {
 	Project string // set when the report covers every project
-	Label   string // the task, or the step of the broken down task
-	Runs    int
-	WallMed float64
-	WallMax float64
+	// LimitProject is the path used to read project limits after repo grouping.
+	LimitProject string
+	Label        string // the task, or the step of the broken down task
+	Runs         int
+	WallMed      float64
+	WallMax      float64
 	// WaitMed and WaitMax are of the waits before the steps, part of the
 	// wall time.
 	WaitMed, WaitMax float64
@@ -427,6 +429,26 @@ func HasHost(recs []Record, f Filter) bool {
 // first; a broken down task leads with its whole-task row. Saved sums the
 // cache hits, which also show on their task's row.
 func Summarize(recs []Record, f Filter) ([]Row, Saved) {
+	return summarizeFiltered(recs, f, nil)
+}
+
+// SummarizeByProject groups records by projectKey while still filtering and
+// summarizing the original records. projectKey is called only when f.Project
+// is empty.
+func SummarizeByProject(recs []Record, f Filter, projectKey func(*Record) string) ([]Row, Saved) {
+	return summarizeFiltered(recs, f, projectKey)
+}
+
+func summarizeFiltered(recs []Record, f Filter, projectKey func(*Record) string) ([]Row, Saved) {
+	rowKeyFor := func(r *Record, label string) rowKey {
+		if f.Project != "" {
+			return rowKey{label: label}
+		}
+		if projectKey != nil {
+			return rowKey{project: projectKey(r), label: label}
+		}
+		return f.rowKey(r, label)
+	}
 	groups := map[rowKey][]int{}
 	hits := map[rowKey]Saved{}
 	var saved Saved
@@ -440,7 +462,7 @@ func Summarize(recs []Record, f Filter) ([]Row, Saved) {
 		}
 		if r.Kind == KindCacheHit {
 			if f.Task == "" || r.Task == f.Task {
-				k := f.rowKey(r, hitLabel(r, f))
+				k := rowKeyFor(r, hitLabel(r, f))
 				hits[k] = hits[k].add(r)
 				saved = saved.add(r)
 			}
@@ -450,7 +472,7 @@ func Summarize(recs []Record, f Filter) ([]Row, Saved) {
 		if !ok || !calm(r.LoadMax, f.MaxLoad) {
 			continue
 		}
-		k := f.rowKey(r, label)
+		k := rowKeyFor(r, label)
 		if _, ok := groups[k]; !ok {
 			order = append(order, k)
 		}

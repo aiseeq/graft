@@ -65,7 +65,8 @@ func (r *Runner) cached(ctx context.Context, name string, args []string) (key st
 		outermost = r.frames[0].task
 	}
 	use := stats.Usage{Wall: seconds(e.WallS), User: seconds(e.UserS), Sys: seconds(e.SysS)}
-	r.write(stats.Record{Kind: stats.KindCacheHit, Task: name}, use, outermost)
+	record := r.recordForFrame(stats.KindCacheHit, &frame{task: name})
+	r.write(record, use, outermost)
 	return key, true, nil
 }
 
