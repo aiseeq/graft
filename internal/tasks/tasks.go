@@ -2522,8 +2522,12 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
 		return cmd
 	}
-	if trimmed := r.builtinVetTrim(s, t, builtin, words, env); trimmed != nil {
-		return r.builtinVetStep(ctx, s.Source, trimmed, words, func(argv []string) *exec.Cmd {
+	trimmedVet, vetTrimErr := r.builtinVetTrim(ctx, s, t, builtin, words, env)
+	if vetTrimErr != nil {
+		return vetTrimErr
+	}
+	if trimmedVet != nil {
+		return r.builtinVetStep(ctx, s.Source, trimmedVet, words, func(argv []string) *exec.Cmd {
 			return prepare(exec.CommandContext(ctx, argv[0], argv[1:]...))
 		})
 	}
@@ -2546,20 +2550,27 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 }
 
 // builtinVetTrim is the gate's built-in go vet with -trimpath, nil when the
-// step is another one, goes to remote_heavy's host, or the go command's flags
-// or GOFLAGS in env, the environment it runs with, name -trimpath already;
-// what go env -w set for GOFLAGS is not read.
+// step is another one, goes to remote_heavy's host, or go's resolved GOFLAGS
+// or the command line names -trimpath already.
 // The host gets none of this environment: its GOFLAGS, and the paths a rerun
 // would show, are not known here, so vet goes there as it is written.
-func (r *Runner) builtinVetTrim(s config.Step, t *config.Task, builtin bool, argv, env []string) []string {
+func (r *Runner) builtinVetTrim(ctx context.Context, s config.Step, t *config.Task, builtin bool, argv, env []string) ([]string, error) {
 	if !builtin || t.Tests != "" || s.Shell != "" || r.frames[len(r.frames)-1].remote || !isBuiltinGoVet(s) {
-		return nil
+		return nil, nil
 	}
-	trimmed := trimVetPaths(argv, env)
+	flagsText, err := resolveGoFlags(ctx, r.taskDir(t), env)
+	if err != nil {
+		return nil, fmt.Errorf("go vet -trimpath: reading GOFLAGS: %w", err)
+	}
+	flags, err := splitGoFlags(flagsText)
+	if err != nil {
+		return nil, fmt.Errorf("go vet -trimpath: parsing GOFLAGS: %w", err)
+	}
+	trimmed := addTrimPath(argv, flags, []string{"vet"})
 	if len(trimmed) == len(argv) {
-		return nil
+		return nil, nil
 	}
-	return trimmed
+	return trimmed, nil
 }
 
 // vetRerunNotice is the line a reported trimmed vet is rerun with.

@@ -223,7 +223,7 @@ func TestGoTestRunCheckOnRemoteHost(t *testing.T) {
     run: ['go test -json {args} ./...']
 `)
 	fakeBin := t.TempDir()
-	script := "#!/bin/sh\n[ \"$1\" = env ] && { echo -list=x; exit 0; }\n" +
+	script := "#!/bin/sh\n[ \"$1\" = env ] && { if [ \"$2\" = -json ]; then printf '{\"GOFLAGS\":\"%s\",\"GOROOT\":\"/fake/goroot\"}\\n' \"$GOFLAGS\"; else printf '%s\\n' \"$GOFLAGS\"; fi; exit 0; }\n" +
 		`echo '{"Action":"run","Package":"projectA/pkg","Test":"TestReal"}'` + "\n" +
 		`echo '{"Action":"pass","Package":"projectA/pkg","Test":"TestReal"}'` + "\n" +
 		`echo '{"Action":"pass","Package":"projectA/pkg"}'` + "\n"
@@ -483,7 +483,7 @@ func TestExecLocalNestedProjectTestUsesRemotePlacement(t *testing.T) {
 				calm(t, state)
 			}
 			fakeBin := t.TempDir()
-			fakeGo := "#!/bin/sh\n[ \"$1\" = env ] && { echo -list=x; exit 0; }\n" +
+			fakeGo := "#!/bin/sh\n[ \"$1\" = env ] && { if [ \"$2\" = -json ]; then printf '{\"GOFLAGS\":\"%s\",\"GOROOT\":\"/fake/goroot\"}\\n' \"$GOFLAGS\"; else printf '%s\\n' \"$GOFLAGS\"; fi; exit 0; }\n" +
 				`echo '{"Action":"run","Package":"projectA/pkg","Test":"TestReal"}'` + "\n" +
 				`echo '{"Action":"pass","Package":"projectA/pkg","Test":"TestReal"}'` + "\n" +
 				`echo '{"Action":"pass","Package":"projectA/pkg"}'` + "\n"
@@ -538,7 +538,7 @@ echo "$*" >> '`+filepath.Join(state, "calls")+`'
 exec "$@"
 `)
 	fakeBin := t.TempDir()
-	fakeGo := "#!/bin/sh\n[ \"$1\" = env ] && { echo -list=x; exit 0; }\n" +
+	fakeGo := "#!/bin/sh\n[ \"$1\" = env ] && { if [ \"$2\" = -json ]; then printf '{\"GOFLAGS\":\"%s\",\"GOROOT\":\"/fake/goroot\"}\\n' \"$GOFLAGS\"; else printf '%s\\n' \"$GOFLAGS\"; fi; exit 0; }\n" +
 		`echo '{"Action":"run","Package":"projectA/pkg","Test":"TestReal"}'` + "\n" +
 		`echo '{"Action":"pass","Package":"projectA/pkg","Test":"TestReal"}'` + "\n" +
 		`echo '{"Action":"pass","Package":"projectA/pkg"}'` + "\n"
@@ -598,7 +598,8 @@ func TestExecLocalWarningAndStatsMark(t *testing.T) {
 				writeFile(t, userConfig, config)
 			}
 			fakeBin := t.TempDir()
-			if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			fakeGo := "#!/bin/sh\nif [ \"$1\" = env ]; then if [ \"$2\" = -json ]; then printf '{\"GOFLAGS\":\"%s\",\"GOROOT\":\"/fake/goroot\"}\\n' \"$GOFLAGS\"; else printf '%s\\n' \"$GOFLAGS\"; fi; exit 0; fi\nexit 0\n"
+			if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(fakeGo), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			f.env = append(f.env, "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))

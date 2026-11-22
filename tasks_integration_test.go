@@ -1144,7 +1144,7 @@ func TestGoTestPackagesFromArgs(t *testing.T) {
     run: ['go test -p 2 -json {args} ./...']
 `, nil)
 	fakeBin := t.TempDir()
-	script := "#!/bin/sh\n[ \"$1\" = env ] && { echo \"$GOFLAGS\"; exit 0; }\necho \"$*\" >> " + f.path("go.txt") + "\ncase \"$*\" in *TestGone*) name=TestReal ;; *) name=TestFake ;; esac\nprintf '{\"Action\":\"run\",\"Package\":\"projectA/pkg\",\"Test\":\"%s\"}\\n' \"$name\"\nprintf '{\"Action\":\"pass\",\"Package\":\"projectA/pkg\",\"Test\":\"%s\"}\\n' \"$name\"\nprintf '{\"Action\":\"pass\",\"Package\":\"projectA/pkg\"}\\n'\n"
+	script := "#!/bin/sh\n[ \"$1\" = env ] && { if [ \"$2\" = -json ]; then printf '{\"GOFLAGS\":\"%s\",\"GOROOT\":\"/fake/goroot\"}\\n' \"$GOFLAGS\"; else printf '%s\\n' \"$GOFLAGS\"; fi; exit 0; }\necho \"$*\" >> " + f.path("go.txt") + "\ncase \"$*\" in *TestGone*) name=TestReal ;; *) name=TestFake ;; esac\nprintf '{\"Action\":\"run\",\"Package\":\"projectA/pkg\",\"Test\":\"%s\"}\\n' \"$name\"\nprintf '{\"Action\":\"pass\",\"Package\":\"projectA/pkg\",\"Test\":\"%s\"}\\n' \"$name\"\nprintf '{\"Action\":\"pass\",\"Package\":\"projectA/pkg\"}\\n'\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1252,6 +1252,7 @@ func TestGoTestRunCheckNeedsEventsAndSuccessfulProcess(t *testing.T) {
 			fakeBin := t.TempDir()
 			goScript := strings.Join([]string{
 				"#!/bin/sh",
+				`if [ "$1" = env ]; then if [ "$2" = -json ]; then printf '{"GOFLAGS":"%s","GOROOT":"%s"}\n' "$GOFLAGS" "$GOROOT"; else printf '%s\n' "$GOFLAGS"; fi; exit 0; fi`,
 				`case "$*" in *NoEvents*) exit 0 ;; esac`,
 				`echo '{"Action":"run","Package":"projectA/pkg","Test":"TestReal"}'`,
 				`echo '{"Action":"pass","Package":"projectA/pkg","Test":"TestReal"}'`,
@@ -1290,8 +1291,8 @@ func TestGoBuildsTrimPaths(t *testing.T) {
     run: ['go test ./...']
 `, nil)
 	fakeBin := t.TempDir()
-	// go env GOROOT answers; the rest log their words and GOROOT.
-	script := "#!/bin/sh\nif [ \"$1\" = env ]; then echo /fake/goroot; exit 0; fi\necho \"$*${GOROOT:+ GOROOT=$GOROOT}\" >> " + f.path("go.txt") + "\n"
+	// go env answers GOFLAGS and GOROOT; the rest log their words and GOROOT.
+	script := "#!/bin/sh\nif [ \"$1\" = env ]; then\n  if [ \"$2\" = -json ]; then printf '{\"GOFLAGS\":\"%s\",\"GOROOT\":\"/fake/goroot\"}\\n' \"$GOFLAGS\"; else printf '%s\\n' \"$GOFLAGS\"; fi\n  exit 0\nfi\necho \"$*${GOROOT:+ GOROOT=$GOROOT}\" >> " + f.path("go.txt") + "\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -1150,9 +1150,12 @@ dotenv_sets:                   # key lists several tasks and services share
   gone.
 - `go build`, `go install`, `go run` and `go test`, as a step's argv or a
   `graft exec` command, get `-trimpath` after the subcommand unless their
-  flags or `GOFLAGS` of the environment name it already, `-trimpath=false`
-  included; graft does not read the `GOFLAGS` setting of `go env -w`: without it
-  the go command keys each package of the module by its directory, and every
+  flags or `GOFLAGS` name it already, `-trimpath=false` included; `GOFLAGS`
+  is resolved with `go env` in the step's directory and environment, including
+  settings from `go env -w` and the Go toolchain's `go.env` file. The fields are
+  split with Go's quoted field rules, so a quoted `"-trimpath=false"` counts
+  too. Without `-trimpath`, the go command keys each package of the module by
+  its directory, and every
   worktree of a repository fills the build cache with its own copy of what
   the others built. A test that finds files through `runtime.Caller` gets a
   path from the module root under it, not one on disk: take paths from the
@@ -1166,7 +1169,8 @@ dotenv_sets:                   # key lists several tasks and services share
   `-trimpath`. A binary `go build` or `go install` made
   reports no `GOROOT` where it runs unless the environment sets it.
   The gate's built-in `go vet ./...` run on this machine gets `-trimpath`
-  by the same rule, `GOFLAGS` read from the environment it runs with. Under
+  by the same rule, using `GOFLAGS` resolved by `go env` for its environment.
+  Under
   `-trimpath` vet can replay what another worktree of the revision cached,
   with that tree's paths (`../other/pkg/p.go`), so graft holds the output of
   that run, its own lines too, and its stats record: when vet exits non-zero

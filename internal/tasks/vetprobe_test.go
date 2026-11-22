@@ -314,6 +314,8 @@ func TestVetProbeKeepsItsLatestOutput(t *testing.T) {
 }
 
 func TestBuiltinVetTrimOnlyForTheLocalBuiltinVet(t *testing.T) {
+	t.Setenv("GOENV", "off")
+	t.Setenv("GOFLAGS", "")
 	vet := config.Step{Argv: vetArgv, Source: GoVetSource}
 	local := &Runner{frames: []*frame{{}}}
 	remote := &Runner{frames: []*frame{{remote: true}}}
@@ -331,9 +333,24 @@ func TestBuiltinVetTrimOnlyForTheLocalBuiltinVet(t *testing.T) {
 		{"GOFLAGS -trimpath=false", local, vet, true, []string{"GOFLAGS=-trimpath=false"}, false},
 		{"go fix", local, config.Step{Argv: []string{"go", "fix", "-diff", "./..."}}, true, nil, false},
 	} {
-		got := c.r.builtinVetTrim(c.s, &config.Task{}, c.builtin, c.s.Argv, c.env)
+		got, err := c.r.builtinVetTrim(context.Background(), c.s, &config.Task{}, c.builtin, c.s.Argv, c.env)
+		if err != nil {
+			t.Errorf("%s: builtinVetTrim error: %v", c.name, err)
+		}
 		if (got != nil) != c.want || got != nil && !slices.Equal(got, vetTrimmedArgv) {
 			t.Errorf("%s: builtinVetTrim = %q, want trimmed %v", c.name, got, c.want)
 		}
+	}
+}
+
+func TestBuiltinVetTrimReadsGoEnvFile(t *testing.T) {
+	dir, _, env := setGoEnvFlags(t, "-trimpath=false")
+	r := &Runner{Root: dir, frames: []*frame{{}}}
+	got, err := r.builtinVetTrim(context.Background(), config.Step{Argv: vetArgv, Source: GoVetSource}, &config.Task{}, true, vetArgv, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("go env -w GOFLAGS=-trimpath=false: builtin vet got %q", got)
 	}
 }
