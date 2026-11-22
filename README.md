@@ -866,8 +866,9 @@ go_fix:
 
 # staticcheck runs only SA* checks in each Go module and fails only for
 # findings on lines changed against HEAD (including staged and unstaged edits).
-# It adds -trimpath to share the Go build cache between worktrees and maps cached
-# findings back to files in this module; unrecognized paths trigger one plain rerun.
+# It adds -trimpath to share staticcheck's cache between worktrees unless GOFLAGS
+# already names -trimpath, and maps cached findings to files in this module.
+# Unrecognized paths trigger one rerun with -trimpath=false.
 # Requires staticcheck in PATH; install with go install
 # honnef.co/go/tools/cmd/staticcheck@latest. Off by default.
 staticcheck:
