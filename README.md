@@ -1571,7 +1571,7 @@ their test database, `DB CPU` and `DB MEM` follow: its median CPU time and
 largest memory. When disk IO fields were recorded, `READ MAX` is the largest
 read amount, while `WRITE MED` and `WRITE MAX` are the median and largest
 write amounts. They show `-` when a field was not recorded, including on
-non-Linux systems and in older stats lines. Top-level local `graft exec --heavy` task lines also record `cmd_key` (SHA-256 of project and full argv), `would_cheap` (7-day history decision) and `cheap_place` (read-only iosched placement result); `graft stats` does not display these jq fields. The decision reads the compact `exec-history.jsonl` next to `stats.jsonl`, pruned to seven days once it exceeds 1 MiB. `--since` and `--until` take days
+non-Linux systems and in older stats lines. `--since` and `--until` take days
 (`30d`), a duration (`12h`), or an absolute RFC3339 time. Together they
 select `[since, until)`; `--until` must be later than `--since`. `--project`
 selects another project's root, `--all` every project; `--task <name>` breaks one task down

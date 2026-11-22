@@ -81,13 +81,8 @@ type Record struct {
 	// folder for every worktree, and a graft exec <repository>:exec:<the
 	// first word of its command>.
 	Profile string `json:"profile,omitempty"`
-	// CmdKey identifies the complete argv and project of a top-level exec.
-	CmdKey string `json:"cmd_key,omitempty"`
-	// WouldCheap and CheapPlace are shadow decisions for graft exec --heavy.
-	WouldCheap *bool  `json:"would_cheap,omitempty"`
-	CheapPlace string `json:"cheap_place,omitempty"`
-	Task       string `json:"task"`
-	GateKey    string `json:"gate_key,omitempty"`
+	Task    string `json:"task"`
+	GateKey string `json:"gate_key,omitempty"`
 	// CacheChanged names the key components that differ from the last pass.
 	CacheChanged []string `json:"cache_changed,omitempty"`
 	// WaitedBehind names the command and task holding the queue or lock.

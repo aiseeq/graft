@@ -12,6 +12,21 @@ import (
 	"time"
 )
 
+func TestLegacyStatsLineWithShadowFieldsIsReadable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.jsonl")
+	line := `{"time":"2026-11-21T10:00:00Z","kind":"task","task":"exec","cmd_key":"projectA-key","would_cheap":true,"cheap_place":"ok"}` + "\n"
+	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recs, malformed, err := Load(path, time.Time{})
+	if err != nil {
+		t.Fatalf("load legacy stats line: %v", err)
+	}
+	if malformed != 0 || len(recs) != 1 || recs[0].Kind != KindTask || recs[0].Task != "exec" {
+		t.Fatalf("legacy stats line: %d malformed, records %+v", malformed, recs)
+	}
+}
+
 func TestExpectedCoresP90(t *testing.T) {
 	cache := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cache)

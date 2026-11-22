@@ -2,57 +2,9 @@ package stats
 
 import (
 	"cmp"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
 	"slices"
 	"time"
 )
-
-// History thresholds for the shadow decision of graft exec --heavy.
-const (
-	CheapHistoryRuns      = 5
-	CheapHistoryCPUSec    = 30.0
-	CheapHistoryTreeMemMB = 300.0
-	CheapHistoryWindow    = 7 * 24 * time.Hour
-)
-
-// WouldCheap says whether key has enough successful local executions and all
-// its complete executions in the window stayed under both resource limits.
-func WouldCheap(recs []ExecHistoryRecord, key string, since time.Time) bool {
-	passed := 0
-	bar := false
-	for i := range recs {
-		r := &recs[i]
-		if r.CmdKey != key || r.Time.Before(since) || r.Host || r.Cached {
-			continue
-		}
-		if r.TreeMemMB == nil || r.CPUS > CheapHistoryCPUSec || *r.TreeMemMB > CheapHistoryTreeMemMB {
-			bar = true
-		}
-		if r.Exit == 0 {
-			passed++
-		}
-	}
-	return !bar && passed >= CheapHistoryRuns
-}
-
-// ExecCommandKey hashes project and argv with an unambiguous length prefix
-// for every byte string. argv is the complete argument vector after --.
-func ExecCommandKey(project string, argv []string) string {
-	h := sha256.New()
-	write := func(s string) {
-		var size [8]byte
-		binary.BigEndian.PutUint64(size[:], uint64(len(s)))
-		_, _ = h.Write(size[:])
-		_, _ = h.Write([]byte(s))
-	}
-	write(project)
-	for _, arg := range argv {
-		write(arg)
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
 
 // What makes a gate light: its last LightGateRuns runs that really ran their
 // steps each stayed under these. Most gates of most projects cost a second
