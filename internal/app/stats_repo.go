@@ -3,8 +3,10 @@ package app
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/stats"
@@ -17,6 +19,10 @@ type statsRepoGroup struct {
 type statsRepoPath struct {
 	commonDir, profileName, worktreeName string
 	lookupFailed                         bool
+}
+
+type statsRepoIdentity struct {
+	commonDir, unresolvedName string
 }
 
 func summarizeStatsRows(records []stats.Record, filter stats.Filter, groupByRepo bool) ([]stats.Row, stats.Saved, error) {
@@ -81,40 +87,22 @@ func statsRepoGroupsWithCache(records []stats.Record, resolved map[string]string
 		}
 	}
 
+	identities := make(map[string]statsRepoIdentity, len(paths))
 	unresolvedRoots := make(map[string]string)
 	for project, path := range paths {
-		name := unresolvedStatsRepoName(path, known)
-		if name == "" {
+		identity := classifyStatsRepoPath(path, known)
+		identities[project] = identity
+		if identity.unresolvedName == "" {
 			continue
 		}
-		key := "profile-unresolved:" + name
+		key := "profile-unresolved:" + identity.unresolvedName
 		if old, ok := unresolvedRoots[key]; !ok || project < old {
 			unresolvedRoots[key] = project
 		}
 	}
 	groups := make(map[string]statsRepoGroup, len(paths))
-	for project, path := range paths {
-		commonDir := path.commonDir
-		switch {
-		case commonDir != "":
-			groups[project] = statsRepoGroupForCommonDir(commonDir)
-		case path.lookupFailed && path.profileName != "":
-			groups[project] = unresolvedStatsRepoGroup(path.profileName, unresolvedRoots)
-		case path.profileName != "" && len(known[path.profileName]) == 1:
-			for match := range known[path.profileName] {
-				groups[project] = statsRepoGroupForCommonDir(match)
-			}
-		case path.worktreeName != "" && len(known[path.worktreeName]) == 1:
-			for match := range known[path.worktreeName] {
-				groups[project] = statsRepoGroupForCommonDir(match)
-			}
-		case path.worktreeName != "":
-			groups[project] = unresolvedStatsRepoGroup(path.worktreeName, unresolvedRoots)
-		case path.profileName != "":
-			groups[project] = unresolvedStatsRepoGroup(path.profileName, unresolvedRoots)
-		default:
-			groups[project] = statsRepoGroup{key: "path:" + project, name: project, limitRoot: project}
-		}
+	for project, identity := range identities {
+		groups[project] = statsRepoGroupForIdentity(project, identity, unresolvedRoots)
 	}
 	return groups, nil
 }
@@ -124,23 +112,43 @@ func unresolvedStatsRepoGroup(name string, roots map[string]string) statsRepoGro
 	return statsRepoGroup{key: key, name: name + " (?)", limitRoot: roots[key]}
 }
 
-func unresolvedStatsRepoName(path *statsRepoPath, known map[string]map[string]bool) string {
+// classifyStatsRepoPath is the single ordered decision for repo identity:
+// recorded/live Git metadata, Profile, graft worktree name, then path.
+func classifyStatsRepoPath(path *statsRepoPath, known map[string]map[string]bool) statsRepoIdentity {
 	switch {
 	case path.commonDir != "":
-		return ""
+		return statsRepoIdentity{commonDir: path.commonDir}
 	case path.lookupFailed && path.profileName != "":
-		return path.profileName
+		return statsRepoIdentity{unresolvedName: path.profileName}
 	case path.profileName != "" && len(known[path.profileName]) == 1:
-		return ""
+		return statsRepoIdentity{commonDir: onlyKnownRepo(known[path.profileName])}
 	case path.worktreeName != "" && len(known[path.worktreeName]) == 1:
-		return ""
+		return statsRepoIdentity{commonDir: onlyKnownRepo(known[path.worktreeName])}
 	case path.worktreeName != "":
-		return path.worktreeName
+		return statsRepoIdentity{unresolvedName: path.worktreeName}
 	case path.profileName != "":
-		return path.profileName
+		return statsRepoIdentity{unresolvedName: path.profileName}
 	default:
-		return ""
+		return statsRepoIdentity{}
 	}
+}
+
+func onlyKnownRepo(repositories map[string]bool) string {
+	keys := slices.Sorted(maps.Keys(repositories))
+	if len(keys) == 1 {
+		return keys[0]
+	}
+	return ""
+}
+
+func statsRepoGroupForIdentity(project string, identity statsRepoIdentity, unresolvedRoots map[string]string) statsRepoGroup {
+	if identity.commonDir != "" {
+		return statsRepoGroupForCommonDir(identity.commonDir)
+	}
+	if identity.unresolvedName != "" {
+		return unresolvedStatsRepoGroup(identity.unresolvedName, unresolvedRoots)
+	}
+	return statsRepoGroup{key: "path:" + project, name: project, limitRoot: project}
 }
 
 func statsRepoGroupForCommonDir(commonDir string) statsRepoGroup {

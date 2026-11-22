@@ -60,6 +60,20 @@ func statsRepo(t *testing.T, config string) (*fixture, string) {
 	return f, filepath.Join(cache, "graft", "stats.jsonl")
 }
 
+func TestStatsByRepoRejectsReportModeFlags(t *testing.T) {
+	f, _ := statsRepo(t, "")
+	for _, args := range [][]string{
+		{"--all", "--by", "repo", "--task", "build"},
+		{"--all", "--by", "repo", "--tests"},
+		{"--all", "--by", "repo", "--value", "wall-p50"},
+	} {
+		_, stderr, code := graftSeparate(f, append([]string{"stats"}, args...)...)
+		if code != 2 {
+			t.Errorf("graft stats %v exit = %d, want 2; stderr: %s", args, code, stderr)
+		}
+	}
+}
+
 func readStats(t *testing.T, path string) []statsLine {
 	t.Helper()
 	file, err := os.Open(path)

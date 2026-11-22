@@ -163,6 +163,29 @@ func TestStatsRepoGroupsResolveDeletedGraftWorktreeWithoutProfile(t *testing.T) 
 	}
 }
 
+func TestStatsRepoGroupsPreferProfileMatchOverWorktreeName(t *testing.T) {
+	cache := filepath.Join(t.TempDir(), "cache")
+	t.Setenv("XDG_CACHE_HOME", cache)
+	mainA := filepath.Join(t.TempDir(), "projectA")
+	mainB := filepath.Join(t.TempDir(), "projectB")
+	statsRepoFixture(t, mainA)
+	statsRepoFixture(t, mainB)
+	deleted := filepath.Join(graftWorktreeRoot(cache), "projectA", "gone")
+	rows := testSummarizeStatsRows(t, []stats.Record{
+		statsTask(mainA, "a", "projectA:build", ""),
+		statsTask(mainB, "b", "projectB:build", ""),
+		statsTask(deleted, "deleted", "projectB:build", ""),
+	})
+	if len(rows) != 2 {
+		t.Fatalf("profile and worktree name did not resolve to separate repositories: %+v", rows)
+	}
+	for _, row := range rows {
+		if row.Project == mainB && row.Runs != 2 {
+			t.Fatalf("Profile match did not take precedence over worktree name: %+v", rows)
+		}
+	}
+}
+
 func TestStatsRepoGroupsIgnorePrunedGitdirAndContinueWithProfile(t *testing.T) {
 	for _, missing := range []string{"gitdir", "commondir"} {
 		t.Run(missing, func(t *testing.T) {
