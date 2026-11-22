@@ -3,6 +3,8 @@ package tasks
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -234,6 +236,370 @@ func TestStaticcheckRealBinary(t *testing.T) {
 	r := &Runner{Root: root, Config: &config.Config{}}
 	if err := r.checkStaticcheck(context.Background(), "."); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStaticcheckForeignPathTranslation(t *testing.T) {
+	files := map[string]bool{"x/f.go": true, "a/x/f.go": true, "svc/p.go": true}
+	root := t.TempDir()
+	if got, own := diagnosticLineForTest(t, "/old/tree/a/x/f.go", "mod", root, files, nil); !own || got != "mod/a/x/f.go:3: SA4006 changed" {
+		t.Fatalf("longest suffix translation = %q own=%v", got, own)
+	}
+	if got, own := diagnosticLineForTest(t, "/old/tree/.claude/worktrees/x/svc/p.go", "mod", root, files, nil); !own || got != "mod/svc/p.go:3: SA4006 changed" {
+		t.Fatalf("nested worktree translation = %q own=%v", got, own)
+	}
+	if got, own := diagnosticLineForTest(t, "/elsewhere/q/f.go", "mod", root, files, nil); own || got != "/elsewhere/q/f.go:3: SA4006 changed" {
+		t.Fatalf("basename-only path translated: %q own=%v", got, own)
+	}
+	goRootOutput, err := exec.Command("go", "env", "GOROOT").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	goRoot := strings.TrimSpace(string(goRootOutput))
+	if isExternalGoPath(filepath.Join(goRoot, "src", "fmt", "print.go"), goRoot) != true {
+		t.Fatal("GOROOT source path must be external")
+	}
+	moduleCache := t.TempDir()
+	if isExternalGoPath(filepath.Join(moduleCache, "example.com", "x", "f.go"), moduleCache) != true {
+		t.Fatal("module cache source path must be external")
+	}
+	for _, external := range []string{
+		filepath.Join(goRoot, "src", "fmt", "print.go"),
+		filepath.Join(moduleCache, "example.com", "x", "f.go"),
+	} {
+		input, err := json.Marshal(staticcheckDiagnosticAt(external))
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, retry, err := parseStaticcheckOutput(input, "mod", root, files, nil, []string{goRoot, moduleCache})
+		if err != nil || retry || len(parsed.findings) != 0 || !strings.Contains(parsed.diagnosticLines[0], external) {
+			t.Fatalf("external related path %q was translated: %+v retry=%v err=%v", external, parsed, retry, err)
+		}
+	}
+	if got := staticcheckPathCandidates("/old/tree/x/f.go", files); len(got) != 2 || got[0] != "a/x/f.go" || got[1] != "x/f.go" {
+		t.Fatalf("ambiguous suffix candidates = %v; want both colliding files", got)
+	}
+	diagnostic := []byte(`{"code":"SA4006","message":"ambiguous","location":{"file":"/old/tree/x/f.go","line":3}}`)
+	for _, candidate := range []string{"mod/x/f.go", "mod/a/x/f.go"} {
+		parsed, retry, err := parseStaticcheckOutput(diagnostic, "mod", root, files, map[string]map[int]bool{candidate: {3: true}}, nil)
+		if err != nil || retry || len(parsed.findings) != 1 {
+			t.Fatalf("ambiguous candidate %s: findings=%v retry=%v err=%v", candidate, parsed.findings, retry, err)
+		}
+	}
+	moduleRoot := filepath.Join(root, "svc")
+	if err := os.MkdirAll(moduleRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	localPath := filepath.Join(moduleRoot, "x", "f.go")
+	got, _, own, _, err := staticcheckDiagnosticLine(staticcheckDiagnosticAt(localPath), "svc", root, files, nil)
+	if err != nil || !own || !strings.HasPrefix(got, "svc/x/f.go:3:") {
+		t.Fatalf("own collision path = %q own=%v err=%v", got, own, err)
+	}
+}
+
+func TestStaticcheckLocalModulePathSkipsGoIgnoredDirectories(t *testing.T) {
+	moduleDir := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		own  bool
+	}{
+		{"visible/pkg.go", true},
+		{".claude/worktrees/x/pkg.go", false},
+		{"_generated/pkg.go", false},
+		{"testdata/pkg.go", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.MkdirAll(filepath.Join(moduleDir, filepath.Dir(tc.name)), 0755); err != nil {
+				t.Fatal(err)
+			}
+			got, own, err := staticcheckLocalModuleFile(filepath.Join(moduleDir, tc.name), moduleDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if own != tc.own || (own && filepath.ToSlash(got) != tc.name) {
+				t.Fatalf("staticcheckLocalModuleFile() = %q, %v; want path %q, own %v", got, own, tc.name, tc.own)
+			}
+		})
+	}
+	nested := filepath.Join(moduleDir, "nested")
+	if err := os.MkdirAll(nested, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "go.mod"), []byte("module example.com/nested\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got, own, err := staticcheckLocalModuleFile(filepath.Join(nested, "pkg.go"), moduleDir); err != nil || own {
+		t.Fatalf("nested module path %q classified as own, err=%v", got, err)
+	}
+}
+
+func TestStaticcheckModuleFilesFiltersNestedModuleInSubdirectory(t *testing.T) {
+	root := t.TempDir()
+	moduleDir := filepath.Join(root, "svc")
+	nestedDir := filepath.Join(moduleDir, "nested")
+	if err := os.MkdirAll(nestedDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	var packageJSON strings.Builder
+	for _, pkg := range []map[string]any{
+		{"Dir": moduleDir, "GoFiles": []string{"p.go"}, "Module": map[string]bool{"Main": true}},
+		{"Dir": nestedDir, "GoFiles": []string{"n.go"}, "Module": map[string]bool{"Main": false}},
+	} {
+		encoded, err := json.Marshal(pkg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		packageJSON.Write(encoded)
+		packageJSON.WriteByte('\n')
+	}
+	script := "#!/bin/sh\nprintf '%s\\n' \"$STATICCHECK_TEST_JSON\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STATICCHECK_TEST_JSON", packageJSON.String())
+	t.Setenv("PATH", bin)
+	files, err := (&Runner{Root: root, Config: &config.Config{}}).staticcheckModuleFiles(context.Background(), "svc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !files["p.go"] || files["nested/n.go"] {
+		t.Fatalf("module file set = %v; want only main module files", files)
+	}
+}
+
+func TestStaticcheckModuleFilesReportsGoListStderr(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "svc"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "go"), []byte("#!/bin/sh\ntest \"$1 $2\" = 'list -e' || exit 3\necho broken-import >&2\nexit 1\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	_, err := (&Runner{Root: root, Config: &config.Config{}}).staticcheckModuleFiles(context.Background(), "svc")
+	if err == nil || !strings.Contains(err.Error(), "broken-import") {
+		t.Fatalf("go list error = %v; want captured stderr", err)
+	}
+	combined := staticcheckWithListingError(err, errors.New("staticcheck exit 1"), "staticcheck stderr")
+	if !strings.Contains(combined.Error(), "staticcheck exit 1") || !strings.Contains(combined.Error(), "staticcheck stderr") {
+		t.Fatalf("listing error masked staticcheck failure: %v", combined)
+	}
+}
+
+func diagnosticLineForTest(t *testing.T, file, module, root string, files map[string]bool, external []string) (string, bool) {
+	t.Helper()
+	line, _, own, _, err := staticcheckDiagnosticLine(staticcheckDiagnosticAt(file), module, root, files, external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return line, own
+}
+
+func staticcheckDiagnosticAt(file string) staticcheckDiagnostic {
+	d := staticcheckDiagnostic{Code: "SA4006", Message: "changed"}
+	d.Location.File, d.Location.Line = file, 3
+	return d
+}
+
+func TestStaticcheckUntranslatedPathRequestsRetry(t *testing.T) {
+	diagnostic := staticcheckDiagnostic{}
+	diagnostic.Code = "SA4006"
+	diagnostic.Message = "finding"
+	diagnostic.Location.File = "/old/tree/other/missing.go"
+	diagnostic.Location.Line = 3
+	data, err := json.Marshal(diagnostic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, retry, err := parseStaticcheckOutput(data, "mod", t.TempDir(), map[string]bool{"svc/p.go": true}, map[string]map[int]bool{}, nil)
+	if err != nil || !retry {
+		t.Fatalf("parseStaticcheckOutput retry = %v, err = %v", retry, err)
+	}
+}
+
+func TestStaticcheckRerunsForUntranslatedPath(t *testing.T) {
+	root := staticcheckRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package test\nfunc f() {\n _ = 2\n}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	countFile := filepath.Join(bin, "count")
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nn=0\n[ ! -f '" + countFile + "' ] || read n < '" + countFile + "'\nn=$((n + 1))\nprintf '%s\\n' \"$n\" > '" + countFile + "'\n"
+	script += "if [ \"$n\" -eq 1 ]; then printf '%s\\n' '{\"code\":\"SA4006\",\"message\":\"foreign\",\"location\":{\"file\":\"/old/copy/missing.go\",\"line\":3}}'; else printf '%s\\n' '{\"code\":\"SA4006\",\"message\":\"local\",\"location\":{\"file\":\"a.go\",\"line\":3}}'; fi\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "staticcheck"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nexec '"+gitPath+"' \"$@\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	goPath, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(goPath, filepath.Join(bin, "go")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	var out, stderr bytes.Buffer
+	r := &Runner{Root: root, Config: &config.Config{}, Stdout: &out, Stderr: &stderr}
+	if err := r.checkStaticcheck(context.Background(), "."); err == nil || !strings.Contains(out.String(), "a.go:3: SA4006 local") {
+		t.Fatalf("rerun result was not gated: %v; %q", err, out.String())
+	}
+	count, err := os.ReadFile(countFile)
+	if err != nil || strings.TrimSpace(string(count)) != "2" {
+		t.Fatalf("staticcheck run count = %q, err = %v; want 2 runs", count, err)
+	}
+	if !strings.Contains(stderr.String(), staticcheckRerunNotice) {
+		t.Fatalf("missing rerun notice: %q", stderr.String())
+	}
+}
+
+func TestStaticcheckAddsTrimPathToGoFlags(t *testing.T) {
+	for _, tc := range []struct{ name, input, want string }{
+		{"append to existing flags", "-mod=readonly", "-mod=readonly -trimpath"},
+		{"preserve explicit false", "-trimpath=false", "-trimpath=false"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := staticcheckRepo(t)
+			bin := t.TempDir()
+			flagsFile := filepath.Join(bin, "flags")
+			gitPath, err := exec.LookPath("git")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(bin, "staticcheck"), []byte("#!/bin/sh\nprintf '%s' \"$GOFLAGS\" > '"+flagsFile+"'\nexit 0\n"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nexec '"+gitPath+"' \"$@\"\n"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin)
+			t.Setenv("GOFLAGS", tc.input)
+			if err := (&Runner{Root: root, Config: &config.Config{}}).checkStaticcheck(context.Background(), "."); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(flagsFile)
+			if err != nil || strings.TrimSpace(string(got)) != tc.want {
+				t.Fatalf("staticcheck GOFLAGS = %q, err = %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestStaticcheckSharedCacheAcrossCopies(t *testing.T) {
+	if _, err := exec.LookPath("staticcheck"); err != nil {
+		t.Skip("staticcheck is not installed")
+	}
+	base := t.TempDir()
+	gitRoot := filepath.Join(base, "repo")
+	if err := os.MkdirAll(filepath.Join(gitRoot, "svc"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitRoot, "svc", "go.mod"), []byte("module example.com/projA\n\ngo 1.22\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitRoot, "svc", "p.go"), []byte("package projectA\nfunc f() {\n _ = 1\n}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cachedDir := filepath.Join(gitRoot, "svc", "cached")
+	if err := os.MkdirAll(cachedDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cachedDir, "c.go"), []byte("package cached\nfunc gen() int { println(); return 0 }\nfunc old() {\n y := gen()\n y = gen()\n println(y)\n}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	git := func(root string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.org"}, args...)...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git(gitRoot, "init", "-q", "-b", "main")
+	git(gitRoot, "add", "-A")
+	git(gitRoot, "commit", "-qm", "base")
+	b := filepath.Join(base, "B")
+	if out, err := exec.Command("git", "clone", "-q", gitRoot, b).CombinedOutput(); err != nil {
+		t.Fatalf("clone B: %v\n%s", err, out)
+	}
+	a := filepath.Join(b, "svc", ".claude", "worktrees", "x")
+	if err := os.MkdirAll(filepath.Dir(a), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "clone", "-q", gitRoot, a).CombinedOutput(); err != nil {
+		t.Fatalf("clone hidden worktree A: %v\n%s", err, out)
+	}
+	staticCache, goCache := filepath.Join(base, "staticcheck-cache"), filepath.Join(base, "go-cache")
+	if err := os.MkdirAll(staticCache, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(goCache, 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STATICCHECK_CACHE", staticCache)
+	t.Setenv("GOCACHE", goCache)
+	if err := (&Runner{Root: a, Config: &config.Config{}}).checkStaticcheck(context.Background(), "svc"); err != nil {
+		t.Fatalf("warm copy A: %v", err)
+	}
+	baseEnv := append(os.Environ(), "GOFLAGS=-trimpath")
+	baseRaw := exec.Command("staticcheck", "-checks", "SA*", "-f", "json", "./...")
+	baseRaw.Dir, baseRaw.Env = filepath.Join(a, "svc"), baseEnv
+	baseOutput, baseErr := baseRaw.Output()
+	if baseErr != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(baseErr, &exitErr) || exitErr.ExitCode() != 1 {
+			t.Fatalf("raw staticcheck A: %v", baseErr)
+		}
+	}
+	if !bytes.Contains(baseOutput, []byte("SA4006")) {
+		var stderr []byte
+		if exitErr, ok := baseErr.(*exec.ExitError); ok {
+			stderr = exitErr.Stderr
+		}
+		t.Fatalf("warm copy A did not produce the cache marker: output=%s err=%v stderr=%s", baseOutput, baseErr, stderr)
+	}
+	withFinding := []byte("package projectA\nfunc gen() int { println(); return 0 }\nfunc f() {\n x := gen()\n x = gen()\n println(x)\n}\n")
+	if err := os.WriteFile(filepath.Join(b, "svc", "p.go"), withFinding, 0644); err != nil {
+		t.Fatal(err)
+	}
+	env := baseEnv
+	raw := exec.Command("staticcheck", "-checks", "SA*", "-f", "json", "./...")
+	raw.Dir, raw.Env = filepath.Join(b, "svc"), env
+	output, err := raw.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			t.Fatalf("raw staticcheck B: %v", err)
+		}
+	}
+	if !bytes.Contains(output, []byte(filepath.Join(a, "svc", "cached", "c.go"))) {
+		t.Fatalf("cache did not replay A path in B output: %s", output)
+	}
+	foreign, err := staticcheckHasForeignAbsolutePath(output, "svc", b)
+	if err != nil || !foreign {
+		t.Fatalf("hidden worktree cache path was classified as local: %s err=%v", output, err)
+	}
+	var out bytes.Buffer
+	r := &Runner{Root: b, Config: &config.Config{}, Stdout: &out}
+	if err := r.checkStaticcheck(context.Background(), "svc"); err == nil || !strings.Contains(out.String(), "svc/p.go:4: SA4006") {
+		t.Fatalf("changed SA finding not retained: %v; %q", err, out.String())
+	}
+	if err := exec.Command("git", "-C", b, "-c", "user.name=t", "-c", "user.email=t@example.org", "add", "svc/p.go").Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("git", "-C", b, "-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-qm", "add finding baseline").Run(); err != nil {
+		t.Fatal(err)
+	}
+	// The SA4006 at line 4 is now unchanged relative to HEAD.
+	if err := (&Runner{Root: b, Config: &config.Config{}}).checkStaticcheck(context.Background(), "svc"); err != nil {
+		t.Fatalf("unchanged SA finding should pass: %v", err)
 	}
 }
 

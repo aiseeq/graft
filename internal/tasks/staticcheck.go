@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,6 +31,17 @@ type staticcheckDiagnostic struct {
 		File string `json:"file"`
 		Line int    `json:"line"`
 	} `json:"location"`
+}
+
+type staticcheckPackage struct {
+	Dir          string
+	GoFiles      []string
+	CgoFiles     []string
+	TestGoFiles  []string
+	XTestGoFiles []string
+	Module       *struct {
+		Main bool
+	}
 }
 
 type changedGoFile struct {
@@ -219,10 +232,45 @@ func (r *Runner) checkStaticcheck(ctx context.Context, module string) error {
 	if err != nil {
 		return err
 	}
-	output, stderr, runErr := r.runStaticcheck(ctx, module)
-	parsed, err := parseStaticcheckOutput(output, module, r.Root, changed)
+	output, stderr, runErr := r.runStaticcheck(ctx, module, true)
+	dir := filepath.Join(r.Root, filepath.FromSlash(module))
+	var externalPaths []string
+	foreignAbsolute, err := staticcheckHasForeignAbsolutePath(output, module, r.Root)
 	if err != nil {
 		return err
+	}
+	if foreignAbsolute {
+		externalPaths, err = r.staticcheckExternalPaths(ctx, dir)
+		if err != nil {
+			return staticcheckWithListingError(err, runErr, stderr)
+		}
+	}
+	parsed, untranslated, err := parseStaticcheckOutput(output, module, r.Root, nil, changed, externalPaths)
+	if err != nil {
+		return err
+	}
+	var files map[string]bool
+	if untranslated {
+		files, err = r.staticcheckModuleFiles(ctx, module)
+		if err != nil {
+			return staticcheckWithListingError(err, runErr, stderr)
+		}
+		parsed, untranslated, err = parseStaticcheckOutput(output, module, r.Root, files, changed, externalPaths)
+		if err != nil {
+			return err
+		}
+	}
+	if untranslated {
+		noticeWriter := r.Stderr
+		if noticeWriter == nil {
+			noticeWriter = os.Stderr
+		}
+		fmt.Fprintln(noticeWriter, staticcheckRerunNotice)
+		output, stderr, runErr = r.runStaticcheck(ctx, module, false)
+		parsed, _, err = parseStaticcheckOutput(output, module, r.Root, files, changed, externalPaths)
+		if err != nil {
+			return err
+		}
 	}
 	exitCode, fail := staticcheckFailure(runErr, len(output), parsed)
 	if !fail {
@@ -235,12 +283,59 @@ func (r *Runner) checkStaticcheck(ctx context.Context, module string) error {
 	return errors.New("staticcheck found SA issues on changed lines")
 }
 
-func (r *Runner) runStaticcheck(ctx context.Context, module string) ([]byte, string, error) {
+func staticcheckHasForeignAbsolutePath(output []byte, module, root string) (bool, error) {
+	moduleDir := filepath.Join(root, filepath.FromSlash(module))
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	for scanner.Scan() {
+		diagnostic, err := decodeStaticcheckDiagnostic(scanner.Bytes())
+		if err != nil {
+			return false, err
+		}
+		if !filepath.IsAbs(diagnostic.Location.File) {
+			continue
+		}
+		if _, own, err := staticcheckLocalModuleFile(diagnostic.Location.File, moduleDir); err != nil {
+			return false, err
+		} else if !own {
+			return true, nil
+		}
+	}
+	return false, scanner.Err()
+}
+
+func staticcheckWithListingError(listErr, runErr error, stderr string) error {
+	if runErr == nil {
+		return listErr
+	}
+	if detail := strings.TrimSpace(stderr); detail != "" {
+		return fmt.Errorf("%w (staticcheck also failed: %v; stderr: %s)", listErr, runErr, detail)
+	}
+	return fmt.Errorf("%w (staticcheck also failed: %v)", listErr, runErr)
+}
+
+const staticcheckRerunNotice = "graft: staticcheck reported a path outside this module's file list; rerun without -trimpath for this tree's paths"
+
+func (r *Runner) runStaticcheck(ctx context.Context, module string, trim bool) ([]byte, string, error) {
 	cmd := exec.CommandContext(ctx, "staticcheck", "-checks", "SA*", "-f", "json", "./...")
 	cmd.Dir = filepath.Join(r.Root, filepath.FromSlash(module))
 	cmd.Env = os.Environ()
 	for key, value := range r.Config.GoVet.Env {
-		cmd.Env = append(cmd.Env, key+"="+value)
+		cmd.Env = setEnv(cmd.Env, key, value)
+	}
+	if trim {
+		// GOFLAGS as go resolves it, env or GOENV file: setting it in env
+		// replaces the file's value, so the resolved text is what goes on.
+		flagsText, err := resolveGoFlags(ctx, cmd.Dir, cmd.Env)
+		if err != nil {
+			return nil, "", fmt.Errorf("staticcheck -trimpath: reading GOFLAGS: %w", err)
+		}
+		flags, err := splitGoFlags(flagsText)
+		if err != nil {
+			return nil, "", fmt.Errorf("staticcheck -trimpath: parsing GOFLAGS: %w", err)
+		}
+		if argv := addTrimPath([]string{"go", "vet"}, flags, []string{"vet"}); len(argv) > 2 {
+			cmd.Env = setEnv(cmd.Env, "GOFLAGS", strings.TrimSpace(flagsText+" -trimpath"))
+		}
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -249,21 +344,93 @@ func (r *Runner) runStaticcheck(ctx context.Context, module string) ([]byte, str
 	return bytes.Clone(stdout.Bytes()), stderr.String(), err
 }
 
-func parseStaticcheckOutput(output []byte, module, root string, changed map[string]map[int]bool) (parsedStaticcheck, error) {
+func setEnv(env []string, key, value string) []string {
+	result := make([]string, 0, len(env)+1)
+	for _, item := range env {
+		name, _, ok := strings.Cut(item, "=")
+		if !ok || !strings.EqualFold(name, key) {
+			result = append(result, item)
+		}
+	}
+	return append(result, key+"="+value)
+}
+
+func (r *Runner) staticcheckModuleFiles(ctx context.Context, module string) (map[string]bool, error) {
+	dir := filepath.Join(r.Root, filepath.FromSlash(module))
+	env := os.Environ()
+	for key, value := range r.Config.GoVet.Env {
+		env = setEnv(env, key, value)
+	}
+	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-test", "-json", "./...")
+	cmd.Dir, cmd.Env = dir, env
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("listing staticcheck module files: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	files := make(map[string]bool)
+	decoder := json.NewDecoder(bytes.NewReader(output))
+	for {
+		var pkg staticcheckPackage
+		if err := decoder.Decode(&pkg); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return nil, fmt.Errorf("reading staticcheck module file list: %w", err)
+		}
+		if pkg.Module == nil || !pkg.Module.Main {
+			continue
+		}
+		for _, name := range slices.Concat(pkg.GoFiles, pkg.CgoFiles, pkg.TestGoFiles, pkg.XTestGoFiles) {
+			full := filepath.Clean(filepath.Join(pkg.Dir, name))
+			rel, err := filepath.Rel(dir, full)
+			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				files[filepath.ToSlash(rel)] = true
+			}
+		}
+	}
+	return files, nil
+}
+
+func (r *Runner) staticcheckExternalPaths(ctx context.Context, dir string) ([]string, error) {
+	env := os.Environ()
+	for key, value := range r.Config.GoVet.Env {
+		env = setEnv(env, key, value)
+	}
+	out, err := goEnvOutput(ctx, dir, env, "GOROOT", "GOMODCACHE")
+	if err != nil {
+		return nil, fmt.Errorf("getting go env GOROOT and GOMODCACHE for staticcheck: %w", err)
+	}
+	values := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	if len(values) != 2 {
+		return nil, fmt.Errorf("getting go env GOROOT and GOMODCACHE for staticcheck: expected two lines, got %q", out)
+	}
+	return values, nil
+}
+
+func parseStaticcheckOutput(output []byte, module, root string, moduleFiles map[string]bool, changed map[string]map[int]bool, externalPaths []string) (parsedStaticcheck, bool, error) {
 	var parsed parsedStaticcheck
+	untranslated := false
 	scanner := bufio.NewScanner(bytes.NewReader(output))
 	for scanner.Scan() {
 		diagnostic, err := decodeStaticcheckDiagnostic(scanner.Bytes())
 		if err != nil {
-			return parsedStaticcheck{}, err
+			return parsedStaticcheck{}, false, err
 		}
-		line, file, err := staticcheckDiagnosticLine(diagnostic, module, root)
+		line, file, own, candidates, err := staticcheckDiagnosticLine(diagnostic, module, root, moduleFiles, externalPaths)
 		if err != nil {
-			return parsedStaticcheck{}, err
+			return parsedStaticcheck{}, false, err
+		}
+		if diagnostic.Location.File != "" && !own && !isExternalGoPath(diagnostic.Location.File, externalPaths...) {
+			untranslated = true
 		}
 		parsed.diagnosticLines = append(parsed.diagnosticLines, line)
 		if strings.HasPrefix(diagnostic.Code, "SA") {
-			if changed[file][diagnostic.Location.Line] {
+			changedLine := own && changed[file][diagnostic.Location.Line]
+			for _, candidate := range candidates {
+				changedLine = changedLine || changed[candidate][diagnostic.Location.Line]
+			}
+			if changedLine {
 				parsed.findings = append(parsed.findings, line)
 			}
 		} else {
@@ -271,9 +438,9 @@ func parseStaticcheckOutput(output []byte, module, root string, changed map[stri
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return parsedStaticcheck{}, fmt.Errorf("reading staticcheck output: %w", err)
+		return parsedStaticcheck{}, false, fmt.Errorf("reading staticcheck output: %w", err)
 	}
-	return parsed, nil
+	return parsed, untranslated, nil
 }
 
 func decodeStaticcheckDiagnostic(data []byte) (staticcheckDiagnostic, error) {
@@ -284,24 +451,130 @@ func decodeStaticcheckDiagnostic(data []byte) (staticcheckDiagnostic, error) {
 	return diagnostic, nil
 }
 
-func staticcheckDiagnosticLine(d staticcheckDiagnostic, module, root string) (string, string, error) {
+func staticcheckDiagnosticLine(d staticcheckDiagnostic, module, root string, moduleFiles map[string]bool, externalPaths []string) (string, string, bool, []string, error) {
 	file := filepath.ToSlash(d.Location.File)
+	own := false
+	var candidates []string
 	if d.Location.File != "" {
-		if filepath.IsAbs(d.Location.File) {
-			rel, err := filepath.Rel(root, d.Location.File)
-			if err != nil {
-				return "", "", fmt.Errorf("making staticcheck path relative to repository: %w", err)
-			}
-			file = filepath.ToSlash(rel)
+		moduleDir := filepath.Join(root, filepath.FromSlash(module))
+		if rel, isModuleFile, err := staticcheckLocalModuleFile(d.Location.File, moduleDir); err != nil {
+			return "", "", false, nil, err
+		} else if isModuleFile {
+			file, own = path.Clean(path.Join(module, filepath.ToSlash(rel))), true
+			candidates = []string{file}
+		} else if len(moduleFiles) > 0 && !isExternalGoPath(d.Location.File, externalPaths...) {
+			matches := staticcheckPathCandidates(d.Location.File, moduleFiles)
+			file, own = translatedStaticcheckFile(d.Location.File, module, matches)
+			candidates = staticcheckModulePaths(module, matches)
 		} else {
-			file = path.Clean(path.Join(module, file))
+			file = filepath.ToSlash(filepath.Clean(filepath.FromSlash(file)))
 		}
 	}
 	line := d.Code + ": " + d.Message
 	if d.Location.File != "" && d.Location.Line > 0 {
 		line = fmt.Sprintf("%s:%d: %s %s", file, d.Location.Line, d.Code, d.Message)
 	}
-	return line, file, nil
+	return line, file, own, candidates, nil
+}
+
+func staticcheckLocalModuleFile(name, moduleDir string) (string, bool, error) {
+	rel := name
+	if filepath.IsAbs(name) {
+		var err error
+		rel, err = filepath.Rel(moduleDir, name)
+		if err != nil {
+			return "", false, fmt.Errorf("relativizing staticcheck path %q to module directory %s: %w", name, moduleDir, err)
+		}
+	}
+	rel = filepath.Clean(rel)
+	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || !strings.HasSuffix(rel, ".go") {
+		return "", false, nil
+	}
+	dirs := strings.Split(filepath.ToSlash(filepath.Dir(rel)), "/")
+	dir := moduleDir
+	for _, part := range dirs {
+		if part == "." || part == "" {
+			continue
+		}
+		if strings.HasPrefix(part, ".") || strings.HasPrefix(part, "_") || part == "testdata" {
+			return "", false, nil
+		}
+		dir = filepath.Join(dir, part)
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return "", false, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", false, fmt.Errorf("checking for nested go.mod in %s: %w", dir, err)
+		}
+	}
+	return rel, true, nil
+}
+
+func translatedStaticcheckFile(diagnosticPath, module string, candidates []string) (string, bool) {
+	if len(candidates) == 0 {
+		return filepath.ToSlash(diagnosticPath), false
+	}
+	return path.Clean(path.Join(module, candidates[0])), true
+}
+
+func staticcheckModulePaths(module string, files []string) []string {
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, path.Clean(path.Join(module, file)))
+	}
+	return paths
+}
+
+func staticcheckPathCandidates(diagnosticPath string, moduleFiles map[string]bool) []string {
+	if isExternalGoPath(diagnosticPath) {
+		return nil
+	}
+	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(diagnosticPath)))
+	parts := strings.Split(strings.Trim(clean, "/"), "/")
+	best := 0
+	var matches []string
+	for candidate := range moduleFiles {
+		candidateParts := strings.Split(candidate, "/")
+		common := 0
+		for i, j := len(parts)-1, len(candidateParts)-1; i >= 0 && j >= 0 && parts[i] == candidateParts[j]; i, j = i-1, j-1 {
+			common++
+		}
+		if common < 2 {
+			continue
+		}
+		if common > best {
+			best, matches = common, []string{candidate}
+		} else if common > 0 && common == best {
+			matches = append(matches, candidate)
+		}
+	}
+	slices.Sort(matches)
+	return matches
+}
+
+func isExternalGoPath(name string, prefixes ...string) bool {
+	if !filepath.IsAbs(name) {
+		return false
+	}
+	clean := filepath.Clean(name)
+	if len(prefixes) == 0 {
+		goModCache, _ := lookupEnv(os.Environ(), "GOMODCACHE")
+		if goModCache == "" {
+			goPath, _ := lookupEnv(os.Environ(), "GOPATH")
+			if goPath == "" {
+				if home, err := os.UserHomeDir(); err == nil {
+					goPath = filepath.Join(home, "go")
+				}
+			}
+			goModCache = filepath.Join(strings.Split(goPath, string(os.PathListSeparator))[0], "pkg", "mod")
+		}
+		prefixes = []string{runtime.GOROOT(), goModCache}
+	}
+	for _, prefix := range prefixes {
+		if prefix != "" && (clean == prefix || strings.HasPrefix(clean, prefix+string(filepath.Separator))) {
+			return true
+		}
+	}
+	return false
 }
 
 func staticcheckFailure(runErr error, outputBytes int, parsed parsedStaticcheck) (int, bool) {
