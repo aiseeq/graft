@@ -84,6 +84,14 @@ func (a *App) retryHeldItem(ctx context.Context, sub *subtaskRun, h heldItem, do
 	if slices.Contains(done, h.key) || slices.ContainsFunc(m.held, func(x heldItem) bool { return x.key == h.key }) {
 		return nil
 	}
+	if isSkipKey(m.standing, h.key) {
+		if m.readOnly {
+			a.printf("- %s: left alone", h.key)
+		} else {
+			a.printf("%s left alone: release_notes.jira.skip_keys", h.key)
+		}
+		return nil
+	}
 	issue, err := m.client.Issue(ctx, h.key)
 	if err != nil {
 		a.warn("%s is still held: %v", h.key, err)

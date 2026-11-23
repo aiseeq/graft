@@ -1105,7 +1105,7 @@ func (n *noteItems) post(ctx context.Context, key string) {
 		a.printf("release note for %s not posted: this deploy reverts its work from the candidate", key)
 		return
 	}
-	if slices.Contains(notes.SkipKeys, key) {
+	if isSkipKey(notes.SkipKeys, key) {
 		a.printf("release note for %s not posted, %s left alone: release_notes.jira.skip_keys", key, key)
 		return
 	}
@@ -1165,6 +1165,9 @@ func (n *noteItems) post(ctx context.Context, key string) {
 		n.sub.reached[issue.Key] = n.mover.delivered(ctx, issue)
 	}
 }
+
+// isSkipKey reports whether release_notes.jira.skip_keys names key.
+func isSkipKey(keys []string, key string) bool { return slices.Contains(keys, key) }
 
 // noteMover moves items by the target's transitions and hands them over to
 // the transition's assignee.
@@ -1458,7 +1461,7 @@ func (s *subtaskRun) move(ctx context.Context, key, parent string, t *config.Not
 	if issue.Done || issue.Status == t.To {
 		return
 	}
-	if slices.Contains(s.notes.SkipKeys, key) {
+	if isSkipKey(s.notes.SkipKeys, key) {
 		app.printf("%s stays %s after its parent %s: release_notes.jira.skip_keys", key, issue.Status, parent)
 		return
 	}

@@ -2638,7 +2638,8 @@ judged by its own key):
   window took out, work older than `days` or only on a local branch; a
   withheld commit is not on the target whatever its content. A held parent
   is judged so again before any move, a deploy of its own commit too; one
-  not held moves at a deploy of its own commit as any delivered item does.
+  not held moves at a deploy of its own commit as any delivered item does. A held key
+  later added to `release_notes.jira.skip_keys` is left alone and removed from the held record.
   A parent not started, or in a status no transition or `approved_release`
   names (Paused), is listed instead: it was put aside by hand;
 - listed by hand, nothing moved: a done item with a commit outside the

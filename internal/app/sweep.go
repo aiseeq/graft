@@ -491,7 +491,7 @@ func (s *sweepRun) judge(ctx context.Context, items map[string][]sweptCommit) {
 	s.read(ctx, withReverted)
 	s.parents(ctx, withReverted)
 	for _, key := range keys {
-		if issue, ok := s.issues[key]; ok && !s.judged[key] && !slices.Contains(s.notes.SkipKeys, key) {
+		if issue, ok := s.issues[key]; ok && !s.judged[key] && !isSkipKey(s.notes.SkipKeys, key) {
 			if item, dormant := s.r.target.ApprovedRelease.DormantFor(key, issue.Parent); dormant {
 				if s.judged[item.Key] {
 					s.judged[key] = true
@@ -956,7 +956,7 @@ func (s *sweepRun) parents(ctx context.Context, keys []string) {
 	s.read(ctx, parents)
 	for _, key := range parents {
 		parent, ok := s.issues[key]
-		if !ok || slices.Contains(s.notes.SkipKeys, key) {
+		if !ok || isSkipKey(s.notes.SkipKeys, key) {
 			continue
 		}
 		if !parent.Done && len(parent.Subtasks) > 0 {

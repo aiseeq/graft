@@ -290,7 +290,7 @@ func (a *App) previewNotes(ctx context.Context, r *deployRun) {
 }
 
 func (a *App) previewNoteKey(ctx context.Context, r *deployRun, m *noteMover, key string) {
-	if slices.Contains(r.cfg.ReleaseNotes.Jira.SkipKeys, key) || (r.moveOut != nil && slices.Contains(r.moveOut.keys, key)) {
+	if isSkipKey(r.cfg.ReleaseNotes.Jira.SkipKeys, key) || (r.moveOut != nil && slices.Contains(r.moveOut.keys, key)) {
 		a.printf("- %s: left alone", key)
 		return
 	}
