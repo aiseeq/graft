@@ -1,0 +1,945 @@
+package app
+
+import (
+	"bytes"
+	"fmt"
+	"maps"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/version"
+)
+
+type versionPortHint struct {
+	commit string
+	port   string
+}
+
+// coveredVersionPorts finds commits in prev..head whose complete, hash-linked
+// port is already in prev. A whole port group must replay cleanly and leave
+// the port tree unchanged outside version files before its tasks stop being
+// active for release-version checks.
+func coveredVersionPorts(repo *gitx.Repo, prev, head string, commits []deliveredCommit, targets map[string][]version.Target) (map[string]string, error) {
+	prior, err := logCommits(repo, prev)
+	if err != nil {
+		return nil, err
+	}
+	return coveredVersionPortsWithPrior(repo, prev, head, prior, commits, targets)
+}
+
+func coveredVersionPortsWithPrior(repo *gitx.Repo, prev, head string, prior, commits []deliveredCommit, targets map[string][]version.Target) (map[string]string, error) {
+	covered := map[string]string{}
+	if len(commits) == 0 {
+		return covered, nil
+	}
+	reverted, err := revertedInRange(repo, commits)
+	if err != nil {
+		return nil, err
+	}
+	active := make([]deliveredCommit, 0, len(commits))
+	for _, c := range commits {
+		if !reverted[c.sha] {
+			active = append(active, c)
+		}
+	}
+	commits = active
+	if len(commits) == 0 {
+		return covered, nil
+	}
+	groups, err := linkedVersionPortGroups(repo, prev, prior, commits)
+	if err != nil {
+		return nil, err
+	}
+	if len(groups) == 0 {
+		return covered, nil
+	}
+
+	ordered, err := logCommits(repo, "--topo-order", "--reverse", prev+".."+head)
+	if err != nil {
+		return nil, err
+	}
+	commitOrder := make(map[string]int, len(commits))
+	for i, c := range ordered {
+		commitOrder[c.sha] = i
+	}
+	for _, port := range slices.Sorted(maps.Keys(groups)) {
+		group := make([]deliveredCommit, 0, len(groups[port]))
+		for _, c := range groups[port] {
+			group = append(group, c)
+		}
+		slices.SortFunc(group, func(a, b deliveredCommit) int { return commitOrder[a.sha] - commitOrder[b.sha] })
+		unchanged, err := portGroupChangesNothing(repo, port, group, prev, head, targets)
+		if err != nil {
+			return nil, fmt.Errorf("checking linked port %s: %w", gitx.Short(port), err)
+		}
+		if unchanged {
+			for _, c := range group {
+				if covered[c.sha] == "" {
+					covered[c.sha] = port
+				}
+			}
+		}
+	}
+	return covered, nil
+}
+
+func revertedInRange(repo *gitx.Repo, commits []deliveredCommit) (map[string]bool, error) {
+	reverted := map[string]bool{}
+	for _, c := range commits {
+		takes, err := isWorkRemovingRevert(repo, c, commits, unknownRevertTargetUsesSubject)
+		if err != nil {
+			return nil, err
+		}
+		if !takes {
+			continue
+		}
+		for _, m := range revertsRe.FindAllStringSubmatch(c.body, -1) {
+			full, err := repo.Git("rev-parse", "--verify", "--quiet", m[1]+"^{commit}")
+			if err != nil {
+				return nil, fmt.Errorf("resolving reverted commit %s in %s: %w", m[1], gitx.Short(c.sha), err)
+			}
+			reverted[strings.TrimSpace(full)] = true
+		}
+	}
+	return reverted, nil
+}
+
+func linkedVersionPortGroups(repo *gitx.Repo, prev string, prior, commits []deliveredCommit) (map[string]map[string]deliveredCommit, error) {
+	groups := map[string]map[string]deliveredCommit{}
+	add := func(port string, c deliveredCommit) {
+		if groups[port] == nil {
+			groups[port] = map[string]deliveredCommit{}
+		}
+		groups[port][c.sha] = c
+	}
+	if err := addSourcesNamedByPorts(prior, commits, add); err != nil {
+		return nil, err
+	}
+	if err := addSourcesNamingPort(prior, commits, add); err != nil {
+		return nil, err
+	}
+	if err := addExplicitVersionPortLinks(repo, prev, commits, add); err != nil {
+		return nil, err
+	}
+	return groups, nil
+}
+
+func addSourcesNamingPort(prior, commits []deliveredCommit, add func(string, deliveredCommit)) error {
+	trailer := regexp.MustCompile(`(?m)^\(cherry picked from commit ([0-9a-fA-F]{7,40})\)$`)
+	byPrefix := map[string][]deliveredCommit{}
+	for _, p := range prior {
+		for n := 7; n <= len(p.sha); n++ {
+			byPrefix[p.sha[:n]] = append(byPrefix[p.sha[:n]], p)
+		}
+	}
+	for _, c := range commits {
+		for _, m := range trailer.FindAllStringSubmatch(c.body, -1) {
+			for _, p := range byPrefix[m[1]] {
+				add(p.sha, c)
+			}
+		}
+	}
+	return nil
+}
+
+// unlinkedContentVersionPorts finds same-task commits whose content is on a
+// prior commit but which have no hash link to it. This is advice only; it
+// never suppresses a version check.
+func unlinkedContentVersionPorts(repo *gitx.Repo, prev, head string, commits []deliveredCommit, targets map[string][]version.Target, keyRe *regexp.Regexp, conf *config.ApprovedRelease, covered map[string]string) (map[string][]versionPortHint, error) {
+	prior, err := logCommits(repo, prev)
+	if err != nil {
+		return nil, err
+	}
+	return unlinkedContentVersionPortsWithPrior(repo, prev, head, prior, commits, targets, keyRe, conf, covered)
+}
+
+func unlinkedContentVersionPortsWithPrior(repo *gitx.Repo, prev, head string, prior, commits []deliveredCommit, targets map[string][]version.Target, keyRe *regexp.Regexp, conf *config.ApprovedRelease, covered map[string]string) (map[string][]versionPortHint, error) {
+	hints := map[string][]versionPortHint{}
+	groups, err := linkedVersionPortGroups(repo, prev, prior, commits)
+	if err != nil {
+		return nil, err
+	}
+	ordered, err := logCommits(repo, "--topo-order", "--reverse", prev+".."+head)
+	if err != nil {
+		return nil, err
+	}
+	order := make(map[string]int, len(ordered))
+	for i, c := range ordered {
+		order[c.sha] = i
+	}
+	byKey := map[string][]deliveredCommit{}
+	for _, c := range commits {
+		if covered[c.sha] != "" {
+			continue
+		}
+		for _, key := range itemKeys(keyRe, conf, c) {
+			byKey[key] = append(byKey[key], c)
+		}
+	}
+	hinted := map[string]map[string]bool{}
+	for _, port := range prior {
+		portKeys := map[string]bool{}
+		for _, key := range keyRe.FindAllString(port.subject+"\n"+port.body, -1) {
+			portKeys[key] = true
+		}
+		if err := findContentOnlyHintsForPort(repo, prev, port, portKeys, byKey, groups[port.sha], order, targets, hints, hinted); err != nil {
+			return nil, err
+		}
+	}
+	for key := range hints {
+		slices.SortFunc(hints[key], func(a, b versionPortHint) int {
+			if n := strings.Compare(a.commit, b.commit); n != 0 {
+				return n
+			}
+			return strings.Compare(a.port, b.port)
+		})
+		hints[key] = slices.CompactFunc(hints[key], func(a, b versionPortHint) bool { return a == b })
+	}
+	return hints, nil
+}
+
+func findContentOnlyHintsForPort(repo *gitx.Repo, prev string, port deliveredCommit, portKeys map[string]bool, byKey map[string][]deliveredCommit, linked map[string]deliveredCommit, order map[string]int, targets map[string][]version.Target, hints map[string][]versionPortHint, hinted map[string]map[string]bool) error {
+	for key, candidates := range byKey {
+		if !portKeys[key] {
+			continue
+		}
+		present, err := versionPortStillPresent(repo, port.sha, prev, targets)
+		if err != nil {
+			return err
+		}
+		if !present {
+			continue
+		}
+		unlinked := make([]deliveredCommit, 0, len(candidates))
+		for _, c := range candidates {
+			if _, hasLink := linked[c.sha]; !hasLink && !hinted[key][c.sha] {
+				unlinked = append(unlinked, c)
+			}
+		}
+		if len(unlinked) == 0 {
+			continue
+		}
+		slices.SortFunc(unlinked, func(a, b deliveredCommit) int { return order[a.sha] - order[b.sha] })
+		unchanged, err := replayVersionPortGroup(repo, port.sha, unlinked, targets)
+		if err != nil {
+			return fmt.Errorf("checking possible unlinked content on %s: %w", gitx.Short(port.sha), err)
+		}
+		if !unchanged {
+			continue
+		}
+		if hinted[key] == nil {
+			hinted[key] = map[string]bool{}
+		}
+		for _, c := range unlinked {
+			hints[key] = append(hints[key], versionPortHint{commit: c.sha, port: port.sha})
+			hinted[key][c.sha] = true
+		}
+	}
+	return nil
+}
+
+func versionPortStillPresent(repo *gitx.Repo, port, prev string, targets map[string][]version.Target) (bool, error) {
+	base, err := versionBlobTree(repo, port+"^1")
+	if err != nil {
+		return false, err
+	}
+	current, err := versionBlobTree(repo, prev)
+	if err != nil {
+		return false, err
+	}
+	paths, err := repo.Git("diff-tree", "--no-commit-id", "--name-only", "-r", port+"^1", port)
+	if err != nil {
+		return false, err
+	}
+	changed := 0
+	for file := range strings.FieldsSeq(paths) {
+		if len(targets[file]) > 0 {
+			continue
+		}
+		changed++
+		if treeEntriesEqual(base[file], base[file] != (versionTreeEntry{}), current[file], current[file] != (versionTreeEntry{})) {
+			return false, nil
+		}
+	}
+	return changed > 0, nil
+}
+
+func addSourcesNamedByPorts(prior, commits []deliveredCommit, add func(string, deliveredCommit)) error {
+	for _, port := range prior {
+		message := port.subject + "\n" + port.body
+		for _, c := range commits {
+			if gitx.NamesCommit(message, c.sha) {
+				add(port.sha, c)
+			}
+		}
+	}
+	return nil
+}
+
+// addExplicitVersionPortLinks accepts a release-range note that names both
+// the source commit and its port, including an empty operator-authored link.
+func addExplicitVersionPortLinks(repo *gitx.Repo, prev string, commits []deliveredCommit, add func(string, deliveredCommit)) error {
+	sourcesByPrefix := versionPortSourcesByPrefix(commits)
+	for _, link := range commits {
+		message := link.subject + "\n" + link.body
+		var ports []string
+		var sources []deliveredCommit
+		for _, hash := range gitx.CommitHashes(message) {
+			sources = append(sources, sourcesByPrefix[hash]...)
+			ok, err := repo.RevExists(hash)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			resolved, err := repo.Git("rev-parse", "--verify", "--quiet", hash+"^{commit}")
+			if err != nil {
+				return fmt.Errorf("resolving explicit port link %s: %w", hash, err)
+			}
+			port := strings.TrimSpace(resolved)
+			ancestor, err := repo.IsAncestor(port, prev)
+			if err != nil {
+				return err
+			}
+			if ancestor {
+				ports = append(ports, port)
+			}
+		}
+		if len(ports) == 0 {
+			continue
+		}
+		for _, source := range uniqueCommits(sources) {
+			for _, port := range ports {
+				add(port, source)
+			}
+		}
+	}
+	return nil
+}
+
+func versionPortSourcesByPrefix(commits []deliveredCommit) map[string][]deliveredCommit {
+	byPrefix := map[string][]deliveredCommit{}
+	for _, c := range commits {
+		for n := 7; n <= len(c.sha); n++ {
+			prefix := c.sha[:n]
+			byPrefix[prefix] = append(byPrefix[prefix], c)
+		}
+	}
+	return byPrefix
+}
+
+func uniqueCommits(commits []deliveredCommit) []deliveredCommit {
+	seen := map[string]bool{}
+	unique := make([]deliveredCommit, 0, len(commits))
+	for _, c := range commits {
+		if !seen[c.sha] {
+			seen[c.sha] = true
+			unique = append(unique, c)
+		}
+	}
+	return unique
+}
+
+// portGroupChangesNothing cherry-picks a linked source group onto its port in
+// memory and compares the final tree outside version files. merge-tree writes
+// its temporary trees only to a private object directory under TMPDIR.
+func portGroupChangesNothing(repo *gitx.Repo, port string, group []deliveredCommit, prev, head string, targets map[string][]version.Target) (bool, error) {
+	if prev == "" {
+		return replayVersionPortGroup(repo, port, group, targets)
+	}
+	unchanged, err := replayVersionPortGroup(repo, port, group, targets)
+	if err != nil || !unchanged {
+		return unchanged, err
+	}
+	return versionPortGroupStillPresent(repo, group, prev, head, targets)
+}
+
+func replayVersionPortGroup(repo *gitx.Repo, port string, group []deliveredCommit, targets map[string][]version.Target) (bool, error) {
+	tmp, err := os.MkdirTemp("", "graft-version-port-")
+	if err != nil {
+		return false, fmt.Errorf("creating temporary git object directory: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+	objects := filepath.Join(tmp, "objects")
+	if err := os.Mkdir(objects, 0o700); err != nil {
+		return false, fmt.Errorf("creating temporary git objects path: %w", err)
+	}
+	baseObjects, err := repo.Git("rev-parse", "--path-format=absolute", "--git-path", "objects")
+	if err != nil {
+		return false, err
+	}
+	env := []string{"GIT_OBJECT_DIRECTORY=" + objects, "GIT_ALTERNATE_OBJECT_DIRECTORIES=" + strings.TrimSpace(baseObjects)}
+	tree, err := repo.Git("rev-parse", "--verify", port+"^{tree}")
+	if err != nil {
+		return false, err
+	}
+	tree = strings.TrimSpace(tree)
+	firstParent, err := repo.Git("rev-parse", "--verify", group[0].sha+"^1")
+	if err != nil {
+		return false, err
+	}
+	firstParent = strings.TrimSpace(firstParent)
+	commit := group[len(group)-1].sha
+	linear := true
+	for i := 1; i < len(group); i++ {
+		parent, err := repo.Git("rev-parse", "--verify", group[i].sha+"^1")
+		if err != nil {
+			return false, err
+		}
+		if strings.TrimSpace(parent) != group[i-1].sha {
+			linear = false
+			break
+		}
+	}
+	if !linear {
+		for _, c := range group {
+			nextTree, ok, err := mergePortCommit(repo, env, tree, c.sha, c.sha+"^1", targets)
+			if err != nil || !ok {
+				return false, err
+			}
+			tree = nextTree
+		}
+	} else {
+		nextTree, ok, err := mergePortCommit(repo, env, tree, commit, firstParent, targets)
+		if err != nil || !ok {
+			return false, err
+		}
+		tree = nextTree
+	}
+	portTree, err := versionBlobTree(repo, port)
+	if err != nil {
+		return false, err
+	}
+	mergedTree, err := versionBlobTreeWithEnv(repo, env, tree)
+	if err != nil {
+		return false, err
+	}
+	return treesEqualExceptVersionEnv(repo, portTree, mergedTree, targets, env)
+}
+
+func versionPortGroupStillPresent(repo *gitx.Repo, group []deliveredCommit, prev, head string, targets map[string][]version.Target) (bool, error) {
+	active, err := versionPortGroupHasActiveDelta(repo, group, prev, head, targets)
+	return !active, err
+}
+
+type versionPortLine struct {
+	number int
+	text   string
+}
+type versionPortHunk struct{ added, deleted []versionPortLine }
+
+var versionPortHunkHeader = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
+var versionPortBlameHeader = regexp.MustCompile(`^(?:\^)?([0-9a-f]{40}|[0-9a-f]{64}) \d+ (\d+)(?: \d+)?$`)
+
+func versionPortGroupHasActiveDelta(repo *gitx.Repo, group []deliveredCommit, prev, head string, targets map[string][]version.Target) (bool, error) {
+	groupFiles, removed, err := versionPortSourceDiff(repo, group, targets)
+	if err != nil {
+		return false, err
+	}
+	linked, mergeRange, revertRange, err := versionPortRangeLinks(repo, group, prev, head)
+	if err != nil {
+		return false, err
+	}
+	for file := range groupFiles {
+		active, err := versionPortFileHasTextDelta(repo, file, prev, head, removed[file], linked, mergeRange, revertRange, targets)
+		if err != nil {
+			return false, err
+		}
+		if active {
+			return true, nil
+		}
+	}
+	return versionPortHasBinaryDelta(repo, groupFiles, prev, head)
+}
+
+func versionPortRangeLinks(repo *gitx.Repo, group []deliveredCommit, prev, head string) (map[string]bool, map[string]bool, map[string]bool, error) {
+	linked := map[string]bool{}
+	for _, c := range group {
+		linked[c.sha] = true
+	}
+	rangeCommits, err := logCommits(repo, prev+".."+head)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	mergeRange := map[string]bool{}
+	revertRange := map[string]bool{}
+	for _, c := range rangeCommits {
+		if c.merge {
+			mergeRange[c.sha] = true
+		}
+		reverted, err := isWorkRemovingRevert(repo, c, rangeCommits, unknownRevertTargetUsesSubject)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("checking revert %s in release range: %w", gitx.Short(c.sha), err)
+		}
+		if reverted {
+			revertRange[c.sha] = true
+		}
+	}
+	return linked, mergeRange, revertRange, nil
+}
+
+func versionPortFileHasTextDelta(repo *gitx.Repo, file, prev, head string, removed, linked, mergeRange, revertRange map[string]bool, targets map[string][]version.Target) (bool, error) {
+	hunks, err := versionPortDiff(repo, prev, head, file)
+	if err != nil {
+		return false, err
+	}
+	before, err := normalizedVersionLines(repo, prev, file, targets[file])
+	if err != nil {
+		return false, err
+	}
+	after, err := normalizedVersionLines(repo, head, file, targets[file])
+	if err != nil {
+		return false, err
+	}
+	var blame map[int]string
+	for _, h := range hunks {
+		for _, added := range h.added {
+			if versionPortLineOnlyBump(added, h.deleted, before, after, targets[file]) {
+				continue
+			}
+			if blame == nil {
+				blame, err = versionPortFileBlame(repo, file, prev, head)
+				if err != nil {
+					return false, err
+				}
+			}
+			// A line blame did not name stays active: an unread line must not
+			// hide the group's work from the version checks.
+			commit, named := blame[added.number]
+			if !named || linked[commit] || mergeRange[commit] || revertRange[commit] {
+				return true, nil
+			}
+		}
+		for _, deleted := range h.deleted {
+			if versionPortLineOnlyBump(deleted, h.added, after, before, targets[file]) {
+				continue
+			}
+			if removed[deleted.text] {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func versionPortFileBlame(repo *gitx.Repo, file, prev, head string) (map[int]string, error) {
+	output, err := repo.Git("blame", "--line-porcelain", "--no-follow", prev+".."+head, "--", file)
+	if err != nil {
+		return nil, fmt.Errorf("blaming %s in release range: %w", file, err)
+	}
+	lines := map[int]string{}
+	for line := range strings.SplitSeq(output, "\n") {
+		match := versionPortBlameHeader.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		lineNumber, err := strconv.Atoi(match[2])
+		if err != nil {
+			return nil, fmt.Errorf("parsing blamed line number %q in %s: %w", match[2], file, err)
+		}
+		lines[lineNumber] = match[1]
+	}
+	return lines, nil
+}
+
+func versionPortHasBinaryDelta(repo *gitx.Repo, groupFiles map[string]bool, prev, head string) (bool, error) {
+	prevTree, err := versionBlobTree(repo, prev)
+	if err != nil {
+		return false, err
+	}
+	headTree, err := versionBlobTree(repo, head)
+	if err != nil {
+		return false, err
+	}
+	for file := range groupFiles {
+		before, beforeOK := prevTree[file]
+		after, afterOK := headTree[file]
+		if beforeOK != afterOK {
+			return true, nil
+		}
+		if !beforeOK {
+			continue
+		}
+		if before.mode != after.mode {
+			return true, nil
+		}
+		if before.oid == after.oid {
+			continue
+		}
+		for _, entry := range []versionTreeEntry{before, after} {
+			if entry.kind != "blob" || entry.oid == "" {
+				continue
+			}
+			blob, err := repo.Git("cat-file", "blob", entry.oid)
+			if err != nil {
+				return false, err
+			}
+			if bytes.IndexByte([]byte(blob), 0) >= 0 {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func versionPortSourceDiff(repo *gitx.Repo, group []deliveredCommit, targets map[string][]version.Target) (map[string]bool, map[string]map[string]bool, error) {
+	files, removed := map[string]bool{}, map[string]map[string]bool{}
+	for _, c := range group {
+		parent, err := repo.Git("rev-parse", "--verify", c.sha+"^1")
+		if err != nil {
+			return nil, nil, err
+		}
+		parent = strings.TrimSpace(parent)
+		out, err := repo.Git("diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--no-renames", parent, c.sha)
+		if err != nil {
+			return nil, nil, err
+		}
+		for file := range strings.SplitSeq(out, "\x00") {
+			if file != "" {
+				files[file] = true
+			}
+		}
+		for file := range strings.SplitSeq(out, "\x00") {
+			if file == "" {
+				continue
+			}
+			if err := versionPortRecordRemoved(repo, file, parent, c.sha, targets[file], removed); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+	return files, removed, nil
+}
+
+func versionPortRecordRemoved(repo *gitx.Repo, file, parent, commit string, targets []version.Target, removed map[string]map[string]bool) error {
+	hunks, err := versionPortDiff(repo, parent, commit, file)
+	if err != nil {
+		return err
+	}
+	before, err := normalizedVersionLines(repo, parent, file, targets)
+	if err != nil {
+		return err
+	}
+	after, err := normalizedVersionLines(repo, commit, file, targets)
+	if err != nil {
+		return err
+	}
+	for _, h := range hunks {
+		for _, line := range h.deleted {
+			if versionPortLineOnlyBump(line, h.added, after, before, targets) {
+				continue
+			}
+			if removed[file] == nil {
+				removed[file] = map[string]bool{}
+			}
+			removed[file][line.text] = true
+		}
+	}
+	return nil
+}
+
+func versionPortDiff(repo *gitx.Repo, from, to, file string) ([]versionPortHunk, error) {
+	args := versionPortDiffArgs(from, to, file)
+	out, err := repo.Git(args...)
+	if err != nil {
+		return nil, err
+	}
+	var hunks []versionPortHunk
+	var h *versionPortHunk
+	oldLine, newLine := 0, 0
+	for line := range strings.SplitSeq(out, "\n") {
+		if m := versionPortHunkHeader.FindStringSubmatch(line); m != nil {
+			var err error
+			oldLine, err = strconv.Atoi(m[1])
+			if err != nil {
+				return nil, fmt.Errorf("parsing old line number in diff hunk %q: %w", line, err)
+			}
+			newLine, err = strconv.Atoi(m[3])
+			if err != nil {
+				return nil, fmt.Errorf("parsing new line number in diff hunk %q: %w", line, err)
+			}
+			hunks = append(hunks, versionPortHunk{})
+			h = &hunks[len(hunks)-1]
+			continue
+		}
+		if h == nil || line == "" || strings.HasPrefix(line, "\\") {
+			continue
+		}
+		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
+			continue
+		}
+		switch line[0] {
+		case '+':
+			h.added = append(h.added, versionPortLine{newLine, line[1:]})
+			newLine++
+		case '-':
+			h.deleted = append(h.deleted, versionPortLine{oldLine, line[1:]})
+			oldLine++
+		case ' ':
+			oldLine++
+			newLine++
+		}
+	}
+	return hunks, nil
+}
+
+func versionPortDiffArgs(from, to, file string) []string {
+	return []string{"diff", "--no-renames", "--no-ext-diff", "--no-color", "--unified=0", from, to, "--", file}
+}
+
+func normalizedVersionLines(repo *gitx.Repo, rev, file string, targets []version.Target) ([]string, error) {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	tree, err := versionBlobTree(repo, rev)
+	if err != nil {
+		return nil, err
+	}
+	entry, ok := tree[file]
+	if !ok || entry.kind != "blob" {
+		return nil, nil
+	}
+	content, err := repo.Git("cat-file", "blob", entry.oid)
+	if err != nil {
+		return nil, err
+	}
+	normalized := []byte(content)
+	for _, target := range targets {
+		normalized, err = target.Replace(normalized, "__GRAFT_VERSION_VALUE__")
+		if err != nil {
+			return nil, err
+		}
+	}
+	return strings.Split(string(normalized), "\n"), nil
+}
+
+func versionPortLineOnlyBump(line versionPortLine, opposite []versionPortLine, before, after []string, targets []version.Target) bool {
+	if len(targets) == 0 {
+		return false
+	}
+	if line.number < 1 || line.number > len(after) {
+		return false
+	}
+	normalized := after[line.number-1]
+	for _, other := range opposite {
+		if other.number >= 1 && other.number <= len(before) && before[other.number-1] == normalized {
+			return true
+		}
+	}
+	return false
+}
+
+func mergePortCommit(repo *gitx.Repo, env []string, ontoTree, commit, mergeBase string, targets map[string][]version.Target) (string, bool, error) {
+	out, err := repo.GitEnv(env, "merge-tree", "--write-tree", "--name-only", "--no-messages", "--merge-base="+mergeBase, ontoTree, commit)
+	conflict := err != nil && gitx.ExitCode(err) == 1
+	if err != nil && !conflict {
+		return "", false, err
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) == 0 || lines[0] == "" {
+		return "", false, fmt.Errorf("git merge-tree returned no tree for %s", gitx.Short(commit))
+	}
+	if conflict {
+		return mergeVersionPortConflict(repo, env, ontoTree, commit, mergeBase, lines, targets)
+	}
+	merged, err := versionBlobTreeWithEnv(repo, env, lines[0])
+	if err != nil {
+		return "", false, err
+	}
+	onto, err := versionBlobTree(repo, ontoTree)
+	if err != nil {
+		return "", false, err
+	}
+	return mergeVersionPortClean(repo, env, commit, mergeBase, lines[0], merged, onto, targets)
+}
+
+func mergeVersionPortConflict(repo *gitx.Repo, env []string, ontoTree, commit, mergeBase string, lines []string, targets map[string][]version.Target) (string, bool, error) {
+	for _, file := range lines[1:] {
+		if file != "" && len(targets[file]) == 0 {
+			return lines[0], false, nil
+		}
+	}
+	merged, err := versionBlobTreeWithEnv(repo, env, lines[0])
+	if err != nil {
+		return "", false, err
+	}
+	onto, err := versionBlobTree(repo, ontoTree)
+	if err != nil {
+		return "", false, err
+	}
+	base, err := versionBlobTree(repo, mergeBase)
+	if err != nil {
+		return "", false, err
+	}
+	source, err := versionBlobTree(repo, commit)
+	if err != nil {
+		return "", false, err
+	}
+	onBase, err := versionTargetsEqual(repo, base, onto, targets)
+	if err != nil {
+		return "", false, err
+	}
+	sourceOnBase, err := versionTargetsEqual(repo, base, source, targets)
+	if err != nil {
+		return "", false, err
+	}
+	if !allVersionTargetsExist(onto, targets) || !allVersionTargetsExist(source, targets) || !onBase || !sourceOnBase || !treesEqualOutsideVersionFiles(onto, merged, targets) {
+		return lines[0], false, nil
+	}
+	return ontoTree, true, nil
+}
+
+func mergeVersionPortClean(repo *gitx.Repo, env []string, commit, mergeBase, mergedID string, merged, onto map[string]versionTreeEntry, targets map[string][]version.Target) (string, bool, error) {
+	equal, err := treesEqualExceptVersionEnv(repo, onto, merged, targets, env)
+	if err != nil {
+		return "", false, err
+	}
+	if equal {
+		if !allVersionTargetsExist(merged, targets) {
+			return mergedID, false, nil
+		}
+		return mergedID, true, nil
+	}
+	base, err := versionBlobTree(repo, mergeBase)
+	if err != nil {
+		return "", false, err
+	}
+	source, err := versionBlobTree(repo, commit)
+	if err != nil {
+		return "", false, err
+	}
+	ontoOnBase, err := treesEqualExceptVersion(repo, base, onto, targets)
+	if err != nil {
+		return "", false, err
+	}
+	sourceOnBase, err := treesEqualExceptVersion(repo, base, source, targets)
+	if err != nil {
+		return "", false, err
+	}
+	if ontoOnBase && sourceOnBase && allVersionTargetsExist(onto, targets) && allVersionTargetsExist(source, targets) {
+		return mergedID, true, nil
+	}
+	return mergedID, false, nil
+}
+
+func treesEqualOutsideVersionFiles(a, b map[string]versionTreeEntry, targets map[string][]version.Target) bool {
+	for file := range unionTreePaths(a, b) {
+		if len(targets[file]) > 0 {
+			continue
+		}
+		if !treeEntriesEqual(a[file], a[file] != (versionTreeEntry{}), b[file], b[file] != (versionTreeEntry{})) {
+			return false
+		}
+	}
+	return true
+}
+
+func allVersionTargetsExist(tree map[string]versionTreeEntry, targets map[string][]version.Target) bool {
+	for file := range targets {
+		entry, ok := tree[file]
+		if !ok || entry.kind != "blob" {
+			return false
+		}
+	}
+	return true
+}
+
+func versionTargetsEqual(repo *gitx.Repo, a, b map[string]versionTreeEntry, targets map[string][]version.Target) (bool, error) {
+	for file, ts := range targets {
+		aa, aok := a[file]
+		bb, bok := b[file]
+		if !aok || !bok || aa.kind != "blob" || bb.kind != "blob" || aa.mode != bb.mode {
+			return false, nil
+		}
+		ac, err := repo.Git("cat-file", "blob", aa.oid)
+		if err != nil {
+			return false, fmt.Errorf("reading version target %q: %w", file, err)
+		}
+		bc, err := repo.Git("cat-file", "blob", bb.oid)
+		if err != nil {
+			return false, fmt.Errorf("reading version target %q: %w", file, err)
+		}
+		for _, target := range ts {
+			x, e := target.Replace([]byte(ac), "__GRAFT_VERSION_VALUE__")
+			if e != nil {
+				return false, e
+			}
+			y, e := target.Replace([]byte(bc), "__GRAFT_VERSION_VALUE__")
+			if e != nil {
+				return false, e
+			}
+			ac, bc = string(x), string(y)
+		}
+		if ac != bc {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func unionTreePaths(a, b map[string]versionTreeEntry) map[string]bool {
+	out := map[string]bool{}
+	for p := range a {
+		out[p] = true
+	}
+	for p := range b {
+		out[p] = true
+	}
+	return out
+}
+
+func treeEntriesEqual(a versionTreeEntry, aok bool, b versionTreeEntry, bok bool) bool {
+	return aok == bok && (!aok || a == b)
+}
+
+func treesEqualExceptVersion(repo *gitx.Repo, a, b map[string]versionTreeEntry, targets map[string][]version.Target) (bool, error) {
+	return treesEqualExceptVersionEnv(repo, a, b, targets, nil)
+}
+
+func treesEqualExceptVersionEnv(repo *gitx.Repo, a, b map[string]versionTreeEntry, targets map[string][]version.Target, env []string) (bool, error) {
+	git := repo.Git
+	if len(env) > 0 {
+		git = func(args ...string) (string, error) { return repo.GitEnv(env, args...) }
+	}
+	for file := range unionTreePaths(a, b) {
+		aa, aok := a[file]
+		bb, bok := b[file]
+		if treeEntriesEqual(aa, aok, bb, bok) {
+			continue
+		}
+		if !aok || !bok || aa.kind != "blob" || bb.kind != "blob" || aa.mode != bb.mode || len(targets[file]) == 0 {
+			return false, nil
+		}
+		ac, e := git("cat-file", "blob", aa.oid)
+		if e != nil {
+			return false, fmt.Errorf("reading version-target blob %q: %w", file, e)
+		}
+		bc, e := git("cat-file", "blob", bb.oid)
+		if e != nil {
+			return false, fmt.Errorf("reading version-target blob %q: %w", file, e)
+		}
+		for _, target := range targets[file] {
+			acb, e := target.Replace([]byte(ac), "__GRAFT_VERSION_VALUE__")
+			if e != nil {
+				return false, e
+			}
+			bcb, e := target.Replace([]byte(bc), "__GRAFT_VERSION_VALUE__")
+			if e != nil {
+				return false, e
+			}
+			ac = string(acb)
+			bc = string(bcb)
+		}
+		if ac != bc {
+			return false, nil
+		}
+	}
+	return true, nil
+}

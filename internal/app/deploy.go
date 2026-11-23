@@ -2224,6 +2224,7 @@ type gateRun struct {
 	keyRe               *regexp.Regexp
 	activeKeys          map[string]bool
 	activeCommits       int
+	contentOnlyPorts    map[string][]versionPortHint
 	dormant             []config.DormantReleaseItem
 	collectionErr       error
 	versionItemFailures map[string][]string
@@ -2365,6 +2366,28 @@ func (g *gateRun) run(ctx context.Context, prev, head string, withheld []string,
 	if err != nil {
 		return out, err
 	}
+	covered := map[string]string{}
+	if g.conf.Version != nil {
+		prior, err := logCommits(g.repo, prev)
+		if err != nil {
+			return out, err
+		}
+		portCommits := make([]deliveredCommit, 0, len(commits))
+		for _, c := range commits {
+			if reverted[c.sha] == "" {
+				portCommits = append(portCommits, c)
+			}
+		}
+		targets := versionTargetsByPath(g.cfg.Version)
+		covered, err = coveredVersionPortsWithPrior(g.repo, prev, head, prior, portCommits, targets)
+		if err != nil {
+			return out, err
+		}
+		g.contentOnlyPorts, err = unlinkedContentVersionPortsWithPrior(g.repo, prev, head, prior, portCommits, targets, g.keyRe, g.conf, covered)
+		if err != nil {
+			return out, err
+		}
+	}
 	for _, c := range all {
 		line := gitx.Short(c.sha) + " " + c.subject
 		takesWork, err := isWorkRemovingRevert(g.repo, c, all, unknownRevertTargetIsError)
@@ -2384,7 +2407,7 @@ func (g *gateRun) run(ctx context.Context, prev, head string, withheld []string,
 			}
 			continue
 		}
-		fail, err := g.check(ctx, c, line, &out)
+		fail, err := g.check(ctx, c, line, &out, covered[c.sha])
 		if err != nil {
 			return out, err
 		}
@@ -2493,7 +2516,7 @@ func (g *gateRun) withEarlier(commits []deliveredCommit, withheld []string) ([]d
 // check lets a commit out by the items it names or is attributed to, or by
 // ignore_paths, recording the items in out; a commit kept outside comes back
 // as the failure.
-func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out *gateOutcome) (*gateFailure, error) {
+func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out *gateOutcome, coveredBy string) (*gateFailure, error) {
 	fail := gateFailure{commit: c, why: "names no item"}
 	if g.conf.Version != nil {
 		ignored, why, err := shipsNothing(g.repo, g.cfg, g.conf, c.sha)
@@ -2510,11 +2533,7 @@ func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out
 			g.app.printf("approved release: %s: %s", line, why)
 			return nil, nil
 		}
-		g.activeCommits++
-		for _, key := range itemKeys(g.keyRe, g.conf, c) {
-			g.activeKeys[key] = true
-		}
-		if err := g.noteLiveKeys(c); err != nil {
+		if err := g.recordVersionActivity(c, line, coveredBy); err != nil {
 			return nil, err
 		}
 	}
@@ -2559,6 +2578,18 @@ func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out
 		return nil, nil
 	}
 	return &fail, nil
+}
+
+func (g *gateRun) recordVersionActivity(c deliveredCommit, line, coveredBy string) error {
+	if coveredBy != "" {
+		g.app.printf("approved release: %s: already on the approved target via linked port %s; excluded from version checks", line, gitx.Short(coveredBy))
+		return nil
+	}
+	g.activeCommits++
+	for _, key := range itemKeys(g.keyRe, g.conf, c) {
+		g.activeKeys[key] = true
+	}
+	return g.noteLiveKeys(c)
 }
 
 // noteLiveKeys keeps, with version and outside_version entries, the keys of a
@@ -2891,7 +2922,17 @@ type versionTreeEntry struct {
 
 // versionBlobTree lists tree entries by their exact repository path.
 func versionBlobTree(repo *gitx.Repo, rev string) (map[string]versionTreeEntry, error) {
-	out, err := repo.Git("ls-tree", "-rz", "--full-tree", rev)
+	return versionBlobTreeWithEnv(repo, nil, rev)
+}
+
+func versionBlobTreeWithEnv(repo *gitx.Repo, env []string, rev string) (map[string]versionTreeEntry, error) {
+	var out string
+	var err error
+	if len(env) == 0 {
+		out, err = repo.Git("ls-tree", "-rz", "--full-tree", rev)
+	} else {
+		out, err = repo.GitEnv(env, "ls-tree", "-rz", "--full-tree", rev)
+	}
 	if err != nil {
 		return nil, err
 	}

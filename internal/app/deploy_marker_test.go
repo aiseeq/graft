@@ -239,7 +239,7 @@ func TestShipsNothingVersionFilesOnly(t *testing.T) {
 		t.Errorf("mixed version and code shipsNothing = (%t, %v), want false", ignored, err)
 	}
 	run := &gateRun{repo: repo, cfg: cfg, conf: conf, keyRe: regexp.MustCompile(`PROJ-[0-9]+`)}
-	failure, err := run.check(t.Context(), deliveredCommit{sha: mixedCommit, subject: "chore: bump version and change code"}, "mixed version commit", &gateOutcome{})
+	failure, err := run.check(t.Context(), deliveredCommit{sha: mixedCommit, subject: "chore: bump version and change code"}, "mixed version commit", &gateOutcome{}, "")
 	if err != nil || failure == nil || failure.why != "names no item" {
 		t.Errorf("mixed version commit gate = (%+v, %v), want names no item", failure, err)
 	}

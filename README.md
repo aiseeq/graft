@@ -2600,6 +2600,17 @@ are, whatever shape the release needed; without the line a pick of a
 change the trunk has changed further since is not recognised and stays
 listed. A commit the target runs is in the trunk by content the same way.
 
+The version checks (the item in the current version, `version-top`) leave
+out a trunk commit whose work a hotfix already took to the target: a
+commit P the target runs is linked to it by hash (P names it, it carries
+`(cherry picked from commit P)`, or a commit of the deploy names both), its
+linked commits put onto P change nothing outside the version line, and no
+line of what the deploy changes on the target comes from them, from a
+merge or from a revert of the deploy (`git blame`), nor do they remove a
+line the target has, change a binary file or a mode. A pick with no hash
+link is named in the refusal with the way to link it: an empty trunk
+commit naming both hashes.
+
 Of the token owner's items (assigned
 to them now or once), not in `skip_keys` (a subtask of an item there is
 judged by its own key):

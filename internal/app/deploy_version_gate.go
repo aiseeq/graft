@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/jira"
 )
 
@@ -387,7 +388,35 @@ func (v *releaseVersionCheck) notInVersion(ctx context.Context, issue jira.Issue
 	if len(stale) > 0 {
 		msg.WriteString(" (" + strings.Join(stale, "; ") + ")")
 	}
-	msg.WriteString("; " + declareHint(v.gate.gate.declareKeys(issue, v.sources[issue.Key], v.selected.Name)))
+	var contentOnly []versionPortHint
+	contentOnly = append(contentOnly, v.gate.contentOnlyPorts[issue.Key]...)
+	if len(contentOnly) == 0 {
+		msg.WriteString("; " + declareHint(v.gate.gate.declareKeys(issue, v.sources[issue.Key], v.selected.Name)))
+	} else {
+		slices.SortFunc(contentOnly, func(a, b versionPortHint) int {
+			if n := strings.Compare(a.commit, b.commit); n != 0 {
+				return n
+			}
+			return strings.Compare(a.port, b.port)
+		})
+		contentOnly = slices.CompactFunc(contentOnly, func(a, b versionPortHint) bool { return a == b })
+		contentOnlyCommits := map[string]bool{}
+		for _, hint := range contentOnly {
+			contentOnlyCommits[hint.commit] = true
+		}
+		var remaining []string
+		for _, source := range v.sources[issue.Key] {
+			if source != issue.Key && !contentOnlyCommits[source] {
+				remaining = append(remaining, source)
+			}
+		}
+		if len(remaining) > 0 {
+			msg.WriteString("; " + declareHint(v.gate.gate.declareKeys(issue, remaining, v.selected.Name)))
+		}
+		for _, hint := range contentOnly {
+			fmt.Fprintf(&msg, "; %s has matching content on %s but no hash link; add an empty commit in this range whose message names both hashes (%s and %s)", gitx.Short(hint.commit), gitx.Short(hint.port), gitx.Short(hint.commit), gitx.Short(hint.port))
+		}
+	}
 	return msg.String()
 }
 
