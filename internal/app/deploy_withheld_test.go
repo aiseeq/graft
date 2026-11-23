@@ -306,6 +306,168 @@ func TestReview3AncestorWithVersionBumpOnlyStaysHeld(t *testing.T) {
 	}
 }
 
+func TestPartitionWithheldModuleFileOverlap(t *testing.T) {
+	tests := []struct {
+		name         string
+		withheld     string
+		deployed     string
+		withheldCode bool
+		deployedCode bool
+		wantActive   bool
+	}{
+		{
+			name:     "different modules in go.mod and go.sum",
+			withheld: "require example.com/liba v1.1.0",
+			deployed: "require example.com/libb v1.1.0",
+		},
+		{
+			name:       "same module overlaps",
+			withheld:   "require example.com/liba v1.1.0",
+			deployed:   "require example.com/liba v1.2.0",
+			wantActive: true,
+		},
+		{
+			name:     "different directive kinds do not overlap",
+			withheld: "require example.com/libb v1.1.0",
+			deployed: "go 1.23",
+		},
+		{
+			name:       "same go directive overlaps",
+			withheld:   "go 1.23",
+			deployed:   "go 1.24",
+			wantActive: true,
+		},
+		{
+			name:         "code path still overlaps",
+			withheld:     "require example.com/liba v1.1.0",
+			deployed:     "require example.com/libb v1.1.0",
+			withheldCode: true,
+			deployedCode: true,
+			wantActive:   true,
+		},
+		{
+			name:       "malformed deployed go.mod keeps path overlap",
+			withheld:   "require example.com/liba v1.1.0",
+			deployed:   "require (\n",
+			wantActive: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newEmptyWithheldRepo(t)
+			baseMod := "module example.com/app\ngo 1.22\nrequire (\n\texample.com/liba v1.0.0\n\texample.com/libb v1.0.0\n)\n"
+			baseSum := "example.com/liba v1.0.0 h1:aaaa\nexample.com/libb v1.0.0 h1:bbbb\n"
+			r.writePath("go.mod", &baseMod)
+			r.writePath("go.sum", &baseSum)
+			r.commitAll("base modules")
+
+			wMod := replaceModuleLine(baseMod, tc.withheld)
+			r.writePath("go.mod", &wMod)
+			wSum := baseSum
+			if strings.HasPrefix(tc.withheld, "require example.com/liba") {
+				wSum = "example.com/liba v1.1.0 h1:cccc\nexample.com/libb v1.0.0 h1:bbbb\n"
+			}
+			r.writePath("go.sum", &wSum)
+			if tc.withheldCode {
+				code := "withheld code\n"
+				r.writePath("a.go", &code)
+			}
+			w := r.commitAll("feat: PROJ-123 withheld module change")
+			r.revert(w)
+			prev := r.head()
+
+			deliveredMod := replaceModuleLine(baseMod, tc.deployed)
+			if tc.name == "malformed deployed go.mod keeps path overlap" {
+				deliveredMod = tc.deployed
+			}
+			r.writePath("go.mod", &deliveredMod)
+			if strings.HasPrefix(tc.deployed, "require example.com/liba") {
+				deliveredSum := "example.com/liba v1.2.0 h1:dddd\nexample.com/libb v1.0.0 h1:bbbb\n"
+				r.writePath("go.sum", &deliveredSum)
+			} else if strings.HasPrefix(tc.deployed, "require example.com/libb") {
+				deliveredSum := "example.com/liba v1.0.0 h1:aaaa\nexample.com/libb v1.1.0 h1:eeee\n"
+				r.writePath("go.sum", &deliveredSum)
+			}
+			if tc.deployedCode {
+				code := "deployed code\n"
+				r.writePath("a.go", &code)
+			}
+			head := r.commitAll("fix: PROJ-456 deployed module change")
+			active, reverted := partitionForTest(t, r, prev, head, w)
+			if tc.wantActive {
+				if len(active) != 1 || active[0] != w || len(reverted) != 0 {
+					t.Fatalf("active %v, reverted %v; want W active", active, reverted)
+				}
+			} else if len(active) != 0 || len(reverted) != 1 || reverted[0] != w {
+				t.Fatalf("active %v, reverted %v; want W reverted with its marker retained", active, reverted)
+			}
+		})
+	}
+}
+
+func TestGoModChangedKeysCollectModuleLinesAndComments(t *testing.T) {
+	const header = "module example.com/app\ngo 1.22\n"
+	tests := []struct {
+		name     string
+		before   string
+		withheld string
+		deployed string
+	}{
+		{
+			name:     "require and replace of the same module overlap",
+			before:   header + "require example.com/liba v1.0.0\n",
+			withheld: header + "require example.com/liba v1.1.0\n",
+			deployed: header + "require example.com/liba v1.0.0\nreplace example.com/liba => ../liba\n",
+		},
+		{
+			name:     "two exclude lines retain the changed row",
+			before:   header + "exclude (\n\texample.com/liba v1.0.0\n\texample.com/liba v1.1.0\n)\n",
+			withheld: header + "exclude example.com/liba v1.1.0\n",
+			deployed: header + "exclude (\n\texample.com/liba v1.0.0\n\texample.com/liba v1.1.1\n)\n",
+		},
+		{
+			name:     "two replace lines retain the changed row",
+			before:   header + "replace (\n\texample.com/liba v1.0.0 => ../old\n\texample.com/liba => ../current\n)\n",
+			withheld: header + "replace (\n\texample.com/liba v1.0.0 => ../withheld\n\texample.com/liba => ../current\n)\n",
+			deployed: header + "replace (\n\texample.com/liba v1.0.0 => ../old\n\texample.com/liba => ../deployed\n)\n",
+		},
+		{
+			name:     "indirect comment change overlaps version bump",
+			before:   header + "require example.com/liba v1.0.0\n",
+			withheld: header + "require example.com/liba v1.0.0 // indirect\n",
+			deployed: header + "require example.com/liba v1.1.0\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			wKeys, err := goModChangedKeys([]byte(tc.before), []byte(tc.withheld))
+			if err != nil {
+				t.Fatal(err)
+			}
+			deployedKeys, err := goModChangedKeys([]byte(tc.before), []byte(tc.deployed))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !stringMapKeysIntersect(wKeys, deployedKeys) {
+				t.Fatalf("withheld keys %v do not intersect deployed keys %v", wKeys, deployedKeys)
+			}
+		})
+	}
+}
+
+func replaceModuleLine(goMod, line string) string {
+	if strings.HasPrefix(line, "go ") {
+		return regexp.MustCompile(`(?m)^go .*?$`).ReplaceAllString(goMod, line)
+	}
+	for _, existing := range []string{"\texample.com/liba v1.0.0", "\texample.com/libb v1.0.0"} {
+		fields := strings.Fields(existing)
+		if strings.HasPrefix(line, "require "+fields[0]) {
+			return strings.Replace(goMod, existing, "\t"+strings.TrimPrefix(line, "require "), 1)
+		}
+	}
+	return goMod
+}
+
 func pathsForVersionDeploy(t *testing.T, r *withheldRepo, prev, head string, v config.Version) map[string]bool {
 	t.Helper()
 	paths, err := repoPaths(r.repo, prev, head)

@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1856,7 +1857,12 @@ func partitionWithheld(repo *gitx.Repo, prev, head string, withheld, versionFile
 			active = append(active, sha)
 			continue
 		}
-		if len(paths) == 0 || !intersectsPaths(paths, deployedPaths) {
+		intersects := intersectsPaths(paths, deployedPaths)
+		if intersects {
+			filteredPaths := maps.Clone(deployedPaths)
+			intersects = withheldModulePathsIntersect(repo, prev, head, sha, paths, filteredPaths)
+		}
+		if len(paths) == 0 || !intersects {
 			// No path this deploy can ship was touched; keep the marker intact.
 			reverted = append(reverted, sha)
 		} else {
@@ -1866,6 +1872,200 @@ func partitionWithheld(repo *gitx.Repo, prev, head string, withheld, versionFile
 		}
 	}
 	return active, reverted, nil
+}
+
+// withheldModulePathsIntersect removes go.mod and go.sum path overlaps when
+// the two commits changed disjoint modules in those files. Any read or parse
+// failure keeps the path overlap, preserving the conservative behavior.
+func withheldModulePathsIntersect(repo *gitx.Repo, prev, head, withheld string, withheldPaths []string, deployedPaths map[string]bool) bool {
+	for _, file := range withheldPaths {
+		base := path.Base(file)
+		if (base != "go.mod" && base != "go.sum") || !deployedPaths[file] {
+			continue
+		}
+		beforeW, err := repo.ShowFile(withheld+"^", file)
+		if err != nil { //nolint:error-masking // An unreadable blob must retain the conservative path overlap.
+			return true //nolint:fallback-return // An unreadable blob must retain the conservative path overlap.
+		}
+		afterW, err := repo.ShowFile(withheld, file)
+		if err != nil { //nolint:error-masking // An unreadable blob must retain the conservative path overlap.
+			return true //nolint:fallback-return // An unreadable blob must retain the conservative path overlap.
+		}
+		beforeDeploy, err := repo.ShowFile(prev, file)
+		if err != nil { //nolint:error-masking // An unreadable blob must retain the conservative path overlap.
+			return true //nolint:fallback-return // An unreadable blob must retain the conservative path overlap.
+		}
+		afterDeploy, err := repo.ShowFile(head, file)
+		if err != nil { //nolint:error-masking // An unreadable blob must retain the conservative path overlap.
+			return true //nolint:fallback-return // An unreadable blob must retain the conservative path overlap.
+		}
+		var wKeys, deployKeys map[string]string
+		if base == "go.mod" {
+			wKeys, err = goModChangedKeys(beforeW, afterW)
+			if err == nil {
+				deployKeys, err = goModChangedKeys(beforeDeploy, afterDeploy)
+			}
+		} else {
+			wKeys = goSumChangedKeys(beforeW, afterW)
+			deployKeys = goSumChangedKeys(beforeDeploy, afterDeploy)
+		}
+		if err != nil { //nolint:error-masking // An unparseable module file must retain the conservative path overlap.
+			return true
+		}
+		if !stringMapKeysIntersect(wKeys, deployKeys) {
+			delete(deployedPaths, file)
+		}
+	}
+	return intersectsPaths(withheldPaths, deployedPaths)
+}
+
+func goModChangedKeys(before, after []byte) (map[string]string, error) {
+	old, err := goModKeys(before)
+	if err != nil {
+		return nil, err
+	}
+	newKeys, err := goModKeys(after)
+	if err != nil {
+		return nil, err
+	}
+	return changedStringMapKeys(old, newKeys), nil
+}
+
+// goModKeys keys the lines of a go.mod for the withheld overlap check: a
+// require, replace (its old path) or exclude line by its module path, every
+// retract line together under the module's own path, so that any two retract
+// edits overlap, and any other directive by its name. A key's value is all its
+// lines in file order, comments included, so that // indirect counts.
+func goModKeys(data []byte) (map[string]string, error) {
+	f, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return nil, fmt.Errorf("parsing go.mod: %w", err)
+	}
+	type entry struct {
+		key, directive string
+		line           *modfile.Line
+	}
+	var entries []entry
+	addModule := func(module, directive string, line *modfile.Line) {
+		if module != "" && line != nil {
+			entries = append(entries, entry{key: module, directive: directive, line: line})
+		}
+	}
+	addOther := func(directive string, line *modfile.Line) {
+		if line != nil {
+			entries = append(entries, entry{key: directive, directive: directive, line: line})
+		}
+	}
+	for _, r := range f.Require {
+		addModule(r.Mod.Path, "require", r.Syntax)
+	}
+	for _, r := range f.Replace {
+		addModule(r.Old.Path, "replace", r.Syntax)
+	}
+	for _, x := range f.Exclude {
+		addModule(x.Mod.Path, "exclude", x.Syntax)
+	}
+	if len(f.Retract) > 0 {
+		if f.Module == nil || f.Module.Mod.Path == "" {
+			return nil, fmt.Errorf("parsing go.mod: retract has no module path")
+		}
+		for _, r := range f.Retract {
+			addModule(f.Module.Mod.Path, "retract", r.Syntax)
+		}
+	}
+	if f.Module != nil {
+		addOther("module", f.Module.Syntax)
+	}
+	if f.Go != nil {
+		addOther("go", f.Go.Syntax)
+	}
+	if f.Toolchain != nil {
+		addOther("toolchain", f.Toolchain.Syntax)
+	}
+	for _, g := range f.Godebug {
+		addOther("godebug", g.Syntax)
+	}
+	for _, tool := range f.Tool {
+		addOther("tool", tool.Syntax)
+	}
+	for _, ignore := range f.Ignore {
+		addOther("ignore", ignore.Syntax)
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].line.Start.Byte < entries[j].line.Start.Byte
+	})
+	values := map[string][]string{}
+	for _, e := range entries {
+		values[e.key] = append(values[e.key], modLineValue(e.directive, e.line))
+	}
+	keys := make(map[string]string, len(values))
+	for key, rows := range values {
+		keys[key] = strings.Join(rows, "\n")
+	}
+	return keys, nil
+}
+
+func modLineValue(directive string, line *modfile.Line) string {
+	var value strings.Builder
+	value.WriteString(directive)
+	value.WriteByte('\x00')
+	for _, comment := range line.Comments.Before {
+		value.WriteString("before:")
+		value.WriteString(comment.Token)
+		value.WriteByte('\x00')
+	}
+	value.WriteString(strings.Join(line.Token, " "))
+	for _, comment := range line.Comments.Suffix {
+		value.WriteString("\x00suffix:")
+		value.WriteString(comment.Token)
+	}
+	for _, comment := range line.Comments.After {
+		value.WriteString("\x00after:")
+		value.WriteString(comment.Token)
+	}
+	return value.String()
+}
+
+func goSumChangedKeys(before, after []byte) map[string]string {
+	linesByModule := func(data []byte) map[string]string {
+		lines := map[string][]string{}
+		for line := range strings.SplitSeq(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				lines[fields[0]] = append(lines[fields[0]], strings.Join(fields, " "))
+			}
+		}
+		out := make(map[string]string, len(lines))
+		for module, rows := range lines {
+			out[module] = strings.Join(rows, "\n")
+		}
+		return out
+	}
+	return changedStringMapKeys(linesByModule(before), linesByModule(after))
+}
+
+func changedStringMapKeys(before, after map[string]string) map[string]string {
+	changed := map[string]string{}
+	for key, value := range before {
+		if next, ok := after[key]; !ok || next != value {
+			changed[key] = ""
+		}
+	}
+	for key, value := range after {
+		if old, ok := before[key]; !ok || old != value {
+			changed[key] = ""
+		}
+	}
+	return changed
+}
+
+func stringMapKeysIntersect(a, b map[string]string) bool {
+	for key := range a {
+		if _, ok := b[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func withheldRevertState(repo *gitx.Repo, head string, withheld []string) (map[string]bool, error) {
