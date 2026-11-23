@@ -62,20 +62,21 @@ type Config struct {
 	// MinGraft is the X.Y.Z from Graft, empty when the project sets none.
 	MinGraft string `yaml:"-"`
 
-	Gate        []Step        `yaml:"gate"`
-	GoVet       GoVet         `yaml:"go_vet"`
-	GoFix       GoFix         `yaml:"go_fix"`
-	Staticcheck Staticcheck   `yaml:"staticcheck"`
-	GoFmt       GoFmt         `yaml:"go_fmt"`
-	Version     Version       `yaml:"version"`
-	Ticket      *Ticket       `yaml:"ticket"`
-	Push        Push          `yaml:"push"`
-	Checks      Checks        `yaml:"checks"`
-	Hooks       Hooks         `yaml:"hooks"`
-	Lock        Lock          `yaml:"lock"`
-	Limits      ProjectLimits `yaml:"limits"`
-	Commit      CommitPolicy  `yaml:"commit"`
-	Merge       Merge         `yaml:"merge"`
+	Gate        []Step         `yaml:"gate"`
+	GoVet       GoVet          `yaml:"go_vet"`
+	GoFix       GoFix          `yaml:"go_fix"`
+	Staticcheck Staticcheck    `yaml:"staticcheck"`
+	GoFmt       GoFmt          `yaml:"go_fmt"`
+	Version     Version        `yaml:"version"`
+	Modules     ProjectModules `yaml:"modules"`
+	Ticket      *Ticket        `yaml:"ticket"`
+	Push        Push           `yaml:"push"`
+	Checks      Checks         `yaml:"checks"`
+	Hooks       Hooks          `yaml:"hooks"`
+	Lock        Lock           `yaml:"lock"`
+	Limits      ProjectLimits  `yaml:"limits"`
+	Commit      CommitPolicy   `yaml:"commit"`
+	Merge       Merge          `yaml:"merge"`
 
 	Envs   map[string]*Env `yaml:"envs"`
 	DotEnv string          `yaml:"dotenv"`
@@ -213,6 +214,12 @@ type Version struct {
 	Skip []*regexp.Regexp `yaml:"-"`
 	// Build is BuildBranches compiled.
 	Build []*regexp.Regexp `yaml:"-"`
+}
+
+// ProjectModules configures project-specific module behavior.
+type ProjectModules struct {
+	HoldBranches []string         `yaml:"hold_branches"`
+	Hold         []*regexp.Regexp `yaml:"-"`
 }
 
 // SyncFile is a file that repeats the version and is rewritten on every bump.
@@ -432,6 +439,7 @@ func (c *Config) validate() error {
 		c.validateGraft,
 		c.validateLimits,
 		c.validateVersion,
+		c.validateModules,
 		c.validateTicket,
 		c.validatePush,
 		c.validateSecrets,
@@ -461,6 +469,15 @@ func (c *Config) validate() error {
 			return err
 		}
 	}
+	return nil
+}
+
+func (c *Config) validateModules() error {
+	match, err := compileBranchGlobs("modules.hold_branches", c.Modules.HoldBranches)
+	if err != nil {
+		return err
+	}
+	c.Modules.Hold = match
 	return nil
 }
 

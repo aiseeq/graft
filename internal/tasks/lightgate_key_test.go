@@ -15,7 +15,7 @@ func TestLightGateKeyConfigFieldsAreClassified(t *testing.T) {
 	}
 	included := map[string]bool{}
 	for _, name := range []string{
-		"schema", "graft", "gate", "go_vet", "go_fix", "staticcheck", "go_fmt",
+		"schema", "graft", "gate", "go_vet", "go_fix", "staticcheck", "go_fmt", "modules",
 		"hooks", "lock", "envs", "dotenv", "dotenv_template", "dotenv_sets",
 		"tasks", "cache_exclude", "services", "test_db", "tools", "remote_heavy", "MinGraft",
 	} {
@@ -81,5 +81,10 @@ func TestLightGateKeyTracksOnlyGateRelevantConfig(t *testing.T) {
 	depChange.Tasks = map[string]*config.Task{"inner": {Deps: []string{"prepare"}, Run: []config.Step{{Argv: []string{"go", "test"}}}}}
 	if key(base) == key(&depChange) {
 		t.Fatal("nested task dependency change did not change the key")
+	}
+	modulesChange := *base
+	modulesChange.Modules.HoldBranches = []string{"fix/*-hotfix"}
+	if key(base) == key(&modulesChange) {
+		t.Fatal("modules hold branches change did not change the key")
 	}
 }

@@ -119,6 +119,10 @@ candidate someone approved, and a raise there would ship a change outside the
 approval (`approved_release` counts a changed `go.mod` as shipped unless no
 shipped binary's module moves); the
 trunk takes the raise.
+Projects can also set `modules.hold_branches` to branch globs for this behavior
+without enabling any of the deploy or version behavior of those other settings.
+On matching branches graft leaves `modules.latest` requirements alone and
+reports `modules.hold_branches` as the reason.
 Offline or otherwise unknown latest versions produce a warning and leave that
 dependency alone. If a raised version makes the gate fail, the commit stops
 and the raised files stay in the work tree for repair. Without this setting,
@@ -900,6 +904,9 @@ version:
       pattern: 'version:\s*"([^"]*)"'
     - path: docs/VERSION
       format: plain             # the whole file is the version
+
+modules:
+  hold_branches: ['fix/*-hotfix'] # keep modules.latest versions on these branches
 
 ticket:                         # omit to never add a key
   pattern: '[A-Z][A-Z]+-[0-9]+' # first match in the branch name

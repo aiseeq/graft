@@ -1197,12 +1197,13 @@ func (a *App) raiseOwnModules(ctx context.Context, repo *gitx.Repo, cfg *config.
 	return npmmods.Raise(ctx, repo, settings.IsLatest, a.Stderr, a.warn)
 }
 
-// modulesHeldBy names the setting that makes branch a hotfix or release
-// branch, or is empty.
+// modulesHeldBy names the setting that keeps module versions on branch, or is empty.
 func modulesHeldBy(cfg *config.Config, branch string) string {
 	switch {
 	case branch == "":
 		return ""
+	case config.BranchMatches(cfg.Modules.Hold, branch):
+		return "modules.hold_branches"
 	case cfg.Deploy != nil && cfg.Deploy.IsHotfix(branch):
 		return "deploy.hotfix.branches"
 	case config.BranchMatches(cfg.Version.Build, branch):

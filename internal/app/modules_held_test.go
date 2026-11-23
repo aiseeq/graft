@@ -12,6 +12,7 @@ func TestModulesHeldBy(t *testing.T) {
 	hotfix := regexp.MustCompile(`^hotfix/.*$`)
 	withDeploy := &config.Config{
 		Version: config.Version{Build: []*regexp.Regexp{release}},
+		Modules: config.ProjectModules{Hold: []*regexp.Regexp{regexp.MustCompile(`^fix/.*-hotfix$`)}},
 		Deploy:  &config.Deploy{Hotfix: &config.Hotfix{Match: []*regexp.Regexp{hotfix}}},
 	}
 	noDeploy := &config.Config{Version: config.Version{Build: []*regexp.Regexp{release}}}
@@ -22,6 +23,8 @@ func TestModulesHeldBy(t *testing.T) {
 	}{
 		{withDeploy, "release/2.19", "version.build_branches"},
 		{withDeploy, "hotfix/PROJ-1", "deploy.hotfix.branches"},
+		{withDeploy, "fix/PROJ-1-hotfix", "modules.hold_branches"},
+		{withDeploy, "fix/PROJ-1", ""},
 		{withDeploy, "main", ""},
 		{withDeploy, "", ""},
 		{noDeploy, "release/2.19", "version.build_branches"},

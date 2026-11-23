@@ -108,6 +108,22 @@ func TestParseDefaults(t *testing.T) {
 	}
 }
 
+func TestProjectModulesHoldBranches(t *testing.T) {
+	cfg, err := Parse([]byte(minimal + "modules:\n  hold_branches: ['fix/*-hotfix']\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !BranchMatches(cfg.Modules.Hold, "fix/PROJ-123-hotfix") || BranchMatches(cfg.Modules.Hold, "fix/PROJ-123") {
+		t.Fatal("modules.hold_branches was not compiled as a branch glob")
+	}
+	if _, err := Parse([]byte(minimal + "modules:\n  hold_branhes: ['fix/*']\n")); err == nil || !strings.Contains(err.Error(), "hold_branhes") {
+		t.Fatalf("unknown modules key error = %v", err)
+	}
+	if _, err := Parse([]byte(minimal + "modules:\n  hold_branches: ['../fix/*']\n")); err == nil || !strings.Contains(err.Error(), "modules.hold_branches[0]") {
+		t.Fatalf("invalid module branch glob error = %v", err)
+	}
+}
+
 func TestReviewerReminderConfigValidation(t *testing.T) {
 	base := minimal + `envs:
   local: {}

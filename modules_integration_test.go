@@ -343,6 +343,34 @@ func TestReleaseBranchKeepsItsModules(t *testing.T) {
 	}
 }
 
+// TestHoldBranchesKeepsItsModules: a commit and a gate on a
+// modules.hold_branches branch leave the own modules where they are, without
+// the side effects of deploy.hotfix or version.build_branches.
+func TestHoldBranchesKeepsItsModules(t *testing.T) {
+	skipGoToolchainInShort(t)
+	f := modulesRepo(t, modulesProxy(t), latestConfig, "Old")
+	f.write(".graft.yaml", f.read(".graft.yaml")+"\nmodules:\n  hold_branches: ['fix/*-hotfix']\n")
+	f.git("checkout", "-q", "-b", "fix/PROJ-123-hotfix")
+	out := f.mustGraft("commit", "-m", "fix: x")
+	if !strings.Contains(out, "graft: modules.latest: fix/PROJ-123-hotfix keeps its module versions (modules.hold_branches); the trunk raises them") {
+		t.Errorf("no line on the held modules:\n%s", out)
+	}
+	for _, name := range []string{"go.mod", "tool/go.mod"} {
+		if line := requireLine(t, f.git("show", "HEAD:"+name), ownLib); !strings.HasSuffix(line, " v0.1.0") {
+			t.Errorf("committed %s: %q", name, line)
+		}
+	}
+	if strings.Contains(out, " -> v0.2.0") {
+		t.Errorf("raised on a held branch:\n%s", out)
+	}
+	if out, code := f.graft("", "gate"); code != 0 || strings.Contains(out, " -> v0.2.0") {
+		t.Errorf("gate on a held branch: exit %d\n%s", code, out)
+	}
+	if line := requireLine(t, f.read("go.mod"), ownLib); !strings.HasSuffix(line, " v0.1.0") {
+		t.Errorf("go.mod after the gate: %q", line)
+	}
+}
+
 func TestCommitRaisesPinnedNPMGitDependency(t *testing.T) {
 	skipNPMInShort(t)
 	f := newRepo(t, map[string]string{
