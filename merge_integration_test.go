@@ -1,12 +1,195 @@
 package main
 
 import (
+	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+const mergeModulePath = "example.com/projecta/lib"
+
+func mergeModuleFixture(t *testing.T, branchVersion, trunkVersion string, versionConflict, trunkNoSum, vendorBeforeConflict bool) *fixture {
+	t.Helper()
+	skipGoToolchainInShort(t)
+	proxy := goProxy(t,
+		proxyModule{path: mergeModulePath, version: "v1.0.0", src: "package lib\n\nconst Value = 1\n"},
+		proxyModule{path: mergeModulePath, version: "v1.1.0", src: "package lib\n\nconst Value = 2\n"},
+		proxyModule{path: mergeModulePath, version: "v1.2.0", src: "package lib\n\nconst Value = 3\n"},
+		proxyModule{path: mergeModulePath, version: "v1.3.0", src: "package lib\n\nconst Value = 4\n"},
+	)
+	f := fileModeRepo(t, "", "origin")
+	userDir := filepath.Join(f.base, "userconfig")
+	writeUserConfig(t, userDir, "modules: {latest: [example.com/projecta/]}\n")
+	f.env = append(f.env, "XDG_CONFIG_HOME="+userDir, "APPDATA="+userDir, "GOPROXY="+proxy,
+		"GOSUMDB=off", "GOPRIVATE=", "GONOPROXY=", "GONOSUMDB=", "GOFLAGS=-modcacherw", "GOWORK=off",
+		"GOMODCACHE="+filepath.Join(f.base, "modcache"))
+	f.write("projectA/go.mod", "module example.com/projecta/app\n\ngo 1.23\n\nrequire "+mergeModulePath+" v1.0.0\n")
+	f.write("projectA/main.go", "package main\n\nimport \"example.com/projecta/lib\"\n\nfunc main() { println(lib.Value) }\n")
+	if out, code := f.exec(filepath.Join(f.work, "projectA"), "", "go", "mod", "tidy"); code != 0 {
+		t.Fatalf("initial tidy: exit %d\n%s", code, out)
+	}
+	f.mustPlainCommit("chore: base module")
+	f.git("branch", "-m", "main")
+	f.git("push", "-q", "origin", "main")
+	f.git("fetch", "--quiet", "origin")
+	f.git("branch", "--set-upstream-to", "origin/main", "main")
+	f.git("remote", "set-head", "origin", "main")
+	f.git("switch", "-q", "-c", "feature/PROJ-42")
+	if vendorBeforeConflict {
+		f.write("projectA/vendor/modules.txt", "# vendored dependencies\n")
+	}
+	mergeModuleRaise(t, f, branchVersion, "1.2.4", versionConflict)
+	f.mustPlainCommit("feat: raise module on source")
+	f.git("switch", "-q", "main")
+	if trunkNoSum {
+		f.write("projectA/go.mod", "module example.com/projecta/app\n\ngo 1.23\n\nrequire "+mergeModulePath+" "+trunkVersion+"\n")
+	} else {
+		mergeModuleRaise(t, f, trunkVersion, "1.2.5", versionConflict)
+	}
+	f.mustPlainCommit("feat: raise module on trunk")
+	f.git("push", "-q", "origin", "main")
+	return f
+}
+
+func mergeModuleRaise(t *testing.T, f *fixture, moduleVersion, projectVersion string, versionConflict bool) {
+	t.Helper()
+	f.write("projectA/go.mod", "module example.com/projecta/app\n\ngo 1.23\n\nrequire "+mergeModulePath+" "+moduleVersion+"\n")
+	if out, code := f.exec(filepath.Join(f.work, "projectA"), "", "go", "mod", "tidy"); code != 0 {
+		t.Fatalf("tidy at %s: exit %d\n%s", moduleVersion, code, out)
+	}
+	if versionConflict {
+		f.write("VERSION", projectVersion+"\n")
+		f.write("web/package.json", fmt.Sprintf("{\n  \"name\": \"web\",\n  \"version\": %q\n}\n", projectVersion))
+		f.write("app.yaml", "name: app\nversion: \""+projectVersion+"\"\n")
+	}
+}
+
+func TestMergeResolvesLatestModuleBumpConflict(t *testing.T) {
+	f := mergeModuleFixture(t, "v1.1.0", "v1.2.0", false, false, false)
+	if out, code := f.graft("", "merge", "feature/PROJ-42"); code != 0 {
+		t.Fatalf("merge: exit %d\n%s", code, out)
+	}
+	if got := f.read("projectA/go.mod"); !strings.Contains(got, mergeModulePath+" v1.2.0") {
+		t.Errorf("go.mod did not take higher version:\n%s", got)
+	}
+	if got := f.read("projectA/go.sum"); strings.Contains(got, "<<<<<<<") || !strings.Contains(got, "v1.2.0") {
+		t.Errorf("go.sum is not resolved at v1.2.0:\n%s", got)
+	}
+	if out, code := f.exec(filepath.Join(f.work, "projectA"), "", "go", "build", "./..."); code != 0 {
+		t.Fatalf("merged projectA build: exit %d\n%s", code, out)
+	}
+}
+
+func TestMergeStagesGoSumTidiedWithoutConflict(t *testing.T) {
+	f := mergeModuleFixture(t, "v1.1.0", "v1.2.0", false, true, false)
+	if out, code := f.graft("", "merge", "feature/PROJ-42"); code != 0 {
+		t.Fatalf("merge: exit %d\n%s", code, out)
+	}
+	remoteSum := f.gitIn(f.remote("origin"), "show", "main:projectA/go.sum")
+	if !strings.Contains(remoteSum, mergeModulePath+" v1.2.0 ") {
+		t.Errorf("published go.sum lacks the selected version:\n%s", remoteSum)
+	}
+	if status := f.git("status", "--porcelain"); status != "" {
+		t.Errorf("main checkout is dirty after merge: %s", status)
+	}
+}
+
+func TestMergeRejectsNonLatestModuleConflictUnchanged(t *testing.T) {
+	for _, tc := range []struct{ name, branch, trunk string }{
+		{name: "rollback", branch: "v1.1.0", trunk: "v1.2.0"},
+		{name: "other go.mod edit", branch: "v1.1.0", trunk: "v1.2.0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := mergeModuleFixture(t, tc.branch, tc.trunk, false, false, false)
+			if tc.name == "rollback" {
+				f.git("switch", "-q", "feature/PROJ-42")
+				mergeModuleRaise(t, f, "v1.0.0", "1.2.4", false)
+				f.mustPlainCommit("fix: roll back module")
+				f.git("switch", "-q", "main")
+			} else {
+				f.git("switch", "-q", "feature/PROJ-42")
+				f.write("projectA/go.mod", "module example.com/projecta/app\n\ngo 1.23\n\nrequire (\n\t"+mergeModulePath+" v1.1.0\n\texample.com/extra v1.0.0\n)\n")
+				f.mustPlainCommit("feat: extra require")
+				f.git("switch", "-q", "main")
+			}
+			trunk, source := f.git("rev-parse", "HEAD"), f.git("rev-parse", "feature/PROJ-42")
+			out, code := f.graft("", "merge", "feature/PROJ-42")
+			if code == 0 || !strings.Contains(out, "merge conflict in projectA/go.mod") || !strings.Contains(out, "trunk and source are unchanged") {
+				t.Fatalf("expected unchanged conflict refusal: exit %d\n%s", code, out)
+			}
+			if got := f.git("rev-parse", "HEAD"); got != trunk {
+				t.Errorf("trunk moved: %s", got)
+			}
+			if got := f.git("rev-parse", "feature/PROJ-42"); got != source {
+				t.Errorf("source moved: %s", got)
+			}
+			assertMergeRefusalLeavesOriginAndCheckoutUntouched(t, f, trunk)
+		})
+	}
+}
+
+func TestMergeResolvesVersionAndLatestModuleConflicts(t *testing.T) {
+	f := mergeModuleFixture(t, "v1.1.0", "v1.2.0", true, false, false)
+	if out, code := f.graft("", "merge", "feature/PROJ-42"); code != 0 {
+		t.Fatalf("merge: exit %d\n%s", code, out)
+	}
+	if got := f.read("projectA/go.mod"); !strings.Contains(got, mergeModulePath+" v1.2.0") {
+		t.Errorf("go.mod did not take higher version:\n%s", got)
+	}
+}
+
+func TestMergeRefusesVendoredLatestModuleConflict(t *testing.T) {
+	f := mergeModuleFixture(t, "v1.1.0", "v1.2.0", false, false, true)
+	trunk := f.git("rev-parse", "HEAD")
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "merge conflict in projectA/go.mod") {
+		t.Fatalf("vendored conflict should be refused: exit %d\n%s", code, out)
+	}
+	assertMergeRefusalLeavesOriginAndCheckoutUntouched(t, f, trunk)
+}
+
+func TestMergeReportsLatestModuleDownloadFailure(t *testing.T) {
+	f := mergeModuleFixture(t, "v1.1.0", "v1.2.0", false, false, false)
+	var proxyURL string
+	for _, item := range f.env {
+		if after, ok := strings.CutPrefix(item, "GOPROXY="); ok {
+			proxyURL = after
+		}
+	}
+	parsed, err := url.Parse(proxyURL)
+	if err != nil || parsed.Scheme != "file" {
+		t.Fatalf("GOPROXY = %q, parse error %v", proxyURL, err)
+	}
+	archive := filepath.Join(filepath.FromSlash(parsed.Path), filepath.FromSlash(mergeModulePath), "@v", "v1.2.0.zip")
+	if err := os.Remove(archive); err != nil {
+		t.Fatal(err)
+	}
+	for i, item := range f.env {
+		if strings.HasPrefix(item, "GOMODCACHE=") {
+			f.env[i] = "GOMODCACHE=" + filepath.Join(f.base, "empty-modcache")
+		}
+	}
+	trunk := f.git("rev-parse", "HEAD")
+	out, code := f.graft("", "merge", "feature/PROJ-42")
+	if code == 0 || !strings.Contains(out, "go mod download "+mergeModulePath+"@v1.2.0 failed") {
+		t.Fatalf("download failure reason missing: exit %d\n%s", code, out)
+	}
+	assertMergeRefusalLeavesOriginAndCheckoutUntouched(t, f, trunk)
+}
+
+func assertMergeRefusalLeavesOriginAndCheckoutUntouched(t *testing.T, f *fixture, trunk string) {
+	t.Helper()
+	if got := f.gitIn(f.remote("origin"), "rev-parse", "refs/heads/main"); got != trunk {
+		t.Errorf("origin main moved: %s, want %s", got, trunk)
+	}
+	if status := f.git("status", "--porcelain"); status != "" {
+		t.Errorf("main checkout is dirty after refusal: %s", status)
+	}
+}
 
 func mergeRepo(t *testing.T, remotes ...string) *fixture {
 	t.Helper()

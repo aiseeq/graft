@@ -611,11 +611,15 @@ an intermediate output may come from an earlier one.
 The default `rebase` mode replays source commits onto the trunk; commits empty
 by content, including originally empty commits, are skipped. `--mode merge`
 preserves the source commits and creates a two-parent merge commit. Conflicts
-in `version.file` keep the larger semantic version from either side; other
-conflicts, including `version.sync` files, stop without publishing. When the
-result version is not above the trunk's, graft adds a patch bump. The result
-tree and `.graft.yaml` drive the gate and dependencies; `--no-deps` skips only
-`merge.deps` and requires a printed `--reason TEXT`.
+in `version.file` keep the larger semantic version from either side. In either
+mode, a conflict only in one module's `go.mod` and `go.sum` is resolved when
+both sides raised the same `modules.latest` requirement: merge takes the
+higher version and reconciles `go.sum` with `go mod download` and `go mod tidy`,
+as worktree sync does. Other conflicts, including `version.sync` files, stop
+without publishing. When the result version is not above the trunk's, graft
+adds a patch bump. The result tree and `.graft.yaml` drive the gate and
+dependencies; `--no-deps` skips only `merge.deps` and requires a printed
+`--reason TEXT`.
 
 `graft commit` on the trunk also runs `merge.deps` after the gate and local
 commit, before pushing; a failure keeps the commit local.

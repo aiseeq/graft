@@ -188,14 +188,7 @@ func worktreeSyncRebase(ctx context.Context, repo *gitx.Repo, trunk string, stde
 		}
 		conflicts := strings.Fields(conflictsOut)
 		moduleDir := filepath.Dir(conflicts[0])
-		var paths []string
-		for _, name := range []string{"go.mod", "go.sum"} {
-			path := filepath.ToSlash(filepath.Join(moduleDir, name))
-			if _, err := os.Stat(filepath.Join(repo.Root, filepath.FromSlash(path))); err == nil || slices.Contains(conflicts, path) {
-				paths = append(paths, path)
-			}
-		}
-		if _, err := repo.Git(append([]string{"add", "--"}, paths...)...); err != nil {
+		if err := worktreeSyncStageModuleFiles(repo, moduleDir, conflicts); err != nil {
 			return worktreeSyncRebaseConflictError(trunk, rebaseErr)
 		}
 		fmt.Fprintln(stderr, note)
@@ -403,13 +396,17 @@ func worktreeSyncResolveLatestConflict(ctx context.Context, repo *gitx.Repo) (bo
 	if !ok {
 		return false, "", nil
 	}
-	settings, err := userconfig.ModulesSettings()
-	if err != nil {
-		return false, "", fmt.Errorf("reading modules.latest: %w", err)
-	}
 	baseGoMod, ontoGoMod, commitGoMod, err := worktreeSyncConflictGoMods(repo, moduleDir)
 	if err != nil {
 		return false, "", err
+	}
+	return worktreeSyncResolveLatestConflictFrom(ctx, repo, moduleDir, baseGoMod, ontoGoMod, commitGoMod)
+}
+
+func worktreeSyncResolveLatestConflictFrom(ctx context.Context, repo *gitx.Repo, moduleDir, baseGoMod, ontoGoMod, commitGoMod string) (bool, string, error) {
+	settings, err := userconfig.ModulesSettings()
+	if err != nil {
+		return false, "", fmt.Errorf("reading modules.latest: %w", err)
 	}
 	changes, ok, err := worktreeSyncLatestGoModChanges(baseGoMod, ontoGoMod, commitGoMod, settings.IsLatest)
 	if err != nil || !ok {
@@ -431,6 +428,24 @@ func worktreeSyncConflictModuleDir(conflicts []string) (string, bool) {
 		moduleDir = dir
 	}
 	return moduleDir, true
+}
+
+func worktreeSyncStageModuleFiles(repo *gitx.Repo, moduleDir string, conflicts []string) error {
+	var paths []string
+	for _, name := range []string{"go.mod", "go.sum"} {
+		path := filepath.ToSlash(filepath.Join(moduleDir, name))
+		_, statErr := os.Stat(filepath.Join(repo.Root, filepath.FromSlash(path)))
+		if statErr == nil || slices.Contains(conflicts, path) {
+			paths = append(paths, path)
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("checking %s: %w", path, statErr)
+		}
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	_, err := repo.Git(append([]string{"add", "--"}, paths...)...)
+	return err
 }
 
 func worktreeSyncConflictGoMods(repo *gitx.Repo, moduleDir string) (baseGoMod, ontoGoMod, commitGoMod string, err error) {
@@ -554,11 +569,17 @@ func worktreeSyncRestoreFiles(backups []worktreeSyncFileBackup) error {
 func worktreeSyncResetGoSumToOnto(repo *gitx.Repo, moduleDir, sumPath string) error {
 	relative := filepath.ToSlash(filepath.Join(moduleDir, "go.sum"))
 	if _, err := repo.Git("cat-file", "-e", "HEAD:"+relative); err != nil {
-		if gitx.ExitCode(err) == 1 {
-			if err := os.Remove(sumPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("removing go.sum absent from onto: %w", err)
+		if gitx.ExitCode(err) == 128 {
+			entries, listErr := repo.Git("ls-tree", "-r", "--name-only", "HEAD", "--", relative)
+			if listErr != nil {
+				return fmt.Errorf("checking onto go.sum: %w", listErr)
 			}
-			return nil
+			if strings.TrimSpace(entries) == "" {
+				if err := os.Remove(sumPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("removing go.sum absent from onto: %w", err)
+				}
+				return nil
+			}
 		}
 		return fmt.Errorf("checking onto go.sum: %w", err)
 	}

@@ -1004,7 +1004,7 @@ func (s *mergeState) resolveCherryPickFailure(commit string, cherryErr error) er
 		}
 		return fmt.Errorf("cherry-pick failed without conflicts: %w", cherryErr)
 	}
-	if err = mergeResolveVersion(s.w, s.cfg); err != nil {
+	if err = mergeResolveVersion(s.ctx, s.w, s.cfg); err != nil {
 		return err
 	}
 	return s.continueCherryPick()
@@ -1038,7 +1038,7 @@ func (s *mergeState) buildMergeCandidate() error {
 	if strings.TrimSpace(paths) == "" {
 		return fmt.Errorf("merge failed: %w", err)
 	}
-	if err = mergeResolveVersion(s.w, s.cfg); err != nil {
+	if err = mergeResolveVersion(s.ctx, s.w, s.cfg); err != nil {
 		return err
 	}
 	_, err = s.w.GitEnv(markerEnv, "commit", "--no-edit")
@@ -1577,10 +1577,20 @@ func primaryRemote(cfg *config.Config, remotes []string, trunkRef string) string
 	}
 	return remotes[0]
 }
-func mergeResolveVersion(repo *gitx.Repo, cfg *config.Config) error {
+func mergeResolveVersion(ctx context.Context, repo *gitx.Repo, cfg *config.Config) error {
 	paths, err := mergeUnmergedPaths(repo)
 	if err != nil {
 		return err
+	}
+	if err := mergeResolveLatestModuleConflicts(ctx, repo, cfg); err != nil {
+		return fmt.Errorf("merge conflict in %s; trunk and source are unchanged: %w", strings.Join(paths, ", "), err)
+	}
+	paths, err = mergeUnmergedPaths(repo)
+	if err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		return nil
 	}
 	allowed := cfg.Version.File
 	targetsByPath := make(map[string][]version.Target, len(cfg.Version.Sync))
@@ -1614,6 +1624,48 @@ func mergeResolveVersion(repo *gitx.Repo, cfg *config.Config) error {
 		return err
 	}
 	return mergeInstallVersionResolution(repo, allowed, side, mirrors)
+}
+
+func mergeResolveLatestModuleConflicts(ctx context.Context, repo *gitx.Repo, cfg *config.Config) error {
+	paths, err := mergeUnmergedPaths(repo)
+	if err != nil {
+		return err
+	}
+	var modulePaths []string
+	for _, path := range paths {
+		if filepath.Base(path) == "go.mod" || filepath.Base(path) == "go.sum" {
+			modulePaths = append(modulePaths, path)
+		}
+	}
+	moduleDir, ok := worktreeSyncConflictModuleDir(modulePaths)
+	if !ok || !slices.Contains(modulePaths, filepath.ToSlash(filepath.Join(moduleDir, "go.mod"))) {
+		return nil
+	}
+	versionPaths := map[string]bool{cfg.Version.File: true}
+	for _, target := range version.Targets(cfg.Version)[1:] {
+		versionPaths[target.Path] = true
+	}
+	for _, path := range paths {
+		if !slices.Contains(modulePaths, path) && !versionPaths[path] {
+			return nil
+		}
+	}
+	goMods := [3]string{}
+	for stage := 1; stage <= 3; stage++ {
+		text, err := repo.Git("show", fmt.Sprintf(":%d:%s", stage, filepath.ToSlash(filepath.Join(moduleDir, "go.mod"))))
+		if err != nil {
+			return err
+		}
+		goMods[stage-1] = text
+	}
+	resolved, _, err := worktreeSyncResolveLatestConflictFrom(ctx, repo, moduleDir, goMods[0], goMods[1], goMods[2])
+	if err != nil {
+		return err
+	}
+	if !resolved {
+		return nil
+	}
+	return worktreeSyncStageModuleFiles(repo, moduleDir, modulePaths)
 }
 
 func mergeVersionConflictStages(repo *gitx.Repo, path string, includeBase bool) ([3]version.Semver, error) {

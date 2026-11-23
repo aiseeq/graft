@@ -278,6 +278,25 @@ func TestWorktreeSyncRestoresConflictFilesWhenDownloadFails(t *testing.T) {
 	}
 }
 
+func TestWorktreeSyncResetGoSumAcceptsMissingOntoFile(t *testing.T) {
+	f := newModuleSyncFixture(t, []string{"lib"})
+	f.setVersions(map[string]string{"lib": "v1.0.0"}, true)
+	f.commit("base with sum")
+	f.git("rm", "-q", "go.sum")
+	f.commit("remove sum")
+	sumPath := filepath.Join(f.repo, "go.sum")
+	if err := os.WriteFile(sumPath, []byte("stale sum\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repo := mustOpenTestRepo(t, f.repo)
+	if err := worktreeSyncResetGoSumToOnto(repo, ".", sumPath); err != nil {
+		t.Fatalf("reset go.sum absent from HEAD: %v", err)
+	}
+	if _, err := os.Stat(sumPath); !os.IsNotExist(err) {
+		t.Errorf("go.sum should be removed, stat error = %v", err)
+	}
+}
+
 type moduleSyncFixture struct {
 	t       *testing.T
 	root    string
