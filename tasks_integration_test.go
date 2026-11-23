@@ -20,6 +20,7 @@ import (
 	akitproc "github.com/aiseeq/akit/proc"
 	"github.com/aiseeq/graft/v2/internal/proc"
 	"github.com/aiseeq/graft/v2/internal/stats"
+	"github.com/aiseeq/graft/v2/internal/testutil"
 	"golang.org/x/sys/unix"
 )
 
@@ -348,7 +349,11 @@ func listeningOn(port int) bool {
 
 func serviceRepo(t *testing.T, mode string, extra string) (*fixture, int) {
 	t.Helper()
-	port := freePort(t)
+	return serviceRepoAtPort(t, mode, extra, freePort(t))
+}
+
+func serviceRepoAtPort(t *testing.T, mode, extra string, port int) (*fixture, int) {
+	t.Helper()
 	f := tasksRepo(t, "", map[string]string{".env": fmt.Sprintf("PORT=%d\nSECRET=s\n", port)})
 	f.write(".graft.yaml", f.read(".graft.yaml")+`tasks:
   build:
@@ -405,7 +410,12 @@ func TestServiceStartStopRestart(t *testing.T) {
 }
 
 func TestServiceStartFailures(t *testing.T) {
-	f, port := serviceRepo(t, "fail", "")
+	reservation, err := testutil.ReserveRefusedTCPAddr()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reservation.Close() })
+	f, port := serviceRepoAtPort(t, "fail", "", reservation.Port())
 	out, code := f.graft("", "start")
 	if code != 1 || !strings.Contains(out, "exited before listening") || !strings.Contains(out, "failing on purpose") {
 		t.Errorf("dying service: exit %d\n%s", code, out)
@@ -414,6 +424,9 @@ func TestServiceStartFailures(t *testing.T) {
 		t.Errorf("pid file left behind: %v", err)
 	}
 
+	if err := reservation.Close(); err != nil {
+		t.Fatal(err)
+	}
 	l, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
 	if err != nil {
 		t.Fatal(err)

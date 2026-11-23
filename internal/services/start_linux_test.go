@@ -18,6 +18,7 @@ import (
 
 	akitproc "github.com/aiseeq/akit/proc"
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/testutil"
 	"golang.org/x/sys/unix"
 )
 
@@ -39,6 +40,28 @@ func TestFailedStartStopsServiceAndChild(t *testing.T) {
 	})
 }
 
+func TestReservedTCPAddressCannotBeListenedTo(t *testing.T) {
+	reservation, err := testutil.ReserveRefusedTCPAddr()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reservation.Close() })
+	addr := reservation.Addr()
+	if listener, err := net.Listen("tcp", addr); err == nil {
+		_ = listener.Close()
+		t.Fatalf("another listener occupied reserved address %s", addr)
+	} else if !errors.Is(err, syscall.EADDRINUSE) {
+		t.Fatalf("listen error = %v, want address in use", err)
+	}
+	conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatalf("connect to reserved address %s succeeded", addr)
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("connect error = %v, want connection refused", err)
+	}
+}
 func failedStartStopsChild(t *testing.T, body, want string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -51,14 +74,12 @@ func failedStartStopsChild(t *testing.T, body, want string) {
 			}
 		}
 	})
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	reservation, err := testutil.ReserveRefusedTCPAddr()
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(func() { _ = reservation.Close() })
+	addr := reservation.Addr()
 	script := filepath.Join(dir, "service.sh")
 	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
