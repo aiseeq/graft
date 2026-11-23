@@ -2517,8 +2517,13 @@ excludes as named work:
 
 `release_notes.jira.quiet` leaves the release note out of a subtask when
 `subtasks` is true and out of an item carrying any label in `labels`; the
-deploy says so in one line per item. Everything else goes on as for an item
-with its note: the fix version, the move, the handover, the sweep and the
+deploy says so in one line per item. A quiet subtask's parent gets one text
+note per deploy when its key is in `project_keys` and it is not skipped or
+quiet itself; the parent gets no fix version and is not transitioned. When
+only quiet subtasks name it, `graft deploy check` lists it as a note-only item
+from a quiet subtask if it belongs to `project_keys` and is not skipped, quiet
+or otherwise left alone. The quiet item's other
+release work continues as before: its fix version, move, handover, sweep and
 gates. A quiet item's fix version is set with `notifyUsers=false`; Jira lets
 only those who administer the project silence it, so on a 400 or 403 the call
 goes again with notifications and the deploy says so. Jira has no such

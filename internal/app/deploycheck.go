@@ -283,6 +283,10 @@ func (a *App) previewNotes(ctx context.Context, r *deployRun) {
 		}
 	}
 	m := &noteMover{app: a, client: client, conf: r.target.ReleaseNotes, approved: r.target.ApprovedRelease, me: me, target: r.name, glint: glint, standing: r.cfg.ReleaseNotes.Jira.SkipKeys, readOnly: true}
+	m.previewed = map[string]bool{}
+	for _, key := range keys {
+		m.previewed[key] = true
+	}
 	for _, key := range keys {
 		a.previewNoteKey(ctx, r, m, key)
 	}
@@ -290,27 +294,27 @@ func (a *App) previewNotes(ctx context.Context, r *deployRun) {
 }
 
 func (a *App) previewNoteKey(ctx context.Context, r *deployRun, m *noteMover, key string) {
-	if isSkipKey(r.cfg.ReleaseNotes.Jira.SkipKeys, key) || (r.moveOut != nil && slices.Contains(r.moveOut.keys, key)) {
+	inspection := a.inspectNote(ctx, r, m.client, m, m.me, key, nil)
+	switch inspection.stop {
+	case noteSkipped, noteReverted:
 		a.printf("- %s: left alone", key)
 		return
-	}
-	issue, err := m.client.Issue(ctx, key)
-	if err != nil {
-		a.printf("- %s: not checked: %v", key, err)
+	case noteDormant:
+		a.previewDormant(r, inspection.issue)
+		return
+	case noteProject:
+		return
+	case noteNotOurs:
+		a.printf("- %s: %s → %s (left alone)", key, inspection.issue.Status, inspection.issue.Status)
 		return
 	}
-	a.previewDormant(r, issue)
-	if m.leaveDormant(issue) {
+	if inspection.err != nil {
+		a.printf("- %s: not checked: %v", key, inspection.err)
 		return
 	}
-	yours, err := a.noteable(ctx, m.client, r.cfg.ReleaseNotes.Jira, m.me, issue)
-	if err != nil {
-		a.printf("- %s: not checked: %v", key, err)
-		return
-	}
-	if !yours {
-		a.printf("- %s: %s → %s (left alone)", key, issue.Status, issue.Status)
-		return
+	issue := inspection.issue
+	if inspection.quietReason == "subtask" && issue.Parent != "" {
+		a.previewQuietParent(ctx, r, m, issue.Parent)
 	}
 	if issue.Done {
 		a.printf("- %s: %s → %s (note only, if not quiet)", key, issue.Status, issue.Status)
@@ -319,6 +323,26 @@ func (a *App) previewNoteKey(ctx context.Context, r *deployRun, m *noteMover, ke
 	if status := m.delivered(ctx, issue); status == issue.Status {
 		a.printf("- %s: %s → %s (stays)", key, issue.Status, status)
 	}
+}
+
+func (a *App) previewQuietParent(ctx context.Context, r *deployRun, m *noteMover, key string) {
+	if m.previewed[key] {
+		return
+	}
+	m.previewed[key] = true
+	inspection := a.inspectNote(ctx, r, m.client, m, m.me, key, nil)
+	if inspection.stop == noteDormant {
+		a.previewDormant(r, inspection.issue)
+		return
+	}
+	if inspection.err != nil {
+		a.printf("- %s: not checked: %v", key, inspection.err)
+		return
+	}
+	if inspection.stop != noteContinue || inspection.quietReason != "" {
+		return
+	}
+	a.printf("- %s: note only (from quiet subtask)", key)
 }
 
 func (a *App) previewDormant(r *deployRun, issue jira.Issue) {

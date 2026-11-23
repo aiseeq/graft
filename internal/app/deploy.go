@@ -1087,6 +1087,62 @@ type noteItems struct {
 	// heldParents are the parents the sweep held for their handover: their
 	// move waits for the handover's retry, which judges their work again.
 	heldParents map[string]bool
+	// noted tracks issues for which Comment was attempted.
+	noted      map[string]bool
+	notePosted map[string]bool
+	parentSeen map[string]bool
+}
+
+type noteStop string
+
+const (
+	noteContinue noteStop = ""
+	noteReverted noteStop = "reverted"
+	noteSkipped  noteStop = "skip_keys"
+	noteProject  noteStop = "project_keys"
+	noteDormant  noteStop = "dormant"
+	noteNotOurs  noteStop = "not_ours"
+)
+
+type noteInspection struct {
+	issue       jira.Issue
+	quietReason string
+	stop        noteStop
+	err         error
+}
+
+// inspectNote is the shared pre-comment path for committed items, quiet
+// parents, and the read-only deploy preview.
+func (a *App) inspectNote(ctx context.Context, run *deployRun, client *jira.Client, mover *noteMover, me, key string, beforeNoteable func(jira.Issue)) noteInspection {
+	if run.moveOut != nil && slices.Contains(run.moveOut.keys, key) {
+		return noteInspection{stop: noteReverted}
+	}
+	notes := run.cfg.ReleaseNotes.Jira
+	if isSkipKey(notes.SkipKeys, key) {
+		return noteInspection{stop: noteSkipped}
+	}
+	project, _, ok := strings.Cut(key, "-")
+	if !ok || !slices.Contains(notes.ProjectKeys, project) {
+		return noteInspection{stop: noteProject}
+	}
+	issue, err := client.Issue(ctx, key)
+	if err != nil {
+		return noteInspection{err: err}
+	}
+	if mover.leaveDormant(issue) {
+		return noteInspection{issue: issue, stop: noteDormant}
+	}
+	if beforeNoteable != nil {
+		beforeNoteable(issue)
+	}
+	yours, err := a.noteable(ctx, client, notes, me, issue)
+	if err != nil {
+		return noteInspection{issue: issue, err: err}
+	}
+	if !yours {
+		return noteInspection{issue: issue, stop: noteNotOurs}
+	}
+	return noteInspection{issue: issue, quietReason: quietNoteReason(notes.Quiet, issue)}
 }
 
 // notifyFallback reports once per task that Jira refused notifyUsers=false.
@@ -1103,56 +1159,54 @@ func (n *noteItems) notifyFallback(key string) {
 
 // post gives one delivered item its note, its fix version and its move.
 func (n *noteItems) post(ctx context.Context, key string) {
-	a, notes := n.app, n.run.cfg.ReleaseNotes.Jira
-	if out := n.run.moveOut; out != nil && slices.Contains(out.keys, key) {
+	a := n.app
+	var learns bool
+	inspection := a.inspectNote(ctx, n.run, n.client, n.mover, n.me, key, func(issue jira.Issue) {
+		learns = issue.Done
+		if !learns {
+			n.sub.delivered = append(n.sub.delivered, issue)
+			n.sub.reached[issue.Key] = issue.Status
+		}
+	})
+	switch inspection.stop {
+	case noteReverted:
 		a.printf("release note for %s not posted: this deploy reverts its work from the candidate", key)
 		return
-	}
-	if isSkipKey(notes.SkipKeys, key) {
-		a.printf("release note for %s not posted, %s left alone: release_notes.jira.skip_keys", key, key)
+	case noteSkipped:
+		if n.parentSeen == nil || !n.parentSeen[key] {
+			a.printf("release note for %s not posted, %s left alone: release_notes.jira.skip_keys", key, key)
+		}
+		return
+	case noteProject:
+		return
+	case noteDormant, noteNotOurs:
 		return
 	}
-	issue, err := n.client.Issue(ctx, key)
-	if err != nil {
-		a.warn("release note for %s not posted: %v", key, err)
-		n.fix.failed(key, err)
-		n.unsure = append(n.unsure, key)
-		return
-	}
-	if n.mover.leaveDormant(issue) {
-		return
-	}
-	// A done item only learns what shipped: its status and versions stay,
-	// and its subtasks go by their own commits.
-	learns := issue.Done
-	if !learns {
-		n.sub.delivered = append(n.sub.delivered, issue)
-		n.sub.reached[issue.Key] = issue.Status
-	}
-	yours, err := a.noteable(ctx, n.client, notes, n.me, issue)
-	if err != nil {
-		a.warn("release note for %s not posted: %v", key, err)
+	if inspection.err != nil {
+		a.warn("release note for %s not posted: %v", key, inspection.err)
 		if !learns {
-			n.fix.failed(key, err)
+			n.fix.failed(key, inspection.err)
 		}
 		n.unsure = append(n.unsure, key)
 		return
 	}
-	if !yours {
-		return
-	}
-	quietReason := quietNoteReason(notes.Quiet, issue)
+	issue := inspection.issue
+	// A done item only learns what shipped: its status and versions stay,
+	// and its subtasks go by their own commits.
+	quietReason := inspection.quietReason
 	posted := quietReason == ""
 	if posted {
-		if err := n.client.Comment(ctx, key, n.text); err != nil {
-			a.warn("release note for %s not posted: %v", key, err)
-			posted = false
+		posted = n.comment(ctx, issue)
+		if !posted {
 			n.unsure = append(n.unsure, key)
 		} else {
-			a.printf("release note posted to %s", key)
+			n.unsure = slices.DeleteFunc(n.unsure, func(unsure string) bool { return unsure == key })
 		}
 	} else {
 		a.printf("release note for %s not posted: release_notes.jira.quiet (%s)", key, quietReason)
+		if quietReason == "subtask" && issue.Parent != "" {
+			n.noteQuietParent(ctx, issue.Parent)
+		}
 	}
 	if learns {
 		return
@@ -1166,6 +1220,61 @@ func (n *noteItems) post(ctx context.Context, key string) {
 	}
 	if posted || quietReason != "" {
 		n.sub.reached[issue.Key] = n.mover.delivered(ctx, issue)
+	}
+}
+
+// comment shares the note-only Jira write path for delivered items and
+// parents of quiet subtasks.
+func (n *noteItems) comment(ctx context.Context, issue jira.Issue) bool {
+	if n.noted == nil {
+		n.noted = map[string]bool{}
+	}
+	if n.noted[issue.Key] {
+		return n.notePosted[issue.Key]
+	}
+	if err := n.client.Comment(ctx, issue.Key, n.text); err != nil {
+		n.noted[issue.Key] = true
+		n.app.warn("release note for %s not posted: %v", issue.Key, err)
+		return false
+	}
+	if n.notePosted == nil {
+		n.notePosted = map[string]bool{}
+	}
+	n.noted[issue.Key] = true
+	n.notePosted[issue.Key] = true
+	n.app.printf("release note posted to %s", issue.Key)
+	return true
+}
+
+// noteQuietParent posts at most one note per parent and deliberately does not
+// run the parent's fix-version or transition handling.
+func (n *noteItems) noteQuietParent(ctx context.Context, key string) {
+	if n.parentSeen != nil && n.parentSeen[key] {
+		return
+	}
+	inspection := n.app.inspectNote(ctx, n.run, n.client, n.mover, n.me, key, nil)
+	if n.parentSeen == nil {
+		n.parentSeen = map[string]bool{}
+	}
+	n.parentSeen[key] = true
+	switch inspection.stop {
+	case noteSkipped:
+		n.app.printf("release note for %s not posted, %s left alone: release_notes.jira.skip_keys", key, key)
+		return
+	case noteReverted, noteProject, noteDormant, noteNotOurs:
+		return
+	}
+	if inspection.err != nil {
+		n.app.warn("release note for %s not posted: %v", key, inspection.err)
+		n.unsure = append(n.unsure, key)
+		return
+	}
+	if inspection.quietReason != "" {
+		n.app.printf("release note for %s not posted: release_notes.jira.quiet (%s)", key, inspection.quietReason)
+		return
+	}
+	if !n.comment(ctx, inspection.issue) {
+		n.unsure = append(n.unsure, key)
 	}
 }
 
@@ -1194,9 +1303,11 @@ type noteMover struct {
 	standing []string
 	// namedHandover identifies explicit keys whose assignment failures must
 	// keep the handover held and fail the command.
-	namedHandover map[string]bool
-	approved      *config.ApprovedRelease
-	readOnly      bool
+	namedHandover   map[string]bool
+	approved        *config.ApprovedRelease
+	readOnly        bool
+	previewed       map[string]bool
+	dormantReported map[string]bool
 }
 
 // errHeld is a move withheld for want of the comment require_comment asks
@@ -1218,6 +1329,13 @@ func (m *noteMover) leaveDormant(issue jira.Issue) bool {
 	if !ok {
 		return false
 	}
+	if m.dormantReported == nil {
+		m.dormantReported = map[string]bool{}
+	}
+	if m.dormantReported[issue.Key] {
+		return true
+	}
+	m.dormantReported[issue.Key] = true
 	m.app.printf("%s", dormantLeftMessage(item, issue))
 	return true
 }

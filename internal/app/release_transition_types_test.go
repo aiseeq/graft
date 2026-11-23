@@ -464,17 +464,18 @@ func TestQuietReleaseNotesSkipCommentsButStillMoveItems(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		quiet *config.QuietNotes
-		want  int
+		want  map[string]int
 	}{
-		{name: "quiet", quiet: &config.QuietNotes{Subtasks: true, Labels: []string{"internal"}}, want: 1},
-		{name: "without quiet", want: 3},
+		{name: "quiet", quiet: &config.QuietNotes{Subtasks: true, Labels: []string{"internal"}}, want: map[string]int{"PROJ-10": 1, "PROJ-3": 1}},
+		{name: "without quiet", want: map[string]int{"PROJ-1": 1, "PROJ-2": 1, "PROJ-3": 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			comments, transitions := 0, 0
+			comments, transitions := map[string]int{}, 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case strings.HasSuffix(r.URL.Path, "/comment"):
-					comments++
+					key := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/rest/api/3/issue/"), "/comment")
+					comments[key]++
 					w.WriteHeader(http.StatusCreated)
 				case strings.HasSuffix(r.URL.Path, "/transitions"):
 					transitions++
@@ -503,8 +504,16 @@ func TestQuietReleaseNotesSkipCommentsButStillMoveItems(t *testing.T) {
 			for _, key := range []string{"PROJ-1", "PROJ-2", "PROJ-3"} {
 				items.post(t.Context(), key)
 			}
-			if comments != tc.want || transitions != 3 {
-				t.Errorf("comments/transitions = %d/%d, want %d/3", comments, transitions, tc.want)
+			if len(comments) != len(tc.want) {
+				t.Errorf("comment keys = %v, want %v", comments, tc.want)
+			}
+			for key, want := range tc.want {
+				if comments[key] != want {
+					t.Errorf("comments for %s = %d, want %d; all comments %v", key, comments[key], want, comments)
+				}
+			}
+			if transitions != 3 {
+				t.Errorf("transitions = %d, want 3", transitions)
 			}
 			if tc.quiet != nil {
 				for _, message := range []string{
