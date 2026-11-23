@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"time"
 
+	"github.com/aiseeq/akit/pressure"
 	"github.com/aiseeq/graft/v2/internal/stats"
 )
 
@@ -29,6 +31,9 @@ type admissionRecord struct {
 	Priority        bool               `json:"priority"`
 	LA1             *float64           `json:"la1,omitempty"`
 	Runnable        *float64           `json:"runnable,omitempty"`
+	Blocked         *int               `json:"blocked,omitempty"`
+	IOSome          *float64           `json:"io_some,omitempty"`
+	IOFull          *float64           `json:"io_full,omitempty"`
 	Limit           *float64           `json:"limit,omitempty"`
 	Unseen          *float64           `json:"unseen,omitempty"`
 	LiveReserve     *float64           `json:"live_reserve,omitempty"`
@@ -70,6 +75,15 @@ func (m *machine) admissionRecord(priority bool) admissionRecord {
 	}
 	load := m.lastView.Load
 	rec.DirtyMB, rec.DirtyLimitMB = &load.DirtyMB, &load.DirtyLimitMB
+	if !slices.Contains(m.lastView.Skipped, pressure.ErrNoRunnable) {
+		rec.Blocked = &load.Blocked
+	}
+	if !slices.Contains(m.lastView.Skipped, pressure.ErrNoIOPressure) {
+		rec.IOSome = &load.IOSome
+		rec.IOFull = &load.IOFull
+	} else if load.Disk != nil {
+		rec.IOFull = &load.IOFull
+	}
 	if load.DiskFault != nil {
 		rec.DiskFault = load.DiskFault.Error()
 	}

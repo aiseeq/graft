@@ -34,10 +34,10 @@ func TestAdmissionJournalMeasureChangesThenAdmits(t *testing.T) {
 	oldFactory := pressureMeterFactory
 	pressureMeterFactory = func(string) machineMeter {
 		return &admissionMeter{verdicts: []pressure.Verdict{
-			{Measure: pressure.Writeback, Value: 200, Limit: 64, Load: pressure.Load{Runnable: 1, Threads: 22, DirtyMB: 200, DirtyLimitMB: 64}},
-			{Measure: pressure.Writeback, Value: 200, Limit: 64, Load: pressure.Load{Runnable: 1, Threads: 22, DirtyMB: 200, DirtyLimitMB: 64}},
-			{Measure: pressure.IO, Value: 35, Limit: 10, Load: pressure.Load{Runnable: 1, Threads: 22, DirtyMB: 18, DirtyLimitMB: 64}},
-			{Load: pressure.Load{Runnable: 1, Threads: 22, DirtyMB: 12, DirtyLimitMB: 64}},
+			{Measure: pressure.Writeback, Value: 200, Limit: 64, Load: pressure.Load{Runnable: 1, Blocked: 3, IOSome: 2.4, IOFull: 1.1, Threads: 22, DirtyMB: 200, DirtyLimitMB: 64}},
+			{Measure: pressure.Writeback, Value: 200, Limit: 64, Load: pressure.Load{Runnable: 1, Blocked: 3, IOSome: 2.4, IOFull: 1.1, Threads: 22, DirtyMB: 200, DirtyLimitMB: 64}},
+			{Measure: pressure.IO, Value: 35, Limit: 10, Load: pressure.Load{Runnable: 1, Blocked: 8, IOSome: 7.3, IOFull: 3.6, Threads: 22, DirtyMB: 18, DirtyLimitMB: 64}},
+			{Load: pressure.Load{Runnable: 1, Blocked: 4, IOSome: 2.8, IOFull: 0.4, Threads: 22, DirtyMB: 12, DirtyLimitMB: 64}},
 		}}
 	}
 	defer func() { pressureMeterFactory = oldFactory }()
@@ -70,8 +70,76 @@ func TestAdmissionJournalMeasureChangesThenAdmits(t *testing.T) {
 	if mb(lines[0].DirtyMB) != 200 || mb(lines[0].DirtyLimitMB) != 64 || mb(lines[1].DirtyMB) != 18 || mb(lines[1].DirtyLimitMB) != 64 {
 		t.Fatalf("dirty sample values = %+v", lines)
 	}
+	for i, want := range []struct {
+		blocked int
+		ioSome  float64
+		ioFull  float64
+	}{{3, 2.4, 1.1}, {8, 7.3, 3.6}, {4, 2.8, 0.4}} {
+		rec := lines[i]
+		if rec.Blocked == nil || *rec.Blocked != want.blocked {
+			t.Errorf("record %d blocked = %v, want %d", i, rec.Blocked, want.blocked)
+		}
+		if rec.IOSome == nil || *rec.IOSome != want.ioSome {
+			t.Errorf("record %d io_some = %v, want %g", i, rec.IOSome, want.ioSome)
+		}
+		if rec.IOFull == nil || *rec.IOFull != want.ioFull || rec.IOFull != nil && *rec.IOFull == want.ioSome {
+			t.Errorf("record %d io_full = %v, want %g distinct from io_some %g", i, rec.IOFull, want.ioFull, want.ioSome)
+		}
+	}
 	if w := lines[2].Waits; w[WhyWriteback] <= 0 || w[WhyIO] <= 0 {
 		t.Errorf("admitted line waits = %v, want writeback and io", w)
+	}
+}
+
+func TestAdmissionRecordUsesIndependentAvailabilityForBlockedAndIO(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		skipped []error
+		disk    *pressure.DiskNow
+		blocked bool
+		ioSome  bool
+		ioFull  bool
+	}{
+		{name: "only stat skipped", skipped: []error{pressure.ErrNoRunnable}, ioSome: true, ioFull: true},
+		{name: "only PSI skipped", skipped: []error{pressure.ErrNoIOPressure}, blocked: true},
+		{name: "disk source without PSI", skipped: []error{pressure.ErrNoIOPressure}, disk: &pressure.DiskNow{}, blocked: true, ioFull: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &machine{haveView: true, lastView: pressure.Verdict{
+				Load: pressure.Load{Blocked: 6, IOSome: 3.25, IOFull: 1.25, Disk: tc.disk}, Skipped: tc.skipped,
+			}}
+			rec := m.admissionRecord(false)
+			if (rec.Blocked != nil) != tc.blocked {
+				t.Errorf("blocked = %v, want present %t", rec.Blocked, tc.blocked)
+			}
+			if (rec.IOSome != nil) != tc.ioSome {
+				t.Errorf("io_some = %v, want present %t", rec.IOSome, tc.ioSome)
+			}
+			if (rec.IOFull != nil) != tc.ioFull {
+				t.Errorf("io_full = %v, want present %t", rec.IOFull, tc.ioFull)
+			}
+			if rec.Blocked != nil && *rec.Blocked != 6 {
+				t.Errorf("blocked = %d, want 6", *rec.Blocked)
+			}
+			if rec.IOSome != nil && *rec.IOSome != 3.25 {
+				t.Errorf("io_some = %g, want 3.25", *rec.IOSome)
+			}
+			if rec.IOFull != nil && *rec.IOFull != 1.25 {
+				t.Errorf("io_full = %g, want 1.25", *rec.IOFull)
+			}
+			line, err := json.Marshal(rec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []struct {
+				name    string
+				present bool
+			}{{`"blocked"`, tc.blocked}, {`"io_some"`, tc.ioSome}, {`"io_full"`, tc.ioFull}} {
+				if got := bytes.Contains(line, []byte(field.name)); got != field.present {
+					t.Errorf("JSON field %s present = %t, want %t: %s", field.name, got, field.present, line)
+				}
+			}
+		})
 	}
 }
 
