@@ -87,6 +87,7 @@ func TestCommitTicketHintsAssigneeAndTransitions(t *testing.T) {
 		status      string
 		subtask     bool
 		transitions bool
+		skip        []string
 		want        []string
 		absent      []string
 	}{
@@ -97,10 +98,13 @@ func TestCommitTicketHintsAssigneeAndTransitions(t *testing.T) {
 		{name: "no matching target transitions", typeName: "Task", status: "Open", transitions: true, absent: []string{"deploying to test"}},
 		{name: "case-insensitive type", typeName: "task", status: "Open", want: []string{"deploying to test moves PROJ-123 to In Progress"}},
 		{name: "already at earlier target", typeName: "Task", status: "Testing", transitions: true, absent: []string{"deploying to test"}},
+		{name: "skip key", assigneeID: "other", assignee: "Alex", typeName: "Task", status: "Open", skip: []string{"PROJ-123"}, absent: []string{"deploying to test"}, want: []string{"is Alex 's task"}},
+		{name: "other skip key", typeName: "Task", status: "Open", skip: []string{"PROJ-9"}, want: []string{"deploying to test moves PROJ-123 to In Progress"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			setupCommitHintJira(t, commitHintJiraHandler(test.assigneeID, test.assignee, test.typeName, test.status, test.subtask))
 			cfg := commitHintConfig()
+			cfg.ReleaseNotes.Jira.SkipKeys = test.skip
 			if test.transitions {
 				cfg.Deploy.Targets["test"].ReleaseNotes.Transitions = nil
 			}

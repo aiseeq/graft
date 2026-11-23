@@ -161,6 +161,11 @@ func (a *App) commitTicketIssueHints(cfg *config.Config, key string, issue jira.
 	if issue.Subtask || cfg.Deploy == nil {
 		return
 	}
+	// A deploy leaves a release_notes.jira.skip_keys task where it is
+	// (noteItems.post), so the commit names no move for it.
+	if cfg.ReleaseNotes != nil && cfg.ReleaseNotes.Jira != nil && slices.Contains(cfg.ReleaseNotes.Jira.SkipKeys, key) {
+		return
+	}
 	for _, name := range slices.Sorted(maps.Keys(cfg.Deploy.Targets)) {
 		target := cfg.Deploy.Targets[name]
 		if target.ReleaseNotes == nil {
