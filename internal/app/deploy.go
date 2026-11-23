@@ -119,7 +119,9 @@ type deployRun struct {
 	approvalReasons        []string
 	approvalItemExceptions map[string][]string
 	pageWithheld           []string
-	approvalCollectionErr  error
+	// reminderMoved are subtasks moved by release_notes.subtasks.
+	reminderMoved         []string
+	approvalCollectionErr error
 	// moveOut are the items whose commits a deploy to a held target
 	// reverts: they leave the window's version for the next one.
 	moveOut *versionMove
@@ -1060,6 +1062,7 @@ func (a *App) releaseNotes(ctx context.Context, r *deployRun) notesUnset {
 	unread := a.retryHeld(ctx, sub, held, judged)
 	if r.target.ReleaseNotes.Subtasks {
 		sub.follow(ctx)
+		r.reminderMoved = append(r.reminderMoved, sub.moved...)
 	}
 	if err := writeHeld(r, append(unread, mover.held...)); err != nil {
 		a.warn("%v", err)
@@ -1421,6 +1424,7 @@ type subtaskRun struct {
 	commits    map[string][]loggedCommit
 	landed     map[string]bool
 	loaded     bool
+	moved      []string
 	// parents judges a parent the sweep held as the sweep does, nil
 	// without release_notes.sweep: the transition it goes on by, nil for
 	// none, or the line why it stays.
@@ -1488,8 +1492,12 @@ func (s *subtaskRun) move(ctx context.Context, key, parent string, t *config.Not
 			return
 		}
 	}
-	if err := s.mover.move(ctx, issue, t, parent); err != nil && !errors.Is(err, errHeld) && !errors.Is(err, errTypeNotAllowed) {
-		app.warn("%v", err)
+	if err := s.mover.move(ctx, issue, t, parent); err != nil {
+		if !errors.Is(err, errHeld) && !errors.Is(err, errTypeNotAllowed) {
+			app.warn("%v", err)
+		}
+	} else {
+		s.moved = append(s.moved, key)
 	}
 }
 

@@ -57,7 +57,7 @@ func (a *App) reviewerReminder(ctx context.Context, r *deployRun) ([]reviewUnder
 	if err != nil {
 		return nil, fmt.Errorf("read deployed commit keys: %w", err)
 	}
-	deployedKeys, err := reviewCommitKeysInRange(r, r.prev, r.head)
+	deployedKeys, err := reviewerReminderExcludedKeys(r)
 	if err != nil {
 		return nil, fmt.Errorf("read this deployment's commit keys: %w", err)
 	}
@@ -144,6 +144,24 @@ func reviewCommitKeysBetween(r *deployRun, lower, upper string) ([]string, error
 		return nil, err
 	}
 	return uniqueSorted(projectKeyRe(r.cfg).FindAllString(output, -1)), nil
+}
+
+// reviewerReminderExcludedKeys are the work items this deploy delivers
+// through release notes, including released commits and subtasks moved by
+// their parent. Standing and withheld items stay eligible for reminders.
+func reviewerReminderExcludedKeys(r *deployRun) ([]string, error) {
+	keys, _, _, err := deliveredKeys(r)
+	if err != nil {
+		return nil, err
+	}
+	keys = append(keys, r.reminderMoved...)
+	standing := map[string]bool{}
+	if r.cfg.ReleaseNotes != nil && r.cfg.ReleaseNotes.Jira != nil {
+		for _, key := range r.cfg.ReleaseNotes.Jira.SkipKeys {
+			standing[key] = true
+		}
+	}
+	return slices.DeleteFunc(uniqueSorted(keys), func(key string) bool { return standing[key] }), nil
 }
 
 func reviewGuardScope(ctx context.Context, r *deployRun, client *jira.Client) (string, []*jira.Issue, error) {
@@ -408,7 +426,7 @@ func reviewCommitKeysThrough(ctx context.Context, r *deployRun, upper string) ([
 	}
 	pattern := projectKeyRe(r.cfg)
 	if base != "" {
-		return reviewCommitKeysBetween(r, base, upper)
+		return reviewCommitKeysInRange(r, base, upper)
 	}
 	// With no reference target, inspect ancestors newest first and retain
 	// at most the first 500 commits that contain a project key.

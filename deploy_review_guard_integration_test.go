@@ -72,6 +72,23 @@ func TestDeployReviewGuardCommitKeysStopAtPreviousDeployment(t *testing.T) {
 	}
 }
 
+func TestDeployReviewGuardStillIncludesBodyMentions(t *testing.T) {
+	d := reviewGuardFixture(t, []string{"Testing"})
+	d.write("guard-body-mention.txt", "work\n")
+	d.mustPlainCommit("deploy release\n\nLike the last release, as in PROJ-123")
+	d.git("push", "-q", "-u", "origin", "HEAD")
+	d.jira.setVersions(productVersions(), map[string][]string{"PROJ-123": {"10010"}})
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-123"] = "Testing"
+	d.jira.assignees["PROJ-123"] = "anna"
+	d.jira.mu.Unlock()
+
+	out, code := d.graft("", "deploy", "uat")
+	if code == 0 || !strings.Contains(out, "PROJ-123@anna") || d.stateExists("uat-run") {
+		t.Fatalf("review guard stopped counting a body mention: exit %d\n%s", code, out)
+	}
+}
+
 func TestDeployReviewGuardCheckReportsWithoutRefusing(t *testing.T) {
 	d := reviewGuardFixture(t, []string{"In QA"})
 	setupGuardVersion(d, map[string][]string{"PROJ-1": {"10010"}})
@@ -238,10 +255,19 @@ func TestDeployReviewGuardUsesJiraFixVersionAcrossRequiresRange(t *testing.T) {
 }
 
 func reviewerReminderFixture(t *testing.T) *deployFixture {
+	return reviewerReminderFixtureWithSubtasks(t, false)
+}
+
+func reviewerReminderFixtureWithSubtasks(t *testing.T, subtasks bool) *deployFixture {
 	t.Helper()
 	return newDeployFixture(t, func(state string, q func(string) string) string {
 		cfg := deployConfig(state, q)
 		cfg = strings.Replace(cfg, "      release_notes: {transitions: [{from: [In Progress], to: Testing}], fix_version: {prefix: \"Product v\"}}\n", "      release_notes: {transitions: [{from: [In Progress], to: Testing}]}\n", 1)
+		if subtasks {
+			old := "      deployed_sha: {path: " + q("uat-sha") + "}\n      release_notes: {transitions: [{from: [In Progress], to: Testing}]}\n"
+			new := "      deployed_sha: {path: " + q("uat-sha") + "}\n      release_notes: {transitions: [{from: [In Progress], to: Testing}], subtasks: true}\n"
+			cfg = strings.Replace(cfg, old, new, 1)
+		}
 		return strings.Replace(cfg, "    uat:\n      env: local\n", "    uat:\n      env: local\n      reviewer_reminder: {statuses: [Testing]}\n", 1)
 	})
 }
@@ -284,6 +310,48 @@ func TestDeployReviewerReminderReportsUnmentionedTaskAndSkipsThisRelease(t *test
 	})
 }
 
+func TestDeployReviewerReminderDoesNotExcludeMentionedBodyKey(t *testing.T) {
+	d := reviewerReminderFixture(t)
+	d.write("reminder-body-mention-old.txt", "old work\n")
+	d.mustPlainCommit("old work PROJ-123")
+	previous := strings.TrimSpace(d.git("rev-parse", "HEAD"))
+	writeFile(t, filepath.Join(d.state, "uat-sha"), previous+"\n")
+	d.write("reminder-body-mention-release.txt", "release work\n")
+	d.mustPlainCommit("deploy release\n\nCompared with the prior release, like 19.11 in PROJ-123")
+	d.git("push", "-q", "-u", "origin", "HEAD")
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-123"] = "Testing"
+	d.jira.assignees["PROJ-123"] = "anna"
+	d.jira.mu.Unlock()
+
+	out, code := d.graft("", "deploy", "uat")
+	want := "graft: PROJ-123: under review by anna (Testing); post what changed on uat in the task"
+	if code != 0 || !strings.Contains(out, want) {
+		t.Fatalf("body mention incorrectly excluded task reminder: exit %d\n%s", code, out)
+	}
+}
+
+func TestDeployReviewerReminderDoesNotExcludeSkipKey(t *testing.T) {
+	d := reviewerReminderFixture(t)
+	d.write("reminder-skip-old.txt", "old work\n")
+	d.mustPlainCommit("old work PROJ-40")
+	previous := strings.TrimSpace(d.git("rev-parse", "HEAD"))
+	writeFile(t, filepath.Join(d.state, "uat-sha"), previous+"\n")
+	d.write("reminder-skip-release.txt", "release work\n")
+	d.mustPlainCommit("this release PROJ-40")
+	d.git("push", "-q", "-u", "origin", "HEAD")
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-40"] = "Testing"
+	d.jira.assignees["PROJ-40"] = "anna"
+	d.jira.mu.Unlock()
+
+	out, code := d.graft("", "deploy", "uat")
+	want := "graft: PROJ-40: under review by anna (Testing); post what changed on uat in the task"
+	if code != 0 || !strings.Contains(out, want) {
+		t.Fatalf("skip_keys item was excluded from reminder: exit %d\n%s", code, out)
+	}
+}
+
 func TestDeployReviewerReminderFiltersAssigneeAndStatus(t *testing.T) {
 	for _, tc := range []struct {
 		name, assignee, status string
@@ -317,6 +385,31 @@ func TestDeployReviewerReminderDoesNotIncludeUncommittedSubtasks(t *testing.T) {
 	out, code := d.graft("", "deploy", "uat")
 	if code != 0 || strings.Contains(out, "PROJ-10: under review by") {
 		t.Fatalf("uncommitted subtask got a reminder: exit %d\n%s", code, out)
+	}
+}
+
+func TestDeployReviewerReminderExcludesSubtaskMovedWithItsParent(t *testing.T) {
+	d := reviewerReminderFixtureWithSubtasks(t, true)
+	d.write("reminder-follow-old.txt", "child work\n")
+	d.mustPlainCommit("child work PROJ-10")
+	previous := strings.TrimSpace(d.git("rev-parse", "HEAD"))
+	writeFile(t, filepath.Join(d.state, "uat-sha"), previous+"\n")
+	d.write("reminder-follow-parent.txt", "parent work\n")
+	d.mustPlainCommit("parent work PROJ-1")
+	d.git("push", "-q", "-u", "origin", "HEAD")
+	d.jira.mu.Lock()
+	d.jira.parents = map[string]string{"PROJ-10": "PROJ-1"}
+	d.jira.statuses["PROJ-1"] = "In Progress"
+	d.jira.statuses["PROJ-10"] = "In Progress"
+	d.jira.assignees["PROJ-1"] = "me"
+	d.jira.assignees["PROJ-10"] = "anna"
+	d.jira.handedOver = append(d.jira.handedOver, "PROJ-10")
+	d.jira.mu.Unlock()
+
+	out, code := d.graft("", "deploy", "uat")
+	_, moved := d.jira.snapshot()
+	if code != 0 || !slices.Contains(moved, "PROJ-10") || strings.Contains(out, "PROJ-10: under review by") {
+		t.Fatalf("followed subtask got a reviewer reminder: exit %d, moved %v\n%s\nconfig:\n%s", code, moved, out, d.read(".graft.yaml"))
 	}
 }
 

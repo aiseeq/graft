@@ -2130,7 +2130,8 @@ nearby unreleased versions. `approved_release` and `release_notes.fix_version`
 do not select the guard's Jira version.
 
 The guard checks tasks in that Jira version and their subtasks in the configured
-statuses. It separately lists every issue key in the version, regardless of
+statuses. Commit keys are read from commit messages, so a body mention can block
+the guard even when it is not work delivered by the commit. It separately lists every issue key in the version, regardless of
 status, then searches subtasks of those tasks and eligible commit-key tasks in
 batches of 100 parents. A parent in `Done` can therefore still have a subtask
 that blocks the deploy. It also checks keys found in commits from the target SHA back to the
@@ -2155,10 +2156,16 @@ change, and a new check can begin between the final Jira read and the script.
 `reviewer_reminder` is opt in per target and requires
 `release_notes.jira.project_keys`. After a successful deploy to a non-prod
 target, it checks tasks and their parent/subtasks whose keys appear in commits
-already on that target, excluding keys named by this deploy. Tasks in the
-configured statuses assigned to another Jira account get a one-line reminder
-to record what changed in the task. Jira errors produce a warning and do not
-change the deploy result.
+already on that target. It excludes keys this deploy delivers, commits leaving
+an earlier hold included, and subtasks successfully moved after their parent, except for
+`release_notes.jira.skip_keys`. This follows commit classification, not the
+result of release note actions: a key can be excluded when release notes leave
+its task in place, as a task whose commits a deploy to a held target reverts or one dormant under
+`approved_release.dormant`, Jira fails, or the target has no
+`release_notes`. Reverted, quiet-only and newly withheld work remains eligible
+for reminders. Tasks in the configured statuses assigned to another Jira
+account get a one-line reminder to record what changed in the task. Jira
+errors produce a warning and do not change the deploy result.
 
 Use `approved_release.dormant` when checked-in work ships while its feature is
 disabled. `{key, reason}` keeps the existing rule: the item or its parent must
@@ -2483,7 +2490,8 @@ a key alone, or its `approved_release.attribute`. The rest are mentions. So
 `fix: PROJ-1 after PROJ-2` of PROJ-1 alone, and a
 commit with only a mention names no item. This covers the gate, the release
 notes, the release page, the items taken out of a window version, the hotfix
-label, the freeze and the trunk merge check:
+label, the freeze, the trunk merge check and the items `reviewer_reminder`
+excludes as named work:
 
 - a commit passes `approved_release`, the hotfix label and the freeze only when
   all the items of its work do, not one of them;
