@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -96,7 +95,7 @@ type revertPair struct {
 func revertPairs(recent []recentCommit, staged []string, message string) []revertPair {
 	var candidates []revertPair
 	for _, c := range recent {
-		if c.parent == "" || names(message, c.sha) {
+		if c.parent == "" || gitx.NamesCommit(message, c.sha) {
 			continue
 		}
 		for _, f := range c.files {
@@ -106,19 +105,6 @@ func revertPairs(recent []recentCommit, staged []string, message string) []rever
 		}
 	}
 	return candidates
-}
-
-// hashRe is a word that can be a commit hash, short as git prints it or full.
-var hashRe = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
-
-// names tells whether message names the commit sha by a prefix of its hash.
-func names(message, sha string) bool {
-	for _, h := range hashRe.FindAllString(message, -1) {
-		if strings.HasPrefix(sha, h) {
-			return true
-		}
-	}
-	return false
 }
 
 // revertCandidates are the staged files that can take something back: not

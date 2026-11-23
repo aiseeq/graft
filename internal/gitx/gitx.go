@@ -11,12 +11,29 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
 
 	"github.com/aiseeq/graft/v2/internal/envname"
 )
+
+// commitHashRe matches a word that can be a commit hash, short as git prints it or full.
+var commitHashRe = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
+
+// NamesCommit reports whether message names sha by a prefix of its hash.
+func NamesCommit(message, sha string) bool {
+	for _, hash := range commitHashRe.FindAllString(message, -1) {
+		if strings.HasPrefix(sha, hash) {
+			return true
+		}
+	}
+	return false
+}
+
+// CommitHashes returns hash-like words in message.
+func CommitHashes(message string) []string { return commitHashRe.FindAllString(message, -1) }
 
 // Repo is a work tree with its git directories resolved to absolute paths.
 type Repo struct {

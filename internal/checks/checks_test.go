@@ -219,8 +219,8 @@ func TestNames(t *testing.T) {
 		"revert: undo 917521d":                             false,
 		"revert: undo x917521c":                            false,
 	} {
-		if got := names(msg, sha); got != want {
-			t.Errorf("names(%q) = %v, want %v", msg, got, want)
+		if got := gitx.NamesCommit(msg, sha); got != want {
+			t.Errorf("gitx.NamesCommit(%q) = %v, want %v", msg, got, want)
 		}
 	}
 }

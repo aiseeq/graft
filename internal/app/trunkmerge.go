@@ -14,11 +14,10 @@ import (
 // target runs among its ancestors. It merges only when every commit of the
 // branch the trunk lacks is a revert, work the release withheld that the
 // trunk keeps, a change the trunk already has by content, or a port of trunk
-// work: every item it names is named by a trunk commit since the branch
-// left it (the trunk has moved on and reworked the same lines). Anything
-// else, a fix made on the branch, the merge would drop from the trunk
-// without a word. The release is live by then, so a failure is returned for
-// the exit status.
+// work: it names a trunk commit by hash and picking onto that commit changes
+// nothing outside version files. Anything else, a fix made on the branch,
+// the merge would drop from the trunk without a word. The release is live by
+// then, so a failure is returned for the exit status.
 func (a *App) mergeIntoTrunk(r *deployRun) error {
 	if !r.target.MergeIntoTrunk || r.dryRun {
 		return nil
@@ -45,7 +44,7 @@ func (a *App) mergeIntoTrunk(r *deployRun) error {
 	if in, err := r.repo.IsAncestor(r.head, trunk); err != nil || in {
 		return err
 	}
-	missing, byItem, err := notInTrunk(r, trunk)
+	missing, err := notInTrunk(r, trunk)
 	if err != nil {
 		return fail(err)
 	}
@@ -54,18 +53,14 @@ func (a *App) mergeIntoTrunk(r *deployRun) error {
 		if r.hotfix {
 			how = "git merge --no-ff " + r.branch
 		}
-		return fmt.Errorf("%s is not merged into %s: %s lacks these of its commits, by content and by the items they name, and a merge keeping %s's tree would drop them:\n  %s\nport them to %s, then: git switch %s && git pull --ff-only %s %s && %s && git push %s %s",
-			r.branch, branch, branch, branch, strings.Join(missing, "\n  "), branch, branch, remote, branch, how, remote, branch)
+		return fmt.Errorf("%s is not merged into %s: a merge keeping %s's tree would drop these commits:\n  %s\nport each fix to %s (cherry-pick) and retry the deploy's merge; a commit that ports trunk work the trunk has since rewritten is closed by merging by hand: git switch %s && git pull --ff-only %s %s && %s && git push %s %s",
+			r.branch, branch, branch, strings.Join(missing, "\n  "), branch, branch, remote, branch, how, remote, branch)
 	}
 	merge, err := a.pushTrunkMerge(r, trunk, branch)
 	if merge == "" {
 		return fail(err)
 	}
 	a.printf("merged %s into %s as %s, keeping %s's tree: the next deploy from %s finds what %s runs", r.branch, branch, gitx.Short(merge), branch, branch, r.name)
-	if len(byItem) > 0 {
-		a.printf("%d commits of %s count as ports of %s's work by the items they name, not by content: if one is a fix of its own, port it\n  %s",
-			len(byItem), r.branch, branch, strings.Join(byItem, "\n  "))
-	}
 	return err
 }
 
@@ -113,79 +108,103 @@ func (a *App) pushTrunkMerge(r *deployRun, trunk, branch string) (string, error)
 
 // notInTrunk lists the commits of the deployed branch the trunk lacks that
 // carry work the trunk does not have: picking one onto the trunk would change
-// the trunk's tree, the version files aside, which every build bumps, and it
-// names no item, or one no trunk commit since the branch left it names.
-// byItem are the commits that pass by their items alone. Reverts are left
-// out: they are work the release withheld and the trunk keeps. A merge
-// counts by what it brings to its first parent.
-func notInTrunk(r *deployRun, trunk string) (missing, byItem []string, err error) {
+// the trunk's tree, the version files aside, and it is not a linked port of
+// trunk work. A port names a real trunk commit by hash in either direction
+// and picking onto that commit changes nothing outside version files.
+// Reverts are left out: they are work the release withheld and the trunk
+// keeps. A merge counts by what it brings to its first parent.
+func notInTrunk(r *deployRun, trunk string) (missing []string, err error) {
 	commits, err := logCommits(r.repo, "--topo-order", trunk+".."+r.head)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	versionFiles := r.cfg.VersionFiles()
 	exclude := make([]string, 0, len(versionFiles))
 	for _, f := range versionFiles {
 		exclude = append(exclude, ":(exclude)"+f)
 	}
-	var trunkItems map[string]bool
+	var trunkCommits []deliveredCommit
+	var mergeBase string
 	for _, c := range commits {
 		if isRevert(c.subject) {
 			continue
 		}
 		in, err := pickChangesNothing(r.repo, trunk, c.sha, versionFiles, exclude)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		if in {
 			continue
 		}
-		if trunkItems == nil {
-			if trunkItems, err = itemsSinceFork(r, trunk); err != nil {
-				return nil, nil, err
+		if trunkCommits == nil {
+			base, e := r.repo.Git("merge-base", trunk, r.head)
+			if e != nil {
+				return nil, e
+			}
+			mergeBase = strings.TrimSpace(base)
+			trunkCommits, err = logCommits(r.repo, mergeBase+".."+trunk)
+			if err != nil {
+				return nil, err
 			}
 		}
-		line := gitx.Short(c.sha) + " " + c.subject
-		keys := commitItems(r, c)
-		if len(keys) > 0 && !slices.ContainsFunc(keys, func(k string) bool { return !trunkItems[k] }) {
-			byItem = append(byItem, line)
+		port, e := trunkPort(r, trunk, mergeBase, c, trunkCommits, versionFiles, exclude)
+		if e != nil {
+			return nil, e
+		}
+		if port {
 			continue
 		}
-		missing = append(missing, line)
+		missing = append(missing, gitx.Short(c.sha)+" "+c.subject)
 	}
-	return missing, byItem, nil
+	return missing, nil
 }
 
-// commitItems are the items a commit names, by the deploy's item keys, or
-// by ticket.pattern without them; none when the project has neither.
-func commitItems(r *deployRun, c deliveredCommit) []string {
-	switch {
-	case r.cfg.ReleaseNotes != nil && r.cfg.ReleaseNotes.Jira != nil:
-		return itemKeys(projectKeyRe(r.cfg), r.target.ApprovedRelease, c)
-	case r.cfg.Ticket != nil:
-		return commitKeys(r.cfg.Ticket.Regexp, r.target.ApprovedRelease, c)
-	}
-	return nil
-}
-
-// itemsSinceFork are the items the trunk's commits name since the deployed
-// branch left it.
-func itemsSinceFork(r *deployRun, trunk string) (map[string]bool, error) {
-	base, err := r.repo.Git("merge-base", trunk, r.head)
-	if err != nil {
-		return nil, err
-	}
-	commits, err := logCommits(r.repo, strings.TrimSpace(base)+".."+trunk)
-	if err != nil {
-		return nil, err
-	}
-	items := map[string]bool{}
-	for _, c := range commits {
-		for _, k := range commitItems(r, c) {
-			items[k] = true
+// trunkPort reports whether Y is linked by hash to a trunk commit C and
+// picking Y onto C changes nothing outside version files.
+func trunkPort(r *deployRun, trunk, mergeBase string, y deliveredCommit, trunkCommits []deliveredCommit, versionFiles, exclude []string) (bool, error) {
+	message := y.subject + "\n" + y.body
+	for _, hash := range gitx.CommitHashes(message) {
+		ok, err := r.repo.RevExists(hash)
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			continue
+		}
+		resolved, err := r.repo.Git("rev-parse", "--verify", "--quiet", hash+"^{commit}")
+		if err != nil {
+			return false, fmt.Errorf("resolving commit hash %s: %w", hash, err)
+		}
+		c := strings.TrimSpace(resolved)
+		ancestor, err := r.repo.IsAncestor(c, trunk)
+		if err != nil {
+			return false, err
+		}
+		if ancestor {
+			pickBase := c
+			beforeFork, err := r.repo.IsAncestor(c, mergeBase)
+			if err != nil {
+				return false, err
+			}
+			if beforeFork {
+				pickBase = mergeBase
+			}
+			ok, err := pickChangesNothing(r.repo, pickBase, y.sha, versionFiles, exclude)
+			if err != nil || ok {
+				return ok, err
+			}
 		}
 	}
-	return items, nil
+	for _, c := range trunkCommits {
+		if !gitx.NamesCommit(c.subject+"\n"+c.body, y.sha) {
+			continue
+		}
+		ok, err := pickChangesNothing(r.repo, c.sha, y.sha, versionFiles, exclude)
+		if err != nil || ok {
+			return ok, err
+		}
+	}
+	return false, nil
 }
 
 // pickChangesNothing tells whether picking commit onto the trunk, its first

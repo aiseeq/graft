@@ -1311,7 +1311,7 @@ func TestReleaseMergeIntoTrunk(t *testing.T) {
 // TestDeployMergeIntoTrunkKeepsFixes: a fix made on a release branch that
 // the trunk lacks stops the merge into the trunk, which would drop it; once
 // the trunk has it by content, a commit of its own, the next deploy merges,
-// and so does a port of trunk work that names the item the trunk worked on.
+// and so does a hash-linked port of trunk work.
 func TestDeployMergeIntoTrunkKeepsFixes(t *testing.T) {
 	d := newDeployFixture(t, func(state string, q func(string) string) string {
 		return `schema: 1
@@ -1336,7 +1336,7 @@ deploy:
 	fix := d.commitFile("fix.txt", "fix: found in the release")
 	out, code := d.graft("", "deploy", "prod")
 	if code == 0 || !strings.Contains(out, "deployed "+fix[:12]+" to prod") ||
-		!strings.Contains(out, "release/1 is not merged into "+trunk+": "+trunk+" lacks these of its commits, by content and by the items they name") ||
+		!strings.Contains(out, "release/1 is not merged into "+trunk+": a merge keeping "+trunk+"'s tree would drop these commits") ||
 		!strings.Contains(out, fix[:12]+" fix: found in the release") {
 		t.Errorf("a fix the trunk lacks: exit %d\n%s", code, out)
 	}
@@ -1366,19 +1366,198 @@ deploy:
 	// conflicts, by its item it is in the trunk, and the merge says so.
 	d.git("switch", "-q", trunk)
 	d.git("pull", "-q", "--ff-only", "origin", trunk)
-	d.commitFile("c.txt", "feat: PROJ-7 first take")
+	x := d.commitFile("c.txt", "feat: PROJ-7 first take")
 	d.git("switch", "-q", "-c", "release/2")
 	d.git("push", "-q", "-u", "origin", "release/2")
 	d.git("switch", "-q", trunk)
 	d.commitFile("c.txt", "feat: PROJ-7 reworked")
 	d.git("switch", "-q", "release/2")
-	port := d.commitFile("c.txt", "fix: PROJ-7 ported from the trunk")
+	port := writeReleaseCommit(d, "c.txt", "feat: PROJ-7 first take", "fix: PROJ-7 ported from the trunk "+x[:12])
 	out = d.mustGraft("deploy", "prod")
-	if !strings.Contains(out, "merged release/2 into "+trunk) ||
-		!strings.Contains(out, "1 commits of release/2 count as ports of "+trunk+"'s work by the items they name, not by content") ||
-		!strings.Contains(out, port[:12]+" fix: PROJ-7 ported from the trunk") {
-		t.Errorf("a port by its item:\n%s", out)
+	if !strings.Contains(out, "merged release/2 into "+trunk) {
+		t.Errorf("a hash-linked port of trunk work:\n%s (commit %s)", out, port)
 	}
+}
+
+func TestDeployMergeIntoTrunkHashLinkedPorts(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*deployFixture, string) (string, bool)
+	}{
+		{name: "own hotfix under a trunk item is refused", setup: func(d *deployFixture, trunk string) (string, bool) {
+			d.git("switch", "-q", trunk)
+			d.commitFile("unrelated.txt", "feat: PROJ-1 already used")
+			d.git("switch", "-q", "release/1")
+			return d.commitFile("own.txt", "fix: PROJ-1 own hotfix"), false
+		}},
+		{name: "Y names source X and trunk rewrites it", setup: func(d *deployFixture, trunk string) (string, bool) {
+			d.git("switch", "-q", trunk)
+			x := d.commitFile("port.txt", "source change")
+			d.git("switch", "-q", "release/1")
+			y := writeReleaseCommit(d, "port.txt", "source change", "port from "+x[:12])
+			d.git("switch", "-q", trunk)
+			d.commitFile("port.txt", "rewritten trunk change")
+			d.git("push", "-q", "origin", trunk)
+			d.git("switch", "-q", "release/1")
+			return y, true
+		}},
+		{name: "accidental hash mention is refused", setup: func(d *deployFixture, trunk string) (string, bool) {
+			d.git("switch", "-q", trunk)
+			x := d.commitFile("other.txt", "unrelated source")
+			d.git("switch", "-q", "release/1")
+			y := writeReleaseCommit(d, "own.txt", "own change", "fixes regression from "+x[:12])
+			d.git("switch", "-q", trunk)
+			d.commitFile("other.txt", "rewritten source")
+			d.git("push", "-q", "origin", trunk)
+			d.git("switch", "-q", "release/1")
+			return y, false
+		}},
+		{name: "hash in an unmerged feature commit is refused", setup: func(d *deployFixture, trunk string) (string, bool) {
+			d.git("switch", "-q", trunk)
+			d.git("switch", "-q", "-c", "feature/unmerged")
+			x := d.commitFile("feature.txt", "feat: feature patch")
+			d.git("switch", "-q", trunk)
+			d.git("switch", "-q", "release/1")
+			y := writeReleaseCommit(d, "feature.txt", "feat: feature patch", "port from "+x[:12])
+			return y, false
+		}},
+		{name: "trunk mention without Y changes is refused", setup: func(d *deployFixture, trunk string) (string, bool) {
+			d.git("switch", "-q", "release/1")
+			y := writeReleaseCommit(d, "port.txt", "branch change", "branch fix")
+			d.git("switch", "-q", trunk)
+			d.git("-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-m", "investigate "+y[:12])
+			d.commitFile("port.txt", "later trunk rewrite")
+			d.git("push", "-q", "origin", trunk)
+			d.git("switch", "-q", "release/1")
+			return y, false
+		}},
+		{name: "trunk commit naming Y contains its patch", setup: func(d *deployFixture, trunk string) (string, bool) {
+			d.git("switch", "-q", "release/1")
+			y := writeReleaseCommit(d, "port.txt", "branch patch", "branch patch")
+			d.git("switch", "-q", trunk)
+			d.write("port.txt", "branch patch\n")
+			d.mustPlainCommit("ported " + y[:12])
+			d.commitFile("port.txt", "later trunk rewrite")
+			d.git("push", "-q", "origin", trunk)
+			d.git("switch", "-q", "release/1")
+			return y, true
+		}},
+		{name: "source after fork is eligible", setup: func(d *deployFixture, trunk string) (string, bool) {
+			d.git("switch", "-q", trunk)
+			x := d.commitFile("port.txt", "pre-fork source")
+			d.git("switch", "-q", "release/1")
+			y := writeReleaseCommit(d, "port.txt", "pre-fork source", "port from "+x[:12])
+			d.git("switch", "-q", trunk)
+			d.commitFile("port.txt", "pre-fork source rewritten")
+			d.git("push", "-q", "origin", trunk)
+			d.git("switch", "-q", "release/1")
+			return y, true
+		}},
+		{name: "one commit ports two trunk ancestors", setup: func(d *deployFixture, trunk string) (string, bool) {
+			d.git("switch", "-q", trunk)
+			x1 := d.commitFile("port.txt", "first source")
+			x2 := d.commitFile("port.txt", "second source")
+			d.git("switch", "-q", "release/1")
+			y := writeReleaseCommit(d, "port.txt", "second source", "ports "+x1[:12]+" and "+x2[:12])
+			d.git("switch", "-q", trunk)
+			d.commitFile("port.txt", "rewritten source")
+			d.git("push", "-q", "origin", trunk)
+			d.git("switch", "-q", "release/1")
+			return y, true
+		}},
+		{name: "unknown hash is ignored and refused", setup: func(d *deployFixture, _ string) (string, bool) {
+			return writeReleaseCommit(d, "own.txt", "own change", "references ffffffe1234567 missing commit"), false
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := newTrunkMergeFixture(t)
+			trunk := d.git("branch", "--show-current")
+			d.git("remote", "set-head", "origin", trunk)
+			d.git("switch", "-q", "-c", "release/1")
+			d.git("push", "-q", "-u", "origin", "release/1")
+			y, passes := tt.setup(d, trunk)
+			out, code := d.graft("", "deploy", "prod")
+			if passes {
+				if code != 0 || !strings.Contains(out, "merged release/1 into "+trunk) {
+					t.Fatalf("expected merge, commit %s: exit %d\n%s", y, code, out)
+				}
+			} else if code == 0 || !strings.Contains(out, y[:12]) {
+				t.Fatalf("expected refusal naming %s: exit %d\n%s", y, code, out)
+			} else if !strings.Contains(out, "cherry-pick") || !strings.Contains(out, "merging by hand") {
+				t.Fatalf("refusal omits the two ways out (cherry-pick, merge by hand): %s", out)
+			} else if strings.Contains(tt.name, "unknown hash") && strings.Contains(strings.ToLower(out), "resolve") {
+				t.Fatalf("unknown hash caused a resolution error: %s", out)
+			}
+		})
+	}
+}
+
+func TestDeployMergeIntoTrunkForkBoundary(t *testing.T) {
+	t.Run("a trunk source before the fork is eligible", func(t *testing.T) {
+		d := newTrunkMergeFixture(t)
+		trunk := d.git("branch", "--show-current")
+		d.git("remote", "set-head", "origin", trunk)
+		// The branch withholds the pre-fork source x by a revert, then
+		// re-applies it naming x; the trunk rewrites x's lines after the fork.
+		d.commitFile("port.txt", "orig")
+		x := d.commitFile("port.txt", "pre-fork source")
+		d.git("push", "-q", "origin", trunk)
+		d.git("switch", "-q", "-c", "release/1")
+		d.git("push", "-q", "-u", "origin", "release/1")
+		d.git("-c", "core.hooksPath=/dev/null", "revert", "--no-edit", x)
+		d.git("push", "-q", "origin", "release/1")
+		writeReleaseCommit(d, "port.txt", "pre-fork source", "re-apply "+x[:12])
+		d.git("switch", "-q", trunk)
+		d.commitFile("port.txt", "rewritten after fork")
+		d.git("push", "-q", "origin", trunk)
+		d.git("switch", "-q", "release/1")
+		out, code := d.graft("", "deploy", "prod")
+		if code != 0 || !strings.Contains(out, "merged release/1 into "+trunk) {
+			t.Fatalf("pre-fork source %s should count as a port: exit %d\n%s", x, code, out)
+		}
+	})
+
+	t.Run("a pre-fork reference cannot restore superseded state", func(t *testing.T) {
+		d := newTrunkMergeFixture(t)
+		trunk := d.git("branch", "--show-current")
+		d.git("remote", "set-head", "origin", trunk)
+		c := d.commitFile("state.txt", "a=good")
+		d.commitFile("state.txt", "a=bad")
+		d.git("push", "-q", "origin", trunk)
+		d.git("switch", "-q", "-c", "release/1")
+		d.git("push", "-q", "-u", "origin", "release/1")
+		y := writeReleaseCommit(d, "state.txt", "a=good", "back to the behaviour of C "+c[:12])
+		out, code := d.graft("", "deploy", "prod")
+		if code == 0 || !strings.Contains(out, y[:12]) {
+			t.Fatalf("restoring the old state must be refused and name Y %s: exit %d\n%s", y, code, out)
+		}
+	})
+}
+
+func newTrunkMergeFixture(t *testing.T) *deployFixture {
+	return newDeployFixture(t, func(state string, q func(string) string) string {
+		return `schema: 1
+version: {mode: file, build_branches: ['release/*']}
+ticket: {pattern: 'PROJ-[0-9]+'}
+envs:
+  local: {}
+deploy:
+  remote: origin
+  targets:
+    prod:
+      env: local
+      run: [sh, deploy.sh]
+      deployed_sha: {path: ` + q("prod-sha") + `}
+      merge_into_trunk: true
+`
+	})
+}
+
+func writeReleaseCommit(d *deployFixture, path, content, message string) string {
+	d.write(path, content+"\n")
+	d.mustVersionedCommit(d.work, message, true)
+	return d.git("rev-parse", "HEAD")
 }
 
 type rv2Tree map[uint64]map[string]bool
