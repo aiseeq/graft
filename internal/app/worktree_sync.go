@@ -322,7 +322,7 @@ func worktreeSyncLatestSideChanges(base, side *modfile.File, isLatest func(strin
 		if req.Mod.Version == old {
 			continue
 		}
-		if !isLatest(req.Mod.Path) || !semver.IsValid(old) || !semver.IsValid(req.Mod.Version) || semver.Compare(req.Mod.Version, old) <= 0 {
+		if !worktreeSyncLatestRequireUpgrade(req.Mod.Path, old, req.Mod.Version, isLatest) {
 			return nil, false, nil
 		}
 		changes[req.Mod.Path] = req.Mod.Version
@@ -348,6 +348,10 @@ func worktreeSyncLatestSideChanges(base, side *modfile.File, isLatest func(strin
 		return nil, false, fmt.Errorf("comparing normalized go.mod: %w", err)
 	}
 	return changes, equal, nil
+}
+
+func worktreeSyncLatestRequireUpgrade(path, old, next string, isLatest func(string) bool) bool {
+	return isLatest(path) && semver.IsValid(old) && semver.IsValid(next) && semver.Compare(next, old) > 0
 }
 
 func baseRequireVersion(file *modfile.File, path string) string {

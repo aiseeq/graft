@@ -2623,6 +2623,12 @@ line the target has, change a binary file or a mode. A pick with no hash
 link is named in the refusal with the way to link it: an empty trunk
 commit naming both hashes.
 
+For version checks, a line rewritten by another commit still counts as the
+linked commit's work when the rewritten line came from it. A later version
+raise of a `modules.latest` requirement stops the search only if that module
+is required on the target; `go.sum` rewrites also stop it. A commit stays
+active when the search reaches its depth limit.
+
 Of the token owner's items (assigned
 to them now or once), not in `skip_keys` (a subtask of an item there is
 judged by its own key):

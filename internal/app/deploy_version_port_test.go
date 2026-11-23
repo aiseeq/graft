@@ -644,7 +644,7 @@ func TestVersionPortFileActivityDoesNotIgnoreOtherSyncFileLines(t *testing.T) {
 	r.writePath("web/package.json", &after)
 	commit := r.commitAll("fix: PROJ-1 version and dependency")
 	targets := versionTargetsByPath(config.Version{File: "VERSION", Sync: []config.SyncFile{{Path: "web/package.json", Format: config.FormatJSON, Key: []string{"version"}}}})
-	active, err := versionPortFileHasTextDelta(r.repo, "web/package.json", prev, commit, nil, map[string]bool{commit: true}, nil, nil, targets)
+	active, err := versionPortFileHasTextDelta(r.repo, "web/package.json", prev, commit, nil, map[string]bool{commit: true}, nil, nil, nil, targets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -653,10 +653,7 @@ func TestVersionPortFileActivityDoesNotIgnoreOtherSyncFileLines(t *testing.T) {
 	}
 }
 
-// TestCoveredVersionPortsDocumentsAcceptedRewriteRisk preserves H8b: when a
-// different task rewrites a newly added line, blame belongs to that task, so
-// the original task stays covered by the accepted content heuristic.
-func TestCoveredVersionPortsDocumentsAcceptedRewriteRisk(t *testing.T) {
+func TestCoveredVersionPortsRejectsRewrittenAddedLine(t *testing.T) {
 	r := newEmptyWithheldRepo(t)
 	r.writePath("work.txt", new(portLines("a0", "z0")))
 	r.writePath("VERSION", new("1\n"))
@@ -664,8 +661,92 @@ func TestCoveredVersionPortsDocumentsAcceptedRewriteRisk(t *testing.T) {
 	prev, c := versionPortThenRevert(t, r, base, func() { r.writePath("work.txt", new(portLines("a0\nadded", "z0"))) })
 	r.writePath("work.txt", new(portLines("a0\nadded // tweaked", "z0")))
 	head := r.commitAll("fix: PROJ-8 tweak")
-	if got := versionPortCovered(t, r, prev, head); got[c] == "" {
-		t.Fatalf("accepted H8b content risk changed: C %s is no longer covered", c[:7])
+	if got := versionPortCovered(t, r, prev, head); got[c] != "" {
+		t.Fatalf("rewritten addition covered: %v", got)
+	}
+}
+
+func TestCoveredVersionPortsRejectsTwiceRewrittenAddedLine(t *testing.T) {
+	r := newEmptyWithheldRepo(t)
+	r.writePath("work.txt", new(portLines("a0", "z0")))
+	r.writePath("VERSION", new("1\n"))
+	base := r.commitAll("base")
+	prev, c := versionPortThenRevert(t, r, base, func() { r.writePath("work.txt", new(portLines("a0\nadded", "z0"))) })
+	r.writePath("work.txt", new(portLines("a0\nfirst rewrite", "z0")))
+	r.commitAll("fix: PROJ-8 first")
+	r.writePath("work.txt", new(portLines("a0\nsecond rewrite", "z0")))
+	head := r.commitAll("fix: PROJ-9 second")
+	if got := versionPortCovered(t, r, prev, head); got[c] != "" {
+		t.Fatalf("twice rewritten addition covered: %v", got)
+	}
+}
+
+func TestCoveredVersionPortsAllowsUnrelatedRewrite(t *testing.T) {
+	r := newEmptyWithheldRepo(t)
+	r.writePath("work.txt", new(portLines("a0", "z0")))
+	r.writePath("VERSION", new("1\n"))
+	base := r.commitAll("base")
+	r.writePath("work.txt", new(portLines("a0\nadded", "z0")))
+	r.writePath("VERSION", new("2\n"))
+	c := r.commitAll("fix: PROJ-1 source")
+	r.writePath("work.txt", new(portLines("a0\nadded", "rewritten unrelated")))
+	head := r.commitAll("fix: PROJ-8 unrelated")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new(portLines("a0\nadded", "z0")))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll(fmt.Sprintf("port %s", c))
+	if got := versionPortCovered(t, r, port, head); got[c] != port {
+		t.Fatalf("unrelated rewrite prevented coverage: %v", got)
+	}
+}
+
+func TestCoveredVersionPortsStopsRewriteHistoryAtTarget(t *testing.T) {
+	r := newEmptyWithheldRepo(t)
+	r.writePath("work.txt", new(portLines("a0", "z0")))
+	r.writePath("VERSION", new("1\n"))
+	base := r.commitAll("base")
+	r.writePath("work.txt", new(portLines("a0\nadded", "z0")))
+	r.writePath("VERSION", new("2\n"))
+	c := r.commitAll("fix: PROJ-1 source")
+	r.writePath("work.txt", new(portLines("a0\nfirst rewrite", "z0")))
+	r.commitAll("fix: PROJ-8 first")
+	r.writePath("work.txt", new(portLines("a0\nsecond rewrite", "z0")))
+	head := r.commitAll("fix: PROJ-9 second")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new(portLines("a0\nadded", "z0")))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll(fmt.Sprintf("port %s", c))
+	r.writePath("work.txt", new(portLines("a0\nfirst rewrite", "z0")))
+	prev := r.commitAll("fix: PROJ-8 on release")
+	if got := versionPortCovered(t, r, prev, head); got[c] != port {
+		t.Fatalf("rewrite already on target prevented coverage: %v", got)
+	}
+}
+
+func TestVersionPortRewriteDepthLimitStaysActive(t *testing.T) {
+	origin := versionPortOrigin{commit: "in-range", line: 1}
+	active, err := versionPortRewriteActive(nil, "work.txt", "prev", origin, nil, nil, nil, map[string]bool{origin.commit: true}, versionPortRewriteDepth)
+	if err != nil || !active {
+		t.Fatalf("depth limit: active=%v err=%v", active, err)
+	}
+}
+
+func TestCoveredVersionPortsAllowsGroupRewrite(t *testing.T) {
+	r := newEmptyWithheldRepo(t)
+	r.writePath("work.txt", new(portLines("a0", "z0")))
+	r.writePath("VERSION", new("1\n"))
+	base := r.commitAll("base")
+	r.writePath("work.txt", new(portLines("a0\nadded", "z0")))
+	r.writePath("VERSION", new("2\n"))
+	c := r.commitAll("fix: PROJ-1 source")
+	r.writePath("work.txt", new(portLines("a0\nrewritten", "z0")))
+	head := r.commitAll("fix: PROJ-1 rewrite")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new(portLines("a0\nrewritten", "z0")))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll(fmt.Sprintf("port %s and %s", c, head))
+	if got := versionPortCovered(t, r, port, head); got[c] != port || got[head] != port {
+		t.Fatalf("group rewrite not covered: %v", got)
 	}
 }
 
@@ -764,4 +845,293 @@ func versionPortGateRun(r *withheldRepo) (*gateRun, *strings.Builder) {
 	cfg := &config.Config{Version: config.Version{File: "VERSION"}}
 	gate := &approvalGate{conf: conf, issues: map[string]jira.Issue{"PROJ-1": {Key: "PROJ-1", Status: "Done"}}}
 	return &gateRun{app: &App{Stdout: &out}, repo: r.repo, cfg: cfg, conf: conf, gate: gate, keyRe: regexp.MustCompile(`PROJ-[0-9]+`), activeKeys: map[string]bool{}}, &out
+}
+
+func TestCoveredVersionPortsModuleRewrites(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, directive string
+		covered               bool
+	}{
+		{"latest require", "example.com/own/mod", "require", true},
+		{"other require", "example.com/other/mod", "require", false},
+		{"latest replace", "example.com/own/mod", "replace", false},
+		{"other replace", "example.com/other/mod", "replace", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", cfg)
+			if err := os.MkdirAll(filepath.Join(cfg, "graft"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cfg, "graft", "config.yaml"), []byte("modules:\n  latest: [example.com/own/]\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			mod := func(v string) string {
+				if tc.directive == "replace" {
+					return fmt.Sprintf("module example.com/test\n\ngo 1.23\n\nreplace %s => example.com/replacement %s\n", tc.path, v)
+				}
+				return fmt.Sprintf("module example.com/test\n\ngo 1.23\n\nrequire %s %s\n", tc.path, v)
+			}
+			sum := func(v string) string { return fmt.Sprintf("%s %s h1:checksum\n", tc.path, v) }
+			r := newEmptyWithheldRepo(t)
+			r.writePath("go.mod", new(mod("v1.0.0")))
+			r.writePath("go.sum", new(sum("v1.0.0")))
+			r.writePath("VERSION", new("1\n"))
+			base := r.commitAll("base")
+			r.writePath("go.mod", new(mod("v1.1.0")))
+			r.writePath("go.sum", new(sum("v1.1.0")))
+			r.writePath("VERSION", new("2\n"))
+			c := r.commitAll("fix: PROJ-1 source")
+			r.writePath("go.mod", new(mod("v1.2.0")))
+			r.writePath("go.sum", new(sum("v1.2.0")))
+			head := r.commitAll("fix: PROJ-8 module update")
+			r.git("checkout", "-q", "-b", "release", base)
+			r.writePath("go.mod", new(mod("v1.1.0")))
+			r.writePath("go.sum", new(sum("v1.1.0")))
+			r.writePath("VERSION", new("9\n"))
+			r.commitAll(fmt.Sprintf("port %s", c))
+			r.writePath("go.mod", new(mod("v1.0.0")))
+			r.writePath("go.sum", new(sum("v1.0.0")))
+			r.writePath("VERSION", new("1\n"))
+			r.commitAll("chore: manual rollback")
+			// Release independently raised the same dependency after the rollback.
+			// This leaves the group's deleted v1.0.0 line absent on the target.
+			r.writePath("go.mod", new(mod("v1.0.1")))
+			r.writePath("go.sum", new(sum("v1.0.1")))
+			prev := r.commitAll("chore: independent release update")
+			got := versionPortCovered(t, r, prev, head)
+			if (got[c] != "") != tc.covered {
+				t.Fatalf("covered=%v want %v: %v", got[c] != "", tc.covered, got)
+			}
+			direct := versionPortCovered(t, r, prev, c)
+			if direct[c] != "" {
+				t.Fatalf("group's own line should stay active: %v", direct)
+			}
+		})
+	}
+}
+
+func TestVersionPortModuleRaisesOnlyVersion(t *testing.T) {
+	latest := func(path string) bool { return strings.HasPrefix(path, "example.com/own/") }
+	for _, tc := range []struct {
+		name, before, after string
+		want                bool
+	}{
+		{"require upgrade", "require example.com/own/mod v1.1.0", "require example.com/own/mod v1.2.0", true},
+		{"require downgrade", "require example.com/own/mod v1.1.0", "require example.com/own/mod v1.0.0", false},
+		{"require adds indirect", "require example.com/own/mod v1.1.0", "require example.com/own/mod v1.2.0 // indirect", false},
+		{"require changes comment", "require example.com/own/mod v1.1.0 // v1.1.0", "require example.com/own/mod v1.2.0 // v1.2.0", false},
+		{"outside latest", "require example.com/other/mod v1.1.0", "require example.com/other/mod v1.2.0", false},
+		{"replace upgrade", "replace example.com/own/mod => example.com/replacement v1.1.0", "replace example.com/own/mod => example.com/replacement v1.2.0", false},
+		{"replace changes path", "replace example.com/own/mod => example.com/replacement v1.1.0", "replace example.com/own/mod => example.com/other v1.2.0", false},
+		{"replaced requirement", "require example.com/own/mod v1.1.0\nreplace example.com/own/mod => example.com/replacement v1.0.0", "require example.com/own/mod v1.2.0\nreplace example.com/own/mod => example.com/replacement v1.0.0", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prefix := "module example.com/test\n\ngo 1.23\n\n"
+			lines, err := versionPortModuleRaises(prefix+tc.before+"\n", prefix+tc.after+"\n", latest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := lines[5]; got != tc.want {
+				t.Fatalf("mechanical=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCoveredVersionPortsModuleRewriteAfterManualRollback(t *testing.T) {
+	for _, tc := range []struct {
+		path    string
+		covered bool
+	}{
+		{"example.com/own/mod", false}, {"example.com/other/mod", false},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			cfg := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", cfg)
+			if err := os.MkdirAll(filepath.Join(cfg, "graft"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cfg, "graft", "config.yaml"), []byte("modules:\n  latest: [example.com/own/]\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			baseMod := "module example.com/test\n\ngo 1.23\n\n"
+			mod := func(v string) string { return fmt.Sprintf("%srequire %s %s\n", baseMod, tc.path, v) }
+			r := newEmptyWithheldRepo(t)
+			r.writePath("go.mod", new(baseMod))
+			r.writePath("VERSION", new("1\n"))
+			base := r.commitAll("base")
+			r.writePath("go.mod", new(mod("v1.1.0")))
+			r.writePath("VERSION", new("2\n"))
+			c := r.commitAll("fix: PROJ-1 dependency")
+			r.writePath("go.mod", new(mod("v1.2.0")))
+			head := r.commitAll("fix: PROJ-8 dependency update")
+			r.git("checkout", "-q", "-b", "release", base)
+			r.writePath("go.mod", new(mod("v1.1.0")))
+			r.writePath("VERSION", new("9\n"))
+			r.commitAll(fmt.Sprintf("port %s", c))
+			r.writePath("go.mod", new(baseMod))
+			r.writePath("VERSION", new("1\n"))
+			prev := r.commitAll("manual rollback without link")
+			got := versionPortCovered(t, r, prev, head)
+			if (got[c] != "") != tc.covered {
+				t.Fatalf("covered=%v want %v: %v", got[c] != "", tc.covered, got)
+			}
+		})
+	}
+}
+
+func TestCoveredVersionPortsRejectsMovedGroupLine(t *testing.T) {
+	for _, changed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("changed_%t", changed), func(t *testing.T) {
+			r := newEmptyWithheldRepo(t)
+			r.writePath("work.txt", new(portLines("a0", "z0")))
+			r.writePath("VERSION", new("1\n"))
+			base := r.commitAll("base")
+			prev, c := versionPortThenRevert(t, r, base, func() { r.writePath("work.txt", new(portLines("a0\nadded", "z0"))) })
+			moved := "added"
+			if changed {
+				moved = "added rewritten"
+			}
+			r.writePath("work.txt", new(portLines("a0", "z0\n"+moved)))
+			head := r.commitAll("fix: PROJ-8 move")
+			if got := versionPortCovered(t, r, prev, head); got[c] != "" {
+				t.Fatalf("moved group line covered: %v", got)
+			}
+		})
+	}
+}
+
+func TestCoveredVersionPortsRejectsMovedFileBackWithoutParent(t *testing.T) {
+	r := newEmptyWithheldRepo(t)
+	r.writePath("work.txt", new(portLines("a0", "z0")))
+	r.writePath("VERSION", new("1\n"))
+	base := r.commitAll("base")
+	prev, c := versionPortThenRevert(t, r, base, func() { r.writePath("work.txt", new(portLines("a0\nadded", "z0"))) })
+	r.git("mv", "work.txt", "elsewhere.txt")
+	r.commitAll("chore: PROJ-8 move away")
+	r.git("mv", "elsewhere.txt", "work.txt")
+	r.writePath("work.txt", new(portLines("a0\nrewritten", "z0")))
+	head := r.commitAll("fix: PROJ-8 move back")
+	if got := versionPortCovered(t, r, prev, head); got[c] != "" {
+		t.Fatalf("line with missing parent file covered: %v", got)
+	}
+}
+
+func TestCoveredVersionPortsAllowsNewLineAndUnrelatedRangeRewrites(t *testing.T) {
+	for _, n := range []int{0, 1, 4} {
+		t.Run(fmt.Sprintf("rewrites_%d", n), func(t *testing.T) {
+			r := newEmptyWithheldRepo(t)
+			r.writePath("work.txt", new(portLines("a0", "z0")))
+			r.writePath("VERSION", new("1\n"))
+			base := r.commitAll("base")
+			r.writePath("work.txt", new(portLines("a0\ngroup", "z0")))
+			r.writePath("VERSION", new("2\n"))
+			c := r.commitAll("fix: PROJ-1 source")
+			r.writePath("work.txt", new(portLines("a0\ngroup", "z0\nother 0")))
+			head := r.commitAll("fix: PROJ-8 addition")
+			for i := 1; i <= n; i++ {
+				r.writePath("work.txt", new(portLines("a0\ngroup", fmt.Sprintf("z0\nother %d", i))))
+				head = r.commitAll(fmt.Sprintf("fix: PROJ-8 rewrite %d", i))
+			}
+			r.git("checkout", "-q", "-b", "release", base)
+			r.writePath("work.txt", new(portLines("a0\ngroup", "z0")))
+			r.writePath("VERSION", new("9\n"))
+			port := r.commitAll(fmt.Sprintf("port %s", c))
+			if got := versionPortCovered(t, r, port, head); got[c] != port {
+				t.Fatalf("unrelated range work prevents coverage: %v", got)
+			}
+		})
+	}
+}
+
+func TestCoveredVersionPortsUsesOriginalBlameLineAfterShift(t *testing.T) {
+	r := newEmptyWithheldRepo(t)
+	r.writePath("work.txt", new(portLines("a0", "z0")))
+	r.writePath("VERSION", new("1\n"))
+	base := r.commitAll("base")
+	r.writePath("work.txt", new(portLines("a0\ngroup", "z0")))
+	r.writePath("VERSION", new("2\n"))
+	c := r.commitAll("fix: PROJ-1 source")
+	r.writePath("work.txt", new(portLines("a0\ngroup", "z0\nother")))
+	r.commitAll("fix: PROJ-8 addition")
+	r.writePath("work.txt", new(portLines("a0\ngroup", "z0\nother rewritten")))
+	r.commitAll("fix: PROJ-8 rewrite")
+	r.writePath("work.txt", new("inserted one\ninserted two\n"+portLines("a0\ngroup", "z0\nother rewritten")))
+	head := r.commitAll("chore: PROJ-9 shift")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new(portLines("a0\ngroup", "z0")))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll(fmt.Sprintf("port %s", c))
+	if got := versionPortCovered(t, r, port, head); got[c] != port {
+		t.Fatalf("shifted unrelated rewrite prevents coverage: %v", got)
+	}
+}
+
+func TestVersionPortRewriteConservativeMissingEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		data    *versionPortRewriteCommit
+		budget  int
+		want    bool
+		inRange bool
+	}{
+		{"missing hunk", &versionPortRewriteCommit{deleted: map[int][]versionPortLine{}, loaded: true}, 10, true, true},
+		{"missing blame", &versionPortRewriteCommit{deleted: map[int][]versionPortLine{1: {{number: 2}}}, changed: map[int]bool{2: true}, blame: map[int]versionPortOrigin{}, loaded: true}, 10, true, true},
+		{"budget exhausted", &versionPortRewriteCommit{deleted: map[int][]versionPortLine{1: nil}, loaded: true}, 0, true, true},
+		{"outside range", nil, 10, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newVersionPortRewrite(nil, "work.txt", "prev", nil, nil, nil, map[string]bool{"commit": tc.inRange})
+			if tc.data != nil {
+				s.commits["commit"] = tc.data
+			}
+			budget := tc.budget
+			active, err := s.walk(versionPortOrigin{commit: "commit", line: 1}, 0, &budget)
+			if err != nil || active != tc.want {
+				t.Fatalf("active=%v err=%v want=%v", active, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestVersionPortRewriteInvalidGoModStaysActive(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	if err := os.MkdirAll(filepath.Join(cfg, "graft"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "graft", "config.yaml"), []byte("modules:\n  latest: [example.com/own/]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := newEmptyWithheldRepo(t)
+	r.writePath("go.mod", new("module example.com/test\n\nrequire example.com/own/mod v1.0.0\n"))
+	prev := r.commitAll("base")
+	r.writePath("go.mod", new("not a valid go.mod\n"))
+	d := r.commitAll("fix: PROJ-8 invalid")
+	s := newVersionPortRewrite(r.repo, "go.mod", prev, nil, nil, nil, map[string]bool{d: true})
+	budget := versionPortRewriteBudget
+	active, err := s.walk(versionPortOrigin{commit: d, line: 1}, 0, &budget)
+	if err != nil || !active {
+		t.Fatalf("invalid history: active=%v err=%v", active, err)
+	}
+	r.writePath("go.mod", new("module example.com/test\n\nrequire example.com/own/mod v1.1.0\n"))
+	valid := r.commitAll("fix: PROJ-8 repair")
+	s = newVersionPortRewrite(r.repo, "go.mod", prev, nil, nil, nil, map[string]bool{d: true, valid: true})
+	budget = versionPortRewriteBudget
+	active, err = s.walk(versionPortOrigin{commit: valid, line: 3}, 0, &budget)
+	if err != nil || !active {
+		t.Fatalf("invalid parent: active=%v err=%v", active, err)
+	}
+}
+
+func TestVersionPortRequiredModulesExcludesReplaced(t *testing.T) {
+	text := "module example.com/test\n\nrequire example.com/own/mod v1.0.0\nreplace example.com/own/mod => example.com/other v1.0.0\n"
+	modules, err := versionPortRequiredModules("go.mod", text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modules["example.com/own/mod"] {
+		t.Fatal("replaced module was treated as present")
+	}
 }

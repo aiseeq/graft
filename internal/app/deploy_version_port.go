@@ -13,7 +13,9 @@ import (
 
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/userconfig"
 	"github.com/aiseeq/graft/v2/internal/version"
+	"golang.org/x/mod/modfile"
 )
 
 type versionPortHint struct {
@@ -436,19 +438,27 @@ type versionPortLine struct {
 type versionPortHunk struct{ added, deleted []versionPortLine }
 
 var versionPortHunkHeader = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
-var versionPortBlameHeader = regexp.MustCompile(`^(?:\^)?([0-9a-f]{40}|[0-9a-f]{64}) \d+ (\d+)(?: \d+)?$`)
+var versionPortBlameHeader = regexp.MustCompile(`^(?:\^)?([0-9a-f]{40}|[0-9a-f]{64}) (\d+) (\d+)(?: \d+)?$`)
+
+type versionPortOrigin struct {
+	commit string
+	line   int
+}
+
+const versionPortRewriteDepth = 32
+const versionPortRewriteBudget = 256
 
 func versionPortGroupHasActiveDelta(repo *gitx.Repo, group []deliveredCommit, prev, head string, targets map[string][]version.Target) (bool, error) {
 	groupFiles, removed, err := versionPortSourceDiff(repo, group, targets)
 	if err != nil {
 		return false, err
 	}
-	linked, mergeRange, revertRange, err := versionPortRangeLinks(repo, group, prev, head)
+	linked, mergeRange, revertRange, inRange, err := versionPortRangeLinks(repo, group, prev, head)
 	if err != nil {
 		return false, err
 	}
 	for file := range groupFiles {
-		active, err := versionPortFileHasTextDelta(repo, file, prev, head, removed[file], linked, mergeRange, revertRange, targets)
+		active, err := versionPortFileHasTextDelta(repo, file, prev, head, removed[file], linked, mergeRange, revertRange, inRange, targets)
 		if err != nil {
 			return false, err
 		}
@@ -459,33 +469,35 @@ func versionPortGroupHasActiveDelta(repo *gitx.Repo, group []deliveredCommit, pr
 	return versionPortHasBinaryDelta(repo, groupFiles, prev, head)
 }
 
-func versionPortRangeLinks(repo *gitx.Repo, group []deliveredCommit, prev, head string) (map[string]bool, map[string]bool, map[string]bool, error) {
+func versionPortRangeLinks(repo *gitx.Repo, group []deliveredCommit, prev, head string) (map[string]bool, map[string]bool, map[string]bool, map[string]bool, error) {
 	linked := map[string]bool{}
 	for _, c := range group {
 		linked[c.sha] = true
 	}
 	rangeCommits, err := logCommits(repo, prev+".."+head)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	mergeRange := map[string]bool{}
 	revertRange := map[string]bool{}
+	inRange := map[string]bool{}
 	for _, c := range rangeCommits {
+		inRange[c.sha] = true
 		if c.merge {
 			mergeRange[c.sha] = true
 		}
 		reverted, err := isWorkRemovingRevert(repo, c, rangeCommits, unknownRevertTargetUsesSubject)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("checking revert %s in release range: %w", gitx.Short(c.sha), err)
+			return nil, nil, nil, nil, fmt.Errorf("checking revert %s in release range: %w", gitx.Short(c.sha), err)
 		}
 		if reverted {
 			revertRange[c.sha] = true
 		}
 	}
-	return linked, mergeRange, revertRange, nil
+	return linked, mergeRange, revertRange, inRange, nil
 }
 
-func versionPortFileHasTextDelta(repo *gitx.Repo, file, prev, head string, removed, linked, mergeRange, revertRange map[string]bool, targets map[string][]version.Target) (bool, error) {
+func versionPortFileHasTextDelta(repo *gitx.Repo, file, prev, head string, removed, linked, mergeRange, revertRange, inRange map[string]bool, targets map[string][]version.Target) (bool, error) {
 	hunks, err := versionPortDiff(repo, prev, head, file)
 	if err != nil {
 		return false, err
@@ -498,7 +510,8 @@ func versionPortFileHasTextDelta(repo *gitx.Repo, file, prev, head string, remov
 	if err != nil {
 		return false, err
 	}
-	var blame map[int]string
+	var blame map[int]versionPortOrigin
+	rewrite := newVersionPortRewrite(repo, file, prev, linked, mergeRange, revertRange, inRange)
 	for _, h := range hunks {
 		for _, added := range h.added {
 			if versionPortLineOnlyBump(added, h.deleted, before, after, targets[file]) {
@@ -512,9 +525,14 @@ func versionPortFileHasTextDelta(repo *gitx.Repo, file, prev, head string, remov
 			}
 			// A line blame did not name stays active: an unread line must not
 			// hide the group's work from the version checks.
-			commit, named := blame[added.number]
-			if !named || linked[commit] || mergeRange[commit] || revertRange[commit] {
+			origin, named := blame[added.number]
+			if !named {
 				return true, nil
+			}
+			budget := versionPortRewriteBudget
+			active, err := rewrite.walk(origin, 0, &budget)
+			if err != nil || active {
+				return active, err
 			}
 		}
 		for _, deleted := range h.deleted {
@@ -529,24 +547,340 @@ func versionPortFileHasTextDelta(repo *gitx.Repo, file, prev, head string, remov
 	return false, nil
 }
 
-func versionPortFileBlame(repo *gitx.Repo, file, prev, head string) (map[int]string, error) {
-	output, err := repo.Git("blame", "--line-porcelain", "--no-follow", prev+".."+head, "--", file)
+// Follow deleted lines from the whole file: a commit can move a line to a
+// different hunk while changing it. Cache the diff and blame per commit.
+type versionPortRewrite struct {
+	repo                                     *gitx.Repo
+	file, prev                               string
+	linked, mergeRange, revertRange, inRange map[string]bool
+	commits                                  map[string]*versionPortRewriteCommit
+	moduleLines                              map[string]map[int]bool
+	latest                                   userconfig.Modules
+	latestLoaded                             bool
+	prevModules                              map[string]bool
+	prevModulesLoaded                        bool
+	invalidPrevModules                       bool
+	invalidModules                           map[string]bool
+}
+
+type versionPortRewriteCommit struct {
+	deleted       map[int][]versionPortLine
+	changed       map[int]bool
+	blame         map[int]versionPortOrigin
+	parent        string
+	lines         []int
+	loaded        bool
+	parentMissing bool
+}
+
+func versionPortRewriteActive(repo *gitx.Repo, file, prev string, origin versionPortOrigin, linked, mergeRange, revertRange, inRange map[string]bool, depth int) (bool, error) {
+	state := newVersionPortRewrite(repo, file, prev, linked, mergeRange, revertRange, inRange)
+	budget := versionPortRewriteBudget
+	return state.walk(origin, depth, &budget)
+}
+
+func newVersionPortRewrite(repo *gitx.Repo, file, prev string, linked, mergeRange, revertRange, inRange map[string]bool) *versionPortRewrite {
+	return &versionPortRewrite{repo: repo, file: file, prev: prev, linked: linked, mergeRange: mergeRange, revertRange: revertRange, inRange: inRange, commits: map[string]*versionPortRewriteCommit{}, moduleLines: map[string]map[int]bool{}, invalidModules: map[string]bool{}}
+}
+
+func (s *versionPortRewrite) walk(origin versionPortOrigin, depth int, budget *int) (bool, error) {
+	if s.linked[origin.commit] || s.mergeRange[origin.commit] || s.revertRange[origin.commit] {
+		return true, nil
+	}
+	if !s.inRange[origin.commit] {
+		return false, nil
+	}
+	if depth >= versionPortRewriteDepth || *budget == 0 {
+		return true, nil
+	}
+	*budget--
+	mechanical, uncertain, err := s.mechanical(origin)
+	if err != nil || uncertain {
+		return uncertain, err
+	}
+	if mechanical {
+		return false, nil
+	}
+	data, err := s.commit(origin.commit)
+	if err != nil {
+		return false, err
+	}
+	deleted, ok := data.deleted[origin.line]
+	if !ok {
+		return true, nil
+	}
+	if len(deleted) == 0 {
+		return data.parentMissing, nil
+	}
+	if err := s.loadPrior(data); err != nil {
+		return false, err
+	}
+	for _, line := range deleted {
+		if !data.changed[line.number] {
+			continue
+		}
+		prior, ok := data.blame[line.number]
+		if !ok {
+			return true, nil
+		}
+		active, err := s.walk(prior, depth+1, budget)
+		if err != nil || active {
+			return active, err
+		}
+	}
+	return false, nil
+}
+
+func (s *versionPortRewrite) mechanical(origin versionPortOrigin) (bool, bool, error) {
+	switch filepath.Base(s.file) {
+	case "go.sum":
+		return true, false, nil
+	case "go.mod":
+	default:
+		return false, false, nil
+	}
+	lines, ok := s.moduleLines[origin.commit]
+	if !ok {
+		var err error
+		lines, err = s.loadModuleHistory(origin.commit)
+		if err != nil {
+			return false, false, err
+		}
+	}
+	return lines[origin.line], s.invalidPrevModules || s.invalidModules[origin.commit], nil
+}
+
+func (s *versionPortRewrite) loadModuleHistory(commit string) (map[int]bool, error) {
+	if !s.latestLoaded {
+		var err error
+		s.latest, err = userconfig.ModulesSettings()
+		if err != nil {
+			return nil, fmt.Errorf("reading modules.latest: %w", err)
+		}
+		s.latestLoaded = true
+	}
+	lines := map[int]bool{}
+	if len(s.latest.Latest) == 0 {
+		s.moduleLines[commit] = lines
+		return lines, nil
+	}
+	s.loadPrevModules()
+	if s.invalidPrevModules {
+		s.moduleLines[commit] = lines
+		return lines, nil
+	}
+	text, err := s.repo.Git("show", commit+":"+s.file)
+	if err != nil {
+		return nil, err
+	}
+	parent, parentErr := s.repo.Git("show", commit+"^1:"+s.file)
+	if parentErr == nil {
+		lines, err = versionPortModuleRaises(parent, text, func(path string) bool { return s.latest.IsLatest(path) && s.prevModules[path] })
+		// A parse failure means attribution is uncertain, so walk marks it active.
+		s.invalidModules[commit] = err != nil
+	}
+	s.moduleLines[commit] = lines
+	return lines, nil
+}
+
+func (s *versionPortRewrite) loadPrevModules() {
+	if s.prevModulesLoaded {
+		return
+	}
+	s.prevModules = map[string]bool{}
+	previous, err := s.repo.Git("show", s.prev+":"+s.file)
+	// Without a readable target go.mod we cannot prove the module is present.
+	s.invalidPrevModules = err != nil
+	if !s.invalidPrevModules {
+		var parseErr error
+		s.prevModules, parseErr = versionPortRequiredModules(s.file, previous)
+		// Unreadable history is active rather than treated as a successful match.
+		s.invalidPrevModules = parseErr != nil
+	}
+	s.prevModulesLoaded = true
+}
+
+func versionPortRequiredModules(file, text string) (map[string]bool, error) {
+	mod, err := modfile.Parse(file, []byte(text), nil)
+	if err != nil {
+		return nil, fmt.Errorf("parsing previous go.mod: %w", err)
+	}
+	modules := map[string]bool{}
+	for _, req := range mod.Require {
+		modules[req.Mod.Path] = true
+	}
+	for _, rep := range mod.Replace {
+		delete(modules, rep.Old.Path)
+	}
+	return modules, nil
+}
+
+// Only version increases are mechanical; changes to a directive's other
+// tokens or comments remain task work. Invalid module files stay conservative.
+func versionPortModuleRaises(before, after string, latest func(string) bool) (map[int]bool, error) {
+	lines := map[int]bool{}
+	base, err := modfile.Parse("go.mod", []byte(before), nil)
+	if err != nil {
+		return nil, fmt.Errorf("parsing parent go.mod: %w", err)
+	}
+	next, err := modfile.Parse("go.mod", []byte(after), nil)
+	if err != nil {
+		return nil, fmt.Errorf("parsing rewritten go.mod: %w", err)
+	}
+	oldLines, newLines := strings.Split(before, "\n"), strings.Split(after, "\n")
+	replaced := map[string]bool{}
+	for _, rep := range append(slices.Clone(base.Replace), next.Replace...) {
+		replaced[rep.Old.Path] = true
+	}
+	for _, req := range next.Require {
+		for _, old := range base.Require {
+			if req.Mod.Path == old.Mod.Path && !replaced[req.Mod.Path] && worktreeSyncLatestRequireUpgrade(req.Mod.Path, old.Mod.Version, req.Mod.Version, latest) && versionPortOnlyRaises(oldLines[old.Syntax.Start.Line-1], newLines[req.Syntax.Start.Line-1], old.Mod.Version, req.Mod.Version) {
+				lines[req.Syntax.Start.Line] = true
+			}
+		}
+	}
+	return lines, nil
+}
+
+func versionPortOnlyRaises(before, after, oldVersion, newVersion string) bool {
+	oldCode, oldComment, oldHasComment := strings.Cut(before, "//")
+	newCode, newComment, newHasComment := strings.Cut(after, "//")
+	if oldHasComment != newHasComment || oldComment != newComment {
+		return false
+	}
+	old, next := strings.Fields(oldCode), strings.Fields(newCode)
+	if len(old) != len(next) {
+		return false
+	}
+	changed := false
+	for i := range old {
+		if old[i] == next[i] {
+			continue
+		}
+		if old[i] != oldVersion || next[i] != newVersion || changed {
+			return false
+		}
+		changed = true
+	}
+	return changed
+}
+
+func (s *versionPortRewrite) commit(commit string) (*versionPortRewriteCommit, error) {
+	if data := s.commits[commit]; data != nil {
+		return data, nil
+	}
+	parent := commit + "^1"
+	hunks, err := versionPortDiff(s.repo, parent, commit, s.file)
+	if err != nil {
+		return nil, err
+	}
+	data := &versionPortRewriteCommit{parent: parent, deleted: map[int][]versionPortLine{}}
+	var allDeleted []versionPortLine
+	for _, h := range hunks {
+		allDeleted = append(allDeleted, h.deleted...)
+		for _, line := range h.deleted {
+			data.lines = append(data.lines, line.number)
+		}
+	}
+	for _, h := range hunks {
+		for _, line := range h.added {
+			data.deleted[line.number] = allDeleted
+		}
+	}
+	if len(allDeleted) == 0 {
+		_, err := s.repo.Git("cat-file", "-e", parent+":"+s.file)
+		data.parentMissing = err != nil
+	}
+	s.commits[commit] = data
+	return data, nil
+}
+
+func (s *versionPortRewrite) loadPrior(data *versionPortRewriteCommit) error {
+	if data.loaded {
+		return nil
+	}
+	var err error
+	data.changed, err = versionPortAddedLines(s.repo, s.prev, data.parent, s.file)
+	if err != nil {
+		return err
+	}
+	var lines []int
+	for _, line := range data.lines {
+		if data.changed[line] {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) > 0 {
+		data.blame, err = versionPortFileBlameLines(s.repo, s.file, s.prev, data.parent, lines)
+		if err != nil {
+			return err
+		}
+	}
+	data.loaded = true
+	return nil
+}
+
+func versionPortAddedLines(repo *gitx.Repo, prev, head, file string) (map[int]bool, error) {
+	hunks, err := versionPortDiff(repo, prev, head, file)
+	if err != nil {
+		return nil, err
+	}
+	added := map[int]bool{}
+	for _, h := range hunks {
+		for _, line := range h.added {
+			added[line.number] = true
+		}
+	}
+	return added, nil
+}
+
+func versionPortFileBlame(repo *gitx.Repo, file, prev, head string) (map[int]versionPortOrigin, error) {
+	return versionPortFileBlameLines(repo, file, prev, head, nil)
+}
+
+func versionPortFileBlameLines(repo *gitx.Repo, file, prev, head string, lines []int) (map[int]versionPortOrigin, error) {
+	args := []string{"blame", "--line-porcelain", "--no-follow"}
+	slices.Sort(lines)
+	lines = slices.Compact(lines)
+	// A very fragmented file can exceed the operating system's argument limit;
+	// in that case one full-file blame remains bounded to a single Git process.
+	var ranges []string
+	for i := 0; i < len(lines); {
+		start, end := lines[i], lines[i]
+		i++
+		for i < len(lines) && lines[i] == end+1 {
+			end = lines[i]
+			i++
+		}
+		ranges = append(ranges, strconv.Itoa(start)+","+strconv.Itoa(end))
+	}
+	if len(ranges) <= 128 {
+		for _, r := range ranges {
+			args = append(args, "-L", r)
+		}
+	}
+	args = append(args, prev+".."+head, "--", file)
+	output, err := repo.Git(args...)
 	if err != nil {
 		return nil, fmt.Errorf("blaming %s in release range: %w", file, err)
 	}
-	lines := map[int]string{}
+	origins := map[int]versionPortOrigin{}
 	for line := range strings.SplitSeq(output, "\n") {
 		match := versionPortBlameHeader.FindStringSubmatch(line)
 		if match == nil {
 			continue
 		}
-		lineNumber, err := strconv.Atoi(match[2])
+		original, err := strconv.Atoi(match[2])
 		if err != nil {
-			return nil, fmt.Errorf("parsing blamed line number %q in %s: %w", match[2], file, err)
+			return nil, fmt.Errorf("parsing original line number %q in %s: %w", match[2], file, err)
 		}
-		lines[lineNumber] = match[1]
+		lineNumber, err := strconv.Atoi(match[3])
+		if err != nil {
+			return nil, fmt.Errorf("parsing blamed line number %q in %s: %w", match[3], file, err)
+		}
+		origins[lineNumber] = versionPortOrigin{match[1], original}
 	}
-	return lines, nil
+	return origins, nil
 }
 
 func versionPortHasBinaryDelta(repo *gitx.Repo, groupFiles map[string]bool, prev, head string) (bool, error) {
