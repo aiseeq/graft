@@ -937,7 +937,7 @@ func (m *machine) refreshPriorityNow(ctx context.Context) error {
 }
 
 func (m *machine) reserveWaitPause(ctx context.Context, b busyness, p *Priority) (time.Duration, error) {
-	pause := m.l.Poll
+	pause := m.pollInterval()
 	if !b.retryAt.IsZero() {
 		pause = min(pause, max(time.Until(b.retryAt), 0))
 	}
@@ -1585,6 +1585,25 @@ func LoadQueueWhy(ctx context.Context, name, kind string, l userconfig.MachineLo
 // BusyChecker keeps the pressure meter across readings, so repeated checks
 // measure since the previous reading without waiting for another swap window.
 type BusyChecker struct{ machine *machine }
+
+// ioWindowFloor is the shortest IO window a look without aguard's disk state
+// source measures over.
+var ioWindowFloor = 5 * time.Second
+
+// pollInterval is load.poll, but at least ioWindowFloor while the last look
+// had no disk state source and measured IO pressure: akit measures it since
+// the previous look then, so a shorter poll would shorten that window. A
+// retry or a deadline may still wake the caller earlier.
+func (m *machine) pollInterval() time.Duration {
+	if m.haveView && m.lastView.Load.Disk == nil && !slices.Contains(m.lastView.Skipped, pressure.ErrNoIOPressure) {
+		return max(m.l.Poll, ioWindowFloor)
+	}
+	return m.l.Poll
+}
+
+// Poll is the pause before the next Why, by the same rule as the admission
+// queue's poll.
+func (c *BusyChecker) Poll() time.Duration { return c.machine.pollInterval() }
 
 // NewDiskBusyChecker checks disk, writeback, swap and quiet mode before the
 // next batch of an already-running process. The batch mainly adds disk load,

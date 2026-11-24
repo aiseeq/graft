@@ -58,6 +58,7 @@ load:                            # heavy tasks on a shared machine (heavy: true 
   threads: 4                     # default 4: {threads} in steps, GRAFT_THREADS, GOMAXPROCS and -p in heavy tasks
   settle: 30s                    # default 30s: maximum lifetime of an expected CPU reservation
   poll: 5s                       # default 5s; 0 anywhere here means the default
+                                 # without a disk state source a poll under 5s waits 5s, the IO pressure window; a retry or a deadline can still end it early
 limits:                          # graft stats marks the tasks over them, by median without the waits; a run over says so when it ends; a project's .graft.yaml limits override these
   gate: 1m                       # default 1m: the gate of a commit as a whole
   task: 8m                       # default 8m: any other task, a test run before a deploy, merge or release

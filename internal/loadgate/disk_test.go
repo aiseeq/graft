@@ -125,6 +125,97 @@ func TestDiskSourceIsAsked(t *testing.T) {
 	}
 }
 
+// TestPollTwoSecondsKeepsFiveSecondIOWithoutDiskSource: without the disk
+// state source akit measures IO pressure since the previous look, so a poll
+// under the IO window floor waits the floor; with the source, or a poll above
+// the floor, the poll stays as it is. The floor is scaled down here; it is
+// five seconds outside the tests.
+func TestPollTwoSecondsKeepsFiveSecondIOWithoutDiskSource(t *testing.T) {
+	floor := 400 * time.Millisecond
+	setFloor := func(t *testing.T) {
+		old := ioWindowFloor
+		ioWindowFloor = floor
+		t.Cleanup(func() { ioWindowFloor = old })
+	}
+	busyMachine := func(t *testing.T, poll time.Duration, diskFails bool) (*machine, busyness, string) {
+		t.Helper()
+		setRunnable, _, _ := fakeMachine(t)
+		setRunnable(22)
+		if diskFails {
+			fakeDisk(t).set(0, "synthetic failure")
+		}
+		l := testLoad
+		l.Poll = poll
+		m := newMachine(l, io.Discard, "poll-floor", "projectA:poll-floor")
+		lockPath := filepath.Join(t.TempDir(), "load.lock")
+		b, err := m.measureOrReserve(context.Background(), true, lockPath)
+		if err != nil || b.why == "" {
+			t.Fatalf("initial measure = %+v, %v; want busy", b, err)
+		}
+		return m, b, lockPath
+	}
+
+	t.Run("source unavailable", func(t *testing.T) {
+		setFloor(t)
+		m, b, lockPath := busyMachine(t, floor/3, true)
+		pause, err := m.reserveWaitPause(context.Background(), b, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pause != floor {
+			t.Errorf("pause = %s; want the floor %s", pause, floor)
+		}
+		if err := m.pause(context.Background(), pause); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.measureOrReserve(context.Background(), false, lockPath); err != nil {
+			t.Fatal(err)
+		}
+		if got := m.lastView.Load.IOWindow; got < floor {
+			t.Errorf("IOWindow = %s; want at least %s", got, floor)
+		}
+	})
+
+	t.Run("source unavailable, poll above the floor", func(t *testing.T) {
+		setFloor(t)
+		m, b, _ := busyMachine(t, 2*floor, true)
+		pause, err := m.reserveWaitPause(context.Background(), b, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pause != 2*floor {
+			t.Errorf("pause = %s; want the poll %s", pause, 2*floor)
+		}
+	})
+
+	t.Run("source available", func(t *testing.T) {
+		setFloor(t)
+		m, b, _ := busyMachine(t, floor/3, false)
+		pause, err := m.reserveWaitPause(context.Background(), b, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pause != floor/3 {
+			t.Errorf("pause = %s; want the poll %s", pause, floor/3)
+		}
+	})
+
+	t.Run("disk busy checker", func(t *testing.T) {
+		setFloor(t)
+		fakeMachine(t)
+		fakeDisk(t).set(0, "synthetic failure")
+		l := testLoad
+		l.Poll = floor / 3
+		c := NewDiskBusyChecker("gocache trim", "projectA:trim", l, io.Discard)
+		if _, err := c.Why(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := c.Poll(); got != floor {
+			t.Errorf("Poll = %s; want the floor %s", got, floor)
+		}
+	})
+}
+
 // TestNoDiskSourceUsesPSI: without the disk state source, or with one that
 // fails, the admission says so once and measures the disk by the IO
 // pressure's total.

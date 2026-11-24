@@ -78,7 +78,7 @@ func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, 
 		}
 		checker := loadgate.NewDiskBusyChecker("gocache trim", trimKind, load, a.Stderr)
 		options.BeforeBatch = func() (bool, error) {
-			ok, batchWaits, err := waitForTrimBatch(ctx, remainingWait, load.Poll,
+			ok, batchWaits, err := waitForTrimBatch(ctx, remainingWait, checker.Poll,
 				trimMemoryCalm,
 				checker.Why)
 			for why, d := range batchWaits {
@@ -161,7 +161,7 @@ func trimMemoryCalm() (bool, error) {
 	return dirtyWriteback < maxDirtyWritebackKB, nil
 }
 
-func waitForTrimBatch(ctx context.Context, maxWait, poll time.Duration, dirty func() (bool, error), why func(context.Context) (string, error)) (bool, loadgate.Waits, error) {
+func waitForTrimBatch(ctx context.Context, maxWait time.Duration, poll func() time.Duration, dirty func() (bool, error), why func(context.Context) (string, error)) (bool, loadgate.Waits, error) {
 	waits := loadgate.Waits{}
 	// The budget runs on the clock, so a wait is the whole time since the
 	// last one ended, the checks with it, not only the sleep between them.
@@ -194,7 +194,7 @@ func waitForTrimBatch(ctx context.Context, maxWait, poll time.Duration, dirty fu
 			charge(blockedBy)
 			return false, waits, nil
 		}
-		timer := time.NewTimer(min(poll, time.Until(deadline)))
+		timer := time.NewTimer(min(poll(), time.Until(deadline)))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
