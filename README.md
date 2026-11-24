@@ -1367,6 +1367,10 @@ graft's version, pid and command line. A
   see remote_heavy) on its own
   line too, and its tasks add it; it counts no more than the step's
   `wall_s`. Absent when nothing waited.
+  Waits of nested grafts are included in the enclosing task's `wait_s` and
+  `wait_why`, and in its step's line, with overlapping waits counted once:
+  graft passes every step a file in `GRAFT_CHILD_WAITS` where a graft it
+  starts reports its wait spans.
 - `wait_why` splits `wait_s` by what was waited for, in seconds: `queue`
   (behind other heavy tasks), `load`, `io`, `writeback`, `swap` (each over its limit;
   the time between two readings goes to what the first found), `quiet` (the

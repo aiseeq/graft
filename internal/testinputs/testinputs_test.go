@@ -27,6 +27,7 @@ func TestEnvReadsInheritedAndNewlySetInputs(t *testing.T) {
 		"gomaxprocs=2",
 		"GOMAXPROCS=4",
 		"GRAFT_RUN_ID=test-run",
+		"GRAFT_CHILD_WAITS=/tmp/graft-child-waits-1",
 		"PATH=/bin",
 	}, func(name string) string {
 		reads = append(reads, name)
@@ -39,7 +40,7 @@ func TestEnvReadsInheritedAndNewlySetInputs(t *testing.T) {
 	}
 	// On Windows gomaxprocs is GOMAXPROCS, a perRun name; elsewhere it is a
 	// variable of its own.
-	wantRead, wantSkipped := []string{"GIT_AUTHOR_NAME", "PATH"}, []string{"GOMAXPROCS", "GRAFT_RUN_ID"}
+	wantRead, wantSkipped := []string{"GIT_AUTHOR_NAME", "PATH"}, []string{"GOMAXPROCS", "GRAFT_RUN_ID", "GRAFT_CHILD_WAITS"}
 
 	wantRead = append(wantRead, "gomaxprocs")
 

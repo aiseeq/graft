@@ -57,6 +57,7 @@ type Waits map[string]time.Duration
 // why.
 type Admission struct {
 	Waits            Waits
+	WaitSpans        []stats.WaitSpan
 	WaitedBehind     string
 	ReserveCores     float64
 	ReserveSince     time.Time
@@ -634,7 +635,7 @@ func acquireSettle(ctx context.Context, m *machine, p *Priority, settleLockPath 
 		return nil, "", start, err
 	}
 	if settleLock.WaitedBehind != "" {
-		m.waits[WhyQueue] += time.Since(start)
+		m.addWait(WhyQueue, start, time.Now())
 		m.waitedBehind = settleLock.WaitedBehind
 		m.lastWaitText = "queued behind " + settleLock.WaitedBehind
 	}
@@ -737,11 +738,13 @@ func (m *machine) loadQueueResult(ctx context.Context, p *Priority, lockPath str
 	}
 	queueWaited := lk.WaitedBehind != "" || lk.WaitedQuiet > 0
 	if queueWaited {
-		waited := time.Since(start)
-		if lk.WaitedQuiet > 0 {
-			m.waits[WhyQuiet] += min(lk.WaitedQuiet, waited)
-		}
-		m.waits[WhyQueue] += max(0, waited-m.waits[WhyQuiet]-m.waits[WhyQueue])
+		now := time.Now()
+		waited := now.Sub(start)
+		quietWait := min(lk.WaitedQuiet, waited)
+		queueWait := max(0, waited-m.waits[WhyQuiet]-quietWait-m.waits[WhyQueue])
+		from := now.Add(-quietWait - queueWait)
+		m.addWait(WhyQueue, from, from.Add(queueWait))
+		m.addWait(WhyQuiet, from.Add(queueWait), now)
 	}
 	if lk.WaitedBehind != "" {
 		behind = lk.WaitedBehind
@@ -805,7 +808,7 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 			why = b.why
 		}
 		if why != "" {
-			m.waits[why] += now.Sub(mark)
+			m.addWait(why, mark, now)
 		}
 		mark, why = now, b.why
 		if err != nil {
@@ -853,7 +856,7 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 		}
 		if err := m.pause(ctx, pause); err != nil {
 			if why != "" {
-				m.waits[why] += m.now().Sub(mark)
+				m.addWait(why, mark, m.now())
 			}
 			return err
 		}
@@ -915,8 +918,7 @@ func (m *machine) priorityFailure(ctx context.Context, p *Priority, from, to tim
 }
 
 func (m *machine) noteQueueWait(path string, from, to time.Time) {
-	waited := max(to.Sub(from), 0)
-	m.waits[WhyQueue] += waited
+	m.addWait(WhyQueue, from, to)
 	holders, err := lock.Holders(path)
 	if err == nil && len(holders) > 0 {
 		m.waitedBehind = holders[0]
@@ -1509,6 +1511,7 @@ type machine struct {
 	ignoreCPUPressure bool
 	// waits is how long admit waited, by why.
 	waits          Waits
+	waitSpans      []stats.WaitSpan
 	candidate      float64
 	candidateKnown bool
 	decision       admissionDecision
@@ -1529,7 +1532,32 @@ func newMachine(l userconfig.MachineLoad, log io.Writer, name, kind string) *mac
 }
 
 func (m *machine) admission() Admission {
-	return Admission{Waits: m.waits, WaitedBehind: m.waitedBehind}
+	return Admission{Waits: m.waits, WaitSpans: m.waitSpans, WaitedBehind: m.waitedBehind}
+}
+
+func (m *machine) addWait(why string, from, to time.Time) {
+	if !to.After(from) {
+		return
+	}
+	m.waits[why] += to.Sub(from)
+	// A wait polled again goes on where the last one ended: extend that span
+	// rather than add one per poll, so a long wait stays one span.
+	if n := len(m.waitSpans); n > 0 {
+		last := &m.waitSpans[n-1]
+		if last.Why == why && !from.After(last.End) && !from.Before(last.Start) {
+			last.End = later(last.End, to)
+			return
+		}
+	}
+	m.waitSpans = append(m.waitSpans, stats.NewWaitSpan(from, to, why))
+}
+
+// later is the later of a and b.
+func later(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 // behind is the admission of a task that waited in a queue behind holder.

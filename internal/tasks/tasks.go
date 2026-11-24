@@ -3505,6 +3505,8 @@ func (r *Runner) measureWithCapture(ctx context.Context, cmd *exec.Cmd, source s
 // measureWithReason runs and records cmd; the reason of a failed step is the
 // first useful cleaned reason from reasonSource, stderr, or stdout.
 func (r *Runner) measureWithReason(ctx context.Context, cmd *exec.Cmd, source string, captureStderr, captureStdout bool, remoteStderr *bytes.Buffer, reasonSource func() string, missingRunNames func() bool, record bool) (stats.Usage, error) {
+	waits := prepareChildWaits(cmd, r.Stderr)
+	defer waits.close(r.Stderr)
 	stdout, stderr, piped := captureStepOutput(cmd, captureStderr, captureStdout)
 	if piped && cmd.WaitDelay == 0 {
 		cmd.WaitDelay = backgroundPipeWait
@@ -3534,6 +3536,7 @@ func (r *Runner) measureWithReason(ctx context.Context, cmd *exec.Cmd, source st
 		return stats.Usage{}, err
 	}
 	use := stats.FromProcess(cmd.ProcessState, time.Since(start))
+	waits.addTo(&use, r.Stderr)
 	if remoteStderr != nil {
 		// The host's wait is part of the step's wall time: a line claiming
 		// more counts no more than that.
@@ -3543,6 +3546,8 @@ func (r *Runner) measureWithReason(ctx context.Context, cmd *exec.Cmd, source st
 				use.WaitWhy = map[string]time.Duration{}
 			}
 			use.WaitWhy[WhyHost] += waited
+			use.WaitSpans = append(use.WaitSpans, stats.NewWaitSpan(start, start.Add(waited), WhyHost))
+			use.UnionWaits()
 		}
 	}
 	if werr := use.Watched(seen); werr != nil && r.Stats != nil {
@@ -3839,6 +3844,7 @@ func (r *Runner) end(f *frame, err error) stats.Usage {
 		}
 	}
 	use := f.use
+	use.UnionWaits()
 	use.Wall = time.Since(f.start)
 	if f.load != nil {
 		if err := use.Watched(f.load.Stop()); err != nil && r.Stats != nil {
@@ -3859,6 +3865,7 @@ func (r *Runner) end(f *frame, err error) stats.Usage {
 	}
 	r.write(rec, use, outermost)
 	if len(r.frames) == 0 {
+		reportChildWait(use, r.Stderr)
 		r.overLimit(f.task, use)
 	}
 	return use
@@ -4596,8 +4603,15 @@ func (r *Runner) Waited(why string, d time.Duration) {
 	if d <= 0 {
 		return
 	}
+	end := time.Now()
+	r.waitedBetween(why, end.Add(-d), end)
+}
+
+func (r *Runner) waitedBetween(why string, start, end time.Time) {
+	d := end.Sub(start)
 	for _, f := range r.frames {
 		f.use.Wait += d
+		f.use.WaitSpans = append(f.use.WaitSpans, stats.NewWaitSpan(start, end, why))
 		if f.use.WaitWhy == nil {
 			f.use.WaitWhy = map[string]time.Duration{}
 		}
@@ -4607,8 +4621,21 @@ func (r *Runner) Waited(why string, d time.Duration) {
 
 // waitedFor adds the waits of a heavy task's admission.
 func (r *Runner) waitedFor(a loadgate.Admission) {
-	for why, d := range a.Waits {
-		r.Waited(why, d)
+	if len(a.WaitSpans) > 0 {
+		for _, span := range a.WaitSpans {
+			r.waitedBetween(span.Why, span.Start, span.End)
+		}
+	} else {
+		// Synthetic admissions can provide totals without intervals.
+		start := time.Now().Add(-a.Waits.Total())
+		for _, why := range slices.Sorted(maps.Keys(a.Waits)) {
+			d := a.Waits[why]
+			if d > 0 {
+				end := start.Add(d)
+				r.waitedBetween(why, start, end)
+				start = end
+			}
+		}
 	}
 	if n := len(r.frames); n > 0 && a.WaitedBehind != "" {
 		r.frames[n-1].waitedBehind = a.WaitedBehind

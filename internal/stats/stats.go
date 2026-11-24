@@ -202,6 +202,8 @@ type Usage struct {
 	// locks; WaitWhy splits it by what was waited for.
 	Wait    time.Duration
 	WaitWhy map[string]time.Duration
+	// WaitSpans carries the actual intervals through nested processes.
+	WaitSpans []WaitSpan
 	// MaxRSS is the peak resident memory in bytes; RSSKnown is false where
 	// the OS does not report it.
 	MaxRSS   int64
@@ -291,6 +293,7 @@ func (s *Usage) Add(u Usage) {
 	s.User += u.User
 	s.Sys += u.Sys
 	s.Wait += u.Wait
+	s.WaitSpans = append(s.WaitSpans, u.WaitSpans...)
 	for why, d := range u.WaitWhy {
 		if s.WaitWhy == nil {
 			s.WaitWhy = map[string]time.Duration{}
