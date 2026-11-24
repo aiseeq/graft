@@ -1094,6 +1094,7 @@ func firstUnmeasuredAdmission(lockPath string, now time.Time, grace time.Duratio
 			if err != nil {
 				return "", time.Time{}, false, err
 			}
+			mtime = notAfter(mtime, now)
 			until := mtime.Add(grace)
 			if now.Before(until) && (retryAt.IsZero() || until.Before(retryAt)) {
 				firstTask, retryAt = "unknown task", until
@@ -1109,6 +1110,7 @@ func firstUnmeasuredAdmission(lockPath string, now time.Time, grace time.Duratio
 			if statErr != nil {
 				return "", time.Time{}, false, statErr
 			}
+			mtime = notAfter(mtime, now)
 			until := mtime.Add(grace)
 			if now.Before(until) && (retryAt.IsZero() || until.Before(retryAt)) {
 				firstTask, retryAt = "unknown task", until
@@ -1141,6 +1143,13 @@ func liveRecordModTime(path string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("stat admitted record %s: %w", path, err)
 	}
 	return info.ModTime(), nil
+}
+
+func notAfter(at, now time.Time) time.Time {
+	if at.After(now) {
+		return time.Time{}
+	}
+	return at
 }
 
 // unseenShare is the share of an admitted task's cores the 1-minute load
@@ -1200,6 +1209,7 @@ func mergeAdmissionEstimate(byAdmission map[string]admittedEstimate, file lock.L
 		if statErr != nil {
 			return statErr
 		}
+		mtime = notAfter(mtime, reserveAgeNow())
 		byAdmission[file.Path] = admittedEstimate{at: mtime, expected: 4, cpuError: true}
 		return nil
 	}
@@ -1210,6 +1220,7 @@ func mergeAdmissionEstimate(byAdmission map[string]admittedEstimate, file lock.L
 		if err != nil {
 			return err
 		}
+		at = notAfter(at, reserveAgeNow())
 	}
 	var observedAt time.Time
 	if d.ObservedAt != "" {

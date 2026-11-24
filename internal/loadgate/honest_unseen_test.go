@@ -159,7 +159,7 @@ func TestReservePollTracksEMAFromAdmission(t *testing.T) {
 		t.Fatalf("published ema = %.6f; want %.6f from the 0.3 → 8 ramp since admission", d.EMA, wantEMA)
 	}
 	unseen, err := unseenAdmittedCores(path, func(at time.Time) float64 {
-		return math.Exp(-reservePollNow().Sub(at).Seconds() / 60)
+		return math.Exp(-gotAt.Sub(at).Seconds() / 60)
 	})
 	if err != nil || math.Abs(unseen-(8-d.EMA)) > 1e-5 {
 		t.Fatalf("head unseen = %.6f, %v; want published rate minus EMA %.6f", unseen, err, 8-d.EMA)
@@ -279,10 +279,52 @@ func TestHalfModeForecastAfterHonestUnseen(t *testing.T) {
 	setRunnable(1)
 	setRunnableLimit(t, 11)
 	setLoadavg(t, 9)
-	now := time.Now()
+	oldPollNow, oldAgeNow := reservePollNow, reserveAgeNow
+	base := time.Now().Add(-time.Minute)
+	reservePollNow = func() time.Time { return base }
+	reserveAgeNow = func() time.Time { return base }
+	defer func() { reservePollNow, reserveAgeNow = oldPollNow, oldAgeNow }()
 	path := filepath.Join(t.TempDir(), "load.lock")
-	release := putAdmissionRecord(t, path, reserveData{Cores: .5, Rate: 1.5, EMA: .1, At: now.Add(-time.Second).Format(time.RFC3339Nano), Admitted: now.Add(-10 * time.Second).Format(time.RFC3339Nano), Task: "underestimated"})
-	defer release()
+	admitted := base.Add(-2 * time.Second).Format(time.RFC3339Nano)
+	var cpu float64
+	reads := 0
+	var recordRelease func() error
+	readCPU := func(int) (float64, error) {
+		reads++
+		if reads == 1 {
+			return 0, nil
+		}
+		cpu = 1.5
+		return cpu, nil
+	}
+	state := reservePollState{lastEMAAt: base, ema: .1, lastRate: .1, haveRate: true}
+	onCPU := func(rate, ema float64, at time.Time) error {
+		raw, err := json.Marshal(reserveData{Cores: .5, Rate: rate, EMA: ema, At: at.Format(time.RFC3339Nano), Admitted: admitted, Task: "underestimated"})
+		if err != nil {
+			return err
+		}
+		release, err := lock.Reserve(filepath.Dir(path), admittedPattern(path), raw)
+		if err != nil {
+			return err
+		}
+		if recordRelease != nil {
+			_ = recordRelease()
+		}
+		recordRelease = release
+		return nil
+	}
+	defer func() {
+		if recordRelease != nil {
+			_ = recordRelease()
+		}
+	}()
+	state.handleTick("underestimated", .5, time.Second, readCPU, onCPU, nil, func(string) {}, func() {}, io.Discard)
+	base = base.Add(time.Second)
+	state.handleTick("underestimated", .5, time.Second, readCPU, onCPU, nil, func(string) {}, func() {}, io.Discard)
+	releases, err := lock.LiveData(filepath.Dir(path), admittedPattern(path))
+	if err != nil || len(releases) != 1 {
+		t.Fatalf("poll published %d admission records, %v; want one", len(releases), err)
+	}
 	m := newMachine(testLoad, io.Discard, "next", "projectA:next")
 	m.runnable, m.avg1, m.avg1Known, m.runnableLimit = 1, 9, true, 11
 	m.candidate, m.candidateKnown = 1, true
@@ -311,7 +353,7 @@ func TestSimultaneousRampWithDelayedPublish(t *testing.T) {
 		}
 	}()
 	m := newMachine(testLoad, io.Discard, "head", "projectA:head")
-	m.runnable, m.avg1, m.avg1Known, m.runnableLimit = 1, 10, true, 18
+	m.runnable, m.avg1, m.avg1Known, m.runnableLimit = 1, 9, true, 18
 	m.candidate, m.candidateKnown = 4, true
 	b, err := m.reservesBusy(path)
 	if err != nil || b.why != "" {
@@ -324,6 +366,7 @@ func TestSimultaneousRampWithDelayedPublish(t *testing.T) {
 	if err != nil || b.why != WhyReserve {
 		t.Fatalf("second head during first CPU window = %+v, %v; want first CPU hold", b, err)
 	}
+	_ = newRelease()
 	for _, release := range releases {
 		_ = release()
 	}
@@ -331,6 +374,9 @@ func TestSimultaneousRampWithDelayedPublish(t *testing.T) {
 	for i := range 2 {
 		admitted := now.Add(-41*time.Second + time.Duration(i)*time.Millisecond)
 		releases = append(releases, putAdmissionRecord(t, path, reserveData{Cores: .3, Rate: 6, EMA: .1, At: now.Format(time.RFC3339Nano), Admitted: admitted.Format(time.RFC3339Nano), Task: fmt.Sprintf("ramp-%d", i)}))
+	}
+	if task, _, pending, err := firstUnmeasuredAdmission(path, now, reserveWindow+reservePollInterval); err != nil || pending {
+		t.Fatalf("published ramp first-measure guard = %q, %v, %v; want no pause", task, pending, err)
 	}
 	unseen, err := unseenAdmittedCores(path, func(at time.Time) float64 { return math.Exp(-now.Sub(at).Seconds() / 60) })
 	if err != nil || unseen < 11.5 {
@@ -405,32 +451,87 @@ func TestCorruptAdmittedRecordCountsAsUnknown(t *testing.T) {
 }
 
 func TestCorruptAdmittedRecordAgesOut(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "load.lock")
-	release, err := lock.Reserve(filepath.Dir(path), admittedPattern(path), []byte("{broken"))
-	if err != nil {
-		t.Fatal(err)
+	for _, test := range []struct {
+		name string
+		data []byte
+	}{
+		{name: "malformed JSON", data: []byte("{broken")},
+		{name: "invalid admission time", data: []byte(`{"cores":0.5,"admitted":"not-a-time","task":"bad-time"}`)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "load.lock")
+			release, err := lock.Reserve(filepath.Dir(path), admittedPattern(path), test.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			files, err := filepath.Glob(admittedFilesPattern(path))
+			if err != nil || len(files) != 1 {
+				t.Fatalf("corrupt admitted files = %v, %v", files, err)
+			}
+			base := time.Now().Add(-2 * time.Minute)
+			if err := os.Chtimes(files[0], base, base); err != nil {
+				t.Fatal(err)
+			}
+			grace := time.Minute
+			if task, _, pending, err := firstUnmeasuredAdmission(path, base, grace); err != nil || !pending || task != "unknown task" {
+				t.Fatalf("fresh corrupt pause = %q, %v, %v; want held", task, pending, err)
+			}
+			now := base.Add(30 * time.Second)
+			oldAgeNow := reserveAgeNow
+			reserveAgeNow = func() time.Time { return now }
+			defer func() { reserveAgeNow = oldAgeNow }()
+			got, err := unseenAdmittedCores(path, func(at time.Time) float64 { return math.Exp(-now.Sub(at).Seconds() / 60) })
+			want := 4 * math.Exp(-30.0/60)
+			if err != nil || math.Abs(got-want) > 1e-12 {
+				t.Fatalf("corrupt unseen at mtime age = %.12f, %v; want candidate decay %.12f", got, err, want)
+			}
+			if task, _, pending, err := firstUnmeasuredAdmission(path, base.Add(grace+time.Second), grace); err != nil || pending {
+				t.Fatalf("old corrupt pause = %q, %v, %v; want released", task, pending, err)
+			}
+		})
 	}
-	defer release()
-	files, err := filepath.Glob(admittedFilesPattern(path))
-	if err != nil || len(files) != 1 {
-		t.Fatalf("corrupt admitted files = %v, %v", files, err)
-	}
-	base := time.Now().Add(-time.Minute)
-	if err := os.Chtimes(files[0], base, base); err != nil {
-		t.Fatal(err)
-	}
-	grace := time.Minute
-	if task, _, pending, err := firstUnmeasuredAdmission(path, base, grace); err != nil || !pending || task != "unknown task" {
-		t.Fatalf("fresh corrupt pause = %q, %v, %v; want held", task, pending, err)
-	}
-	now := base.Add(24 * time.Hour)
-	got, err := unseenAdmittedCores(path, func(at time.Time) float64 { return math.Exp(-now.Sub(at).Seconds() / 60) })
-	want := 4 * math.Exp(-24*time.Hour.Seconds()/60)
-	if err != nil || math.Abs(got-want) > 1e-12 {
-		t.Fatalf("old corrupt unseen = %.12f, %v; want candidate decay %.12f", got, err, want)
-	}
-	if task, _, pending, err := firstUnmeasuredAdmission(path, now, grace); err != nil || pending {
-		t.Fatalf("old corrupt pause = %q, %v, %v; want released", task, pending, err)
+}
+
+func TestFutureMtimeDoesNotExtendAdmissionGraceOrUnseenReserve(t *testing.T) {
+	for _, record := range []struct {
+		name string
+		data []byte
+	}{
+		{name: "malformed JSON", data: []byte("{broken")},
+		{name: "invalid admission time", data: []byte(`{"cores":0.5,"admitted":"not-a-time","task":"bad-time"}`)},
+	} {
+		t.Run(record.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "load.lock")
+			release, err := lock.Reserve(filepath.Dir(path), admittedPattern(path), record.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			files, err := filepath.Glob(admittedFilesPattern(path))
+			if err != nil || len(files) != 1 {
+				t.Fatalf("future mtime files = %v, %v", files, err)
+			}
+			future := time.Now().Add(365 * 24 * time.Hour)
+			if err := os.Chtimes(files[0], future, future); err != nil {
+				t.Fatal(err)
+			}
+			grace := time.Minute
+			now := time.Now()
+			if _, retry, pending, err := firstUnmeasuredAdmission(path, now, grace); err != nil || pending {
+				t.Fatalf("future mtime pause = %v, %v, %v; want stale record released", retry, pending, err)
+			}
+			if _, _, pending, err := firstUnmeasuredAdmission(path, now.Add(grace+time.Second), grace); err != nil || pending {
+				t.Fatalf("future mtime still pauses after grace: pending=%v, err=%v", pending, err)
+			}
+			oldAgeNow := reserveAgeNow
+			reserveAgeNow = func() time.Time { return now }
+			defer func() { reserveAgeNow = oldAgeNow }()
+			got, err := unseenAdmittedCores(path, func(at time.Time) float64 { return math.Exp(-max(now.Sub(at), 0).Seconds() / 60) })
+			if err != nil || got > 1e-9 {
+				t.Fatalf("future mtime unseen = %.9f, %v; want stale reserve near zero", got, err)
+			}
+		})
 	}
 }
 
@@ -545,5 +646,37 @@ func TestCPUErrorRecoveryPublishesSameRate(t *testing.T) {
 	}
 	if cpuErrorPresent || writes == before {
 		t.Fatalf("recovery writes=%d (+%d), cpu_error=%v; want same-rate record without cpu_error", writes, writes-before, cpuErrorPresent)
+	}
+}
+
+func TestCPUErrorRecoveryPublishesBelowHalfCandidate(t *testing.T) {
+	oldPollNow := reservePollNow
+	base := time.Now()
+	reservePollNow = func() time.Time { return base }
+	defer func() { reservePollNow = oldPollNow }()
+	fail := true
+	var cpu float64
+	readCPU := func(int) (float64, error) {
+		if fail {
+			return 0, io.ErrUnexpectedEOF
+		}
+		cpu += 1.5
+		return cpu, nil
+	}
+	writes := 0
+	var published float64
+	onCPU := func(rate, _ float64, _ time.Time) error {
+		writes++
+		published = rate
+		return nil
+	}
+	state := reservePollState{haveObserved: true, observed: 1.5}
+	state.handleTick("below-half", 4, time.Second, readCPU, onCPU, nil, func(string) {}, func() {}, io.Discard)
+	fail = false
+	state.handleTick("below-half", 4, time.Second, readCPU, onCPU, nil, func(string) {}, func() {}, io.Discard)
+	base = base.Add(time.Second)
+	state.handleTick("below-half", 4, time.Second, readCPU, onCPU, nil, func(string) {}, func() {}, io.Discard)
+	if writes != 1 || published != 1.5 || state.reserveDropped {
+		t.Fatalf("recovery publication writes=%d rate=%.2f dropped=%v; want one 1.5-core update without dropping the 4-core reserve", writes, published, state.reserveDropped)
 	}
 }
