@@ -171,6 +171,10 @@ func TestUserRemoteHeavyGlintInABusyGateSplit(t *testing.T) {
 	writeHostGlint(t, state, "pc", path, sum)
 	config := strings.Replace(splitGateConfig, "  unit:\n    heavy: true\n    remote: true\n    run: [[go, test, -count=1, ./...]]\n", "  unit:\n    heavy: true\n    remote: true\n    run: [[go, vet, ./...], [glint, check, ./...]]\n", 1)
 	f.write(".graft.yaml", config)
+	seedGatePlacementCosts(t, f, state, map[string][]float64{
+		"work:unit\x00go vet ./...":      {100},
+		"work:unit\x00glint check ./...": {100},
+	})
 	loaded(t, state)
 	out := runUntilMachineWait(t, f, state, "gate")
 	calls := callsOf(t, state)
