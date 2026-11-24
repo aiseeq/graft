@@ -157,10 +157,17 @@ func TestSweepGlintLinksWorktreeDependencies(t *testing.T) {
 	d.write(".graft.yaml", config)
 	d.write(".gitignore", "node_modules/\n")
 	d.write("projectA-lock.json", "synthetic\n")
+	d.write("go.mod", "module projectA\n\ngo 1.24\n")
+	d.write("main.go", "package projectA\n\nfunc Value() int { return 1 }\n")
+	d.write("projectA.ts", "import { value } from 'project-a-dep';\nexport const result: number = value;\n")
 	if err := os.MkdirAll(filepath.Join(d.work, "node_modules"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(d.work, "node_modules", "synthetic-tsc"), "present\n")
+	if err := os.MkdirAll(filepath.Join(d.work, "node_modules", "project-a-dep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(d.work, "node_modules", "project-a-dep", "index.d.ts"), "export declare const value: number;\n")
 	d.mustFixtureCommit("feat: PROJ-123 add projectA dependencies")
 	d.mustGraft("deploy", "sub")
 	d.git("remote", "set-head", "origin", d.git("branch", "--show-current"))
@@ -186,5 +193,58 @@ echo '{"summary":{"total":0}}'
 	}
 	if got, err := os.ReadFile(filepath.Join(d.work, "node_modules", "synthetic-tsc")); err != nil || string(got) != "present\n" {
 		t.Errorf("main worktree dependency was removed or changed: %q, %v", got, err)
+	}
+}
+
+// A different lockfile requires the deployed commit's own setup before glint.
+func TestSweepGlintSetsUpWorktreeDependencies(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(map[bool]string{false: "installed", true: "setup fails"}[fail], func(t *testing.T) {
+			d := glintRepo(t)
+			d.jira.mu.Lock()
+			d.jira.statuses["PROJ-123"] = "Ready for release"
+			d.jira.mu.Unlock()
+			config := strings.Replace(d.read(".graft.yaml"), "version: {mode: file}\n", "version: {mode: file}\ntasks:\n  install_project_a: {run: [sh setup-project-a.sh]}\nworktree:\n  link:\n    - key: [projectA-lock.json]\n      paths: [node_modules]\n      setup: install_project_a\n", 1)
+			d.write(".graft.yaml", config)
+			d.write(".gitignore", "node_modules/\n")
+			d.write("projectA-lock.json", "deployed\n")
+			d.write("main.go", "package projectA\n\nfunc Value() int { return 1 }\n")
+			d.write("projectA.ts", "import { value } from 'project-a-dep';\nexport const result: number = value;\n")
+			d.write("setup-project-a.sh", "#!/bin/sh\necho ran >> '"+filepath.Join(d.state, "setup-runs")+"'\nif test -e '"+filepath.Join(d.state, "fail-setup")+"'; then\n  echo discarded-prefix >&2\n  head -c 70000 /dev/zero | tr '\\000' x >&2\n  echo >&2\n  for i in $(seq -w 1 14); do echo setup-line-$i >&2; done\n  echo 'setup exploded' >&2\n  exit 7\nfi\nmkdir -p node_modules/project-a-dep\nprintf 'export declare const value: number;\\n' > node_modules/project-a-dep/index.d.ts\n")
+			if err := os.MkdirAll(filepath.Join(d.work, "node_modules", "project-a-dep"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(d.work, "node_modules", "project-a-dep", "index.d.ts"), "export declare const value: number;\n")
+			bin := t.TempDir()
+			writeFile(t, filepath.Join(bin, "glint"), "#!/bin/sh\nif test -f node_modules/project-a-dep/index.d.ts; then n=0; else n=1; fi\nprintf '{\"summary\":{\"total\":%s}}\\n' \"$n\"\n")
+			if err := os.Chmod(filepath.Join(bin, "glint"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			d.env = append(d.env, "PATH="+bin+string(os.PathListSeparator)+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			d.mustFixtureCommit("feat: PROJ-123 add projectA")
+			d.mustGraft("deploy", "sub")
+			d.git("remote", "set-head", "origin", d.git("branch", "--show-current"))
+			d.write("projectA-lock.json", "different\n")
+			d.mustFixtureCommit("chore: update dependencies")
+			if fail {
+				writeFile(t, filepath.Join(d.state, "fail-setup"), "")
+			}
+			out := d.mustGraft("deploy", "sweep", "sub", "--apply")
+			if got := readFile(t, filepath.Join(d.state, "setup-runs")); got != "ran\n" {
+				t.Errorf("setup runs: %q", got)
+			}
+			if fail {
+				at := strings.Index(out, "PROJ-123 stays Ready for release")
+				if at < 0 {
+					t.Fatalf("no held item: %s", out)
+				}
+				held := out[at:]
+				if !strings.Contains(held, "worktree.setup install_project_a") || !strings.Contains(held, "setup exploded") || !strings.Contains(held, "setup-line-06") || strings.Contains(held, "setup-line-05") || strings.Contains(held, "discarded-prefix") || len(held) > 4000 || len(d.moved()) != 0 {
+					t.Errorf("failed setup must hold the item: moved %v\n%s", d.moved(), out)
+				}
+			} else if !slices.Contains(d.moved(), "PROJ-123") || !strings.Contains(out, "PROJ-123 moved to Done") {
+				t.Errorf("setup should let the item move: moved %v\n%s", d.moved(), out)
+			}
+		})
 	}
 }

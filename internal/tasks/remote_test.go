@@ -302,6 +302,14 @@ func TestTailCaptureReason(t *testing.T) {
 	}
 }
 
+func TestTailCaptureBoundsBytes(t *testing.T) {
+	var capture tailCapture
+	_, _ = capture.Write([]byte("discarded-prefix\n" + strings.Repeat("x", 70<<10) + "\nlast line\n"))
+	if len(capture.data) > 64<<10 || strings.Contains(string(capture.data), "discarded-prefix") || !strings.Contains(string(capture.data), "last line") {
+		t.Fatalf("tail retains %d bytes or the wrong end of the output", len(capture.data))
+	}
+}
+
 func TestGlintCheckNoOutput(t *testing.T) {
 	abs := filepath.Join(t.TempDir(), "glint")
 	for _, c := range []struct {

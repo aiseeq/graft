@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/atomicfile"
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/tasks"
 )
 
 // WorktreeAddOptions are the arguments of graft worktree add.
@@ -150,6 +152,12 @@ func (a *App) prepareWorktree(ctx context.Context, main, dir string, linkSetups 
 		a.printf("copied %s from %s", p, main)
 	}
 	setups := append(linkSetups, cfg.Worktree.Setup...)
+	return a.runWorktreeSetups(ctx, repo, cfg, setups, false)
+}
+
+// runWorktreeSetups runs each required setup once in the new worktree.
+// Capture the tail only for glint: worktree add must keep the terminal direct.
+func (a *App) runWorktreeSetups(ctx context.Context, repo *gitx.Repo, cfg *config.Config, setups []string, capture bool) error {
 	seen := map[string]bool{}
 	for _, t := range setups {
 		if seen[t] {
@@ -157,8 +165,17 @@ func (a *App) prepareWorktree(ctx context.Context, main, dir string, linkSetups 
 		}
 		seen[t] = true
 		a.printf("setup: %s", t)
-		if err := a.runner(repo, cfg).Run(ctx, t, nil); err != nil {
-			return fmt.Errorf("worktree.setup %s in %s: %w", t, dir, err)
+		var output tasks.TailCapture
+		runner := a.runner(repo, cfg)
+		if capture {
+			runner.Stdout = io.MultiWriter(runner.Stdout, &output)
+			runner.Stderr = io.MultiWriter(runner.Stderr, &output)
+		}
+		if err := runner.Run(ctx, t, nil); err != nil {
+			if tail := output.Reason(); tail != "" {
+				return fmt.Errorf("worktree.setup %s in %s: %w: %s", t, repo.Root, err, tail)
+			}
+			return fmt.Errorf("worktree.setup %s in %s: %w", t, repo.Root, err)
 		}
 	}
 	return nil

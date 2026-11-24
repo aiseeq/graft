@@ -2375,8 +2375,12 @@ remove the dormant entry once the feature is enabled and checked.
    project clean, the commit gate failing on the high findings alone. graft
    runs glint once a deploy, in the work tree when it is at the deployed
    commit and clean, else in a work tree of its own at that commit, which
-   receives the matching `worktree.link` links, and
-   counts the report's findings whatever glint's exit status; a run without
+   receives the matching `worktree.link` links and runs the setup tasks for
+   groups it cannot link. Unlike `graft worktree add`, this copy does not
+   perform `worktree.copy` or run `worktree.setup`. A failed link-group setup
+   holds the items with the tail of its output; if the deployed commit has
+   no readable configuration, graft warns and runs glint without links.
+   It counts the report's findings whatever glint's exit status; a run without
    a report, or with rules that panicked, holds the items too. A held item
    keeps its status and assignee, the deploy prints `graft: KEY: NOT MOVED
    to Testing: glint: N findings of low and above in <commit>

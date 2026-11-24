@@ -3723,6 +3723,12 @@ type tailCapture struct {
 	data []byte
 }
 
+// TailCapture retains the bounded output tail used for task failures.
+type TailCapture = tailCapture
+
+// Reason returns the last lines suitable for a failure message.
+func (c *tailCapture) Reason() string { return c.reason() }
+
 func (c *tailCapture) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

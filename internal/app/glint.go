@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"github.com/aiseeq/graft/v2/internal/jira"
@@ -163,16 +164,24 @@ func (g *glintCheck) count(ctx context.Context) (sha string, found int, err erro
 	if _, err := g.repo.Git("worktree", "add", "--detach", dir, sha); err != nil {
 		return sha, 0, err
 	}
-	g.link(dir)
+	if err := g.link(ctx, dir); err != nil {
+		return sha, 0, err
+	}
 	found, err = g.run(ctx, dir)
 	return sha, found, err
 }
 
 // link gives glint's work tree at dir the worktree.link links of the main
-// tree, setups left out. The links only help: glint runs without them when
-// they cannot be made, say at a deployed commit older than .graft.yaml, as it
-// did before.
-func (g *glintCheck) link(dir string) {
+// tree, and runs the setups for groups that could not be linked.
+func (g *glintCheck) link(ctx context.Context, dir string) error {
+	cfg, err := config.Load(dir)
+	if err != nil {
+		g.a.warn("glint runs without worktree.link links: %v", err)
+		return nil
+	}
+	if len(cfg.Worktree.Link) == 0 {
+		return nil
+	}
 	trees, err := listWorktrees(g.repo)
 	if err == nil && len(trees) == 0 {
 		err = errors.New("the main worktree is unknown")
@@ -183,11 +192,16 @@ func (g *glintCheck) link(dir string) {
 	}
 	if err != nil {
 		g.a.warn("glint runs without worktree.link links: %v", err)
-		return
+		return nil
 	}
-	for _, setup := range setups {
-		g.a.warn("worktree.link group needing %s is not linked; glint's temporary copy does not run setup, so glint may fail", setup)
+	if len(setups) == 0 {
+		return nil
 	}
+	repo, err := gitx.Open(dir)
+	if err != nil {
+		return fmt.Errorf("opening glint's temporary worktree: %w", err)
+	}
+	return g.a.runWorktreeSetups(ctx, repo, cfg, setups, true)
 }
 
 // run is glint check in dir. glint exits non-zero on findings from its own
