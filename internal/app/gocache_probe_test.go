@@ -121,13 +121,14 @@ func TestGocacheProbeExitsWhileWriteIsStuckAndWhileProcessDies(t *testing.T) {
 	}
 	out := &lockedProbeBuffer{}
 	type probeResult struct {
-		outcome probeOutcome
-		err     error
+		outcome  probeOutcome
+		err      error
+		finished time.Time
 	}
 	done := make(chan probeResult, 1)
 	go func() {
 		outcome, runErr := runGocacheProbe(context.Background(), cmd.Process.Pid, start, t.TempDir(), 10*time.Second, ops, out)
-		done <- probeResult{outcome: outcome, err: runErr}
+		done <- probeResult{outcome: outcome, err: runErr, finished: time.Now()}
 	}()
 	select {
 	case <-started:
@@ -135,21 +136,29 @@ func TestGocacheProbeExitsWhileWriteIsStuckAndWhileProcessDies(t *testing.T) {
 		t.Fatal("probe write did not start")
 	}
 	waitProbeOutput(t, out, "write stuck 1s", 2*time.Second)
-	releaseAt := time.Now()
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
 	}
+	// The bound runs from the exit of the --while process, seen when Wait
+	// returns, to the probe's return, stamped in its own goroutine: how soon
+	// a loaded machine lets the child see the release and exit, or lets this
+	// goroutine read the result, is not the probe's work.
+	exitedAt := time.Now()
 	waited = true
 	var result probeResult
 	select {
 	case result = <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("probe did not exit within 2s after --while exited")
+	case <-time.After(10 * time.Second):
+		select {
+		case result = <-done:
+		default:
+			t.Fatal("probe did not exit within 10s after --while exited")
+		}
 	}
-	if elapsed := time.Since(releaseAt); elapsed > 2*time.Second {
+	if elapsed := result.finished.Sub(exitedAt); elapsed > 2*time.Second {
 		t.Fatalf("probe exit took %s after --while exited", elapsed)
 	}
 	if result.err != nil || !result.outcome.writeActive || result.outcome.writeStage != "truncate" || result.outcome.writeFor < time.Second || !strings.Contains(out.String(), "summary:") || !strings.Contains(out.String(), "write stuck: truncate") {
