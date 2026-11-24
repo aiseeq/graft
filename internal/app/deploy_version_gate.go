@@ -390,6 +390,19 @@ func (v *releaseVersionCheck) notInVersion(ctx context.Context, issue jira.Issue
 	}
 	var contentOnly []versionPortHint
 	contentOnly = append(contentOnly, v.gate.contentOnlyPorts[issue.Key]...)
+	contentOnlyTasks := map[string]bool{}
+	if len(v.gate.contentOnlyPorts[issue.Key]) > 0 {
+		contentOnlyTasks[issue.Key] = true
+	}
+	for _, source := range v.sources[issue.Key] {
+		if source != issue.Key {
+			hints := v.gate.contentOnlyPorts[source]
+			contentOnly = append(contentOnly, hints...)
+			if len(hints) > 0 {
+				contentOnlyTasks[source] = true
+			}
+		}
+	}
 	if len(contentOnly) == 0 {
 		msg.WriteString("; " + declareHint(v.gate.gate.declareKeys(issue, v.sources[issue.Key], v.selected.Name)))
 	} else {
@@ -400,13 +413,9 @@ func (v *releaseVersionCheck) notInVersion(ctx context.Context, issue jira.Issue
 			return strings.Compare(a.port, b.port)
 		})
 		contentOnly = slices.CompactFunc(contentOnly, func(a, b versionPortHint) bool { return a == b })
-		contentOnlyCommits := map[string]bool{}
-		for _, hint := range contentOnly {
-			contentOnlyCommits[hint.commit] = true
-		}
 		var remaining []string
 		for _, source := range v.sources[issue.Key] {
-			if source != issue.Key && !contentOnlyCommits[source] {
+			if !contentOnlyTasks[source] {
 				remaining = append(remaining, source)
 			}
 		}

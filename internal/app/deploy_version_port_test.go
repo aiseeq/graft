@@ -91,6 +91,127 @@ func TestCoveredVersionPortsReplaysNonLinearGroupSequentially(t *testing.T) {
 	}
 }
 
+func TestCoveredVersionPortsReplaysNonLinearGroupRejectsMissingMember(t *testing.T) {
+	r, base := versionPortRepo(t)
+	r.git("checkout", "-q", "-b", "side", base)
+	r.writePath("feat.txt", new("F\n"))
+	c2 := r.commitAll("fix: PROJ-1 side feature")
+	r.git("checkout", "-q", "-")
+	c1 := versionPortCommit(r, "one\n", "2\n", "fix: PROJ-1 main fix")
+	r.git("merge", "-q", "--no-ff", "-m", "merge side", "side")
+	head := r.head()
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("one\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll(fmt.Sprintf("port %s and %s", c1, c2))
+	commits, err := deliveredCommits(r.repo, port, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior, err := logCommits(r.repo, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := linkedVersionPortGroups(r.repo, port, prior, commits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var group []deliveredCommit
+	for _, c := range groups[port] {
+		group = append(group, c)
+	}
+	ordered, err := logCommits(r.repo, "--topo-order", "--reverse", port+".."+head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := map[string]int{}
+	for i, c := range ordered {
+		order[c.sha] = i
+	}
+	slices.SortFunc(group, func(a, b deliveredCommit) int { return order[a.sha] - order[b.sha] })
+	unchanged, err := replayVersionPortGroup(r.repo, port, group, versionPortTargets("VERSION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged {
+		t.Fatalf("non-linear replay hid missing side member: order=%v", []string{group[0].sha, group[len(group)-1].sha})
+	}
+}
+
+func TestReplayVersionPortGroupRejectsSideFirstNonLinearGroup(t *testing.T) {
+	r, base := versionPortRepo(t)
+	r.git("checkout", "-q", "-b", "side", base)
+	r.writePath("side.txt", new("side\n"))
+	side := r.commitAll("fix: PROJ-1 side")
+	r.git("checkout", "-q", base)
+	main := versionPortCommit(r, "main\n", "2\n", "fix: PROJ-1 main")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("main\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll("port main")
+	group := []deliveredCommit{{sha: side}, {sha: main}}
+	unchanged, err := replayVersionPortGroup(r.repo, port, group, versionPortTargets("VERSION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged {
+		t.Fatal("replay accepted port missing the first side-branch commit")
+	}
+}
+
+func TestReplayVersionPortGroupRejectsModifyDeleteConflictOutsideVersion(t *testing.T) {
+	r := newEmptyWithheldRepo(t)
+	r.writePath("work.txt", new("before\n"))
+	r.writePath("VERSION", new("1\n"))
+	r.writePath("other.txt", new("base\n"))
+	base := r.commitAll("base")
+	r.git("checkout", "-q", "-b", "side", base)
+	r.git("rm", "-q", "other.txt")
+	source := r.commitAll("fix: PROJ-1 delete")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("other.txt", new("port edit\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll("port edit")
+	unchanged, err := replayVersionPortGroup(r.repo, port, []deliveredCommit{{sha: source}}, versionPortTargets("VERSION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged {
+		t.Fatal("replay accepted modify/delete conflict outside version files")
+	}
+}
+
+func TestLinkedVersionPortGroupsIgnoresExplicitLinkOutsidePreviousRange(t *testing.T) {
+	r, base := versionPortRepo(t)
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("release.txt", new("release\n"))
+	prev := r.commitAll("release point")
+	r.git("checkout", "-q", base)
+	c := versionPortCommit(r, "source\n", "2\n", "fix: PROJ-1 source")
+	r.git("checkout", "-q", "-b", "unreleased-port", base)
+	r.writePath("work.txt", new("source\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll("unreleased port")
+	r.git("checkout", "-q", c)
+	r.git("commit", "--allow-empty", "-qm", fmt.Sprintf("link %s to %s", c, port))
+	link := r.head()
+	commits, err := deliveredCommits(r.repo, prev, link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior, err := logCommits(r.repo, prev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := linkedVersionPortGroups(r.repo, prev, prior, commits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups[port]) != 0 {
+		t.Fatalf("non-ancestor explicit port was linked: %#v", groups)
+	}
+}
+
 func TestCoveredVersionPortsAcceptsSingleTransferWithVersionConflict(t *testing.T) {
 	r, base := versionPortRepo(t)
 	c := versionPortCommit(r, "restored\n", "2\n", "fix: PROJ-1 source")
@@ -108,6 +229,35 @@ func TestCoveredVersionPortsAcceptsSingleTransferWithVersionConflict(t *testing.
 	}
 	if covered[c] != port {
 		t.Fatalf("covered = %#v, want %s covered despite VERSION conflict", covered, c)
+	}
+}
+
+func TestCoveredVersionPortsRejectsConflictWithNonVersionSyncChange(t *testing.T) {
+	r := newEmptyWithheldRepo(t)
+	r.writePath("work.txt", new("before\n"))
+	r.writePath("VERSION", new("1\n"))
+	r.writePath("web/package.json", new("{\n  \"version\": \"1\",\n  \"dependencies\": {}\n}\n"))
+	base := r.commitAll("base")
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("2\n"))
+	r.writePath("web/package.json", new("{\n  \"version\": \"2\",\n  \"dependencies\": {\"evil\": \"1.0\"}\n}\n"))
+	c := r.commitAll("fix: PROJ-1 source")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("9\n"))
+	r.writePath("web/package.json", new("{\n  \"version\": \"9\",\n  \"dependencies\": {}\n}\n"))
+	port := r.commitAll(fmt.Sprintf("port %s", c))
+	commits, err := deliveredCommits(r.repo, port, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets := versionTargetsByPath(config.Version{File: "VERSION", Sync: []config.SyncFile{{Path: "web/package.json", Format: config.FormatJSON, Key: []string{"version"}}}})
+	replayed, err := replayVersionPortGroup(r.repo, port, commits, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed {
+		t.Fatal("conflicted replay with an independent sync-file edit was accepted")
 	}
 }
 
@@ -136,6 +286,190 @@ func TestCoveredVersionPortsLeavesContentOnlyMatchActiveAndAdvisesLink(t *testin
 	}
 	if len(hints["PROJ-1"]) != 1 || hints["PROJ-1"][0] != (versionPortHint{commit: c, port: port}) {
 		t.Fatalf("content-only hints = %#v, want source and port", hints)
+	}
+}
+
+func TestUnlinkedContentVersionPortsDoesNotAdviseForALinkedCommit(t *testing.T) {
+	r, base := versionPortRepo(t)
+	r.writePath("VERSION", new("2\n"))
+	c := r.commitAll("fix: PROJ-1 version only")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("port-only\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll(fmt.Sprintf("port: PROJ-1 source %s", c))
+	prior, err := logCommits(r.repo, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commits, err := deliveredCommits(r.repo, port, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hints, err := unlinkedContentVersionPortsWithPrior(r.repo, port, c, prior, commits, versionPortTargets("VERSION"), regexp.MustCompile(`PROJ-[0-9]+`), &config.ApprovedRelease{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hints["PROJ-1"]) != 0 {
+		t.Fatalf("hash-linked source received content-only advice: %#v", hints)
+	}
+}
+
+func TestUnlinkedContentVersionPortsRejectsUnmatchedPortContent(t *testing.T) {
+	r, base := versionPortRepo(t)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("extra.txt", new("source-only\n"))
+	r.writePath("VERSION", new("2\n"))
+	head := r.commitAll("fix: PROJ-1 source")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("9\n"))
+	prev := r.commitAll("port PROJ-1 without a hash link")
+	commits, err := deliveredCommits(r.repo, prev, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hints, err := unlinkedContentVersionPorts(r.repo, prev, head, commits, versionPortTargets("VERSION"), regexp.MustCompile(`PROJ-[0-9]+`), &config.ApprovedRelease{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hints["PROJ-1"]) != 0 {
+		t.Fatalf("port that omits source content received advice: %#v", hints)
+	}
+}
+
+func TestUnlinkedContentVersionPortsSkipsAlreadyCoveredSource(t *testing.T) {
+	r, base := versionPortRepo(t)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("2\n"))
+	c := r.commitAll("fix: PROJ-1 source")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll(fmt.Sprintf("port %s", c))
+	r.writePath("extra.txt", new("second port remains\n"))
+	r.writePath("VERSION", new("10\n"))
+	prev := r.commitAll("port PROJ-1 independently")
+	commits, err := deliveredCommits(r.repo, prev, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	covered, err := coveredVersionPorts(r.repo, prev, c, commits, versionPortTargets("VERSION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if covered[c] != port {
+		t.Fatalf("source was not covered by linked port: %v", covered)
+	}
+	prior, err := logCommits(r.repo, prev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hints, err := unlinkedContentVersionPortsWithPrior(r.repo, prev, c, prior, commits, versionPortTargets("VERSION"), regexp.MustCompile(`PROJ-[0-9]+`), &config.ApprovedRelease{}, covered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hints["PROJ-1"]) != 0 {
+		t.Fatalf("already-covered source got a second-port hint: %#v", hints)
+	}
+}
+
+func TestUnlinkedContentVersionPortsOnlySuggestsUnlinkedCandidates(t *testing.T) {
+	r, base := versionPortRepo(t)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("2\n"))
+	c := r.commitAll("fix: PROJ-1 source")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll(fmt.Sprintf("port %s", c))
+	commits, err := deliveredCommits(r.repo, port, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hints, err := unlinkedContentVersionPorts(r.repo, port, c, commits, versionPortTargets("VERSION"), regexp.MustCompile(`PROJ-[0-9]+`), &config.ApprovedRelease{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hints["PROJ-1"]) != 0 {
+		t.Fatalf("linked source got content-only advice: %#v", hints)
+	}
+}
+
+func TestUnlinkedContentVersionPortsIgnoresRevertedSource(t *testing.T) {
+	r, base := versionPortRepo(t)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("2\n"))
+	source := r.commitAll("fix: PROJ-1 source")
+	r.revert(source)
+	head := r.head()
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("9\n"))
+	prev := r.commitAll("port PROJ-1 without a hash link")
+	commits, err := deliveredCommits(r.repo, prev, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reverted, err := revertedInRange(r.repo, commits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revertedBy := map[string]string{}
+	for sha := range reverted {
+		revertedBy[sha] = "revert"
+	}
+	commits = notRevertedVersionPortCommits(commits, revertedBy)
+	hints, err := unlinkedContentVersionPorts(r.repo, prev, head, commits, versionPortTargets("VERSION"), regexp.MustCompile(`PROJ-[0-9]+`), &config.ApprovedRelease{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hints["PROJ-1"]) != 0 {
+		t.Fatalf("reverted source or removed port received content-only advice: %#v", hints)
+	}
+}
+
+func TestGateRunFiltersRevertedCommitsBeforePortAdvice(t *testing.T) {
+	r, base := versionPortRepo(t)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("2\n"))
+	source := r.commitAll("fix: PROJ-1 source")
+	r.revert(source)
+	head := r.head()
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("9\n"))
+	prev := r.commitAll("port PROJ-1 without a hash link")
+	g, _ := versionPortGateRun(r)
+	if _, err := g.run(context.Background(), prev, head, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.contentOnlyPorts) != 0 {
+		t.Fatalf("gate advised content already removed by a revert: %#v", g.contentOnlyPorts)
+	}
+}
+
+func TestUnlinkedContentVersionPortsIgnoresRemovedPort(t *testing.T) {
+	r, base := versionPortRepo(t)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("2\n"))
+	_ = r.commitAll("fix: PROJ-1 source")
+	head := r.head()
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll("port PROJ-1 without a hash link")
+	r.revert(port)
+	prev := r.head()
+	commits, err := deliveredCommits(r.repo, prev, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hints, err := unlinkedContentVersionPorts(r.repo, prev, head, commits, versionPortTargets("VERSION"), regexp.MustCompile(`PROJ-[0-9]+`), &config.ApprovedRelease{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hints["PROJ-1"]) != 0 {
+		t.Fatalf("removed port received content-only advice: %#v", hints)
 	}
 }
 
@@ -274,6 +608,28 @@ func TestCoveredVersionPortsRejectsDeletedVersionFile(t *testing.T) {
 	}
 }
 
+func TestCoveredVersionPortsReplayRejectsMissingVersionTarget(t *testing.T) {
+	r, base := versionPortRepo(t)
+	r.writePath("VERSION", nil)
+	r.writePath("work.txt", new("fixed\n"))
+	c := r.commitAll("fix: PROJ-1 delete version")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", nil)
+	port := r.commitAll(fmt.Sprintf("port %s", c))
+	commits, err := deliveredCommits(r.repo, port, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := replayVersionPortGroup(r.repo, port, commits, versionPortTargets("VERSION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed {
+		t.Fatal("replay without a required version target was accepted")
+	}
+}
+
 func TestCoveredVersionPortsAcceptsSourceCherryPickTrailer(t *testing.T) {
 	r, base := versionPortRepo(t)
 	r.git("checkout", "-q", "-b", "release", base)
@@ -301,6 +657,24 @@ func TestCoveredVersionPortsFiltersRevertedGroupMember(t *testing.T) {
 	p := r.commitAll(fmt.Sprintf("port %s %s", c1, c2))
 	if got := versionPortCovered(t, r, p, head); got[c1] != "" {
 		t.Fatalf("group covered after member revert: %v", got)
+	}
+}
+
+func TestCoveredVersionPortsDoesNotAttributeRevertedGroupMember(t *testing.T) {
+	r, base := versionPortRepo(t)
+	r.writePath("first.txt", new("first\n"))
+	c1 := r.commitAll("fix: PROJ-1 first work")
+	r.writePath("second.txt", new("second\n"))
+	c2 := r.commitAll("fix: PROJ-1 second work")
+	r.revert(c1)
+	head := r.head()
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("second.txt", new("second\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll(fmt.Sprintf("port %s and %s", c1, c2))
+	covered := versionPortCovered(t, r, port, head)
+	if covered[c2] != port || covered[c1] != "" {
+		t.Fatalf("coverage attribution for reverted member: %v", covered)
 	}
 }
 
@@ -338,8 +712,8 @@ func TestCoveredVersionPortOnlySkipsVersionActivity(t *testing.T) {
 
 func TestNotInVersionUsesAssociationForContentOnlyPort(t *testing.T) {
 	conf := &config.ApprovedRelease{}
-	g := &gateRun{conf: conf, contentOnlyPorts: map[string][]versionPortHint{"PROJ-1": {{commit: "c0ffee0000000000000000000000000000000000", port: "1234567890123456789012345678901234567890"}}}, gate: &approvalGate{conf: conf}}
-	v := &releaseVersionCheck{gate: g, sources: map[string][]string{"PROJ-1": {"c0ffee0000000000000000000000000000000000"}}, selected: jira.Version{Name: "v2"}}
+	g := &gateRun{conf: conf, contentOnlyPorts: map[string][]versionPortHint{"PROJ-2": {{commit: "c0ffee0000000000000000000000000000000000", port: "1234567890123456789012345678901234567890"}}}, gate: &approvalGate{conf: conf}}
+	v := &releaseVersionCheck{gate: g, sources: map[string][]string{"PROJ-1": {"PROJ-2"}}, selected: jira.Version{Name: "v2"}}
 	msg := v.notInVersion(context.Background(), jira.Issue{Key: "PROJ-1", Status: "Done"})
 	if !strings.Contains(msg, "add an empty commit in this range") || strings.Contains(msg, "approved_release.dormant") {
 		t.Fatalf("content-only advice=%q", msg)
@@ -349,12 +723,33 @@ func TestNotInVersionUsesAssociationForContentOnlyPort(t *testing.T) {
 func TestNotInVersionCombinesAssociationAndNewWorkAdvice(t *testing.T) {
 	conf := &config.ApprovedRelease{}
 	content := "c0ffee0000000000000000000000000000000000"
-	fresh := "abcdef0000000000000000000000000000000000"
-	g := &gateRun{conf: conf, contentOnlyPorts: map[string][]versionPortHint{"PROJ-1": {{commit: content, port: "1234567890123456789012345678901234567890"}}}, gate: &approvalGate{conf: conf}}
-	v := &releaseVersionCheck{gate: g, sources: map[string][]string{"PROJ-1": {content, fresh}}, selected: jira.Version{Name: "v2"}}
+	g := &gateRun{conf: conf, contentOnlyPorts: map[string][]versionPortHint{"PROJ-2": {{commit: content, port: "1234567890123456789012345678901234567890"}}}, gate: &approvalGate{conf: conf}}
+	v := &releaseVersionCheck{gate: g, sources: map[string][]string{"PROJ-1": {"PROJ-2", "PROJ-3"}}, selected: jira.Version{Name: "v2"}}
 	msg := v.notInVersion(context.Background(), jira.Issue{Key: "PROJ-1", Status: "Done"})
-	if !strings.Contains(msg, "add an empty commit in this range") || !strings.Contains(msg, "approved_release.dormant") {
+	if !strings.Contains(msg, "add an empty commit in this range") || !strings.Contains(msg, "approved_release.dormant: [{key: PROJ-3") || strings.Contains(msg, "key: PROJ-2") {
 		t.Fatalf("mixed advice=%q", msg)
+	}
+}
+
+func TestNotInVersionCombinesSubtaskContentPortAndNewWorkAdvice(t *testing.T) {
+	conf := &config.ApprovedRelease{}
+	content := "c0ffee0000000000000000000000000000000000"
+	g := &gateRun{conf: conf, contentOnlyPorts: map[string][]versionPortHint{"PROJ-2": {{commit: content, port: "1234567890123456789012345678901234567890"}}}, gate: &approvalGate{conf: conf}}
+	v := &releaseVersionCheck{gate: g, sources: map[string][]string{"PROJ-1": {"PROJ-2", "PROJ-3"}}, selected: jira.Version{Name: "v2"}}
+	msg := v.notInVersion(context.Background(), jira.Issue{Key: "PROJ-1", Status: "Done"})
+	if !strings.Contains(msg, "add an empty commit in this range") || !strings.Contains(msg, "approved_release.dormant: [{key: PROJ-3") || strings.Contains(msg, "key: PROJ-2") {
+		t.Fatalf("mixed subtask advice=%q", msg)
+	}
+}
+
+func TestNotInVersionKeepsParentAdviceBesideSubtaskContentPort(t *testing.T) {
+	conf := &config.ApprovedRelease{}
+	content := "c0ffee0000000000000000000000000000000000"
+	g := &gateRun{conf: conf, contentOnlyPorts: map[string][]versionPortHint{"PROJ-2": {{commit: content, port: "1234567890123456789012345678901234567890"}}}, gate: &approvalGate{conf: conf}}
+	v := &releaseVersionCheck{gate: g, sources: map[string][]string{"PROJ-1": {"PROJ-1", "PROJ-2"}}, selected: jira.Version{Name: "v2"}}
+	msg := v.notInVersion(context.Background(), jira.Issue{Key: "PROJ-1", Status: "Done"})
+	if !strings.Contains(msg, "approved_release.dormant: [{key: PROJ-1") || strings.Contains(msg, "key: PROJ-2") {
+		t.Fatalf("parent and subtask advice=%q", msg)
 	}
 }
 
@@ -565,6 +960,16 @@ func TestCoveredVersionPortDiffKeepsRenameDetectionDisabled(t *testing.T) {
 	args := versionPortDiffArgs(base, commit, "rename")
 	if !slices.Contains(args, "--no-renames") {
 		t.Fatalf("rename diff args = %v, want --no-renames", args)
+	}
+}
+
+func TestVersionPortBlameDisablesRenameFollowing(t *testing.T) {
+	args := versionPortFileBlameArgs("work.txt", "prev", "head", []int{4, 2, 3})
+	if !slices.Contains(args, "--no-follow") {
+		t.Fatalf("blame args = %v, want --no-follow", args)
+	}
+	if !slices.Contains(args, "2,4") {
+		t.Fatalf("blame args = %v, want the coalesced line range", args)
 	}
 }
 

@@ -839,27 +839,7 @@ func versionPortFileBlame(repo *gitx.Repo, file, prev, head string) (map[int]ver
 }
 
 func versionPortFileBlameLines(repo *gitx.Repo, file, prev, head string, lines []int) (map[int]versionPortOrigin, error) {
-	args := []string{"blame", "--line-porcelain", "--no-follow"}
-	slices.Sort(lines)
-	lines = slices.Compact(lines)
-	// A very fragmented file can exceed the operating system's argument limit;
-	// in that case one full-file blame remains bounded to a single Git process.
-	var ranges []string
-	for i := 0; i < len(lines); {
-		start, end := lines[i], lines[i]
-		i++
-		for i < len(lines) && lines[i] == end+1 {
-			end = lines[i]
-			i++
-		}
-		ranges = append(ranges, strconv.Itoa(start)+","+strconv.Itoa(end))
-	}
-	if len(ranges) <= 128 {
-		for _, r := range ranges {
-			args = append(args, "-L", r)
-		}
-	}
-	args = append(args, prev+".."+head, "--", file)
+	args := versionPortFileBlameArgs(file, prev, head, lines)
 	output, err := repo.Git(args...)
 	if err != nil {
 		return nil, fmt.Errorf("blaming %s in release range: %w", file, err)
@@ -881,6 +861,31 @@ func versionPortFileBlameLines(repo *gitx.Repo, file, prev, head string, lines [
 		origins[lineNumber] = versionPortOrigin{match[1], original}
 	}
 	return origins, nil
+}
+
+func versionPortFileBlameArgs(file, prev, head string, lines []int) []string {
+	args := []string{"blame", "--line-porcelain", "--no-follow"}
+	slices.Sort(lines)
+	lines = slices.Compact(lines)
+	// A very fragmented file can exceed the operating system's argument limit;
+	// in that case one full-file blame remains bounded to a single Git process.
+	var ranges []string
+	for i := 0; i < len(lines); {
+		start, end := lines[i], lines[i]
+		i++
+		for i < len(lines) && lines[i] == end+1 {
+			end = lines[i]
+			i++
+		}
+		ranges = append(ranges, strconv.Itoa(start)+","+strconv.Itoa(end))
+	}
+	if len(ranges) <= 128 {
+		for _, r := range ranges {
+			args = append(args, "-L", r)
+		}
+	}
+	args = append(args, prev+".."+head, "--", file)
+	return args
 }
 
 func versionPortHasBinaryDelta(repo *gitx.Repo, groupFiles map[string]bool, prev, head string) (bool, error) {

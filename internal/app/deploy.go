@@ -2501,12 +2501,7 @@ func (g *gateRun) run(ctx context.Context, prev, head string, withheld []string,
 		if err != nil {
 			return out, err
 		}
-		portCommits := make([]deliveredCommit, 0, len(commits))
-		for _, c := range commits {
-			if reverted[c.sha] == "" {
-				portCommits = append(portCommits, c)
-			}
-		}
+		portCommits := notRevertedVersionPortCommits(commits, reverted)
 		targets := versionTargetsByPath(g.cfg.Version)
 		covered, err = coveredVersionPortsWithPrior(g.repo, prev, head, prior, portCommits, targets)
 		if err != nil {
@@ -2597,6 +2592,16 @@ func (g *gateRun) linkOutside(ctx context.Context) ([]gateFailure, error) {
 		failures[i].why = strings.Join(whys[i], "; ")
 	}
 	return failures, nil
+}
+
+func notRevertedVersionPortCommits(commits []deliveredCommit, reverted map[string]string) []deliveredCommit {
+	active := make([]deliveredCommit, 0, len(commits))
+	for _, c := range commits {
+		if reverted[c.sha] == "" {
+			active = append(active, c)
+		}
+	}
+	return active
 }
 
 // reverted maps each commit the reverts among commits take back to the
