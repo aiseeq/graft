@@ -463,11 +463,18 @@ gate's later go steps run here too. A gate whose host does not answer waits
 here whole and says why; none of its steps says `cheaper here`.
 For each step eligible for the host, graft compares the median wall time of
 its last up to five successful local runs of the same profile and step, from
-any tree of the project and at least two of them, with the minimum wall time
-of the last up to five successful host steps for this tree. When the local
-time is known and less than the host time, the step stays here; otherwise it
-goes to the host. If no host time is known, the first eligible step is a
-probe, and later steps in the same gate use its measured wall time. A
+any tree of the project, with the minimum wall time of the last up to five
+successful host steps for this tree. A single local run is enough to set a
+price. Both local prices and host fees expire seven days after their recorded
+`time`. Graft first reads the newest 8 MiB of the journal, selecting this
+repository's records; if a local price or host fee is missing, it makes at
+most one deeper read in that gate, capped at 256 MiB of raw journal data.
+When the host fee is known but no fresh local price exists, the step is tried
+here; only a successful record with positive wall time becomes a local price.
+If no host fee is known, the
+first eligible step is probed on the host, and later steps in the same gate
+use its measured wall time. When the local time is known and less than the
+host time, the step stays here; otherwise it goes to the host. A
 `remote: true` task's local placement reason is printed once per task and
 recorded on each affected step. If every eligible step stays here, the gate
 waits here whole instead of splitting.
@@ -1418,7 +1425,7 @@ graft's version, pid and command line. A
   also `inside an admitted heavy task, …`,
   `this machine would not make it wait`, `<host> did not answer (…)`, `no
   step of the gate may go to the host`, `each step of the gate that may go
-  to the host is cheaper here`, `when: always places the gate's heavy tasks,
+  to the host is cheaper here or being tried here`, `when: always places the gate's heavy tasks,
   not its steps`, `the project's remote_heavy places the gate's heavy tasks,
   not its steps`. Absent for a task the host ran and without a host. On a
   step line, a heavy task that stayed here gives its `here` to each step;
@@ -1427,7 +1434,9 @@ graft's version, pid and command line. A
   its own local reason, including why a step of a multi-step `remote: true`
   task stays here. Built-in checks and steps of tasks without `remote: true`
   record their reasons without printing a line for each one. Eligible steps
-  kept here for cost say `cheaper here: …`; a broken host path says
+  kept here after a fresh local price say `cheaper here: …`; a step without
+  a fresh local price, when the host has a known fee, is tried here and says
+  `price probe here: …`. A broken host path says
   `<host> path broken: …` on the fallback step and later eligible steps.
 - `reserve_cores`, `reserve_s` and `reserve_end` record expected CPU use, how
   long the reservation lived, and whether it ended by CPU use (`cpu`), the

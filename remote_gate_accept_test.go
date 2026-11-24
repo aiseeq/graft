@@ -244,6 +244,11 @@ func TestBusyGateSendsItsGoStepsToTheHost(t *testing.T) {
 	if err := os.Remove(f.path("out")); err != nil {
 		t.Fatal(err)
 	}
+	seedGatePlacementCosts(t, f, state, map[string][]float64{
+		"work:gate\x00go vet ./...":           {100},
+		"work:unit\x00go test -count=1 ./...": {100},
+		"work:unit\x00go vet ./...":           {100},
+	})
 
 	loaded(t, state)
 	out := runUntilMachineWait(t, f, state, "gate")
@@ -286,6 +291,10 @@ const builtinSplitGateConfig = "schema: 1\nversion: {mode: none}\ngo_fix: {enabl
 func TestBusyGateSendsBuiltinVetToTheHost(t *testing.T) {
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", builtinSplitGateConfig)
+	seedGatePlacementCosts(t, f, state, map[string][]float64{
+		"work:gate\x00go vet ./...":       {100},
+		"work:gate\x00go fix -diff ./...": {100},
+	})
 	loaded(t, state)
 	out := runUntilMachineWait(t, f, state, "gate")
 	calls := callsOf(t, state)
@@ -362,6 +371,11 @@ func TestBusyGateDescriptionOmitsBuiltinKeptInSubdirectory(t *testing.T) {
 	f.write("sub/a.go", "package sub\n")
 	path, sum := fakeGlint(t, f)
 	writeHostGlint(t, state, "pc", path, sum)
+	seedGatePlacementCosts(t, f, state, map[string][]float64{
+		"work:gate\x00go vet ./...":       {100},
+		"work:gate\x00go fix -diff ./...": {100},
+		"work:lint\x00glint check ./...":  {100},
+	})
 	loaded(t, state)
 	out := runUntilMachineWait(t, f, state, "gate")
 	if !strings.Contains(out, "glint check steps of remote: true tasks") || strings.Contains(out, "built-in go vet") {
@@ -379,6 +393,11 @@ func TestBusyGateDescriptionNamesRemoteGlint(t *testing.T) {
 	f.write(".graft.yaml", cfg)
 	path, sum := fakeGlint(t, f)
 	writeHostGlint(t, state, "pc", path, sum)
+	seedGatePlacementCosts(t, f, state, map[string][]float64{
+		"work:gate\x00go vet ./...":       {100},
+		"work:gate\x00go fix -diff ./...": {100},
+		"work:lint\x00glint check ./...":  {100},
+	})
 	loaded(t, state)
 	out := runUntilMachineWait(t, f, state, "gate")
 	if !strings.Contains(out, "glint check steps of remote: true tasks") {
@@ -424,6 +443,10 @@ func TestBusyGateWaitsForThisMachineOnce(t *testing.T) {
 		"  unit:\n    heavy: true\n    remote: true\n    run: [[go, test, -count=1, ./...]]\n"+
 		"  first:\n    run: [[sh, "+yamlQuote(filepath.Join(state, "first.sh"))+"]]\n"+
 		"  second:\n    run: [[sh, -c, 'echo second >> out']]\n")
+	seedGatePlacementCosts(t, f, state, map[string][]float64{
+		"work:gate\x00go vet ./...":           {100},
+		"work:unit\x00go test -count=1 ./...": {100},
+	})
 	loaded(t, state)
 	g := startWaitingForMachine(t, f, "gate")
 	setRunnable(t, proc, 1)

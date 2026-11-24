@@ -235,7 +235,13 @@ type gateStepCosts struct {
 	host   string
 	// remote is remote_heavy as the busy gate decided by: a gate that did
 	// not split has none of its own, and its step lines ask with this one.
-	remote *config.RemoteHeavy
+	remote      *config.RemoteHeavy
+	path        string
+	project     string
+	now         time.Time
+	deepened    bool
+	deepMatches []stats.RecordMatch
+	stderr      io.Writer
 }
 
 // frame is a running task as the stats see it.
@@ -751,7 +757,7 @@ func (r *Runner) splitBusyGate(ctx context.Context, gate []gateStep) (bool, stri
 		r.remoteHeavy = previousRemoteHeavy
 		return false, WhyGateNoStepForHost, nil
 	}
-	costs, err := r.loadGateStepCosts()
+	costs, err := r.loadGateStepCosts(gate)
 	if err != nil {
 		r.remoteHeavy = previousRemoteHeavy
 		return false, "", fmt.Errorf("reading stats for busy gate placement: %w", err)
@@ -801,29 +807,142 @@ func (r *Runner) gateBusyNow(ctx context.Context, name string, nestedAdmitted bo
 }
 
 const gateStatsTailBytes = 8 << 20
+const gateStatsDeepBytes = 256 << 20
+const gatePriceLifetime = 7 * 24 * time.Hour
 
 func gateCostKey(profile, step string) string { return profile + "\x00" + step }
 
-func (r *Runner) loadGateStepCosts() (*gateStepCosts, error) {
+func freshGateCostRecord(rec *stats.Record, now time.Time) bool {
+	return !rec.Time.Before(now.Add(-gatePriceLifetime))
+}
+
+func gateLocalPrice(values []float64) gateStepCost {
+	values = lastFloats(values, 5)
+	if len(values) == 0 {
+		return gateStepCost{}
+	}
+	return gateStepCost{here: stats.Median(values), ok: true}
+}
+
+func gateCostPlacement(local gateStepCost, fee float64, host string) (bool, string) {
+	if !local.ok {
+		return false, fmt.Sprintf("price probe here: no fresh local price, %.1fs on %s", fee, host)
+	}
+	if local.here >= fee {
+		return true, ""
+	}
+	return false, fmt.Sprintf("cheaper here: %.1fs here, %.1fs on %s", local.here, fee, host)
+}
+
+func (r *Runner) loadGateStepCosts(gate []gateStep) (*gateStepCosts, error) {
 	path, err := stats.Path()
 	if err != nil {
 		return nil, err
 	}
-	records, _, err := stats.LoadTail(path, gateStatsTailBytes)
+	root := filepath.Clean(r.Root)
+	now := time.Now()
+	needle := strings.SplitN(r.profile(&frame{task: stats.GateTask}), ":", 2)[0] + ":"
+	records, malformed, err := stats.LoadTailMatching(path, gateStatsTailBytes, needle)
 	if err != nil {
 		return nil, err
 	}
-	costs := &gateStepCosts{local: map[string]gateStepCost{}, host: r.remoteHeavy.Host, remote: r.remoteHeavy}
-	root := filepath.Clean(r.Root)
+	costs := &gateStepCosts{local: map[string]gateStepCost{}, host: r.remoteHeavy.Host, remote: r.remoteHeavy, path: path, project: root, now: now, stderr: r.Stderr}
+	if malformed > 0 {
+		fmt.Fprintf(r.Stderr, "graft: %s: %d malformed line(s) left out\n", path, malformed)
+	}
+	accumulateGateCosts(records, costs)
+	profileFor := func(name string) string { return r.profile(&frame{task: name}) }
+	add := func(name, step string) {
+		costs.deepMatches = append(costs.deepMatches, stats.RecordMatch{Profile: profileFor(name), Step: stats.StepText(step)})
+	}
+	for i := range gate {
+		gs := &gate[i]
+		if gs.builtin && builtinGateGoCheck(gs.step) {
+			add(stats.GateTask, gs.step.Source)
+		}
+	}
+	seen := map[string]bool{}
+	var visit func(string)
+	visit = func(name string) {
+		if seen[name] {
+			return
+		}
+		seen[name] = true
+		task := r.Config.Tasks[name]
+		if task == nil {
+			return
+		}
+		for _, nested := range nestedTaskNames(task) {
+			visit(nested)
+		}
+		if !remoteVouched(task) {
+			return
+		}
+		for _, s := range task.Run {
+			eligible, _ := r.remoteGateVouchedStep(s, task)
+			if eligible {
+				add(name, s.Source)
+			}
+		}
+	}
+	for i := range gate {
+		gs := &gate[i]
+		if gs.step.Task != "" {
+			visit(gs.step.Task)
+		}
+	}
+	return costs, nil
+}
+
+func (c *gateStepCosts) deepen() error {
+	if c.deepened {
+		return nil
+	}
+	c.deepened = true
+	queries := make([]stats.RecordMatch, 0, len(c.deepMatches)+1)
+	for _, query := range c.deepMatches {
+		key := gateCostKey(query.Profile, query.Step)
+		if !c.local[key].ok {
+			queries = append(queries, query)
+		}
+	}
+	if !c.hasFee {
+		queries = append(queries, stats.RecordMatch{Project: c.project, Host: c.host})
+	}
+	rows, malformed, err := stats.LoadWindowMatching(c.path, c.now.Add(-gatePriceLifetime), queries, gateStatsDeepBytes)
+	if err != nil {
+		return err
+	}
+	if malformed > 0 {
+		fmt.Fprintf(c.stderr, "graft: %s: %d malformed line(s) left out\n", c.path, malformed)
+	}
+	extra := &gateStepCosts{local: map[string]gateStepCost{}, host: c.host, project: c.project, now: c.now}
+	accumulateGateCosts(rows, extra)
+	mergeMissingGatePrices(c.local, extra.local)
+	if !c.hasFee && extra.hasFee {
+		c.fee, c.hasFee = extra.fee, true
+	}
+	return nil
+}
+
+func mergeMissingGatePrices(current, deeper map[string]gateStepCost) {
+	for key, value := range deeper {
+		if !current[key].ok {
+			current[key] = value
+		}
+	}
+}
+
+func accumulateGateCosts(records []stats.Record, costs *gateStepCosts) {
 	local := map[string][]float64{}
 	var remote []float64
 	for i := range records {
 		rec := &records[i]
-		if rec.Kind != stats.KindStep || rec.Exit != 0 || rec.WallS <= 0 {
+		if !freshGateCostRecord(rec, costs.now) || rec.Kind != stats.KindStep || rec.Exit != 0 || rec.WallS <= 0 {
 			continue
 		}
-		if rec.Host == r.remoteHeavy.Host {
-			if rec.Project == root {
+		if rec.Host == costs.host {
+			if rec.Project == costs.project {
 				remote = append(remote, rec.WallS)
 			}
 			continue
@@ -834,17 +953,13 @@ func (r *Runner) loadGateStepCosts() (*gateStepCosts, error) {
 		}
 	}
 	for key, values := range local {
-		values = lastFloats(values, 5)
-		if len(values) < 2 {
-			continue
-		}
-		costs.local[key] = gateStepCost{here: stats.Median(values), ok: true}
+		costs.local[key] = gateLocalPrice(values)
 	}
 	remote = lastFloats(remote, 5)
 	if len(remote) > 0 {
-		costs.fee, costs.hasFee = slices.Min(remote), true
+		costs.fee = slices.Min(remote)
+		costs.hasFee = true
 	}
-	return costs, nil
 }
 
 func lastFloats(values []float64, n int) []float64 {
@@ -885,16 +1000,31 @@ func (r *Runner) gateStepPlacement(s config.Step, t *config.Task, taskName strin
 			return false, reason, nil
 		}
 	}
-	if r.gateCosts == nil || !r.gateCosts.hasFee {
+	if r.gateCosts == nil {
+		return true, "", nil
+	}
+	if !r.gateCosts.hasFee {
+		if err := r.gateCosts.deepen(); err != nil {
+			return false, "", fmt.Errorf("deepening gate step prices: %w", err)
+		}
+	}
+	if !r.gateCosts.hasFee {
 		return true, "", nil
 	}
 	profile := r.profile(&frame{task: taskName})
-	local := r.gateCosts.local[gateCostKey(profile, stats.StepText(s.Source))]
-	if !local.ok || local.here >= r.gateCosts.fee {
+	key := gateCostKey(profile, stats.StepText(s.Source))
+	local := r.gateCosts.local[key]
+	if !local.ok {
+		if err := r.gateCosts.deepen(); err != nil {
+			return false, "", fmt.Errorf("deepening gate step prices: %w", err)
+		}
+		local = r.gateCosts.local[key]
+	}
+	if !r.gateCosts.hasFee {
 		return true, "", nil
 	}
-	reason := fmt.Sprintf("cheaper here: %.1fs here, %.1fs on %s", local.here, r.gateCosts.fee, r.gateCosts.host)
-	return false, reason, nil
+	remote, reason := gateCostPlacement(local, r.gateCosts.fee, r.gateCosts.host)
+	return remote, reason, nil
 }
 
 func (r *Runner) remoteGateVouchedStep(s config.Step, t *config.Task) (bool, string) {
@@ -1371,21 +1501,8 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int, reason str
 	}
 	inner := r.frames[len(r.frames)-1]
 	stepHost := r.hostOf(inner)
-	var stepHere string
-	var heavyFrame *frame
-	for i := len(r.frames) - 1; i >= 0; i-- {
-		if r.frames[i].heavy {
-			heavyFrame = r.frames[i]
-			break
-		}
-	}
+	stepHere, heavyFrame := r.recordedStepPlacement(inner, source, len(builtin) > 0 && builtin[0])
 	heavy := heavyFrame != nil && heavyFrame.remote == (stepHost != "")
-	if heavy && !heavyFrame.remote {
-		stepHere = heavyFrame.here
-	}
-	if inner.stepHere != "" {
-		stepHere = inner.stepHere
-	}
 	for _, f := range r.frames {
 		if f.loadMachineSet && f.loadMachine != stepHost {
 			f.mixedLoadMachine = true
@@ -1412,6 +1529,69 @@ func (r *Runner) recordStep(source string, use stats.Usage, code int, reason str
 	rec.Host, rec.Here, rec.Heavy = r.hostOf(inner), stepHere, heavy
 	rec.Builtin, rec.BuiltinCostKnown = isBuiltin, builtinCostKnown
 	r.write(rec, use, r.frames[0].task)
+}
+
+func (r *Runner) recordedStepPlacement(inner *frame, source string, builtin bool) (string, *frame) {
+	var heavyFrame *frame
+	for i := len(r.frames) - 1; i >= 0; i-- {
+		if r.frames[i].heavy {
+			heavyFrame = r.frames[i]
+			break
+		}
+	}
+	var stepHere string
+	if heavyFrame != nil && !heavyFrame.remote {
+		stepHere = heavyFrame.here
+	}
+	if inner.stepHere != "" {
+		return inner.stepHere, heavyFrame
+	}
+	if costReason := r.recordedGateCostReason(inner, source, builtin); costReason != "" {
+		return costReason, heavyFrame
+	}
+	return stepHere, heavyFrame
+}
+
+func (r *Runner) recordedGateCostReason(current *frame, source string, builtin bool) string {
+	if r.gateSplit || r.gateCosts == nil || !r.gateCosts.hasFee {
+		return ""
+	}
+	var task *config.Task
+	taskName := current.task
+	if builtin {
+		taskName = stats.GateTask
+		step := config.Step{Source: source, Argv: strings.Fields(source)}
+		if !builtinGateGoCheck(step) {
+			return ""
+		}
+		profile := r.profile(&frame{task: taskName})
+		local := r.gateCosts.local[gateCostKey(profile, stats.StepText(source))]
+		remote, reason := gateCostPlacement(local, r.gateCosts.fee, r.gateCosts.host)
+		if !remote {
+			return reason
+		}
+		return ""
+	}
+	task = r.Config.Tasks[taskName]
+	if task == nil || !remoteVouched(task) {
+		return ""
+	}
+	for _, step := range task.Run {
+		if stats.StepText(step.Source) != stats.StepText(source) {
+			continue
+		}
+		eligible, _ := r.remoteGateVouchedStep(step, task)
+		if !eligible {
+			continue
+		}
+		profile := r.profile(&frame{task: taskName})
+		local := r.gateCosts.local[gateCostKey(profile, stats.StepText(source))]
+		remote, reason := gateCostPlacement(local, r.gateCosts.fee, r.gateCosts.host)
+		if !remote {
+			return reason
+		}
+	}
+	return ""
 }
 
 // recordForFrame centralizes the fields shared by every task, step, and cache

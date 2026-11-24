@@ -24,6 +24,10 @@ func TestBusyGateKeepsHereAStepItsTaskKeepsHere(t *testing.T) {
 	}
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", strings.Replace(splitGateConfig, "  - task: script\n", gate+"  - task: script\n", 1)+tasks)
+	seedGatePlacementCosts(t, f, state, map[string][]float64{
+		"work:gate\x00go vet ./...":           {100},
+		"work:unit\x00go test -count=1 ./...": {100},
+	})
 	loaded(t, state)
 	out := runUntilMachineWait(t, f, state, "gate")
 	calls := callsOf(t, state)
@@ -112,6 +116,10 @@ func TestBusyGateStepsGetTheirThreads(t *testing.T) {
 	f, state := userRemoteRepo(t, "")
 	f.write(".graft.yaml", strings.Replace(splitGateConfig, "gate:\n",
 		"go_fmt: {enabled: false, reason: the test has no go files to format}\ngate:\n  - [sh, -c, 'echo first procs=$GOMAXPROCS flags=$GOFLAGS threads=$GRAFT_THREADS >> out']\n", 1))
+	seedGatePlacementCosts(t, f, state, map[string][]float64{
+		"work:gate\x00go vet ./...":           {100},
+		"work:unit\x00go test -count=1 ./...": {100},
+	})
 	f.env = append(f.env, "GOMAXPROCS=1", "GOFLAGS=-p=1")
 	loaded(t, state)
 	out := runUntilMachineWait(t, f, state, "gate")

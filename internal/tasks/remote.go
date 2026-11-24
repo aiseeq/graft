@@ -184,9 +184,9 @@ const (
 	WhyClone     = "it runs in a clean clone of HEAD, which the host does not have"
 	WhyGateSplit = "in a gate split by step, each step placed for itself"
 	// A busy gate stays here whole when none of its steps may go to the host,
-	// or each that may is cheaper here.
+	// or each eligible step has a local price or is being probed here.
 	WhyGateNoStepForHost = "no step of the gate may go to the host"
-	WhyGateCheaperHere   = "each step of the gate that may go to the host is cheaper here"
+	WhyGateCheaperHere   = "each step of the gate that may go to the host is cheaper here or being tried here"
 	// A gate is split by step only for the user's remote_heavy with when:
 	// busy; otherwise its heavy tasks are placed one by one.
 	WhyGateProjectHost = "the project's remote_heavy places the gate's heavy tasks, not its steps"

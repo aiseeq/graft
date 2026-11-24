@@ -2,11 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aiseeq/graft/v2/internal/stats"
 	"github.com/aiseeq/graft/v2/internal/tasks"
@@ -49,7 +51,12 @@ func newGateCostFixture(t *testing.T, cfg string) gateCostFixture {
 func (g gateCostFixture) writeHistory(t *testing.T, locals, hosts []stats.Record) {
 	t.Helper()
 	var file strings.Builder
+	var sampleN int
 	write := func(rec stats.Record) {
+		if rec.Time.IsZero() {
+			rec.Time = time.Now().Add(time.Duration(sampleN) * time.Millisecond)
+			sampleN++
+		}
 		rec.Kind = stats.KindStep
 		if rec.Project == "" {
 			rec.Project = g.project
@@ -101,6 +108,52 @@ func gateCostRows(walls []float64, host string, exit int) []stats.Record {
 	return rows
 }
 
+func seedGatePlacementCosts(t *testing.T, f *fixture, state string, profileSteps map[string][]float64) {
+	t.Helper()
+	project, err := filepath.EvalSymlinks(f.work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(state, "cache", "graft", "stats.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendRecord := func(rec stats.Record) {
+		t.Helper()
+		data, marshalErr := json.Marshal(rec)
+		if marshalErr != nil {
+			file.Close()
+			t.Fatal(marshalErr)
+		}
+		if _, writeErr := file.Write(append(data, '\n')); writeErr != nil {
+			file.Close()
+			t.Fatal(writeErr)
+		}
+	}
+	for i, fee := range []float64{40, 41, 42} {
+		appendRecord(stats.Record{Time: time.Now().Add(time.Duration(i) * time.Millisecond), Kind: stats.KindStep, Task: "gate", Project: project, Profile: "work:gate", Step: "go vet ./...", Host: "pc", Exit: 0, WallS: fee, Run: fmt.Sprintf("host-%d", i)})
+	}
+	idx := 0
+	for key, values := range profileSteps {
+		profile, step, ok := strings.Cut(key, "\x00")
+		if !ok {
+			file.Close()
+			t.Fatalf("bad test profile/step key %q", key)
+		}
+		for _, wall := range values {
+			appendRecord(stats.Record{Time: time.Now().Add(time.Duration(idx) * time.Millisecond), Kind: stats.KindStep, Task: strings.SplitN(profile, ":", 2)[1], Project: project, Profile: profile, Step: step, Exit: 0, WallS: wall, Run: fmt.Sprintf("local-%d", idx)})
+			idx++
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func runBusyCostGate(t *testing.T, g gateCostFixture, remoteDelay bool) (string, string) {
 	t.Helper()
 	if remoteDelay {
@@ -138,6 +191,68 @@ func TestBusyGateCheaperHereHistory(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("step history has no here reason: %+v", readStats(t, g.statsFile))
+	}
+}
+
+func TestBusyGateRecoversPriceBehindForeignJournalTail(t *testing.T) {
+	g := newGateCostFixture(t, gateCostVetConfig)
+	locals := gateCostRows([]float64{0.2, 0.3, 0.4}, "", 0)
+	for i := range locals {
+		locals[i].Time = time.Now().Add(-48 * time.Hour)
+	}
+	g.writeHistory(t, locals, nil)
+	noise := `{"time":"2026-11-24T12:00:00Z","kind":"step","task":"noise","project":"/projectB","profile":"projectB:gate","step":"foreign","run":"noise","wall_s":1,"exit":0,"padding":"` + strings.Repeat("x", 200) + `"}` + "\n"
+	file, err := os.OpenFile(g.statsFile, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(strings.Repeat(noise, (8<<20)/len(noise)+1)); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(g.statsFile, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rec := range gateCostRows([]float64{40, 41}, "pc", 0) {
+		rec.Time = time.Now()
+		rec.Kind = stats.KindStep
+		rec.Task = stats.GateTask
+		rec.Project = g.project
+		rec.Profile = g.profile
+		rec.Step = g.step
+		b, marshalErr := json.Marshal(rec)
+		if marshalErr != nil {
+			f.Close()
+			t.Fatal(marshalErr)
+		}
+		if _, err := f.Write(append(b, '\n')); err != nil {
+			f.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	window, _, err := stats.LoadWindow(g.statsFile, time.Now().Add(-7*24*time.Hour), strings.SplitN(g.profile, ":", 2)[0]+":", 256<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(window) != 5 {
+		t.Fatalf("deep window returned %d matching rows, want three local and two host records", len(window))
+	}
+	out, calls := runBusyCostGate(t, g, false)
+	foundLocalPrice := false
+	for _, rec := range readStats(t, g.statsFile) {
+		if rec.Kind == stats.KindStep && rec.Step == g.step && rec.Host == "" && strings.HasPrefix(rec.Here, "cheaper here:") {
+			foundLocalPrice = true
+		}
+	}
+	if calls != "" || !foundLocalPrice {
+		t.Fatalf("old local price behind foreign tail was not found; calls=%q\n%s", calls, out)
 	}
 }
 
@@ -214,10 +329,13 @@ func TestBusyGateColdProbeThenCheaperHere(t *testing.T) {
 		t.Fatal(err)
 	}
 	var local []stats.Record
+	var sampleN int
 	for _, rec := range records {
 		if rec.Kind == "step" && strings.Contains(rec.Step, "go test -run Probe") {
-			local = append(local, stats.Record{Kind: "step", Project: g.project, Profile: rec.Profile, Task: rec.Task, Step: rec.Step, WallS: 0.2, Exit: 0})
-			local = append(local, stats.Record{Kind: "step", Project: g.project, Profile: rec.Profile, Task: rec.Task, Step: rec.Step, WallS: 0.2, Exit: 0})
+			for range 2 {
+				local = append(local, stats.Record{Time: time.Now().Add(time.Duration(sampleN) * time.Millisecond), Kind: "step", Project: g.project, Profile: rec.Profile, Task: rec.Task, Step: rec.Step, WallS: 0.2, Exit: 0})
+				sampleN++
+			}
 		}
 	}
 	if len(local) != 8 {
@@ -301,17 +419,76 @@ func TestBusyGateAllStepsStayHereWaitsWhole(t *testing.T) {
 	}
 }
 
-func TestBusyGateUnknownLocalStepGoesToHost(t *testing.T) {
+func TestBusyGateUnknownLocalStepIsProbedHere(t *testing.T) {
 	g := newGateCostFixture(t, gateCostVetConfig)
 	g.writeHistory(t, nil, gateCostRows([]float64{1}, "pc", 0))
 	out, calls := runBusyCostGate(t, g, false)
-	if !strings.Contains(calls, "go vet ./...") || strings.Contains(out, "cheaper here") {
-		t.Fatalf("step with unknown local price did not use host; calls=%q\n%s", calls, out)
+	if calls != "" || strings.Contains(out, "cheaper here") {
+		t.Fatalf("step with unknown local price was not probed here; calls=%q\n%s", calls, out)
+	}
+	found := false
+	for _, rec := range readStats(t, g.statsFile) {
+		if rec.Kind == stats.KindStep && rec.Step == "go vet ./..." && rec.Host == "" && strings.HasPrefix(rec.Here, "price probe here:") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("local step has no probe reason: %+v", readStats(t, g.statsFile))
 	}
 }
 
 // TestBusyGateKeepsTheTaskHereReason: the cost rule leaves the here of a
 // split gate's heavy task as it was, and a step the host ran has none.
+func TestBusyGateNewStepGetsCheaperHereAfterProbe(t *testing.T) {
+	const cfg = "schema: 1\nversion: {mode: none}\ngo_vet: {enabled: false, reason: disabled in this test}\n" +
+		"gate:\n  - task: unit\n  - task: script\ntasks:\n" +
+		"  unit:\n    heavy: true\n    remote: true\n    run: [[go, test, -run, NewText, ./...]]\n" +
+		"  script:\n    run: [[sh, -c, 'echo local >> out']]\n"
+	g := newGateCostFixture(t, cfg)
+	g.writeHistory(t, nil, gateCostRows([]float64{40}, "pc", 0))
+	_, calls := runBusyCostGate(t, g, false)
+	if calls != "" {
+		t.Fatalf("new step was not probed here: %q", calls)
+	}
+	probed := false
+	for _, rec := range readStats(t, g.statsFile) {
+		if rec.Kind == stats.KindStep && strings.Contains(rec.Step, "NewText") && rec.Host == "" && strings.HasPrefix(rec.Here, "price probe here:") {
+			probed = true
+		}
+	}
+	if !probed {
+		t.Fatalf("first gate did not record a local price probe: %+v", readStats(t, g.statsFile))
+	}
+	for range 2 {
+		previousRun := latestGateRun(t, g.statsFile)
+		_, calls = runBusyCostGate(t, g, false)
+		if calls != "" {
+			t.Fatalf("step with a fresh local price went to host: %q", calls)
+		}
+		found := false
+		currentRun := latestGateRun(t, g.statsFile)
+		for _, rec := range readStats(t, g.statsFile) {
+			if currentRun != previousRun && rec.Run == currentRun && rec.Kind == stats.KindStep && strings.Contains(rec.Step, "NewText") && rec.Host == "" && strings.HasPrefix(rec.Here, "cheaper here:") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("later gate has no cheaper-here step record: %+v", readStats(t, g.statsFile))
+		}
+	}
+}
+
+func latestGateRun(t *testing.T, path string) string {
+	t.Helper()
+	var latest string
+	for _, rec := range readStats(t, path) {
+		if rec.Kind == stats.KindTask && rec.Task == stats.GateTask {
+			latest = rec.Run
+		}
+	}
+	return latest
+}
+
 func TestBusyGateKeepsTheTaskHereReason(t *testing.T) {
 	g := newGateCostFixture(t, splitGateConfig)
 	if err := os.Remove(g.f.path("out")); err != nil {
@@ -320,6 +497,10 @@ func TestBusyGateKeepsTheTaskHereReason(t *testing.T) {
 	if err := os.Remove(g.statsFile); err != nil {
 		t.Fatal(err)
 	}
+	seedGatePlacementCosts(t, g.f, g.state, map[string][]float64{
+		"work:gate\x00go vet ./...":           {100},
+		"work:unit\x00go test -count=1 ./...": {100},
+	})
 	loaded(t, g.state)
 	out := runUntilMachineWait(t, g.f, g.state, "gate")
 	records, _, err := stats.LoadTail(g.statsFile, 8<<20)
@@ -347,24 +528,59 @@ func TestBusyGateKeepsTheTaskHereReason(t *testing.T) {
 	}
 }
 
-// TestBusyGateHostDownKeepsNoStepHereForCost: a gate whose host did not
-// answer waits here whole, and none of its steps says cheaper here: the
-// unit step has no local price, so the gate asks the host.
-func TestBusyGateHostDownKeepsNoStepHereForCost(t *testing.T) {
+// A cheap local step stays here without querying an unavailable host.
+func TestBusyGateCheapLocalStepDoesNotQueryHost(t *testing.T) {
 	g := newGateCostFixture(t, gateCostHostAskedConfig)
 	if g.step != "go vet ./..." {
 		t.Fatalf("the sample step is %q, want the built-in vet", g.step)
 	}
-	g.writeHistory(t, gateCostRows([]float64{0.2, 0.2}, "", 0), gateCostRows([]float64{40}, "pc", 0))
+	locals := gateCostRows([]float64{0.2, 0.2}, "", 0)
+	g.writeHistory(t, locals, gateCostRows([]float64{40}, "pc", 0))
 	if err := os.Remove(filepath.Join(g.state, "up")); err != nil {
 		t.Fatal(err)
 	}
+	previousRun := latestGateRun(t, g.statsFile)
+	out, calls := runBusyCostGate(t, g, false)
+	if strings.Contains(out, "did not answer") || calls != "" {
+		t.Fatalf("cheap local step should not query unavailable host; calls=%q\n%s", calls, out)
+	}
+	_ = out // Step price reasons are recorded, not printed individually.
+	records, _, err := stats.LoadTail(g.statsFile, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saidDown := false
+	for _, rec := range records {
+		if rec.Run == previousRun || rec.Run == "" {
+			continue
+		}
+		if rec.Kind == stats.KindStep && rec.Step == g.step && !strings.HasPrefix(rec.Here, "cheaper here:") {
+			t.Errorf("cheap local step lost its price reason: %+v", rec)
+		}
+		if rec.Kind == "task" && rec.Task == stats.GateTask && strings.HasPrefix(rec.Here, "pc did not answer (") {
+			saidDown = true
+		}
+	}
+	if saidDown {
+		t.Errorf("the gate queried unavailable host despite its cheap local step: %+v", records)
+	}
+}
+
+// TestBusyGateHostDownKeepsNoStepHereForCost checks the original host-down
+// fallback: inexpensive test commands have historical prices above the fee.
+func TestBusyGateHostDownKeepsNoStepHereForCost(t *testing.T) {
+	g := newGateCostFixture(t, gateCostHostAskedConfig)
+	locals := gateCostRows([]float64{60, 60}, "", 0)
+	locals[1].Profile = "work:unit"
+	locals[1].Step = "go test -run Nothing ./..."
+	g.writeHistory(t, locals, gateCostRows([]float64{40}, "pc", 0))
+	if err := os.Remove(filepath.Join(g.state, "up")); err != nil {
+		t.Fatal(err)
+	}
+	previousRun := latestGateRun(t, g.statsFile)
 	out, calls := runBusyCostGate(t, g, false)
 	if !strings.Contains(out, "did not answer") || calls != "" {
-		t.Fatalf("want a host that did not answer and no host call; calls=%q\n%s", calls, out)
-	}
-	if strings.Contains(out, "cheaper here") {
-		t.Errorf("the console says cheaper here with the host down:\n%s", out)
+		t.Fatalf("expected unavailable host after expensive local price; calls=%q\n%s", calls, out)
 	}
 	records, _, err := stats.LoadTail(g.statsFile, 8<<20)
 	if err != nil {
@@ -372,8 +588,11 @@ func TestBusyGateHostDownKeepsNoStepHereForCost(t *testing.T) {
 	}
 	saidDown := false
 	for _, rec := range records {
-		if strings.Contains(rec.Here, "cheaper here") {
-			t.Errorf("a record says cheaper here with the host down: %+v", rec)
+		if rec.Run == previousRun || rec.Run == "" {
+			continue
+		}
+		if strings.HasPrefix(rec.Here, "cheaper here:") {
+			t.Errorf("expensive local step says cheaper here: %+v", rec)
 		}
 		if rec.Kind == "task" && rec.Task == stats.GateTask && strings.HasPrefix(rec.Here, "pc did not answer (") {
 			saidDown = true

@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -87,6 +88,425 @@ func LoadTail(path string, maxBytes int64) (recs []Record, malformed int, err er
 		recs = append(recs, newestFirst[i]...)
 	}
 	return recs, malformed, nil
+}
+
+// LoadTailMatching reads a bounded newest tail and decodes only lines
+// containing needle. A partial first line is discarded.
+func LoadTailMatching(path string, maxBytes int64, needle string) ([]Record, int, error) {
+	encodedNeedle, err := stringPrefixNeedle(needle)
+	if err != nil {
+		return nil, 0, err
+	}
+	return loadBounded(path, time.Time{}, maxBytes, encodedNeedle)
+}
+
+// LoadWindow reads recent raw journal bytes, newest first, with a hard byte
+// limit. Files are opened before reading so rotation cannot expose one inode
+// under two names and make its records count twice.
+func LoadWindow(path string, since time.Time, needle string, maxBytes int64) ([]Record, int, error) {
+	encodedNeedle, err := stringPrefixNeedle(needle)
+	if err != nil {
+		return nil, 0, err
+	}
+	return loadBounded(path, since, maxBytes, encodedNeedle)
+}
+
+// RecordMatch selects a record by every nonempty field. Multiple matches are
+// alternatives, so callers can scan one bounded window for a set of keys.
+type RecordMatch struct {
+	Profile string
+	Step    string
+	Project string
+	Host    string
+}
+
+func LoadWindowMatching(path string, since time.Time, matches []RecordMatch, maxBytes int64) ([]Record, int, error) {
+	encoded, err := encodeRecordMatches(matches)
+	if err != nil {
+		return nil, 0, err
+	}
+	return loadBoundedMatches(path, since, maxBytes, encoded)
+}
+
+type encodedRecordMatch [][]byte
+
+func encodeRecordMatches(matches []RecordMatch) ([]encodedRecordMatch, error) {
+	var out []encodedRecordMatch
+	for _, match := range matches {
+		var fields encodedRecordMatch
+		for _, pair := range [][2]string{{"profile", match.Profile}, {"step", match.Step}, {"project", match.Project}, {"host", match.Host}} {
+			if pair[1] == "" {
+				continue
+			}
+			field, err := json.Marshal(pair[0])
+			if err != nil {
+				return nil, fmt.Errorf("encoding stats field: %w", err)
+			}
+			value, err := json.Marshal(pair[1])
+			if err != nil {
+				return nil, fmt.Errorf("encoding stats value: %w", err)
+			}
+			fragment := append(append(field, ':'), value...)
+			fields = append(fields, fragment)
+		}
+		if len(fields) > 0 {
+			out = append(out, fields)
+		}
+	}
+	return out, nil
+}
+
+func stringPrefixNeedle(value string) ([]byte, error) {
+	if value == "" {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("encoding stats needle: %w", err)
+	}
+	return encoded[:len(encoded)-1], nil
+}
+
+var loadBoundedAfterOpen func()
+
+type openedWindowFile struct {
+	f    *os.File
+	size int64
+}
+
+func loadBounded(path string, since time.Time, maxBytes int64, needle []byte) ([]Record, int, error) {
+	return loadBoundedWithReader(path, since, maxBytes, func(data []byte) ([]Record, int, error) {
+		return readWindowRecords(data, needle)
+	})
+}
+
+func loadBoundedMatches(path string, since time.Time, maxBytes int64, matches []encodedRecordMatch) ([]Record, int, error) {
+	if maxBytes <= 0 || len(matches) == 0 {
+		return nil, 0, nil
+	}
+	paths, err := Files(path, since)
+	if err != nil {
+		return nil, 0, err
+	}
+	files, err := openWindowFiles(paths)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() {
+		for _, x := range files {
+			_ = x.f.Close()
+		}
+	}()
+	if loadBoundedAfterOpen != nil {
+		loadBoundedAfterOpen()
+	}
+	remaining := maxBytes
+	var grouped [][]Record
+	var malformed int
+	seen := map[string]bool{}
+	counts := make([]int, len(matches))
+	for i := len(files) - 1; i >= 0 && remaining > 0; i-- {
+		x := files[i]
+		n := min(x.size, remaining)
+		start := x.size - n
+		rows, bad, readErr := readMatchedWindowFile(x.f, start, n, matches)
+		if readErr != nil {
+			return nil, 0, readErr
+		}
+		remaining -= n
+		malformed += bad
+		countMatchedWindowRows(rows, since, matches, seen, counts)
+		grouped = append(grouped, rows)
+		if enoughWindowMatches(counts) {
+			break
+		}
+	}
+	return uniqueWindowRecords(grouped, since), malformed, nil
+}
+
+func readMatchedWindowFile(file *os.File, start, n int64, matches []encodedRecordMatch) ([]Record, int, error) {
+	data, err := readWindowBytes(file, start, n)
+	if err != nil {
+		return nil, 0, err
+	}
+	if start > 0 {
+		boundary := bytes.IndexByte(data, '\n')
+		if boundary < 0 {
+			return nil, 0, nil
+		}
+		data = data[boundary+1:]
+	}
+	return readWindowMatchedRecords(data, matches)
+}
+
+func countMatchedWindowRows(rows []Record, since time.Time, matches []encodedRecordMatch, seen map[string]bool, counts []int) {
+	for i := range rows {
+		rec := &rows[i]
+		if (!since.IsZero() && rec.Time.Before(since)) || rec.Kind != KindStep || rec.Exit != 0 || rec.WallS <= 0 {
+			continue
+		}
+		key := rec.Time.UTC().Format(time.RFC3339Nano) + "\x00" + rec.Run + "\x00" + rec.Step
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		for j, match := range matches {
+			if recordMatchesQuery(*rec, match) && queryAcceptsPriceRecord(*rec, match) {
+				counts[j]++
+			}
+		}
+	}
+}
+
+func queryAcceptsPriceRecord(rec Record, match encodedRecordMatch) bool {
+	for _, fragment := range match {
+		if bytes.HasPrefix(fragment, []byte(`"profile":`)) {
+			return rec.Host == ""
+		}
+	}
+	return true
+}
+
+func enoughWindowMatches(counts []int) bool {
+	for _, count := range counts {
+		if count < 5 {
+			return false
+		}
+	}
+	return true
+}
+
+func recordMatchesQuery(rec Record, match encodedRecordMatch) bool {
+	for _, fragment := range match {
+		var field, value string
+		colon := bytes.IndexByte(fragment, ':')
+		if colon < 0 || json.Unmarshal(fragment[:colon], &field) != nil || json.Unmarshal(fragment[colon+1:], &value) != nil {
+			return false
+		}
+		switch field {
+		case "profile":
+			if rec.Profile != value {
+				return false
+			}
+		case "step":
+			if rec.Step != value {
+				return false
+			}
+		case "project":
+			if rec.Project != value {
+				return false
+			}
+		case "host":
+			if rec.Host != value {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func loadBoundedWithReader(path string, since time.Time, maxBytes int64, read func([]byte) ([]Record, int, error)) ([]Record, int, error) {
+	if maxBytes <= 0 {
+		return nil, 0, nil
+	}
+	paths, err := Files(path, since)
+	if err != nil {
+		return nil, 0, err
+	}
+	files, err := openWindowFiles(paths)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() {
+		for _, x := range files {
+			x.f.Close()
+		}
+	}()
+	if loadBoundedAfterOpen != nil {
+		loadBoundedAfterOpen()
+	}
+	grouped, malformed, err := readWindowTail(files, maxBytes, read)
+	if err != nil {
+		return nil, 0, err
+	}
+	return uniqueWindowRecords(grouped, since), malformed, nil
+}
+
+func openWindowFiles(paths []string) ([]openedWindowFile, error) {
+	files := make([]openedWindowFile, 0, len(paths))
+	seenInodes := map[[2]uint64]bool{}
+	for _, p := range paths {
+		f, e := os.Open(p)
+		if errors.Is(e, os.ErrNotExist) {
+			continue
+		}
+		if e != nil {
+			for _, x := range files {
+				x.f.Close()
+			}
+			return nil, fmt.Errorf("reading the stats: %w", e)
+		}
+		info, e := f.Stat()
+		if e != nil {
+			f.Close()
+			for _, x := range files {
+				x.f.Close()
+			}
+			return nil, fmt.Errorf("stating %s: %w", p, e)
+		}
+		st := reflect.ValueOf(info.Sys())
+		if st.Kind() == reflect.Pointer {
+			st = st.Elem()
+		}
+		if !st.IsValid() || st.Kind() != reflect.Struct {
+			files = append(files, openedWindowFile{f, info.Size()})
+			continue
+		}
+		dev, okD := statFieldUint(st, "Dev")
+		ino, okI := statFieldUint(st, "Ino")
+		if okD && okI {
+			id := [2]uint64{dev, ino}
+			if seenInodes[id] {
+				f.Close()
+				continue
+			}
+			seenInodes[id] = true
+		}
+		files = append(files, openedWindowFile{f, info.Size()})
+	}
+	return files, nil
+}
+
+func readWindowTail(files []openedWindowFile, maxBytes int64, read func([]byte) ([]Record, int, error)) ([][]Record, int, error) {
+	remaining := maxBytes
+	var grouped [][]Record
+	var malformed int
+	for i := len(files) - 1; i >= 0 && remaining > 0; i-- {
+		x := files[i]
+		n := min(x.size, remaining)
+		start := x.size - n
+		data, err := readWindowBytes(x.f, start, n)
+		if err != nil {
+			return nil, 0, err
+		}
+		if start > 0 {
+			end := bytes.IndexByte(data, '\n')
+			if end < 0 {
+				remaining -= n
+				grouped = append(grouped, nil)
+				continue
+			}
+			data = data[end+1:]
+		}
+		rows, bad, err := read(data)
+		if err != nil {
+			return nil, 0, err
+		}
+		remaining -= n
+		malformed += bad
+		grouped = append(grouped, rows)
+	}
+	return grouped, malformed, nil
+}
+
+func readWindowRecords(data, needle []byte) ([]Record, int, error) {
+	rows, bad, err := decodeRecordsMatching(bytes.NewReader(data), needle)
+	if err != nil {
+		return nil, 0, fmt.Errorf("decoding stats window: %w", err)
+	}
+	return rows, bad, nil
+}
+
+func readWindowMatchedRecords(data []byte, matches []encodedRecordMatch) ([]Record, int, error) {
+	return decodeQueriedRecords(data, matches)
+}
+
+func readWindowBytes(f *os.File, start, n int64) ([]byte, error) {
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("seeking in stats window: %w", err)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, n))
+	if err != nil {
+		return nil, fmt.Errorf("reading stats window: %w", err)
+	}
+	if int64(len(data)) != n {
+		return nil, fmt.Errorf("reading stats window: short read from %s: wanted %d bytes, read %d", f.Name(), n, len(data))
+	}
+	return data, nil
+}
+
+func decodeQueriedRecords(data []byte, matches []encodedRecordMatch) ([]Record, int, error) {
+	var records []Record
+	var malformed int
+	start := 0
+	for start < len(data) {
+		end := bytes.IndexByte(data[start:], '\n')
+		if end < 0 {
+			end = len(data) - start
+		}
+		line := data[start : start+end]
+		start += end + 1
+		if lineMatchesRecord(line, matches) {
+			var rec Record
+			if json.Unmarshal(line, &rec) != nil || rec.Kind == "" || rec.Task == "" {
+				malformed++
+				continue
+			}
+			records = append(records, rec)
+		} else if !writerShapedRecord(line) || !json.Valid(line) {
+			malformed++
+		}
+	}
+	return records, malformed, nil
+}
+
+func lineMatchesRecord(line []byte, matches []encodedRecordMatch) bool {
+	for _, match := range matches {
+		matched := true
+		for _, fragment := range match {
+			if !bytes.Contains(line, fragment) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func writerShapedRecord(line []byte) bool {
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' || bytes.Contains(trimmed, []byte("}{")) {
+		return false
+	}
+	for _, field := range [][]byte{[]byte(`"time":`), []byte(`"kind":`), []byte(`"task":`)} {
+		if !bytes.Contains(trimmed, field) {
+			return false
+		}
+	}
+	return true
+}
+
+func uniqueWindowRecords(grouped [][]Record, since time.Time) []Record {
+	var out []Record
+	seenRows := map[string]bool{}
+	for i := len(grouped) - 1; i >= 0; i-- {
+		for j := range grouped[i] {
+			rec := &grouped[i][j]
+			if !since.IsZero() && rec.Time.Before(since) {
+				continue
+			}
+			key := rec.Time.UTC().Format(time.RFC3339Nano) + "\x00" + rec.Run + "\x00" + rec.Step
+			if seenRows[key] {
+				continue
+			}
+			seenRows[key] = true
+			out = append(out, *rec)
+		}
+	}
+	return out
 }
 
 func loadTailFile(path string, maxBytes int64) ([]Record, int, int64, error) {
