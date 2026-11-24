@@ -1060,6 +1060,8 @@ func (s *sweepRun) parentStays(ctx context.Context, parent jira.Issue) string {
 			return fmt.Sprintf("%s stays %s: its subtask %s is %s", key, status, st, issue.Status)
 		case s.win != nil && s.win.reverted[st]:
 			return reverted(st)
+		case s.droppedWithoutWork(issue):
+			continue
 		case len(s.items[st]) == 0:
 			return fmt.Sprintf("%s stays %s: its subtask %s has no commit of the last %d days that %s or a remote branch has, so whether its work is on %[5]s is unknown", key, status, st, s.conf.Days, s.r.name)
 		}
@@ -1078,6 +1080,12 @@ func (s *sweepRun) parentStays(ctx context.Context, parent jira.Issue) string {
 		return fmt.Sprintf("%s stays %s: %s has work only on a local branch, so whether %s runs it is unknown", key, status, strings.Join(local, ", "), s.r.name)
 	}
 	return ""
+}
+
+// droppedWithoutWork tells whether a configured closed-without-work subtask
+// has no commits in the sweep window.
+func (s *sweepRun) droppedWithoutWork(issue jira.Issue) bool {
+	return len(s.items[issue.Key]) == 0 && slices.Contains(s.conf.Dropped, issue.Status)
 }
 
 // offTarget names the first commit of the item the target does not run.

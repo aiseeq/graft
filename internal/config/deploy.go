@@ -199,6 +199,9 @@ type Sweep struct {
 	// Done is the status a finished item moves to; a transition of the
 	// target must lead there.
 	Done string `yaml:"done"`
+	// Dropped are statuses for subtasks closed without work; without commits
+	// in the sweep window, they do not hold their parent.
+	Dropped []string `yaml:"dropped"`
 	// Apply moves the items; without it the sweep only lists what it would
 	// move.
 	Apply bool `yaml:"apply"`
@@ -1179,6 +1182,16 @@ func validateSweep(where string, n *TargetNotes) error {
 	}
 	if s.Done == "" {
 		s.Done = DefaultSweepDone
+	}
+	for i, status := range s.Dropped {
+		switch {
+		case strings.TrimSpace(status) == "":
+			return fmt.Errorf("%s.dropped[%d]: blank status; name a Jira status without surrounding whitespace", where, i)
+		case status != strings.TrimSpace(status):
+			return fmt.Errorf("%s.dropped[%d]: %q has surrounding whitespace; remove it", where, i, status)
+		case status == s.Done:
+			return fmt.Errorf("%s.dropped[%d]: %q is also done; take it out of dropped or change done", where, i, status)
+		}
 	}
 	if n.Leading(s.Done) == nil {
 		return fmt.Errorf("%s: no transition leads to %s, the status a finished item moves to: add {from: [Ready for release], to: %s} to transitions, or name it in done", where, s.Done, s.Done)

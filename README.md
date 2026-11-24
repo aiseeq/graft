@@ -2486,8 +2486,15 @@ This follows `landed`'s model: version-only commits count as shipping nothing, a
     prod:
       release_notes:
         transitions: [{from: [Ready for release], to: Done}]
-        sweep: {apply: true}   # days: 30, stale_days: 3, done: Done by default
+        sweep:
+          apply: true
+          done: Done       # default status for finished items
+          dropped: []      # project-specific statuses for subtasks closed without work
 ```
+
+For a subtask in `dropped`, the sweep does not require a commit in the window.
+Its older or local work, a revert, or a commit missing from the target can
+still hold the parent.
 
 Everything that asks which items a commit is for asks what it is the work of,
 not what it mentions: the first key
@@ -2662,8 +2669,9 @@ judged by its own key):
   `done: Testing` on a target before the last moves a parent whose code is
   all in its subtasks to Testing. With `approved_release.prefix`, only in
   an approved version. Work the sweep cannot place keeps the parent with a
-  line: a subtask without a commit of the window, work a revert of the
-  window took out, work older than `days` or only on a local branch; a
+  line: a subtask without a commit of the window (unless its status is in
+  `dropped`), work a revert of the window took out, work older than `days` or
+  only on a local branch; a
   withheld commit is not on the target whatever its content. A held parent
   is judged so again before any move, a deploy of its own commit too; one
   not held moves at a deploy of its own commit as any delivered item does. A held key

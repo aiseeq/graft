@@ -442,8 +442,14 @@ deploy:
 	cfg, err = Parse([]byte(notes("{transitions: [{from: [Ready for release], to: Done}], sweep: {apply: true}}")))
 	if err != nil {
 		t.Errorf("sweep: %v", err)
-	} else if s := cfg.Deploy.Targets["test"].ReleaseNotes.Sweep; s == nil || *s != (Sweep{Days: 30, StaleDays: 3, Done: "Done", Apply: true}) {
+	} else if s := cfg.Deploy.Targets["test"].ReleaseNotes.Sweep; s == nil || s.Days != 30 || s.StaleDays != 3 || s.Done != "Done" || !s.Apply || len(s.Dropped) != 0 {
 		t.Errorf("sweep = %+v", s)
+	}
+	cfg, err = Parse([]byte(notes("{transitions: [{from: [Ready for release], to: Done}], sweep: {dropped: [Won't do]}}")))
+	if err != nil {
+		t.Errorf("sweep dropped: %v", err)
+	} else if s := cfg.Deploy.Targets["test"].ReleaseNotes.Sweep; s == nil || !slices.Equal(s.Dropped, []string{"Won't do"}) {
+		t.Errorf("sweep dropped = %+v", s)
 	}
 	cfg, err = Parse([]byte(notes(`{transitions: [{from: [In Progress], to: Testing}], fix_version: {prefix: "Product v"}}`)))
 	if err != nil {
@@ -535,6 +541,9 @@ deploy:
 		"sweep without done":            notes("{transitions: [{from: [In Progress], to: Testing}], sweep: {}}"),
 		"sweep negative days":           notes("{transitions: [{from: [Ready for release], to: Done}], sweep: {days: -1}}"),
 		"sweep blank done":              notes("{transitions: [{from: [Ready for release], to: Done}], sweep: {done: ' '}}"),
+		"sweep blank dropped":           notes("{transitions: [{from: [Ready for release], to: Done}], sweep: {dropped: [' ']}}"),
+		"sweep padded dropped":          notes("{transitions: [{from: [Ready for release], to: Done}], sweep: {dropped: [' Done ']}}"),
+		"sweep dropped done":            notes("{transitions: [{from: [Ready for release], to: Done}], sweep: {dropped: [Done]}}"),
 		"blank keep label":              notes("{transitions: [{from: [In Progress], to: Testing, assign: qa, keep_assignee_labels: [' ']}]}"),
 		"comment w/o assign":            notes("{transitions: [{from: [In Progress], to: Testing, require_comment: How to check}]}"),
 		"blank comment":                 notes("{transitions: [{from: [In Progress], to: Testing, assign: qa, require_comment: ' '}]}"),
@@ -589,6 +598,15 @@ deploy:
 	for name, data := range cases {
 		if _, err := Parse([]byte(data)); err == nil {
 			t.Errorf("%s: want an error", name)
+		}
+	}
+	for _, tc := range []struct{ yaml, want string }{
+		{"{dropped: [' ']}", "name a Jira status without surrounding whitespace"},
+		{"{dropped: [' Done ']}", "has surrounding whitespace; remove it"},
+	} {
+		data := notes("{transitions: [{from: [Ready for release], to: Done}], sweep: " + tc.yaml + "}")
+		if _, err := Parse([]byte(data)); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("sweep %s error = %v, want %q", tc.yaml, err, tc.want)
 		}
 	}
 	if _, err := Parse([]byte(base + "worktree: {copy: [oracle/]}\n")); err != nil {
