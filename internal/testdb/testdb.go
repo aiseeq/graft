@@ -74,6 +74,9 @@ func (d *DB) Inspect(ctx context.Context) (State, error) {
 		if errors.As(err, &exitErr) && strings.Contains(string(exitErr.Stderr), "No such") {
 			return State{}, nil
 		}
+		if msg := lastLine(exitErr); msg != "" {
+			return State{}, fmt.Errorf("docker inspect %s: %w: %s", d.Cfg.Container, err, msg)
+		}
 		return State{}, fmt.Errorf("docker inspect %s: %w (is the docker daemon running?)", d.Cfg.Container, err)
 	}
 	var info []struct {
@@ -401,10 +404,26 @@ func runDocker(cmd *exec.Cmd) error {
 func CheckDSN(dsn string, cfg *config.TestDB, source string) error {
 	u, err := url.Parse(dsn)
 	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
-		return fmt.Errorf("%s is not a postgres:// URL", cfg.DSNVar)
+		return fmt.Errorf("%s is not a postgres:// URL; %s", cfg.DSNVar, unsetHint(cfg.DSNVar))
 	}
 	if db := strings.TrimPrefix(u.Path, "/"); db != cfg.Database && db != source {
-		return fmt.Errorf("%s points at database %q, not the test database %q", cfg.DSNVar, db, cfg.Database)
+		return fmt.Errorf("%s points at database %q, not the test database %q; %s", cfg.DSNVar, db, cfg.Database, unsetHint(cfg.DSNVar))
 	}
 	return nil
+}
+
+// unsetHint says what to do with a DSN variable inherited from the
+// environment that CheckDSN refused, an empty one included.
+func unsetHint(name string) string {
+	return "unset " + name + " to let graft bring up its own test database, or set it to the test database's postgres:// URL"
+}
+
+// lastLine is the last line docker wrote to stderr before it failed, such as
+// a refused socket, or "" when it wrote nothing or did not run.
+func lastLine(exitErr *exec.ExitError) string {
+	if exitErr == nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(exitErr.Stderr)), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
 }

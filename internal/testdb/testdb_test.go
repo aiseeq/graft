@@ -17,10 +17,15 @@ func TestCheckDSN(t *testing.T) {
 		"postgres://u:p@127.0.0.1:5432/app":                      false,
 		"postgres://u:p@127.0.0.1:5432/":                         false,
 		"host=127.0.0.1 dbname=app_test":                         false,
+		"":                                                       false,
 		"mysql://u@h/app_test":                                   false,
 	} {
-		if err := CheckDSN(dsn, cfg, cfg.Database); (err == nil) != ok {
+		err := CheckDSN(dsn, cfg, cfg.Database)
+		if (err == nil) != ok {
 			t.Errorf("CheckDSN(%q) = %v", dsn, err)
+		}
+		if err != nil && !strings.Contains(err.Error(), "; unset TEST_DB_DSN to let graft bring up its own test database") {
+			t.Errorf("CheckDSN(%q) refusal does not say what to do: %v", dsn, err)
 		}
 	}
 }

@@ -148,3 +148,37 @@ func socketConfig(t *testing.T, dsn string) *config.TestDB {
 	return &config.TestDB{Container: "graft-test-pg", Socket: true, SocketDir: host, User: u.User.Username(), Password: password,
 		Database: strings.TrimPrefix(u.Path, "/"), Settings: config.DefaultTestDBSettings, ReadyTimeout: 10 * time.Second}
 }
+
+// TestInspectNamesDockersReason: when docker inspect fails for a reason other
+// than a missing container, the error carries the last line docker wrote, so
+// a closed socket is told apart from a stopped daemon.
+func TestInspectNamesDockersReason(t *testing.T) {
+	dir := t.TempDir()
+	saved := dockerCheck
+	t.Cleanup(func() { dockerCheck = saved })
+	inspect := func(stderr string) (State, error) {
+		script := filepath.Join(dir, "docker")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '"+stderr+"' >&2\nexit 1\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		dockerCheck = func() (string, error) { return script, nil }
+		return (&DB{Cfg: &config.TestDB{Container: "projectA-test-pg"}}).Inspect(t.Context())
+	}
+	if _, err := inspect("first line\\npermission denied while trying to connect to the docker API\\n"); err == nil ||
+		!strings.HasSuffix(err.Error(), ": permission denied while trying to connect to the docker API") {
+		t.Errorf("Inspect with a refused socket: %v", err)
+	}
+	for _, stderr := range []string{"", " \\n\\n"} {
+		if _, err := inspect(stderr); err == nil || !strings.HasSuffix(err.Error(), "(is the docker daemon running?)") {
+			t.Errorf("Inspect with stderr %q: %v", stderr, err)
+		}
+	}
+	if st, err := inspect("Error: No such container: projectA-test-pg\\n"); err != nil || st.Exists {
+		t.Errorf("Inspect of a missing container: %+v, %v", st, err)
+	}
+	dockerCheck = func() (string, error) { return filepath.Join(dir, "missing"), nil }
+	if _, err := (&DB{Cfg: &config.TestDB{Container: "projectA-test-pg"}}).Inspect(t.Context()); err == nil ||
+		!strings.HasSuffix(err.Error(), "(is the docker daemon running?)") {
+		t.Errorf("Inspect when docker does not start: %v", err)
+	}
+}
