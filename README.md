@@ -184,11 +184,18 @@ two seconds, ends, or `load.settle` expires (30 seconds by default). The last
 20 whole-task CPU measurements estimate expected use; a new profile reserves
 four cores. The load average, IO, and swap checks still apply. The 1-minute load
 average shows a task's load only as it grows into it, c·(1 − e^(−t/60s)) for c
-cores t after its start: until the admitted task ends, the next admission adds
-the part it does not show yet, c·e^(−t/60s), to the load average it measures,
-and adds the expected cores of the task being considered to both the load
-average forecast and the runnable count with live reserves. A candidate
-whose estimate reaches the limit could never fit, so it is counted as 0 and
+cores t after its start. Once CPU is measured, unseen load is the positive
+difference between the latest rate and its EMA60, decayed from that measurement:
+max(0, rate − ema)·e^(−(now − at)/60s); before then it remains
+c·e^(−age/60s). If a record is from an older version or has `cpu_error`, the
+queue uses the greater of expected candidate load decayed from admission and
+observed CPU decayed from its observation. A damaged record or invalid
+admission timestamp counts as four cores, decayed from the record file's
+modification time; it holds the first-CPU pause only through the grace window.
+The next admission adds unseen load to the measured load average and adds the
+candidate's expected cores to both the load-average forecast and the runnable
+count with live reserves. A candidate whose estimate reaches the limit could
+never fit, so it is counted as 0 and
 starts by the plain rule, one at a time: the next candidate sees its reserve. A
 new task starts only while both sums are strictly below the limit. If there are no live
 reservations or unseen cores from graft-admitted tasks, the queue uses the

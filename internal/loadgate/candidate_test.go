@@ -214,6 +214,9 @@ func setAdmissionFuture(t *testing.T, lockPath string) {
 		}
 		future := time.Now().Add(time.Minute).Format(time.RFC3339Nano)
 		record.Admitted = future
+		if record.At != "" {
+			record.At = future
+		}
 		if record.ObservedAt != "" {
 			record.ObservedAt = future
 		}

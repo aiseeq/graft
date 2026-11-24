@@ -252,7 +252,7 @@ func TestReserveReadErrorIsLoggedOnceAndPollingContinues(t *testing.T) {
 	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
 	path := filepath.Join(t.TempDir(), "load.lock")
 	var log strings.Builder
-	release, _, end, _, err := startReserve(path, "task", 1, 60*time.Millisecond, nil, &log)
+	release, _, end, _, err := startReserve(path, "task", 1, 60*time.Millisecond, nil, nil, &log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func testReserveEnd(t *testing.T, want string, reader func() float64) {
 	if want == "done" {
 		cap = time.Second
 	}
-	release, _, end, _, err := startReserve(path, "task", 1, cap, nil, io.Discard)
+	release, _, end, _, err := startReserve(path, "task", 1, cap, nil, nil, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}

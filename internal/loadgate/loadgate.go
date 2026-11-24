@@ -83,6 +83,10 @@ func (a Admission) Waited() bool {
 
 type reserveData struct {
 	Cores         float64 `json:"cores"`
+	Rate          float64 `json:"rate"`
+	EMA           float64 `json:"ema"`
+	At            string  `json:"at,omitempty"`
+	CPUError      string  `json:"cpu_error,omitempty"`
 	ObservedCores float64 `json:"observed_cores,omitempty"`
 	ObservedAt    string  `json:"observed_at,omitempty"`
 	Admitted      string  `json:"admitted"`
@@ -92,6 +96,7 @@ type reserveData struct {
 var reservePollInterval = 250 * time.Millisecond
 var reserveWindow = 2 * time.Second
 var reserveCPUReader = treeCPU
+var reservePollNow = time.Now
 
 // reserveAgeNow is overridden by tests to hold the admitted-core forecast at
 // a fixed age; production uses the wall clock.
@@ -1076,7 +1081,7 @@ func capCandidate(candidate, limit float64) float64 {
 // until its first CPU window should have been sampled. After that grace period
 // the expected reserve continues to protect tasks whose CPU cannot be read.
 func firstUnmeasuredAdmission(lockPath string, now time.Time, grace time.Duration) (string, time.Time, bool, error) {
-	files, err := lock.LiveData(filepath.Dir(lockPath), admittedPattern(lockPath))
+	files, err := lock.LiveDataRaw(filepath.Dir(lockPath), admittedPattern(lockPath))
 	if err != nil {
 		return "", time.Time{}, false, err
 	}
@@ -1085,14 +1090,30 @@ func firstUnmeasuredAdmission(lockPath string, now time.Time, grace time.Duratio
 	for _, file := range files {
 		var d reserveData
 		if err := json.Unmarshal(file.Data, &d); err != nil {
-			return "", time.Time{}, false, fmt.Errorf("decoding admitted task %s: %w", file.Path, err)
+			mtime, err := liveRecordModTime(file.Path)
+			if err != nil {
+				return "", time.Time{}, false, err
+			}
+			until := mtime.Add(grace)
+			if now.Before(until) && (retryAt.IsZero() || until.Before(retryAt)) {
+				firstTask, retryAt = "unknown task", until
+			}
+			continue
 		}
-		if d.ObservedAt != "" {
+		if d.CPUError == "" && d.At != "" {
 			continue
 		}
 		at, err := time.Parse(time.RFC3339Nano, d.Admitted)
 		if err != nil {
-			return "", time.Time{}, false, fmt.Errorf("admitted task %s: %w", file.Path, err)
+			mtime, statErr := liveRecordModTime(file.Path)
+			if statErr != nil {
+				return "", time.Time{}, false, statErr
+			}
+			until := mtime.Add(grace)
+			if now.Before(until) && (retryAt.IsZero() || until.Before(retryAt)) {
+				firstTask, retryAt = "unknown task", until
+			}
+			continue
 		}
 		until := at.Add(grace)
 		if now.Before(until) && (retryAt.IsZero() || until.Before(retryAt)) {
@@ -1114,6 +1135,14 @@ const loadAvgTau = time.Minute
 // long as the task, past its reserve.
 func admittedPattern(lockPath string) string { return filepath.Base(lockPath) + ".*.admitted" }
 
+func liveRecordModTime(path string) (time.Time, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("stat admitted record %s: %w", path, err)
+	}
+	return info.ModTime(), nil
+}
+
 // unseenShare is the share of an admitted task's cores the 1-minute load
 // average does not show yet, by the time of its admission.
 func (m *machine) unseenShare() func(admitted time.Time) float64 {
@@ -1123,62 +1152,101 @@ func (m *machine) unseenShare() func(admitted time.Time) float64 {
 	}
 }
 
-// unseenAdmittedCores is how much of the expected or observed cores of the
-// running admitted tasks the load does not show yet. Expected cores decay
-// from admission; observed cores decay from when that estimate was measured.
-// The load average of a queue's dip is that of the machine before the tasks it
-// let in: the next counts them so.
+type admittedEstimate struct {
+	at             time.Time
+	expected       float64
+	observed       float64
+	observedAt     time.Time
+	hasObservation bool
+	rate           float64
+	ema            float64
+	rateAt         time.Time
+	hasEMA         bool
+	cpuError       bool
+}
+
+// unseenAdmittedCores is how much load from running admitted tasks the load
+// average does not show yet. Records without EMA and unreadable records use
+// the conservative candidate/observed forecast; measured records use rate minus EMA60.
 func unseenAdmittedCores(lockPath string, share func(admitted time.Time) float64) (float64, error) {
-	files, err := lock.LiveData(filepath.Dir(lockPath), admittedPattern(lockPath))
+	files, err := lock.LiveDataRaw(filepath.Dir(lockPath), admittedPattern(lockPath))
 	if err != nil {
 		return 0, err
 	}
-	type admittedEstimate struct {
-		at             time.Time
-		expected       float64
-		observed       float64
-		observedAt     time.Time
-		hasObservation bool
-	}
 	byAdmission := make(map[string]admittedEstimate, len(files))
 	for _, file := range files {
-		var d reserveData
-		if err := json.Unmarshal(file.Data, &d); err != nil {
-			return 0, fmt.Errorf("decoding admitted task %s: %w", file.Path, err)
+		if err := mergeAdmissionEstimate(byAdmission, file); err != nil {
+			return 0, err
 		}
-		at, err := time.Parse(time.RFC3339Nano, d.Admitted)
-		if err != nil {
-			return 0, fmt.Errorf("admitted task %s: %w", file.Path, err)
-		}
-		var observedAt time.Time
-		if d.ObservedAt != "" {
-			observedAt, err = time.Parse(time.RFC3339Nano, d.ObservedAt)
-			if err != nil {
-				return 0, fmt.Errorf("observed CPU of admitted task %s: %w", file.Path, err)
-			}
-		}
-		key := d.Admitted
-		if key == "" {
-			key = file.Path
-		}
-		old, ok := byAdmission[key]
-		if !ok {
-			old.at = at
-		}
-		old.expected = max(old.expected, d.Cores)
-		if !observedAt.IsZero() && (!old.hasObservation || observedAt.After(old.observedAt)) {
-			old.observed, old.observedAt, old.hasObservation = d.ObservedCores, observedAt, true
-		}
-		byAdmission[key] = old
 	}
 	var sum float64
 	for _, key := range slices.Sorted(maps.Keys(byAdmission)) {
 		estimate := byAdmission[key]
 		expected := estimate.expected * share(estimate.at)
 		observed := estimate.observed * share(estimate.observedAt)
-		sum += max(expected, observed)
+		if estimate.hasEMA && !estimate.cpuError {
+			sum += max(0, estimate.rate-estimate.ema) * share(estimate.rateAt)
+		} else {
+			sum += max(expected, observed)
+		}
 	}
 	return sum, nil
+}
+
+func mergeAdmissionEstimate(byAdmission map[string]admittedEstimate, file lock.LiveFile) error {
+	var d reserveData
+	if err := json.Unmarshal(file.Data, &d); err != nil {
+		mtime, statErr := liveRecordModTime(file.Path)
+		if statErr != nil {
+			return statErr
+		}
+		byAdmission[file.Path] = admittedEstimate{at: mtime, expected: 4, cpuError: true}
+		return nil
+	}
+	at, err := time.Parse(time.RFC3339Nano, d.Admitted)
+	unknownAdmission := err != nil
+	if unknownAdmission {
+		at, err = liveRecordModTime(file.Path)
+		if err != nil {
+			return err
+		}
+	}
+	var observedAt time.Time
+	if d.ObservedAt != "" {
+		observedAt, err = time.Parse(time.RFC3339Nano, d.ObservedAt)
+		if err != nil {
+			return fmt.Errorf("observed CPU of admitted task %s: %w", file.Path, err)
+		}
+	}
+	key := d.Admitted
+	if key == "" {
+		key = file.Path
+	}
+	old, ok := byAdmission[key]
+	if !ok {
+		old.at = at
+	}
+	old.expected = max(old.expected, d.Cores)
+	if d.Admitted == "" || unknownAdmission {
+		old.expected, old.cpuError = max(old.expected, 4), true
+	}
+	if d.CPUError != "" {
+		old.cpuError = true
+	}
+	if d.At != "" {
+		atRate, parseErr := time.Parse(time.RFC3339Nano, d.At)
+		if parseErr != nil {
+			return fmt.Errorf("rate of admitted CPU %s: %w", file.Path, parseErr)
+		}
+		if !old.hasEMA || atRate.After(old.rateAt) {
+			old.rate, old.ema, old.rateAt, old.hasEMA = d.Rate, d.EMA, atRate, true
+		}
+	}
+	if !observedAt.IsZero() && (!old.hasObservation || observedAt.After(old.observedAt)) {
+		old.observed, old.observedAt, old.hasObservation = d.ObservedCores, observedAt, true
+	}
+	byAdmission[key] = old
+	return nil
 }
 
 func liveReserveCores(lockPath string) (float64, error) {
@@ -1221,14 +1289,17 @@ func startAdmission(lockPath, name string, cores float64, cap time.Duration, log
 	var observedMu sync.Mutex
 	var observedRel func() error
 	observedReleased := false
-	recordObserved := func(observed float64, observedAt time.Time) error {
+	var lastRate, lastEMA float64
+	var lastAt time.Time
+	recordObserved := func(rate, ema float64, observedAt time.Time) error {
 		observedMu.Lock()
 		defer observedMu.Unlock()
 		if observedReleased {
 			return nil
 		}
 		data, err := json.Marshal(reserveData{
-			Cores: cores, ObservedCores: observed, ObservedAt: observedAt.Format(time.RFC3339Nano),
+			Cores: cores, Rate: rate, EMA: ema, At: observedAt.Format(time.RFC3339Nano),
+			ObservedCores: rate, ObservedAt: observedAt.Format(time.RFC3339Nano),
 			Admitted: admitted, Task: name,
 		})
 		if err != nil {
@@ -1244,9 +1315,37 @@ func startAdmission(lockPath, name string, cores float64, cap time.Duration, log
 			}
 		}
 		observedRel = rel
+		lastRate, lastEMA, lastAt = rate, ema, observedAt
 		return nil
 	}
-	release, since, end, stoppedAt, err := startReserve(lockPath, name, cores, cap, recordObserved, log)
+	recordCPUError := func(readErr error) error {
+		observedMu.Lock()
+		defer observedMu.Unlock()
+		if observedReleased {
+			return nil
+		}
+		d := reserveData{Cores: cores, CPUError: readErr.Error(), Admitted: admitted, Task: name}
+		if !lastAt.IsZero() {
+			d.Rate, d.EMA = lastRate, lastEMA
+			d.ObservedCores, d.ObservedAt = lastRate, lastAt.Format(time.RFC3339Nano)
+		}
+		data, err := json.Marshal(d)
+		if err != nil {
+			return fmt.Errorf("encoding CPU error for admitted task: %w", err)
+		}
+		rel, err := lock.Reserve(filepath.Dir(lockPath), admittedPattern(lockPath), data)
+		if err != nil {
+			return fmt.Errorf("recording CPU error for admitted task: %w", err)
+		}
+		if observedRel != nil {
+			if err := observedRel(); err != nil {
+				return errors.Join(err, rel())
+			}
+		}
+		observedRel = rel
+		return nil
+	}
+	release, since, end, stoppedAt, err := startReserve(lockPath, name, cores, cap, recordObserved, recordCPUError, log)
 	if err != nil {
 		return released, since, nil, nil, errors.Join(err, admittedRel())
 	}
@@ -1278,7 +1377,13 @@ type reservePollState struct {
 	haveObserved     bool
 	observed         float64
 	readErrorLogged  bool
+	cpuErrorActive   bool
+	cpuErrorPending  bool
 	writeErrorLogged bool
+	lastEMAAt        time.Time
+	ema              float64
+	lastRate         float64
+	haveRate         bool
 }
 
 func (state *reservePollState) readError(name string, err error, log io.Writer) {
@@ -1301,12 +1406,28 @@ func (state *reservePollState) sampleSpeed(cpu float64, at time.Time, window tim
 	return speed, true
 }
 
-func (state *reservePollState) updateObservation(speed float64, at time.Time, onCPU func(float64, time.Time) error) (bool, error) {
-	if state.haveObserved && !reserveEstimateChanged(state.observed, speed) {
+func (state *reservePollState) updateEMA(speed float64, at time.Time) {
+	if state.lastEMAAt.IsZero() {
+		state.lastEMAAt = at
+	}
+	dt := max(at.Sub(state.lastEMAAt), 0).Seconds()
+	if !state.haveRate {
+		state.ema = speed + (state.ema-speed)*math.Exp(-dt/loadAvgTau.Seconds())
+		state.haveRate = true
+	} else {
+		state.ema = state.lastRate + (state.ema-state.lastRate)*math.Exp(-dt/loadAvgTau.Seconds())
+	}
+	state.lastEMAAt = at
+	state.lastRate = speed
+}
+
+func (state *reservePollState) updateObservation(speed float64, at time.Time, onCPU func(float64, float64, time.Time) error, force bool) (bool, error) {
+	state.updateEMA(speed, at)
+	if !force && state.haveObserved && !reserveEstimateChanged(state.observed, speed) {
 		return true, nil
 	}
 	if onCPU != nil {
-		if err := onCPU(speed, at); err != nil {
+		if err := onCPU(speed, state.ema, at); err != nil {
 			return false, err
 		}
 	}
@@ -1321,18 +1442,42 @@ func (state *reservePollState) logWriteError(name string, err error, log io.Writ
 	}
 }
 
-func (state *reservePollState) handleTick(name string, cores float64, window time.Duration, readCPU func(int) (float64, error), onCPU func(float64, time.Time) error, setEnd func(string), drop func(), log io.Writer) {
+func (state *reservePollState) handleTick(name string, cores float64, window time.Duration, readCPU func(int) (float64, error), onCPU func(float64, float64, time.Time) error, onError func(error) error, setEnd func(string), drop func(), log io.Writer) {
 	cpu, err := readCPU(os.Getpid())
 	if err != nil {
+		newEpisode := !state.cpuErrorActive
+		state.cpuErrorActive = true
+		state.cpuErrorPending = true
 		state.readError(name, err, log)
+		if newEpisode && onError != nil {
+			if recordErr := onError(err); recordErr != nil {
+				state.logWriteError(name, recordErr, log)
+			}
+		}
 		return
 	}
-	at := time.Now()
+	state.cpuErrorActive = false
+	at := reservePollNow()
 	speed, ready := state.sampleSpeed(cpu, at, window)
-	if !ready || !state.reserveDropped && speed < cores/2 {
+	if !ready {
 		return
 	}
-	updated, err := state.updateObservation(speed, at, onCPU)
+	if !state.reserveDropped && speed < cores/2 {
+		if state.cpuErrorPending {
+			_, err := state.updateObservation(speed, at, onCPU, true)
+			if err != nil {
+				state.logWriteError(name, err, log)
+				return
+			}
+			state.cpuErrorPending = false
+			return
+		}
+		// Track the low-rate phase for EMA, but retain the expected reservation
+		// until the existing half-candidate release threshold is reached.
+		state.updateEMA(speed, at)
+		return
+	}
+	updated, err := state.updateObservation(speed, at, onCPU, state.cpuErrorPending)
 	if err != nil {
 		state.logWriteError(name, err, log)
 		return
@@ -1340,6 +1485,7 @@ func (state *reservePollState) handleTick(name string, cores float64, window tim
 	if !updated {
 		return
 	}
+	state.cpuErrorPending = false
 	if state.reserveDropped {
 		return
 	}
@@ -1348,7 +1494,7 @@ func (state *reservePollState) handleTick(name string, cores float64, window tim
 	drop()
 }
 
-func runReservePoll(name string, cores float64, cap, interval, window time.Duration, readCPU func(int) (float64, error), onCPU func(float64, time.Time) error, log io.Writer, done <-chan struct{}, setEnd func(string), drop func()) {
+func runReservePoll(name string, cores float64, cap, interval, window time.Duration, admitted time.Time, readCPU func(int) (float64, error), onCPU func(float64, float64, time.Time) error, onError func(error) error, log io.Writer, done <-chan struct{}, setEnd func(string), drop func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Fprintf(log, "graft: %s: panic in reserve poll: %v\n", name, r)
@@ -1361,7 +1507,7 @@ func runReservePoll(name string, cores float64, cap, interval, window time.Durat
 	deadline := time.NewTimer(cap)
 	defer deadline.Stop()
 	deadlineC := deadline.C
-	var state reservePollState
+	state := reservePollState{lastEMAAt: admitted}
 	for {
 		select {
 		case <-done:
@@ -1371,12 +1517,12 @@ func runReservePoll(name string, cores float64, cap, interval, window time.Durat
 			setEnd("cap")
 			drop()
 		case <-ticker.C:
-			state.handleTick(name, cores, window, readCPU, onCPU, setEnd, drop, log)
+			state.handleTick(name, cores, window, readCPU, onCPU, onError, setEnd, drop, log)
 		}
 	}
 }
 
-func startReserve(lockPath, name string, cores float64, cap time.Duration, onCPU func(float64, time.Time) error, log io.Writer) (func() error, time.Time, func() string, func() time.Time, error) {
+func startReserve(lockPath, name string, cores float64, cap time.Duration, onCPU func(float64, float64, time.Time) error, onError func(error) error, log io.Writer) (func() error, time.Time, func() string, func() time.Time, error) {
 	now := time.Now()
 	since := now
 	raw, err := json.Marshal(reserveData{Cores: cores, Admitted: now.Format(time.RFC3339Nano), Task: name})
@@ -1420,7 +1566,7 @@ func startReserve(lockPath, name string, cores float64, cap time.Duration, onCPU
 	// The goroutine outlives the call: it reads its settings from here, not
 	// from the package variables a test may swap meanwhile.
 	interval, window, readCPU := reservePollInterval, reserveWindow, reserveCPUReader
-	go runReservePoll(name, cores, cap, interval, window, readCPU, onCPU, log, done, setEnd, drop)
+	go runReservePoll(name, cores, cap, interval, window, now, readCPU, onCPU, onError, log, done, setEnd, drop)
 	return func() error {
 		once.Do(func() { setEnd("done"); close(done) })
 		drop()

@@ -140,8 +140,8 @@ func admitOne(t *testing.T, path string, cores float64) func() error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// These tests model an already measured admission; the production monitor
-	// has not necessarily completed a CPU window when WaitWithSettle returns.
+	// These tests model an already measured admission with new-format rate data;
+	// the production monitor has not necessarily completed a CPU window yet.
 	files, err := filepath.Glob(admittedFilesPattern(path))
 	if err != nil || len(files) != 1 {
 		t.Fatalf("admitted records = %v, %v; want one", files, err)
@@ -154,6 +154,7 @@ func admitOne(t *testing.T, path string, cores float64) func() error {
 	if err := json.Unmarshal(data, &d); err != nil {
 		t.Fatal(err)
 	}
+	d.Rate, d.EMA, d.At = cores, 0, time.Now().Format(time.RFC3339Nano)
 	d.ObservedCores = cores
 	d.ObservedAt = d.Admitted
 	data, err = json.Marshal(d)

@@ -92,6 +92,17 @@ type LiveFile struct {
 // LiveData reads live files matching glob and removes dead ones.
 // A live file that cannot be read fails the scan with its path.
 func LiveData(dir, glob string) ([]LiveFile, error) {
+	return liveData(dir, glob, true)
+}
+
+// LiveDataRaw reads live files matching glob and removes dead ones without
+// validating their contents as JSON. Callers can then treat damaged records
+// conservatively instead of failing the entire scan.
+func LiveDataRaw(dir, glob string) ([]LiveFile, error) {
+	return liveData(dir, glob, false)
+}
+
+func liveData(dir, glob string, validateJSON bool) ([]LiveFile, error) {
 	pattern := filepath.Join(dir, glob)
 	names, err := filepath.Glob(pattern)
 	if err != nil {
@@ -113,7 +124,7 @@ func LiveData(dir, glob string) ([]LiveFile, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading live file %s: %w", name, err)
 		}
-		if !json.Valid(data) {
+		if validateJSON && !json.Valid(data) {
 			return nil, fmt.Errorf("decoding live file %s: invalid JSON", name)
 		}
 		rows = append(rows, LiveFile{Path: name, Data: data})
