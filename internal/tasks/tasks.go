@@ -5019,12 +5019,20 @@ func (r *Runner) install(ctx context.Context, s config.Step, t *config.Task) err
 			return err
 		}
 	}
+	return r.copyInstallToHosts(ctx, hosts, candidates)
+}
+
+func (r *Runner) copyInstallToHosts(ctx context.Context, hosts []string, candidates []installCandidate) error {
 	var errs []error
 	for _, host := range hosts {
 		for i, candidate := range candidates {
-			cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "rsync", "--archive", "--mkpath", candidate.source, host+":"+candidate.destination)
+			cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "rsync", "--archive", "--mkpath", "-e", "ssh -o BatchMode=yes -o ConnectTimeout=10", candidate.source, host+":"+candidate.destination)
 			if err != nil {
-				errs = append(errs, fmt.Errorf("install to %s: rsync: %w", host, err))
+				missed := make([]string, 0, len(candidates)-i)
+				for _, c := range candidates[i:] {
+					missed = append(missed, c.name)
+				}
+				fmt.Fprintf(r.Stderr, "graft: warning: install to %s: rsync: %s; not there: %s\n", host, err, strings.Join(missed, ", "))
 				break
 			}
 			out, err := cmd.CombinedOutput()
@@ -5034,7 +5042,19 @@ func (r *Runner) install(ctx context.Context, s config.Step, t *config.Task) err
 				for _, c := range candidates[i:] {
 					missed = append(missed, c.name)
 				}
-				errs = append(errs, fmt.Errorf("install to %s: rsync: %w: %s; not there: %s", host, err, strings.TrimSpace(string(out)), strings.Join(missed, ", ")))
+				// rsync's last line is its own summary ("unexplained error");
+				// ssh's reason comes before it, so every line is kept.
+				var lines []string
+				for line := range strings.SplitSeq(string(out), "\n") {
+					if line = strings.TrimSpace(line); line != "" {
+						lines = append(lines, line)
+					}
+				}
+				reason := strings.Join(lines, "; ")
+				if reason == "" {
+					reason = err.Error()
+				}
+				fmt.Fprintf(r.Stderr, "graft: warning: install to %s: rsync: %s; not there: %s\n", host, reason, strings.Join(missed, ", "))
 				break
 			}
 			if abs, absErr := filepath.Abs(candidate.destination); absErr != nil {

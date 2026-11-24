@@ -188,7 +188,10 @@ func TestInstallRecordsTheCopyOnTheHost(t *testing.T) {
 	f := installRepo(t, dest)
 	state, cache, cfgDir, fakebin := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 	writeUserConfig(t, cfgDir, "tools: {bin_dir: "+yamlQuote(dest)+"}\ninstall: {hosts: [pc]}\n")
-	writeFile(t, filepath.Join(fakebin, "rsync"), "#!/bin/sh\n[ ! -e \""+filepath.Join(state, "fail")+"\" ] || exit 1\nsrc=$3\ndst=${4#*:}\nmkdir -p \"$(dirname \"$dst\")\"\ncp \"$src\" \"$dst\"\n")
+	writeFile(t, filepath.Join(fakebin, "rsync"), "#!/bin/sh\n"+
+		`printf '%s\n' "$@" > "`+filepath.Join(state, "argv")+`"`+"\n"+
+		`[ ! -e "`+filepath.Join(state, "fail")+`" ] || { echo 'Connection timed out during banner exchange'; echo 'rsync: connection unexpectedly closed (0 bytes received so far) [sender]'; echo 'rsync error: unexplained error (code 255) at io.c(232) [sender=3.4.1]'; exit 255; }`+"\n"+
+		"src=$5\ndst=${6#*:}\nmkdir -p \"$(dirname \"$dst\")\"\ncp \"$src\" \"$dst\"\n")
 	if err := os.Chmod(filepath.Join(fakebin, "rsync"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -196,8 +199,9 @@ func TestInstallRecordsTheCopyOnTheHost(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(state, "fail"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, code := f.graft("", "install-script"); code == 0 {
-		t.Fatal("failed rsync passed")
+	out, code := f.graft("", "install-script-then-step")
+	if code != 0 || !strings.Contains(out, "after-install") || !strings.Contains(out, "warning: install to pc") || !strings.Contains(out, "Connection timed out during banner exchange") || !strings.Contains(out, "run.sh") {
+		t.Fatalf("failed rsync did not warn and continue: exit %d\n%s", code, out)
 	}
 	registry := filepath.Join(cache, "graft", "hosts.json")
 	if _, err := os.Stat(registry); !os.IsNotExist(err) {
@@ -223,6 +227,29 @@ func TestInstallRecordsTheCopyOnTheHost(t *testing.T) {
 	}
 	if copies["pc"][installed] != fmt.Sprintf("%x", sum) {
 		t.Errorf("host copy registry: %#v", copies)
+	}
+}
+
+func TestInstallRsyncUsesBoundedBatchSSH(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "bin")
+	f := installRepo(t, dest)
+	state, cache, cfgDir, fakebin := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	writeUserConfig(t, cfgDir, "tools: {bin_dir: "+yamlQuote(dest)+"}\ninstall: {hosts: [pc]}\n")
+	writeFile(t, filepath.Join(fakebin, "rsync"), "#!/bin/sh\n"+
+		`printf '%s\n' "$@" > "`+filepath.Join(state, "argv")+`"`+"\nexit 0\n")
+	if err := os.Chmod(filepath.Join(fakebin, "rsync"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, "APPDATA="+cfgDir, "XDG_CACHE_HOME="+cache, "LOCALAPPDATA="+cache, "PATH="+fakebin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if out, code := f.graft("", "install"); code != 0 {
+		t.Fatalf("install failed: exit %d\n%s", code, out)
+	}
+	argv, err := os.ReadFile(filepath.Join(state, "argv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(argv); !strings.Contains(got, "-e\nssh -o BatchMode=yes -o ConnectTimeout=10\n") {
+		t.Fatalf("rsync argv lacks bounded batch SSH: %q", got)
 	}
 }
 
@@ -558,8 +585,8 @@ func TestProjectRemoteHeavyWinsOverTheUsers(t *testing.T) {
 
 // TestInstallCopiesToTheUsersHosts: with install.hosts in the user config
 // the install step, after installing here, puts the same binary at the same
-// path on each host with rsync; a host it cannot reach fails the step loudly
-// and leaves the binary installed here.
+// path on each host with rsync; a host it cannot reach warns and leaves the
+// binary installed here.
 func TestInstallCopiesToTheUsersHosts(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "bin")
 	f := installRepo(t, dest)
@@ -592,7 +619,7 @@ func TestInstallCopiesToTheUsersHosts(t *testing.T) {
 	f.write("main.go", "package main\n\nfunc main() { println(\"two\") }\n")
 	f.git("commit", "-q", "-am", "two")
 	out, code := f.graft("", "install")
-	if code == 0 || !strings.Contains(out, "pc") || !strings.Contains(out, "No route to host") {
+	if code != 0 || !strings.Contains(out, "warning: install to pc") || !strings.Contains(out, "No route to host") {
 		t.Errorf("an unreachable host: exit %d\n%s", code, out)
 	}
 	if !strings.Contains(string(readBytes(t, installed)), "two") {
@@ -601,8 +628,8 @@ func TestInstallCopiesToTheUsersHosts(t *testing.T) {
 }
 
 // TestInstallHereDoesNotStopAtAHostDown: a host down does not stop the
-// install of the other files here; the step tries the host once and fails
-// naming it and every file it did not get.
+// install of the other files here; the step warns once and names every file
+// the host did not get.
 func TestInstallHereDoesNotStopAtAHostDown(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "bin")
 	f := installRepo(t, dest)
@@ -630,7 +657,7 @@ func TestInstallHereDoesNotStopAtAHostDown(t *testing.T) {
 			t.Errorf("the failure does not name %s:\n%s", name, out)
 		}
 	}
-	if code == 0 || !strings.Contains(out, "pc") || !strings.Contains(out, "Could not resolve hostname") {
+	if code != 0 || !strings.Contains(out, "warning: install to pc") || !strings.Contains(out, "Could not resolve hostname") {
 		t.Errorf("a host down: exit %d\n%s", code, out)
 	}
 	if n := strings.Count(readFile(t, filepath.Join(state, "rsync")), "\n"); n != 1 {

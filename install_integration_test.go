@@ -111,6 +111,10 @@ tasks:
   install-script:
     run:
       - {install: scripts/*.sh, to: `+yamlQuote(dest)+`}
+  install-script-then-step:
+    run:
+      - {install: scripts/*.sh, to: `+yamlQuote(dest)+`}
+      - [echo, after-install]
   install-none:
     run:
       - {install: bin/absent*, to: `+yamlQuote(dest)+`}

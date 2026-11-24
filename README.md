@@ -1126,9 +1126,10 @@ dotenv_sets:                   # key lists several tasks and services share
   their project and target while waiting. An install step running inside that
   same deploy does not wait for itself, nor for a deploy that started after it
   (or after the deploy it runs in), so two deploys installing at once do not
-  wait for each other: the later one waits. A host that fails is not tried for
-  the rest of the files, and the step fails naming it, its error and the files it did
-  not get. Successful host copies are recorded by host and absolute path in
+  wait for each other: the later one waits. An unreachable host gets a warning
+  naming the host and files it missed, and the task continues. A host that
+  fails is not tried for the rest of the files. Successful host copies are
+  recorded by host and absolute path in
   `<user cache dir>/graft/hosts.json` for the glint check placement rule. A task with an install step is
   never cached. The usual install
   of a project's program:
