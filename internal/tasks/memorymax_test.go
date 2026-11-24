@@ -85,6 +85,28 @@ func TestMemoryKills(t *testing.T) {
 	}
 }
 
+func TestPIDsLimitWarning(t *testing.T) {
+	for _, tc := range []struct {
+		before, after uint64
+		want          string
+	}{
+		{before: 2, after: 5, want: "(TasksMax=4096) or a cgroup inside it; process or thread creation was refused 3 time(s), which may have caused the command to fail"},
+		{before: 2, after: 2},
+		{before: 2, after: 1},
+	} {
+		got := pidsLimitWarning("build", pidsMaxGrowth(map[string]uint64{"max": tc.before}, map[string]uint64{"max": tc.after}))
+		if tc.want == "" {
+			if got != "" {
+				t.Errorf("warning = %q, want silence", got)
+			}
+			continue
+		}
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("warning = %q, want substring %q", got, tc.want)
+		}
+	}
+}
+
 // TestMemoryKillsOuter: a ceiling an outer graft exec --memory-max holds is
 // raised there, or by the task's memory_max above it.
 func TestMemoryKillsOuter(t *testing.T) {

@@ -277,6 +277,7 @@ type frame struct {
 	stepLoads        stats.Usage
 	loadStepUnknown  bool
 	cgroupPeakMB     *float64
+	pidsPeak         *uint64
 }
 
 // TestDB is the test database of test_db tasks.
@@ -3808,7 +3809,7 @@ func (r *Runner) end(f *frame, err error) stats.Usage {
 	r.frames = r.frames[:len(r.frames)-1]
 	rec := r.recordForFrame(stats.KindTask, f)
 	rec.In, rec.Steps, rec.Host, rec.Here = f.in, f.steps, r.hostOf(f), f.here
-	rec.Mark, rec.WaitedBehind, rec.CgroupPeakMB = f.mark, f.waitedBehind, f.cgroupPeakMB
+	rec.Mark, rec.WaitedBehind, rec.CgroupPeakMB, rec.PIDsPeak = f.mark, f.waitedBehind, f.cgroupPeakMB, f.pidsPeak
 	rec.GateKey = gateKeyForFrame(f)
 	if f.reserveRelease != nil {
 		if err := f.reserveRelease(); err != nil {
@@ -4262,16 +4263,66 @@ func (r *Runner) enterHeavy(ctx context.Context, name, memoryMax, memoryHigh str
 		}
 		return nil, err
 	}
+	pidsBefore := r.pidsEventsBefore(name)
 	r.heavy++
 	return func() error {
-		if r.heavy == 1 && r.heavyScopeOwned && len(r.frames) > 0 {
-			if mb, err := iosched.MemoryPeakMB(os.Getenv(loadgate.ProcEnv)); err == nil {
-				r.frames[len(r.frames)-1].cgroupPeakMB = &mb
+		if r.heavy == 1 {
+			procRoot := os.Getenv(loadgate.ProcEnv)
+			if len(r.frames) > 0 {
+				if r.heavyScopeOwned {
+					if mb, err := iosched.MemoryPeakMB(procRoot); err == nil {
+						r.frames[len(r.frames)-1].cgroupPeakMB = &mb
+					}
+					if peak, err := iosched.PIDsPeak(procRoot); err == nil {
+						r.frames[len(r.frames)-1].pidsPeak = &peak
+					}
+				}
 			}
+			r.reportPIDsLimit(name, procRoot, pidsBefore)
 		}
 		r.heavy--
 		return release()
 	}, nil
+}
+
+func (r *Runner) pidsEventsBefore(name string) map[string]uint64 {
+	if r.heavy != 0 || !r.heavyScopeOwned {
+		return nil
+	}
+	events, err := iosched.PIDsEvents(os.Getenv(loadgate.ProcEnv))
+	if err != nil {
+		fmt.Fprintf(r.Stderr, "graft: %s: TasksMax limit not watched: %v\n", name, err)
+		return nil
+	}
+	return events
+}
+
+func (r *Runner) reportPIDsLimit(name, procRoot string, before map[string]uint64) {
+	if before == nil {
+		return
+	}
+	after, err := iosched.PIDsEvents(procRoot)
+	if err != nil {
+		fmt.Fprintf(r.Stderr, "graft: %s: TasksMax limit not watched after command: %v\n", name, err)
+		return
+	}
+	if warning := pidsLimitWarning(name, pidsMaxGrowth(before, after)); warning != "" {
+		fmt.Fprintln(r.Stderr, warning)
+	}
+}
+
+func pidsMaxGrowth(before, after map[string]uint64) uint64 {
+	if after["max"] <= before["max"] {
+		return 0
+	}
+	return after["max"] - before["max"]
+}
+
+func pidsLimitWarning(name string, refused uint64) string {
+	if refused == 0 {
+		return ""
+	}
+	return fmt.Sprintf("graft: %s: a task limit was hit in the heavy scope (TasksMax=%d) or a cgroup inside it; process or thread creation was refused %d time(s), which may have caused the command to fail", name, iosched.HeavyTasksMax, refused)
 }
 
 // holdCeiling places heavy work under its requested memory ceiling and passes

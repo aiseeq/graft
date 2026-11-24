@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,14 +19,18 @@ import (
 
 func TestHeavyScopeCgroupPeakStats(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		own      bool
-		peak     string
-		wantPeak *float64
+		name         string
+		own          bool
+		peak         string
+		eventsBefore string
+		eventsAfter  string
+		wantWarning  string
+		wantPeak     *float64
 	}{
-		{name: "created scope", own: true, peak: "681574400\n", wantPeak: new(650.0)},
-		{name: "inherited scope", peak: "681574400\n"},
-		{name: "memory.peak unavailable", own: true},
+		{name: "created scope", own: true, peak: "681574400\n", eventsBefore: "max 2\n", eventsAfter: "max 5\n", wantWarning: "(TasksMax=4096) or a cgroup inside it; process or thread creation was refused 3 time(s)", wantPeak: new(650.0)},
+		{name: "inherited scope ignores foreign limit", eventsBefore: "max 2\n", eventsAfter: "max 5\n"},
+		{name: "created scope without growth", own: true, eventsBefore: "max 2\n", eventsAfter: "max 2\n"},
+		{name: "memory.peak unavailable", own: true, eventsBefore: "max 0\n", eventsAfter: "max 0\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cache := t.TempDir()
@@ -46,6 +51,8 @@ func TestHeavyScopeCgroupPeakStats(t *testing.T) {
 			if tc.peak != "" {
 				write("cgroup"+cgroup+"/memory.peak", tc.peak)
 			}
+			write("cgroup"+cgroup+"/pids.events", tc.eventsBefore)
+			write("cgroup"+cgroup+"/pids.peak", "117\n")
 			t.Setenv(loadgate.ProcEnv, procRoot)
 
 			oldConfigure, oldHalfMode := configureHeavy, halfMode
@@ -68,6 +75,7 @@ func TestHeavyScopeCgroupPeakStats(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			write("cgroup"+cgroup+"/pids.events", tc.eventsAfter)
 			r.recordStep("synthetic step", stats.Usage{}, 0, "")
 			if err := leave(); err != nil {
 				t.Fatal(err)
@@ -95,11 +103,15 @@ func TestHeavyScopeCgroupPeakStats(t *testing.T) {
 					t.Fatal(err)
 				}
 				_, hasPeak := record["cgroup_peak_mb"]
+				_, hasPIDsPeak := record["pids_peak"]
 				switch kind {
 				case stats.KindStep:
 					stepFound = true
 					if hasPeak {
 						t.Errorf("step record unexpectedly has cgroup_peak_mb: %s", scanner.Text())
+					}
+					if hasPIDsPeak {
+						t.Errorf("step record unexpectedly has pids_peak: %s", scanner.Text())
 					}
 				case stats.KindTask:
 					taskFound = true
@@ -113,6 +125,14 @@ func TestHeavyScopeCgroupPeakStats(t *testing.T) {
 							t.Errorf("task cgroup_peak_mb = %s; want %g", record["cgroup_peak_mb"], *tc.wantPeak)
 						}
 					}
+					if tc.own {
+						var got uint64
+						if !hasPIDsPeak || json.Unmarshal(record["pids_peak"], &got) != nil || got != 117 {
+							t.Errorf("task pids_peak = %s; want 117", record["pids_peak"])
+						}
+					} else if hasPIDsPeak {
+						t.Errorf("inherited task unexpectedly has pids_peak: %s", scanner.Text())
+					}
 				}
 			}
 			if err := scanner.Err(); err != nil {
@@ -121,8 +141,10 @@ func TestHeavyScopeCgroupPeakStats(t *testing.T) {
 			if !taskFound || !stepFound {
 				t.Fatalf("task record found=%v, step record found=%v", taskFound, stepFound)
 			}
-			if stderr.Len() != 0 {
-				t.Errorf("reading optional memory.peak wrote an error: %s", stderr.String())
+			if tc.wantWarning == "" && stderr.Len() != 0 {
+				t.Errorf("unexpected stderr: %s", stderr.String())
+			} else if tc.wantWarning != "" && !strings.Contains(stderr.String(), tc.wantWarning) {
+				t.Errorf("stderr = %q, want warning containing %q", stderr.String(), tc.wantWarning)
 			}
 		})
 	}

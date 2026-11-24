@@ -176,7 +176,7 @@ func scopeProperties(p plan, pid int) []string {
 	// is linked. IOAccounting gives the scope its io.stat: systemd enables
 	// the io controller under a slice only while some child asks for it, and
 	// the slice's IOWeight does not count the scope's own reads and writes.
-	count := 7
+	count := 8
 	properties := []string{"PIDs", "au", "1", strconv.Itoa(pid), "Slice", "s", p.slice}
 	if p.cpuQuotaUSec > 0 {
 		count++
@@ -188,12 +188,17 @@ func scopeProperties(p plan, pid int) []string {
 	}
 	properties = append(properties, "CollectMode", "s", "inactive-or-failed", "IOAccounting", "b", "true")
 	properties = append(properties, memoryProperties(p.ceiling)...)
+	properties = append(properties, "TasksMax", "t", strconv.FormatUint(HeavyTasksMax, 10))
 	if p.memoryHigh > 0 {
 		count++
 		properties = append(properties, "MemoryHigh", "t", strconv.FormatInt(p.memoryHigh, 10))
 	}
 	return append(append([]string{strconv.Itoa(count)}, properties...), "0")
 }
+
+// HeavyTasksMax is above the measured legal-run peak of 1107 tasks (glint -p 32);
+// measurement materials are in /home/aisee/docs/llmark/pc-tasksmax/.
+const HeavyTasksMax = 4096
 
 // memoryProperties hold the work under ceiling without swap: swapping out a
 // runaway's memory is what stalls the machine. OOMPolicy goes only on a new
@@ -701,6 +706,68 @@ func MemoryPeakMB(procRoot string) (float64, error) {
 		return 0, fmt.Errorf("memory.peak: %q: %w", strings.TrimSpace(string(b)), err)
 	}
 	return float64(n) / (1024 * 1024), nil
+}
+
+// PIDsEvents reads pids.events of the process's current cgroup v2.
+func PIDsEvents(procRoot string) (map[string]uint64, error) {
+	return readCgroupCounters(procRoot, "pids.events")
+}
+
+// PIDsPeak reads pids.peak of the process's current cgroup v2.
+func PIDsPeak(procRoot string) (uint64, error) {
+	return readCgroupCounter(procRoot, "pids.peak")
+}
+
+func readCgroupCounters(procRoot, filename string) (map[string]uint64, error) {
+	b, err := readCgroupFile(procRoot, filename)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]uint64{}
+	for line := range strings.SplitSeq(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		n, err := strconv.ParseUint(f[1], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %q: %w", filename, line, err)
+		}
+		out[f[0]] = n
+	}
+	return out, nil
+}
+
+func readCgroupFile(procRoot, filename string) ([]byte, error) {
+	self := "/proc/self/cgroup"
+	if procRoot != "" {
+		self = filepath.Join(procRoot, "self", "cgroup")
+	}
+	b, err := os.ReadFile(self)
+	if err != nil {
+		return nil, fmt.Errorf("read current cgroup: %w", err)
+	}
+	cg := unifiedCgroup(string(b))
+	if cg == "" {
+		return nil, fmt.Errorf("no cgroup v2 line in %s", self)
+	}
+	b, err = os.ReadFile(filepath.Join(cgroupBase(procRoot, cg), filename))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", filename, err)
+	}
+	return b, nil
+}
+
+func readCgroupCounter(procRoot, filename string) (uint64, error) {
+	b, err := readCgroupFile(procRoot, filename)
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %q: %w", filename, strings.TrimSpace(string(b)), err)
+	}
+	return n, nil
 }
 
 func transient(ctx context.Context, name string, mode string, args ...string) error {

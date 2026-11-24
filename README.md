@@ -312,6 +312,13 @@ graft sets no ceiling and nothing above its cgroup has `memory.max`, it says
 so once: `no memory ceiling: …`; an asked ceiling it cannot set (a service,
 a scope with its own limits) is named as not applied.
 
+New heavy scopes also set `TasksMax=4096`, above the measured legal-run peak
+of 1107 tasks, including threads (`glint -p 32`). If `pids.events` shows that `max` grew
+during a heavy command, graft reports how many process or thread creations
+were refused. The counter also counts limits of cgroups inside the scope, so
+the limit hit may be one of theirs; this can explain a failure but does not
+establish its cause.
+
 For a heavy task that reads a lot, such as a scan or corpus pass, page cache
 can evict neighbors' cache and drive them into swap. `memory_high` on the task
 or `graft exec --heavy --memory-high 20G -- …` sets `MemoryHigh` on its new

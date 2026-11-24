@@ -111,6 +111,8 @@ type Record struct {
 	// CgroupPeakMB is memory.peak of a heavy scope this graft created.
 	// Absent when the scope belongs to an enclosing graft or is unavailable.
 	CgroupPeakMB *float64 `json:"cgroup_peak_mb,omitempty"`
+	// PIDsPeak is pids.peak of a heavy scope this graft created.
+	PIDsPeak *uint64 `json:"pids_peak,omitempty"`
 	// ReadMB and WriteMB are what the step and the descendants it waited for
 	// read from and wrote to the storage (ru_inblock, ru_oublock), a write
 	// counted when it dirties the page; on a task line, its steps' sum.

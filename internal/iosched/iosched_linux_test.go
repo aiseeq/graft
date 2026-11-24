@@ -59,6 +59,34 @@ func TestMemoryPeak(t *testing.T) {
 	}
 }
 
+func TestPIDsEventsAndPeak(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "cgroup/user.slice/graft-heavy-7.scope")
+	if err := os.MkdirAll(filepath.Join(root, "self"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "self/cgroup"), []byte("0::/user.slice/graft-heavy-7.scope\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "pids.events"), []byte("max 3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "pids.peak"), []byte("117\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	events, err := PIDsEvents(root)
+	if err != nil || events["max"] != 3 {
+		t.Fatalf("PIDsEvents = %v, %v", events, err)
+	}
+	peak, err := PIDsPeak(root)
+	if err != nil || peak != 117 {
+		t.Fatalf("PIDsPeak = %d, %v", peak, err)
+	}
+}
+
 func TestDecide(t *testing.T) {
 	const scope = "/user.slice/user-1000.slice/user@1000.service/agents.slice/console.scope"
 	const session = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-probe-77-r2.scope"
@@ -101,10 +129,10 @@ func TestDecide(t *testing.T) {
 				t.Fatalf("limited = %q, want %q", got.limited, tt.wantLimited)
 			}
 			if move {
-				want := []string{"9", "PIDs", "au", "1", "42", "Slice", "s", tt.wantSlice,
+				want := []string{"10", "PIDs", "au", "1", "42", "Slice", "s", tt.wantSlice,
 					"PartOf", "as", "1", tt.wantSource, "After", "as", "1", tt.wantSource,
 					"CollectMode", "s", "inactive-or-failed", "IOAccounting", "b", "true",
-					"MemoryMax", "t", "7", "MemorySwapMax", "t", "0", "OOMPolicy", "s", "continue", "0"}
+					"MemoryMax", "t", "7", "MemorySwapMax", "t", "0", "OOMPolicy", "s", "continue", "TasksMax", "t", "4096", "0"}
 				if properties := scopeProperties(got, 42); !reflect.DeepEqual(properties, want) {
 					t.Fatalf("scope properties = %q, want %q", properties, want)
 				}
@@ -127,8 +155,8 @@ func TestDecideSession(t *testing.T) {
 	if !ok || move.slice != "app-graft.slice" || move.source != "session-7.scope" || move.scope != "graft-heavy-42.scope" || move.linkSource {
 		t.Fatalf("session plan = %+v, move %v", move, ok)
 	}
-	want := []string{"7", "PIDs", "au", "1", "42", "Slice", "s", "app-graft.slice", "CollectMode", "s", "inactive-or-failed", "IOAccounting", "b", "true",
-		"MemoryMax", "t", "7", "MemorySwapMax", "t", "0", "OOMPolicy", "s", "continue", "0"}
+	want := []string{"8", "PIDs", "au", "1", "42", "Slice", "s", "app-graft.slice", "CollectMode", "s", "inactive-or-failed", "IOAccounting", "b", "true",
+		"MemoryMax", "t", "7", "MemorySwapMax", "t", "0", "OOMPolicy", "s", "continue", "TasksMax", "t", "4096", "0"}
 	if got := scopeProperties(move, 42); !reflect.DeepEqual(got, want) {
 		t.Fatalf("session scope properties = %q, want %q", got, want)
 	}
@@ -405,7 +433,7 @@ func TestMemoryHighPropertiesAndValidation(t *testing.T) {
 	}
 	p := plan{source: "console.scope", slice: "agents-graft.slice", scope: "graft-heavy-42.scope", ceiling: 7, memoryHigh: 2 << 30, linkSource: true}
 	properties := scopeProperties(p, 42)
-	if properties[0] != "10" || !strings.Contains(strings.Join(properties, " "), "MemoryHigh t 2147483648") {
+	if properties[0] != "11" || !strings.Contains(strings.Join(properties, " "), "MemoryHigh t 2147483648") {
 		t.Fatalf("scope properties = %q", properties)
 	}
 	if _, _, err := highOf(Request{High: "9G", HighSource: "--memory-high"}, 8<<30); err != nil {
@@ -481,13 +509,13 @@ func TestHalfModeQuotaProperty(t *testing.T) {
 	if !strings.Contains(strings.Join(got, " "), "CPUQuotaPerSecUSec t 3500000") {
 		t.Fatalf("scope properties lack half CPU quota: %q", got)
 	}
-	if got[0] != "10" {
-		t.Errorf("property count = %s, want 10", got[0])
+	if got[0] != "11" {
+		t.Errorf("property count = %s, want 11", got[0])
 	}
 }
 
 func TestScopePropertiesCount(t *testing.T) {
-	names := map[string]bool{"PIDs": true, "Slice": true, "PartOf": true, "After": true, "CollectMode": true, "IOAccounting": true, "MemoryMax": true, "MemorySwapMax": true, "OOMPolicy": true}
+	names := map[string]bool{"PIDs": true, "Slice": true, "PartOf": true, "After": true, "CollectMode": true, "IOAccounting": true, "MemoryMax": true, "MemorySwapMax": true, "OOMPolicy": true, "TasksMax": true}
 	for _, linked := range []bool{true, false} {
 		p := plan{source: "app-x.scope", slice: "app-graft.slice", scope: "graft-heavy-42.scope", ceiling: 7, linkSource: linked}
 		properties := scopeProperties(p, 42)
