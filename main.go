@@ -709,7 +709,7 @@ func gocacheCmd(ctx context.Context, a *app.App, args []string) error {
 	older := fs.Duration("older", 25*time.Hour, "remove the entries unused for longer than this")
 	maxWait := fs.Duration("max-wait", 2*time.Hour, "stop waiting for a quiet machine after this long")
 	freeBelow := fs.String("free-below", "", "trim only when filesystem free space is below this size (binary K/M/G)")
-	batchSync := fs.String("batch-sync", "fs", "sync after each batch: fs or none")
+	batchSync := fs.String("batch-sync", "none", "sync after each batch: fs or none")
 	pos, err := parseInterspersed(fs, args[1:])
 	if err != nil {
 		return err

@@ -162,12 +162,13 @@ func TestGocacheBatchSyncFlagAndEnvironment(t *testing.T) {
 		setEnv, setFlag       bool
 		code                  int
 	}{
-		{"default", "", "", "sync fs", false, false, 0},
+		{"default", "", "", "sync none", false, false, 0},
 		{"env none", "none", "", "sync none", true, false, 0},
+		{"env fs", "fs", "", "sync fs", true, false, 0},
 		{"flag overrides env", "none", "fs", "sync fs", true, true, 0},
 		{"flag overrides invalid env", "bad", "none", "sync none", true, true, 0},
 		{"bad env", "bad", "", "GRAFT_GOCACHE_BATCH_SYNC \"bad\": want fs or none", true, false, 2},
-		{"empty env", "", "", "sync fs", true, false, 0},
+		{"empty env", "", "", "sync none", true, false, 0},
 		{"bad flag", "fs", "bad", "--batch-sync \"bad\": want fs or none", true, true, 2},
 		{"empty flag", "fs", "", "--batch-sync \"\": want fs or none", true, true, 2},
 	} {

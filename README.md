@@ -3419,10 +3419,12 @@ keeps. A removed entry is a cache miss: go rebuilds the package the next time
 it is needed, so a project not built for a day builds cold once, and a
 project in use stays warm. With `--apply`, graft removes entries in batches
 of up to 1000 entries or 256 MiB (an entry bigger than that is a batch
-of its own), syncing the cache filesystem after each batch. Set
-`--batch-sync none` or `GRAFT_GOCACHE_BATCH_SYNC=none` to skip this sync;
-`fs` is the default, an empty environment variable uses the default, and the
-flag overrides the environment. Before a batch it waits until `Dirty` plus
+of its own). Set `--batch-sync fs` or `GRAFT_GOCACHE_BATCH_SYNC=fs` to sync
+the cache filesystem after each batch; `none`, no sync, is the default: on a
+filesystem shared with other work, such as btrfs `/home`, that sync flushes
+everyone's dirty data and stalls small writes for seconds. An empty
+environment variable uses the default, and the flag overrides the
+environment. Before a batch it waits until `Dirty` plus
 `Writeback` in
 `/proc/meminfo` is below 64 MiB (where the system reports it: Linux) and
 the machine is calm by the busy check for disk pressure, writeback,
