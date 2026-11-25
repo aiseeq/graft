@@ -99,10 +99,16 @@ bump, and nothing is pushed. Merging the branch brings the gate (see Hooks).
 
 `modules.latest` lists Go module and npm git repository path prefixes. Before
 `graft commit` runs its gate and before a manual `graft gate`, graft raises
-matching requirements in tracked `go.mod` files to the latest versions visible
-through the user's Go proxy settings, then tidies the module and refreshes an
-existing vendor tree. Set `GRAFT_MODULES_HOLD=1` to skip these raises during
-`graft gate`. It also raises npm dependencies in `package.json` whose
+matching Go requirements in tracked `go.mod` files to the latest versions
+visible through the user's Go proxy settings, then tidies the module and
+refreshes an existing vendor tree. Set `modules.foreign_go: true` in the user
+config to also raise every other Go requirement, within its current major
+version; this does not affect npm dependencies. A failed foreign Go raise or
+one that changes the `go` or `toolchain` directive is rolled back with its
+`go.sum` changes and reported as a warning, while raises of `modules.latest`
+remain. A `vendor/modules.txt` tree skips the foreign Go raise with a warning.
+Set `GRAFT_MODULES_HOLD=1` to skip all raises during `graft gate`. Graft also
+raises npm dependencies in `package.json` whose
 git URL is under one of those prefixes and ends in a `#vX.Y.Z` semver tag; npm
 ranges, shorthand specs, branches, and commit hashes stay as they are. When a
 `package-lock.json` covers the package, graft refreshes its resolved commit
@@ -122,12 +128,15 @@ shipped binary's module moves); the
 trunk takes the raise.
 Projects can also set `modules.hold_branches` to branch globs for this behavior
 without enabling any of the deploy or version behavior of those other settings.
-On matching branches graft leaves `modules.latest` requirements alone and
-reports `modules.hold_branches` as the reason.
+On matching branches graft leaves module requirements alone and reports
+`modules.hold_branches` as the reason.
 Offline or otherwise unknown latest versions produce a warning and leave that
 dependency alone. If a raised version makes the gate fail, the commit stops
-and the raised files stay in the work tree for repair. Without this setting,
-module and npm dependency versions are left alone.
+and the raised files stay in the work tree for repair. `GRAFT_MODULES_HOLD=1`
+skips raises only during `graft gate`; to defer raises during `graft commit`,
+add the branch to `modules.hold_branches` or disable `modules.foreign_go` in
+the user config. Without
+`modules.latest` or `modules.foreign_go`, module versions are left alone.
 
 A gate whose last 5 runs that really ran their steps each stayed under 2 s CPU
 and 300 MB, since the last change to the parts of the config the gate depends

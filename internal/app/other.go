@@ -1183,18 +1183,30 @@ func modulesHoldEnabled() (bool, error) {
 // approval; the trunk takes the raise.
 func (a *App) raiseOwnModules(ctx context.Context, repo *gitx.Repo, cfg *config.Config, branch string) error {
 	settings, err := userconfig.ModulesSettings()
-	if err != nil || len(settings.Latest) == 0 {
+	if err != nil || (len(settings.Latest) == 0 && !settings.ForeignGo) {
 		return err
 	}
-	warnPinnedTools(cfg.Tools, settings, a.warn)
+	if len(settings.Latest) > 0 {
+		warnPinnedTools(cfg.Tools, settings, a.warn)
+	}
 	if held := modulesHeldBy(cfg, branch); held != "" {
 		a.printf("modules.latest: %s keeps its module versions (%s); the trunk raises them", branch, held)
 		return nil
 	}
-	if err := gomods.Raise(ctx, repo, settings.IsLatest, a.Stderr, a.warn); err != nil {
-		return err
+	if len(settings.Latest) > 0 {
+		if err := gomods.Raise(ctx, repo, settings.IsLatest, a.Stderr, a.warn); err != nil {
+			return err
+		}
 	}
-	return npmmods.Raise(ctx, repo, settings.IsLatest, a.Stderr, a.warn)
+	if settings.ForeignGo {
+		if err := gomods.RaiseForeign(ctx, repo, settings.IsLatest, a.Stderr, a.warn); err != nil {
+			return err
+		}
+	}
+	if len(settings.Latest) > 0 {
+		return npmmods.Raise(ctx, repo, settings.IsLatest, a.Stderr, a.warn)
+	}
+	return nil
 }
 
 // modulesHeldBy names the setting that keeps module versions on branch, or is empty.

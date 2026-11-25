@@ -59,7 +59,8 @@ func RemoteHeavySettings() (*config.RemoteHeavy, error) {
 // Modules lists Go module path prefixes whose requirements graft raises to
 // their latest published versions before a commit or a manual gate.
 type Modules struct {
-	Latest []string `yaml:"latest"`
+	Latest    []string `yaml:"latest"`
+	ForeignGo bool     `yaml:"foreign_go"`
 }
 
 // IsLatest reports whether path is equal to a configured prefix or below it.

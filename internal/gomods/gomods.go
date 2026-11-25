@@ -3,6 +3,7 @@
 package gomods
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 )
 
@@ -31,12 +33,19 @@ const latestTimeout = time.Minute
 // module. A latest version go cannot learn (offline) is a warning, the
 // go.mod stays as it is; a failing go get or tidy is an error.
 func Raise(ctx context.Context, repo *gitx.Repo, own func(path string) bool, log io.Writer, warning func(string, ...any)) error {
-	goPath, err := exec.LookPath("go")
-	if errors.Is(err, exec.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("looking up go: %w", err)
+	return raise(ctx, repo, own, log, warning)
+}
+
+// RaiseForeign raises requirements other than the module itself and replaced
+// modules. It runs separately so failures can roll back only this step.
+func RaiseForeign(ctx context.Context, repo *gitx.Repo, own func(string) bool, log io.Writer, warning func(string, ...any)) error {
+	return raiseForeign(ctx, repo, own, log, warning)
+}
+
+func raise(ctx context.Context, repo *gitx.Repo, own func(string) bool, log io.Writer, warning func(string, ...any)) error {
+	goPath, err := findGo()
+	if err != nil || goPath == "" {
+		return err
 	}
 	files, err := repo.Git("ls-files", "-z", "--cached", "--others", "--exclude-standard")
 	if err != nil {
@@ -51,11 +60,54 @@ func Raise(ctx context.Context, repo *gitx.Repo, own func(path string) bool, log
 		if filepath.Base(name) != "go.mod" || excluded(name) {
 			continue
 		}
-		if err := raiseFile(ctx, filepath.Join(repo.Root, filepath.FromSlash(name)), name, goPath, env, own, log, warning); err != nil {
+		path := filepath.Join(repo.Root, filepath.FromSlash(name))
+		if own == nil {
+			return fmt.Errorf("own module predicate is required")
+		}
+		if err := raiseFile(ctx, path, name, goPath, env, own, log, warning); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// raiseForeign visits the same module files as raise but selects only
+// requirements outside the configured own-module prefixes.
+func raiseForeign(ctx context.Context, repo *gitx.Repo, own func(string) bool, log io.Writer, warning func(string, ...any)) error {
+	goPath, err := findGo()
+	if err != nil || goPath == "" {
+		return err
+	}
+	files, err := repo.Git("ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	if err != nil {
+		return fmt.Errorf("listing tracked files: %w", err)
+	}
+	drop, err := gitx.LocalEnvVars()
+	if err != nil {
+		return fmt.Errorf("listing git environment variables: %w", err)
+	}
+	env := envWith(gitx.Without(os.Environ(), drop), "GOWORK", "off")
+	for name := range strings.SplitSeq(files, "\x00") {
+		if filepath.Base(name) != "go.mod" || excluded(name) {
+			continue
+		}
+		path := filepath.Join(repo.Root, filepath.FromSlash(name))
+		if err := raiseForeignFile(ctx, path, name, goPath, env, own, log, warning); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func findGo() (string, error) {
+	goPath, err := exec.LookPath("go")
+	if errors.Is(err, exec.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("looking up go: %w", err)
+	}
+	return goPath, nil
 }
 
 func excluded(name string) bool {
@@ -146,6 +198,199 @@ func raiseFile(ctx context.Context, path, display, goPath string, env []string, 
 		return fmt.Errorf("checking %s vendor/modules.txt: %w", display, statErr)
 	}
 	return nil
+}
+
+func raiseForeignFile(ctx context.Context, path, display, goPath string, env []string, own func(string) bool, log io.Writer, warning func(string, ...any)) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", display, err)
+	}
+	candidates, err := selectCandidates(data, func(path string) bool { return !own(path) })
+	if err != nil {
+		return fmt.Errorf("%s: %w", display, err)
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), "vendor", "modules.txt")); err == nil {
+		warning("%s: foreign Go module raises skipped because vendor/modules.txt is present", display)
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("checking %s vendor/modules.txt: %w", display, err)
+	}
+	snapshot, err := snapshotForeignFiles(path, display, data)
+	if err != nil {
+		return err
+	}
+	latest, err := latestVersions(ctx, filepath.Dir(path), goPath, env, candidates)
+	if err != nil {
+		if restoreErr := restoreForeignFiles(path, display, snapshot); restoreErr != nil {
+			return restoreErr
+		}
+		return fmt.Errorf("%s: %w", display, err)
+	}
+	upgraded, args := foreignUpgradeArgs(candidates, latest, display, warning)
+	if len(upgraded) == 0 {
+		if err := restoreForeignFiles(path, display, snapshot); err != nil {
+			return err
+		}
+		return nil
+	}
+	if err := applyForeignUpgrades(ctx, path, display, goPath, env, args, upgraded, latest, snapshot, log, warning); err != nil {
+		return err
+	}
+	return nil
+}
+
+func foreignUpgradeArgs(candidates []candidate, latest map[string]LatestModule, display string, warning func(string, ...any)) ([]candidate, []string) {
+	var upgraded []candidate
+	args := []string{"get"}
+	for _, c := range candidates {
+		m := latest[c.path]
+		if m.Version == "" {
+			reason := m.Err
+			if reason == "" {
+				reason = "go list -m gave no version"
+			}
+			warning("%s: %s: foreign module latest version is unknown: %s", display, c.path, lastOutputLine(reason))
+			continue
+		}
+		if !foreignUpgrade(c.version, m.Version) {
+			continue
+		}
+		upgraded = append(upgraded, c)
+		args = append(args, c.path+"@"+m.Version)
+	}
+	return upgraded, args
+}
+
+type foreignSnapshot struct {
+	goMod, goSum           []byte
+	goSumExists            bool
+	goDirective, toolchain string
+}
+
+func snapshotForeignFiles(path, display string, data []byte) (foreignSnapshot, error) {
+	sumPath := filepath.Join(filepath.Dir(path), "go.sum")
+	sumData, sumErr := os.ReadFile(sumPath)
+	sumExists := sumErr == nil
+	if sumErr != nil && !errors.Is(sumErr, os.ErrNotExist) {
+		return foreignSnapshot{}, fmt.Errorf("reading %s go.sum: %w", display, sumErr)
+	}
+	goDirective, toolchain, err := goDirectives(data)
+	if err != nil {
+		return foreignSnapshot{}, fmt.Errorf("%s: %w", display, err)
+	}
+	return foreignSnapshot{goMod: data, goSum: sumData, goSumExists: sumExists, goDirective: goDirective, toolchain: toolchain}, nil
+}
+
+func applyForeignUpgrades(ctx context.Context, path, display, goPath string, env, args []string, upgraded []candidate, latest map[string]LatestModule, snapshot foreignSnapshot, log io.Writer, warning func(string, ...any)) error {
+	rollback := func() error {
+		return restoreForeignFiles(path, display, snapshot)
+	}
+	out, stderr, runErr := execx.Run(ctx, filepath.Dir(path), goPath, env, args...)
+	if runErr == nil {
+		out, stderr, runErr = execx.Run(ctx, filepath.Dir(path), goPath, env, "mod", "tidy")
+	}
+	if runErr != nil {
+		reason := lastOutputLine(joinOutput(stderr, out, runErr))
+		if err := rollback(); err != nil {
+			return err
+		}
+		warning("%s: foreign modules %s were rolled back: %s", display, candidateNames(upgraded), reason)
+		return nil
+	}
+	changed, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading raised %s: %w", display, err)
+	}
+	newGo, newToolchain, err := goDirectives(changed)
+	if err != nil {
+		return fmt.Errorf("%s after foreign raise: %w", display, err)
+	}
+	if newGo != snapshot.goDirective || newToolchain != snapshot.toolchain {
+		if err := rollback(); err != nil {
+			return err
+		}
+		warning("%s: foreign modules %s were rolled back because go/toolchain directive changed", display, candidateNames(upgraded))
+		return nil
+	}
+	fmt.Fprintf(log, "graft: %s: raised foreign modules: %s\n", display, formatRaisedModules(upgraded, latest))
+	return nil
+}
+
+func restoreForeignFiles(path, display string, snapshot foreignSnapshot) error {
+	sumPath := filepath.Join(filepath.Dir(path), "go.sum")
+	currentMod, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("reading %s before restore: %w", display, err)
+	}
+	if errors.Is(err, os.ErrNotExist) || !bytes.Equal(currentMod, snapshot.goMod) {
+		if err := os.WriteFile(path, snapshot.goMod, 0o666); err != nil {
+			return fmt.Errorf("restoring %s: %w", display, err)
+		}
+	}
+	if snapshot.goSumExists {
+		currentSum, err := os.ReadFile(sumPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("reading %s go.sum before restore: %w", display, err)
+		}
+		if errors.Is(err, os.ErrNotExist) || !bytes.Equal(currentSum, snapshot.goSum) {
+			if err := os.WriteFile(sumPath, snapshot.goSum, 0o666); err != nil {
+				return fmt.Errorf("restoring %s go.sum: %w", display, err)
+			}
+		}
+	} else {
+		_, err := os.Stat(sumPath)
+		if err == nil {
+			if err := os.Remove(sumPath); err != nil {
+				return fmt.Errorf("removing raised %s go.sum: %w", display, err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("checking raised %s go.sum: %w", display, err)
+		}
+	}
+	return nil
+}
+
+func foreignUpgrade(current, latest string) bool {
+	return semver.IsValid(current) && semver.IsValid(latest) &&
+		semver.Compare(latest, current) > 0 &&
+		semver.Major(latest) == semver.Major(current) &&
+		!strings.Contains(latest, "+incompatible") &&
+		(module.IsPseudoVersion(current) || !module.IsPseudoVersion(latest))
+}
+
+func goDirectives(data []byte) (string, string, error) {
+	f, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("parsing go.mod directives: %w", err)
+	}
+	toolchain := ""
+	if f.Toolchain != nil {
+		toolchain = f.Toolchain.Name
+	}
+	goVersion := ""
+	if f.Go != nil {
+		goVersion = f.Go.Version
+	}
+	return goVersion, toolchain, nil
+}
+
+func lastOutputLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	if len(lines) == 0 || lines[len(lines)-1] == "" {
+		return "unknown error"
+	}
+	return lines[len(lines)-1]
+}
+
+func candidateNames(candidates []candidate) string {
+	names := make([]string, len(candidates))
+	for i, c := range candidates {
+		names[i] = c.path
+	}
+	return strings.Join(names, ", ")
 }
 
 func formatRaisedModules(upgraded []candidate, latest map[string]LatestModule) string {

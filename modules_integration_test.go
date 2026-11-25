@@ -15,9 +15,16 @@ import (
 // and the source of its one package.
 type proxyModule struct {
 	path, version, src string
+	goVersion          string
+	toolchain          string
+	retract            string
 	// latestOnly serves the version only as @latest, with an empty list:
 	// a module without tags, whose latest is a pseudo-version.
 	latestOnly bool
+	// noLatest serves this version for existing requirements but omits it from
+	// the version list, simulating an unavailable latest lookup for that module.
+	noLatest   bool
+	invalidZip bool
 }
 
 // goProxy writes a GOPROXY=file:// tree serving mods and returns its URL.
@@ -27,12 +34,34 @@ func goProxy(t *testing.T, mods ...proxyModule) string {
 	lists := map[string][]string{}
 	for _, m := range mods {
 		v := filepath.Join(dir, filepath.FromSlash(m.path), "@v")
-		gomod := "module " + m.path + "\n\ngo 1.21\n"
+		goVersion := m.goVersion
+		if goVersion == "" {
+			goVersion = "1.21"
+		}
+		gomod := "module " + m.path + "\n\ngo " + goVersion + "\n"
+		if m.toolchain != "" {
+			gomod += "toolchain " + m.toolchain + "\n"
+		}
+		if m.retract != "" {
+			gomod += "retract " + m.retract + "\n"
+		}
 		writeFile(t, filepath.Join(v, m.version+".mod"), gomod)
 		writeFile(t, filepath.Join(v, m.version+".info"), fmt.Sprintf(`{"Version":%q,"Time":"2026-01-02T00:00:00Z"}`, m.version))
 		zf, err := os.Create(filepath.Join(v, m.version+".zip"))
 		if err != nil {
 			t.Fatal(err)
+		}
+		if m.invalidZip {
+			if _, err := zf.Write([]byte("invalid module archive")); err != nil {
+				t.Fatal(err)
+			}
+			if err := zf.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if !m.latestOnly {
+				lists[m.path] = append(lists[m.path], m.version)
+			}
+			continue
 		}
 		zw := zip.NewWriter(zf)
 		for name, content := range map[string]string{"go.mod": gomod, "lib.go": m.src} {
@@ -57,6 +86,12 @@ func goProxy(t *testing.T, mods ...proxyModule) string {
 			}
 			continue
 		}
+		if m.noLatest {
+			if _, ok := lists[m.path]; !ok {
+				lists[m.path] = nil
+			}
+			continue
+		}
 		lists[m.path] = append(lists[m.path], m.version)
 	}
 	for path, versions := range lists {
@@ -70,13 +105,14 @@ func goProxy(t *testing.T, mods ...proxyModule) string {
 }
 
 const (
-	ownLib       = "example.com/own/lib"
-	ownUntagged  = "example.com/own/untagged"
-	ownLocal     = "example.com/own/local"
-	otherDep     = "example.com/other/dep"
-	oldPseudo    = "v0.0.0-20260101000000-111111111111"
-	newPseudo    = "v0.0.0-20260102000000-222222222222"
-	latestConfig = "modules: {latest: [example.com/own/]}\n"
+	ownLib        = "example.com/own/lib"
+	ownUntagged   = "example.com/own/untagged"
+	ownLocal      = "example.com/own/local"
+	otherDep      = "example.com/other/dep"
+	oldPseudo     = "v0.0.0-20260101000000-111111111111"
+	newPseudo     = "v0.0.0-20260102000000-222222222222"
+	latestConfig  = "modules: {latest: [example.com/own/]}\n"
+	foreignConfig = "modules: {foreign_go: true}\n"
 )
 
 // modulesProxy serves an own library whose v0.2.0 adds New and drops Old, an
@@ -89,6 +125,16 @@ func modulesProxy(t *testing.T) string {
 		proxyModule{path: ownUntagged, version: newPseudo, src: "package untagged\n\nconst A, B = 1, 2\n", latestOnly: true},
 		proxyModule{path: otherDep, version: "v1.0.0", src: "package dep\n\nconst X = 1\n"},
 		proxyModule{path: otherDep, version: "v1.1.0", src: "package dep\n\nconst X, Y = 1, 2\n"},
+	)
+}
+
+func modulesProxyWithoutForeignLatest(t *testing.T) string {
+	return goProxy(t,
+		proxyModule{path: ownLib, version: "v0.1.0", src: "package lib\n\nfunc Old() int { return 1 }\n"},
+		proxyModule{path: ownLib, version: "v0.2.0", src: "package lib\n\nfunc New() int { return 2 }\n"},
+		proxyModule{path: ownUntagged, version: oldPseudo, src: "package untagged\n\nconst A = 1\n", latestOnly: true},
+		proxyModule{path: ownUntagged, version: newPseudo, src: "package untagged\n\nconst A, B = 1, 2\n", latestOnly: true},
+		proxyModule{path: otherDep, version: "v1.0.0", src: "package dep\n\nconst X = 1\n", noLatest: true},
 	)
 }
 
@@ -268,6 +314,195 @@ func TestUnreachableProxyWarnsAndCommits(t *testing.T) {
 	}
 }
 
+func TestForeignGoRaisesWithoutModulesLatest(t *testing.T) {
+	skipGoToolchainInShort(t)
+	f := modulesRepo(t, modulesProxy(t), foreignConfig, "New")
+	out := f.mustGraft("commit", "-m", "feat: foreign update")
+	if !strings.Contains(out, otherDep+" v1.0.0 -> v1.1.0") {
+		t.Errorf("foreign raise was not reported:\n%s", out)
+	}
+	root := f.git("show", "HEAD:go.mod")
+	if line := requireLine(t, root, otherDep); !strings.HasSuffix(line, " v1.1.0") {
+		t.Errorf("foreign dependency: %q", line)
+	}
+	if line := requireLine(t, root, ownLib); !strings.HasSuffix(line, " v0.2.0") {
+		t.Errorf("foreign_go did not raise the module without modules.latest: %q", line)
+	}
+}
+
+func TestForeignGoDisabledLeavesDependencyAlone(t *testing.T) {
+	skipGoToolchainInShort(t)
+	f := modulesRepo(t, modulesProxy(t), latestConfig, "New")
+	f.mustGraft("commit", "-m", "feat: unchanged")
+	root := f.git("show", "HEAD:go.mod")
+	if line := requireLine(t, root, otherDep); !strings.HasSuffix(line, " v1.0.0") {
+		t.Errorf("foreign dependency raised without foreign_go: %q", line)
+	}
+	if line := requireLine(t, root, ownLib); !strings.HasSuffix(line, " v0.2.0") {
+		t.Errorf("configured own dependency was not raised with foreign_go disabled: %q", line)
+	}
+}
+
+func TestForeignGoSkipsIncompatibleMajor(t *testing.T) {
+	skipGoToolchainInShort(t)
+	proxy := goProxy(t,
+		proxyModule{path: ownLib, version: "v0.1.0", src: "package lib\nfunc Old() int { return 1 }\n"},
+		proxyModule{path: ownLib, version: "v0.2.0", src: "package lib\nfunc New() int { return 2 }\n"},
+		proxyModule{path: ownUntagged, version: oldPseudo, src: "package untagged\nconst A = 1\n", latestOnly: true},
+		proxyModule{path: otherDep, version: "v1.0.0", src: "package dep\nconst X = 1\n"},
+		proxyModule{path: otherDep, version: "v2.0.0+incompatible", src: "package dep\nconst X = 1\n"},
+	)
+	f := modulesRepo(t, proxy, foreignConfig, "New")
+	if err := os.RemoveAll(filepath.Join(f.work, "tool")); err != nil {
+		t.Fatal(err)
+	}
+	out := f.mustGraft("commit", "-m", "feat: keep incompatible major")
+	if strings.Contains(out, otherDep+" v1.0.0 ->") {
+		t.Errorf("incompatible major was raised:\n%s", out)
+	}
+	if line := requireLine(t, f.git("show", "HEAD:go.mod"), otherDep); !strings.HasSuffix(line, " v1.0.0") {
+		t.Errorf("incompatible major changed requirement: %q", line)
+	}
+}
+
+func TestForeignGoDoesNotRaiseRetractedLatest(t *testing.T) {
+	skipGoToolchainInShort(t)
+	proxy := goProxy(t,
+		proxyModule{path: ownLib, version: "v0.1.0", src: "package lib\nfunc Old() int { return 1 }\n"},
+		proxyModule{path: ownUntagged, version: oldPseudo, src: "package untagged\nconst A = 1\n", latestOnly: true},
+		proxyModule{path: otherDep, version: "v1.0.0", src: "package dep\nconst X = 1\n"},
+		proxyModule{path: otherDep, version: "v1.1.0", src: "package dep\nconst X, Y = 1, 2\n", retract: "v1.1.0"},
+	)
+	f := modulesRepo(t, proxy, foreignConfig, "Old")
+	mod := strings.Replace(f.read("go.mod"), otherDep+" v1.0.0", otherDep+" v1.1.0", 1)
+	f.write("go.mod", mod)
+	if out, code := f.exec(f.work, "", "go", "mod", "download", "all"); code != 0 {
+		t.Fatalf("download current retracted version: exit %d\n%s", code, out)
+	}
+	out := f.mustGraft("commit", "-m", "feat: ignore retracted release")
+	if strings.Contains(out, otherDep+" v1.1.0 -> v1.0.0") {
+		t.Errorf("retracted current version was downgraded:\n%s", out)
+	}
+	if line := requireLine(t, f.git("show", "HEAD:go.mod"), otherDep); !strings.HasSuffix(line, " v1.1.0") {
+		t.Errorf("retracted current version was not retained: %q", line)
+	}
+}
+
+func TestForeignGoFailureRollsBackOnlyForeignStep(t *testing.T) {
+	skipGoToolchainInShort(t)
+	proxy := goProxy(t,
+		proxyModule{path: ownLib, version: "v0.1.0", src: "package lib\nfunc Old() int { return 1 }\n"},
+		proxyModule{path: ownLib, version: "v0.2.0", src: "package lib\nfunc New() int { return 2 }\n"},
+		proxyModule{path: ownUntagged, version: oldPseudo, src: "package untagged\nconst A = 1\n", latestOnly: true},
+		proxyModule{path: ownUntagged, version: newPseudo, src: "package untagged\nconst A, B = 1, 2\n", latestOnly: true},
+		proxyModule{path: otherDep, version: "v1.0.0", src: "package dep\nconst X = 1\n"},
+		proxyModule{path: otherDep, version: "v1.1.0", src: "package dep\nconst X = 1\n", invalidZip: true},
+	)
+	control := modulesRepo(t, proxy, latestConfig, "New")
+	control.mustGraft("commit", "-m", "feat: own update")
+	wantMod, wantSum := control.read("go.mod"), control.read("go.sum")
+	f := modulesRepo(t, proxy, "modules:\n  latest: [example.com/own/]\n  foreign_go: true\n", "New")
+	out := f.mustGraft("commit", "-m", "feat: own and foreign")
+	if !strings.Contains(out, "foreign modules "+otherDep+" were rolled back") {
+		t.Errorf("missing foreign rollback warning naming module:\n%s", out)
+	}
+	if got := f.read("go.mod"); got != wantMod {
+		t.Errorf("go.mod differs from own-only result\n got:\n%s\nwant:\n%s", got, wantMod)
+	}
+	if got := f.read("go.sum"); got != wantSum {
+		t.Errorf("go.sum differs from own-only result\n got:\n%s\nwant:\n%s", got, wantSum)
+	}
+}
+
+func TestForeignGoVendorSkipsWithWarning(t *testing.T) {
+	skipGoToolchainInShort(t)
+	f := modulesRepo(t, modulesProxy(t), foreignConfig, "Old")
+	if out, code := f.exec(f.work, "", "go", "mod", "vendor"); code != 0 {
+		t.Fatalf("go mod vendor: exit %d\n%s", code, out)
+	}
+	if out, code := f.exec(filepath.Join(f.work, "tool"), "", "go", "mod", "vendor"); code != 0 {
+		t.Fatalf("tool go mod vendor: exit %d\n%s", code, out)
+	}
+	out := f.mustGraft("commit", "-m", "feat: vendor")
+	if !strings.Contains(out, "foreign Go module raises skipped because vendor/modules.txt is present") {
+		t.Errorf("vendor skip was not reported:\n%s", out)
+	}
+	if line := requireLine(t, f.git("show", "HEAD:go.mod"), otherDep); !strings.HasSuffix(line, " v1.0.0") {
+		t.Errorf("vendor dependency raised: %q", line)
+	}
+}
+
+func TestForeignGoDirectiveChangeRollsBack(t *testing.T) {
+	skipGoToolchainInShort(t)
+	proxy := goProxy(t,
+		proxyModule{path: ownLib, version: "v0.1.0", src: "package lib\nfunc Old() int { return 1 }\n"},
+		proxyModule{path: ownLib, version: "v0.2.0", src: "package lib\nfunc New() int { return 2 }\n"},
+		proxyModule{path: ownUntagged, version: oldPseudo, src: "package untagged\nconst A = 1\n", latestOnly: true},
+		proxyModule{path: ownUntagged, version: newPseudo, src: "package untagged\nconst A, B = 1, 2\n", latestOnly: true},
+		proxyModule{path: otherDep, version: "v1.0.0", src: "package dep\nconst X = 1\n"},
+		proxyModule{path: otherDep, version: "v1.1.0", src: "package dep\nconst X = 1\n", goVersion: "1.22"},
+	)
+	f := modulesRepo(t, proxy, foreignConfig, "Old")
+	if err := os.RemoveAll(filepath.Join(f.work, "tool")); err != nil {
+		t.Fatal(err)
+	}
+	wantMod, wantSum := f.read("go.mod"), f.read("go.sum")
+	out := f.mustGraft("commit", "-m", "feat: unchanged directives")
+	if !strings.Contains(out, "rolled back because go/toolchain directive changed") {
+		t.Errorf("directive change was not reported:\n%s", out)
+	}
+	if got := f.read("go.mod"); got != wantMod {
+		t.Errorf("go.mod was not restored byte for byte")
+	}
+	if got := f.read("go.sum"); got != wantSum {
+		t.Errorf("go.sum was not restored byte for byte")
+	}
+}
+
+func TestForeignGoOfflineWarnsAndCommits(t *testing.T) {
+	skipGoToolchainInShort(t)
+	proxy := modulesProxyWithoutForeignLatest(t)
+	f := modulesRepo(t, proxy, "modules: {latest: [example.com/own/], foreign_go: true}\n", "New")
+	wantMod := f.read("go.mod")
+	out := f.mustGraft("commit", "-m", "feat: offline")
+	if !strings.Contains(out, "foreign module latest version is unknown") || !strings.Contains(out, otherDep) {
+		t.Errorf("offline warning did not name dependency:\n%s", out)
+	}
+	if got := f.read("go.mod"); got == wantMod {
+		t.Errorf("configured own dependency did not raise before offline foreign lookup:\n%s", got)
+	}
+	if line := requireLine(t, f.read("go.mod"), ownLib); !strings.HasSuffix(line, " v0.2.0") {
+		t.Errorf("own raise was not retained: %q", line)
+	}
+	if line := requireLine(t, f.read("go.mod"), otherDep); !strings.HasSuffix(line, " v1.0.0") {
+		t.Errorf("foreign dependency changed while offline: %q", line)
+	}
+}
+
+func TestForeignGoGOPROXYOffPreservesOwnRaise(t *testing.T) {
+	skipGoToolchainInShort(t)
+	f := modulesRepo(t, modulesProxy(t), latestConfig, "New")
+	out := f.mustGraft("commit", "-m", "feat: raise own modules")
+	if !strings.Contains(out, ownLib+" v0.1.0 -> v0.2.0") {
+		t.Fatalf("own raise did not happen before offline commit:\n%s", out)
+	}
+	cfgDir := t.TempDir()
+	writeUserConfig(t, cfgDir, "modules: {latest: [example.com/own/], foreign_go: true}\n")
+	f.env = append(f.env, "XDG_CONFIG_HOME="+cfgDir, "GOPROXY=off")
+	f.write("main.go", f.read("main.go")+"\n// offline foreign lookup\n")
+	out = f.mustGraft("commit", "-m", "feat: foreign lookup offline")
+	if !strings.Contains(out, "foreign module latest version is unknown") || !strings.Contains(out, otherDep) {
+		t.Errorf("GOPROXY=off warning did not name foreign dependency:\n%s", out)
+	}
+	root := f.git("show", "HEAD:go.mod")
+	if line := requireLine(t, root, ownLib); !strings.HasSuffix(line, " v0.2.0") {
+		t.Errorf("own raise was not preserved offline: %q", line)
+	}
+	if line := requireLine(t, root, otherDep); !strings.HasSuffix(line, " v1.0.0") {
+		t.Errorf("foreign dependency changed offline: %q", line)
+	}
+}
+
 // TestToolsInstallTakesOwnToolsAtLatest: graft tools install installs a tool
 // of an own module at its latest release, whatever version go_install names;
 // the version stays the oldest the project works with.
@@ -320,7 +555,7 @@ func TestToolsInstallTakesOwnToolsAtLatest(t *testing.T) {
 // outside the approval. The code still builds only at the old release.
 func TestReleaseBranchKeepsItsModules(t *testing.T) {
 	skipGoToolchainInShort(t)
-	f := modulesRepo(t, modulesProxy(t), latestConfig, "Old")
+	f := modulesRepo(t, modulesProxy(t), "modules:\n  latest: [example.com/own/]\n  foreign_go: true\n", "Old")
 	f.write(".graft.yaml", strings.Replace(f.read(".graft.yaml"), "  mode: file\n", "  mode: file\n  build_branches: ['release/*']\n", 1))
 	f.git("checkout", "-q", "-b", "release/1.2")
 	out := f.mustGraft("commit", "-m", "fix: x")
@@ -335,6 +570,9 @@ func TestReleaseBranchKeepsItsModules(t *testing.T) {
 			t.Errorf("committed %s: %q", name, line)
 		}
 	}
+	if line := requireLine(t, f.git("show", "HEAD:go.mod"), otherDep); !strings.HasSuffix(line, " v1.0.0") {
+		t.Errorf("foreign dependency changed on release branch: %q", line)
+	}
 	if out, code := f.graft("", "gate"); code != 0 || strings.Contains(out, " -> v0.2.0") {
 		t.Errorf("gate on a release branch: exit %d\n%s", code, out)
 	}
@@ -348,7 +586,7 @@ func TestReleaseBranchKeepsItsModules(t *testing.T) {
 // the side effects of deploy.hotfix or version.build_branches.
 func TestHoldBranchesKeepsItsModules(t *testing.T) {
 	skipGoToolchainInShort(t)
-	f := modulesRepo(t, modulesProxy(t), latestConfig, "Old")
+	f := modulesRepo(t, modulesProxy(t), "modules:\n  latest: [example.com/own/]\n  foreign_go: true\n", "Old")
 	f.write(".graft.yaml", f.read(".graft.yaml")+"\nmodules:\n  hold_branches: ['fix/*-hotfix']\n")
 	f.git("checkout", "-q", "-b", "fix/PROJ-123-hotfix")
 	out := f.mustGraft("commit", "-m", "fix: x")
@@ -359,6 +597,9 @@ func TestHoldBranchesKeepsItsModules(t *testing.T) {
 		if line := requireLine(t, f.git("show", "HEAD:"+name), ownLib); !strings.HasSuffix(line, " v0.1.0") {
 			t.Errorf("committed %s: %q", name, line)
 		}
+	}
+	if line := requireLine(t, f.git("show", "HEAD:go.mod"), otherDep); !strings.HasSuffix(line, " v1.0.0") {
+		t.Errorf("foreign dependency changed on held branch: %q", line)
 	}
 	if strings.Contains(out, " -> v0.2.0") {
 		t.Errorf("raised on a held branch:\n%s", out)
@@ -405,7 +646,7 @@ gate: []
 	config := filepath.Join(f.base, "gitconfig")
 	writeFile(t, config, fmt.Sprintf("[user]\n\tname = Test\n\temail = test@example.org\n[url %q]\n\tinsteadOf = ssh://git@example.org/projectA/dep.git\n[url %q]\n\tinsteadOf = ssh://git@example.org/other/dep.git\n", filepath.ToSlash(dep), filepath.ToSlash(dep)))
 	userDir := filepath.Join(f.base, "userconfig")
-	writeUserConfig(t, userDir, "modules: {latest: [example.org/projectA/]}\n")
+	writeUserConfig(t, userDir, "modules: {latest: [example.org/projectA/], foreign_go: true}\n")
 	f.env = append(f.env, "GIT_CONFIG_GLOBAL="+config, "GIT_CONFIG_NOSYSTEM=1", "XDG_CONFIG_HOME="+userDir, "APPDATA="+userDir)
 	if out, code := f.exec(f.work, "", "npm", "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"); code != 0 {
 		t.Fatalf("initial npm lock: exit %d\n%s", code, out)
