@@ -142,7 +142,7 @@ var registrySpecs = []registrySpec{
 	{path: "testdb", rest: "none"}, {path: "testdb up", rest: "none"},
 	{path: "testdb down", rest: "none"}, {path: "testdb status", rest: "none"},
 	{path: "testdb recreate", rest: "none"},
-	{path: "tools", rest: "none"}, {path: "tools install", rest: "none"},
+	{path: "tools", rest: "none"}, {path: "tools install", rest: "none"}, {path: "tools install-dir", rest: "none"},
 	{path: "worktree", rest: "none"},
 	{path: "worktree add", rest: "args", source: "worktree add"},
 	{path: "worktree archive", rest: "args", source: "worktree archive"},
