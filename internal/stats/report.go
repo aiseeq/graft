@@ -452,9 +452,19 @@ func decodeQueriedRecords(data []byte, matches []encodedRecordMatch) ([]Record, 
 				malformed++
 				continue
 			}
+			if _, valid := filteredRecordTime(line, "kind", "task"); !valid {
+				malformed++
+				continue
+			}
 			records = append(records, rec)
-		} else if !writerShapedRecord(line) || !json.Valid(line) {
-			malformed++
+		} else {
+			if !writerShapedRecord(line) || !json.Valid(line) {
+				malformed++
+				continue
+			}
+			if _, valid := filteredRecordTime(line, "kind", "task"); !valid {
+				malformed++
+			}
 		}
 	}
 	return records, malformed, nil
@@ -670,52 +680,19 @@ func jsonNonemptyStringField(line []byte, name string) bool {
 }
 
 func jsonStringField(line []byte, name string) ([]byte, bool) {
-	var key [32]byte
-	keyLen := copy(key[:], `"`)
-	keyLen += copy(key[keyLen:], name)
-	keyLen += copy(key[keyLen:], `"`)
-	for search := 0; search < len(line); {
-		rel := bytes.Index(line[search:], key[:keyLen])
-		if rel < 0 {
-			return nil, false
-		}
-		i := search + rel + keyLen
-		search = search + rel + 1
-		for i < len(line) && jsonSpace(line[i]) {
-			i++
-		}
-		if i == len(line) || line[i] != ':' {
-			continue
-		}
-		i++
-		for i < len(line) && jsonSpace(line[i]) {
-			i++
-		}
-		if i == len(line) || line[i] != '"' {
-			continue
-		}
-		if value, ok := jsonQuotedString(line, i); ok {
-			return value, true
-		}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(line, &fields) != nil {
+		return nil, false
 	}
-	return nil, false
-}
-
-func jsonQuotedString(line []byte, start int) ([]byte, bool) {
-	for i := start + 1; i < len(line); i++ {
-		if line[i] == '\\' {
-			i++
-			continue
-		}
-		if line[i] == '"' {
-			return line[start : i+1], true
-		}
+	value, ok := fields[name]
+	if !ok || len(value) == 0 || value[0] != '"' {
+		return nil, false
 	}
-	return nil, false
-}
-
-func jsonSpace(b byte) bool {
-	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+	var decoded string
+	if json.Unmarshal(value, &decoded) != nil {
+		return nil, false
+	}
+	return value, true
 }
 
 func earlierTime(current, candidate time.Time) time.Time {

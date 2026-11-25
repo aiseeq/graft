@@ -169,3 +169,80 @@ func TestLoadWindowMatchingCountsMalformedJournalShapedRow(t *testing.T) {
 		t.Fatalf("matching read returned %d rows and %d malformed lines, want 0 and 1", len(rows), malformed)
 	}
 }
+
+func TestLoadWindowMatchingCountsMalformedForeignRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.jsonl")
+	data := "{\"time\":\"2026-11-24T12:00:00Z\",\"kind\":\"\",\"task\":\"other\",\"profile\":\"foreign:gate\"}\n" +
+		"{\"time\":\"not-a-time\",\"kind\":\"step\",\"task\":\"other\",\"profile\":\"foreign:gate\"}\n" +
+		"{\"time\":\"2026-11-24T12:00:00Z\",\"kind\":null,\"task\":\"other\",\"profile\":\"foreign:gate\"}\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rows, malformed, err := LoadWindowMatching(path, time.Time{}, []RecordMatch{{Profile: "repo:gate", Step: "wanted"}}, int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 || malformed != 3 {
+		t.Fatalf("foreign rows = %d records and %d malformed lines, want 0 and 3", len(rows), malformed)
+	}
+}
+
+func TestLoadWindowMatchingRejectsForeignRecordWithOnlyNestedTime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.jsonl")
+	line := `{"time":123,"kind":"step","task":"other","profile":"foreign:gate","meta":{"time":"2026-11-24T12:00:00Z"}}` + "\n"
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rows, malformed, err := LoadWindowMatching(path, time.Time{}, []RecordMatch{{Profile: "repo:gate", Step: "wanted"}}, int64(len(line)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 || malformed != 1 {
+		t.Fatalf("matching read returned %d rows and %d malformed lines, want 0 and 1", len(rows), malformed)
+	}
+}
+
+func TestLoadWindowMatchingAcceptsForeignRecordWithoutPackage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.jsonl")
+	line := `{"time":"2026-11-24T12:00:00Z","kind":"step","task":"other","profile":"foreign:gate"}` + "\n"
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rows, malformed, err := LoadWindowMatching(path, time.Time{}, []RecordMatch{{Profile: "repo:gate", Step: "wanted"}}, int64(len(line)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 || malformed != 0 {
+		t.Fatalf("matching read returned %d rows and %d malformed lines, want 0 and 0", len(rows), malformed)
+	}
+}
+
+func TestLoadWindowMatchingStopsAfterFiveLocalRowsAcrossProjects(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.jsonl")
+	now := time.Now().UTC()
+	var current []byte
+	for i := range 5 {
+		project := "/repo/a"
+		if i%2 != 0 {
+			project = "/repo/b"
+		}
+		row, err := json.Marshal(Record{Time: now.Add(time.Duration(i) * time.Second), Kind: KindStep, Task: "gate", Project: project, Profile: "repo:gate", Step: "check", Run: string(rune('a' + i)), Exit: 0, WallS: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		current = append(append(current, row...), '\n')
+	}
+	if err := os.WriteFile(path, current, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".1", []byte("torn older row\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rows, malformed, err := LoadWindowMatching(path, time.Time{}, []RecordMatch{{Profile: "repo:gate", Step: "check"}}, int64(len(current)+len("torn older row\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 5 || malformed != 0 {
+		t.Fatalf("window returned %d rows and %d malformed lines, want 5 rows and no older read", len(rows), malformed)
+	}
+}

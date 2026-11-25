@@ -603,6 +603,63 @@ func TestBusyGateHostDownKeepsNoStepHereForCost(t *testing.T) {
 	}
 }
 
+func TestBusyGateHostDownClearsMixedStepCosts(t *testing.T) {
+	const cfg = "schema: 1\nversion: {mode: none}\ngo_vet: {enabled: false, reason: disabled in this test}\n" +
+		"gate:\n  - task: unit\ntasks:\n  unit:\n    heavy: true\n    remote: true\n    run:\n" +
+		"      - [go, test, -run, HostDownCheap, ./...]\n" +
+		"      - [go, test, -run, HostDownExpensive, ./...]\n"
+	g := newGateCostFixture(t, cfg)
+	records, _, err := stats.LoadTail(g.statsFile, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := map[string]bool{}
+	for _, rec := range records {
+		if rec.Kind == stats.KindStep && rec.Task == "unit" && strings.Contains(rec.Step, "HostDown") {
+			steps[rec.Step] = true
+		}
+	}
+	if len(steps) != 2 {
+		t.Fatalf("calm run recorded %d test steps, want both configured steps: %v", len(steps), steps)
+	}
+	var locals []stats.Record
+	for step := range steps {
+		wall := 60.0
+		if strings.Contains(step, "HostDownCheap") {
+			wall = 0.2
+		}
+		for range 2 {
+			locals = append(locals, stats.Record{Project: g.project, Profile: "work:unit", Task: "unit", Step: step, WallS: wall, Exit: 0})
+		}
+	}
+	g.writeHistory(t, locals, gateCostRows([]float64{40}, "pc", 0))
+	if err := os.Remove(filepath.Join(g.state, "up")); err != nil {
+		t.Fatal(err)
+	}
+	previousRun := latestGateRun(t, g.statsFile)
+	out, calls := runBusyCostGate(t, g, false)
+	if !strings.Contains(out, "did not answer") || calls != "" {
+		t.Fatalf("expected the unavailable host fallback; calls=%q\n%s", calls, out)
+	}
+	got := make(map[string]statsLine)
+	for _, rec := range readStats(t, g.statsFile) {
+		if rec.Run == previousRun || rec.Run == "" || rec.Kind != stats.KindStep || rec.Task != "unit" {
+			continue
+		}
+		if strings.Contains(rec.Step, "HostDown") {
+			got[rec.Step] = rec
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("fallback recorded %d of the two local steps: %+v", len(got), got)
+	}
+	for step, rec := range got {
+		if strings.HasPrefix(rec.Here, "cheaper here:") {
+			t.Errorf("host-down fallback retained a step price for %q: %+v", step, rec)
+		}
+	}
+}
+
 // TestBusyGateAllHereWithASubmodule: a gate whose steps all stay here, one
 // of them the vet of a module below the root, does not split, and the step
 // lines name why each step stayed (the cost, or the subdirectory).
