@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -63,6 +64,79 @@ func TestLoadTailMatchingHandlesEscapedProfileNeedles(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].Profile != rec.Profile {
 		t.Fatalf("escaped needle records = %+v", rows)
+	}
+}
+
+func TestDecodeRecordsAcceptsObjectDelimiterInString(t *testing.T) {
+	line := objectDelimiterStepRecord(t, "projectA", "projectA:gate", "wanted")
+	rows, malformed, err := decodeRecords(bytes.NewReader(line))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || malformed != 0 {
+		t.Fatalf("full read returned %d rows and %d malformed lines, want 1 and 0", len(rows), malformed)
+	}
+}
+
+func TestDecodeRecordsRejectsConcatenatedObjects(t *testing.T) {
+	line := objectDelimiterStepRecord(t, "projectA", "projectA:gate", "wanted")
+	joined := append(bytes.TrimSuffix(line, []byte{'\n'}), line...)
+	rows, malformed, err := decodeRecords(bytes.NewReader(joined))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 || malformed != 1 {
+		t.Fatalf("full read returned %d rows and %d malformed lines, want 0 and 1", len(rows), malformed)
+	}
+}
+
+func TestDecodeRecordsProjectAcceptsForeignObjectDelimiterInString(t *testing.T) {
+	line := objectDelimiterStepRecord(t, "projectB", "projectB:gate", "other")
+	rows, malformed, err := decodeRecordsProject(bytes.NewReader(line), "projectA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 || malformed != 0 {
+		t.Fatalf("project-filtered read returned %d rows and %d malformed lines, want 0 and 0", len(rows), malformed)
+	}
+}
+
+func TestDecodePackageRunsProjectAcceptsForeignObjectDelimiterInString(t *testing.T) {
+	line, err := json.Marshal(PackageRun{
+		Time:    time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC),
+		Project: "projectB",
+		Task:    "other",
+		Top:     "gate",
+		Runner:  "go",
+		Package: "example/other",
+		Result:  ResultPass,
+		Reason:  "valid writer text: }{",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	line = append(line, '\n')
+	runs, malformed, err := decodePackageRunsProject(bytes.NewReader(line), "projectA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 0 || malformed != 0 {
+		t.Fatalf("project-filtered package read returned %d rows and %d malformed lines, want 0 and 0", len(runs), malformed)
+	}
+}
+
+func TestLoadTailMatchingAcceptsForeignObjectDelimiterInString(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.jsonl")
+	line := objectDelimiterStepRecord(t, "projectB", "projectB:gate", "other")
+	if err := os.WriteFile(path, line, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rows, malformed, err := LoadTailMatching(path, int64(len(line)), "projectA:gate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 || malformed != 0 {
+		t.Fatalf("tail read returned %d rows and %d malformed lines, want 0 and 0", len(rows), malformed)
 	}
 }
 
@@ -215,6 +289,70 @@ func TestLoadWindowMatchingAcceptsForeignRecordWithoutPackage(t *testing.T) {
 	if len(rows) != 0 || malformed != 0 {
 		t.Fatalf("matching read returned %d rows and %d malformed lines, want 0 and 0", len(rows), malformed)
 	}
+}
+
+func TestLoadWindowMatchingAcceptsForeignRecordWithObjectDelimiterInString(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.jsonl")
+	line := objectDelimiterStepRecord(t, "projectB", "projectB:gate", "other")
+	if err := os.WriteFile(path, line, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rows, malformed, err := LoadWindowMatching(path, time.Time{}, []RecordMatch{{Profile: "projectA:gate", Step: "wanted"}}, int64(len(line)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 || malformed != 0 {
+		t.Fatalf("matching read returned %d rows and %d malformed lines, want 0 and 0", len(rows), malformed)
+	}
+}
+
+func TestLoadWindowMatchingRejectsConcatenatedForeignObjects(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.jsonl")
+	line := objectDelimiterStepRecord(t, "projectB", "projectB:gate", "other")
+	joined := append(bytes.TrimSuffix(line, []byte{'\n'}), line...)
+	if err := os.WriteFile(path, joined, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rows, malformed, err := LoadWindowMatching(path, time.Time{}, []RecordMatch{{Profile: "projectA:gate", Step: "wanted"}}, int64(len(joined)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 || malformed != 1 {
+		t.Fatalf("matching read returned %d rows and %d malformed lines, want 0 and 1", len(rows), malformed)
+	}
+}
+
+func TestLoadWindowMatchingAcceptsMatchedRecordWithObjectDelimiterInString(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.jsonl")
+	line := objectDelimiterStepRecord(t, "projectA", "projectA:gate", "wanted")
+	if err := os.WriteFile(path, line, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rows, malformed, err := LoadWindowMatching(path, time.Time{}, []RecordMatch{{Profile: "projectA:gate", Step: "wanted"}}, int64(len(line)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Step != "wanted" || malformed != 0 {
+		t.Fatalf("matching read returned %d rows and %d malformed lines, want 1 and 0", len(rows), malformed)
+	}
+}
+
+func objectDelimiterStepRecord(t *testing.T, project, profile, step string) []byte {
+	t.Helper()
+	line, err := json.Marshal(Record{
+		Time:    time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC),
+		Kind:    KindStep,
+		Task:    "gate",
+		Project: project,
+		Profile: profile,
+		Step:    step,
+		Here:    "valid writer text: }{",
+		WallS:   1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(line, '\n')
 }
 
 func TestLoadWindowMatchingStopsAfterFiveLocalRowsAcrossProjects(t *testing.T) {

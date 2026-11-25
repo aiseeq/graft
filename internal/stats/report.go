@@ -488,7 +488,7 @@ func lineMatchesRecord(line []byte, matches []encodedRecordMatch) bool {
 
 func writerShapedRecord(line []byte) bool {
 	trimmed := bytes.TrimSpace(line)
-	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' || bytes.Contains(trimmed, []byte("}{")) {
+	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
 		return false
 	}
 	for _, field := range [][]byte{[]byte(`"time":`), []byte(`"kind":`), []byte(`"task":`)} {
@@ -612,7 +612,7 @@ func decodeRecordsMatchingWithStart(reader io.Reader, needle []byte) (recs []Rec
 // retain the malformed count for other input shapes.
 func filteredRecordTime(line []byte, required ...string) (time.Time, bool) {
 	trimmed := bytes.TrimSpace(line)
-	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' || bytes.Contains(trimmed, []byte("}{")) {
+	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
 		return decodeSuspiciousRecordTime(line, required...)
 	}
 	stamp, timeOK := jsonTimeField(trimmed)
