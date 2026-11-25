@@ -11,6 +11,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/aiseeq/graft/v2/internal/config"
 )
 
 // Commands outside the agent's common workflow stay discoverable in help.
@@ -133,10 +137,10 @@ func docExamples(source string) []string {
 }
 
 func checkDocExample(t *testing.T, entries []registryCommand, source, example string) {
-	checkDocExampleMode(t, entries, source, example, false)
+	checkDocExampleMode(t, entries, source, example, false, nil)
 }
 
-func checkDocExampleMode(t *testing.T, entries []registryCommand, source, example string, ignoreUnknown bool) {
+func checkDocExampleMode(t *testing.T, entries []registryCommand, source, example string, ignoreUnknown bool, projectTasks map[string]bool) {
 	t.Helper()
 	for _, start := range graftWord.FindAllStringIndex(example, -1) {
 		rest := example[start[1]:]
@@ -193,6 +197,10 @@ func checkDocExampleMode(t *testing.T, entries []registryCommand, source, exampl
 		}
 		if command == nil {
 			if ignoreUnknown && len(tokens) > 1 && tokens[1] == "--" {
+				if nearBuiltinCommand(tokens[0], entries) && !projectTasks[tokens[0]] {
+					t.Errorf("%s: graft: unknown command %s before -- (one edit from a built-in command)", source, tokens[0])
+					continue
+				}
 				// A task name comes from project configuration, not the command
 				// registry. Its graft-owned options end at the argument separator.
 				used = 1
@@ -384,7 +392,7 @@ func removeGoHintExceptions(path, value string) (string, []int, []string) {
 		if filepath.ToSlash(path) != exception.file {
 			continue
 		}
-		count := strings.Count(value, exception.literal)
+		count, match := boundedHintException(value, exception.literal)
 		if count == 0 {
 			continue
 		}
@@ -392,9 +400,119 @@ func removeGoHintExceptions(path, value string) (string, []int, []string) {
 			problems = append(problems, exception.file+" exception span occurs more than once: "+strconv.Quote(exception.literal))
 		}
 		found = append(found, i)
-		value = strings.Replace(value, exception.literal, "", 1)
+		value = value[:match] + value[match+len(exception.literal):]
 	}
 	return value, found, problems
+}
+
+// An exception ends at a word boundary so a suffix added to its last word
+// cannot hide a command mention (for example, "graft itselfx").
+func boundedHintException(value, fragment string) (int, int) {
+	count, first := 0, -1
+	for from := 0; from <= len(value)-len(fragment); {
+		relative := strings.Index(value[from:], fragment)
+		if relative < 0 {
+			break
+		}
+		start := from + relative
+		end := start + len(fragment)
+		if end == len(value) || !hintWordContinuation(value[end:]) {
+			if first < 0 {
+				first = start
+			}
+			count++
+		}
+		from = start + 1
+	}
+	return count, first
+}
+
+func hintWordContinuation(s string) bool {
+	if s == "" {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(s)
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-'
+}
+
+func editDistanceAtMostOne(a, b string) bool {
+	if a == b {
+		return true
+	}
+	if len(a)-len(b) > 1 || len(b)-len(a) > 1 {
+		return false
+	}
+	i, j, edits := 0, 0, 0
+	for i < len(a) && j < len(b) {
+		if a[i] == b[j] {
+			i++
+			j++
+			continue
+		}
+		if len(a) == len(b) && i+1 < len(a) && j+1 < len(b) && a[i] == b[j+1] && a[i+1] == b[j] {
+			edits++
+			if edits > 1 {
+				return false
+			}
+			i += 2
+			j += 2
+			continue
+		}
+		edits++
+		if edits > 1 {
+			return false
+		}
+		if len(a) > len(b) {
+			i++
+		} else if len(b) > len(a) {
+			j++
+		} else {
+			i++
+			j++
+		}
+	}
+	if i < len(a) || j < len(b) {
+		edits++
+	}
+	return edits <= 1
+}
+
+func nearBuiltinCommand(word string, entries []registryCommand) bool {
+	for _, entry := range entries {
+		if editDistanceAtMostOne(word, entry.Path[0]) {
+			return true
+		}
+	}
+	return false
+}
+
+func configuredProjectTasks(t *testing.T) map[string]bool {
+	t.Helper()
+	cfg, err := config.Load(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := make(map[string]bool, len(cfg.Tasks))
+	for name := range cfg.Tasks {
+		tasks[name] = true
+	}
+	return tasks
+}
+
+func TestRegistryProjectTaskCanResembleBuiltin(t *testing.T) {
+	entries := registryForTest(t)
+	tasks := configuredProjectTasks(t)
+	tasks["comit"] = true // synthetic project task, one edit from built-in "commit"
+	checkDocExampleMode(t, entries, "test", "run graft comit --", true, tasks)
+}
+
+func TestRegistryAdjacentTranspositionIsOneEdit(t *testing.T) {
+	if !editDistanceAtMostOne("mrege", "merge") {
+		t.Fatal("adjacent transposition in mrege should be one edit from merge")
+	}
+	if !nearBuiltinCommand("mrege", registryForTest(t)) {
+		t.Fatal("mrege should be recognized as a typo of built-in merge")
+	}
 }
 
 func TestRegistryDocumentation(t *testing.T) {
@@ -419,6 +537,7 @@ func TestRegistryGoHintAndAnd(t *testing.T) {
 // parser above so paths and flags use the same registry rules.
 func TestRegistryGoHints(t *testing.T) {
 	entries := registryForTest(t)
+	projectTasks := configuredProjectTasks(t)
 	paths := map[string]bool{}
 	for _, e := range entries {
 		paths[strings.Join(e.Path, " ")] = true
@@ -426,7 +545,11 @@ func TestRegistryGoHints(t *testing.T) {
 	fset := token.NewFileSet()
 	files := 0
 	commands := map[string]bool{}
-	checkedLiterals := map[int]bool{}
+	type literalPosition struct {
+		file   string
+		offset int
+	}
+	checkedLiterals := map[literalPosition]bool{}
 	exceptionCounts := make([]int, len(goHintExceptions))
 	err := filepath.WalkDir(".", func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -480,7 +603,7 @@ func TestRegistryGoHints(t *testing.T) {
 					exceptionCounts[exception]++
 				}
 				if graftWord.MatchString(value) {
-					checkedLiterals[fset.Position(source.pos).Offset] = true
+					checkedLiterals[literalPosition{file: filepath.ToSlash(path), offset: fset.Position(source.pos).Offset}] = true
 				}
 			}
 			// docExamples handles inline and fenced command examples; checking
@@ -491,7 +614,7 @@ func TestRegistryGoHints(t *testing.T) {
 				examples := docExamples(value)
 				examples = append(examples, value)
 				for _, example := range examples {
-					checkDocExampleMode(t, entries, path, example, true)
+					checkDocExampleMode(t, entries, path, example, true, projectTasks)
 				}
 			}
 			for _, loc := range graftWord.FindAllStringIndex(value, -1) {
