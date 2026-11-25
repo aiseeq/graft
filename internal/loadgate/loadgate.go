@@ -139,6 +139,9 @@ type Priority struct {
 	For    string
 	Budget string
 	Fail   bool
+	// Unlimited is for a single explicit --past-load admission. It gets
+	// queue ordering without spending a deploy's shared wait budget.
+	Unlimited bool
 }
 
 // Env is the priority as the variables its grafts read.
@@ -509,6 +512,9 @@ func writeBudgetSpend(budget string, state budgetState, left time.Duration, span
 // spend takes the part of [from, to] not already counted from the shared wall-time budget.
 // Empty endpoints read the remaining budget without changing its watermark.
 func (p *Priority) spend(from, to time.Time) (left time.Duration, err error) {
+	if p.Unlimited {
+		return time.Duration(1 << 62), nil
+	}
 	fl := flock.New(p.Budget + ".lock")
 	if err := fl.Lock(); err != nil {
 		return 0, fmt.Errorf("locking the budget for waiting %s: %w", p.Budget, err)
@@ -552,16 +558,22 @@ func (p *Priority) spend(from, to time.Time) (left time.Duration, err error) {
 // A priority task uses the same FIFO queue and spends its shared wait budget.
 //
 // kind is the task's kind as the stats profile names it.
-func Wait(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (Admission, func() error, error) {
-	return WaitWithSettle(ctx, name, kind, p, l, lockPath, "", 0, 0, log)
+func Wait(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer, pastLoad ...string) (Admission, func() error, error) {
+	return WaitWithSettle(ctx, name, kind, p, l, lockPath, "", 0, 0, log, pastLoad...)
 }
 
 // WaitWithSettle admits a heavy task and, when settleLockPath is set,
 // serializes tasks that requested their own settling period on that lock.
 // The ordinary queue writes a live reservation before releasing its lock:
 // cores when positive, else the profile's estimate.
-func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath, settleLockPath string, settleDuration time.Duration, cores float64, log io.Writer) (admission Admission, release func() error, retErr error) {
+func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath, settleLockPath string, settleDuration time.Duration, cores float64, log io.Writer, pastLoad ...string) (admission Admission, release func() error, retErr error) {
 	m := newMachine(l, log, name, kind)
+	if len(pastLoad) > 0 && pastLoad[0] != "" {
+		m.pastLoad = pastLoad[0]
+		if p == nil {
+			p = &Priority{For: "graft " + name, Unlimited: true}
+		}
+	}
 	priority := p != nil
 	defer func() {
 		if retErr != nil {
@@ -780,6 +792,9 @@ func waitQueued(ctx context.Context, m *machine, p *Priority, kind string, l use
 	if err != nil {
 		return queuedFailure(m, behind, err, settleLock, lk)
 	}
+	if m.pastLoad != "" {
+		fmt.Fprintf(log, "graft: %s: passed CPU load limit by --past-load (%s)\n", m.name, m.pastLoad)
+	}
 	if err := loadLockRelease(lk); err != nil {
 		return queuedFailure(m, behind, errors.Join(err, releaseFn()), settleLock, nil)
 	}
@@ -865,8 +880,14 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 
 func (m *machine) measureOrReserve(ctx context.Context, fresh bool, lockPath string) (busyness, error) {
 	b, err := m.busy(ctx, fresh)
-	if err != nil || b.why != "" {
+	if err != nil {
 		return b, err
+	}
+	if b.why != "" {
+		return b, nil
+	}
+	if m.pastLoad != "" {
+		return busyness{}, nil
 	}
 	return m.reservesBusy(lockPath)
 }
@@ -1490,6 +1511,7 @@ type machine struct {
 	limitsErr         error
 	log               io.Writer
 	name, kind        string
+	pastLoad          string
 	meter             machineMeter
 	lastView          pressure.Verdict
 	haveView          bool
@@ -1686,7 +1708,7 @@ func (m *machine) busy(ctx context.Context, fresh bool) (busyness, error) {
 	if err != nil {
 		return busyness{}, fmt.Errorf("measuring the machine: %w", err)
 	}
-	if m.ignoreCPUPressure {
+	if m.ignoreCPUPressure || m.pastLoad != "" {
 		skipped := v.Skipped
 		v = pressure.Rule(v.Load, m.limits, append(slices.Clone(skipped), pressure.ErrNoRunnable, pressure.ErrNoLoadAvg))
 		v.Skipped = skipped

@@ -133,6 +133,7 @@ type Runner struct {
 	ExecSettle     time.Duration
 	// ExecCores overrides the history estimate for graft exec's reservation.
 	ExecCores float64
+	PastLoad  string
 	// ExecMemoryMax is graft exec --memory-max, "" for the default ceiling.
 	ExecMemoryMax  string
 	ExecMemoryHigh string
@@ -1597,7 +1598,7 @@ func (r *Runner) recordedGateCostReason(current *frame, source string, builtin b
 // recordForFrame centralizes the fields shared by every task, step, and cache
 // record so profile metadata is present consistently.
 func (r *Runner) recordForFrame(kind string, f *frame) stats.Record {
-	record := stats.Record{Kind: kind, Task: f.task, Profile: r.profile(f)}
+	record := stats.Record{Kind: kind, Task: f.task, Profile: r.profile(f), PastLoad: r.PastLoad}
 	if r.snapshotHead != "" && r.snapshotRepo != "" {
 		record.Repo = r.snapshotRepo
 	} else if r.Repo != nil {
@@ -4660,9 +4661,9 @@ func (r *Runner) admit(ctx context.Context, name string) (loadgate.Admission, fu
 		priority = &p
 	}
 	if name == ExecTask && (r.ExecSettle > 0 && r.ExecSettleLock != "" || r.ExecCores > 0) {
-		return loadgate.WaitWithSettle(ctx, name, r.kind(name), priority, l, lockPath, r.ExecSettleLock, r.ExecSettle, r.ExecCores, r.Stderr)
+		return loadgate.WaitWithSettle(ctx, name, r.kind(name), priority, l, lockPath, r.ExecSettleLock, r.ExecSettle, r.ExecCores, r.Stderr, r.PastLoad)
 	}
-	return loadgate.Wait(ctx, name, r.kind(name), priority, l, lockPath, r.Stderr)
+	return loadgate.Wait(ctx, name, r.kind(name), priority, l, lockPath, r.Stderr, r.PastLoad)
 }
 
 // kind is the heavy task name's kind for the admission: the profile of the

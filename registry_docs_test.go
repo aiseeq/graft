@@ -81,6 +81,20 @@ func TestRegistryGuideCoverage(t *testing.T) {
 	}
 }
 
+func TestREADMEDeployPriorityOrder(t *testing.T) {
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(readme)
+	if !strings.Contains(s, "from graft deploy use the same FIFO queue: they wait behind its current lock\nholder and move ahead of ordinary queued tasks.") {
+		t.Fatal("README must explain that deploy waits behind the lock holder and moves ahead of ordinary queued tasks")
+	}
+	if strings.Contains(s, "cannot pass an earlier waiter") {
+		t.Fatal("README still contradicts deploy priority over ordinary queued tasks")
+	}
+}
+
 var (
 	inlineCode = regexp.MustCompile("`([^`]+)`")
 	graftWord  = regexp.MustCompile(`\bgraft[ \t]+`)

@@ -31,6 +31,8 @@ type App struct {
 	ToolVersion string
 	// NoCache runs the tasks with cache as if they had none (--no-cache).
 	NoCache bool
+	// PastLoad is a one-run reference to the user's explicit CPU-load override.
+	PastLoad string
 	// NoCacheEnv is GRAFT_NO_CACHE as main reads it: the same for every run.
 	NoCacheEnv bool
 	Stdin      io.Reader
@@ -124,7 +126,7 @@ func (a *App) newRunner(root string, cfg *config.Config) *tasks.Runner {
 	if a.stats == nil {
 		a.stats = stats.NewRecorder(a.Stderr)
 	}
-	r.Stats, r.Top = a.stats, a.Command
+	r.Stats, r.Top, r.PastLoad = a.stats, a.Command, a.PastLoad
 	return r
 }
 

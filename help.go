@@ -49,7 +49,7 @@ var commands = []command{
 	), summary: text("review the project's event journal: status, show, ack, mute"),
 		applies: func(c *config.Config) bool { return c.Flags != nil }},
 	{name: "deploy", syntax: fixed(
-		"graft deploy [--no-cache] [--redeploy] [--take-back --reason TEXT] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] [--reviewer-agreed KEY@ACCOUNT,...] <target> [-- script args]",
+		"graft deploy [--no-cache] [--redeploy] [--take-back --reason TEXT] [--unapproved] [--past-freeze REASON] [--past-load REASON] [--glint-ticket KEY] [--reviewer-agreed KEY@ACCOUNT,...] <target> [-- script args]",
 		"graft deploy freeze <target> [Jira version] [--no-cache]",
 		"graft deploy thaw <target> --reason REASON [--no-cache]",
 		"graft deploy status <target> [--no-cache] [-- args]",
@@ -64,7 +64,7 @@ var commands = []command{
 	), summary: text("run the project's deploy script between graft's checks; status, logs, what a deploy would refuse, the versions the targets run, the release cutoff, the items git and the target contradict, the items held for their comment"),
 		details: "freeze <target> <Jira version> cuts the configured release branch and records the active freeze; without a version it shows the freeze. The required target accepts that branch and items in the frozen version; --past-freeze REASON records an exceptional deploy, and hotfix deploys are journaled. freeze.advisory tasks warn and are recorded on the frozen branch during deploy and the graft commit gate. A successful deploy of the frozen branch to the release target ends the freeze; thaw <target> --reason REASON ends it manually.",
 		applies: func(c *config.Config) bool { return c.Deploy != nil }},
-	{name: "run", syntax: fixed("graft <task> [-- args]", "graft run <task> [--no-cache] [-- args]"), summary: text("run a task with its deps"),
+	{name: "run", syntax: fixed("graft <task> [--past-load REASON] [-- args]", "graft run <task> [--no-cache] [--past-load REASON] [-- args]"), summary: text("run a task with its deps"),
 		details: "An {install: paths} step waits up to lock.timeout for other graft deploys on this machine and names their project and target while waiting. An install step inside a deploy skips its own deploy and those it runs in, and waits only for deploys that started before them, so of two deploys installing at once the later one waits.",
 		applies: func(c *config.Config) bool { return len(c.Tasks) > 0 }},
 	{name: "tasks", syntax: fixed("graft tasks"), summary: text("list every task, building blocks included"),

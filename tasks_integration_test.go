@@ -40,6 +40,19 @@ func tasksRepo(t *testing.T, config string, files map[string]string) *fixture {
 	return newRepo(t, all)
 }
 
+func TestTaskPastLoadRejectsFlagAsReason(t *testing.T) {
+	f := tasksRepo(t, `tasks:
+  smoke:
+    run: [`+helperStep("ok")+`]
+`, nil)
+	for _, reason := range []string{"--", "--future-option"} {
+		out, code := f.graft("", "smoke", "--past-load", reason)
+		if code != 2 || !strings.Contains(out, "--past-load REASON") {
+			t.Errorf("graft smoke --past-load %s: exit %d, want usage 2\n%s", reason, code, out)
+		}
+	}
+}
+
 func (f *fixture) lines(name string) []string {
 	f.t.Helper()
 	return strings.Split(strings.TrimSpace(f.read(name)), "\n")

@@ -79,6 +79,8 @@ type DeployOptions struct {
 	Unapproved bool
 	// PastFreeze permits a freeze refusal when it gives the bypass reason.
 	PastFreeze string
+	// PastLoad authorizes this deploy's heavy tasks through CPU load limits.
+	PastLoad string
 	// ReviewerAgreed lists KEY@accountId pairs whose reviewers answered yes.
 	ReviewerAgreed string
 }
@@ -171,6 +173,7 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 	if err != nil {
 		return err
 	}
+	r.tasks.PastLoad = o.PastLoad
 	if err := refusedSudo(r.target, r.env); err != nil {
 		return err
 	}

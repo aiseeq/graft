@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,6 +71,51 @@ func TestExecSettleUsage(t *testing.T) {
 	} {
 		if out, code := f.graft("", args...); code != 125 || !strings.Contains(out, "graft exec") && !strings.Contains(out, "--settle") {
 			t.Errorf("graft %q: exit %d, want the usage with 125\n%s", args, code, out)
+		}
+	}
+}
+
+func TestExecPastLoadOption(t *testing.T) {
+	f := execSettleRepo(t)
+	cache := t.TempDir()
+	f.env = append(f.env, "XDG_CACHE_HOME="+cache, "LOCALAPPDATA="+cache)
+	reason := "tl dd4a9367:6208"
+	if out, code := f.graft("", "exec", "--heavy", "--past-load", reason, "--", helperBin, "ok"); code != 0 || !strings.Contains(out, "passed CPU load limit by --past-load ("+reason+")") {
+		t.Fatalf("authorized exec: exit %d\n%s", code, out)
+	}
+	statsFile, err := os.Open(filepath.Join(cache, "graft", "stats.jsonl"))
+	if err != nil {
+		t.Fatalf("open stats.jsonl: %v", err)
+	}
+	defer statsFile.Close()
+	seen := map[string]bool{}
+	scanner := bufio.NewScanner(statsFile)
+	for scanner.Scan() {
+		var row struct {
+			Kind     string `json:"kind"`
+			PastLoad string `json:"past_load"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
+			t.Fatalf("decode stats line: %v", err)
+		}
+		if row.PastLoad == reason {
+			seen[row.Kind] = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("read stats.jsonl: %v", err)
+	}
+	if !seen["task"] || !seen["step"] {
+		t.Errorf("stats.jsonl past_load kinds = %v; want task and step", seen)
+	}
+	for _, args := range [][]string{
+		{"exec", "--heavy", "--past-load", "", "--", helperBin, "ok"},
+		{"exec", "--heavy", "--past-load"},
+		{"exec", "--heavy", "--past-load", "--", helperBin, "ok"},
+		{"exec", "--heavy", "--past-load", "--future-option", "--", helperBin, "ok"},
+	} {
+		if out, code := f.graft("", args...); code != 125 || !strings.Contains(out, "graft exec") {
+			t.Errorf("graft %q: exit %d, want usage with 125\n%s", args, code, out)
 		}
 	}
 }

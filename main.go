@@ -448,8 +448,22 @@ func taskShortcut(ctx context.Context, a *app.App, name string, args []string) e
 // runTask takes the task arguments after --, so a task argument is never
 // mistaken for one of graft's. p is the project already open, nil to open it.
 func runTask(ctx context.Context, a *app.App, p *app.Project, name string, args []string) error {
-	if len(args) > 0 && args[0] == "--no-cache" {
-		a.NoCache, args = true, args[1:]
+flags:
+	for len(args) > 0 && args[0] != "--" {
+		switch args[0] {
+		case "--past-load":
+			if len(args) < 2 || !validPastLoadReason(args[1]) {
+				return fmt.Errorf("%w: graft %s --past-load REASON [-- task args]", errUsage, name)
+			}
+			a.PastLoad, args = args[1], args[2:]
+		case "--no-cache":
+			a.NoCache, args = true, args[1:]
+		default:
+			break flags
+		}
+		if len(args) > 0 && args[0] != "--" && args[0] != "--past-load" && args[0] != "--no-cache" {
+			break
+		}
 	}
 	if len(args) > 0 {
 		if args[0] != "--" {
@@ -947,8 +961,12 @@ type stringListFlag []string
 func (s *stringListFlag) String() string         { return strings.Join(*s, ",") }
 func (s *stringListFlag) Set(value string) error { *s = append(*s, value); return nil }
 
+func validPastLoadReason(reason string) bool {
+	return strings.TrimSpace(reason) != "" && !strings.HasPrefix(reason, "-")
+}
+
 // execSyntax is graft exec's usage, in its error and in graft help.
-const execSyntax = "graft exec [--heavy [--local] [--test-db] [--env <name>]... [--settle <duration>] [--cores <n>] [--memory-max <value>] [--memory-high <value>]] -- <command> [args]"
+const execSyntax = "graft exec [--heavy [--past-load REASON] [--local] [--test-db] [--env <name>]... [--settle <duration>] [--cores <n>] [--memory-max <value>] [--memory-high <value>]] -- <command> [args]"
 
 // execCmd is graft exec; its own failures, usage too, exit app.ExitGraft
 // (run).
@@ -963,7 +981,7 @@ func execCmd(ctx context.Context, a *app.App, args []string) error {
 		}
 		args = args[consumed:]
 	}
-	if len(args) < 2 || ((local || opts.TestDB || opts.Settle > 0 || opts.Cores > 0 || opts.MemoryMax != "" || opts.MemoryHigh != "" || len(pass) > 0) && !opts.Heavy) {
+	if len(args) < 2 || ((local || opts.TestDB || opts.Settle > 0 || opts.Cores > 0 || opts.MemoryMax != "" || opts.MemoryHigh != "" || opts.PastLoad != "" || len(pass) > 0) && !opts.Heavy) {
 		return execUsage()
 	}
 	if err := exportExecEnv(pass, local); err != nil {
@@ -984,6 +1002,12 @@ func parseExecFlag(args []string, opts *app.ExecOptions, local *bool, pass *[]st
 		*local = true
 	case "--test-db":
 		opts.TestDB = true
+	case "--past-load":
+		if len(args) < 2 || !validPastLoadReason(args[1]) {
+			return 0, usage
+		}
+		opts.PastLoad = args[1]
+		return 2, nil
 	case "--env":
 		if len(args) < 2 {
 			return 0, usage
@@ -1214,11 +1238,22 @@ func commitCmd(ctx context.Context, a *app.App, args []string) error {
 	file := fs.String("F", "", "read the commit message from a file, - for stdin")
 	noDeps := fs.Bool("no-deps", false, "skip merge.deps on trunk (requires --reason)")
 	noDepsReason := fs.String("reason", "", "reason for skipping merge.deps")
+	pastLoad := fs.String("past-load", "", "pass CPU load limits with a reference to the user's authorization")
 	level := levelFlags(fs)
 	fs.BoolVar(&a.NoCache, "no-cache", false, "run the gate's tasks again, without the cache, even if they passed on this tree")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
+	pastLoadSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "past-load" {
+			pastLoadSet = true
+		}
+	})
+	if pastLoadSet && !validPastLoadReason(*pastLoad) {
+		return fmt.Errorf("%w: --past-load requires REASON", errUsage)
+	}
+	a.PastLoad = *pastLoad
 	lvl, err := level()
 	if err != nil {
 		return err
@@ -1385,6 +1420,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	takeBack := fs.Bool("take-back", false, "allow taking back deployed commits with --reason")
 	unapproved := fs.Bool("unapproved", false, "collect approved_release results without refusing the deploy")
 	pastFreeze := fs.String("past-freeze", "", "deploy through an acceptance freeze with a reason")
+	pastLoad := fs.String("past-load", "", "pass CPU load limits with a reference to the user's authorization")
 	reason := fs.String("reason", "", "thaw: why the freeze ended")
 	apply := fs.Bool("apply", false, "sweep: move the items, not only list them")
 	glintTicket := fs.String("glint-ticket", "", "deploy, handover: the item that takes the glint findings of the deployed commit, at a release acceptance")
@@ -1394,20 +1430,29 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	if err != nil {
 		return err
 	}
+	pastLoadSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "past-load" {
+			pastLoadSet = true
+		}
+	})
+	if pastLoadSet && !validPastLoadReason(*pastLoad) {
+		return fmt.Errorf("%w: --past-load requires REASON", errUsage)
+	}
 	return runDeployCommand(ctx, a, deployCommandArgs{
 		pos: pos, scriptArgs: scriptArgs,
 		lines: *lines, grep: *grep, redeploy: *redeploy, unapproved: *unapproved,
-		pastFreeze: *pastFreeze, reason: *reason, takeBack: *takeBack, apply: *apply, glintTicket: *glintTicket, reviewerAgreed: *reviewerAgreed,
+		pastFreeze: *pastFreeze, pastLoad: *pastLoad, reason: *reason, takeBack: *takeBack, apply: *apply, glintTicket: *glintTicket, reviewerAgreed: *reviewerAgreed,
 	})
 }
 
 type deployCommandArgs struct {
-	pos, scriptArgs                                 []string
-	lines                                           int
-	grep                                            string
-	redeploy, unapproved, apply                     bool
-	takeBack                                        bool
-	pastFreeze, reason, glintTicket, reviewerAgreed string
+	pos, scriptArgs                                           []string
+	lines                                                     int
+	grep                                                      string
+	redeploy, unapproved, apply                               bool
+	takeBack                                                  bool
+	pastFreeze, pastLoad, reason, glintTicket, reviewerAgreed string
 }
 
 func runDeployCommand(ctx context.Context, a *app.App, args deployCommandArgs) error {
@@ -1442,7 +1487,7 @@ func runDeployCommand(ctx context.Context, a *app.App, args deployCommandArgs) e
 
 func deployCommandFlagsInvalid(sub string, args deployCommandArgs) bool {
 	logFlags := args.lines != 200 || args.grep != ""
-	return deployFlagsMisplaced(sub, args.scriptArgs != nil, logFlags, args.redeploy || args.unapproved || args.pastFreeze != "" || args.reviewerAgreed != "" || args.takeBack) || args.apply && sub != "sweep" ||
+	return deployFlagsMisplaced(sub, args.scriptArgs != nil, logFlags, args.redeploy || args.unapproved || args.pastFreeze != "" || args.pastLoad != "" || args.reviewerAgreed != "" || args.takeBack) || args.apply && sub != "sweep" ||
 		args.glintTicket != "" && isDeploySubcommand(sub) && sub != "handover"
 }
 
@@ -1461,7 +1506,7 @@ func runDeployTarget(ctx context.Context, a *app.App, args deployCommandArgs, us
 		if args.reason != "" && !args.takeBack {
 			return errors.New("--reason requires --take-back")
 		}
-		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs, Redeploy: args.redeploy, TakeBack: args.takeBack, TakeBackReason: args.reason, Unapproved: args.unapproved, GlintTicket: args.glintTicket, PastFreeze: args.pastFreeze, ReviewerAgreed: args.reviewerAgreed})
+		return a.Deploy(ctx, app.DeployOptions{Target: pos[0], Args: scriptArgs, Redeploy: args.redeploy, TakeBack: args.takeBack, TakeBackReason: args.reason, Unapproved: args.unapproved, GlintTicket: args.glintTicket, PastFreeze: args.pastFreeze, PastLoad: args.pastLoad, ReviewerAgreed: args.reviewerAgreed})
 	default:
 		return usage
 	}

@@ -221,6 +221,20 @@ func TestAdmissionRecordNamesFailingDiskSource(t *testing.T) {
 	}
 }
 
+func TestAdmissionRecordOmitsUnavailableDirtyMeasures(t *testing.T) {
+	m := &machine{haveView: true, lastView: pressure.Verdict{
+		Load:    pressure.Load{DirtyMB: 99, DirtyLimitMB: 64},
+		Skipped: []error{pressure.ErrNoMemInfo},
+	}}
+	line, err := json.Marshal(m.admissionRecord(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(line, []byte(`"dirty_mb"`)) || bytes.Contains(line, []byte(`"dirty_limit_mb"`)) {
+		t.Fatalf("unavailable dirty measures were written as values: %s", line)
+	}
+}
+
 func readAdmissionLines(t *testing.T, path string) []admissionRecord {
 	t.Helper()
 	data, err := os.ReadFile(path)

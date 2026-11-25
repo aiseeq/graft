@@ -87,6 +87,8 @@ type Record struct {
 	CacheChanged []string `json:"cache_changed,omitempty"`
 	// WaitedBehind names the command and task holding the queue or lock.
 	WaitedBehind string `json:"waited_behind,omitempty"`
+	// PastLoad records the user's explicit authorization to pass CPU load limits.
+	PastLoad string `json:"past_load,omitempty"`
 	// Top is what the task ran under: the graft command (commit, gate,
 	// deploy, ...) or, for graft <task>, the outermost task.
 	Top string `json:"top"`

@@ -29,6 +29,7 @@ type admissionRecord struct {
 	DirtyLimitMB    *float64           `json:"dirty_limit_mb,omitempty"`
 	DiskFault       string             `json:"disk_fault,omitempty"`
 	Priority        bool               `json:"priority"`
+	PastLoad        string             `json:"past_load,omitempty"`
 	LA1             *float64           `json:"la1,omitempty"`
 	Runnable        *float64           `json:"runnable,omitempty"`
 	Blocked         *int               `json:"blocked,omitempty"`
@@ -70,11 +71,16 @@ func (m *machine) admissionRecord(priority bool) admissionRecord {
 		LA1: m.decision.LA1, Runnable: m.decision.Runnable, Limit: m.decision.Limit,
 		Unseen: m.decision.Unseen, LiveReserve: m.decision.LiveReserve,
 		Candidate: m.decision.Candidate, CandidateCapped: m.decision.CandidateCapped, ExitHatch: m.exitHatch}
+	if m.pastLoad != "" {
+		rec.PastLoad = m.pastLoad
+	}
 	if !m.haveView {
 		return rec
 	}
 	load := m.lastView.Load
-	rec.DirtyMB, rec.DirtyLimitMB = &load.DirtyMB, &load.DirtyLimitMB
+	if !slices.Contains(m.lastView.Skipped, pressure.ErrNoMemInfo) {
+		rec.DirtyMB, rec.DirtyLimitMB = &load.DirtyMB, &load.DirtyLimitMB
+	}
 	if !slices.Contains(m.lastView.Skipped, pressure.ErrNoRunnable) {
 		rec.Blocked = &load.Blocked
 	}

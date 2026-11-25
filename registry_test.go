@@ -185,6 +185,8 @@ func TestRegistryExecAccepted(t *testing.T) {
 		switch name {
 		case "--env":
 			args = append(args, "NAME")
+		case "--past-load":
+			args = append(args, "tl dd4a9367:6208")
 		case "--settle":
 			args = append(args, "1s")
 		case "--cores":

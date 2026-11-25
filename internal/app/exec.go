@@ -67,6 +67,7 @@ func exitStatus(exit *exec.ExitError) int {
 
 // ExecOptions are graft exec's flags.
 type ExecOptions struct {
+	PastLoad string
 	// Heavy queues the command as a heavy task.
 	Heavy bool
 	// Local pins this exec to the current machine despite remote_heavy.
@@ -137,6 +138,10 @@ func (a *App) exec(ctx context.Context, argv []string, opts ExecOptions) error {
 		r.TestDB = func(ctx context.Context) (tasks.TestDB, error) { return quiet.testDB(ctx, repo, cfg) }
 	}
 	r.ExecCores = opts.Cores
+	if opts.PastLoad != "" && !opts.Heavy {
+		return errors.New("--past-load requires --heavy")
+	}
+	r.PastLoad = opts.PastLoad
 	r.ExecMemoryMax = opts.MemoryMax
 	r.ExecMemoryHigh = opts.MemoryHigh
 	if opts.Settle > 0 {

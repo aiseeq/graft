@@ -204,7 +204,22 @@ and `runnable` in `pressure.yaml` there is no threshold for the reservations
 or that part to reach). A heavy task inside
 a heavy task or the gate was admitted with it, and so is a graft that the
 steps of an admitted task start (they carry `GRAFT_ADMITTED`). Priority tasks
-from `graft deploy` use the same FIFO queue and cannot pass an earlier waiter.
+from graft deploy use the same FIFO queue: they wait behind its current lock
+holder and move ahead of ordinary queued tasks.
+When the user explicitly authorizes one run to pass CPU limits, `--past-load
+REASON` gives it deploy-style queue priority: it waits behind the current lock
+holder and moves ahead of ordinary queued tasks. It skips the LA, runnable,
+live-reservation and unseen-core forecast checks, then writes its own normal
+live CPU reservation under the queue lock. Quiet mode, disk freeze, IO
+pressure, dirty/writeback limits, and memory pressure while swapping still
+block it. The option is available on `graft commit`, `graft <task>` and
+`graft run <task>`, `graft exec --heavy`, and `graft deploy <target>`. A
+`remote_heavy` step on another host uses that host's ordinary queue. The
+admitted task's existing `GRAFT_ADMITTED` behavior for its steps and nested
+grafts is unchanged; the reason is not passed through an environment variable.
+Use this only after an explicit user instruction in the current agent session;
+it authorizes one top-level run, and another run needs a new instruction.
+`REASON` must point to that instruction, for example `tl dd4a9367:6208`.
 Ctrl-C, SIGTERM, or an unignored SIGHUP stops the wait and command. If both
 caller output pipes close, graft stops them too; deploy keeps its existing
 signal behavior.
@@ -586,7 +601,7 @@ and runnable count as ordinary heavy tasks; equality with the limit blocks.
 | `graft start` / `stop` / `restart [service]` | background services, all of them without a name |
 | `graft logs <service> [--lines N] [-f]` | the end of a service's log, or its journal; `-f` follows until Ctrl-C |
 | `graft stats [--failures|--refused] [--since 7d] [--until <time>] [--project <root>\|--all] [--task <name>]` | recorded resource use and recent failure reasons (see [Resource stats](#resource-stats)) |
-| `graft exec [--heavy [--local] [--test-db] [--env <name>]... [--settle <duration>] [--cores <n>] [--memory-max <value>] [--memory-high <value>]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local`; `--test-db` gives it the configured test database DSN and keeps it on this machine; the host gets no variable of the caller's but the go command's own unless `--env <name>` names it; `--settle` holds a separate FIFO lock for this long, waited on only by another `exec --settle`; `--cores` sets the live reservation instead of using history; `--memory-high` limits page cache of the heavy scope |
+| `graft exec [--heavy [--past-load REASON] [--local] [--test-db] [--env <name>]... [--settle <duration>] [--cores <n>] [--memory-max <value>] [--memory-high <value>]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local`; `--past-load REASON` passes CPU load limits for this run only and requires `--heavy`; `--test-db` gives it the configured test database DSN and keeps it on this machine; the host gets no variable of the caller's but the go command's own unless `--env <name>` names it; `--settle` holds a separate FIFO lock for this long, waited on only by another `exec --settle`; `--cores` sets the live reservation instead of using history; `--memory-high` limits page cache of the heavy scope; `graft exec` usage errors exit 125 (see `graft help exec`) |
 | `graft reap -- <command> [args]` | run a command as the reaper of what it leaves behind (Linux): its orphans become graft's children, not the session manager's, and those left in its session end with it, as for the local commands of tasks and `graft exec` (see Install) |
 | `graft status` | services, the test database, held locks |
 | `graft locks` | who holds graft's locks; for a held `load.lock`, why the load queue waits or whether the machine has room |
@@ -3458,6 +3473,10 @@ that have not been built for those hours cold again; the threshold should be
 chosen with that tradeoff in mind.
 
 ## Development
+
+`admissions.jsonl` records the `past_load` reason on an admitted override, along
+with the measurements available on that admission. The task and step records
+in `stats.jsonl` carry the same `past_load` field.
 
 graft builds, tests and commits itself through its own `.graft.yaml`:
 
