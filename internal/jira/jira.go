@@ -235,11 +235,23 @@ func (c *Client) changelog(ctx context.Context, key string, visit func(json.RawM
 			return err
 		}
 		var page struct {
-			IsLast bool              `json:"isLast"`
-			Values []json.RawMessage `json:"values"`
+			StartAt *int              `json:"startAt"`
+			Total   *int              `json:"total"`
+			IsLast  bool              `json:"isLast"`
+			Values  []json.RawMessage `json:"values"`
 		}
 		if err := json.Unmarshal(data, &page); err != nil {
 			return fmt.Errorf("%s: unexpected changelog JSON: %w", key, err)
+		}
+		if page.StartAt != nil && *page.StartAt != start {
+			return fmt.Errorf("%s: changelog page starts at %d, requested %d", key, *page.StartAt, start)
+		}
+		if page.Total == nil {
+			return fmt.Errorf("%s: changelog page at %d has no total; completeness cannot be verified", key, start)
+		}
+		readThrough := start + len(page.Values)
+		if *page.Total < readThrough || page.IsLast && *page.Total != readThrough || !page.IsLast && *page.Total <= readThrough {
+			return fmt.Errorf("%s: changelog page at %d is incomplete or inconsistent: read %d of %d entries (isLast=%t)", key, start, readThrough, *page.Total, page.IsLast)
 		}
 		for _, value := range page.Values {
 			stop, err := visit(value)
@@ -258,6 +270,52 @@ func (c *Client) changelog(ctx context.Context, key string, visit func(json.RawM
 		}
 		start += len(page.Values)
 	}
+}
+
+// StatusChange is one status transition from an issue's changelog.
+type StatusChange struct {
+	From, To, AuthorID, AuthorName string
+	When                           time.Time
+}
+
+// StatusChanges reads every status transition, preserving its author and time.
+func (c *Client) StatusChanges(ctx context.Context, key string) ([]StatusChange, error) {
+	var changes []StatusChange
+	err := c.changelog(ctx, key, func(value json.RawMessage) (bool, error) {
+		var entry struct {
+			Created string `json:"created"`
+			Author  struct {
+				AccountID   string `json:"accountId"`
+				DisplayName string `json:"displayName"`
+			} `json:"author"`
+			Items []struct {
+				FieldID    string `json:"fieldId"`
+				FromString string `json:"fromString"`
+				ToString   string `json:"toString"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(value, &entry); err != nil {
+			return false, fmt.Errorf("%s: unexpected changelog entry: %w", key, err)
+		}
+		for _, item := range entry.Items {
+			if item.FieldID != "status" {
+				continue
+			}
+			changed, err := time.Parse(timeLayout, entry.Created)
+			if err != nil {
+				return false, fmt.Errorf("%s: invalid status changelog time %q: %w", key, entry.Created, err)
+			}
+			changes = append(changes, StatusChange{From: item.FromString, To: item.ToString, AuthorID: entry.Author.AccountID, AuthorName: entry.Author.DisplayName, When: changed})
+		}
+		return false, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Jira returns changelog records from oldest to newest. Keep that order, as
+	// well as the order of status items within each record: equal timestamps
+	// are common and can represent sequential status transitions.
+	return changes, nil
 }
 
 // WasAssignedTo reports whether the item's history shows it assigned to the

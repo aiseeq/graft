@@ -937,6 +937,9 @@ release_notes: {jira: {project_keys: [PROJ]}}
 		{`{statuses: [Done], version: {match: '['}}`, "approved_release.version.match"},
 		{`{prefix: Product, version: {}}`, "approved_release.version: needs statuses"},
 		{`{statuses: [Done], version: {match: '^Product'}}`, ""},
+		{`{statuses: [Done], version: {human_check: {from: [], labels: [noqa]}}}`, "human_check: needs non-empty from and labels"},
+		{`{statuses: [Done], version: {human_check: {from: [Testing], labels: []}}}`, "human_check: needs non-empty from and labels"},
+		{`{statuses: [Done], version: {human_check: {from: [Testing], labels: [noqa]}}}`, ""},
 		{`{statuses: [Done], version: {match: '^Product'}, dormant: [{key: PROJ-1, reason: x, disabled_by: flag, outside_version: Other}]}`, "outside_version"},
 	} {
 		_, err := Parse([]byte(strings.Replace(base, "REPLACE", tc.config, 1)))

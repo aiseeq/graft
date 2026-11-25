@@ -60,7 +60,7 @@ func newQuietParentFixture(t *testing.T) *quietParentFixture {
 				http.Error(w, "synthetic changelog failure", http.StatusInternalServerError)
 				return
 			}
-			fmt.Fprint(w, `{"isLast":true,"values":[]}`)
+			fmt.Fprint(w, `{"startAt":0,"total":0,"isLast":true,"values":[]}`)
 		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/rest/api/3/issue/"):
 			key := strings.TrimPrefix(r.URL.Path, "/rest/api/3/issue/")
 			f.fixUpdates[key]++

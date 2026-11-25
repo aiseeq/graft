@@ -40,7 +40,7 @@ func TestFreezeJournalFailureKeepsFreeze(t *testing.T) {
 func TestFreezeHistoryUsesVersionIDWhenAnotherVersionExists(t *testing.T) {
 	at := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"isLast": true, "values": []any{
+		_ = json.NewEncoder(w).Encode(map[string]any{"startAt": 0, "total": 1, "isLast": true, "values": []any{
 			map[string]any{"created": "2026-10-20T12:00:00.000+0000", "items": []any{
 				map[string]any{"fieldId": "fixVersions", "from": "10001", "to": "10010", "fromString": "Product v1.2.9", "toString": "Product v1.2.9, Product v1.2.10"},
 			}},

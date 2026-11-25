@@ -2601,6 +2601,7 @@ approved_release:
   version:
     match: '^Product[ .]?\d\d\.\d\d\.\d\d$'
     manual: ["QA smoke on TEST passed"]
+    human_check: {from: [Testing], labels: [noqa, internal]}
     refs: {version-subtasks: "2.2"}
 ```
 
@@ -2630,6 +2631,18 @@ not close it. The version must have approvers and every one must have
 approved; when they have, check and deploy print `approved release: version
 <name> (<id>) approved by <names>`, an approver whose name does not read
 named by the account. Items in the version without code in the range also draw a warning.
+With `version.human_check`, every top-level task in the version must also carry
+one of its configured labels or have its latest entry into the approved status
+set (`statuses` plus matching `label_statuses`) made from one of the configured
+`from` statuses by an account other than the Jira token's account. Transitions
+within the approved set, such as Ready for release to Done, keep the original
+entry; a move outside the set and a later return require a new check. Status
+names are compared without case, using changelog names, so a renamed status
+does not pass. Jira changelog or `/myself` read errors refuse the task and say
+what failed. A configured label skips its changelog and `/myself` reads. This
+check runs with the complete version check, so no active commits skip it too.
+It is independent of `prefix`; `--unapproved` bypasses its refusal like the
+other `approved_release` refusals.
 With no active
 commits the version checks are skipped. `prefix`, when set, still checks the
 items' approved versions independently.
@@ -2642,9 +2655,10 @@ It reads Jira to preview the delivered items when possible; if it cannot read
 them, it says why. It does not write to Jira or deploy anything.
 `--unapproved` bypasses refusals from `approved_release` while collecting its results; hotfixes
 do not run it. The gate reads deploy rules from the branch being deployed. It
-does not restore the deployed commit or Jira statuses on rollback, check who
-moved an item to Ready for release or Done, or judge whether an umbrella's
-content is technical.
+does not restore the deployed commit or Jira statuses on rollback, or judge
+whether an umbrella's content is technical. The human check treats a status
+change by an account other than the token's account as a review signal, not
+proof of a person: agents for the same project can use one shared token.
 
 The sweep takes the commits of the last `days` on any remote branch or on
 the target, merges left out, and groups them by the item each is the work

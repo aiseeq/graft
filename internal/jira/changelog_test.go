@@ -24,8 +24,10 @@ func TestWasAssignedToReadsEveryPage(t *testing.T) {
 			item = map[string]any{"fieldId": "assignee", "from": "me", "to": "reviewer"}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"isLast": start == 1,
-			"values": []any{map[string]any{"items": []any{item}}},
+			"isLast":  start == 1,
+			"startAt": start,
+			"total":   2,
+			"values":  []any{map[string]any{"items": []any{item}}},
 		})
 	}))
 	defer srv.Close()
@@ -34,6 +36,67 @@ func TestWasAssignedToReadsEveryPage(t *testing.T) {
 		got, err := c.WasAssignedTo(context.Background(), "PROJ-1", account)
 		if err != nil || got != want {
 			t.Errorf("%s: %v %v, want %v", account, got, err, want)
+		}
+	}
+}
+
+func TestStatusChangesRejectsLastPageWithoutCompleteness(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"startAt": 0,
+			"isLast":  true,
+			"values": []any{map[string]any{
+				"created": "2026-11-25T10:00:00.000+0000",
+				"author":  map[string]string{"accountId": "reviewer", "displayName": "Synthetic reviewer"},
+				"items":   []any{map[string]string{"fieldId": "status", "fromString": "Testing", "toString": "Ready for release"}},
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	changes, err := New(Credentials{BaseURL: srv.URL}).StatusChanges(context.Background(), "PROJ-123")
+	if err == nil || changes != nil {
+		t.Fatalf("StatusChanges = %+v, %v; want incomplete changelog refusal", changes, err)
+	}
+}
+
+func TestStatusChangesPreservesTransitionsWithinOneHistoryEntry(t *testing.T) {
+	want := []struct{ from, to string }{
+		{"In Progress", "Testing"},
+		{"Testing", "Ready for release"},
+		{"Ready for release", "In Progress"},
+		{"In Progress", "Ready for release"},
+		{"Ready for release", "Done"},
+		{"Done", "In Progress"},
+		{"In Progress", "Done"},
+		{"Done", "Testing"},
+		{"Testing", "Done"},
+		{"Done", "Ready for release"},
+		{"Ready for release", "In Progress"},
+	}
+	middleItems := make([]any, 0, len(want)-2)
+	for _, move := range want[1 : len(want)-1] {
+		middleItems = append(middleItems, map[string]string{"fieldId": "status", "fromString": move.from, "toString": move.to})
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"startAt": 0, "total": 3, "isLast": true, "values": []any{
+			map[string]any{"created": "2026-11-25T10:00:00.000+0000", "items": []any{map[string]string{"fieldId": "status", "fromString": want[0].from, "toString": want[0].to}}},
+			map[string]any{"created": "2026-11-25T10:01:00.000+0000", "items": middleItems},
+			map[string]any{"created": "2026-11-25T10:02:00.000+0000", "items": []any{map[string]string{"fieldId": "status", "fromString": want[len(want)-1].from, "toString": want[len(want)-1].to}}},
+		}})
+	}))
+	defer srv.Close()
+
+	changes, err := New(Credentials{BaseURL: srv.URL}).StatusChanges(context.Background(), "PROJ-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != len(want) {
+		t.Fatalf("got %d transitions, want %d", len(changes), len(want))
+	}
+	for i, move := range want {
+		if changes[i].From != move.from || changes[i].To != move.to {
+			t.Errorf("transition %d = %s -> %s, want %s -> %s", i, changes[i].From, changes[i].To, move.from, move.to)
 		}
 	}
 }
@@ -69,7 +132,7 @@ func TestFixVersionHistoryAfterUsesLatestAddition(t *testing.T) {
 					http.Error(w, "unexpected request", http.StatusNotFound)
 					return
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"isLast": true, "values": tc.entries})
+				_ = json.NewEncoder(w).Encode(map[string]any{"startAt": 0, "total": len(tc.entries), "isLast": true, "values": tc.entries})
 			}))
 			defer srv.Close()
 			got, _, err := New(Credentials{BaseURL: srv.URL}).FixVersionHistoryAfter(context.Background(), "PROJ-1", "10010", at)
@@ -82,7 +145,7 @@ func TestFixVersionHistoryAfterUsesLatestAddition(t *testing.T) {
 
 func TestLastFixVersionRemovalFindsLatestRemoval(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"isLast": true, "values": []any{
+		_ = json.NewEncoder(w).Encode(map[string]any{"startAt": 0, "total": 4, "isLast": true, "values": []any{
 			map[string]any{"created": "2026-11-16T15:55:00.000+0000", "author": map[string]string{"displayName": "Jane Doe"}, "items": []any{map[string]string{"fieldId": "fixVersions", "from": "10010", "fromString": "Product 1", "to": ""}}},
 			map[string]any{"created": "2026-11-16T15:40:00.000+0000", "author": map[string]string{"displayName": "Someone Else"}, "items": []any{map[string]string{"fieldId": "fixVersions", "from": "10010", "fromString": "Product 1", "to": ""}}},
 			map[string]any{"created": "2026-11-16T16:10:00.000+0000", "author": map[string]string{"displayName": "Other Version"}, "items": []any{map[string]string{"fieldId": "fixVersions", "from": "10020", "fromString": "Other 2", "to": ""}}},

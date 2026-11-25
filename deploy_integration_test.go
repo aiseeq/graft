@@ -83,9 +83,12 @@ type fakeJira struct {
 	written map[string][]fakeComment
 	entered map[string]time.Time
 	// changelogDown fails every read of a history.
-	changelogDown bool
+	changelogDown     bool
+	changelogReads    map[string]int
+	changelogPageFail int
 	// statusMoves are the status changes a key's history shows.
-	statusMoves map[string][]fakeStatusMove
+	statusMoves       map[string][]fakeStatusMove
+	statusMoveRecords map[string][][]fakeStatusMove
 	// fixChanges are the changes of a key's fix versions its history shows;
 	// created maps a key to when it was created, with the fix versions it
 	// has, if its history shows no change of them.
@@ -99,8 +102,10 @@ type fakeIssueEditRequest struct {
 }
 
 type fakeStatusMove struct {
-	at       time.Time
-	from, to string
+	at         time.Time
+	from, to   string
+	authorID   string
+	authorName string
 }
 
 // fakeFixChange is one change of an item's fix versions in its history.
@@ -220,11 +225,26 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		j.comments[key] = append(j.comments[key], doc.Body.Content[0].Content[0].Text)
 		w.WriteHeader(http.StatusCreated)
 	case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "changelog":
+		if j.changelogReads == nil {
+			j.changelogReads = map[string]int{}
+		}
+		j.changelogReads[key]++
+		if j.changelogPageFail > 0 && r.URL.Query().Get("startAt") != "0" {
+			http.Error(w, "page unavailable", j.changelogPageFail)
+			return
+		}
 		if j.changelogDown {
 			http.Error(w, "down", http.StatusInternalServerError)
 			return
 		}
 		var values []any
+		if j.changelogPageFail > 0 && r.URL.Query().Get("startAt") == "0" {
+			for range 100 {
+				values = append(values, map[string]any{"created": fakeTimeLayout, "items": []any{map[string]any{"fieldId": "summary"}}})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"startAt": 0, "total": 101, "isLast": false, "values": values})
+			return
+		}
 		if slices.Contains(j.handedOver, key) {
 			values = append(values, map[string]any{"items": []any{map[string]any{"fieldId": "assignee", "from": "me", "to": j.assignees[key]}}})
 		}
@@ -232,7 +252,18 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			values = append(values, map[string]any{"created": when.Format(fakeTimeLayout), "items": []any{map[string]any{"fieldId": "status", "fromString": "Testing", "toString": "In Progress"}}})
 		}
 		for _, m := range j.statusMoves[key] {
-			values = append(values, map[string]any{"created": m.at.Format(fakeTimeLayout), "items": []any{map[string]any{"fieldId": "status", "fromString": m.from, "toString": m.to}}})
+			values = append(values, map[string]any{"created": m.at.Format(fakeTimeLayout), "author": map[string]string{"accountId": m.authorID, "displayName": m.authorName}, "items": []any{map[string]any{"fieldId": "status", "fromString": m.from, "toString": m.to}}})
+		}
+		for _, record := range j.statusMoveRecords[key] {
+			if len(record) == 0 {
+				continue
+			}
+			items := make([]any, 0, len(record))
+			for _, move := range record {
+				items = append(items, map[string]any{"fieldId": "status", "fromString": move.from, "toString": move.to})
+			}
+			first := record[0]
+			values = append(values, map[string]any{"created": first.at.Format(fakeTimeLayout), "author": map[string]string{"accountId": first.authorID, "displayName": first.authorName}, "items": items})
 		}
 		for _, c := range j.fixChanges[key] {
 			item := map[string]any{"field": "Fix Version", "fieldId": "fixVersions"}
@@ -247,7 +278,8 @@ func (j *fakeJira) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			values = append(values, map[string]any{"created": c.at.Format(fakeTimeLayout), "author": map[string]string{"displayName": author}, "items": []any{item}})
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"isLast": true, "values": values})
+		start, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
+		_ = json.NewEncoder(w).Encode(map[string]any{"startAt": start, "total": start + len(values), "isLast": true, "values": values})
 	case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "comment":
 		j.listComments(w, key)
 	case r.Method == http.MethodGet && len(parts) == 1:

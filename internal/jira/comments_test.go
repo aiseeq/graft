@@ -68,7 +68,7 @@ func TestCameIntoTakesTheLastEntryFromOutside(t *testing.T) {
 			http.Error(w, "unexpected", http.StatusBadRequest)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"isLast": start/2 == len(pages)-1, "values": pages[start/2]})
+		_ = json.NewEncoder(w).Encode(map[string]any{"startAt": start, "total": len(pages) * 2, "isLast": start/2 == len(pages)-1, "values": pages[start/2]})
 	}))
 	defer srv.Close()
 	c := New(Credentials{BaseURL: srv.URL})

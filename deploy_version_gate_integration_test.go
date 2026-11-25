@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -160,6 +161,174 @@ func TestDeployReleaseVersion(t *testing.T) {
 	d.commitFile("more.txt", "feat: PROJ-30 more work")
 	d.jira.setFailing()
 	check(false, "down for maintenance")
+}
+
+func TestDeployReleaseVersionHumanCheck(t *testing.T) {
+	cfg := func(state string, q func(string) string) string {
+		return strings.Replace(versionGateConfig(state, q), "approved_release: {statuses: [Ready for release, Done]}",
+			`approved_release: {statuses: [Ready for release, Done], label_statuses: {release-candidate: [Accepted]}, version: {match: '^Product', human_check: {from: [Testing], labels: [noqa, internal]}}}`, 1)
+	}
+	d := newDeployFixture(t, cfg)
+	writeFile(t, filepath.Join(d.state, "gate-sha"), d.git("rev-parse", "HEAD")+"\n")
+	d.jira.setVersions([]map[string]any{{"id": "1", "name": "Product 25.11.26"}}, map[string][]string{"PROJ-123": {"1"}})
+	d.jira.setApprovers(map[string][]string{"1": {"APPROVED"}})
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-123"] = "Ready for release"
+	d.jira.statusMoves = map[string][]fakeStatusMove{"PROJ-123": {{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "In Progress", to: "Ready for release", authorID: "me", authorName: "Me"}}}
+	d.jira.mu.Unlock()
+	d.commitFile("human-check.txt", "feat: PROJ-123 synthetic work")
+	check := func(wantPass bool, wants ...string) string {
+		t.Helper()
+		out, code := d.graft("", "deploy", "check", "prod")
+		if (code == 0) != wantPass {
+			t.Errorf("exit %d, want pass %v:\n%s", code, wantPass, out)
+		}
+		for _, want := range wants {
+			if !strings.Contains(out, want) {
+				t.Errorf("missing %q:\n%s", want, out)
+			}
+		}
+		return out
+	}
+	check(false, "version-human-check", "PROJ-123", "Me", "2026-11-25 10:00", "noqa or internal", "Testing")
+
+	d.jira.mu.Lock()
+	d.jira.labels = map[string][]string{"PROJ-123": {"noqa"}}
+	reads := d.jira.changelogReads["PROJ-123"]
+	d.jira.mu.Unlock()
+	check(true, "passes its checks now")
+	d.jira.mu.Lock()
+	if got := d.jira.changelogReads["PROJ-123"] - reads; got != 0 {
+		t.Errorf("labelled task changelog reads = %d, want none", got)
+	}
+	d.jira.labels["PROJ-123"] = nil
+	d.jira.statuses["PROJ-123"] = "Ready for release"
+	d.jira.statusMoves["PROJ-123"] = []fakeStatusMove{
+		{at: time.Date(2026, 11, 25, 10, 30, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "me", authorName: "Me"},
+	}
+	d.jira.mu.Unlock()
+	check(false, "version-human-check", "PROJ-123", "Me", "2026-11-25 10:30")
+	d.jira.mu.Lock()
+	d.jira.labels["PROJ-123"] = []string{"release-candidate"}
+	d.jira.statuses["PROJ-123"] = "Accepted"
+	d.jira.statusMoves["PROJ-123"] = []fakeStatusMove{
+		{at: time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC), from: "Testing", to: "Accepted", authorID: "reviewer", authorName: "Synthetic reviewer"},
+	}
+	d.jira.mu.Unlock()
+	check(true, "passes its checks now")
+	d.jira.mu.Lock()
+	d.jira.labels["PROJ-123"] = nil
+	d.jira.statuses["PROJ-123"] = "Done"
+	d.jira.statusMoves["PROJ-123"] = []fakeStatusMove{
+		{at: time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "reviewer", authorName: "Synthetic reviewer"},
+		{at: time.Date(2026, 11, 25, 11, 0, 0, 0, time.UTC), from: "Ready for release", to: "Done", authorID: "me", authorName: "Me"},
+	}
+	d.jira.mu.Unlock()
+	check(true, "passes its checks now")
+
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-123"] = "Done"
+	d.jira.statusMoves["PROJ-123"] = []fakeStatusMove{
+		{at: time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "reviewer", authorName: "Synthetic reviewer"},
+		{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "Ready for release", to: "In Progress", authorID: "reviewer", authorName: "Synthetic reviewer"},
+		{at: time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC), from: "In Progress", to: "Ready for release", authorID: "me", authorName: "Me"},
+		{at: time.Date(2026, 11, 25, 13, 0, 0, 0, time.UTC), from: "Ready for release", to: "Done", authorID: "reviewer", authorName: "Synthetic reviewer"},
+	}
+	d.jira.mu.Unlock()
+	check(false, "version-human-check", "PROJ-123", "Synthetic reviewer", "Done", "2026-11-25 13:00")
+
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-123"] = "Ready for release"
+	d.jira.statusMoves["PROJ-123"] = []fakeStatusMove{
+		{at: time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "reviewer", authorName: "Synthetic reviewer"},
+		{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "In Progress", to: "Ready for release", authorID: "me", authorName: "Me"},
+	}
+	d.jira.mu.Unlock()
+	check(false, "version-human-check", "Me", "2026-11-25 10:00")
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-123"] = "Ready for release"
+	d.jira.statusMoves["PROJ-123"] = nil
+	d.jira.statusMoveRecords = map[string][][]fakeStatusMove{}
+	d.jira.statusMoveRecords["PROJ-123"] = [][]fakeStatusMove{{
+		{at: time.Date(2026, 11, 25, 11, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "reviewer", authorName: "Synthetic reviewer"},
+		{at: time.Date(2026, 11, 25, 11, 0, 0, 0, time.UTC), from: "Ready for release", to: "In Progress", authorID: "reviewer", authorName: "Synthetic reviewer"},
+		{at: time.Date(2026, 11, 25, 11, 0, 0, 0, time.UTC), from: "In Progress", to: "Ready for release", authorID: "reviewer", authorName: "Synthetic reviewer"},
+	}}
+	d.jira.mu.Unlock()
+	check(false, "version-human-check", "latest entry into an approved status is not from Testing")
+	d.jira.mu.Lock()
+	d.jira.statusMoveRecords["PROJ-123"] = nil
+	d.jira.statuses["PROJ-123"] = "Done"
+	d.jira.statusMoves["PROJ-123"] = []fakeStatusMove{
+		{at: time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "reviewer", authorName: "Synthetic reviewer"},
+	}
+	d.jira.mu.Unlock()
+	check(false, "version-human-check", "history does not explain the current status Done")
+
+	d.jira.mu.Lock()
+	d.jira.statusMoveRecords["PROJ-123"] = nil
+	d.jira.statuses["PROJ-123"] = "Done"
+	d.jira.statusMoves["PROJ-123"] = []fakeStatusMove{
+		{at: time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "reviewer", authorName: "Synthetic reviewer"},
+		{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "Ready for release", to: "In Progress", authorID: "reviewer", authorName: "Synthetic reviewer"},
+	}
+	d.jira.mu.Unlock()
+	check(false, "version-human-check", "history does not explain the current status Done")
+
+	d.jira.mu.Lock()
+	d.jira.changelogPageFail = http.StatusForbidden
+	d.jira.mu.Unlock()
+	check(false, "version-human-check", "PROJ-123", "read Jira changelog", "http 403")
+	out, code := d.graft("", "deploy", "--unapproved", "prod")
+	if code != 0 || !strings.Contains(out, "collecting approved release (--unapproved)") {
+		t.Fatalf("unapproved bypass: exit %d\n%s", code, out)
+	}
+}
+
+func TestDeployReleaseVersionHumanCheckBeforeVersionApprovalWithPrefix(t *testing.T) {
+	cfg := func(state string, q func(string) string) string {
+		return strings.Replace(versionGateConfig(state, q), "approved_release: {statuses: [Ready for release, Done]}",
+			`approved_release: {prefix: "Product", statuses: [Ready for release, Done], version: {match: '^Product', human_check: {from: [Testing], labels: [noqa, internal]}}}`, 1)
+	}
+	d := newDeployFixture(t, cfg)
+	writeFile(t, filepath.Join(d.state, "gate-sha"), d.git("rev-parse", "HEAD")+"\n")
+	d.jira.setVersions([]map[string]any{{"id": "1", "name": "Product 25.11.26"}}, map[string][]string{"PROJ-123": {"1"}})
+	d.jira.setApprovers(map[string][]string{"1": {"PENDING"}})
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-123"] = "Ready for release"
+	d.jira.statusMoves = map[string][]fakeStatusMove{"PROJ-123": {{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "In Progress", to: "Ready for release", authorID: "me", authorName: "Me"}}}
+	d.jira.mu.Unlock()
+	d.commitFile("human-check-prefix.txt", "feat: PROJ-123 synthetic work")
+	out, code := d.graft("", "deploy", "check", "prod")
+	if code == 0 || !strings.Contains(out, "version-human-check") || !strings.Contains(out, "version-approval") || !strings.Contains(out, "PROJ-123") {
+		t.Fatalf("human-check refusal before prefix version approval: exit %d\n%s", code, out)
+	}
+}
+
+func TestDeployReleaseVersionHumanCheckReportsCurrentStatusAuthor(t *testing.T) {
+	cfg := func(state string, q func(string) string) string {
+		return strings.Replace(versionGateConfig(state, q), "approved_release: {statuses: [Ready for release, Done]}",
+			`approved_release: {statuses: [Ready for release, Done], version: {match: '^Product', human_check: {from: [Testing], labels: [noqa, internal]}}}`, 1)
+	}
+	d := newDeployFixture(t, cfg)
+	writeFile(t, filepath.Join(d.state, "gate-sha"), d.git("rev-parse", "HEAD")+"\n")
+	d.jira.setVersions([]map[string]any{{"id": "1", "name": "Product 25.11.26"}}, map[string][]string{"PROJ-123": {"1"}})
+	d.jira.setApprovers(map[string][]string{"1": {"APPROVED"}})
+	d.jira.mu.Lock()
+	d.jira.statuses = map[string]string{}
+	d.jira.statuses["PROJ-123"] = "Done"
+	d.jira.statusMoves = map[string][]fakeStatusMove{}
+	d.jira.statusMoves["PROJ-123"] = []fakeStatusMove{
+		{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "me", authorName: "Me"},
+		{at: time.Date(2026, 11, 25, 11, 0, 0, 0, time.UTC), from: "Ready for release", to: "Done", authorID: "reviewer", authorName: "Synthetic reviewer"},
+	}
+	d.jira.mu.Unlock()
+	d.commitFile("human-check-current-status.txt", "feat: PROJ-123 synthetic work")
+	out, code := d.graft("", "deploy", "check", "prod")
+	want := "current status Done was entered from Ready for release by Synthetic reviewer on 2026-11-25 11:00"
+	if code == 0 || !strings.Contains(out, "version-human-check") || !strings.Contains(out, want) {
+		t.Fatalf("current-status author refusal: exit %d, want %q\n%s", code, want, out)
+	}
 }
 
 func TestDeployUnapprovedVersionFailuresOnPage(t *testing.T) {

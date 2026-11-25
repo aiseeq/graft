@@ -489,9 +489,17 @@ func (t *NoteTransition) TypeNames() string {
 
 // ApprovedReleaseVersion checks the complete Jira release version.
 type ApprovedReleaseVersion struct {
-	Match  string            `yaml:"match"`
-	Manual []string          `yaml:"manual"`
-	Refs   map[string]string `yaml:"refs"`
+	Match      string                     `yaml:"match"`
+	Manual     []string                   `yaml:"manual"`
+	Refs       map[string]string          `yaml:"refs"`
+	HumanCheck *ApprovedReleaseHumanCheck `yaml:"human_check"`
+}
+
+// ApprovedReleaseHumanCheck requires a task to carry a label or to have
+// entered an approved version status from one of From by a non-token user.
+type ApprovedReleaseHumanCheck struct {
+	From   []string `yaml:"from"`
+	Labels []string `yaml:"labels"`
 }
 
 // Attribution ties a commit that names no item to the item it belongs to:
@@ -852,13 +860,8 @@ func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {
 	if err := c.validateApprovedDormant(where, t.ApprovedRelease); err != nil {
 		return err
 	}
-	if v := t.ApprovedRelease.Version; v != nil {
-		if len(t.ApprovedRelease.Statuses) == 0 {
-			return fmt.Errorf("%s.approved_release.version: needs statuses", where)
-		}
-		if _, err := regexp.Compile(v.Match); err != nil {
-			return fmt.Errorf("%s.approved_release.version.match: %w", where, err)
-		}
+	if err := validateApprovedVersion(where, t.ApprovedRelease.Statuses, t.ApprovedRelease.Version); err != nil {
+		return err
 	}
 	for i, st := range t.ApprovedRelease.Statuses {
 		if strings.TrimSpace(st) == "" {
@@ -875,6 +878,40 @@ func (c *Config) validateApprovedRelease(where string, t *DeployTarget) error {
 		return err
 	}
 	return c.validateAttribute(where+".approved_release.attribute", t.ApprovedRelease)
+}
+
+func validateApprovedVersion(where string, statuses []string, v *ApprovedReleaseVersion) error {
+	if v == nil {
+		return nil
+	}
+	if len(statuses) == 0 {
+		return fmt.Errorf("%s.approved_release.version: needs statuses", where)
+	}
+	if _, err := regexp.Compile(v.Match); err != nil {
+		return fmt.Errorf("%s.approved_release.version.match: %w", where, err)
+	}
+	return validateApprovedHumanCheck(where, v.HumanCheck)
+}
+
+func validateApprovedHumanCheck(where string, h *ApprovedReleaseHumanCheck) error {
+	if h == nil {
+		return nil
+	}
+	base := where + ".approved_release.version.human_check"
+	if len(h.From) == 0 || len(h.Labels) == 0 {
+		return fmt.Errorf("%s: needs non-empty from and labels", base)
+	}
+	for i, status := range h.From {
+		if strings.TrimSpace(status) == "" {
+			return fmt.Errorf("%s.from[%d]: blank", base, i)
+		}
+	}
+	for i, label := range h.Labels {
+		if strings.TrimSpace(label) == "" {
+			return fmt.Errorf("%s.labels[%d]: blank", base, i)
+		}
+	}
+	return nil
 }
 
 func compileApprovedIgnorePaths(where string, approved *ApprovedRelease) error {

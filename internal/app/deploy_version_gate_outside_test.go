@@ -17,7 +17,7 @@ func outsideVersionServer(t *testing.T) *jira.Client {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/changelog") {
-			_, _ = w.Write([]byte(`{"isLast":true,"values":[]}`))
+			_, _ = w.Write([]byte(`{"startAt":0,"total":0,"isLast":true,"values":[]}`))
 			return
 		}
 		http.NotFound(w, r)

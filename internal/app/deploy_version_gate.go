@@ -33,9 +33,12 @@ type releaseVersionCheck struct {
 	returned map[string]bool
 	// linkedKeys are the outside items whose entry is linked: it stands in
 	// for their top being in the version, and for nothing else.
-	linkedKeys map[string]bool
-	umbrellas  map[string]bool
-	selected   jira.Version
+	linkedKeys  map[string]bool
+	umbrellas   map[string]bool
+	selected    jira.Version
+	humanMe     string
+	humanMeErr  error
+	humanMeRead bool
 	// liveInSelected: live work of the selected version goes out, which links
 	// the outside entries naming it.
 	liveInSelected bool
@@ -506,6 +509,9 @@ func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 				badKeys = append(badKeys, key)
 			}
 		}
+		if v.checkTopLevelHumanStatus(ctx, issue) {
+			return true
+		}
 		if issue.Subtask || issue.Parent != "" {
 			subtasks = append(subtasks, key+" ("+issue.Status+")")
 			subtaskKeys = append(subtaskKeys, key)
@@ -531,6 +537,99 @@ func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 		v.gate.app.warn("release version %s has items without code in the range: %s", v.selected.Name, strings.Join(missing, ", "))
 	}
 	return false
+}
+
+func (v *releaseVersionCheck) checkTopLevelHumanStatus(ctx context.Context, issue jira.Issue) bool {
+	if issue.Subtask || issue.Parent != "" || v.gate.conf.Version.HumanCheck == nil {
+		return false
+	}
+	return v.checkHumanStatus(ctx, issue)
+}
+
+func statusInSet(status string, statuses []string) bool {
+	for _, configured := range statuses {
+		if strings.EqualFold(configured, status) {
+			return true
+		}
+	}
+	return false
+}
+
+func latestStatusEntry(changes []jira.StatusChange, approved []string) *jira.StatusChange {
+	var latest *jira.StatusChange
+	for i := range changes {
+		change := changes[i]
+		if statusInSet(change.To, approved) {
+			if !statusInSet(change.From, approved) {
+				latest = &change
+			}
+		} else {
+			latest = nil
+		}
+	}
+	return latest
+}
+
+func (v *releaseVersionCheck) checkHumanStatus(ctx context.Context, issue jira.Issue) bool {
+	h := v.gate.conf.Version.HumanCheck
+	if h == nil {
+		return false
+	}
+	for _, label := range issue.Labels {
+		if slices.Contains(h.Labels, label) {
+			return false
+		}
+	}
+	approved := v.gate.conf.StatusesFor(issue.Labels)
+	remedy := fmt.Sprintf("put label %s (from the setting) on it or have a reviewer move it through %s", strings.Join(h.Labels, " or "), strings.Join(h.From, " or "))
+	if !v.humanMeRead {
+		v.humanMeRead = true
+		v.humanMe, v.humanMeErr = v.gate.gate.client.Myself(ctx)
+	}
+	if v.humanMeErr != nil {
+		return v.failItems("version-human-check", fmt.Sprintf("%s: read Jira /myself: %v; %s", issue.Key, v.humanMeErr, remedy), issue.Key)
+	}
+	changes, err := v.gate.gate.client.StatusChanges(ctx, issue.Key)
+	if err != nil {
+		return v.failItems("version-human-check", fmt.Sprintf("%s: read Jira changelog: %v; %s", issue.Key, err, remedy), issue.Key)
+	}
+	if len(changes) == 0 || !strings.EqualFold(changes[len(changes)-1].To, issue.Status) {
+		return v.failItems("version-human-check", fmt.Sprintf("%s: history does not explain the current status %s; %s", issue.Key, issue.Status, remedy), issue.Key)
+	}
+	latest := latestStatusEntry(changes, approved)
+	currentStatus := describeCurrentStatusEntry(issue.Status, changes)
+	if latest != nil && statusInSet(latest.From, h.From) && latest.AuthorID != "" && latest.AuthorID != v.humanMe {
+		return false
+	}
+	if latest == nil {
+		return v.failItems("version-human-check", fmt.Sprintf("%s: %s; no latest entry into an approved status from outside the approved statuses was found; %s", issue.Key, currentStatus, remedy), issue.Key)
+	}
+	if !statusInSet(latest.From, h.From) {
+		return v.failItems("version-human-check", fmt.Sprintf("%s: %s; latest entry into an approved status is not from %s; %s", issue.Key, currentStatus, strings.Join(h.From, " or "), remedy), issue.Key)
+	}
+	if latest.AuthorID == "" {
+		return v.failItems("version-human-check", fmt.Sprintf("%s: %s; latest approved-status entry has no Jira author account ID to compare with the automation used by graft; %s", issue.Key, currentStatus, remedy), issue.Key)
+	}
+	return v.failItems("version-human-check", fmt.Sprintf("%s: %s; latest approved-status entry was made by the automation used by graft; %s", issue.Key, currentStatus, remedy), issue.Key)
+}
+
+func describeCurrentStatusEntry(status string, changes []jira.StatusChange) string {
+	if len(changes) == 0 {
+		return fmt.Sprintf("current status %s has no status history entry", status)
+	}
+	change := changes[len(changes)-1]
+	who := change.AuthorName
+	if who == "" {
+		who = change.AuthorID
+	}
+	if who == "" {
+		who = "unknown account"
+	}
+	when := change.When.Format("2006-01-02 15:04")
+	if strings.EqualFold(change.To, status) {
+		return fmt.Sprintf("current status %s was entered from %s by %s on %s", status, change.From, who, when)
+	}
+	return fmt.Sprintf("current status %s; latest history entry entered %s from %s by %s on %s", status, change.To, change.From, who, when)
 }
 
 // checkUmbrellas holds a parent while a subtask is not Done. An old dormant
