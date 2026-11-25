@@ -473,6 +473,9 @@ func (f *fixture) start(dir string, args ...string) (*exec.Cmd, *syncBuffer) {
 // still running past it is killed and the test fails with its output.
 const graftRunLimit = 60 * time.Second
 
+const graftDumpLimit = 2 * time.Second
+const graftOutputTailLimit = 32 << 10
+
 // runningGraft is a graft a test started in the background.
 type runningGraft struct {
 	args []string
@@ -524,10 +527,46 @@ func (g *runningGraft) end(t *testing.T) string {
 			t.Fatalf("%s: %v\n%s", g.name(), err, g.out.String())
 		}
 	case <-time.After(graftRunLimit):
-		g.kill()
-		t.Fatalf("%s still ran after %s:\n%s", g.name(), graftRunLimit, g.out.String())
+		dump := g.dumpOnTimeout()
+		t.Fatalf("%s still ran after %s; SIGQUIT result: %s\ngoroutine dump:\n%s\noutput tail:\n%s", g.name(), graftRunLimit, dump.status, dump.stack, outputTail(g.out.String(), graftOutputTailLimit))
 	}
 	return g.out.String()
+}
+
+// dumpOnTimeout asks only this test's graft process for a goroutine dump. Go
+// prints the dump to stderr and exits; if the child does not handle SIGQUIT,
+// stop it after the short diagnostic grace period.
+type graftDump struct {
+	status string
+	stack  string
+}
+
+func (g *runningGraft) dumpOnTimeout() graftDump {
+	if g.cmd == nil || g.cmd.Process == nil {
+		return graftDump{status: "could not signal graft: process is unavailable"}
+	}
+	before := len(g.out.String())
+	//nolint:raw-process-kill SIGQUIT must target only this direct child, not its descendants.
+	if err := g.cmd.Process.Signal(syscall.SIGQUIT); err != nil {
+		g.kill()
+		return graftDump{status: "could not signal graft with SIGQUIT: " + err.Error()}
+	}
+	select {
+	case err := <-g.done:
+		output := g.out.String()
+		return graftDump{status: fmt.Sprintf("graft exited after SIGQUIT (%v)", err), stack: output[min(before, len(output)):]}
+	case <-time.After(graftDumpLimit):
+		g.kill()
+		output := g.out.String()
+		return graftDump{status: fmt.Sprintf("graft did not exit after SIGQUIT within %s; killed it", graftDumpLimit), stack: output[min(before, len(output)):]}
+	}
+}
+
+func outputTail(s string, limit int) string {
+	if len(s) > limit {
+		return "[earlier output omitted]\n" + s[len(s)-limit:]
+	}
+	return s
 }
 
 // startWaitingForMachine runs graft with the test machine loaded and waits
