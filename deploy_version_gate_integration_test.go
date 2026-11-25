@@ -285,6 +285,100 @@ func TestDeployReleaseVersionHumanCheck(t *testing.T) {
 	}
 }
 
+func TestDeployReleaseVersionHumanCheckStopsDeployAndComparesAuthor(t *testing.T) {
+	cfg := func(state string, q func(string) string) string {
+		return strings.Replace(versionGateConfig(state, q), "approved_release: {statuses: [Ready for release, Done]}",
+			`approved_release: {statuses: [Ready for release, Done], version: {match: '^Product', human_check: {from: [Testing], labels: [noqa]}}}`, 1)
+	}
+	newFixture := func() *deployFixture {
+		d := newDeployFixture(t, cfg)
+		writeFile(t, filepath.Join(d.state, "gate-sha"), d.git("rev-parse", "HEAD")+"\n")
+		d.jira.setVersions([]map[string]any{{"id": "1", "name": "Product 25.11.26"}}, map[string][]string{"PROJ-123": {"1"}})
+		d.jira.setApprovers(map[string][]string{"1": {"APPROVED"}})
+		d.jira.mu.Lock()
+		d.jira.statuses["PROJ-123"] = "Ready for release"
+		d.jira.statusMoves = map[string][]fakeStatusMove{"PROJ-123": {{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "In Progress", to: "Ready for release", authorID: "reviewer", authorName: "Synthetic reviewer"}}}
+		d.jira.mu.Unlock()
+		d.commitFile("human-check-author.txt", "feat: PROJ-123 synthetic work")
+		return d
+	}
+	t.Run("ordinary deploy refuses and never runs its script", func(t *testing.T) {
+		d := newFixture()
+		d.jira.mu.Lock()
+		d.jira.statusMoves["PROJ-123"] = []fakeStatusMove{{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "me", authorName: "Me"}}
+		d.jira.mu.Unlock()
+		out, code := d.graft("", "deploy", "prod")
+		if code == 0 || !strings.Contains(out, "version-human-check") || !strings.Contains(out, "PROJ-123") {
+			t.Fatalf("ordinary deploy did not refuse on human-check: exit %d\n%s", code, out)
+		}
+		if d.stateExists("prod-run") {
+			t.Fatalf("deploy script ran despite human-check refusal: %s", d.stateFile("prod-run"))
+		}
+	})
+	t.Run("same transition passes only when another account made it", func(t *testing.T) {
+		d := newFixture()
+		transition := fakeStatusMove{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "me", authorName: "Me"}
+		d.jira.mu.Lock()
+		d.jira.statusMoves["PROJ-123"] = []fakeStatusMove{transition}
+		d.jira.mu.Unlock()
+		out, code := d.graft("", "deploy", "check", "prod")
+		if code == 0 || !strings.Contains(out, "version-human-check") || !strings.Contains(out, "PROJ-123") {
+			t.Fatalf("graft-authored transition passed: exit %d\n%s", code, out)
+		}
+		transition.authorID, transition.authorName = "reviewer", "Synthetic reviewer"
+		d.jira.mu.Lock()
+		d.jira.statusMoves["PROJ-123"] = []fakeStatusMove{transition}
+		d.jira.mu.Unlock()
+		out, code = d.graft("", "deploy", "check", "prod")
+		if code != 0 || !strings.Contains(out, "passes its checks now") {
+			t.Fatalf("other-account transition did not pass: exit %d\n%s", code, out)
+		}
+	})
+}
+
+func TestDeployReleaseVersionHumanCheckHistoryEdges(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     string
+		moves      []fakeStatusMove
+		labels     []string
+		failMyself int
+		want       []string
+	}{
+		{name: "empty changelog", status: "Ready for release", want: []string{"version-human-check", "PROJ-123", "history does not explain the current status Ready for release"}},
+		{name: "renamed status", status: "Ready for release", moves: []fakeStatusMove{{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for shipment", authorID: "reviewer", authorName: "Synthetic reviewer"}}, want: []string{"version-human-check", "PROJ-123", "history does not explain the current status Ready for release"}},
+		{name: "/myself unavailable", status: "Ready for release", moves: []fakeStatusMove{{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "reviewer", authorName: "Synthetic reviewer"}}, failMyself: http.StatusServiceUnavailable, want: []string{"version-human-check", "PROJ-123", "read Jira /myself", "http 503"}},
+		{name: "label comparison is case-sensitive", status: "Ready for release", moves: []fakeStatusMove{{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "me", authorName: "Me"}}, labels: []string{"NoQa"}, want: []string{"version-human-check", "PROJ-123", "latest approved-status entry was made by the automation used by graft"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := func(state string, q func(string) string) string {
+				return strings.Replace(versionGateConfig(state, q), "approved_release: {statuses: [Ready for release, Done]}",
+					`approved_release: {statuses: [Ready for release, Done], version: {match: '^Product', human_check: {from: [Testing], labels: [noqa]}}}`, 1)
+			}
+			d := newDeployFixture(t, cfg)
+			writeFile(t, filepath.Join(d.state, "gate-sha"), d.git("rev-parse", "HEAD")+"\n")
+			d.jira.setVersions([]map[string]any{{"id": "1", "name": "Product 25.11.26"}}, map[string][]string{"PROJ-123": {"1"}})
+			d.jira.setApprovers(map[string][]string{"1": {"APPROVED"}})
+			d.jira.mu.Lock()
+			d.jira.statuses["PROJ-123"] = tc.status
+			d.jira.statusMoves = map[string][]fakeStatusMove{"PROJ-123": tc.moves}
+			d.jira.labels = map[string][]string{"PROJ-123": tc.labels}
+			d.jira.failMyself = tc.failMyself
+			d.jira.mu.Unlock()
+			d.commitFile("human-check-edge.txt", "feat: PROJ-123 synthetic work")
+			out, code := d.graft("", "deploy", "check", "prod")
+			if code == 0 {
+				t.Fatalf("human-check edge passed: exit %d\n%s", code, out)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("missing %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
 func TestDeployReleaseVersionHumanCheckBeforeVersionApprovalWithPrefix(t *testing.T) {
 	cfg := func(state string, q func(string) string) string {
 		return strings.Replace(versionGateConfig(state, q), "approved_release: {statuses: [Ready for release, Done]}",

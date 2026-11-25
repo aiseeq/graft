@@ -2636,9 +2636,13 @@ one of its configured labels or have its latest entry into the approved status
 set (`statuses` plus matching `label_statuses`) made from one of the configured
 `from` statuses by an account other than the Jira token's account. Transitions
 within the approved set, such as Ready for release to Done, keep the original
-entry; a move outside the set and a later return require a new check. Status
-names are compared without case, using changelog names, so a renamed status
-does not pass. Jira changelog or `/myself` read errors refuse the task and say
+entry; a move outside the set and a later return require a new check.
+Human-check compares configured and changelog statuses without case. The
+version's current-status gate compares the Jira status to its configured
+approved statuses with case, so a case-only mismatch fails `version-top`.
+Human-check also requires the final changelog status to match the current
+status without case; a renamed or otherwise mismatched status does not pass.
+Jira changelog or `/myself` read errors refuse the task and say
 what failed. A configured label skips its changelog and `/myself` reads. This
 check runs with the complete version check, so no active commits skip it too.
 It is independent of `prefix`; `--unapproved` bypasses its refusal like the
