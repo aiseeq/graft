@@ -141,4 +141,8 @@ tasks:
     desc: everything, before install
     # The gate itself, not only its task: go vet in every module and go fix
     # are steps of the gate, so a green all is a gate a commit passes.
+    # GRAFT_MODULES_HOLD: a raise here would leave go.mod and go.sum dirty in
+    # the work tree the release tags from HEAD, so all would check a tree the
+    # tag does not carry and the next merge would refuse the dirty files.
+    env: {GRAFT_MODULES_HOLD: '1'}
     run: ['go run . gate', {task: test-race}]
