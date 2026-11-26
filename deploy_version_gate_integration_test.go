@@ -285,6 +285,77 @@ func TestDeployReleaseVersionHumanCheck(t *testing.T) {
 	}
 }
 
+func TestDeployReleaseVersionHumanCheckDoneOutsideApprovedStatuses(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		status               string
+		moves                []fakeStatusMove
+		wantHumanCheckRefuse bool
+	}{
+		{
+			name:   "human review survives completion",
+			status: "Done",
+			moves: []fakeStatusMove{
+				{at: time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "reviewer", authorName: "Synthetic reviewer"},
+				{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "Ready for release", to: "Done", authorID: "me", authorName: "Me"},
+			},
+		},
+		{
+			name:   "automation entry still refuses",
+			status: "Done",
+			moves: []fakeStatusMove{
+				{at: time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC), from: "In Progress", to: "Ready for release", authorID: "me", authorName: "Me"},
+				{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "Ready for release", to: "Done", authorID: "reviewer", authorName: "Synthetic reviewer"},
+			},
+			wantHumanCheckRefuse: true,
+		},
+		{
+			name:   "intermediate exit clears entry",
+			status: "Done",
+			moves: []fakeStatusMove{
+				{at: time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "reviewer", authorName: "Synthetic reviewer"},
+				{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "Ready for release", to: "Done", authorID: "reviewer", authorName: "Synthetic reviewer"},
+				{at: time.Date(2026, 11, 25, 11, 0, 0, 0, time.UTC), from: "Done", to: "In Progress", authorID: "me", authorName: "Me"},
+				{at: time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC), from: "In Progress", to: "Done", authorID: "reviewer", authorName: "Synthetic reviewer"},
+			},
+			wantHumanCheckRefuse: true,
+		},
+		{
+			name:   "non-done exit still clears entry",
+			status: "In Progress",
+			moves: []fakeStatusMove{
+				{at: time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "reviewer", authorName: "Synthetic reviewer"},
+				{at: time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC), from: "Ready for release", to: "In Progress", authorID: "reviewer", authorName: "Synthetic reviewer"},
+			},
+			wantHumanCheckRefuse: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := func(state string, q func(string) string) string {
+				return strings.Replace(versionGateConfig(state, q), "approved_release: {statuses: [Ready for release, Done]}",
+					`approved_release: {statuses: [Ready for release], version: {match: '^Product', human_check: {from: [Testing], labels: [noqa]}}}`, 1)
+			}
+			d := newDeployFixture(t, cfg)
+			writeFile(t, filepath.Join(d.state, "gate-sha"), d.git("rev-parse", "HEAD")+"\n")
+			d.jira.setVersions([]map[string]any{{"id": "1", "name": "Product 25.11.26"}}, map[string][]string{"PROJ-123": {"1"}})
+			d.jira.setApprovers(map[string][]string{"1": {"APPROVED"}})
+			d.jira.mu.Lock()
+			d.jira.statuses["PROJ-123"] = tc.status
+			d.jira.statusMoves = map[string][]fakeStatusMove{"PROJ-123": tc.moves}
+			d.jira.mu.Unlock()
+			d.commitFile("human-check-done.txt", "feat: PROJ-123 synthetic work")
+			out, code := d.graft("", "deploy", "check", "prod")
+			if code == 0 || !strings.Contains(out, "version-top") || !strings.Contains(out, "version-status") {
+				t.Fatalf("exit %d, want expected version-top and version-status refusals:\n%s", code, out)
+			}
+			gotHumanCheckRefusal := strings.Contains(out, "version-human-check") && strings.Contains(out, "PROJ-123")
+			if gotHumanCheckRefusal != tc.wantHumanCheckRefuse {
+				t.Errorf("human-check refusal = %v, want %v:\n%s", gotHumanCheckRefusal, tc.wantHumanCheckRefuse, out)
+			}
+		})
+	}
+}
+
 func TestDeployReleaseVersionHumanCheckStopsDeployAndComparesAuthor(t *testing.T) {
 	cfg := func(state string, q func(string) string) string {
 		return strings.Replace(versionGateConfig(state, q), "approved_release: {statuses: [Ready for release, Done]}",

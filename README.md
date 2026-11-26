@@ -2634,9 +2634,11 @@ named by the account. Items in the version without code in the range also draw a
 With `version.human_check`, every top-level task in the version must also carry
 one of its configured labels or have its latest entry into the approved status
 set (`statuses` plus matching `label_statuses`) made from one of the configured
-`from` statuses by an account other than the Jira token's account. Transitions
-within the approved set, such as Ready for release to Done, keep the original
-entry; a move outside the set and a later return require a new check.
+`from` statuses by an account other than the Jira token's account. If the
+current status is outside the approved set and Jira marks it as done,
+human-check ignores the final transition into that status and checks the
+history before it. Every other move outside the approved set clears the entry
+and requires a new check.
 Human-check compares configured and changelog statuses without case. The
 version's current-status gate compares the Jira status to its configured
 approved statuses with case, so a case-only mismatch fails `version-top`.

@@ -570,6 +570,17 @@ func latestStatusEntry(changes []jira.StatusChange, approved []string) *jira.Sta
 	return latest
 }
 
+func latestHumanStatusEntry(issue jira.Issue, changes []jira.StatusChange, approved []string) *jira.StatusChange {
+	history := changes
+	if len(history) > 0 && !statusInSet(issue.Status, approved) && issue.Done {
+		// Jira's done category can be outside the configured approved set.
+		// The final transition explains the current status, but does not
+		// replace the human check recorded before the task was completed.
+		history = history[:len(history)-1]
+	}
+	return latestStatusEntry(history, approved)
+}
+
 func (v *releaseVersionCheck) checkHumanStatus(ctx context.Context, issue jira.Issue) bool {
 	h := v.gate.conf.Version.HumanCheck
 	if h == nil {
@@ -596,7 +607,7 @@ func (v *releaseVersionCheck) checkHumanStatus(ctx context.Context, issue jira.I
 	if len(changes) == 0 || !strings.EqualFold(changes[len(changes)-1].To, issue.Status) {
 		return v.failItems("version-human-check", fmt.Sprintf("%s: history does not explain the current status %s; %s", issue.Key, issue.Status, remedy), issue.Key)
 	}
-	latest := latestStatusEntry(changes, approved)
+	latest := latestHumanStatusEntry(issue, changes, approved)
 	currentStatus := describeCurrentStatusEntry(issue.Status, changes)
 	if latest != nil && statusInSet(latest.From, h.From) && latest.AuthorID != "" && latest.AuthorID != v.humanMe {
 		return false

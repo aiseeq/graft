@@ -30,6 +30,32 @@ func outsideEntry(key, version string) config.DormantReleaseItem {
 	return config.DormantReleaseItem{Key: key, Reason: "disabled", DisabledBy: "flag", OutsideVersion: version}
 }
 
+func TestDeployReleaseVersionHumanCheckDoneEntrySelection(t *testing.T) {
+	if got := latestStatusEntry([]jira.StatusChange{
+		{From: "Testing", To: "Ready for release", AuthorID: "reviewer"},
+		{From: "Ready for release", To: "Done", AuthorID: "reviewer"},
+	}, []string{"Ready for release"}); got != nil {
+		t.Fatalf("non-final transition into Done kept an approved entry: %+v", *got)
+	}
+
+	changes := []jira.StatusChange{
+		{From: "Testing", To: "Ready for release", AuthorID: "reviewer"},
+		{From: "Ready for release", To: "In Progress", AuthorID: "reviewer"},
+	}
+	if got := latestHumanStatusEntry(jira.Issue{Status: "In Progress"}, changes, []string{"Ready for release"}); got != nil {
+		t.Fatalf("non-done exit kept an approved entry: %+v", *got)
+	}
+
+	doneChanges := []jira.StatusChange{
+		{From: "Testing", To: "Ready for release", AuthorID: "reviewer"},
+		{From: "Ready for release", To: "Done", AuthorID: "me"},
+	}
+	got := latestHumanStatusEntry(jira.Issue{Status: "Done", Done: true}, doneChanges, []string{"Ready for release"})
+	if got == nil || got.From != "Testing" || got.To != "Ready for release" || got.AuthorID != "reviewer" {
+		t.Fatalf("done transition entry = %+v, want the earlier human entry", got)
+	}
+}
+
 // Adversary 1: an outside parent entry cannot excuse a live subtask.
 func TestOutsideEntryOnParentDoesNotCoverSubtask(t *testing.T) {
 	ar := &config.ApprovedRelease{Dormant: []config.DormantReleaseItem{outsideEntry("PROJ-120", "Product X")}}
