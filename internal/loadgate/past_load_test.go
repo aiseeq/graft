@@ -27,7 +27,9 @@ func TestPastLoadPassesCPUThresholdAndRecordsReason(t *testing.T) {
 		t.Fatal("ordinary admission passed the CPU limit")
 	}
 
-	_, release, err := Wait(context.Background(), "authorized", "projectA:authorized", nil, testLoad, path, io.Discard, "tl dd4a9367:6208")
+	admitCtx, admitCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer admitCancel()
+	_, release, err := Wait(admitCtx, "authorized", "projectA:authorized", nil, testLoad, path, io.Discard, "tl dd4a9367:6208")
 	if err != nil {
 		t.Fatalf("authorized admission: %v", err)
 	}
@@ -152,7 +154,6 @@ func TestPastLoadStillWaitsForNonCPUMeasures(t *testing.T) {
 		{"io", WhyIO, pressure.Load{IOFull: 35, IOWindow: 5 * time.Second}},
 		{"writeback", WhyWriteback, pressure.Load{DirtyMB: 200, DirtyLimitMB: 64}},
 		{"swap", WhySwap, pressure.Load{MemSome: 30, SwapKBs: 4096}},
-		{"disk-freeze", WhyIO, pressure.Load{IOFull: 35, IOWindow: 5 * time.Second, Disk: &pressure.DiskNow{Open: true}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fakeMachine(t)
@@ -169,6 +170,26 @@ func TestPastLoadStillWaitsForNonCPUMeasures(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("disk-freeze", func(t *testing.T) {
+		fakeMachine(t)
+		var output bytes.Buffer
+		m := newMachine(testLoad, &output, "authorized", "projectA:authorized")
+		m.pastLoad = "tl dd4a9367:6208"
+		m.limits = pressure.Limits{Runnable: 11, MaxIOFull: 10, MaxDirtyMB: 64, MaxMemSome: 10, MaxSwapKBs: 1024}
+		m.meter = &admissionMeter{verdicts: []pressure.Verdict{{Load: pressure.Load{
+			Runnable: 12, Threads: 22, IOFull: 0, IOWindow: 5 * time.Second,
+			Disk: &pressure.DiskNow{Open: true, OpenMs: 37},
+		}}}}
+		m.sleep = func(context.Context, time.Duration) error { return context.Canceled }
+		err := m.admitWithReserves(context.Background(), nil, filepath.Join(t.TempDir(), "load.lock"))
+		if err == nil || m.waits[WhyIO] == 0 {
+			t.Fatalf("waits = %v, %v; want wait for disk freeze", m.waits, err)
+		}
+		if !strings.Contains(output.String(), "disk freeze") {
+			t.Fatalf("wait output %q does not explain disk freeze", output.String())
+		}
+	})
 
 	t.Run("quiet", func(t *testing.T) {
 		fakeMachine(t)

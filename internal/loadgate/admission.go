@@ -79,7 +79,12 @@ func (m *machine) admissionRecord(priority bool) admissionRecord {
 	}
 	load := m.lastView.Load
 	if !slices.Contains(m.lastView.Skipped, pressure.ErrNoMemInfo) {
-		rec.DirtyMB, rec.DirtyLimitMB = &load.DirtyMB, &load.DirtyLimitMB
+		rec.DirtyMB = &load.DirtyMB
+	}
+	if load.DirtyLimitMB > 0 &&
+		!slices.Contains(m.lastView.Skipped, pressure.ErrNoMemInfo) &&
+		!slices.Contains(m.lastView.Skipped, pressure.ErrNoDirtyLimit) {
+		rec.DirtyLimitMB = &load.DirtyLimitMB
 	}
 	if !slices.Contains(m.lastView.Skipped, pressure.ErrNoRunnable) {
 		rec.Blocked = &load.Blocked

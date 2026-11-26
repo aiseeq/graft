@@ -222,16 +222,40 @@ func TestAdmissionRecordNamesFailingDiskSource(t *testing.T) {
 }
 
 func TestAdmissionRecordOmitsUnavailableDirtyMeasures(t *testing.T) {
-	m := &machine{haveView: true, lastView: pressure.Verdict{
-		Load:    pressure.Load{DirtyMB: 99, DirtyLimitMB: 64},
-		Skipped: []error{pressure.ErrNoMemInfo},
-	}}
-	line, err := json.Marshal(m.admissionRecord(false))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(line, []byte(`"dirty_mb"`)) || bytes.Contains(line, []byte(`"dirty_limit_mb"`)) {
-		t.Fatalf("unavailable dirty measures were written as values: %s", line)
+	for _, tc := range []struct {
+		name    string
+		limits  pressure.Limits
+		skipped []error
+		present bool
+		dirty   bool
+		limit   float64
+	}{
+		{name: "no meminfo", skipped: []error{pressure.ErrNoMemInfo}},
+		{name: "no machine dirty limit", skipped: []error{pressure.ErrNoDirtyLimit}, dirty: true, limit: 64},
+		{name: "custom limit without measured machine limit", limits: pressure.Limits{MaxDirtyMB: 32}, skipped: []error{pressure.ErrNoDirtyLimit}, dirty: true, limit: 64},
+		{name: "custom limit but no measured value", limits: pressure.Limits{MaxDirtyMB: 32}, dirty: true},
+		{name: "measured limit", present: true, dirty: true, limit: 64},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &machine{limits: tc.limits, haveView: true, lastView: pressure.Verdict{
+				Load: pressure.Load{DirtyMB: 99, DirtyLimitMB: tc.limit}, Skipped: tc.skipped,
+			}}
+			line, err := json.Marshal(m.admissionRecord(false))
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotLimit := bytes.Contains(line, []byte(`"dirty_limit_mb"`))
+			if gotLimit != tc.present {
+				t.Fatalf("dirty_limit_mb present = %t, want %t: %s", gotLimit, tc.present, line)
+			}
+			gotDirty := bytes.Contains(line, []byte(`"dirty_mb"`))
+			if gotDirty != tc.dirty {
+				t.Fatalf("dirty_mb present = %t, want %t: %s", gotDirty, tc.dirty, line)
+			}
+			if tc.present && (m.admissionRecord(false).DirtyLimitMB == nil || *m.admissionRecord(false).DirtyLimitMB != tc.limit) {
+				t.Fatalf("measured dirty limit = %v, want %g", m.admissionRecord(false).DirtyLimitMB, tc.limit)
+			}
+		})
 	}
 }
 
