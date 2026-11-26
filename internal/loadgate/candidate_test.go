@@ -22,7 +22,7 @@ func TestAdmissionCountsCandidateBesideLiveReserve(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
-	_, _, err := WaitWithSettle(ctx, "candidate", "projectA:candidate", nil, testLoad, path, "", 0, 2, io.Discard)
+	_, _, err := WaitWithSettle(ctx, "candidate", "projectA:candidate", nil, testLoad, path, "", 0, 2, io.Discard, "")
 	if err == nil {
 		t.Fatal("candidate passed at LA1 10 + unseen reserve 0.5 + candidate 2, limit 11")
 	}
@@ -39,7 +39,7 @@ func TestAdmissionExitHatchWithoutOurReserves(t *testing.T) {
 	setLoadavg(t, 10)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, release, err := WaitWithSettle(ctx, "oversized", "projectA:oversized", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), "", 0, 30, io.Discard)
+	_, release, err := WaitWithSettle(ctx, "oversized", "projectA:oversized", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), "", 0, 30, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestAdmissionCountsCandidateAndBlocksAtEquality(t *testing.T) {
 			setAdmissionFuture(t, path)
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 			defer cancel()
-			_, _, err := WaitWithSettle(ctx, "candidate", "projectA:candidate", nil, testLoad, path, "", 0, tc.candidate, io.Discard)
+			_, _, err := WaitWithSettle(ctx, "candidate", "projectA:candidate", nil, testLoad, path, "", 0, tc.candidate, io.Discard, "")
 			if (err != nil) != tc.wantWait {
 				t.Fatalf("candidate %.1f: err = %v, wantWait %v", tc.candidate, err, tc.wantWait)
 			}
@@ -96,7 +96,7 @@ func TestReviewOversizedStarvation(t *testing.T) {
 	defer release()
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
-	_, candidateRelease, err := WaitWithSettle(ctx, "oversized", "projectA:oversized", nil, testLoad, path, "", 0, 11, io.Discard)
+	_, candidateRelease, err := WaitWithSettle(ctx, "oversized", "projectA:oversized", nil, testLoad, path, "", 0, 11, io.Discard, "")
 	if err != nil {
 		t.Fatalf("oversized candidate starved beside a small live task: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestCandidateCountsAgainstRunnableWithLiveReserve(t *testing.T) {
 	defer release()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
-	_, _, err := WaitWithSettle(ctx, "runnable-boundary", "projectA:runnable-boundary", nil, testLoad, path, "", 0, 1, io.Discard)
+	_, _, err := WaitWithSettle(ctx, "runnable-boundary", "projectA:runnable-boundary", nil, testLoad, path, "", 0, 1, io.Discard, "")
 	if err == nil {
 		t.Fatal("candidate passed runnable 10 + live reserve 0.5 + candidate 1 at limit 11")
 	}
@@ -131,7 +131,7 @@ func TestReviewBusyJournal(t *testing.T) {
 	setLoadavg(t, 12)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
-	_, _, err := WaitWithSettle(ctx, "busy-journal", "projectA:busy-journal", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), "", 0, 2, io.Discard)
+	_, _, err := WaitWithSettle(ctx, "busy-journal", "projectA:busy-journal", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), "", 0, 2, io.Discard, "")
 	if err == nil {
 		t.Fatal("busy load unexpectedly admitted")
 	}
@@ -161,7 +161,7 @@ func TestAdmissionJournalFirstCPUWindow(t *testing.T) {
 	defer release()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
-	_, _, err = WaitWithSettle(ctx, "waiting", "projectA:waiting", nil, testLoad, path, "", 0, 2, io.Discard)
+	_, _, err = WaitWithSettle(ctx, "waiting", "projectA:waiting", nil, testLoad, path, "", 0, 2, io.Discard, "")
 	if err == nil {
 		t.Fatal("wait for first CPU measure unexpectedly admitted")
 	}

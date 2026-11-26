@@ -28,6 +28,8 @@ import (
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
+const unlimitedPriorityBudget = time.Duration(1 << 62)
+
 // queueTimeout bounds the wait for the queue; Ctrl-C stops it sooner.
 const queueTimeout = 24 * time.Hour
 
@@ -513,7 +515,7 @@ func writeBudgetSpend(budget string, state budgetState, left time.Duration, span
 // Empty endpoints read the remaining budget without changing its watermark.
 func (p *Priority) spend(from, to time.Time) (left time.Duration, err error) {
 	if p.Unlimited {
-		return time.Duration(1 << 62), nil
+		return unlimitedPriorityBudget, nil
 	}
 	fl := flock.New(p.Budget + ".lock")
 	if err := fl.Lock(); err != nil {
@@ -558,18 +560,18 @@ func (p *Priority) spend(from, to time.Time) (left time.Duration, err error) {
 // A priority task uses the same FIFO queue and spends its shared wait budget.
 //
 // kind is the task's kind as the stats profile names it.
-func Wait(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer, pastLoad ...string) (Admission, func() error, error) {
-	return WaitWithSettle(ctx, name, kind, p, l, lockPath, "", 0, 0, log, pastLoad...)
+func Wait(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer, pastLoad string) (Admission, func() error, error) {
+	return WaitWithSettle(ctx, name, kind, p, l, lockPath, "", 0, 0, log, pastLoad)
 }
 
 // WaitWithSettle admits a heavy task and, when settleLockPath is set,
 // serializes tasks that requested their own settling period on that lock.
 // The ordinary queue writes a live reservation before releasing its lock:
 // cores when positive, else the profile's estimate.
-func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath, settleLockPath string, settleDuration time.Duration, cores float64, log io.Writer, pastLoad ...string) (admission Admission, release func() error, retErr error) {
+func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userconfig.MachineLoad, lockPath, settleLockPath string, settleDuration time.Duration, cores float64, log io.Writer, pastLoad string) (admission Admission, release func() error, retErr error) {
 	m := newMachine(l, log, name, kind)
-	if len(pastLoad) > 0 && pastLoad[0] != "" {
-		m.pastLoad = pastLoad[0]
+	if pastLoad != "" {
+		m.pastLoad = pastLoad
 		if p == nil {
 			p = &Priority{For: "graft " + name, Unlimited: true}
 		}
@@ -583,29 +585,12 @@ func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userc
 		}
 	}()
 	holder := "graft " + name + " (starting a heavy task)"
-	settleCtx := ctx
-	var cancel context.CancelFunc
-	if p != nil {
-		if left, budgetErr := p.spend(time.Time{}, time.Time{}); budgetErr != nil {
-			return m.admission(), released, budgetErr
-		} else {
-			m.priorityBudget = left
-			if left <= 0 && settleLockPath != "" && settleDuration > 0 {
-				holders, holderErr := lock.Holders(settleLockPath)
-				if holderErr != nil {
-					return m.admission(), released, holderErr
-				}
-				if len(holders) > 0 {
-					m.waitedBehind = holders[0]
-					m.lastWaitText = "queued behind " + holders[0]
-					err := m.priorityFailure(ctx, p, time.Time{}, time.Time{})
-					return m.admission(), released, err
-				}
-			} else if left > 0 {
-				settleCtx, cancel = context.WithTimeout(ctx, left)
-				defer cancel()
-			}
-		}
+	settleCtx, cancel, err := prioritySettleContext(ctx, m, p, settleLockPath, settleDuration)
+	if err != nil {
+		return m.admission(), released, err
+	}
+	if cancel != nil {
+		defer cancel()
 	}
 	settleLock, behind, start, err := acquireSettle(settleCtx, m, p, settleLockPath, settleDuration, holder, log)
 	if err != nil {
@@ -629,6 +614,33 @@ func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userc
 		cancel()
 	}
 	return waitQueued(ctx, m, p, kind, l, lockPath, cores, settleLock, settleDuration, start, behind, log)
+}
+
+func prioritySettleContext(ctx context.Context, m *machine, p *Priority, settleLockPath string, settleDuration time.Duration) (context.Context, context.CancelFunc, error) {
+	if p == nil {
+		return ctx, nil, nil
+	}
+	left, err := p.spend(time.Time{}, time.Time{})
+	if err != nil {
+		return ctx, nil, err
+	}
+	m.priorityBudget = left
+	if left <= 0 && settleLockPath != "" && settleDuration > 0 {
+		holders, err := lock.Holders(settleLockPath)
+		if err != nil {
+			return ctx, nil, err
+		}
+		if len(holders) > 0 {
+			m.waitedBehind = holders[0]
+			m.lastWaitText = "queued behind " + holders[0]
+			return ctx, nil, m.priorityFailure(ctx, p, time.Time{}, time.Time{})
+		}
+	}
+	if left > 0 {
+		settleCtx, cancel := context.WithTimeout(ctx, left)
+		return settleCtx, cancel, nil
+	}
+	return ctx, nil, nil
 }
 
 func acquireSettle(ctx context.Context, m *machine, p *Priority, settleLockPath string, settleDuration time.Duration, holder string, log io.Writer) (*lock.Lock, string, time.Time, error) {
@@ -1708,11 +1720,7 @@ func (m *machine) busy(ctx context.Context, fresh bool) (busyness, error) {
 	if err != nil {
 		return busyness{}, fmt.Errorf("measuring the machine: %w", err)
 	}
-	if m.ignoreCPUPressure || m.pastLoad != "" {
-		skipped := v.Skipped
-		v = pressure.Rule(v.Load, m.limits, append(slices.Clone(skipped), pressure.ErrNoRunnable, pressure.ErrNoLoadAvg))
-		v.Skipped = skipped
-	}
+	v = m.withoutCPUPressure(v)
 	// A look that the wait's end cut short is no measure: its disk source
 	// failed for the deadline, not for the machine.
 	if err := ended(ctx); err != nil {
@@ -1737,6 +1745,16 @@ func (m *machine) busy(ctx context.Context, fresh bool) (busyness, error) {
 		}
 	}
 	return b, nil
+}
+
+func (m *machine) withoutCPUPressure(v pressure.Verdict) pressure.Verdict {
+	if !m.ignoreCPUPressure && m.pastLoad == "" {
+		return v
+	}
+	skipped := v.Skipped
+	v = pressure.Rule(v.Load, m.limits, append(slices.Clone(skipped), pressure.ErrNoRunnable, pressure.ErrNoLoadAvg))
+	v.Skipped = skipped
+	return v
 }
 
 func (m *machine) recordLoadDecision(v pressure.Verdict) {

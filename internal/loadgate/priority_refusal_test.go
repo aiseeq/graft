@@ -23,7 +23,7 @@ func TestProbeReviewFIFORefusal(t *testing.T) {
 	}
 	defer holder.Release()
 	p := &Priority{For: "deploy", Budget: newBudget(t, 80*time.Millisecond), Fail: true}
-	adm, _, err := Wait(context.Background(), "fifo", "projectA:fifo", p, testLoad, path, io.Discard)
+	adm, _, err := Wait(context.Background(), "fifo", "projectA:fifo", p, testLoad, path, io.Discard, "")
 	assertQueueRefusal(t, "ordinary holder", adm, err)
 }
 
@@ -38,7 +38,7 @@ func TestProbeReviewSettleRefusal(t *testing.T) {
 	}
 	defer holder.Release()
 	p := &Priority{For: "deploy", Budget: newBudget(t, 80*time.Millisecond), Fail: true}
-	adm, _, err := WaitWithSettle(context.Background(), "settle", "projectA:settle", p, testLoad, filepath.Join(dir, "load.lock"), settlePath, time.Second, 0, io.Discard)
+	adm, _, err := WaitWithSettle(context.Background(), "settle", "projectA:settle", p, testLoad, filepath.Join(dir, "load.lock"), settlePath, time.Second, 0, io.Discard, "")
 	assertQueueRefusal(t, "settling holder", adm, err)
 }
 
@@ -84,7 +84,7 @@ func TestPriorityRefusalKeepsTheMeasureThatBlocked(t *testing.T) {
 	l := testLoad
 	l.Poll = time.Millisecond
 	p := &Priority{For: "deploy", Budget: newBudget(t, 50*time.Millisecond), Fail: true}
-	_, _, err := Wait(context.Background(), "swap-refusal", "projectA:swap-refusal", p, l, filepath.Join(t.TempDir(), "load.lock"), io.Discard)
+	_, _, err := Wait(context.Background(), "swap-refusal", "projectA:swap-refusal", p, l, filepath.Join(t.TempDir(), "load.lock"), io.Discard, "")
 	if err == nil || !strings.Contains(err.Error(), "last wait: memory pressure") {
 		t.Fatalf("priority refusal = %v; want the blocking swap reason", err)
 	}
@@ -105,7 +105,7 @@ func TestPriorityQuietQueueRefusalNamesQuiet(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer holder.Release()
-	_, _, err = Wait(context.Background(), "quiet-refusal", "projectA:quiet-refusal", p, testLoad, path, io.Discard)
+	_, _, err = Wait(context.Background(), "quiet-refusal", "projectA:quiet-refusal", p, testLoad, path, io.Discard, "")
 	if err == nil || !strings.Contains(err.Error(), "last wait: quiet mode kept this task waiting") {
 		t.Fatalf("priority refusal = %v; want quiet mode as the queue reason", err)
 	}

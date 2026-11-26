@@ -974,14 +974,11 @@ func execCmd(ctx context.Context, a *app.App, args []string) error {
 	var opts app.ExecOptions
 	var local bool
 	var pass []string
-	for len(args) > 0 && args[0] != "--" {
-		consumed, err := parseExecFlag(args, &opts, &local, &pass)
-		if err != nil {
-			return err
-		}
-		args = args[consumed:]
+	args, err := parseExecArgs(args, &opts, &local, &pass)
+	if err != nil {
+		return err
 	}
-	if len(args) < 2 || ((local || opts.TestDB || opts.Settle > 0 || opts.Cores > 0 || opts.MemoryMax != "" || opts.MemoryHigh != "" || opts.PastLoad != "" || len(pass) > 0) && !opts.Heavy) {
+	if len(args) < 2 || (!opts.Heavy && (local || opts.TestDB || opts.Settle > 0 || opts.Cores > 0 || opts.MemoryMax != "" || opts.MemoryHigh != "" || opts.PastLoad != "" || len(pass) > 0)) {
 		return execUsage()
 	}
 	if err := exportExecEnv(pass, local); err != nil {
@@ -989,6 +986,17 @@ func execCmd(ctx context.Context, a *app.App, args []string) error {
 	}
 	opts.Local = local
 	return a.Exec(ctx, args[1:], opts)
+}
+
+func parseExecArgs(args []string, opts *app.ExecOptions, local *bool, pass *[]string) ([]string, error) {
+	for len(args) > 0 && args[0] != "--" {
+		consumed, err := parseExecFlag(args, opts, local, pass)
+		if err != nil {
+			return nil, err
+		}
+		args = args[consumed:]
+	}
+	return args, nil
 }
 
 func execUsage() error { return fmt.Errorf("%w: %s", errUsage, execSyntax) }
@@ -1002,12 +1010,19 @@ func parseExecFlag(args []string, opts *app.ExecOptions, local *bool, pass *[]st
 		*local = true
 	case "--test-db":
 		opts.TestDB = true
+	default:
+		return parseExecValueFlag(args, opts, pass, usage)
+	}
+	return 1, nil
+}
+
+func parseExecValueFlag(args []string, opts *app.ExecOptions, pass *[]string, usage error) (int, error) {
+	switch args[0] {
 	case "--past-load":
 		if len(args) < 2 || !validPastLoadReason(args[1]) {
 			return 0, usage
 		}
 		opts.PastLoad = args[1]
-		return 2, nil
 	case "--env":
 		if len(args) < 2 {
 			return 0, usage
@@ -1016,7 +1031,6 @@ func parseExecFlag(args []string, opts *app.ExecOptions, local *bool, pass *[]st
 			return 0, fmt.Errorf("%w: exec --env %q: want the name of a variable", errUsage, args[1])
 		}
 		*pass = append(*pass, args[1])
-		return 2, nil
 	case "--settle":
 		if len(args) < 2 {
 			return 0, usage
@@ -1026,7 +1040,6 @@ func parseExecFlag(args []string, opts *app.ExecOptions, local *bool, pass *[]st
 			return 0, fmt.Errorf("%w: exec --settle %q: want a duration above 0, such as 60s", errUsage, args[1])
 		}
 		opts.Settle = d
-		return 2, nil
 	case "--cores":
 		if len(args) < 2 {
 			return 0, usage
@@ -1036,24 +1049,27 @@ func parseExecFlag(args []string, opts *app.ExecOptions, local *bool, pass *[]st
 			return 0, err
 		}
 		opts.Cores = cores
-		return 2, nil
 	case "--memory-max", "--memory-high":
-		if len(args) < 2 {
-			return 0, usage
-		}
-		if _, _, err := memorymax.Parse(args[1]); err != nil {
-			return 0, fmt.Errorf("%w: exec %s %q: %w", errUsage, args[0], args[1], err)
-		}
-		if args[0] == "--memory-max" {
-			opts.MemoryMax = args[1]
-		} else {
-			opts.MemoryHigh = args[1]
-		}
-		return 2, nil
+		return parseExecMemoryFlag(args, opts, usage)
 	default:
 		return 0, usage
 	}
-	return 1, nil
+	return 2, nil
+}
+
+func parseExecMemoryFlag(args []string, opts *app.ExecOptions, usage error) (int, error) {
+	if len(args) < 2 {
+		return 0, usage
+	}
+	if _, _, err := memorymax.Parse(args[1]); err != nil {
+		return 0, fmt.Errorf("%w: exec %s %q: %w", errUsage, args[0], args[1], err)
+	}
+	if args[0] == "--memory-max" {
+		opts.MemoryMax = args[1]
+	} else {
+		opts.MemoryHigh = args[1]
+	}
+	return 2, nil
 }
 
 func parseExecCores(value string) (float64, error) {

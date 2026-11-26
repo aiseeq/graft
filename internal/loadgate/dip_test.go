@@ -75,7 +75,7 @@ func dipAdmits(t *testing.T, dip, cores float64, want int) int {
 	var wg sync.WaitGroup
 	for i := range 5 {
 		wg.Go(func() {
-			_, release, err := WaitWithSettle(ctx, fmt.Sprintf("task%d", i), "projectA:agent", nil, l, path, "", 0, cores, logw)
+			_, release, err := WaitWithSettle(ctx, fmt.Sprintf("task%d", i), "projectA:agent", nil, l, path, "", 0, cores, logw, "")
 			if err != nil {
 				return
 			}
@@ -136,7 +136,7 @@ func waitUntil(timeout time.Duration, cond func() bool) bool {
 // release.
 func admitOne(t *testing.T, path string, cores float64) func() error {
 	t.Helper()
-	_, release, err := WaitWithSettle(context.Background(), "first", "projectA:first", nil, testLoad, path, "", 0, cores, io.Discard)
+	_, release, err := WaitWithSettle(context.Background(), "first", "projectA:first", nil, testLoad, path, "", 0, cores, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func admittedFilesPattern(path string) string { return path + ".*.admitted" }
 func waitBriefly(path string, p *Priority) (Admission, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
-	adm, release, err := Wait(ctx, "next", "projectA:next", p, testLoad, path, io.Discard)
+	adm, release, err := Wait(ctx, "next", "projectA:next", p, testLoad, path, io.Discard, "")
 	if err == nil {
 		_ = release()
 	}
@@ -230,7 +230,7 @@ func TestPriorityRefusalNamesReserveForecast(t *testing.T) {
 	p := &Priority{For: "deploy", Budget: newBudget(t, 30*time.Millisecond), Fail: true}
 	l := testLoad
 	l.Poll = time.Millisecond
-	_, _, err := WaitWithSettle(context.Background(), "forecast", "projectA:forecast", p, l, path, "", 0, 0, io.Discard)
+	_, _, err := WaitWithSettle(context.Background(), "forecast", "projectA:forecast", p, l, path, "", 0, 0, io.Discard, "")
 	forecast := "load average 1m 21.0 plus 4.0 of the admitted tasks"
 	if err == nil || !strings.Contains(err.Error(), forecast) || !strings.Contains(err.Error(), "now: load average 1m") {
 		t.Fatalf("priority refusal = %v; want forecast %q and a fresh now sample", err, forecast)
@@ -311,7 +311,7 @@ func TestPrioritySettleCountsTheForecast(t *testing.T) {
 	if err := os.WriteFile(p.Budget, []byte("100000000"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, release, err := WaitWithSettle(context.Background(), "deploy", "projectA:deploy", p, testLoad, path, settlePath, time.Hour, 8, io.Discard)
+	_, release, err := WaitWithSettle(context.Background(), "deploy", "projectA:deploy", p, testLoad, path, settlePath, time.Hour, 8, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestPrioritySettleCountsTheForecast(t *testing.T) {
 	setLoadavg(t, 21)
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
-	adm, rel, err := WaitWithSettle(ctx, "deploy", "projectA:deploy", p, testLoad, path, settlePath, time.Hour, 1, io.Discard)
+	adm, rel, err := WaitWithSettle(ctx, "deploy", "projectA:deploy", p, testLoad, path, settlePath, time.Hour, 1, io.Discard, "")
 	if err == nil {
 		_ = rel()
 	}
@@ -354,7 +354,7 @@ func TestNoStatAdmits(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "load.lock")
 	for _, name := range []string{"first", "next"} {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		adm, release, err := WaitWithSettle(ctx, name, "projectA:"+name, nil, testLoad, path, "", 0, 4, io.Discard)
+		adm, release, err := WaitWithSettle(ctx, name, "projectA:"+name, nil, testLoad, path, "", 0, 4, io.Discard, "")
 		cancel()
 		if err != nil {
 			t.Fatalf("%s task of 4 cores, no /proc/stat: %+v, %v", name, adm, err)

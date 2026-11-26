@@ -110,7 +110,7 @@ func TestDiskSourceIsAsked(t *testing.T) {
 	fakeMachine(t)
 	d := fakeDisk(t)
 	var log strings.Builder
-	adm, release, err := Wait(context.Background(), "build", "projectA:build", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log)
+	adm, release, err := Wait(context.Background(), "build", "projectA:build", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log, "")
 	if err != nil || log.Len() != 0 {
 		t.Fatalf("%v:\n%s", err, log.String())
 	}
@@ -245,7 +245,7 @@ func TestNoDiskSourceUsesPSI(t *testing.T) {
 				setRunnable(1)
 			}()
 			var log strings.Builder
-			_, release, err := Wait(context.Background(), "build", "projectA:build", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log)
+			_, release, err := Wait(context.Background(), "build", "projectA:build", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log, "")
 			if err != nil {
 				t.Fatal(err)
 			}

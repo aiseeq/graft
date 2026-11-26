@@ -23,7 +23,7 @@ func TestPastLoadPassesCPUThresholdAndRecordsReason(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
-	if _, _, err := Wait(ctx, "ordinary", "projectA:ordinary", nil, testLoad, path, io.Discard); err == nil {
+	if _, _, err := Wait(ctx, "ordinary", "projectA:ordinary", nil, testLoad, path, io.Discard, ""); err == nil {
 		t.Fatal("ordinary admission passed the CPU limit")
 	}
 
@@ -60,7 +60,7 @@ func TestPastLoadPriorityReservesBeforeOrdinaryWaiter(t *testing.T) {
 	ordinaryCtx, ordinaryCancel := context.WithCancel(context.Background())
 	defer ordinaryCancel()
 	go func() {
-		adm, rel, err := Wait(ordinaryCtx, "ordinary", "projectA:ordinary", nil, testLoad, path, io.Discard)
+		adm, rel, err := Wait(ordinaryCtx, "ordinary", "projectA:ordinary", nil, testLoad, path, io.Discard, "")
 		got <- result{"ordinary", adm, rel, err}
 	}()
 	awaitFiles(t, path+".queue.*.lticket", 1)
@@ -104,7 +104,7 @@ func TestPastLoadPriorityReservesBeforeOrdinaryWaiter(t *testing.T) {
 	}
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 	defer waitCancel()
-	ordinary, _, err := Wait(waitCtx, "ordinary-after", "projectA:ordinary", nil, testLoad, path, io.Discard)
+	ordinary, _, err := Wait(waitCtx, "ordinary-after", "projectA:ordinary", nil, testLoad, path, io.Discard, "")
 	if err == nil || ordinary.Waits[WhyReserve] == 0 {
 		t.Fatalf("ordinary admission after reservation = %+v, %v; want reserve wait", ordinary, err)
 	}

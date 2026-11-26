@@ -89,17 +89,21 @@ func TestRegistryFlagSets(t *testing.T) {
 	}
 }
 
-// Exec has a handwritten switch. Its case labels are the accepted spellings;
-// comparing the syntax tree catches additions as well as stale entries.
+// Exec's handwritten parser switches define accepted spellings; comparing
+// their case labels with the registry catches additions and stale entries.
 func TestRegistryExecParser(t *testing.T) {
 	f, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var actual []string
+	parserFuncs := map[string]bool{
+		"parseExecFlag":      true,
+		"parseExecValueFlag": true,
+	}
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "parseExecFlag" {
+		if !ok || !parserFuncs[fn.Name.Name] {
 			continue
 		}
 		ast.Inspect(fn.Body, func(n ast.Node) bool {

@@ -94,13 +94,13 @@ func TestReserveLightTasksStartBackToBack(t *testing.T) {
 	l := testLoad
 	l.Settle = 300 * time.Millisecond
 	path := filepath.Join(t.TempDir(), "load.lock")
-	_, release, err := Wait(context.Background(), "first", "projectA:first", nil, l, path, io.Discard)
+	_, release, err := Wait(context.Background(), "first", "projectA:first", nil, l, path, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
 	started := time.Now()
-	_, release2, err := Wait(context.Background(), "second", "projectA:second", nil, l, path, io.Discard)
+	_, release2, err := Wait(context.Background(), "second", "projectA:second", nil, l, path, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestReservePollPanicIsLoggedAndDropped(t *testing.T) {
 	l := testLoad
 	l.Settle = time.Hour
 	path := filepath.Join(t.TempDir(), "load.lock")
-	adm, release, err := Wait(context.Background(), "panic-check", "projectA:panic-check", nil, l, path, &log)
+	adm, release, err := Wait(context.Background(), "panic-check", "projectA:panic-check", nil, l, path, &log, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,14 +164,14 @@ func TestReserveSumHoldsTheHead(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Millisecond)
 	defer cancel()
-	adm, _, err := Wait(ctx, "head", "projectA:head", nil, testLoad, path, io.Discard)
+	adm, _, err := Wait(ctx, "head", "projectA:head", nil, testLoad, path, io.Discard, "")
 	if err == nil || adm.Waits[WhyReserve] == 0 {
 		t.Fatalf("admission = %+v, %v; want reserve wait", adm, err)
 	}
 	if err := rel(); err != nil {
 		t.Fatal(err)
 	}
-	_, release, err := Wait(context.Background(), "head", "projectA:head", nil, testLoad, path, io.Discard)
+	_, release, err := Wait(context.Background(), "head", "projectA:head", nil, testLoad, path, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestReserveSumHoldsTheHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 8 runnable + 9 reserved + 4 of the candidate stays below 22.
-	_, release, err = Wait(context.Background(), "head", "projectA:head", nil, testLoad, path, io.Discard)
+	_, release, err = Wait(context.Background(), "head", "projectA:head", nil, testLoad, path, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestReserveSumHoldsTheHead(t *testing.T) {
 	defer rel()
 	ctx, cancel = context.WithTimeout(context.Background(), 35*time.Millisecond)
 	defer cancel()
-	adm, _, err = Wait(ctx, "head", "projectA:head", nil, testLoad, path, io.Discard)
+	adm, _, err = Wait(ctx, "head", "projectA:head", nil, testLoad, path, io.Discard, "")
 	if err == nil || adm.Waits[WhyReserve] == 0 {
 		t.Fatalf("admission with candidate cores = %+v, %v; want reserve wait", adm, err)
 	}
@@ -325,7 +325,7 @@ func TestReserveMissedHistoryStillMeetsRunnable(t *testing.T) {
 		<-observed
 		cancel()
 	}()
-	adm, _, err := Wait(ctx, "next", "projectA:next", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), waitLogWriter{observed: observed})
+	adm, _, err := Wait(ctx, "next", "projectA:next", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), waitLogWriter{observed: observed}, "")
 	if err == nil || adm.Waits[WhyLoad] == 0 {
 		t.Fatalf("high runnable admitted: %+v %v", adm, err)
 	}
@@ -335,7 +335,7 @@ func TestReserveHugeHeadRunsAlone(t *testing.T) {
 	fakeMachine(t)
 	setProfileHistory(t, "projectA:huge", 20)
 	path := filepath.Join(t.TempDir(), "load.lock")
-	adm, release, err := Wait(context.Background(), "huge", "projectA:huge", nil, testLoad, path, io.Discard)
+	adm, release, err := Wait(context.Background(), "huge", "projectA:huge", nil, testLoad, path, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestReserveHugeHeadRunsAlone(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	_, _, err = Wait(ctx, "next", "projectA:next", nil, testLoad, path, io.Discard)
+	_, _, err = Wait(ctx, "next", "projectA:next", nil, testLoad, path, io.Discard, "")
 	if err == nil {
 		t.Fatal("next passed huge live reservation")
 	}
@@ -358,7 +358,7 @@ func TestReservePriorityWritesItsReserve(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "load.lock")
 	p := &Priority{For: "deploy", Budget: filepath.Join(t.TempDir(), "budget")}
 	_ = os.WriteFile(p.Budget, []byte("1000000000"), 0o644)
-	adm, release, err := Wait(context.Background(), "priority", "projectA:priority", p, testLoad, path, io.Discard)
+	adm, release, err := Wait(context.Background(), "priority", "projectA:priority", p, testLoad, path, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestReservePriorityWritesItsReserve(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
 	defer cancel()
-	next, _, err := Wait(ctx, "next", "projectA:next", nil, testLoad, path, io.Discard)
+	next, _, err := Wait(ctx, "next", "projectA:next", nil, testLoad, path, io.Discard, "")
 	if err == nil || next.Waits[WhyReserve] == 0 {
 		t.Fatalf("next admission = %+v, %v", next, err)
 	}
@@ -385,7 +385,7 @@ func TestPriorityCannotPassHolderOfLoadLock(t *testing.T) {
 	p := &Priority{For: "deploy", Budget: newBudget(t, time.Minute)}
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
 	defer cancel()
-	if _, release, err := Wait(ctx, "priority", "projectA:priority", p, testLoad, path, io.Discard); err == nil {
+	if _, release, err := Wait(ctx, "priority", "projectA:priority", p, testLoad, path, io.Discard, ""); err == nil {
 		_ = release()
 		t.Fatal("priority passed the ordinary holder of load.lock")
 	}
@@ -414,7 +414,7 @@ func TestPriorityQueuePassesFiveOrdinaryLoadWaiters(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancels = append(cancels, cancel)
 		go func() {
-			_, release, err := Wait(ctx, name, "projectA:"+name, p, testLoad, path, io.Discard)
+			_, release, err := Wait(ctx, name, "projectA:"+name, p, testLoad, path, io.Discard, "")
 			got <- result{name, release, err}
 		}()
 	}
@@ -476,7 +476,7 @@ func TestPriorityQueuePassesFiveOrdinarySettleWaiters(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancels = append(cancels, cancel)
 		go func() {
-			_, release, err := WaitWithSettle(ctx, name, "projectA:"+name, p, testLoad, loadPath, settlePath, time.Hour, 0, io.Discard)
+			_, release, err := WaitWithSettle(ctx, name, "projectA:"+name, p, testLoad, loadPath, settlePath, time.Hour, 0, io.Discard, "")
 			got <- result{name, release, err}
 		}()
 	}
@@ -578,7 +578,7 @@ func TestPriorityReservationConstrainsConcurrentPriorityAndOrdinary(t *testing.T
 
 	path := filepath.Join(t.TempDir(), "load.lock")
 	p := &Priority{For: "deploy", Budget: newBudget(t, time.Minute)}
-	_, firstRelease, err := WaitWithSettle(context.Background(), "priority-one", "projectA:priority-one", p, testLoad, path, "", 0, 2, io.Discard)
+	_, firstRelease, err := WaitWithSettle(context.Background(), "priority-one", "projectA:priority-one", p, testLoad, path, "", 0, 2, io.Discard, "")
 	if err != nil {
 		t.Fatalf("first priority admission: %v", err)
 	}
@@ -595,7 +595,7 @@ func TestPriorityReservationConstrainsConcurrentPriorityAndOrdinary(t *testing.T
 		priority *Priority
 	}{{"priority-two", p}, {"ordinary", nil}} {
 		go func() {
-			_, release, err := WaitWithSettle(ctx, tc.name, "projectA:"+tc.name, tc.priority, testLoad, path, "", 0, 2, io.Discard)
+			_, release, err := WaitWithSettle(ctx, tc.name, "projectA:"+tc.name, tc.priority, testLoad, path, "", 0, 2, io.Discard, "")
 			results <- result{release: release, err: err}
 		}()
 	}
@@ -695,7 +695,7 @@ func TestBrokenPressureLimitsFailBusyCheck(t *testing.T) {
 
 // wait is Wait for a task of projectA, with only its waits.
 func wait(ctx context.Context, name string, p *Priority, l userconfig.MachineLoad, lockPath string, log io.Writer) (Waits, func() error, error) {
-	adm, release, err := Wait(ctx, name, "projectA:"+name, p, l, lockPath, log)
+	adm, release, err := Wait(ctx, name, "projectA:"+name, p, l, lockPath, log, "")
 	return adm.Waits, release, err
 }
 
@@ -975,7 +975,7 @@ func TestWaitWithSettleReleasesSettleLockOnHistoryError(t *testing.T) {
 	}
 	dir := t.TempDir()
 	lockPath, settlePath := filepath.Join(dir, "load.lock"), filepath.Join(dir, "load.settle.lock")
-	_, _, err = WaitWithSettle(context.Background(), "head", "projectA:bad", nil, testLoad, lockPath, settlePath, time.Hour, 0, io.Discard)
+	_, _, err = WaitWithSettle(context.Background(), "head", "projectA:bad", nil, testLoad, lockPath, settlePath, time.Hour, 0, io.Discard, "")
 	if err == nil || !strings.Contains(err.Error(), history) {
 		t.Fatalf("WaitWithSettle error = %v; want corrupt history path %s", err, history)
 	}
@@ -1001,13 +1001,13 @@ func TestWaitNamesWhoHeldTheQueue(t *testing.T) {
 	}
 	got := make(chan result, 2)
 	go func() {
-		adm, rel, err := Wait(context.Background(), "head", "projectA:head", nil, l, path, io.Discard)
+		adm, rel, err := Wait(context.Background(), "head", "projectA:head", nil, l, path, io.Discard, "")
 		got <- result{adm, rel, err}
 	}()
 	awaitFiles(t, path+".*.lholder", 1)
 	observed := make(chan struct{}, 1)
 	go func() {
-		adm, rel, err := Wait(context.Background(), "follower", "projectA:follower", nil, l, path, waitLogWriter{observed: observed})
+		adm, rel, err := Wait(context.Background(), "follower", "projectA:follower", nil, l, path, waitLogWriter{observed: observed}, "")
 		got <- result{adm, rel, err}
 	}()
 	awaitFiles(t, path+".queue.*.lticket", 1)
@@ -1038,7 +1038,7 @@ func TestWaitWithSettleNamesWhoHeldTheSettleQueue(t *testing.T) {
 	fakeMachine(t)
 	dir := t.TempDir()
 	path, settlePath := filepath.Join(dir, "load.lock"), filepath.Join(dir, "load.settle.lock")
-	_, release, err := WaitWithSettle(context.Background(), "head", "projectA:head", nil, testLoad, path, settlePath, time.Hour, 0, io.Discard)
+	_, release, err := WaitWithSettle(context.Background(), "head", "projectA:head", nil, testLoad, path, settlePath, time.Hour, 0, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1052,7 +1052,7 @@ func TestWaitWithSettleNamesWhoHeldTheSettleQueue(t *testing.T) {
 	// lock fails; head is released only after the follower says it waits.
 	waiting := &signalWriter{text: "waiting for the write lock", seen: make(chan struct{})}
 	go func() {
-		adm, rel, err := WaitWithSettle(context.Background(), "follower", "projectA:follower", nil, testLoad, path, settlePath, time.Hour, 0, waiting)
+		adm, rel, err := WaitWithSettle(context.Background(), "follower", "projectA:follower", nil, testLoad, path, settlePath, time.Hour, 0, waiting, "")
 		if err == nil {
 			err = rel()
 		}
@@ -1091,7 +1091,7 @@ func TestWaitBehindQuietIsQuiet(t *testing.T) {
 	defer cancel()
 	first := make(chan struct{})
 	go func() {
-		_, _, _ = Wait(ctx, "head", "projectA:head", nil, testLoad, path, io.Discard)
+		_, _, _ = Wait(ctx, "head", "projectA:head", nil, testLoad, path, io.Discard, "")
 		close(first)
 	}()
 	awaitFiles(t, path+".*.lholder", 1)
@@ -1103,7 +1103,7 @@ func TestWaitBehindQuietIsQuiet(t *testing.T) {
 	}
 	got := make(chan waitResult, 1)
 	go func() {
-		adm, _, err := Wait(followerCtx, "follower", "projectA:follower", nil, testLoad, path, io.Discard)
+		adm, _, err := Wait(followerCtx, "follower", "projectA:follower", nil, testLoad, path, io.Discard, "")
 		got <- waitResult{adm: adm, err: err}
 	}()
 	awaitFiles(t, path+".queue.*.lticket", 1)
@@ -1163,7 +1163,7 @@ func TestOrdinaryAdmissionWaitsForCPUInHalfMode(t *testing.T) {
 	}()
 
 	adm, release, err := Wait(context.Background(), "half admission", "projectA:half-admission", nil,
-		testLoad, filepath.Join(t.TempDir(), "load.lock"), io.Discard)
+		testLoad, filepath.Join(t.TempDir(), "load.lock"), io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1773,7 +1773,7 @@ func TestPriorityZeroBudgetDoesNotStartOverLA1(t *testing.T) {
 		t.Fatal(err)
 	}
 	var log strings.Builder
-	_, _, err := Wait(context.Background(), "deploy-step", "projectA:deploy-step", p, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log)
+	_, _, err := Wait(context.Background(), "deploy-step", "projectA:deploy-step", p, testLoad, filepath.Join(t.TempDir(), "load.lock"), &log, "")
 	if err == nil || !strings.Contains(err.Error(), "budget exhausted (budget 10s)") || !strings.Contains(err.Error(), "last wait: ") || strings.Contains(err.Error(), "last wait: this task did not wait") || !strings.Contains(err.Error(), "budget already exhausted by other tasks of this deploy") || !strings.Contains(err.Error(), "waited 0s; budget on entry 0s; now: load average 1m 12.00") || !strings.Contains(err.Error(), "limit 11") || !strings.Contains(err.Error(), "deploy-step not started") {
 		t.Fatalf("zero-budget admission error = %v; log: %s", err, log.String())
 	}
@@ -1873,7 +1873,7 @@ func TestHalfModeQueueDoesNotAdmitABurst(t *testing.T) {
 	admitted := 0
 	for range 20 {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
-		_, release, err := Wait(ctx, "burst", "projectA:burst", nil, testLoad, path, io.Discard)
+		_, release, err := Wait(ctx, "burst", "projectA:burst", nil, testLoad, path, io.Discard, "")
 		cancel()
 		if err != nil {
 			break
@@ -1907,7 +1907,7 @@ func TestMeasuredCPUReplacesLowReservationInUnseenLoad(t *testing.T) {
 	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
 	path := filepath.Join(t.TempDir(), "load.lock")
 	var log strings.Builder
-	adm, release, err := Wait(context.Background(), "measured-eight", "projectA:measured-eight", nil, testLoad, path, &log)
+	adm, release, err := Wait(context.Background(), "measured-eight", "projectA:measured-eight", nil, testLoad, path, &log, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1931,7 +1931,7 @@ func TestMeasuredCPUReplacesLowReservationInUnseenLoad(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
-	nextAdm, _, err := Wait(ctx, "next", "projectA:next", nil, testLoad, path, io.Discard)
+	nextAdm, _, err := Wait(ctx, "next", "projectA:next", nil, testLoad, path, io.Discard, "")
 	if err == nil || nextAdm.Waits[WhyReserve] == 0 {
 		t.Fatalf("next admission = %+v, %v; want it held by measured 8-core task", nextAdm, err)
 	}
@@ -1957,7 +1957,7 @@ func TestWaitHoldsQueueUntilFirstCPUObservation(t *testing.T) {
 	}
 	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
 	path := filepath.Join(t.TempDir(), "load.lock")
-	_, release, err := Wait(context.Background(), "first-measure", "projectA:first-measure", nil, testLoad, path, io.Discard)
+	_, release, err := Wait(context.Background(), "first-measure", "projectA:first-measure", nil, testLoad, path, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1973,7 +1973,7 @@ func TestWaitHoldsQueueUntilFirstCPUObservation(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
-	firstNext, _, err := Wait(ctx, "next-before-measure", "projectA:next", nil, testLoad, path, io.Discard)
+	firstNext, _, err := Wait(ctx, "next-before-measure", "projectA:next", nil, testLoad, path, io.Discard, "")
 	if err == nil || firstNext.Waits[WhyReserve] == 0 {
 		t.Fatalf("next admission before first CPU measure = %+v, %v; want it held", firstNext, err)
 	}
@@ -1981,7 +1981,7 @@ func TestWaitHoldsQueueUntilFirstCPUObservation(t *testing.T) {
 	measured := waitObservedCores(t, path, func(d reserveData) bool { return d.ObservedCores >= 7.5 }, time.Second)
 	ctxAfterMeasure, cancelAfterMeasure := context.WithTimeout(context.Background(), 35*time.Millisecond)
 	defer cancelAfterMeasure()
-	secondNext, _, err := Wait(ctxAfterMeasure, "next-after-measure", "projectA:next", nil, testLoad, path, io.Discard)
+	secondNext, _, err := Wait(ctxAfterMeasure, "next-after-measure", "projectA:next", nil, testLoad, path, io.Discard, "")
 	if err == nil || secondNext.Waits[WhyReserve] == 0 {
 		t.Fatalf("next admission after %.2f measured cores = %+v, %v; want it held", measured.ObservedCores, secondNext, err)
 	}
@@ -1999,7 +1999,7 @@ func TestWaitRechecksAtFirstMeasureDeadline(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "load.lock")
 	l := testLoad
 	l.Poll, l.Settle = 5*time.Second, time.Hour
-	_, release, err := Wait(context.Background(), "first-measure", "projectA:first-measure-deadline", nil, l, path, io.Discard)
+	_, release, err := Wait(context.Background(), "first-measure", "projectA:first-measure-deadline", nil, l, path, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2007,7 +2007,7 @@ func TestWaitRechecksAtFirstMeasureDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	started := time.Now()
-	adm, releaseNext, err := Wait(ctx, "next", "projectA:next", nil, l, path, io.Discard)
+	adm, releaseNext, err := Wait(ctx, "next", "projectA:next", nil, l, path, io.Discard, "")
 	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("next admission after waiting %s: %+v, %v", elapsed, adm, err)
@@ -2051,7 +2051,7 @@ func TestReserveKeepsPollingAfterCap(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "load.lock")
 	l := testLoad
 	l.Settle = capDuration
-	_, release, err := Wait(context.Background(), "after-cap", "projectA:after-cap", nil, l, path, io.Discard)
+	_, release, err := Wait(context.Background(), "after-cap", "projectA:after-cap", nil, l, path, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2079,7 +2079,7 @@ func TestZeroCPUQueueWaitEndsAfterFirstWindowGrace(t *testing.T) {
 	}
 	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
 	path := filepath.Join(t.TempDir(), "load.lock")
-	_, release, err := Wait(context.Background(), "idle", "projectA:idle", nil, testLoad, path, io.Discard)
+	_, release, err := Wait(context.Background(), "idle", "projectA:idle", nil, testLoad, path, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2091,7 +2091,7 @@ func TestZeroCPUQueueWaitEndsAfterFirstWindowGrace(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	adm, releaseNext, err := Wait(ctx, "next-idle", "projectA:next-idle", nil, testLoad, path, io.Discard)
+	adm, releaseNext, err := Wait(ctx, "next-idle", "projectA:next-idle", nil, testLoad, path, io.Discard, "")
 	if err != nil {
 		t.Fatalf("zero-CPU task held the next admission: %+v, %v", adm, err)
 	}
@@ -2120,7 +2120,7 @@ func TestWaitWithSettleHoldsNextAdmissionForDuration(t *testing.T) {
 	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
 	path, settlePath := filepath.Join(t.TempDir(), "load.lock"), filepath.Join(t.TempDir(), "load.settle.lock")
 	duration := 80 * time.Millisecond
-	_, release, err := WaitWithSettle(context.Background(), "head", "projectA:head", nil, testLoad, path, settlePath, duration, .5, io.Discard)
+	_, release, err := WaitWithSettle(context.Background(), "head", "projectA:head", nil, testLoad, path, settlePath, duration, .5, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2128,7 +2128,7 @@ func TestWaitWithSettleHoldsNextAdmissionForDuration(t *testing.T) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	_, releaseNext, err := WaitWithSettle(ctx, "next", "projectA:next", nil, testLoad, path, settlePath, duration, .5, io.Discard)
+	_, releaseNext, err := WaitWithSettle(ctx, "next", "projectA:next", nil, testLoad, path, settlePath, duration, .5, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2159,7 +2159,7 @@ func TestReserveTracksLateCPUIncrease(t *testing.T) {
 	}
 	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
 	path := filepath.Join(t.TempDir(), "load.lock")
-	_, release, err := Wait(context.Background(), "late-phase", "projectA:late-phase", nil, testLoad, path, io.Discard)
+	_, release, err := Wait(context.Background(), "late-phase", "projectA:late-phase", nil, testLoad, path, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2205,7 +2205,7 @@ func TestReserveKeepsObservationAfterReadError(t *testing.T) {
 	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
 	path := filepath.Join(t.TempDir(), "load.lock")
 	var log strings.Builder
-	_, release, err := Wait(context.Background(), "read-error", "projectA:read-error", nil, testLoad, path, &log)
+	_, release, err := Wait(context.Background(), "read-error", "projectA:read-error", nil, testLoad, path, &log, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2249,7 +2249,7 @@ func TestReserveDropsMeasuredPeakAfterLoadFalls(t *testing.T) {
 	}
 	defer func() { reservePollInterval, reserveWindow, reserveCPUReader = oldPoll, oldWindow, oldReader }()
 	path := filepath.Join(t.TempDir(), "load.lock")
-	_, release, err := Wait(context.Background(), "short-peak", "projectA:short-peak", nil, testLoad, path, io.Discard)
+	_, release, err := Wait(context.Background(), "short-peak", "projectA:short-peak", nil, testLoad, path, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}

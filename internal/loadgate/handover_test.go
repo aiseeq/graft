@@ -132,7 +132,7 @@ func TestReserveWrittenBeforeLoadLockHandover(t *testing.T) {
 
 	firstStarted = true
 	go func() {
-		_, release, err := Wait(firstCtx, "first", "projectA:first", nil, testLoad, path, io.Discard)
+		_, release, err := Wait(firstCtx, "first", "projectA:first", nil, testLoad, path, io.Discard, "")
 		first <- result{release: release, err: err}
 	}()
 	entered := false
@@ -146,7 +146,7 @@ func TestReserveWrittenBeforeLoadLockHandover(t *testing.T) {
 		watching.Store(true)
 		secondStarted = true
 		go func() {
-			_, release, err := Wait(secondCtx, "next", "projectA:next", nil, testLoad, path, queueSignalWriter(gotQueue))
+			_, release, err := Wait(secondCtx, "next", "projectA:next", nil, testLoad, path, queueSignalWriter(gotQueue), "")
 			second <- result{release: release, err: err}
 		}()
 		select {

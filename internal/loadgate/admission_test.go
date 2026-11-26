@@ -45,7 +45,7 @@ func TestAdmissionJournalMeasureChangesThenAdmits(t *testing.T) {
 	l := testLoad
 	l.Poll = time.Millisecond
 	path := filepath.Join(t.TempDir(), "load.lock")
-	_, release, err := WaitWithSettle(context.Background(), "synthetic", "projectA:exec:go", nil, l, path, "", 0, 0, io.Discard)
+	_, release, err := WaitWithSettle(context.Background(), "synthetic", "projectA:exec:go", nil, l, path, "", 0, 0, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestAdmissionJournalRefusedBeforeMeasure(t *testing.T) {
 	defer func() { pressureMeterFactory = oldFactory }()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := WaitWithSettle(ctx, "synthetic", "projectA:exec:go", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), "", 0, 0, io.Discard); err == nil {
+	if _, _, err := WaitWithSettle(ctx, "synthetic", "projectA:exec:go", nil, testLoad, filepath.Join(t.TempDir(), "load.lock"), "", 0, 0, io.Discard, ""); err == nil {
 		t.Fatal("a cancelled wait was admitted")
 	}
 	lines := readAdmissionLines(t, filepath.Join(os.Getenv("XDG_CACHE_HOME"), "graft", "admissions.jsonl"))
@@ -190,7 +190,7 @@ func TestAdmissionJournalRefusesAtDeadline(t *testing.T) {
 	l.Poll = time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, _, err := WaitWithSettle(ctx, "synthetic", "projectA:exec:go", nil, l, filepath.Join(t.TempDir(), "load.lock"), "", 0, 0, io.Discard)
+	_, _, err := WaitWithSettle(ctx, "synthetic", "projectA:exec:go", nil, l, filepath.Join(t.TempDir(), "load.lock"), "", 0, 0, io.Discard, "")
 	if err == nil {
 		t.Fatal("wait passed its context deadline")
 	}
