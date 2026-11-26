@@ -5026,52 +5026,63 @@ func (r *Runner) install(ctx context.Context, s config.Step, t *config.Task) err
 func (r *Runner) copyInstallToHosts(ctx context.Context, hosts []string, candidates []installCandidate) error {
 	var errs []error
 	for _, host := range hosts {
-		for i, candidate := range candidates {
-			cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "rsync", "--archive", "--mkpath", "-e", "ssh -o BatchMode=yes -o ConnectTimeout=10", candidate.source, host+":"+candidate.destination)
+		missed, reason, err := copyInstallToHost(ctx, host, candidates, func(candidate installCandidate) error {
+			abs, err := filepath.Abs(candidate.destination)
 			if err != nil {
-				missed := make([]string, 0, len(candidates)-i)
-				for _, c := range candidates[i:] {
-					missed = append(missed, c.name)
-				}
-				fmt.Fprintf(r.Stderr, "graft: warning: install to %s: rsync: %s; not there: %s\n", host, err, strings.Join(missed, ", "))
-				break
+				return fmt.Errorf("resolving destination %s: %w", candidate.destination, err)
 			}
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				// A host that failed once is not tried for the other files.
-				var missed []string
-				for _, c := range candidates[i:] {
-					missed = append(missed, c.name)
-				}
-				// rsync's last line is its own summary ("unexplained error");
-				// ssh's reason comes before it, so every line is kept.
-				var lines []string
-				for line := range strings.SplitSeq(string(out), "\n") {
-					if line = strings.TrimSpace(line); line != "" {
-						lines = append(lines, line)
-					}
-				}
-				reason := strings.Join(lines, "; ")
-				if reason == "" {
-					reason = err.Error()
-				}
-				fmt.Fprintf(r.Stderr, "graft: warning: install to %s: rsync: %s; not there: %s\n", host, reason, strings.Join(missed, ", "))
-				break
-			}
-			if abs, absErr := filepath.Abs(candidate.destination); absErr != nil {
-				errs = append(errs, fmt.Errorf("install to %s: resolving destination %s: %w", host, candidate.destination, absErr))
-				break
-			} else {
-				sum := sha256.Sum256(candidate.data)
-				if err := recordHostCopy(host, abs, fmt.Sprintf("%x", sum)); err != nil {
-					errs = append(errs, fmt.Errorf("install to %s: %w", host, err))
-					break
-				}
+			sum := sha256.Sum256(candidate.data)
+			if err := recordHostCopy(host, abs, fmt.Sprintf("%x", sum)); err != nil {
+				return err
 			}
 			fmt.Fprintf(r.Stderr, "graft: install: %s %s -> %s:%s\n", candidate.name, shortRevision(candidate.revision), host, candidate.destination)
+			return nil
+		})
+		if err != nil {
+			errs = append(errs, fmt.Errorf("install to %s: %w", host, err))
+		}
+		if len(missed) > 0 {
+			fmt.Fprintf(r.Stderr, "graft: warning: install to %s: rsync: %s; not there: %s\n", host, reason, strings.Join(missed, ", "))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func copyInstallToHost(ctx context.Context, host string, candidates []installCandidate, record func(installCandidate) error) (missed []string, reason string, err error) {
+	for i, candidate := range candidates {
+		cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "rsync", "--archive", "--mkpath", "-e", "ssh -o BatchMode=yes -o ConnectTimeout=10", candidate.source, host+":"+candidate.destination)
+		if err != nil {
+			return installCandidateNames(candidates[i:]), err.Error(), nil
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			// rsync's last line is its own summary ("unexplained error");
+			// ssh's reason comes before it, so every line is kept.
+			var lines []string
+			for line := range strings.SplitSeq(string(out), "\n") {
+				if line = strings.TrimSpace(line); line != "" {
+					lines = append(lines, line)
+				}
+			}
+			reason := strings.Join(lines, "; ")
+			if reason == "" {
+				reason = err.Error()
+			}
+			return installCandidateNames(candidates[i:]), reason, nil
+		}
+		if err := record(candidate); err != nil {
+			return nil, "", err
+		}
+	}
+	return nil, "", nil
+}
+
+func installCandidateNames(candidates []installCandidate) []string {
+	names := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		names = append(names, candidate.name)
+	}
+	return names
 }
 
 type installCandidate struct {
