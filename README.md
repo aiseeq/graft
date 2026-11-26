@@ -3491,6 +3491,9 @@ the cache. Below the threshold it trims entries unused for 6h and reports
 available space before and after. The shorter `--older` age makes projects
 that have not been built for those hours cold again; the threshold should be
 chosen with that tradeoff in mind.
+Every `gocache trim` run takes a lock beside the cache (`<GOCACHE>.graft-trim.lock`)
+before walking the cache; after waiting, it checks `--free-below` again and
+skips the walk if enough space is available.
 
 ## Development
 

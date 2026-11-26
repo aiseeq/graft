@@ -3,7 +3,9 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/gocache"
 	"github.com/aiseeq/graft/v2/internal/loadgate"
+	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
@@ -21,11 +24,12 @@ const trimKind = "gocache-trim"
 
 var freeSpace = availableFreeSpace
 var trimSyncFS func(string) error
+var trimWithOptions = gocache.TrimWithOptions
 
 // GocacheTrim removes, with apply, the entries of the Go build cache of
 // go env GOCACHE not used for longer than older, or tells how many it
 // would; it needs no project.
-func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, maxWait time.Duration, freeBelow int64, batchSync string) error {
+func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, maxWait time.Duration, freeBelow int64, batchSync string) (retErr error) {
 	cmd, err := execx.CommandContext(ctx, execx.ShortGrace, "go", "env", "GOCACHE")
 	if err != nil {
 		return err
@@ -40,55 +44,30 @@ func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, 
 	if dir == "off" || !filepath.IsAbs(dir) {
 		return fmt.Errorf("go env GOCACHE is %q: no build cache to trim", dir)
 	}
-	var freeBefore int64
+	freeBefore, skip, err := checkTrimFreeSpace(a, dir, freeBelow)
+	if err != nil || skip {
+		return err
+	}
+	trimLock, err := acquireGocacheTrimLock(ctx, dir, a.Stderr)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if releaseErr := trimLock.Release(); releaseErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("releasing the gocache trim lock: %w", releaseErr))
+		}
+	}()
 	if freeBelow > 0 {
-		var err error
-		freeBefore, err = freeSpace(dir)
-		if err != nil {
-			return fmt.Errorf("measure free space on filesystem of %s: %w", dir, err)
-		}
-		if freeBefore >= freeBelow {
-			a.printf("%s free on %s, at or above --free-below %s: nothing to do",
-				checks.FormatSize(freeBefore), dir, checks.FormatSize(freeBelow))
-			return nil
+		freeBefore, skip, err = checkTrimFreeSpace(a, dir, freeBelow)
+		if err != nil || skip {
+			return err
 		}
 	}
-	waits := loadgate.Waits{}
-	remainingWait := maxWait
-	var options gocache.Options
-	options.Apply = apply
-	options.BatchSync = batchSync
-	options.SyncFS = trimSyncFS
-	if apply {
-		options.OnStart = func() { startTrimProbe(a.Stderr) }
-		var reportedWait time.Duration
-		options.OnBatch = func(number, entries int, bytes int64, started time.Time, unlink, syncTime time.Duration) {
-			waited := waitTotal(waits) - reportedWait
-			reportedWait = waitTotal(waits)
-			syncDuration := "-"
-			if options.BatchSync == "fs" {
-				syncDuration = fmt.Sprintf("%dms", syncTime.Milliseconds())
-			}
-			fmt.Fprintf(a.Stderr, "graft: gocache trim: batch %d: started %s, %d entries, %s, unlink %dms, sync %s, syncfs %s, waited %dms\n",
-				number, started.Format(time.RFC3339Nano), entries, checks.FormatSize(bytes), unlink.Milliseconds(), options.BatchSync, syncDuration, waited.Milliseconds())
-		}
-		load, err := userconfig.LoadSettings()
-		if err != nil {
-			return fmt.Errorf("load machine pressure settings: %w", err)
-		}
-		checker := loadgate.NewDiskBusyChecker("gocache trim", trimKind, load, a.Stderr)
-		options.BeforeBatch = func() (bool, error) {
-			ok, batchWaits, err := waitForTrimBatch(ctx, remainingWait, checker.Poll,
-				trimMemoryCalm,
-				checker.Why)
-			for why, d := range batchWaits {
-				waits[why] += d
-			}
-			remainingWait = max(0, remainingWait-waitTotal(batchWaits))
-			return ok, err
-		}
+	options, waits, err := makeGocacheTrimOptions(ctx, a, apply, maxWait, batchSync)
+	if err != nil {
+		return err
 	}
-	r, err := gocache.TrimWithOptions(dir, older, time.Now(), options)
+	r, err := trimWithOptions(dir, older, time.Now(), options)
 	if err != nil {
 		if apply && r.CacheValidated {
 			var freeAfter *int64
@@ -114,6 +93,84 @@ func (a *App) GocacheTrim(ctx context.Context, older time.Duration, apply bool, 
 	}
 	a.printf("%s", formatTrimSummary(dir, older, apply, options.BatchSync, r, waits, freeBelow > 0, freeBefore, freeAfter, nil, nil))
 	return nil
+}
+
+// gocacheTrimLockWait bounds the wait for another trim of the same cache only
+// nominally: a timer or a person stops a stuck run long before, through ctx.
+const gocacheTrimLockWait = 24 * time.Hour
+
+// gocacheTrimLockPath sits beside the cache, so every trim of that cache
+// meets the same lock whatever its environment; a symlinked path to the
+// cache resolves to the same lock.
+func gocacheTrimLockPath(dir string) string {
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
+	return filepath.Clean(dir) + ".graft-trim.lock"
+}
+
+func acquireGocacheTrimLock(ctx context.Context, dir string, log io.Writer) (*lock.Lock, error) {
+	lockPath := gocacheTrimLockPath(dir)
+	started := time.Now()
+	trimLock, err := lock.Acquire(ctx, lockPath, gocacheTrimLockWait, "graft gocache trim", log)
+	if err != nil {
+		return nil, fmt.Errorf("gocache trim lock: %w", err)
+	}
+	if waited := time.Since(started); waited > 3*time.Second {
+		fmt.Fprintf(log, "graft: gocache trim: waited %s for lock %s (%s)\n", waited.Round(time.Second), filepath.Base(lockPath), trimLock.WaitedBehind)
+	}
+	return trimLock, nil
+}
+
+func makeGocacheTrimOptions(ctx context.Context, a *App, apply bool, maxWait time.Duration, batchSync string) (gocache.Options, loadgate.Waits, error) {
+	waits := loadgate.Waits{}
+	remainingWait := maxWait
+	options := gocache.Options{Apply: apply, BatchSync: batchSync, SyncFS: trimSyncFS}
+	if !apply {
+		return options, waits, nil
+	}
+	options.OnStart = func() { startTrimProbe(a.Stderr) }
+	var reportedWait time.Duration
+	options.OnBatch = func(number, entries int, bytes int64, started time.Time, unlink, syncTime time.Duration) {
+		waited := waitTotal(waits) - reportedWait
+		reportedWait = waitTotal(waits)
+		syncDuration := "-"
+		if options.BatchSync == "fs" {
+			syncDuration = fmt.Sprintf("%dms", syncTime.Milliseconds())
+		}
+		fmt.Fprintf(a.Stderr, "graft: gocache trim: batch %d: started %s, %d entries, %s, unlink %dms, sync %s, syncfs %s, waited %dms\n",
+			number, started.Format(time.RFC3339Nano), entries, checks.FormatSize(bytes), unlink.Milliseconds(), options.BatchSync, syncDuration, waited.Milliseconds())
+	}
+	load, err := userconfig.LoadSettings()
+	if err != nil {
+		return options, waits, fmt.Errorf("load machine pressure settings: %w", err)
+	}
+	checker := loadgate.NewDiskBusyChecker("gocache trim", trimKind, load, a.Stderr)
+	options.BeforeBatch = func() (bool, error) {
+		ok, batchWaits, err := waitForTrimBatch(ctx, remainingWait, checker.Poll, trimMemoryCalm, checker.Why)
+		for why, d := range batchWaits {
+			waits[why] += d
+		}
+		remainingWait = max(0, remainingWait-waitTotal(batchWaits))
+		return ok, err
+	}
+	return options, waits, nil
+}
+
+func checkTrimFreeSpace(a *App, dir string, freeBelow int64) (int64, bool, error) {
+	if freeBelow <= 0 {
+		return 0, false, nil
+	}
+	free, err := freeSpace(dir)
+	if err != nil {
+		return 0, false, fmt.Errorf("measure free space on filesystem of %s: %w", dir, err)
+	}
+	if free >= freeBelow {
+		a.printf("%s free on %s, at or above --free-below %s: nothing to do",
+			checks.FormatSize(free), dir, checks.FormatSize(freeBelow))
+		return free, true, nil
+	}
+	return free, false, nil
 }
 
 func formatTrimSummary(dir string, older time.Duration, apply bool, batchSync string, r gocache.Result, waits loadgate.Waits, measureFree bool, freeBefore int64, freeAfter *int64, freeAfterErr, interrupted error) string {

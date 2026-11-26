@@ -10,13 +10,166 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aiseeq/graft/v2/internal/gocache"
 	"github.com/aiseeq/graft/v2/internal/loadgate"
+	"github.com/aiseeq/graft/v2/internal/lock"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
+
+type trimSignalWriter struct{ waiting chan struct{} }
+
+func (w trimSignalWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), "waiting for the write lock") {
+		select {
+		case w.waiting <- struct{}{}:
+		default:
+		}
+	}
+	return len(p), nil
+}
+
+func TestGocacheTrimSerializesCacheWalks(t *testing.T) {
+	dir, _ := makeTrimCache(t)
+	t.Setenv("GOCACHE", dir)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var calls atomic.Int32
+	previous := trimWithOptions
+	trimWithOptions = func(dir string, older time.Duration, now time.Time, opts gocache.Options) (gocache.Result, error) {
+		if calls.Add(1) == 1 {
+			entered <- struct{}{}
+			<-release
+		} else {
+			entered <- struct{}{}
+		}
+		return gocache.TrimWithOptions(dir, older, now, opts)
+	}
+	t.Cleanup(func() { trimWithOptions = previous })
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- (&App{Stdout: io.Discard}).GocacheTrim(context.Background(), time.Hour, false, 0, 0, "none")
+	}()
+	<-entered
+	waiting := make(chan struct{}, 1)
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- (&App{Stdout: io.Discard, Stderr: trimSignalWriter{waiting}}).GocacheTrim(context.Background(), time.Hour, false, 0, 0, "none")
+	}()
+	select {
+	case <-waiting:
+	case <-entered:
+		close(release)
+		t.Fatal("second trim entered the cache walk without waiting for the lock")
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("second trim neither waited for the lock nor entered the cache walk")
+	}
+	select {
+	case <-entered:
+		t.Fatal("second trim entered the cache walk while the first held the lock")
+	default:
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second trim did not enter the cache walk after lock release")
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("trim calls = %d, want 2", calls.Load())
+	}
+}
+
+func TestGocacheTrimRechecksFreeBelowAfterLock(t *testing.T) {
+	dir, _ := makeTrimCache(t)
+	t.Setenv("GOCACHE", dir)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var calls atomic.Int32
+	previousTrim, previousFree := trimWithOptions, freeSpace
+	trimWithOptions = func(dir string, older time.Duration, now time.Time, opts gocache.Options) (gocache.Result, error) {
+		calls.Add(1)
+		entered <- struct{}{}
+		<-release
+		return gocache.TrimWithOptions(dir, older, now, opts)
+	}
+	var measures atomic.Int32
+	freeSpace = func(string) (int64, error) {
+		if measures.Add(1) == 1 {
+			return 1, nil
+		}
+		return 80 << 30, nil
+	}
+	t.Cleanup(func() { trimWithOptions, freeSpace = previousTrim, previousFree })
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- (&App{Stdout: io.Discard}).GocacheTrim(context.Background(), time.Hour, false, 0, 0, "none")
+	}()
+	<-entered
+	waiting := make(chan struct{}, 1)
+	var out bytes.Buffer
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- (&App{Stdout: &out, Stderr: trimSignalWriter{waiting}}).GocacheTrim(context.Background(), time.Hour, false, 0, 80<<30, "none")
+	}()
+	select {
+	case <-waiting:
+	case <-entered:
+		close(release)
+		t.Fatal("second trim entered the cache walk without waiting for the lock")
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("second trim neither waited for the lock nor entered the cache walk")
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 || measures.Load() != 2 || !strings.Contains(out.String(), "nothing to do") {
+		t.Fatalf("trim calls %d, measurements %d, output %q", calls.Load(), measures.Load(), out.String())
+	}
+}
+
+func TestGocacheTrimLockWaitHonorsContextCancellation(t *testing.T) {
+	dir, _ := makeTrimCache(t)
+	t.Setenv("GOCACHE", dir)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	path := gocacheTrimLockPath(dir)
+	holder, err := lock.Acquire(context.Background(), path, 0, "synthetic-holder", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Release()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	waiting := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- (&App{Stdout: io.Discard, Stderr: trimSignalWriter{waiting}}).GocacheTrim(ctx, time.Hour, false, 0, 0, "none")
+	}()
+	<-waiting
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("trim succeeded after context cancellation while waiting for lock")
+	}
+}
 
 func TestGocacheFreeBelowSkipsCacheWalkWhenSpaceIsEnough(t *testing.T) {
 	dir, old := makeTrimCache(t)
@@ -59,7 +212,7 @@ func TestGocacheFreeBelowMeasuresBeforeAndAfterTrim(t *testing.T) {
 		t.Fatal(err)
 	}
 	previous := freeSpace
-	values := []int64{40 << 30, 42 << 30}
+	values := []int64{40 << 30, 40 << 30, 42 << 30}
 	freeSpace = func(string) (int64, error) {
 		value := values[0]
 		values = values[1:]
@@ -432,6 +585,7 @@ func serveTrimDisk(t *testing.T, ioFullMS int) {
 func TestGocacheFreeBelowDryRunKeepsEntries(t *testing.T) {
 	dir, old := makeTrimCache(t)
 	t.Setenv("GOCACHE", dir)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	previous := freeSpace
 	freeSpace = func(string) (int64, error) { return 40 << 30, nil }
 	t.Cleanup(func() { freeSpace = previous })
@@ -502,4 +656,18 @@ func TestGocacheTrimBatchSyncReachesFilesystem(t *testing.T) {
 // every is a fixed poll for waitForTrimBatch.
 func every(d time.Duration) func() time.Duration {
 	return func() time.Duration { return d }
+}
+
+func TestGocacheTrimLockPathFollowsSymlink(t *testing.T) {
+	real := filepath.Join(t.TempDir(), "go-build")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "cache-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := gocacheTrimLockPath(link), gocacheTrimLockPath(real); got != want {
+		t.Fatalf("lock through symlink = %s, want %s", got, want)
+	}
 }
