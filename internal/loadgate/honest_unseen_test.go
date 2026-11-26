@@ -125,7 +125,7 @@ func TestReservePollTracksEMAFromAdmission(t *testing.T) {
 	stop := func() { stopOnce.Do(func() { close(done); <-stopped }) }
 	go func() {
 		defer close(stopped)
-		runReservePoll("step-ramp", 4, 10*time.Second, reservePollInterval, reserveWindow, base, reserveCPUReader, onCPU, nil, io.Discard, done, func(string) {}, func() {})
+		runReservePoll("step-ramp", 4, 10*time.Second, reservePollInterval, reserveWindow, base, reservePollNow, reserveCPUReader, onCPU, nil, io.Discard, done, func(string) {}, func() {})
 	}()
 	defer func() {
 		stop()

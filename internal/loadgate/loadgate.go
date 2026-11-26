@@ -1406,6 +1406,9 @@ type reservePollState struct {
 	ema              float64
 	lastRate         float64
 	haveRate         bool
+	// now is reservePollNow as the reserve started: the goroutine outlives
+	// the call and must not read the package variable a test may swap.
+	now func() time.Time
 }
 
 func (state *reservePollState) readError(name string, err error, log io.Writer) {
@@ -1479,7 +1482,12 @@ func (state *reservePollState) handleTick(name string, cores float64, window tim
 		return
 	}
 	state.cpuErrorActive = false
-	at := reservePollNow()
+	now := state.now
+	if now == nil {
+		// A state built in place, as a test does, polls in its own goroutine.
+		now = reservePollNow
+	}
+	at := now()
 	speed, ready := state.sampleSpeed(cpu, at, window)
 	if !ready {
 		return
@@ -1516,7 +1524,7 @@ func (state *reservePollState) handleTick(name string, cores float64, window tim
 	drop()
 }
 
-func runReservePoll(name string, cores float64, cap, interval, window time.Duration, admitted time.Time, readCPU func(int) (float64, error), onCPU func(float64, float64, time.Time) error, onError func(error) error, log io.Writer, done <-chan struct{}, setEnd func(string), drop func()) {
+func runReservePoll(name string, cores float64, cap, interval, window time.Duration, admitted time.Time, pollNow func() time.Time, readCPU func(int) (float64, error), onCPU func(float64, float64, time.Time) error, onError func(error) error, log io.Writer, done <-chan struct{}, setEnd func(string), drop func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Fprintf(log, "graft: %s: panic in reserve poll: %v\n", name, r)
@@ -1529,7 +1537,7 @@ func runReservePoll(name string, cores float64, cap, interval, window time.Durat
 	deadline := time.NewTimer(cap)
 	defer deadline.Stop()
 	deadlineC := deadline.C
-	state := reservePollState{lastEMAAt: admitted}
+	state := reservePollState{lastEMAAt: admitted, now: pollNow}
 	for {
 		select {
 		case <-done:
@@ -1587,8 +1595,8 @@ func startReserve(lockPath, name string, cores float64, cap time.Duration, onCPU
 	}
 	// The goroutine outlives the call: it reads its settings from here, not
 	// from the package variables a test may swap meanwhile.
-	interval, window, readCPU := reservePollInterval, reserveWindow, reserveCPUReader
-	go runReservePoll(name, cores, cap, interval, window, now, readCPU, onCPU, onError, log, done, setEnd, drop)
+	interval, window, readCPU, pollNow := reservePollInterval, reserveWindow, reserveCPUReader, reservePollNow
+	go runReservePoll(name, cores, cap, interval, window, now, pollNow, readCPU, onCPU, onError, log, done, setEnd, drop)
 	return func() error {
 		once.Do(func() { setEnd("done"); close(done) })
 		drop()
