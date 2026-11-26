@@ -1219,6 +1219,9 @@ func (r *Runner) glintCopy(argv0 string) glintCopyCheck {
 }
 
 func (r *Runner) glintStayReason(argv0 string) string {
+	if r.remoteHeavy == nil {
+		return "remote_heavy is off"
+	}
 	check := r.glintCopy(argv0)
 	return "glint here (" + shortSHA(check.local) + ") is not the one install copied to " + r.remoteHeavy.Host + " (" + shortSHA(check.installed) + ")"
 }
@@ -1581,7 +1584,16 @@ func (r *Runner) recordedGateCostReason(current *frame, source string, builtin b
 		if stats.StepText(step.Source) != stats.StepText(source) {
 			continue
 		}
-		eligible, _ := r.remoteGateVouchedStep(step, task)
+		// The gate did not split, so remote_heavy is off for its steps:
+		// eligibility is asked with the settings the gate decided by, as
+		// gateStepLine does.
+		eligible := func() bool {
+			saved := r.remoteHeavy
+			r.remoteHeavy = r.gateCosts.remote
+			defer func() { r.remoteHeavy = saved }()
+			ok, _ := r.remoteGateVouchedStep(step, task)
+			return ok
+		}()
 		if !eligible {
 			continue
 		}
