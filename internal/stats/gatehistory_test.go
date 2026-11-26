@@ -47,12 +47,18 @@ func TestLoadGateHistoryMatchesFullJournal(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, r := range records {
+				if r.Time.IsZero() {
+					r.Time = now
+				}
 				if err := json.NewEncoder(f).Encode(r); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if mode == "escaped-link" {
-				for _, line := range []string{`{"kind":"task","project":"projectB","task":"nested","\u0072un":"child","PARENT":"e"}`, `{"kind":"cache-hit","project":"projectB","task":"nested","run":"child"}`} {
+				for _, line := range []string{
+					fmt.Sprintf(`{"kind":"task","project":"projectB","task":"nested","\u0072un":"child","PARENT":"e","time":%q}`, now.Format(time.RFC3339Nano)),
+					fmt.Sprintf(`{"kind":"cache-hit","project":"projectB","task":"nested","run":"child","time":%q}`, now.Format(time.RFC3339Nano)),
+				} {
 					if _, err := f.WriteString(line + "\n"); err != nil {
 						t.Fatal(err)
 					}
@@ -106,6 +112,9 @@ func TestGateHistorySnapshotAcrossAppendAndRotation(t *testing.T) {
 					{Kind: KindStep, Task: GateTask, Project: "projectA", Run: run, Step: "check", UserS: .1, TreeMemMB: &mem},
 					{Kind: KindTask, Task: GateTask, Project: "projectA", Run: run, Steps: 1, UserS: .1, TreeMemMB: &mem, Time: now.Add(time.Duration(i) * time.Second)},
 				} {
+					if rec.Time.IsZero() {
+						rec.Time = now
+					}
 					if err := enc.Encode(rec); err != nil {
 						t.Fatal(err)
 					}
@@ -131,6 +140,9 @@ func TestGateHistorySnapshotAcrossAppendAndRotation(t *testing.T) {
 					{Kind: KindStep, Task: GateTask, Project: "projectA", Run: "new", Step: "check", UserS: .1, TreeMemMB: &mem},
 					{Kind: KindTask, Task: GateTask, Project: "projectA", Run: "new", Steps: 1, UserS: .1, TreeMemMB: &mem, Time: now.Add(5 * time.Second)},
 				} {
+					if rec.Time.IsZero() {
+						rec.Time = now
+					}
 					if err := json.NewEncoder(f).Encode(rec); err != nil {
 						t.Fatal(err)
 					}
@@ -221,7 +233,7 @@ func TestGateHistorySelectsEscapedProjectWithoutLiteral(t *testing.T) {
 	now := time.Now()
 	var lines bytes.Buffer
 	for i := range LightGateRuns {
-		fmt.Fprintf(&lines, `{"kind":"step","task":"gate","project":"project\u0041","run":"r%d","step":"check","user_s":0.1,"tree_mem_mb":12}`+"\n", i)
+		fmt.Fprintf(&lines, `{"kind":"step","task":"gate","project":"project\u0041","run":"r%d","step":"check","user_s":0.1,"tree_mem_mb":12,"time":%q}`+"\n", i, now.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano))
 		fmt.Fprintf(&lines, `{"kind":"task","task":"gate","project":"project\u0041","run":"r%d","steps":1,"user_s":0.1,"tree_mem_mb":12,"time":%q}`+"\n", i, now.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano))
 	}
 	if err := os.WriteFile(path, lines.Bytes(), 0600); err != nil {
@@ -274,7 +286,7 @@ func TestGateHistoryAcrossRotatedFiles(t *testing.T) {
 			for i := range LightGateRuns {
 				run := string(rune('a' + i))
 				for _, rec := range []Record{
-					{Kind: KindStep, Task: GateTask, Project: project, Run: run, Step: "check", UserS: .1, TreeMemMB: &mem},
+					{Kind: KindStep, Task: GateTask, Project: project, Run: run, Step: "check", UserS: .1, TreeMemMB: &mem, Time: now.Add(time.Duration(i) * time.Second)},
 					{Kind: KindTask, Task: GateTask, Project: project, Run: run, Steps: 1, UserS: .1, TreeMemMB: &mem, Time: now.Add(time.Duration(i) * time.Second)},
 				} {
 					if err := json.NewEncoder(current).Encode(rec); err != nil {
@@ -294,6 +306,9 @@ func TestGateHistoryAcrossRotatedFiles(t *testing.T) {
 					{Kind: KindTask, Task: "nested", Project: "projectB", Run: "child", Parent: "e"},
 					{Kind: KindCacheHit, Task: "nested", Project: "projectB", Run: "grandchild", Parent: "child"},
 				} {
+					if rec.Time.IsZero() {
+						rec.Time = now
+					}
 					if err := json.NewEncoder(old).Encode(rec); err != nil {
 						t.Fatal(err)
 					}
@@ -338,7 +353,7 @@ func TestLoadGateHistorySelectsUnescapedProject(t *testing.T) {
 	now := time.Now()
 	var lines bytes.Buffer
 	for i := range LightGateRuns {
-		fmt.Fprintf(&lines, `{"kind":"step","task":"gate","project":"%s","run":"r%d","step":"check","user_s":0.1,"tree_mem_mb":12}`+"\n", project, i)
+		fmt.Fprintf(&lines, `{"kind":"step","task":"gate","project":"%s","run":"r%d","step":"check","user_s":0.1,"tree_mem_mb":12,"time":%q}`+"\n", project, i, now.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano))
 		fmt.Fprintf(&lines, `{"kind":"task","task":"gate","project":"%s","run":"r%d","steps":1,"user_s":0.1,"tree_mem_mb":12,"time":%q}`+"\n", project, i, now.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano))
 	}
 	if err := os.WriteFile(path, lines.Bytes(), 0600); err != nil {

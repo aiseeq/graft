@@ -18,8 +18,9 @@ import (
 )
 
 // Load reads the old copies of the stats file that reach since and the file
-// itself, oldest first. Lines that are not records (a torn write of a
-// crashed graft) are counted in malformed and left out.
+// itself, oldest first. Lines that are not valid records, including records
+// without a readable time (a torn write of a crashed graft), are counted in
+// malformed and left out.
 func Load(path string, since time.Time) (recs []Record, malformed int, err error) {
 	recs, malformed, _, err = load(path, since, "")
 	return recs, malformed, err
@@ -596,6 +597,13 @@ func decodeRecordsMatchingWithStart(reader io.Reader, needle []byte) (recs []Rec
 			malformed++
 			continue
 		}
+		// The record is decoded already: a missing time leaves it zero and an
+		// unreadable one fails Unmarshal above. Same rule as filteredRecordTime
+		// without three more decodes of the line.
+		if r.Time.IsZero() {
+			malformed++
+			continue
+		}
 		first = earlierTime(first, r.Time)
 		recs = append(recs, r)
 	}
@@ -633,6 +641,8 @@ func decodeSuspiciousRecordTime(line []byte, required ...string) (time.Time, boo
 	if !json.Valid(line) {
 		return time.Time{}, false
 	}
+	// Decoded like a Record (field names without case), so a line the full
+	// reader takes keeps its time here; a missing time stays zero and fails.
 	var meta struct {
 		Time    time.Time `json:"time"`
 		Kind    string    `json:"kind"`
@@ -640,7 +650,7 @@ func decodeSuspiciousRecordTime(line []byte, required ...string) (time.Time, boo
 		Package string    `json:"package"`
 		Result  string    `json:"result"`
 	}
-	if json.Unmarshal(line, &meta) != nil {
+	if json.Unmarshal(line, &meta) != nil || meta.Time.IsZero() {
 		return time.Time{}, false
 	}
 	for _, name := range required {
@@ -668,7 +678,7 @@ func jsonTimeField(line []byte) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	var stamp time.Time
-	if stamp.UnmarshalJSON(value) != nil {
+	if stamp.UnmarshalJSON(value) != nil || stamp.IsZero() {
 		return time.Time{}, false
 	}
 	return stamp, true

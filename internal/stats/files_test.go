@@ -96,7 +96,7 @@ func TestLoadSkipsBodyOfOldestCopyOutsideWindow(t *testing.T) {
 
 func TestLoadIgnoresLegacyDiskProfile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "stats.jsonl")
-	line := `{"kind":"task","task":"build","disk_profile":{"kind":"projectA:build"}}` + "\n"
+	line := `{"kind":"task","task":"build","disk_profile":{"kind":"projectA:build"},"time":"2026-11-24T12:00:00Z"}` + "\n"
 	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
 		t.Fatal(err)
 	}

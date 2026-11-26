@@ -380,6 +380,8 @@ func TestGateHistoryIsSharedOnlyDuringGate(t *testing.T) {
 	}
 	write := func(rec stats.Record) {
 		t.Helper()
+		// Writers always stamp a record; one without a time is malformed.
+		rec.Time = time.Now()
 		data, err := json.Marshal(rec)
 		if err != nil {
 			t.Fatal(err)

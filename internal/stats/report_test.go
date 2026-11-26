@@ -198,7 +198,7 @@ func TestReportShowsLargestCgroupPeak(t *testing.T) {
 func TestReportShowsDiskUse(t *testing.T) {
 	value := func(v float64) *float64 { return &v }
 	base := func(read, write *float64) Record {
-		return Record{Kind: KindTask, Task: "build", WallS: 1, ReadMB: read, WriteMB: write}
+		return Record{Kind: KindTask, Task: "build", WallS: 1, Time: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), ReadMB: read, WriteMB: write}
 	}
 	render := func(recs []Record) string {
 		t.Helper()

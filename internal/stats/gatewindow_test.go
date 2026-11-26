@@ -90,6 +90,61 @@ func TestDecodeRecordsRejectsConcatenatedObjects(t *testing.T) {
 	}
 }
 
+func TestReadersUseOneRuleForRecordTime(t *testing.T) {
+	tests := []struct {
+		name      string
+		timeField string
+		wantRows  int
+		wantBad   int
+	}{
+		{name: "missing", wantBad: 1},
+		{name: "unreadable", timeField: `,"time":"not-a-time"`, wantBad: 1},
+		{name: "zero", timeField: `,"time":"0001-01-01T00:00:00Z"`, wantBad: 1},
+		{name: "valid", timeField: `,"time":"2026-11-24T12:00:00Z"`, wantRows: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			line := []byte(`{"kind":"step","task":"gate","project":"projectA","profile":"projectA:gate","step":"check"` + tt.timeField + `}` + "\n")
+			path := filepath.Join(t.TempDir(), "stats.jsonl")
+			if err := os.WriteFile(path, line, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			check := func(reader string, rows []Record, malformed int, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("%s read: %v", reader, err)
+				}
+				if len(rows) != tt.wantRows || malformed != tt.wantBad {
+					t.Errorf("%s read = %d records, %d malformed; want %d and %d", reader, len(rows), malformed, tt.wantRows, tt.wantBad)
+				}
+			}
+
+			rows, malformed, err := decodeRecords(bytes.NewReader(line))
+			check("full", rows, malformed, err)
+			rows, malformed, err = decodeRecordsProject(bytes.NewReader(line), "projectA")
+			check("filtered", rows, malformed, err)
+			rows, malformed, err = LoadWindow(path, time.Time{}, "projectA", int64(len(line)))
+			check("window", rows, malformed, err)
+			rows, malformed, err = LoadWindowMatching(path, time.Time{}, []RecordMatch{{Profile: "projectA:gate", Step: "check"}}, int64(len(line)))
+			check("window matching", rows, malformed, err)
+
+			// A foreign line is not decoded as a record, but its time
+			// follows the same rule.
+			foreignBad := func(reader string, rows []Record, malformed int, err error) {
+				t.Helper()
+				if err != nil || len(rows) != 0 || malformed != tt.wantBad {
+					t.Errorf("%s foreign read = %d records, %d malformed, %v; want 0 and %d", reader, len(rows), malformed, err, tt.wantBad)
+				}
+			}
+			rows, malformed, err = decodeRecordsProject(bytes.NewReader(line), "projectB")
+			foreignBad("filtered", rows, malformed, err)
+			rows, malformed, err = LoadWindowMatching(path, time.Time{}, []RecordMatch{{Profile: "projectB:gate", Step: "check"}}, int64(len(line)))
+			foreignBad("window matching", rows, malformed, err)
+		})
+	}
+}
+
 func TestDecodeRecordsProjectAcceptsForeignObjectDelimiterInString(t *testing.T) {
 	line := objectDelimiterStepRecord(t, "projectB", "projectB:gate", "other")
 	rows, malformed, err := decodeRecordsProject(bytes.NewReader(line), "projectA")

@@ -131,7 +131,7 @@ func TestHistoryGZInvalidationAndCorruptionFallback(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = io.WriteString(f, "{\"kind\":\"task\",\"task\":\"new\",\"top\":\"gate\"}\n")
+		_, err = io.WriteString(f, "{\"kind\":\"task\",\"task\":\"new\",\"top\":\"gate\",\"time\":\"2026-11-26T12:00:00Z\"}\n")
 		if closeErr := f.Close(); err == nil {
 			err = closeErr
 		}
@@ -237,7 +237,7 @@ func TestHistoryGZRejectsSourceAppendBeforeAcceptance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, writeErr := io.WriteString(f, "{\"kind\":\"task\",\"task\":\"arrived\",\"top\":\"gate\"}\n")
+		_, writeErr := io.WriteString(f, "{\"kind\":\"task\",\"task\":\"arrived\",\"top\":\"gate\",\"time\":\"2026-11-26T12:00:00Z\"}\n")
 		if closeErr := f.Close(); writeErr == nil {
 			writeErr = closeErr
 		}
