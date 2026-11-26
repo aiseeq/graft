@@ -27,18 +27,28 @@ import (
 type GoTest struct {
 	out     io.Writer
 	verbose bool
-	partial []byte
-	pkgs    map[string]*goPackage
-	order   []string
-	runs    []stats.PackageRun
-	events  int
-	runAlts []runAlternative
+	// workerPCOutput marks are meaningful only for streams sent to remote pc.
+	workerPCOutput bool
+	partial        []byte
+	pkgs           map[string]*goPackage
+	order          []string
+	runs           []stats.PackageRun
+	events         int
+	runAlts        []runAlternative
 	// runSkip is the -skip of the command line the -run check read.
 	runSkip string
 	// skipped and skippedPkgs count the skipped tests and their packages.
 	skipped, skippedPkgs int
 	err                  error
+	truncated            bool
+	truncatedBytes       string
 }
+
+// workerPCTruncationPrefix starts worker pc's capPCOutput stdout marker
+// (llmark/tool/cmd/worker/pc.go): it keeps the head and tail around this line.
+const workerPCTruncationPrefix = "[вывод обрезан: пропущено "
+
+var workerPCTruncation = regexp.MustCompile(`^` + regexp.QuoteMeta(workerPCTruncationPrefix) + `([0-9]+) байт из [0-9]+, предел [0-9]+ байт\]$`)
 
 type runAlternative struct {
 	name  string
@@ -83,6 +93,14 @@ type event struct {
 // -v does.
 func NewGoTest(out io.Writer, verbose bool) *GoTest {
 	return &GoTest{out: out, verbose: verbose, pkgs: map[string]*goPackage{}}
+}
+
+// NewRemoteGoTest reads a go test stream returned by worker pc, whose stdout
+// may carry capPCOutput's truncation marker.
+func NewRemoteGoTest(out io.Writer, verbose bool) *GoTest {
+	g := NewGoTest(out, verbose)
+	g.workerPCOutput = true
+	return g
 }
 
 // HasRun says whether a go test command line sets -run: only then is the
@@ -292,6 +310,10 @@ func (g *GoTest) Write(p []byte) (int, error) {
 // Events is how many events the stream held.
 func (g *GoTest) Events() int { return g.events }
 
+// TruncatedBytes reports whether worker pc marked this stream as truncated
+// and, when present, the number of omitted bytes as printed in its marker.
+func (g *GoTest) TruncatedBytes() (string, bool) { return g.truncatedBytes, g.truncated }
+
 // Close reads what is left of the stream and returns the package runs, the
 // cached ones left out: they did not run. A package the stream left
 // unfinished, its process killed, counts as failed.
@@ -299,6 +321,9 @@ func (g *GoTest) Close() ([]stats.PackageRun, error) {
 	if len(g.partial) > 0 {
 		g.line(append(g.partial, '\n'))
 		g.partial = nil
+	}
+	if g.truncated {
+		return nil, g.err
 	}
 	for _, name := range g.order {
 		if g.pkgs[name] != nil {
@@ -376,6 +401,29 @@ func (g *GoTest) print(s string) {
 }
 
 func (g *GoTest) line(raw []byte) {
+	line := strings.TrimSuffix(string(raw), "\n")
+	line = strings.TrimSuffix(line, "\r")
+	if g.workerPCOutput {
+		if match := workerPCTruncation.FindStringSubmatch(line); match != nil {
+			g.truncated = true
+			g.truncatedBytes = match[1]
+			g.print(string(raw))
+			return
+		}
+	}
+	if g.truncated {
+		// Keep useful test output after the cut, but don't derive package or
+		// test results from the incomplete tail.
+		var e event
+		if raw[0] == '{' && json.Unmarshal(raw, &e) == nil && e.Action != "" {
+			if e.Action == "output" || e.Action == "build-output" {
+				g.print(e.Output)
+			}
+			return
+		}
+		g.print(string(raw))
+		return
+	}
 	var e event
 	if raw[0] != '{' || json.Unmarshal(raw, &e) != nil || e.Action == "" {
 		g.print(string(raw))

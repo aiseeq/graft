@@ -340,3 +340,33 @@ func TestGoTestThroughATerminal(t *testing.T) {
 		t.Fatalf("graft's own line not printed:\n%s", out.String())
 	}
 }
+
+func TestRemoteTruncationDoesNotFinishPackagesFromTheTail(t *testing.T) {
+	prefix := `{"Action":"build-output","Package":"example.com/projectA/p","Output":"synthetic early failure\n"}` + "\n" +
+		`{"Action":"fail","Package":"example.com/projectA/p","FailedBuild":"compile"}` + "\n"
+	probe := NewRemoteGoTest(&strings.Builder{}, false)
+	feed(t, probe, prefix)
+	if got := probe.Reason(); !strings.Contains(got, "synthetic early failure") {
+		t.Fatalf("complete prefix reason = %q", got)
+	}
+	stream := prefix +
+		`{"Action":"run","Package":"example.com/projectA/p","Test":"TestMaybePass"}` + "\n" +
+		`{"Action":"output","Package":"example.com/projectA/p","Test":"TestMaybePass","Output":"    synthetic_test.go:1: incomplete\n"}` + "\n" +
+		`{"Action":"run","Package":"example.com/projectA/p","Test":"TestSkip"}` + "\n" +
+		"[вывод обрезан: пропущено 50 байт из 100, предел 80 байт]\n" +
+		`{"Action":"pass","Package":"example.com/projectA/p","Test":"TestMaybePass"}` + "\n" +
+		`{"Action":"output","Package":"example.com/projectA/p","Test":"TestSkip","Output":"    synthetic_test.go:2: skipped\n"}` + "\n" +
+		`{"Action":"skip","Package":"example.com/projectA/p","Test":"TestSkip"}` + "\n" +
+		`{"Action":"fail","Package":"example.com/projectA/p"}` + "\n"
+	var out strings.Builder
+	g := NewRemoteGoTest(&out, false)
+	if runs := feed(t, g, stream); len(runs) != 0 {
+		t.Fatalf("truncated stream runs = %+v, want none", runs)
+	}
+	if strings.Contains(out.String(), "TestMaybePass: fail") || strings.Contains(out.String(), "skipped 1 test in") {
+		t.Fatalf("truncated tail printed synthesized conclusions: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "synthetic_test.go:2: skipped") {
+		t.Fatalf("tail test output was lost: %s", out.String())
+	}
+}

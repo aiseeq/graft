@@ -3462,7 +3462,13 @@ func (r *Runner) measureUnrecorded(ctx context.Context, cmd *exec.Cmd, source st
 // parsed into the tests journal and the reason of its stats line.
 func (r *Runner) goTestStep(ctx context.Context, cmd *exec.Cmd, source, runner string, words []string, directGoTest bool, remoteStderr *bytes.Buffer) error {
 	tree := r.treeIDWithOverlay(words, cmd.Env, cmd.Dir)
-	report := testreport.NewGoTest(r.Stdout, verboseGoTest(words))
+	remote := len(r.frames) > 0 && r.frames[len(r.frames)-1].remote
+	var report *testreport.GoTest
+	if remote {
+		report = testreport.NewRemoteGoTest(r.Stdout, verboseGoTest(words))
+	} else {
+		report = testreport.NewGoTest(r.Stdout, verboseGoTest(words))
+	}
 	if directGoTest && testreport.HasRun(words) {
 		r.checkRunWords(report, cmd, words)
 	}
@@ -3477,6 +3483,9 @@ func (r *Runner) goTestStep(ctx context.Context, cmd *exec.Cmd, source, runner s
 	use, err := r.measureGoTest(ctx, cmd, source, remoteStderr, func() string {
 		closed = true
 		runs, cerr = report.Close()
+		if _, truncated := report.TruncatedBytes(); truncated {
+			return ""
+		}
 		reason := report.Reason()
 		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0 {
 			if message := report.MissingRunMessage(); message != "" {
@@ -3488,6 +3497,9 @@ func (r *Runner) goTestStep(ctx context.Context, cmd *exec.Cmd, source, runner s
 		}
 		return reason
 	}, func() bool {
+		if _, truncated := report.TruncatedBytes(); truncated {
+			return false
+		}
 		missingRunFailure = len(report.MissingRunNames()) > 0
 		return missingRunFailure
 	})
@@ -3495,10 +3507,21 @@ func (r *Runner) goTestStep(ctx context.Context, cmd *exec.Cmd, source, runner s
 		runs, cerr = report.Close()
 	}
 	r.noteBrokenRemote(cmd, err, remoteStderr.String())
+	if omitted, truncated := report.TruncatedBytes(); truncated {
+		warning := "graft: the remote output of this tests: go step was cut"
+		if omitted != "" {
+			warning += " (" + omitted + " bytes omitted)"
+		}
+		warning += "; its test statistics are not recorded"
+		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() != 0 {
+			warning += "; failures in the omitted part may be missing from the output: rerun it here with GRAFT_HEAVY=local"
+		}
+		fmt.Fprintln(r.Stderr, warning)
+	}
 	if cerr != nil {
 		fmt.Fprintf(r.Stderr, "graft: printing the test output: %v\n", cerr)
 	}
-	if report.Events() == 0 && strings.Contains(source, "go test") {
+	if _, truncated := report.TruncatedBytes(); !truncated && report.Events() == 0 && strings.Contains(source, "go test") {
 		fmt.Fprintf(r.Stderr, "graft: %s: the task has tests: go, but go test printed no -json events; pass -json to it\n", r.frames[len(r.frames)-1].task)
 	}
 	if missingRunFailure {

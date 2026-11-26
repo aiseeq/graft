@@ -1558,6 +1558,8 @@ output when no test failed. Reasons have at most 10 lines, 300 characters per
 line and 2000 characters total, with terminal color codes removed. Cached
 packages did not run and are left out.
 
+If `remote_heavy`'s `worker pc` truncates the stdout of a `tests: go` step, graft warns and writes no package records for that step because its test statistics may be incomplete. If the step failed, rerun it here with `GRAFT_HEAVY=local` to see failures that may have been in the omitted output.
+
 ```json
 {"time":"2026-01-05T10:00:03.1+01:00","project":"/home/me/work/projectA","task":"test","top":"commit","tree":"9f2c...","runner":"go","package":"example.com/a/store","result":"fail","wall_s":2.7,"tests":[["TestSave",2.5,"pass"],["TestLoad",0.1,"fail","load_test.go:18: database unavailable"],["TestTable/empty",0,"fail","want empty result"],["TestTable",0,"fail"]]}
 ```
