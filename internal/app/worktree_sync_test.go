@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 )
 
@@ -118,6 +119,215 @@ func TestWorktreeSyncResolvesLatestModuleConflictOffline(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go mod verify: %v: %s", err, out)
+	}
+}
+
+func TestWorktreeSyncResolvesForeignGoConflictOffline(t *testing.T) {
+	f := newModuleSyncFixture(t, []string{"liba", "libb"})
+	f.setModulesSettings("modules:\n  foreign_go: true\n")
+	f.setVersions(map[string]string{"liba": "v1.0.0", "libb": "v1.0.0"}, true)
+	f.commit("base")
+	f.git("checkout", "-q", "-b", "feature")
+	f.setVersions(map[string]string{"liba": "v1.2.0", "libb": "v1.0.0"}, true)
+	f.commit("feature raises A")
+	f.git("checkout", "-q", "main")
+	f.setVersions(map[string]string{"liba": "v1.3.0", "libb": "v1.1.0"}, true)
+	f.commit("main raises modules")
+	f.git("checkout", "-q", "feature")
+	var stderr bytes.Buffer
+	if err := f.sync(&stderr); err != nil {
+		t.Fatalf("sync: %v; stderr=%s", err, stderr.String())
+	}
+	goMod := string(f.read("go.mod"))
+	for _, want := range []string{"example.com/liba v1.3.0", "example.com/libb v1.1.0"} {
+		if !strings.Contains(goMod, want) {
+			t.Errorf("go.mod missing %q:\n%s", want, goMod)
+		}
+	}
+	if !strings.Contains(stderr.String(), "example.com/liba (v1.3.0 vs v1.2.0), took v1.3.0") {
+		t.Fatalf("resolution output = %q", stderr.String())
+	}
+	cmd := exec.Command("go", "mod", "verify")
+	cmd.Dir = f.repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go mod verify: %v: %s", err, out)
+	}
+}
+
+func TestWorktreeSyncForeignGoDisabledRejectsConflict(t *testing.T) {
+	f := newModuleSyncFixture(t, []string{"lib"})
+	f.setModulesSettings("modules: {}\n")
+	f.makeRaiseConflict("lib")
+	err := f.sync(io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "a commit of the branch conflicts with main") {
+		t.Fatalf("sync error = %v", err)
+	}
+}
+
+func TestWorktreeSyncForeignGoHeldBranchRejectsConflict(t *testing.T) {
+	f := newModuleSyncFixture(t, []string{"lib"})
+	f.setModulesSettings("modules:\n  foreign_go: true\n")
+	if err := os.WriteFile(filepath.Join(f.repo, ".graft.yaml"), []byte("schema: 1\nversion: {mode: none}\nmodules:\n  hold_branches: [feature]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.makeRaiseConflict("lib")
+	err := f.sync(io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "a commit of the branch conflicts with main") {
+		t.Fatalf("sync error = %v", err)
+	}
+}
+
+func (f *moduleSyncFixture) makeRaiseConflict(module string) {
+	f.t.Helper()
+	baseVersions := map[string]string{module: "v1.0.0"}
+	f.setVersions(baseVersions, true)
+	f.commit("base")
+	f.git("checkout", "-q", "-b", "feature")
+	f.setVersions(map[string]string{module: "v1.2.0"}, true)
+	f.commit("feature raise")
+	f.git("checkout", "-q", "main")
+	f.setVersions(map[string]string{module: "v1.1.0"}, true)
+	f.commit("main raise")
+	f.git("checkout", "-q", "feature")
+}
+
+func TestWorktreeSyncConflictRequireUpgradeMajorBoundary(t *testing.T) {
+	isLatest := func(string) bool { return false }
+	if worktreeSyncConflictRequireUpgrade("example.com/lib", "v1.9.0+incompatible", "v2.0.0+incompatible", isLatest, true) {
+		t.Fatal("foreign_go accepted a major version change")
+	}
+	if worktreeSyncConflictRequireUpgrade("example.com/lib", "v0.9.0", "v1.0.0", isLatest, true) {
+		t.Fatal("foreign_go accepted a v0 to v1 change")
+	}
+	if !worktreeSyncConflictRequireUpgrade("example.com/lib", "v1.9.0", "v1.10.0", isLatest, true) {
+		t.Fatal("foreign_go rejected a same-major raise")
+	}
+	// Only moves the foreign raise itself makes: no +incompatible target and no
+	// release replaced by a pseudo-version.
+	if worktreeSyncConflictRequireUpgrade("example.com/lib", "v1.9.0+incompatible", "v1.10.0+incompatible", isLatest, true) {
+		t.Fatal("foreign_go accepted a +incompatible raise the foreign raise never makes")
+	}
+	if worktreeSyncConflictRequireUpgrade("example.com/lib", "v1.9.0", "v1.9.1-0.20261126000000-abcdefabcdef", isLatest, true) {
+		t.Fatal("foreign_go accepted a release replaced by a pseudo-version")
+	}
+}
+
+func TestWorktreeSyncTidyCannotLowerSelectedRequire(t *testing.T) {
+	before := []byte("module example.com/projectA\n\ngo 1.23\n\nrequire example.com/lib v1.3.0\n")
+	after := []byte("module example.com/projectA\n\ngo 1.23\n\nrequire example.com/lib v1.2.0\n")
+	err := worktreeSyncCheckTidyGoMod(before, after, []worktreeSyncModuleChange{{path: "example.com/lib", version: "v1.3.0"}})
+	if err == nil || !strings.Contains(err.Error(), "go mod tidy lowered require") {
+		t.Fatalf("tidy check error = %v", err)
+	}
+}
+
+func TestMergeResolvesForeignGoModuleConflict(t *testing.T) {
+	f := newModuleSyncFixture(t, []string{"liba", "libb"})
+	f.setModulesSettings("modules:\n  foreign_go: true\n")
+	f.setVersions(map[string]string{"liba": "v1.0.0", "libb": "v1.0.0"}, true)
+	f.commit("base")
+	f.git("checkout", "-q", "-b", "feature")
+	f.setVersions(map[string]string{"liba": "v1.2.0", "libb": "v1.0.0"}, true)
+	f.commit("feature raises A")
+	f.git("checkout", "-q", "main")
+	f.setVersions(map[string]string{"liba": "v1.3.0", "libb": "v1.1.0"}, true)
+	f.commit("main raises modules")
+	if _, err := exec.Command("git", "-C", f.repo, "merge", "--no-commit", "feature").CombinedOutput(); err == nil {
+		t.Fatal("git merge should leave a go.mod conflict")
+	}
+	repo := mustOpenTestRepo(t, f.repo)
+	cfg, err := config.Load(f.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mergeResolveLatestModuleConflicts(context.Background(), repo, cfg, "feature", io.Discard); err != nil {
+		t.Fatalf("merge resolver: %v", err)
+	}
+	goMod := string(f.read("go.mod"))
+	if !strings.Contains(goMod, "example.com/liba v1.3.0") || !strings.Contains(goMod, "example.com/libb v1.1.0") {
+		t.Fatalf("resolved go.mod = %s", goMod)
+	}
+}
+
+func TestWorktreeSyncReportsVersionRaisedByTidy(t *testing.T) {
+	f := newModuleSyncFixture(t, []string{"liba", "libb"})
+	writeTestProxyModuleRequire(t, filepath.Join(f.root, "proxy"), "libb", "v1.0.0", "liba", "v1.5.0")
+	f.setModulesSettings("modules:\n  foreign_go: true\n")
+	f.setVersions(map[string]string{"liba": "v1.0.0", "libb": "v1.0.0"}, true)
+	f.commit("base")
+	f.git("checkout", "-q", "-b", "feature")
+	f.setVersions(map[string]string{"liba": "v1.2.0", "libb": "v1.0.0"}, true)
+	f.commit("feature raises A")
+	f.git("checkout", "-q", "main")
+	f.setVersions(map[string]string{"liba": "v1.3.0", "libb": "v1.0.0"}, true)
+	f.commit("main raises A")
+	f.git("checkout", "-q", "feature")
+	var stderr bytes.Buffer
+	if err := f.sync(&stderr); err != nil {
+		t.Fatalf("sync: %v\nstderr: %s", err, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "example.com/liba") || !strings.Contains(stderr.String(), "took v1.5.0") {
+		t.Fatalf("resolution stderr = %q; want final tidy version v1.5.0", stderr.String())
+	}
+	if !strings.Contains(string(f.read("go.mod")), "example.com/liba v1.5.0") {
+		t.Fatalf("tidied go.mod = %s", f.read("go.mod"))
+	}
+}
+
+func TestMergeBuildCandidateReportsForeignGoResolution(t *testing.T) {
+	f := newModuleSyncFixture(t, []string{"liba"})
+	f.setModulesSettings("modules:\n  foreign_go: true\n")
+	f.setVersions(map[string]string{"liba": "v1.0.0"}, true)
+	f.commit("base")
+	f.git("checkout", "-q", "-b", "feature")
+	f.setVersions(map[string]string{"liba": "v1.2.0"}, true)
+	f.commit("feature raises A")
+	f.git("checkout", "-q", "main")
+	f.setVersions(map[string]string{"liba": "v1.3.0"}, true)
+	f.commit("main raises A")
+	repo := mustOpenTestRepo(t, f.repo)
+	cfg, err := config.Load(f.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	state := &mergeState{
+		a:         &App{Dir: f.repo, Stdout: io.Discard, Stderr: &stderr},
+		ctx:       context.Background(),
+		cfg:       cfg,
+		w:         repo,
+		F:         f.git("rev-parse", "feature"),
+		message:   "merge feature",
+		sourceRef: "refs/heads/feature",
+	}
+	if err := state.buildMergeCandidate(); err != nil {
+		t.Fatalf("build merge candidate: %v\nstderr: %s", err, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "graft: go.mod conflict resolved: example.com/liba") || !strings.Contains(stderr.String(), "took v1.3.0") {
+		t.Fatalf("merge stderr = %q; want resolved module and final version", stderr.String())
+	}
+}
+
+func TestMergeSourceBranch(t *testing.T) {
+	tests := []struct {
+		name, ref, want string
+	}{
+		{name: "local branch", ref: "refs/heads/feature/topic", want: "feature/topic"},
+		{name: "remote branch", ref: "refs/remotes/origin/feature/topic", want: "feature/topic"},
+		{name: "unknown ref", ref: "refs/tags/v1.0.0", want: ""},
+		{name: "longest remote", ref: "refs/remotes/team/x/feature", want: "feature"},
+		{name: "shorter remote", ref: "refs/remotes/team/y/feature", want: "y/feature"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			remotes := []string{"origin", "team", "team/x"}
+			if got := mergeSourceBranch(tt.ref, remotes); got != tt.want {
+				t.Fatalf("mergeSourceBranch(%q) = %q; want %q", tt.ref, got, tt.want)
+			}
+			if remote := explicitMergeSourceRemote(tt.ref, remotes); tt.want != "" && strings.HasPrefix(tt.ref, "refs/remotes/") && strings.TrimPrefix(tt.ref, "refs/remotes/") != remote+"/"+tt.want {
+				t.Fatalf("explicitMergeSourceRemote(%q) = %q; disagrees with branch %q", tt.ref, remote, tt.want)
+			}
+		})
 	}
 }
 
@@ -304,6 +514,14 @@ type moduleSyncFixture struct {
 	modules []string
 }
 
+func (f *moduleSyncFixture) setModulesSettings(settings string) {
+	f.t.Helper()
+	configPath := filepath.Join(f.root, "config", "graft", "config.yaml")
+	if err := os.WriteFile(configPath, []byte(settings), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
 func newModuleSyncFixture(t *testing.T, modules []string) *moduleSyncFixture {
 	t.Helper()
 	root := t.TempDir()
@@ -409,7 +627,7 @@ func writeTestModuleProxy(t *testing.T, root string, modules []string) {
 			t.Fatal(err)
 		}
 		var versions []string
-		for _, version := range []string{"v1.0.0", "v1.1.0", "v1.2.0", "v1.5.0"} {
+		for _, version := range []string{"v1.0.0", "v1.1.0", "v1.2.0", "v1.3.0", "v1.5.0"} {
 			versions = append(versions, version)
 			modulePath := "example.com/" + module
 			modFile := []byte("module " + modulePath + "\n\ngo 1.23.0\n")
@@ -449,5 +667,55 @@ func writeTestModuleProxy(t *testing.T, root string, modules []string) {
 		if err := os.WriteFile(filepath.Join(dir, "list"), []byte(strings.Join(versions, "\n")+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func writeTestProxyModuleRequire(t *testing.T, proxy, module, version, required, requiredVersion string) {
+	t.Helper()
+	modulePath := "example.com/" + module
+	modText := "module " + modulePath + "\n\ngo 1.23.0\n\nrequire example.com/" + required + " " + requiredVersion + "\n"
+	dir := filepath.Join(proxy, "example.com", module, "@v")
+	if err := os.WriteFile(filepath.Join(dir, version+".mod"), []byte(modText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	zipPath := filepath.Join(dir, version+".zip")
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	tmpPath := zipPath + ".tmp"
+	file, err := os.Create(tmpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := zip.NewWriter(file)
+	for _, item := range reader.File {
+		entry, err := writer.Create(item.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasSuffix(item.Name, "/go.mod") {
+			_, err = io.WriteString(entry, modText)
+		} else {
+			var source io.ReadCloser
+			source, err = item.Open()
+			if err == nil {
+				_, err = io.Copy(entry, source)
+				_ = source.Close()
+			}
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmpPath, zipPath); err != nil {
+		t.Fatal(err)
 	}
 }

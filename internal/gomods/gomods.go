@@ -353,6 +353,13 @@ func restoreForeignFiles(path, display string, snapshot foreignSnapshot) error {
 	return nil
 }
 
+// ForeignUpgrade reports whether the foreign raise would move a requirement
+// from current to latest: a higher version in the same major, not
+// +incompatible, and not from a release to a pseudo-version.
+func ForeignUpgrade(current, latest string) bool {
+	return foreignUpgrade(current, latest)
+}
+
 func foreignUpgrade(current, latest string) bool {
 	return semver.IsValid(current) && semver.IsValid(latest) &&
 		semver.Compare(latest, current) > 0 &&

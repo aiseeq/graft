@@ -18,6 +18,7 @@ import (
 	"github.com/aiseeq/graft/v2/internal/config"
 	"github.com/aiseeq/graft/v2/internal/execx"
 	"github.com/aiseeq/graft/v2/internal/gitx"
+	"github.com/aiseeq/graft/v2/internal/gomods"
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 )
 
@@ -110,7 +111,12 @@ func (a *App) WorktreeSync(ctx context.Context, o WorktreeSyncOptions) error {
 	} else if err := worktreeSyncPushTrunk(repo, trunk, trunkBranch, branch, pushRemote, pushRef); err != nil {
 		return err
 	}
-	if err := worktreeSyncRebase(ctx, repo, trunk, a.Stderr); err != nil {
+	branchName, branchErr := repo.Branch()
+	if branchErr != nil {
+		fmt.Fprintf(a.Stderr, "graft: could not determine the current branch; foreign_go conflict resolution is disabled: %v\n", branchErr)
+		branchName = ""
+	}
+	if err := worktreeSyncRebase(ctx, repo, trunk, branchName, cfg, a.Stderr); err != nil {
 		return err
 	}
 	return worktreeSyncFinish(a, repo, o, trunk, pushRemote, pushRef, trackingRef, lease)
@@ -167,14 +173,14 @@ func worktreeSyncStaleUpstreamHint(a *App, repo *gitx.Repo) error {
 	return nil
 }
 
-func worktreeSyncRebase(ctx context.Context, repo *gitx.Repo, trunk string, stderr io.Writer) error {
+func worktreeSyncRebase(ctx context.Context, repo *gitx.Repo, trunk, branch string, cfg *config.Config, stderr io.Writer) error {
 	beforeStashes, err := worktreeSyncStashes(repo)
 	if err != nil {
 		return err
 	}
 	rebaseOutput, rebaseErr := repo.Git("rebase", "--autostash", trunk)
 	for worktreeSyncRebaseStopped(repo) {
-		resolved, note, resolveErr := worktreeSyncResolveLatestConflict(ctx, repo)
+		resolved, note, resolveErr := worktreeSyncResolveLatestConflict(ctx, repo, branch, cfg)
 		if !resolved {
 			err := worktreeSyncRebaseConflictError(trunk, rebaseErr)
 			if resolveErr != nil {
@@ -227,11 +233,17 @@ func worktreeSyncRebase(ctx context.Context, repo *gitx.Repo, trunk string, stde
 }
 
 type worktreeSyncModuleChange struct {
-	path, onto, commit, version string
-	bothSidesChanged            bool
+	path, onto, commit, version, selectedVersion string
+	bothSidesChanged                             bool
 }
 
 func worktreeSyncLatestGoModChanges(baseText, ontoText, commitText string, isLatest func(string) bool) ([]worktreeSyncModuleChange, bool, error) {
+	return worktreeSyncGoModChanges(baseText, ontoText, commitText, func(path, old, next string) bool {
+		return worktreeSyncLatestRequireUpgrade(path, old, next, isLatest)
+	})
+}
+
+func worktreeSyncGoModChanges(baseText, ontoText, commitText string, isUpgrade func(path, old, next string) bool) ([]worktreeSyncModuleChange, bool, error) {
 	base, err := modfile.Parse("go.mod", []byte(baseText), nil)
 	if err != nil {
 		return nil, false, fmt.Errorf("parsing base go.mod: %w", err)
@@ -244,14 +256,14 @@ func worktreeSyncLatestGoModChanges(baseText, ontoText, commitText string, isLat
 	if err != nil {
 		return nil, false, fmt.Errorf("parsing commit go.mod: %w", err)
 	}
-	ontoChanges, ok, err := worktreeSyncLatestSideChanges(base, onto, isLatest)
+	ontoChanges, ok, err := worktreeSyncLatestSideChanges(base, onto, isUpgrade)
 	if err != nil {
 		return nil, false, fmt.Errorf("checking onto go.mod: %w", err)
 	}
 	if !ok {
 		return nil, false, nil
 	}
-	commitChanges, ok, err := worktreeSyncLatestSideChanges(base, commit, isLatest)
+	commitChanges, ok, err := worktreeSyncLatestSideChanges(base, commit, isUpgrade)
 	if err != nil {
 		return nil, false, fmt.Errorf("checking commit go.mod: %w", err)
 	}
@@ -308,7 +320,7 @@ func worktreeSyncCombineLatestGoModChanges(base *modfile.File, ontoChanges, comm
 	return changes, true, nil
 }
 
-func worktreeSyncLatestSideChanges(base, side *modfile.File, isLatest func(string) bool) (map[string]string, bool, error) {
+func worktreeSyncLatestSideChanges(base, side *modfile.File, isUpgrade func(path, old, next string) bool) (map[string]string, bool, error) {
 	baseVersions := map[string]string{}
 	for _, req := range base.Require {
 		baseVersions[req.Mod.Path] = req.Mod.Version
@@ -322,7 +334,7 @@ func worktreeSyncLatestSideChanges(base, side *modfile.File, isLatest func(strin
 		if req.Mod.Version == old {
 			continue
 		}
-		if !worktreeSyncLatestRequireUpgrade(req.Mod.Path, old, req.Mod.Version, isLatest) {
+		if !isUpgrade(req.Mod.Path, old, req.Mod.Version) {
 			return nil, false, nil
 		}
 		changes[req.Mod.Path] = req.Mod.Version
@@ -390,7 +402,7 @@ func worktreeSyncRebaseConflictError(trunk string, rebaseErr error) error {
 	return fmt.Errorf("a commit of the branch conflicts with %s: resolve and git rebase --continue, or git rebase --abort; the uncommitted changes come back when the rebase ends: %w", trunk, rebaseErr)
 }
 
-func worktreeSyncResolveLatestConflict(ctx context.Context, repo *gitx.Repo) (bool, string, error) {
+func worktreeSyncResolveLatestConflict(ctx context.Context, repo *gitx.Repo, branch string, cfg *config.Config) (bool, string, error) {
 	conflictsOut, err := repo.Git("diff", "--name-only", "--diff-filter=U")
 	if err != nil {
 		return false, "", fmt.Errorf("listing rebase conflicts: %w", err)
@@ -404,19 +416,32 @@ func worktreeSyncResolveLatestConflict(ctx context.Context, repo *gitx.Repo) (bo
 	if err != nil {
 		return false, "", err
 	}
-	return worktreeSyncResolveLatestConflictFrom(ctx, repo, moduleDir, baseGoMod, ontoGoMod, commitGoMod)
+	return worktreeSyncResolveLatestConflictFrom(ctx, repo, moduleDir, baseGoMod, ontoGoMod, commitGoMod, branch, cfg)
 }
 
-func worktreeSyncResolveLatestConflictFrom(ctx context.Context, repo *gitx.Repo, moduleDir, baseGoMod, ontoGoMod, commitGoMod string) (bool, string, error) {
+func worktreeSyncResolveLatestConflictFrom(ctx context.Context, repo *gitx.Repo, moduleDir, baseGoMod, ontoGoMod, commitGoMod, branch string, projectCfg *config.Config) (bool, string, error) {
 	settings, err := userconfig.ModulesSettings()
 	if err != nil {
 		return false, "", fmt.Errorf("reading modules.latest: %w", err)
 	}
-	changes, ok, err := worktreeSyncLatestGoModChanges(baseGoMod, ontoGoMod, commitGoMod, settings.IsLatest)
+	allowForeign := settings.ForeignGo && branch != ""
+	if allowForeign && projectCfg != nil && modulesHeldBy(projectCfg, branch) != "" {
+		allowForeign = false
+	}
+	changes, ok, err := worktreeSyncGoModChanges(baseGoMod, ontoGoMod, commitGoMod, func(path, old, next string) bool {
+		return worktreeSyncConflictRequireUpgrade(path, old, next, settings.IsLatest, allowForeign)
+	})
 	if err != nil || !ok {
 		return false, "", err
 	}
 	return worktreeSyncApplyLatestConflict(ctx, repo, moduleDir, ontoGoMod, changes)
+}
+
+func worktreeSyncConflictRequireUpgrade(path, old, next string, isLatest func(string) bool, allowForeign bool) bool {
+	if worktreeSyncLatestRequireUpgrade(path, old, next, isLatest) {
+		return true
+	}
+	return allowForeign && gomods.ForeignUpgrade(old, next)
 }
 
 func worktreeSyncConflictModuleDir(conflicts []string) (string, bool) {
@@ -513,9 +538,18 @@ func worktreeSyncApplyLatestConflict(ctx context.Context, repo *gitx.Repo, modul
 	if err := worktreeSyncCheckTidyGoMod(merged, tidied, reports); err != nil {
 		return rollback(err)
 	}
+	for i := range reports {
+		selectedVersion := reports[i].version
+		version, err := worktreeSyncRequireVersion(tidied, reports[i].path)
+		if err != nil {
+			return rollback(fmt.Errorf("reading final version for %s: %w", reports[i].path, err))
+		}
+		reports[i].version = version
+		reports[i].selectedVersion = selectedVersion
+	}
 	var differing []worktreeSyncModuleChange
 	for _, item := range reports {
-		if item.bothSidesChanged && item.onto != item.commit {
+		if item.bothSidesChanged && item.onto != item.commit || semver.Compare(item.version, item.selectedVersion) > 0 {
 			differing = append(differing, item)
 		}
 	}
@@ -523,7 +557,7 @@ func worktreeSyncApplyLatestConflict(ctx context.Context, repo *gitx.Repo, modul
 	for _, item := range differing {
 		modules = append(modules, fmt.Sprintf("%s (%s vs %s), took %s", item.path, item.onto, item.commit, item.version))
 	}
-	note := "graft: worktree sync resolved " + strings.Join(modules, "; ")
+	note := "graft: go.mod conflict resolved: " + strings.Join(modules, "; ")
 	return true, note, nil
 }
 
@@ -653,6 +687,9 @@ func worktreeSyncCheckTidyGoMod(beforeText, afterText []byte, allowed []worktree
 		if beforeReq == nil || afterReq == nil {
 			return fmt.Errorf("go mod tidy removed require %s", change.path)
 		}
+		if !semver.IsValid(afterReq.Mod.Version) || semver.Compare(afterReq.Mod.Version, change.version) < 0 {
+			return fmt.Errorf("go mod tidy lowered require %s below selected version %s (got %s)", change.path, change.version, afterReq.Mod.Version)
+		}
 		if err := before.DropRequire(change.path); err != nil {
 			return fmt.Errorf("excluding raised require from pre-tidy comparison: %w", err)
 		}
@@ -675,6 +712,14 @@ func worktreeSyncCheckTidyGoMod(beforeText, afterText []byte, allowed []worktree
 		return errors.New("go mod tidy changed go.mod outside the raised require lines")
 	}
 	return nil
+}
+
+func worktreeSyncRequireVersion(data []byte, path string) (string, error) {
+	file, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return "", fmt.Errorf("parsing tidied go.mod: %w", err)
+	}
+	return baseRequireVersion(file, path), nil
 }
 
 func worktreeSyncStashes(repo *gitx.Repo) (map[string]bool, error) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -546,13 +547,19 @@ func (s *mergeState) resolveSource() error {
 }
 
 func explicitMergeSourceRemote(name string, remotes []string) string {
-	name = strings.TrimPrefix(name, "refs/remotes/")
-	for _, remote := range remotes {
-		if branch, ok := strings.CutPrefix(name, remote+"/"); ok && branch != "" {
-			return remote
+	remote, _ := splitRemoteBranch(strings.TrimPrefix(name, "refs/remotes/"), remotes)
+	return remote
+}
+
+// splitRemoteBranch splits remote/branch by the longest matching remote: with
+// remotes team and team/x, team/x/feature is branch feature of team/x.
+func splitRemoteBranch(name string, remotes []string) (remote, branch string) {
+	for _, candidate := range remotes {
+		if rest, ok := strings.CutPrefix(name, candidate+"/"); ok && rest != "" && len(candidate) > len(remote) {
+			remote, branch = candidate, rest
 		}
 	}
-	return ""
+	return remote, branch
 }
 
 func (s *mergeState) sourceIsTrunk() bool {
@@ -1004,7 +1011,7 @@ func (s *mergeState) resolveCherryPickFailure(commit string, cherryErr error) er
 		}
 		return fmt.Errorf("cherry-pick failed without conflicts: %w", cherryErr)
 	}
-	if err = mergeResolveVersion(s.ctx, s.w, s.cfg); err != nil {
+	if err = mergeResolveVersion(s.ctx, s.w, s.cfg, mergeSourceBranch(s.sourceRef, s.allRemotes), s.a.Stderr); err != nil {
 		return err
 	}
 	return s.continueCherryPick()
@@ -1038,7 +1045,7 @@ func (s *mergeState) buildMergeCandidate() error {
 	if strings.TrimSpace(paths) == "" {
 		return fmt.Errorf("merge failed: %w", err)
 	}
-	if err = mergeResolveVersion(s.ctx, s.w, s.cfg); err != nil {
+	if err = mergeResolveVersion(s.ctx, s.w, s.cfg, mergeSourceBranch(s.sourceRef, s.allRemotes), s.a.Stderr); err != nil {
 		return err
 	}
 	_, err = s.w.GitEnv(markerEnv, "commit", "--no-edit")
@@ -1577,12 +1584,12 @@ func primaryRemote(cfg *config.Config, remotes []string, trunkRef string) string
 	}
 	return remotes[0]
 }
-func mergeResolveVersion(ctx context.Context, repo *gitx.Repo, cfg *config.Config) error {
+func mergeResolveVersion(ctx context.Context, repo *gitx.Repo, cfg *config.Config, sourceBranch string, stderr io.Writer) error {
 	paths, err := mergeUnmergedPaths(repo)
 	if err != nil {
 		return err
 	}
-	if err := mergeResolveLatestModuleConflicts(ctx, repo, cfg); err != nil {
+	if err := mergeResolveLatestModuleConflicts(ctx, repo, cfg, sourceBranch, stderr); err != nil {
 		return fmt.Errorf("merge conflict in %s; trunk and source are unchanged: %w", strings.Join(paths, ", "), err)
 	}
 	paths, err = mergeUnmergedPaths(repo)
@@ -1626,7 +1633,7 @@ func mergeResolveVersion(ctx context.Context, repo *gitx.Repo, cfg *config.Confi
 	return mergeInstallVersionResolution(repo, allowed, side, mirrors)
 }
 
-func mergeResolveLatestModuleConflicts(ctx context.Context, repo *gitx.Repo, cfg *config.Config) error {
+func mergeResolveLatestModuleConflicts(ctx context.Context, repo *gitx.Repo, cfg *config.Config, sourceBranch string, stderr io.Writer) error {
 	paths, err := mergeUnmergedPaths(repo)
 	if err != nil {
 		return err
@@ -1658,14 +1665,30 @@ func mergeResolveLatestModuleConflicts(ctx context.Context, repo *gitx.Repo, cfg
 		}
 		goMods[stage-1] = text
 	}
-	resolved, _, err := worktreeSyncResolveLatestConflictFrom(ctx, repo, moduleDir, goMods[0], goMods[1], goMods[2])
+	resolved, note, err := worktreeSyncResolveLatestConflictFrom(ctx, repo, moduleDir, goMods[0], goMods[1], goMods[2], sourceBranch, cfg)
 	if err != nil {
 		return err
 	}
 	if !resolved {
 		return nil
 	}
+	if note != "" && stderr != nil {
+		fmt.Fprintln(stderr, note)
+	}
 	return worktreeSyncStageModuleFiles(repo, moduleDir, modulePaths)
+}
+
+func mergeSourceBranch(sourceRef string, remotes []string) string {
+	branch, ok := strings.CutPrefix(sourceRef, "refs/heads/")
+	if ok {
+		return branch
+	}
+	branch, ok = strings.CutPrefix(sourceRef, "refs/remotes/")
+	if !ok {
+		return ""
+	}
+	_, name := splitRemoteBranch(branch, remotes)
+	return name
 }
 
 func mergeVersionConflictStages(repo *gitx.Repo, path string, includeBase bool) ([3]version.Semver, error) {

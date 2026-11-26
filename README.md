@@ -652,9 +652,17 @@ by content, including originally empty commits, are skipped. `--mode merge`
 preserves the source commits and creates a two-parent merge commit. Conflicts
 in `version.file` keep the larger semantic version from either side. In either
 mode, a conflict only in one module's `go.mod` and `go.sum` is resolved when
-both sides raised the same `modules.latest` requirement: merge takes the
-higher version and reconciles `go.sum` with `go mod download` and `go mod tidy`,
-as worktree sync does. Other conflicts, including `version.sync` files, stop
+both sides raised the same `modules.latest` requirement. With user setting
+`modules.foreign_go: true`, it also resolves raises of other existing
+requirements when each side's move is one the foreign raise itself makes (same
+major, not `+incompatible`, not from a release to a pseudo-version); on a
+branch held by
+`modules.hold_branches`, `deploy.hotfix.branches` or
+`version.build_branches`, only `modules.latest` requirements qualify. The
+higher version wins and `go.sum` is reconciled with `go mod download` and
+`go mod tidy`. With `foreign_go`, a higher trunk version wins over a lower
+manual pin on the source branch too; to keep a pin, hold the branch with
+`modules.hold_branches`. Other conflicts, including `version.sync` files, stop
 without publishing. When the result version is not above the trunk's, graft
 adds a patch bump. The result tree and `.graft.yaml` drive the gate and
 dependencies; `--no-deps` skips only `merge.deps` and requires a printed
@@ -3433,10 +3441,17 @@ stops the rebase (`git rebase --continue` or `--abort`); an untracked file
 the trunk adds stops it before anything changes.
 
 When a rebase conflict is only in one module's `go.mod` and `go.sum`, sync
-resolves it if both sides raised the same `modules.latest` requirement, taking
-the higher version. It starts `go.sum` from onto, then runs `go mod download`
-and `go mod tidy`; a vendor manifest or tidy changes outside the raised require
-lines leave the rebase stopped.
+resolves it if both sides raised the same `modules.latest` requirement. With
+user setting `modules.foreign_go: true`, it also resolves raises of other
+existing requirements when each side's move is one the foreign raise itself
+makes (same major, not `+incompatible`, not from a release to a
+pseudo-version); on a branch held by `modules.hold_branches`, `deploy.hotfix.branches` or
+`version.build_branches`, only `modules.latest` requirements qualify. The
+higher version wins. With `foreign_go`, a higher trunk version wins over a
+lower manual pin on the worktree branch too; to keep a pin, hold the branch
+with `modules.hold_branches`. Sync starts `go.sum` from onto, then runs `go mod
+download` and `go mod tidy`; a vendor manifest or tidy changes outside the
+raised require lines leave the rebase stopped.
 
 ## Go build cache
 
@@ -3491,9 +3506,11 @@ the cache. Below the threshold it trims entries unused for 6h and reports
 available space before and after. The shorter `--older` age makes projects
 that have not been built for those hours cold again; the threshold should be
 chosen with that tradeoff in mind.
-Every `gocache trim` run takes a lock beside the cache (`<GOCACHE>.graft-trim.lock`)
-before walking the cache; after waiting, it checks `--free-below` again and
-skips the walk if enough space is available.
+A `gocache trim` run that is going to walk the cache first takes a lock beside
+it (`<GOCACHE>.graft-trim.lock`), so trims of one cache run one at a time; a run
+whose `--free-below` is already met exits before the lock. After waiting for the
+lock, it checks `--free-below` again and skips the walk if enough space is
+available.
 
 ## Development
 
