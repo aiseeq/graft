@@ -453,17 +453,13 @@ func decodeQueriedRecords(data []byte, matches []encodedRecordMatch) ([]Record, 
 				malformed++
 				continue
 			}
-			if _, valid := filteredRecordTime(line, "kind", "task"); !valid {
+			if rec.Time.IsZero() {
 				malformed++
 				continue
 			}
 			records = append(records, rec)
 		} else {
-			if !writerShapedRecord(line) || !json.Valid(line) {
-				malformed++
-				continue
-			}
-			if _, valid := filteredRecordTime(line, "kind", "task"); !valid {
+			if _, valid := foreignRecordTime(line); !valid {
 				malformed++
 			}
 		}
@@ -485,19 +481,6 @@ func lineMatchesRecord(line []byte, matches []encodedRecordMatch) bool {
 		}
 	}
 	return false
-}
-
-func writerShapedRecord(line []byte) bool {
-	trimmed := bytes.TrimSpace(line)
-	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
-		return false
-	}
-	for _, field := range [][]byte{[]byte(`"time":`), []byte(`"kind":`), []byte(`"task":`)} {
-		if !bytes.Contains(trimmed, field) {
-			return false
-		}
-	}
-	return true
 }
 
 func uniqueWindowRecords(grouped [][]Record, since time.Time) []Record {
@@ -584,7 +567,7 @@ func decodeRecordsMatchingWithStart(reader io.Reader, needle []byte) (recs []Rec
 	for sc.Scan() {
 		line := sc.Bytes()
 		if needle != nil && !bytes.Contains(line, needle) {
-			start, valid := filteredRecordTime(line, "kind", "task")
+			start, valid := foreignRecordTime(line)
 			if !valid {
 				malformed++
 				continue
@@ -598,7 +581,7 @@ func decodeRecordsMatchingWithStart(reader io.Reader, needle []byte) (recs []Rec
 			continue
 		}
 		// The record is decoded already: a missing time leaves it zero and an
-		// unreadable one fails Unmarshal above. Same rule as filteredRecordTime
+		// unreadable one fails Unmarshal above. Same rule as foreignRecordTime
 		// without three more decodes of the line.
 		if r.Time.IsZero() {
 			malformed++
@@ -613,96 +596,14 @@ func decodeRecordsMatchingWithStart(reader io.Reader, needle []byte) (recs []Rec
 	return recs, malformed, first, nil
 }
 
-// filteredRecordTime handles writer-shaped foreign records without validating
-// or decoding their full JSON. appendUnderLock writes json.Marshal output as a
-// single newline-terminated object, so incomplete writes fail the framing or
-// required-field checks. Suspicious lines take the full validation path to
-// retain the malformed count for other input shapes.
-func filteredRecordTime(line []byte, required ...string) (time.Time, bool) {
-	trimmed := bytes.TrimSpace(line)
-	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
-		return decodeSuspiciousRecordTime(line, required...)
-	}
-	stamp, timeOK := jsonTimeField(trimmed)
-	fieldsOK := timeOK
-	for _, name := range required {
-		if !jsonNonemptyStringField(trimmed, name) {
-			fieldsOK = false
-			break
-		}
-	}
-	if fieldsOK {
-		return stamp, true
-	}
-	return decodeSuspiciousRecordTime(line, required...)
-}
-
-func decodeSuspiciousRecordTime(line []byte, required ...string) (time.Time, bool) {
-	if !json.Valid(line) {
+// foreignRecordTime reads another project's line as the full reader reads a
+// Record, so both count the same lines as malformed.
+func foreignRecordTime(line []byte) (time.Time, bool) {
+	var r Record
+	if json.Unmarshal(line, &r) != nil || r.Kind == "" || r.Task == "" || r.Time.IsZero() {
 		return time.Time{}, false
 	}
-	// Decoded like a Record (field names without case), so a line the full
-	// reader takes keeps its time here; a missing time stays zero and fails.
-	var meta struct {
-		Time    time.Time `json:"time"`
-		Kind    string    `json:"kind"`
-		Task    string    `json:"task"`
-		Package string    `json:"package"`
-		Result  string    `json:"result"`
-	}
-	if json.Unmarshal(line, &meta) != nil || meta.Time.IsZero() {
-		return time.Time{}, false
-	}
-	for _, name := range required {
-		var value string
-		switch name {
-		case "kind":
-			value = meta.Kind
-		case "task":
-			value = meta.Task
-		case "package":
-			value = meta.Package
-		case "result":
-			value = meta.Result
-		}
-		if value == "" {
-			return time.Time{}, false
-		}
-	}
-	return meta.Time, true
-}
-
-func jsonTimeField(line []byte) (time.Time, bool) {
-	value, ok := jsonStringField(line, "time")
-	if !ok {
-		return time.Time{}, false
-	}
-	var stamp time.Time
-	if stamp.UnmarshalJSON(value) != nil || stamp.IsZero() {
-		return time.Time{}, false
-	}
-	return stamp, true
-}
-
-func jsonNonemptyStringField(line []byte, name string) bool {
-	value, ok := jsonStringField(line, name)
-	return ok && len(value) > 2
-}
-
-func jsonStringField(line []byte, name string) ([]byte, bool) {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(line, &fields) != nil {
-		return nil, false
-	}
-	value, ok := fields[name]
-	if !ok || len(value) == 0 || value[0] != '"' {
-		return nil, false
-	}
-	var decoded string
-	if json.Unmarshal(value, &decoded) != nil {
-		return nil, false
-	}
-	return value, true
+	return r.Time, true
 }
 
 func earlierTime(current, candidate time.Time) time.Time {

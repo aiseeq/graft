@@ -101,6 +101,11 @@ func TestReadersUseOneRuleForRecordTime(t *testing.T) {
 		{name: "unreadable", timeField: `,"time":"not-a-time"`, wantBad: 1},
 		{name: "zero", timeField: `,"time":"0001-01-01T00:00:00Z"`, wantBad: 1},
 		{name: "valid", timeField: `,"time":"2026-11-24T12:00:00Z"`, wantRows: 1},
+		{name: "case-insensitive time key", timeField: `,"TIME":"2026-11-24T12:00:00Z"`, wantRows: 1},
+		{name: "duplicate time key with unreadable value", timeField: `,"time":"2026-11-24T12:00:00Z","TIME":"not-a-time"`, wantBad: 1},
+		{name: "duplicate time key unreadable first", timeField: `,"TIME":"not-a-time","time":"2026-11-24T12:00:00Z"`, wantBad: 1},
+		{name: "field unknown to Record", timeField: `,"time":"2026-11-24T12:00:00Z","package":42`, wantRows: 1},
+		{name: "Record field of another type", timeField: `,"time":"2026-11-24T12:00:00Z","host":42`, wantBad: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -141,6 +146,45 @@ func TestReadersUseOneRuleForRecordTime(t *testing.T) {
 			foreignBad("filtered", rows, malformed, err)
 			rows, malformed, err = LoadWindowMatching(path, time.Time{}, []RecordMatch{{Profile: "projectB:gate", Step: "check"}}, int64(len(line)))
 			foreignBad("window matching", rows, malformed, err)
+		})
+	}
+}
+
+func TestPackageReadersUseOneRuleForRecordTime(t *testing.T) {
+	tests := []struct {
+		name      string
+		timeField string
+		wantRows  int
+		wantBad   int
+	}{
+		{name: "missing", wantBad: 1},
+		{name: "zero", timeField: `,"time":"0001-01-01T00:00:00Z"`, wantBad: 1},
+		{name: "valid", timeField: `,"time":"2026-11-24T12:00:00Z"`, wantRows: 1},
+		{name: "case-insensitive time key", timeField: `,"TIME":"2026-11-24T12:00:00Z"`, wantRows: 1},
+		{name: "duplicate time key with unreadable value", timeField: `,"time":"2026-11-24T12:00:00Z","TIME":"not-a-time"`, wantBad: 1},
+		{name: "duplicate time key unreadable first", timeField: `,"TIME":"not-a-time","time":"2026-11-24T12:00:00Z"`, wantBad: 1},
+		{name: "field unknown to PackageRun", timeField: `,"time":"2026-11-24T12:00:00Z","extra":42`, wantRows: 1},
+		{name: "PackageRun field of another type", timeField: `,"time":"2026-11-24T12:00:00Z","package":42`, wantBad: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			line := []byte(`{"package":"pkgA","result":"pass","project":"projectA"` + tt.timeField + `}` + "\n")
+			check := func(reader string, runs []PackageRun, malformed int, err error, wantRows int) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("%s read: %v", reader, err)
+				}
+				if len(runs) != wantRows || malformed != tt.wantBad {
+					t.Errorf("%s read = %d runs, %d malformed; want %d and %d", reader, len(runs), malformed, wantRows, tt.wantBad)
+				}
+			}
+
+			runs, malformed, err := decodePackageRuns(bytes.NewReader(line))
+			check("full", runs, malformed, err, tt.wantRows)
+			runs, malformed, err = decodePackageRunsProject(bytes.NewReader(line), "projectA")
+			check("filtered", runs, malformed, err, tt.wantRows)
+			runs, malformed, err = decodePackageRunsProject(bytes.NewReader(line), "projectB")
+			check("filtered foreign", runs, malformed, err, 0)
 		})
 	}
 }

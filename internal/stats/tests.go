@@ -261,7 +261,7 @@ func decodePackageRunsMatchingWithStart(reader io.Reader, needle []byte) (runs [
 	for sc.Scan() {
 		line := sc.Bytes()
 		if needle != nil && !bytes.Contains(line, needle) {
-			start, valid := filteredRecordTime(line, "package", "result")
+			start, valid := foreignPackageTime(line)
 			if !valid {
 				malformed++
 				continue
@@ -271,6 +271,10 @@ func decodePackageRunsMatchingWithStart(reader io.Reader, needle []byte) (runs [
 		}
 		var r PackageRun
 		if json.Unmarshal(line, &r) != nil || r.Package == "" || r.Result == "" {
+			malformed++
+			continue
+		}
+		if r.Time.IsZero() {
 			malformed++
 			continue
 		}
@@ -891,4 +895,14 @@ func RenderTests(w io.Writer, rep TestReport, withProject bool) error {
 	}
 	renderReruns(tw, rep.Reruns, withProject)
 	return tw.Flush()
+}
+
+// foreignPackageTime reads another project's line as the full reader reads a
+// PackageRun, so both count the same lines as malformed.
+func foreignPackageTime(line []byte) (time.Time, bool) {
+	var r PackageRun
+	if json.Unmarshal(line, &r) != nil || r.Package == "" || r.Result == "" || r.Time.IsZero() {
+		return time.Time{}, false
+	}
+	return r.Time, true
 }
