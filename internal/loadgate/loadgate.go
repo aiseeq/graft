@@ -101,6 +101,7 @@ var reservePollNow = time.Now
 // reserveAgeNow is overridden by tests to hold the admitted-core forecast at
 // a fixed age; production uses the wall clock.
 var reserveAgeNow = time.Now
+var admittedRecordStat = os.Stat
 var pressureMeterFactory = func(root string) machineMeter { return pressure.NewMeter(root) }
 var loadLockAcquired = func(string) {}
 var loadLockBeforeRelease = func() {}
@@ -1088,39 +1089,24 @@ func firstUnmeasuredAdmission(lockPath string, now time.Time, grace time.Duratio
 	var firstTask string
 	var retryAt time.Time
 	for _, file := range files {
-		var d reserveData
-		if err := json.Unmarshal(file.Data, &d); err != nil {
-			mtime, err := liveRecordModTime(file.Path)
-			if err != nil {
-				return "", time.Time{}, false, err
-			}
-			mtime = notAfter(mtime, now)
-			until := mtime.Add(grace)
-			if now.Before(until) && (retryAt.IsZero() || until.Before(retryAt)) {
-				firstTask, retryAt = "unknown task", until
-			}
-			continue
-		}
-		if d.CPUError == "" && d.At != "" {
-			continue
-		}
-		at, err := time.Parse(time.RFC3339Nano, d.Admitted)
+		d, at, unknownAdmission, err := decodeAdmissionRecord(file)
 		if err != nil {
-			mtime, statErr := liveRecordModTime(file.Path)
-			if statErr != nil {
-				return "", time.Time{}, false, statErr
+			if errors.Is(err, os.ErrNotExist) {
+				continue
 			}
-			mtime = notAfter(mtime, now)
-			until := mtime.Add(grace)
-			if now.Before(until) && (retryAt.IsZero() || until.Before(retryAt)) {
-				firstTask, retryAt = "unknown task", until
-			}
+			return "", time.Time{}, false, err
+		}
+		_, _, hasEMA, malformedMeasurement := parseAdmissionMeasurements(d)
+		if !unknownAdmission && d.CPUError == "" && hasEMA && !malformedMeasurement {
 			continue
+		}
+		if unknownAdmission {
+			at = notAfter(at, now)
 		}
 		until := at.Add(grace)
 		if now.Before(until) && (retryAt.IsZero() || until.Before(retryAt)) {
 			task := d.Task
-			if task == "" {
+			if unknownAdmission || task == "" {
 				task = "unknown task"
 			}
 			firstTask, retryAt = task, until
@@ -1138,7 +1124,7 @@ const loadAvgTau = time.Minute
 func admittedPattern(lockPath string) string { return filepath.Base(lockPath) + ".*.admitted" }
 
 func liveRecordModTime(path string) (time.Time, error) {
-	info, err := os.Stat(path)
+	info, err := admittedRecordStat(path)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("stat admitted record %s: %w", path, err)
 	}
@@ -1203,34 +1189,16 @@ func unseenAdmittedCores(lockPath string, share func(admitted time.Time) float64
 }
 
 func mergeAdmissionEstimate(byAdmission map[string]admittedEstimate, file lock.LiveFile) error {
-	var d reserveData
-	if err := json.Unmarshal(file.Data, &d); err != nil {
-		mtime, statErr := liveRecordModTime(file.Path)
-		if statErr != nil {
-			return statErr
+	d, at, unknownAdmission, err := decodeAdmissionRecord(file)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
 		}
-		mtime = notAfter(mtime, reserveAgeNow())
-		byAdmission[file.Path] = admittedEstimate{at: mtime, expected: 4, cpuError: true}
-		return nil
+		return err
 	}
-	at, err := time.Parse(time.RFC3339Nano, d.Admitted)
-	unknownAdmission := err != nil
-	if unknownAdmission {
-		at, err = liveRecordModTime(file.Path)
-		if err != nil {
-			return err
-		}
-		at = notAfter(at, reserveAgeNow())
-	}
-	var observedAt time.Time
-	if d.ObservedAt != "" {
-		observedAt, err = time.Parse(time.RFC3339Nano, d.ObservedAt)
-		if err != nil {
-			return fmt.Errorf("observed CPU of admitted task %s: %w", file.Path, err)
-		}
-	}
+	observedAt, rateAt, hasEMA, malformedMeasurement := parseAdmissionMeasurements(d)
 	key := d.Admitted
-	if key == "" {
+	if key == "" || unknownAdmission {
 		key = file.Path
 	}
 	old, ok := byAdmission[key]
@@ -1238,26 +1206,69 @@ func mergeAdmissionEstimate(byAdmission map[string]admittedEstimate, file lock.L
 		old.at = at
 	}
 	old.expected = max(old.expected, d.Cores)
-	if d.Admitted == "" || unknownAdmission {
+	if unknownAdmission {
 		old.expected, old.cpuError = max(old.expected, 4), true
 	}
-	if d.CPUError != "" {
+	if d.CPUError != "" || malformedMeasurement {
 		old.cpuError = true
 	}
-	if d.At != "" {
-		atRate, parseErr := time.Parse(time.RFC3339Nano, d.At)
-		if parseErr != nil {
-			return fmt.Errorf("rate of admitted CPU %s: %w", file.Path, parseErr)
-		}
-		if !old.hasEMA || atRate.After(old.rateAt) {
-			old.rate, old.ema, old.rateAt, old.hasEMA = d.Rate, d.EMA, atRate, true
-		}
+	if hasEMA && (!old.hasEMA || rateAt.After(old.rateAt)) {
+		old.rate, old.ema, old.rateAt, old.hasEMA = d.Rate, d.EMA, rateAt, true
 	}
 	if !observedAt.IsZero() && (!old.hasObservation || observedAt.After(old.observedAt)) {
 		old.observed, old.observedAt, old.hasObservation = d.ObservedCores, observedAt, true
 	}
 	byAdmission[key] = old
 	return nil
+}
+
+func decodeAdmissionRecord(file lock.LiveFile) (reserveData, time.Time, bool, error) {
+	var d reserveData
+	if err := json.Unmarshal(file.Data, &d); err != nil { //nolint:error-masking // Malformed live records conservatively become unknown reservations.
+		mtime, statErr := liveRecordModTime(file.Path)
+		if statErr != nil {
+			return d, time.Time{}, false, statErr
+		}
+		mtime = notAfter(mtime, reserveAgeNow())
+		d.Cores = 4
+		d.CPUError = "invalid admitted JSON"
+		d.Admitted = file.Path
+		return d, mtime, true, nil
+	}
+	at, err := time.Parse(time.RFC3339Nano, d.Admitted)
+	unknownAdmission := err != nil
+	if unknownAdmission {
+		at, err = liveRecordModTime(file.Path)
+		if err != nil {
+			return d, time.Time{}, true, err
+		}
+		at = notAfter(at, reserveAgeNow())
+	}
+	return d, at, unknownAdmission, nil
+}
+
+func parseAdmissionMeasurements(d reserveData) (observedAt, rateAt time.Time, hasEMA, malformed bool) {
+	malformedMeasurement := false
+	if d.ObservedAt != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, d.ObservedAt)
+		if err != nil { //nolint:fallback-return,silent-error-handling // An invalid observation time disables measurement and keeps the candidate fallback.
+			malformedMeasurement = true
+		} else {
+			observedAt = parsed
+		}
+	}
+	if d.At != "" {
+		parsed, parseErr := time.Parse(time.RFC3339Nano, d.At)
+		if parseErr != nil { //nolint:silent-error-handling // An invalid rate timestamp disables measurement and keeps the candidate fallback.
+			malformedMeasurement = true
+		} else if !malformedMeasurement {
+			rateAt, hasEMA = parsed, true
+		}
+	}
+	if malformedMeasurement {
+		return observedAt, time.Time{}, false, true
+	}
+	return observedAt, rateAt, hasEMA, false
 }
 
 func liveReserveCores(lockPath string) (float64, error) {

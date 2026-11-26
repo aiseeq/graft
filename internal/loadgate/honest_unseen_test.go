@@ -207,7 +207,7 @@ func TestUnreadableCPUKeepsCandidateDecay(t *testing.T) {
 		reservePollInterval, reserveWindow, reserveCPUReader, reserveAgeNow = oldPoll, oldWindow, oldReader, oldNow
 	}()
 	path := filepath.Join(t.TempDir(), "load.lock")
-	_, release, err := Wait(context.Background(), "unreadable", "projectA:unreadable", nil, testLoad, path, io.Discard)
+	_, release, err := Wait(context.Background(), "unreadable", "projectA:unreadable", nil, testLoad, path, io.Discard, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,6 +546,111 @@ func TestInvalidAdmissionTimeCountsAsUnknownAndPauses(t *testing.T) {
 	}
 	if task, _, pending, err := firstUnmeasuredAdmission(path, now, time.Minute); err != nil || !pending || task != "unknown task" {
 		t.Fatalf("invalid admission pause = %q, %v, %v; want held", task, pending, err)
+	}
+}
+
+func TestInvalidObservationTimesUseUnmeasuredForecast(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		name string
+		data reserveData
+		want float64
+	}{
+		{
+			name: "observed_at",
+			data: reserveData{Cores: 2, Rate: 8, EMA: 0, At: now.Format(time.RFC3339Nano), ObservedCores: 3, ObservedAt: "not-a-time", Admitted: now.Format(time.RFC3339Nano), Task: "bad-observed-at"},
+			want: 2,
+		},
+		{
+			name: "at",
+			data: reserveData{Cores: 2, Rate: 8, EMA: 0, At: "not-a-time", ObservedCores: 3, ObservedAt: now.Add(-time.Second).Format(time.RFC3339Nano), Admitted: now.Add(-10 * time.Second).Format(time.RFC3339Nano), Task: "bad-rate-at"},
+			want: max(2*math.Exp(-10.0/60), 3*math.Exp(-1.0/60)),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "load.lock")
+			release := putAdmissionRecord(t, path, tc.data)
+			defer release()
+			got, err := unseenAdmittedCores(path, func(at time.Time) float64 { return math.Exp(-now.Sub(at).Seconds() / 60) })
+			if err != nil || math.Abs(got-tc.want) > .01 {
+				t.Fatalf("unseen = %.3f, %v; want unmeasured forecast %.3f", got, err, tc.want)
+			}
+			if task, _, pending, err := firstUnmeasuredAdmission(path, now, time.Minute); err != nil || !pending || task == "" {
+				t.Fatalf("first CPU guard = %q, %v, %v; want malformed measurement held", task, pending, err)
+			}
+		})
+	}
+}
+
+func TestMalformedAndMeasuredRecordsSameAdmissionFallback(t *testing.T) {
+	now := time.Now()
+	admitted := now.Format(time.RFC3339Nano)
+	tests := []struct {
+		name string
+		bad  reserveData
+	}{
+		{
+			name: "observed_at",
+			bad:  reserveData{Cores: 4, Rate: 8, EMA: 0, At: now.Format(time.RFC3339Nano), ObservedCores: 4, ObservedAt: "not-a-time", Admitted: admitted, Task: "bad-observed"},
+		},
+		{
+			name: "at",
+			bad:  reserveData{Cores: 4, Rate: 8, EMA: 0, At: "not-a-time", ObservedCores: 4, ObservedAt: now.Format(time.RFC3339Nano), Admitted: admitted, Task: "bad-at"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "load.lock")
+			badRelease := putAdmissionRecord(t, path, tc.bad)
+			defer badRelease()
+			goodRelease := putAdmissionRecord(t, path, reserveData{Cores: 4, Rate: 8, EMA: 7.9, At: now.Format(time.RFC3339Nano), ObservedCores: 4, ObservedAt: now.Format(time.RFC3339Nano), Admitted: admitted, Task: "good-measure"})
+			defer goodRelease()
+			got, err := unseenAdmittedCores(path, func(time.Time) float64 { return 1 })
+			if err != nil || math.Abs(got-4) > 1e-9 {
+				t.Fatalf("mixed-record unseen = %.3f, %v; want unmeasured candidate fallback 4", got, err)
+			}
+		})
+	}
+}
+
+func TestInvalidAdmissionTimestampRecordsCountSeparately(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "load.lock")
+	first := putAdmissionRecord(t, path, reserveData{Cores: 1, Admitted: "same-invalid-time", Task: "first-unknown"})
+	defer first()
+	second := putAdmissionRecord(t, path, reserveData{Cores: 1, Admitted: "same-invalid-time", Task: "second-unknown"})
+	defer second()
+	got, err := unseenAdmittedCores(path, func(time.Time) float64 { return 1 })
+	if err != nil || math.Abs(got-8) > 1e-9 {
+		t.Fatalf("unseen for duplicate invalid timestamps = %.3f, %v; want two independent 4-core fallbacks", got, err)
+	}
+}
+
+func TestDisappearedAdmissionRecordIsSkipped(t *testing.T) {
+	oldStat := admittedRecordStat
+	admittedRecordStat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	defer func() { admittedRecordStat = oldStat }()
+	for _, tc := range []struct {
+		name string
+		data []byte
+	}{
+		{name: "bad_json", data: []byte("{broken")},
+		{name: "bad_admitted", data: []byte(`{"cores":1,"admitted":"not-a-time","task":"gone"}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "load.lock")
+			release, err := lock.Reserve(filepath.Dir(path), admittedPattern(path), tc.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			if got, err := unseenAdmittedCores(path, func(time.Time) float64 { return 1 }); err != nil || got != 0 {
+				t.Fatalf("unseen after stat ENOENT = %.3f, %v; want skipped record", got, err)
+			}
+			if task, _, pending, err := firstUnmeasuredAdmission(path, time.Now(), time.Minute); err != nil || pending {
+				t.Fatalf("first CPU after stat ENOENT = %q, %v, %v; want skipped record", task, pending, err)
+			}
+		})
 	}
 }
 

@@ -189,9 +189,11 @@ difference between the latest rate and its EMA60, decayed from that measurement:
 max(0, rate − ema)·e^(−(now − at)/60s); before then it remains
 c·e^(−age/60s). If a record is from an older version or has `cpu_error`, the
 queue uses the greater of expected candidate load decayed from admission and
-observed CPU decayed from its observation. A damaged record or invalid
-admission timestamp counts as four cores, decayed from the record file's
-modification time; it holds the first-CPU pause only through the grace window.
+observed CPU decayed from its observation; so does a record whose `at` or
+`observed_at` is invalid. A damaged record or invalid admission timestamp
+counts as at least four cores, or more when its observation shows more,
+decayed from the record file's modification time; it holds the first-CPU pause
+only through the grace window.
 The next admission adds unseen load to the measured load average and adds the
 candidate's expected cores to both the load-average forecast and the runnable
 count with live reserves. A candidate whose estimate reaches the limit could
