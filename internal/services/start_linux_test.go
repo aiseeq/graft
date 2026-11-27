@@ -395,11 +395,7 @@ func TestStopServiceWithLegacyStartRecord(t *testing.T) {
 }
 
 func TestLegacyStartRecordRejectsReusedPID(t *testing.T) {
-	cmd := exec.Command("sleep", "30")
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = akitproc.SignalCmd(cmd, syscall.SIGKILL); _ = cmd.Wait() })
+	cmd := startTestSleep(t)
 	stat, err := akitproc.ReadStat("/proc", cmd.Process.Pid)
 	if err != nil {
 		t.Fatal(err)
@@ -427,11 +423,7 @@ func TestLegacyStartRecordRejectsReusedPID(t *testing.T) {
 }
 
 func TestRunningRejectsReusedPIDWithMatchingArgv(t *testing.T) {
-	cmd := exec.Command("sleep", "30")
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = akitproc.SignalCmd(cmd, syscall.SIGKILL); _ = cmd.Wait() })
+	cmd := startTestSleep(t)
 	stat, err := akitproc.ReadStat("/proc", cmd.Process.Pid)
 	if err != nil {
 		t.Fatal(err)
@@ -469,11 +461,7 @@ func TestRunningRejectsReusedPIDWithMatchingArgv(t *testing.T) {
 }
 
 func checkRunningLegacyPIDFileChecksArgv(t *testing.T) {
-	cmd := exec.Command("sleep", "30")
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = akitproc.SignalCmd(cmd, syscall.SIGKILL); _ = cmd.Wait() })
+	cmd := startTestSleep(t)
 	dir := t.TempDir()
 	s := &config.Service{Run: config.Command{Argv: []string{"sleep", "30"}}, PIDFile: "service.pid"}
 	m := New(dir, &config.Config{Services: map[string]*config.Service{"svc": s}}, nil, io.Discard)
@@ -715,6 +703,29 @@ func describeTestProcess(pid int) string {
 	return fmt.Sprintf("stat %+v (%v), argv %q (%v)", stat, statErr, argv, argvErr)
 }
 
+// startTestSleep starts sleep 30 and returns once /proc shows its argv:
+// right after fork, and for a moment inside execve, the comm is already
+// sleep while cmdline is still empty, so a check of the argv there fails.
+func startTestSleep(t *testing.T) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = akitproc.SignalCmd(cmd, syscall.SIGKILL); _ = cmd.Wait() })
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		argv, err := readServiceCmdline(cmd.Process.Pid)
+		if err == nil && len(argv) == 2 && filepath.Base(argv[0]) == "sleep" {
+			return cmd
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("sleep did not show its argv: %s", describeTestProcess(cmd.Process.Pid))
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func serviceTestRunning(pid int) bool {
 	stat, err := akitproc.ReadStat("/proc", pid)
 	return err == nil && stat.State != "Z" && stat.State != "X"
@@ -803,11 +814,7 @@ func TestExecServiceWithoutStartRecordIsNotDiscarded(t *testing.T) {
 func TestMismatchedStartRecordDoesNotIdentifyPID(t *testing.T) {
 	for _, op := range []string{"state", "stop"} {
 		t.Run(op, func(t *testing.T) {
-			cmd := exec.Command("sleep", "30")
-			if err := cmd.Start(); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = akitproc.SignalCmd(cmd, syscall.SIGKILL); _ = cmd.Wait() })
+			cmd := startTestSleep(t)
 			stat, err := akitproc.ReadStat("/proc", cmd.Process.Pid)
 			if err != nil {
 				t.Fatal(err)
