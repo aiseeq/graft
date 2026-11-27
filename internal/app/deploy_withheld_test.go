@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -601,5 +602,20 @@ func TestDeployCheckPrintsWithheldVersionHintsForRelatedCommits(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestVersionWithheldHintsRequireMatchingFailureItem(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	reasonForOtherItem := "version-top: PROJ-2 is In Progress, fix versions Product 1.0: move it to Ready for release"
+	r := &deployRun{target: &config.DeployTarget{DeployedSHA: &config.DeployedSHA{Path: "synthetic/deployed-sha"}}}
+	g := &gateRun{
+		markerWithheld:      []string{sha},
+		withheldByItem:      map[string][]string{"PROJ-1": {sha}},
+		versionItemFailures: map[string][]string{"PROJ-1": {"version-top: PROJ-1 is Done: not in Product 1.0"}},
+	}
+
+	if hints := versionWithheldHints(r, g, []error{errors.New(reasonForOtherItem)}); len(hints) != 0 {
+		t.Fatalf("unrelated version refusal produced withheld hints: %v", hints)
 	}
 }
