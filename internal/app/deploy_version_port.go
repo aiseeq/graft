@@ -1178,11 +1178,11 @@ func mergeVersionPortConflict(repo *gitx.Repo, env []string, ontoTree, commit, m
 	if err != nil {
 		return "", false, err
 	}
-	onBase, err := versionTargetsEqual(repo, base, onto, targets)
+	onBase, err := versionTargetsEqual(repo, env, base, onto, targets)
 	if err != nil {
 		return "", false, err
 	}
-	sourceOnBase, err := versionTargetsEqual(repo, base, source, targets)
+	sourceOnBase, err := versionTargetsEqual(repo, env, base, source, targets)
 	if err != nil {
 		return "", false, err
 	}
@@ -1215,11 +1215,11 @@ func mergeVersionPortClean(repo *gitx.Repo, env []string, commit, mergeBase, mer
 	if err != nil {
 		return "", false, err
 	}
-	ontoOnBase, err := treesEqualExceptVersion(repo, base, onto, targets)
+	ontoOnBase, err := treesEqualExceptVersionEnv(repo, base, onto, targets, env)
 	if err != nil {
 		return "", false, err
 	}
-	sourceOnBase, err := treesEqualExceptVersion(repo, base, source, targets)
+	sourceOnBase, err := treesEqualExceptVersionEnv(repo, base, source, targets, env)
 	if err != nil {
 		return "", false, err
 	}
@@ -1255,18 +1255,22 @@ func allVersionTargetsExist(tree map[string]versionTreeEntry, targets map[string
 	return true
 }
 
-func versionTargetsEqual(repo *gitx.Repo, a, b map[string]versionTreeEntry, targets map[string][]version.Target) (bool, error) {
+func versionTargetsEqual(repo *gitx.Repo, env []string, a, b map[string]versionTreeEntry, targets map[string][]version.Target) (bool, error) {
+	git := repo.Git
+	if len(env) > 0 {
+		git = func(args ...string) (string, error) { return repo.GitEnv(env, args...) }
+	}
 	for file, ts := range targets {
 		aa, aok := a[file]
 		bb, bok := b[file]
 		if !aok || !bok || aa.kind != "blob" || bb.kind != "blob" || aa.mode != bb.mode {
 			return false, nil
 		}
-		ac, err := repo.Git("cat-file", "blob", aa.oid)
+		ac, err := git("cat-file", "blob", aa.oid)
 		if err != nil {
 			return false, fmt.Errorf("reading version target %q: %w", file, err)
 		}
-		bc, err := repo.Git("cat-file", "blob", bb.oid)
+		bc, err := git("cat-file", "blob", bb.oid)
 		if err != nil {
 			return false, fmt.Errorf("reading version target %q: %w", file, err)
 		}
@@ -1301,10 +1305,6 @@ func unionTreePaths(a, b map[string]versionTreeEntry) map[string]bool {
 
 func treeEntriesEqual(a versionTreeEntry, aok bool, b versionTreeEntry, bok bool) bool {
 	return aok == bok && (!aok || a == b)
-}
-
-func treesEqualExceptVersion(repo *gitx.Repo, a, b map[string]versionTreeEntry, targets map[string][]version.Target) (bool, error) {
-	return treesEqualExceptVersionEnv(repo, a, b, targets, nil)
 }
 
 func treesEqualExceptVersionEnv(repo *gitx.Repo, a, b map[string]versionTreeEntry, targets map[string][]version.Target, env []string) (bool, error) {

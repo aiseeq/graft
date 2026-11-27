@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2013,4 +2014,92 @@ func TestReplayOfUnchainedSourcesMergesCleanlyOntoTheIntermediateTree(t *testing
 	if !replayed {
 		t.Fatal("replay of unchained sources whose changes are the port's was not linked")
 	}
+}
+
+func TestReplayOfUnchainedSourcesConflictReadsIntermediateVersionBlob(t *testing.T) {
+	r := newEmptyWithheldRepo(t)
+	r.writePath("VERSION", new("base\nmiddle\nlast\n"))
+	base := r.commitAll("base")
+	r.git("checkout", "-q", "-b", "first", base)
+	r.writePath("VERSION", new("source one\nmiddle\nlast\n"))
+	first := r.commitAll("fix: PROJ-1 first")
+	r.git("checkout", "-q", "-b", "second", base)
+	r.writePath("VERSION", new("source two\nmiddle\nlast\n"))
+	second := r.commitAll("fix: PROJ-2 second")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("VERSION", new("base\nmiddle\nport last\n"))
+	port := r.commitAll("port both sources")
+
+	replayed, err := replayVersionPortGroup(r.repo, port, []deliveredCommit{{sha: first}, {sha: second}}, versionPortTargets("VERSION"))
+	if err != nil {
+		t.Fatalf("non-linear conflict replay could not read its intermediate version blob: %v", err)
+	}
+	if !replayed {
+		t.Fatal("non-linear version-only conflict was not linked")
+	}
+}
+
+func TestReplayVersionPortCleanReadsVersionBlobFromReplayObjects(t *testing.T) {
+	r := newEmptyWithheldRepo(t)
+	r.writePath("VERSION", new("1\n"))
+	r.writePath("go.mod", new("module example.com/test\n"))
+	r.writePath("go.sum", new(""))
+	base := r.commitAll("base")
+	r.writePath("VERSION", new("2\n"))
+	source := r.commitAll("fix: PROJ-2 source")
+	env, objects := newVersionPortTestObjectEnv(t, r)
+	blob := versionPortTestObject(t, r, env, "hash-object", "-w", "--stdin", "9\n")
+	onto := map[string]versionTreeEntry{
+		"VERSION": {mode: "100644", kind: "blob", oid: blob},
+		"go.mod":  {mode: "100644", kind: "blob", oid: r.git("rev-parse", base+":go.mod")},
+		"go.sum":  {mode: "100644", kind: "blob", oid: r.git("rev-parse", base+":go.sum")},
+	}
+	merged := mapsCloneVersionTree(onto)
+	merged["other.txt"] = versionTreeEntry{mode: "100644", kind: "blob", oid: r.git("rev-parse", base+":VERSION")}
+
+	_, linked, err := mergeVersionPortClean(r.repo, env, source, base, "unused", merged, onto, versionPortTargets("VERSION"))
+	if err != nil {
+		t.Fatalf("clean replay could not read temporary version blob (%s): %v", objects, err)
+	}
+	if !linked {
+		t.Fatal("clean replay of a version-only change was not linked")
+	}
+	baseTree, err := versionBlobTree(r.repo, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := treesEqualExceptVersionEnv(r.repo, baseTree, onto, versionPortTargets("VERSION"), nil); err == nil {
+		t.Fatal("reading the replay-only version blob without env unexpectedly succeeded")
+	} else {
+		t.Logf("without replay env: %v", err)
+	}
+}
+
+func newVersionPortTestObjectEnv(t *testing.T, r *withheldRepo) ([]string, string) {
+	t.Helper()
+	objects := filepath.Join(t.TempDir(), "objects")
+	if err := os.Mkdir(objects, 0700); err != nil {
+		t.Fatal(err)
+	}
+	baseObjects := r.git("rev-parse", "--path-format=absolute", "--git-path", "objects")
+	return []string{"GIT_OBJECT_DIRECTORY=" + objects, "GIT_ALTERNATE_OBJECT_DIRECTORIES=" + baseObjects}, objects
+}
+
+func versionPortTestObject(t *testing.T, r *withheldRepo, env []string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args[:len(args)-1]...)
+	cmd.Dir = r.dir
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdin = strings.NewReader(args[len(args)-1])
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %s: %v", strings.Join(args[:len(args)-1], " "), err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func mapsCloneVersionTree(tree map[string]versionTreeEntry) map[string]versionTreeEntry {
+	clone := make(map[string]versionTreeEntry, len(tree))
+	maps.Copy(clone, tree)
+	return clone
 }
