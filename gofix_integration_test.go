@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -52,5 +53,42 @@ func TestGoFixRunsInEveryModuleWithoutVet(t *testing.T) {
 	if code == 0 || strings.Contains(out, "go vet") || !strings.Contains(out, "gate 1/4: go fix -diff ./...\n") ||
 		!strings.Contains(out, `gate failed at "go fix -diff ./... (tools/a)"`) {
 		t.Errorf("exit %d:\n%s", code, out)
+	}
+}
+
+// TestBuiltinGoFixTrimpathShowsThisTreesPaths checks the same cached analyzer
+// result across two copies of one module: the gate retries a reported diff
+// without -trimpath so the displayed patch names this tree.
+func TestBuiltinGoFixTrimpathShowsThisTreesPaths(t *testing.T) {
+	skipGoToolchainInShort(t)
+	f := vetRepo(t, "go_vet: {enabled: false, reason: synthetic test project}\ngo_fix: {enabled: true}\n", map[string]string{
+		"go.mod":   fixGoMod,
+		"pkg/p.go": "package pkg\n\nfunc F() { for i := 0; i < 3; i++ { println(i) } }\n",
+	})
+	second := vetCopy(t, f)
+	f.env = append(f.env, "GOCACHE="+t.TempDir(), "GOFLAGS=")
+	if out, code := f.graft("", "gate"); code == 0 || !strings.Contains(out, "pkg/p.go") {
+		t.Fatalf("first copy's go fix did not report pkg/p.go (exit %d):\n%s", code, out)
+	}
+	firstPath := filepath.ToSlash(filepath.Join(f.work, "pkg/p.go"))
+	firstRelative, err := filepath.Rel(second, filepath.Join(f.work, "pkg/p.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRelative = filepath.ToSlash(firstRelative)
+	// Ask Go directly to expose the trimmed analyzer result before the gate
+	// suppresses it. This also verifies that the second tree actually reuses
+	// the first tree's cached result.
+	trimmedOut, _ := f.exec(second, "", "go", "fix", "-trimpath", "-diff", "./...")
+	if !strings.Contains(trimmedOut, firstPath) && !strings.Contains(trimmedOut, firstRelative) {
+		t.Fatalf("trimmed go fix in second tree did not expose the first tree's cached path %q or %q:\n%s", firstPath, firstRelative, trimmedOut)
+	}
+	secondPath := filepath.ToSlash(filepath.Join(second, "pkg/p.go"))
+	out, code := f.exec(second, "", graftBin, "gate")
+	if code == 0 || !strings.Contains(out, secondPath) || strings.Contains(out, firstPath) || strings.Contains(out, firstRelative) {
+		t.Fatalf("second copy's gate must show %q and neither %q nor %q (exit %d):\n%s", secondPath, firstPath, firstRelative, code, out)
+	}
+	if n := strings.Count(out, "graft: go fix -diff reported; rerun without -trimpath for this tree's paths"); n != 1 {
+		t.Fatalf("rerun notice said %d times, want once:\n%s", n, out)
 	}
 }

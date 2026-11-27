@@ -2710,14 +2710,15 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = r.Stdin, r.Stdout, r.Stderr
 		return cmd
 	}
-	trimmedVet, vetTrimErr := r.builtinVetTrim(ctx, s, t, builtin, words, env)
-	if vetTrimErr != nil {
-		return vetTrimErr
+	trimmed, trimErr := r.builtinTrimPath(ctx, s, t, builtin, words, env)
+	if trimErr != nil {
+		return trimErr
 	}
-	if trimmedVet != nil {
-		return r.builtinVetStep(ctx, s.Source, trimmedVet, words, func(argv []string) *exec.Cmd {
+	if trimmed != nil {
+		command := func(argv []string) *exec.Cmd {
 			return prepare(exec.CommandContext(ctx, argv[0], argv[1:]...))
-		})
+		}
+		return r.builtinTrimmedGoStep(ctx, s, trimmed, words, command)
 	}
 	cmd = prepare(cmd)
 	var remoteStderr bytes.Buffer
@@ -2737,28 +2738,33 @@ func (r *Runner) step(ctx context.Context, s config.Step, t *config.Task, args [
 	return err
 }
 
-// builtinVetTrim is the gate's built-in go vet with -trimpath, nil when the
-// step is another one, goes to remote_heavy's host, or go's resolved GOFLAGS
-// or the command line names -trimpath already.
-// The host gets none of this environment: its GOFLAGS, and the paths a rerun
-// would show, are not known here, so vet goes there as it is written.
-func (r *Runner) builtinVetTrim(ctx context.Context, s config.Step, t *config.Task, builtin bool, argv, env []string) ([]string, error) {
-	if !builtin || t.Tests != "" || s.Shell != "" || r.frames[len(r.frames)-1].remote || !isBuiltinGoVet(s) {
+// builtinTrimPath adds -trimpath to the local built-in vet and go fix diff
+// gate steps, unless Go's resolved GOFLAGS or the command line already names
+// it. remote_heavy's host gets neither this environment nor known tree paths.
+func (r *Runner) builtinTrimPath(ctx context.Context, s config.Step, t *config.Task, builtin bool, argv, env []string) ([]string, error) {
+	if !builtin || t.Tests != "" || s.Shell != "" || r.frames[len(r.frames)-1].remote || (!isBuiltinGoVet(s) && !isBuiltinGoFixDiff(s)) {
 		return nil, nil
 	}
 	flagsText, err := resolveGoFlags(ctx, r.taskDir(t), env)
 	if err != nil {
-		return nil, fmt.Errorf("go vet -trimpath: reading GOFLAGS: %w", err)
+		return nil, fmt.Errorf("%s -trimpath: reading GOFLAGS: %w", argv[1], err)
 	}
 	flags, err := splitGoFlags(flagsText)
 	if err != nil {
-		return nil, fmt.Errorf("go vet -trimpath: parsing GOFLAGS: %w", err)
+		return nil, fmt.Errorf("%s -trimpath: parsing GOFLAGS: %w", argv[1], err)
 	}
-	trimmed := addTrimPath(argv, flags, []string{"vet"})
+	trimmed := addTrimPath(argv, flags, []string{"vet", "fix"})
 	if len(trimmed) == len(argv) {
 		return nil, nil
 	}
 	return trimmed, nil
+}
+
+func (r *Runner) builtinTrimmedGoStep(ctx context.Context, s config.Step, trimmed, argv []string, command func([]string) *exec.Cmd) error {
+	if isBuiltinGoVet(s) {
+		return r.builtinVetStep(ctx, s.Source, trimmed, argv, command)
+	}
+	return r.builtinGoFixStep(ctx, s.Source, trimmed, argv, command)
 }
 
 // vetRerunNotice is the line a reported trimmed vet is rerun with.
@@ -2777,6 +2783,20 @@ const vetRerunNotice = "graft: go vet reported; rerun without -trimpath for this
 // killed processes of the heavy scope is not rerun either: the probe's output
 // and record stand for the step, which a memory failure fails.
 func (r *Runner) builtinVetStep(ctx context.Context, source string, trimmed, argv []string, command func([]string) *exec.Cmd) error {
+	return r.builtinTrimmedStep(ctx, source, trimmed, argv, command, vetRerunNotice,
+		func(ctx context.Context, cmd *exec.Cmd, printed bool, err error) bool {
+			return vetReported(ctx, cmd, printed)
+		})
+}
+
+const goFixRerunNotice = "graft: go fix -diff reported; rerun without -trimpath for this tree's paths"
+
+func (r *Runner) builtinGoFixStep(ctx context.Context, source string, trimmed, argv []string, command func([]string) *exec.Cmd) error {
+	return r.builtinTrimmedStep(ctx, source, trimmed, argv, command, goFixRerunNotice,
+		func(_ context.Context, _ *exec.Cmd, printed bool, err error) bool { return printed || err != nil })
+}
+
+func (r *Runner) builtinTrimmedStep(ctx context.Context, source string, trimmed, argv []string, command func([]string) *exec.Cmd, notice string, rerun func(context.Context, *exec.Cmd, bool, error) bool) error {
 	probe := &vetProbe{}
 	stdout, stderr := r.Stdout, r.Stderr
 	r.Stdout, r.Stderr = probe.stream(false, false), probe.stream(true, false)
@@ -2791,14 +2811,14 @@ func (r *Runner) builtinVetStep(ctx context.Context, source string, trimmed, arg
 		// that does not start is.
 		first = []heldRecord{{source: source, code: stepExit(err), reason: err.Error()}}
 	}
-	if !vetReported(ctx, cmd, probe.reported()) || isMemoryFailure(err) {
+	if isMemoryFailure(err) || !rerun(ctx, cmd, probe.reported(), err) {
 		for i := range first {
 			rec := &first[i]
 			r.recordStep(rec.source, rec.use, rec.code, rec.reason, rec.builtin...)
 		}
 		return errors.Join(err, probe.replay(stdout, stderr))
 	}
-	fmt.Fprintln(stderr, vetRerunNotice)
+	fmt.Fprintln(stderr, notice)
 	held = r.holdRecords()
 	cmd = command(argv)
 	cmd.Stdout, cmd.Stderr = stdout, stderr

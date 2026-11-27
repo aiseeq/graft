@@ -107,11 +107,10 @@ func splitGoFlags(s string) ([]string, error) {
 // resolved GOFLAGS or the command's own flags already name it, =false included.
 // Without it the go command keys a package of the module by its directory,
 // and every worktree of a repository fills the build cache with its own copy
-// of what the others built. go vet and go fix are not here: under -trimpath
-// both replay a result another worktree cached, with that tree's paths. The
-// gate's built-in vet resolves GOFLAGS with go env and is rerun without
-// -trimpath when it reports (builtinVetStep); go fix goes without, for it
-// rewrites the files of that other tree.
+// of what the others built. The gate's built-in vet and go fix -diff also use
+// -trimpath; if they print anything or fail, they repeat without it so the
+// result shows paths from this tree (builtinTrimmedStep). Ordinary go fix,
+// which rewrites files, is not changed.
 func addTrimPath(argv, flags []string, commands []string) []string {
 	if len(argv) < 2 || argv[0] != "go" || !slices.Contains(commands, argv[1]) {
 		return argv

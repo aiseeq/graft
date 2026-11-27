@@ -331,11 +331,10 @@ func TestBuiltinVetTrimOnlyForTheLocalBuiltinVet(t *testing.T) {
 		{"project step", local, vet, false, nil, false},
 		{"on the host", remote, vet, true, nil, false},
 		{"GOFLAGS -trimpath=false", local, vet, true, []string{"GOFLAGS=-trimpath=false"}, false},
-		{"go fix", local, config.Step{Argv: []string{"go", "fix", "-diff", "./..."}}, true, nil, false},
 	} {
-		got, err := c.r.builtinVetTrim(context.Background(), c.s, &config.Task{}, c.builtin, c.s.Argv, c.env)
+		got, err := c.r.builtinTrimPath(context.Background(), c.s, &config.Task{}, c.builtin, c.s.Argv, c.env)
 		if err != nil {
-			t.Errorf("%s: builtinVetTrim error: %v", c.name, err)
+			t.Errorf("%s: builtinTrimPath error: %v", c.name, err)
 		}
 		if (got != nil) != c.want || got != nil && !slices.Equal(got, vetTrimmedArgv) {
 			t.Errorf("%s: builtinVetTrim = %q, want trimmed %v", c.name, got, c.want)
@@ -346,11 +345,69 @@ func TestBuiltinVetTrimOnlyForTheLocalBuiltinVet(t *testing.T) {
 func TestBuiltinVetTrimReadsGoEnvFile(t *testing.T) {
 	dir, _, env := setGoEnvFlags(t, "-trimpath=false")
 	r := &Runner{Root: dir, frames: []*frame{{}}}
-	got, err := r.builtinVetTrim(context.Background(), config.Step{Argv: vetArgv, Source: GoVetSource}, &config.Task{}, true, vetArgv, env)
+	got, err := r.builtinTrimPath(context.Background(), config.Step{Argv: vetArgv, Source: GoVetSource}, &config.Task{}, true, vetArgv, env)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != nil {
-		t.Fatalf("go env -w GOFLAGS=-trimpath=false: builtin vet got %q", got)
+		t.Fatalf("go env -w GOFLAGS=-trimpath=false: built-in vet got %q", got)
+	}
+}
+
+func TestBuiltinGoFixTrimPathAndFallback(t *testing.T) {
+	t.Setenv("GOENV", "off")
+	t.Setenv("GOFLAGS", "")
+	fixArgv := []string{"go", "fix", "-diff", "./..."}
+	trimmed := []string{"go", "fix", "-trimpath", "-diff", "./..."}
+	r, _, out, errOut := vetProbeRunner(t)
+	step := config.Step{Argv: fixArgv, Source: GoFixSource}
+	args, err := r.builtinTrimPath(context.Background(), step, &config.Task{}, true, fixArgv, nil)
+	if err != nil || !slices.Equal(args, trimmed) {
+		t.Fatalf("builtinTrimPath = %q, %v; want %q", args, err, trimmed)
+	}
+	var calls [][]string
+	err = r.builtinGoFixStep(context.Background(), GoFixSource, trimmed, fixArgv, vetScripts(&calls,
+		"echo stale: ../other/pkg/p.go", "echo fresh: pkg/p.go"))
+	if err != nil || len(calls) != 2 || !slices.Equal(calls[0], trimmed) || !slices.Equal(calls[1], fixArgv) {
+		t.Fatalf("calls %q, err %v; want trimmed probe then plain rerun", calls, err)
+	}
+	if strings.Contains(out.String()+errOut.String(), "../other") || !strings.Contains(out.String()+errOut.String(), "fresh: pkg/p.go") {
+		t.Fatalf("shown output = %q %q; want only rerun paths", out, errOut)
+	}
+}
+
+func TestBuiltinGoFixTrimmedMemoryKillIsNotRerun(t *testing.T) {
+	r, f, _, errOut := vetProbeRunner(t)
+	kill := vetMemoryScope(t, r)
+	trimmed := []string{"go", "fix", "-trimpath", "-diff", "./..."}
+	argv := []string{"go", "fix", "-diff", "./..."}
+	var calls [][]string
+	err := r.builtinGoFixStep(context.Background(), GoFixSource, trimmed, argv, vetScripts(&calls,
+		kill+"; echo 'signal: killed' >&2; exit 1", "exit 0"))
+	if err == nil || !strings.Contains(err.Error(), "the kernel killed 1 process") || len(calls) != 1 || !slices.Equal(calls[0], trimmed) {
+		t.Fatalf("err %v, calls %q: want the trimmed go fix memory failure, no rerun", err, calls)
+	}
+	if strings.Contains(errOut.String(), goFixRerunNotice) {
+		t.Errorf("stderr %q: memory failure must not announce a rerun", errOut)
+	}
+	if f.steps != 1 || f.exit == 0 || !strings.Contains(f.reason, "memory ceiling") {
+		t.Errorf("frame steps %d exit %d reason %q, want the memory failure", f.steps, f.exit, f.reason)
+	}
+}
+
+func TestBuiltinGoFixTrimPathCleanAndExplicitFalse(t *testing.T) {
+	t.Setenv("GOENV", "off")
+	t.Setenv("GOFLAGS", "")
+	fixArgv := []string{"go", "fix", "-diff", "./..."}
+	trimmed := []string{"go", "fix", "-trimpath", "-diff", "./..."}
+	r, _, _, _ := vetProbeRunner(t)
+	var calls [][]string
+	err := r.builtinGoFixStep(context.Background(), GoFixSource, trimmed, fixArgv, vetScripts(&calls, "exit 0", "exit 1"))
+	if err != nil || len(calls) != 1 {
+		t.Fatalf("clean fix diff calls %q, err %v; want one probe", calls, err)
+	}
+	args, err := r.builtinTrimPath(context.Background(), config.Step{Argv: fixArgv, Source: GoFixSource}, &config.Task{}, true, fixArgv, []string{"GOFLAGS=-trimpath=false"})
+	if err != nil || args != nil {
+		t.Fatalf("GOFLAGS=-trimpath=false got %q, %v; want no trimmed invocation", args, err)
 	}
 }
