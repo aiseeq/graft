@@ -253,8 +253,8 @@ is queued, and an ordinary task that reaches its admission in that gap starts
 before the next step; priority tickets stay FIFO among themselves, so a
 `--past-load` task waits behind a deploy's priority task that waits for the
 load. The yield works when the holder is a graft that has it: a holder from
-graft 2.146.1 or older keeps the lock until its admission. An observer from
-graft 2.146.1 or older does not see a head that gave the lock up: its `graft
+graft 2.146.2 or older keeps the lock until its admission. An observer from
+graft 2.146.2 or older does not see a head that gave the lock up: its `graft
 locks` says `no locks held`, and its `remote_heavy` under `when: busy` may
 take the queue for free. The tickets and lock files are the ones older graft
 reads, so a mixed queue keeps its order.
