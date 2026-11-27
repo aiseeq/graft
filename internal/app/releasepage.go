@@ -334,7 +334,8 @@ func buildSection(ctx context.Context, client *jira.Client, p *config.ReleasePag
 		return "", err
 	}
 	// Subtasks are grouped before fixes are told from changes: a subtask of a
-	// fix type folds into its parent too, and the parent's row is a change.
+	// fix type folds into its parent too. A technical parent's row is a
+	// change; any other parent goes by its own type.
 	rows := items
 	var technical []jira.Issue
 	if p.Subtasks == "parent" {
@@ -414,9 +415,10 @@ func exceptionSection(p *config.ReleasePage, r *deployRun) string {
 	return b.String()
 }
 
-// groupSubtasks hides subtasks and inserts one technical row for each parent
-// that is not already listed in this section. A parent Jira does not give
-// keeps its row, without a type, and a warning says why.
+// groupSubtasks hides subtasks and inserts their parent once when it is not
+// already listed in this section. Parents with a configured technical label
+// use the technical summary; other parents keep their Jira fields. A parent
+// Jira does not give keeps a technical row without a type and emits a warning.
 func groupSubtasks(ctx context.Context, client *jira.Client, p *config.ReleasePage, issues []jira.Issue, warn func(string, ...any)) ([]jira.Issue, []jira.Issue) {
 	listed := make(map[string]bool, len(issues))
 	for i := range issues {
@@ -440,11 +442,18 @@ func groupSubtasks(ctx context.Context, client *jira.Client, p *config.ReleasePa
 		parent, err := client.Issue(ctx, issue.Parent)
 		if err != nil {
 			warn("release page: %s, the parent of %s, is listed without its type: %v", issue.Parent, issue.Key, err)
-			parent = jira.Issue{Key: issue.Parent}
+			parent = jira.Issue{Key: issue.Parent, Summary: p.Label("technical")}
+			parents[issue.Parent] = parent
+			technical = append(technical, parent)
+			continue
 		}
-		parent.Summary = p.Label("technical")
 		parents[issue.Parent] = parent
-		technical = append(technical, parent)
+		if slices.ContainsFunc(parent.Labels, func(label string) bool { return slices.Contains(p.TechnicalLabels, label) }) {
+			parent.Summary = p.Label("technical")
+			technical = append(technical, parent)
+		} else {
+			grouped = append(grouped, parent)
+		}
 	}
 	return grouped, technical
 }

@@ -832,14 +832,14 @@ release_notes: {jira: {project_keys: [PROJ]}}
 deploy:
   remote: origin
   targets:
-    prod: {env: local, run: [sh, d.sh], deployed_sha: {path: /x/prod}, approved_release: {prefix: "Product v"}, release_page: {parent: "500", labels: {fixes: Fixed}}}
+    prod: {env: local, run: [sh, d.sh], deployed_sha: {path: /x/prod}, approved_release: {prefix: "Product v"}, release_page: {parent: "500", technical_labels: [release-technical], labels: {fixes: Fixed}}}
 `
 	cfg, err := Parse([]byte(base))
 	if err != nil {
 		t.Fatalf("base must parse: %v", err)
 	}
 	p := cfg.Deploy.Targets["prod"].ReleasePage
-	if p.Title != "{release}: release notes" || p.Subtasks != "list" || !slices.Equal(p.FixTypes, []string{"Bug"}) || p.Label("fixes") != "Fixed" || p.Label("changes") != "Changes" || p.Label("technical") != "Technical changes" {
+	if p.Title != "{release}: release notes" || p.Subtasks != "list" || !slices.Equal(p.FixTypes, []string{"Bug"}) || !slices.Equal(p.TechnicalLabels, []string{"release-technical"}) || p.Label("fixes") != "Fixed" || p.Label("changes") != "Changes" || p.Label("technical") != "Technical changes" {
 		t.Errorf("release page = %+v", p)
 	}
 	for name, yaml := range map[string]string{
