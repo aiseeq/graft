@@ -315,8 +315,10 @@ func TestHeavyTaskWaitIsRecorded(t *testing.T) {
 	}
 }
 
-// TestDeployPriorityWaitsInQueue: priority shares the FIFO load lock and its
-// budget expires while it waits behind an ordinary admission.
+// TestDeployPriorityWaitsInQueue: priority shares the FIFO load lock; the
+// ordinary admission ahead of it that waits for the load gives the lock up,
+// and the priority task's budget expires while it waits for the load itself,
+// not behind that admission.
 func TestDeployPriorityWaitsInQueue(t *testing.T) {
 	f := newRepo(t, map[string]string{
 		".graft.yaml": "schema: 1\nversion: {mode: none}\ntasks:\n  build:\n    heavy: true\n    run: [" + helperStep("ok") + "]\n",
@@ -334,8 +336,8 @@ func TestDeployPriorityWaitsInQueue(t *testing.T) {
 	}
 	t.Cleanup(func() { stopTestChild(queued); _ = queued.Wait() })
 	waitFor(t, func() bool {
-		notes, _ := filepath.Glob(filepath.Join(cache, "graft", "load.lock.*.lholder"))
-		return len(notes) > 0
+		tickets, _ := filepath.Glob(filepath.Join(cache, "graft", "load.lock.queue.*.lticket"))
+		return len(tickets) > 0
 	})
 	// Queued, it would wait as long as the load stays up.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -350,9 +352,9 @@ func TestDeployPriorityWaitsInQueue(t *testing.T) {
 	priority.Env = append(slices.Clone(testEnv), append(f.env, "GRAFT_LOAD_PRIORITY=graft deploy prod",
 		"GRAFT_LOAD_BUDGET="+budget, "GRAFT_LOAD_THEN=start")...)
 	out, err := priority.CombinedOutput()
-	if err == nil || !strings.Contains(string(out), "waiting for the write lock load.lock") ||
-		!strings.Contains(string(out), "deploy.load_wait: budget exhausted") || !strings.Contains(string(out), "not started") {
-		t.Errorf("the priority task did not wait in the queue and fail at its budget: %v\n%s", err, out)
+	if err == nil || !strings.Contains(string(out), "deploy.load_wait: budget exhausted") || !strings.Contains(string(out), "not started") ||
+		strings.Contains(string(out), "last wait: queued behind") {
+		t.Errorf("the priority task did not wait for the load and fail at its budget: %v\n%s", err, out)
 	}
 	if data, err := os.ReadFile(budget); err != nil {
 		t.Errorf("read remaining budget: %v", err)

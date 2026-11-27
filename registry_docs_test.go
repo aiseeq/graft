@@ -91,8 +91,8 @@ func TestREADMEDeployPriorityOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(readme)
-	if !strings.Contains(s, "from graft deploy use the same FIFO queue: they wait behind its current lock\nholder and move ahead of ordinary queued tasks.") {
-		t.Fatal("README must explain that deploy waits behind the lock holder and moves ahead of ordinary queued tasks")
+	if !strings.Contains(s, "from graft deploy use the same FIFO queue and move ahead of ordinary queued\ntasks. The queue head that waits for the machine does not hold `load.lock`\nwhile it waits") {
+		t.Fatal("README must explain that deploy moves ahead of ordinary queued tasks and that a holder waiting for the machine gives load.lock up")
 	}
 	if strings.Contains(s, "cannot pass an earlier waiter") {
 		t.Fatal("README still contradicts deploy priority over ordinary queued tasks")

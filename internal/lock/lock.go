@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
@@ -80,76 +81,74 @@ func TryAcquire(path, holder string) (*Lock, error) {
 	return &Lock{fl: fl, noteLock: noteLock, note: note}, nil
 }
 
-// AcquireFIFOObserved also lets a waiter classify intervals while it is
-// behind the queue head. The callback returns true when the head's blocker
-// is quiet mode. Tickets are shared by processes through live files next to
-// the lock, and the tickets no process holds are removed while inspecting the
-// queue.
-func AcquireFIFOObserved(ctx context.Context, path string, timeout time.Duration, holder string, log io.Writer, quiet func() (bool, error)) (lk *Lock, retErr error) {
-	return acquireFIFOObserved(ctx, path, timeout, holder, log, quiet, false)
-}
-
-// AcquireFIFOPriorityObserved joins the FIFO ahead of ordinary tickets while
-// preserving FIFO order among priority tickets. The lock holder is unchanged.
-func AcquireFIFOPriorityObserved(ctx context.Context, path string, timeout time.Duration, holder string, log io.Writer, quiet func() (bool, error)) (lk *Lock, retErr error) {
-	return acquireFIFOObserved(ctx, path, timeout, holder, log, quiet, true)
-}
-
+// acquireFIFOObserved queues a ticket for the lock at path, waits until it
+// heads the queue and the lock is free, takes the lock and leaves the queue:
+// one hold of a Ticket. quiet classifies the intervals it waits behind the
+// head (true when the head's blocker is quiet mode). Tickets are shared by
+// processes through live files next to the lock, and the tickets no process
+// holds are removed while inspecting the queue.
 func acquireFIFOObserved(ctx context.Context, path string, timeout time.Duration, holder string, log io.Writer, quiet func() (bool, error), priority bool) (lk *Lock, retErr error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("creating the lock directory: %w", err)
-	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	ticketLock, ticket, err := enqueue(waitCtx, path, holder, priority)
+	ticket, err := JoinFIFO(waitCtx, path, holder, priority)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
-		if err := releaseLive(ticketLock, ticket); err != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("removing queue ticket for %s: %w", path, err))
+		if err := ticket.Leave(); err != nil {
+			retErr = errors.Join(retErr, err)
 			if lk != nil {
 				retErr = errors.Join(retErr, lk.Release())
 				lk = nil
 			}
 		}
 	}()
-	return waitFIFO(waitCtx, ctx, path, timeout, ticket, holder, log, quiet)
+	lk, _, err = waitFIFO(waitCtx, ctx, path, timeout, ticket.name, holder, log, quiet)
+	return lk, err
 }
 
-func waitFIFO(waitCtx, ctx context.Context, path string, timeout time.Duration, ticket, holder string, log io.Writer, quiet func() (bool, error)) (*Lock, error) {
+// FIFOWait is what a wait in a FIFO queue saw, kept also when the wait
+// fails: whom it waited behind and how long while quiet mode was on.
+type FIFOWait struct {
+	Behind string
+	Quiet  time.Duration
+}
+
+func waitFIFO(waitCtx, ctx context.Context, path string, timeout time.Duration, ticket, holder string, log io.Writer, quiet func() (bool, error)) (*Lock, FIFOWait, error) {
 	var said string
 	var behind string
 	var waitedOn string
 	var lockWaitStart time.Time
 	var waitedQuiet time.Duration
+	seen := func() FIFOWait {
+		if behind != "" {
+			return FIFOWait{Behind: behind, Quiet: waitedQuiet}
+		}
+		return FIFOWait{Behind: waitedOn, Quiet: waitedQuiet}
+	}
 	for {
 		queue, err := queueForTicket(waitCtx, path, ticket)
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			return nil, fmt.Errorf("lock %s still queued after %s (%s)", filepath.Base(path), timeout, Describe(path))
+			return nil, seen(), fmt.Errorf("lock %s still queued after %s (%s)", filepath.Base(path), timeout, Describe(path))
 		}
 		if err != nil {
-			return nil, err
+			return nil, seen(), err
 		}
 		if queue[0].path == ticket {
 			lk, acquired, err := tryAcquireFIFOHead(waitCtx, path, ticket, holder)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-					return nil, fmt.Errorf("lock %s still queued after %s (%s)", filepath.Base(path), timeout, Describe(path))
+					return nil, seen(), fmt.Errorf("lock %s still queued after %s (%s)", filepath.Base(path), timeout, Describe(path))
 				}
-				return nil, err
+				return nil, seen(), err
 			}
 			if acquired {
 				if !lockWaitStart.IsZero() {
 					lk.Waited = time.Since(lockWaitStart)
 				}
-				lk.WaitedQuiet = waitedQuiet
-				if behind != "" {
-					lk.WaitedBehind = behind
-				} else {
-					lk.WaitedBehind = waitedOn
-				}
-				return lk, nil
+				w := seen()
+				lk.WaitedQuiet, lk.WaitedBehind = w.Quiet, w.Behind
+				return lk, w, nil
 			}
 			if waitedOn == "" {
 				lockWaitStart = time.Now()
@@ -162,9 +161,9 @@ func waitFIFO(waitCtx, ctx context.Context, path string, timeout time.Duration, 
 		waitedQuiet += quietWait
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-				return nil, fmt.Errorf("lock %s still queued after %s (%s)", filepath.Base(path), timeout, Describe(path))
+				return nil, seen(), fmt.Errorf("lock %s still queued after %s (%s)", filepath.Base(path), timeout, Describe(path))
 			}
-			return nil, err
+			return nil, seen(), err
 		}
 	}
 }
@@ -261,25 +260,55 @@ type queueEntry struct {
 	holder string
 }
 
+// guardRetry bounds the pause between two tries of a busy queue guard. The
+// pause is short and random: a guard is held for a moment only, and a waiter
+// that tried again at the fixed period of another one's polling could keep
+// finding the guard held by it.
+const guardRetry = 20 * time.Millisecond
+
 func queueGuard(ctx context.Context, path string) (*flock.Flock, error) {
 	guard := flock.New(path + ".queue.lock")
-	ok, err := guard.TryLockContext(ctx, retryDelay)
-	if err != nil {
-		return nil, fmt.Errorf("locking the queue for %s: %w", path, err)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("locking the queue for %s: %w", path, err)
+		}
+		ok, err := guard.TryLock()
+		if err != nil {
+			return nil, fmt.Errorf("locking the queue for %s: %w", path, err)
+		}
+		if ok {
+			return guard, nil
+		}
+		pause := time.NewTimer(time.Millisecond + rand.N(guardRetry))
+		select {
+		case <-ctx.Done():
+			pause.Stop()
+		case <-pause.C:
+		}
 	}
-	if !ok {
-		return nil, fmt.Errorf("could not lock the queue for %s", path)
-	}
-	return guard, nil
 }
 
 // enqueue writes this process's ticket, holding it live until AcquireFIFO
 // is done. Tickets are .lticket files: graft before them judged a ticket by
 // its pid, which from another PID namespace finds every ticket dead.
-func enqueue(ctx context.Context, path, holder string, priority bool) (ticketLock *flock.Flock, ticket string, retErr error) {
+func enqueue(ctx context.Context, path, holder string, priority bool) (*flock.Flock, string, error) {
+	fl, ticket, _, err := placeTicket(ctx, path, ticketText(holder), "", priority)
+	return fl, ticket, err
+}
+
+// ticketText is what a ticket says of its holder: who, its pid and since
+// when it queued, as a lock holder's note says it of the lock.
+func ticketText(holder string) []byte {
+	return fmt.Appendf(nil, "%s, pid %d, queued since %s", holder, os.Getpid(), time.Now().Format(time.RFC3339))
+}
+
+// placeTicket writes a live ticket under the queue guard at place, the
+// file pattern of a ticket that left the queue, or, when place is empty, at
+// the next sequence number of the queue. It returns the place it used.
+func placeTicket(ctx context.Context, path string, text []byte, place string, priority bool) (ticketLock *flock.Flock, ticket, used string, retErr error) {
 	guard, err := queueGuard(ctx, path)
 	if err != nil {
-		return nil, "", fmt.Errorf("joining the queue for %s: %w", path, err)
+		return nil, "", "", fmt.Errorf("joining the queue for %s: %w", path, err)
 	}
 	defer func() {
 		if err := guard.Close(); err != nil {
@@ -290,35 +319,46 @@ func enqueue(ctx context.Context, path, holder string, priority bool) (ticketLoc
 			retErr = errors.Join(retErr, fmt.Errorf("closing the queue guard for %s: %w", path, err))
 		}
 	}()
+	if place == "" {
+		place, err = nextPlace(path, priority)
+		if err != nil {
+			return nil, "", "", err
+		}
+	}
+	ticketLock, ticket, err = createLive(filepath.Dir(path), place, text)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("writing a queue ticket for %s: %w", path, err)
+	}
+	return ticketLock, ticket, place, nil
+}
+
+// nextPlace takes the queue's next sequence number, under the queue guard,
+// and returns the file pattern of a ticket with it.
+func nextPlace(path string, priority bool) (string, error) {
 	sequencePath := path + ".queue.next"
 	var sequence uint64
 	data, err := os.ReadFile(sequencePath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, "", fmt.Errorf("reading the queue sequence for %s: %w", path, err)
+		return "", fmt.Errorf("reading the queue sequence for %s: %w", path, err)
 	}
 	if len(data) != 0 {
 		sequence, err = strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
 		if err != nil {
-			return nil, "", fmt.Errorf("reading the queue sequence for %s: %w", path, err)
+			return "", fmt.Errorf("reading the queue sequence for %s: %w", path, err)
 		}
 	}
 	if sequence == ^uint64(0) {
-		return nil, "", fmt.Errorf("queue sequence exhausted for %s", path)
+		return "", fmt.Errorf("queue sequence exhausted for %s", path)
 	}
 	sequence++
 	if err := writeQueueFile(sequencePath, []byte(strconv.FormatUint(sequence, 10))); err != nil {
-		return nil, "", fmt.Errorf("writing the queue sequence for %s: %w", path, err)
+		return "", fmt.Errorf("writing the queue sequence for %s: %w", path, err)
 	}
 	prefix := ""
 	if priority {
 		prefix = "-"
 	}
-	pattern := fmt.Sprintf("%s.queue.%s%020d.*.lticket", filepath.Base(path), prefix, sequence)
-	ticketLock, ticket, err = createLive(filepath.Dir(path), pattern, []byte(holder))
-	if err != nil {
-		return nil, "", fmt.Errorf("writing a queue ticket for %s: %w", path, err)
-	}
-	return ticketLock, ticket, nil
+	return fmt.Sprintf("%s.queue.%s%020d.*.lticket", filepath.Base(path), prefix, sequence), nil
 }
 
 func writeQueueFile(path string, data []byte) error {

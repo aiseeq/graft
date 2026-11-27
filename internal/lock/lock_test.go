@@ -173,7 +173,7 @@ func TestAcquireFIFO(t *testing.T) {
 	var firstLog, secondLog safeBuffer
 	start := func(name string, log *safeBuffer) {
 		go func() {
-			lk, err := AcquireFIFOObserved(context.Background(), path, 5*time.Second, name, log, nil)
+			lk, err := acquireFIFOObserved(context.Background(), path, 5*time.Second, name, log, nil, false)
 			results <- fifoResult{lk, err}
 		}()
 	}
@@ -220,7 +220,7 @@ func TestAcquireFIFOHeadBusyDoesNotLogEmptyQueueBehind(t *testing.T) {
 	defer holder.Release()
 	firstResult := make(chan fifoResult, 1)
 	go func() {
-		lk, err := AcquireFIFOObserved(context.Background(), path, 5*time.Second, "first", io.Discard, nil)
+		lk, err := acquireFIFOObserved(context.Background(), path, 5*time.Second, "first", io.Discard, nil, false)
 		firstResult <- fifoResult{lock: lk, err: err}
 	}()
 	waitForTickets(t, path, 1)
@@ -230,7 +230,7 @@ func TestAcquireFIFOHeadBusyDoesNotLogEmptyQueueBehind(t *testing.T) {
 	lines := make(chan string, 8)
 	secondResult := make(chan fifoResult, 1)
 	go func() {
-		lk, err := AcquireFIFOObserved(ctx, path, 5*time.Second, "second", logLines(lines), nil)
+		lk, err := acquireFIFOObserved(ctx, path, 5*time.Second, "second", logLines(lines), nil, false)
 		secondResult <- fifoResult{lock: lk, err: err}
 	}()
 	waitForTickets(t, path, 2)
@@ -322,7 +322,7 @@ func TestPriorityTicketsSortBeforeOrdinaryTickets(t *testing.T) {
 	}
 	var got []string
 	for _, entry := range queue {
-		got = append(got, entry.holder)
+		got = append(got, holderName(entry.holder))
 	}
 	want := []string{"P1", "P2", "O1", "O2"}
 	if !slices.Equal(got, want) {
@@ -362,7 +362,7 @@ func TestAcquireFIFODropsDeadTicket(t *testing.T) {
 	results := make(chan fifoResult, 1)
 	var log safeBuffer
 	go func() {
-		lk, err := AcquireFIFOObserved(context.Background(), path, 5*time.Second, "live", &log, nil)
+		lk, err := acquireFIFOObserved(context.Background(), path, 5*time.Second, "live", &log, nil, false)
 		results <- fifoResult{lock: lk, err: err}
 	}()
 	for deadline := time.Now().Add(3 * time.Second); !strings.Contains(log.String(), "behind") && time.Now().Before(deadline); {

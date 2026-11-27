@@ -213,11 +213,54 @@ and `runnable` in `pressure.yaml` there is no threshold for the reservations
 or that part to reach). A heavy task inside
 a heavy task or the gate was admitted with it, and so is a graft that the
 steps of an admitted task start (they carry `GRAFT_ADMITTED`). Priority tasks
-from graft deploy use the same FIFO queue: they wait behind its current lock
-holder and move ahead of ordinary queued tasks.
+from graft deploy use the same FIFO queue and move ahead of ordinary queued
+tasks. The queue head that waits for the machine does not hold `load.lock`
+while it waits: for each pause between its readings it gives the lock up and
+keeps its ticket, its place in the queue; before the next reading it takes the
+lock back with that ticket and reads the machine again, quiet mode included. A
+priority ticket that joined meanwhile heads the queue and takes the lock
+first, so a priority task waits for a holder only while that holder reads the
+machine or writes its reservation, not while it waits for the load. A task of
+`exec --settle` keeps a ticket in the settle queue as well and holds the
+settle lock only beside `load.lock`, while it reads the machine: it joins the
+load queue once its settle ticket heads the settle queue and no settling
+period holds the lock, and holds no settle lock while it waits in the load
+queue, so a `--past-load` settle task passes it there. A task is admitted only
+when, with the locks held, its tickets still head their queues, checked under
+the guard of the settle queue and, inside it, of the load queue, and it leaves
+both queues in that one check: a priority ticket that joined before it goes
+first, one that joins after it finds the reservation written, or, in the
+settle queue, the settling period it waits for. A settle task that finds the
+settle lock taken when it comes to read the machine, by a settle task that
+went first or by its settling period, leaves the load queue, so tasks without
+a settling period do not wait for it, waits for its settle turn holding no
+lock and rejoins the load queue at the place it left: ahead of the tasks that
+joined after it, which a task reading the machine at that moment lets go first
+as it lets a priority ticket. A ticket names its holder, the pid and the time
+it queued, so a task queued behind a head that gave the lock up names it as it
+names a holder. A task that dies while it waits drops its ticket and its lock
+with its process. Under `when: busy` a heavy task finds the queue busy here
+when a task holds `load.lock` or a ticket is queued; a deploy's priority task
+counts a holder and the priority tickets only, as it goes ahead of the
+ordinary ones. Its waits count each interval once: by what the machine
+reading found, or as the queue (or quiet mode) while it waited to take the
+lock back; a priority task spends its budget for the same wall time once, the
+pause before it waits to take the lock back included, so the budget left
+bounds that wait, and `admissions.jsonl` gets one `admitted` or `refused` line
+per admission. What this does not give: a steady stream of priority tasks can
+keep an ordinary one waiting; between two steps of a deploy no priority ticket
+is queued, and an ordinary task that reaches its admission in that gap starts
+before the next step; priority tickets stay FIFO among themselves, so a
+`--past-load` task waits behind a deploy's priority task that waits for the
+load. The yield works when the holder is a graft that has it: a holder from
+graft 2.146.1 or older keeps the lock until its admission. An observer from
+graft 2.146.1 or older does not see a head that gave the lock up: its `graft
+locks` says `no locks held`, and its `remote_heavy` under `when: busy` may
+take the queue for free. The tickets and lock files are the ones older graft
+reads, so a mixed queue keeps its order.
 When the user explicitly authorizes one run to pass CPU limits, `--past-load
-REASON` gives it deploy-style queue priority: it waits behind the current lock
-holder and moves ahead of ordinary queued tasks. It skips the LA, runnable,
+REASON` gives it deploy-style queue priority: it moves ahead of ordinary
+queued tasks and passes a holder that waits for the load, as above. It skips the LA, runnable,
 live-reservation and unseen-core forecast checks, then writes its own normal
 live CPU reservation under the queue lock. Quiet mode, disk freeze, IO
 pressure, dirty/writeback limits, and memory pressure while swapping still
@@ -555,7 +598,9 @@ heavy runs here wherever its caller runs.
 `graft deploy` gives its heavy tasks, and those of every graft its script
 starts, a priority (`GRAFT_LOAD_PRIORITY`, `GRAFT_LOAD_BUDGET`,
 `GRAFT_LOAD_THEN`): they use the same FIFO queue and load lock as other heavy
-tasks, ahead of ordinary tasks but after the current lock holder. A queue head
+tasks, ahead of ordinary tasks but after the current lock holder; a holder
+that waits for the load gives the lock up between its readings, so they wait
+for it only while it reads the machine (see the load queue above). A queue head
 already waiting for the lock in an older graft version may acquire it first.
 Priority does not bypass the load limit, which stays the same. The deploy's
 heavy tasks and grafts its script starts share one `deploy.load_wait` budget;
@@ -567,7 +612,14 @@ exhausted by other tasks of this deploy. It gives the wait time, the budget on
 entry, and the refusal-time sample (`now: load average 1m …, runnable …, limit …`).
 `then: start` is accepted for compatibility, warns, and is
 treated as `fail`; the default is `fail`. A task that finds the machine calm
-can start within the budget. The budget lives in a file in the user cache
+can start within the budget. A task that comes with the budget exhausted takes
+a lock only at once: free locks it takes, ahead of the ordinary tickets, the
+settle lock beside the load lock too, and it is refused at once, without a
+wait, when it would wait for a lock: a holder of the settle or load lock, or a priority
+ticket queued ahead whose holder gave the lock up for its own wait, also one
+that joins as this task joins. It waits for a queue's guard, which a task
+holds for milliseconds to read or join the queue, no longer than a second,
+and is refused then, with the locks it took given up. The budget lives in a file in the user cache
 (`graft/load-budget-*`) for as long as the deploy runs. The wait shows in
 `graft stats` (`wait_s`). Priority tasks use the same 1-minute load average
 and runnable count as ordinary heavy tasks; equality with the limit blocks.
@@ -614,7 +666,7 @@ and runnable count as ordinary heavy tasks; equality with the limit blocks.
 | `graft exec [--heavy [--past-load REASON] [--local] [--test-db] [--env <name>]... [--settle <duration>] [--cores <n>] [--memory-max <value>] [--memory-high <value>]] -- <command> [args]` | run a command that is no task: `--heavy` queues it for the machine as heavy tasks are, with `{threads}` (see Install, the user config), or sends it to the host of `remote_heavy` unless `--local`; `--past-load REASON` passes CPU load limits for this run only and requires `--heavy`; `--test-db` gives it the configured test database DSN and keeps it on this machine; the host gets no variable of the caller's but the go command's own unless `--env <name>` names it; `--settle` holds a separate FIFO lock for this long, waited on only by another `exec --settle`; `--cores` sets the live reservation instead of using history; `--memory-high` limits page cache of the heavy scope; `graft exec` usage errors exit 125 (see `graft help exec`) |
 | `graft reap -- <command> [args]` | run a command as the reaper of what it leaves behind (Linux): its orphans become graft's children, not the session manager's, and those left in its session end with it, as for the local commands of tasks and `graft exec` (see Install) |
 | `graft status` | services, the test database, held locks |
-| `graft locks` | who holds graft's locks; for a held `load.lock`, why the load queue waits or whether the machine has room |
+| `graft locks` | who holds graft's locks; for a held `load.lock`, why the load queue waits or whether the machine has room; a queue whose head gave the lock up for its wait shows as `lock load free, queue head …` with the same reason |
 | `graft testdb up` / `down` / `status` / `recreate` | the disposable test PostgreSQL |
 | `graft worktree add [--trunk <ref>] <branch> [<base>]` | a worktree under the user's cache, go.work's neighbours linked (see Worktrees) |
 | `graft worktree archive [--trunk <ref>] [--name <slug>] --reason <text> <branch>` / `graft worktree archive --list [<RE>]` | tag a rejected branch with its reason, push the tag, then remove its local worktree and branch; list archived reasons |

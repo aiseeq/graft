@@ -210,6 +210,19 @@ func (a *App) Locks(ctx context.Context) error {
 			}
 			held++
 		}
+		if p == loadLockPath && len(holders) == 0 {
+			// The head that waits for the machine gives the lock up between
+			// its readings and keeps its ticket.
+			queued, err := lock.Queue(ctx, loadLockPath)
+			if err != nil {
+				return err
+			}
+			if len(queued) > 0 {
+				a.printf("lock load free, queue head %s (%d queued)", queued[0], len(queued))
+				a.printf("%s", loadQueueLine(ctx, loadLockPath))
+				held++
+			}
+		}
 	}
 	if held == 0 {
 		a.printf("no locks held")

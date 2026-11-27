@@ -432,7 +432,7 @@ func TestPriorityQueuePassesFiveOrdinaryLoadWaiters(t *testing.T) {
 	if err := holder.Release(); err != nil {
 		t.Fatal(err)
 	}
-	waitForLoadHolder(t, path, "priority")
+	waitForLoadHead(t, path, "priority")
 	setLoadavg(t, 0)
 	first := <-got
 	if first.err != nil {
@@ -516,11 +516,16 @@ func TestPriorityQueuePassesFiveOrdinarySettleWaiters(t *testing.T) {
 	}
 }
 
-func waitForLoadHolder(t *testing.T, path, name string) {
+// waitForLoadHead waits until the task named holds load.lock, or heads its
+// queue while no one holds it: a head waiting for the machine gives the lock
+// up between its readings.
+func waitForLoadHead(t *testing.T, path, name string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
+	var holders, queued []string
 	for time.Now().Before(deadline) {
-		holders, err := lock.Holders(path)
+		var err error
+		holders, err = lock.Holders(path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -529,10 +534,16 @@ func waitForLoadHolder(t *testing.T, path, name string) {
 				return
 			}
 		}
+		queued, err = lock.Queue(context.Background(), path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(holders) == 0 && len(queued) > 0 && strings.Contains(queued[0], name) {
+			return
+		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	holders, _ := lock.Holders(path)
-	t.Fatalf("load lock holders = %v; want %q to hold it", holders, name)
+	t.Fatalf("load lock holders = %v, queue = %v; want %q to hold it or head the queue", holders, queued, name)
 }
 
 func TestPriorityExhaustedBudgetRefusesBehindLoadLockHolder(t *testing.T) {
@@ -546,7 +557,7 @@ func TestPriorityExhaustedBudgetRefusesBehindLoadLockHolder(t *testing.T) {
 
 	p := &Priority{For: "graft deploy prod", Budget: newBudget(t, 0)}
 	m := newMachine(testLoad, io.Discard, "deploy-step", "projectA:deploy-step")
-	_, cancel, err := priorityQueueContext(context.Background(), m, p, path, "")
+	_, cancel, _, err := priorityQueueContext(context.Background(), m, p, path, "")
 	cancel()
 	if err == nil || !strings.Contains(err.Error(), "deploy.load_wait: budget exhausted") || !strings.Contains(err.Error(), "deploy-step not started") {
 		t.Fatalf("queue context with exhausted budget and held lock = %v; want immediate budget refusal", err)
@@ -1004,13 +1015,14 @@ func TestWaitNamesWhoHeldTheQueue(t *testing.T) {
 		adm, rel, err := Wait(context.Background(), "head", "projectA:head", nil, l, path, io.Discard, "")
 		got <- result{adm, rel, err}
 	}()
-	awaitFiles(t, path+".*.lholder", 1)
+	// The head keeps its ticket while it waits for the machine.
+	awaitFiles(t, path+".queue.*.lticket", 1)
 	observed := make(chan struct{}, 1)
 	go func() {
 		adm, rel, err := Wait(context.Background(), "follower", "projectA:follower", nil, l, path, waitLogWriter{observed: observed}, "")
 		got <- result{adm, rel, err}
 	}()
-	awaitFiles(t, path+".queue.*.lticket", 1)
+	awaitFiles(t, path+".queue.*.lticket", 2)
 	// A ticket can exist before the follower observes the queue head. Wait for
 	// that observation before admitting the head, or this test races the first poll.
 	select {
@@ -1094,7 +1106,9 @@ func TestWaitBehindQuietIsQuiet(t *testing.T) {
 		_, _, _ = Wait(ctx, "head", "projectA:head", nil, testLoad, path, io.Discard, "")
 		close(first)
 	}()
-	awaitFiles(t, path+".*.lholder", 1)
+	// The head waiting for quiet mode keeps its ticket, and gives the lock
+	// up between its readings.
+	awaitFiles(t, path+".queue.*.lticket", 1)
 	followerCtx, stop := context.WithTimeout(context.Background(), 3500*time.Millisecond)
 	defer stop()
 	type waitResult struct {
@@ -1106,7 +1120,7 @@ func TestWaitBehindQuietIsQuiet(t *testing.T) {
 		adm, _, err := Wait(followerCtx, "follower", "projectA:follower", nil, testLoad, path, io.Discard, "")
 		got <- waitResult{adm: adm, err: err}
 	}()
-	awaitFiles(t, path+".queue.*.lticket", 1)
+	awaitFiles(t, path+".queue.*.lticket", 2)
 	var result waitResult
 	select {
 	case result = <-got:

@@ -107,6 +107,10 @@ var loadLockAcquired = func(string) {}
 var loadLockBeforeRelease = func() {}
 var loadLockRelease = func(lk *lock.Lock) error { return lk.Release() }
 
+// queueJoining runs as a task joins the settle or load queue at path, after
+// the check for what is ahead.
+var queueJoining = func(string) {}
+
 func reserveEstimateChanged(old, next float64) bool {
 	delta := math.Abs(next - old)
 	scale := max(math.Abs(old), math.Abs(next))
@@ -591,17 +595,29 @@ func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userc
 		}
 	}()
 	holder := "graft " + name + " (starting a heavy task)"
-	settleCtx, cancel, err := prioritySettleContext(ctx, m, p, settleLockPath, settleDuration)
+	s := &seat{holder: holder, priority: priority, log: log, settlePath: settleLockPath, loadPath: lockPath}
+	settleCtx, cancel, atOnce, err := prioritySettleContext(ctx, m, p, settleLockPath, settleDuration)
 	if err != nil {
 		return m.admission(), released, err
 	}
 	if cancel != nil {
 		defer cancel()
 	}
-	settleLock, behind, start, err := acquireSettle(settleCtx, m, p, settleLockPath, settleDuration, holder, log)
+	behind, start, err := acquireSettle(settleCtx, m, p, s, settleDuration, atOnce, holder, log)
+	if errors.Is(err, errWouldWait) {
+		_, err = m.refuseWouldWait(ctx, settleCtx, p, settleLockPath)
+		return m.admission(), released, err
+	}
+	if err != nil && atOnce {
+		return m.admission(), released, m.guardFailure(ctx, p, settleLockPath, err)
+	}
 	if err != nil {
 		if p != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			m.noteQueueWait(settleLockPath, start, time.Now())
+			if behind == "" {
+				m.noteQueueWait(settleLockPath, start, time.Now())
+			} else {
+				m.noteQueueHolder(settleLockPath)
+			}
 			err = m.priorityFailure(ctx, p, start, time.Now())
 		}
 		return m.admission(), released, err
@@ -609,119 +625,220 @@ func WaitWithSettle(ctx context.Context, name, kind string, p *Priority, l userc
 	if p != nil && behind != "" {
 		left, spendErr := p.spend(start, time.Now())
 		if spendErr != nil {
-			return m.admission(), released, errors.Join(spendErr, settleLock.Release())
+			return m.admission(), released, errors.Join(spendErr, s.close())
 		}
 		if left <= 0 {
 			err := m.priorityFailure(ctx, p, time.Time{}, time.Time{})
-			return m.admission(), released, errors.Join(err, settleLock.Release())
+			return m.admission(), released, errors.Join(err, s.close())
 		}
 	}
 	if cancel != nil {
 		cancel()
 	}
-	return waitQueued(ctx, m, p, kind, l, lockPath, cores, settleLock, settleDuration, start, behind, log)
+	return waitQueued(ctx, m, p, kind, l, s, cores, settleDuration, start, behind, log)
 }
 
-func prioritySettleContext(ctx context.Context, m *machine, p *Priority, settleLockPath string, settleDuration time.Duration) (context.Context, context.CancelFunc, error) {
+// prioritySettleContext bounds a priority task's wait for its settle turn by
+// the budget left. With the budget spent, atOnce: the task takes its turn
+// at once or is refused, and is refused before it joins when a holder or a
+// priority ticket is ahead; the context then bounds the queue guard's wait
+// by guardWait.
+func prioritySettleContext(ctx context.Context, m *machine, p *Priority, settleLockPath string, settleDuration time.Duration) (_ context.Context, _ context.CancelFunc, atOnce bool, _ error) {
 	if p == nil {
-		return ctx, nil, nil
+		return ctx, nil, false, nil
 	}
 	left, err := p.spend(time.Time{}, time.Time{})
 	if err != nil {
-		return ctx, nil, err
+		return ctx, nil, false, err
 	}
 	m.priorityBudget = left
-	if left <= 0 && settleLockPath != "" && settleDuration > 0 {
-		holders, err := lock.Holders(settleLockPath)
-		if err != nil {
-			return ctx, nil, err
-		}
-		if len(holders) > 0 {
-			m.waitedBehind = holders[0]
-			m.lastWaitText = "queued behind " + holders[0]
-			return ctx, nil, m.priorityFailure(ctx, p, time.Time{}, time.Time{})
-		}
-	}
 	if left > 0 {
 		settleCtx, cancel := context.WithTimeout(ctx, left)
-		return settleCtx, cancel, nil
+		return settleCtx, cancel, false, nil
 	}
-	return ctx, nil, nil
+	onceCtx, cancel := context.WithTimeout(ctx, guardWait)
+	if settleLockPath != "" && settleDuration > 0 {
+		ahead, err := priorityAhead(onceCtx, settleLockPath)
+		if err != nil {
+			cancel()
+			return ctx, nil, false, m.guardFailure(ctx, p, settleLockPath, err)
+		}
+		if ahead != "" {
+			cancel()
+			m.waitedBehind = ahead
+			m.lastWaitText = "queued behind " + ahead
+			return ctx, nil, false, m.priorityFailure(ctx, p, time.Time{}, time.Time{})
+		}
+	}
+	return onceCtx, cancel, true, nil
 }
 
-func acquireSettle(ctx context.Context, m *machine, p *Priority, settleLockPath string, settleDuration time.Duration, holder string, log io.Writer) (*lock.Lock, string, time.Time, error) {
+// guardWait bounds how long a priority task whose budget is spent waits for
+// the guard of a queue, which it takes to check the queue, join it, take
+// the lock and leave: a task holds the guard for a directory read and a
+// ticket file's write, milliseconds, so a second is far beyond a held guard
+// on a loaded disk and well short of the queue's own timeout. Past it the
+// task is refused, as for a lock that would wait.
+const guardWait = time.Second
+
+// guardFailure refuses a priority task whose budget is spent and whose wait
+// for the guard of the queue at path, or of a queue when path is empty, ran
+// out guardWait, err, and returns any other error as it is.
+func (m *machine) guardFailure(ctx context.Context, p *Priority, path string, err error) error {
+	if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		return err
+	}
+	m.lastWaitText = fmt.Sprintf("a queue guard stayed held over %s", guardWait)
+	if path != "" {
+		m.lastWaitText = fmt.Sprintf("the queue guard of %s stayed held over %s", filepath.Base(path), guardWait)
+	}
+	return m.priorityFailure(ctx, p, time.Time{}, time.Time{})
+}
+
+// errWouldWait is a ticket that did not take its lock at once when its task,
+// its budget spent, could not wait for it.
+var errWouldWait = errors.New("the lock is not free at once")
+
+// refuseWouldWait refuses a priority task whose budget is spent and whose
+// ticket, already gone, did not take the lock at path at once: it names what
+// it would have waited for, reading the queue within onceCtx.
+func (m *machine) refuseWouldWait(ctx, onceCtx context.Context, p *Priority, path string) (string, error) {
+	ahead, err := priorityAhead(onceCtx, path)
+	if err != nil {
+		return "", m.guardFailure(ctx, p, path, err)
+	}
+	if ahead != "" {
+		m.waitedBehind = ahead
+		m.lastWaitText = "queued behind " + ahead
+	} else {
+		m.lastWaitText = "queued in the FIFO lock"
+	}
+	return ahead, m.priorityFailure(ctx, p, time.Time{}, time.Time{})
+}
+
+// acquireSettle queues for the settle lock and waits for its turn: its
+// ticket heads the queue and no settling period holds the lock. It gives the
+// lock up then and the seat keeps the ticket until the admission: the seat
+// takes the settle lock only beside the load lock, never while it waits in
+// the load queue.
+func acquireSettle(ctx context.Context, m *machine, p *Priority, s *seat, settleDuration time.Duration, atOnce bool, holder string, log io.Writer) (string, time.Time, error) {
 	start := time.Now()
-	if settleLockPath == "" || settleDuration <= 0 {
-		return nil, "", start, nil
+	if s.settlePath == "" || settleDuration <= 0 {
+		return "", start, nil
+	}
+	queueJoining(s.settlePath)
+	ticket, err := lock.JoinFIFO(ctx, s.settlePath, holder+" with settle", p != nil)
+	if err != nil {
+		return "", start, err
 	}
 	var settleLock *lock.Lock
-	var err error
-	if p != nil {
-		settleLock, err = lock.AcquireFIFOPriorityObserved(ctx, settleLockPath, queueTimeout, holder+" with settle", log, nil)
+	var w lock.FIFOWait
+	if atOnce {
+		settleLock, err = takeAtOnce(ctx, ticket)
 	} else {
-		settleLock, err = lock.AcquireFIFOObserved(ctx, settleLockPath, queueTimeout, holder+" with settle", log, nil)
+		settleLock, w, err = ticket.Acquire(ctx, queueTimeout, log, nil)
+	}
+	// The wait counts as the queue whether the turn came or not.
+	if behind := w.Behind; behind != "" {
+		m.addWait(WhyQueue, start, time.Now())
+		m.waitedBehind = behind
+		m.lastWaitText = "queued behind " + behind
 	}
 	if err != nil {
-		return nil, "", start, err
+		return w.Behind, start, errors.Join(err, ticket.Leave())
 	}
-	if settleLock.WaitedBehind != "" {
-		m.addWait(WhyQueue, start, time.Now())
-		m.waitedBehind = settleLock.WaitedBehind
-		m.lastWaitText = "queued behind " + settleLock.WaitedBehind
+	if err := settleLock.Release(); err != nil {
+		return w.Behind, start, errors.Join(err, ticket.Leave())
 	}
-	return settleLock, settleLock.WaitedBehind, start, nil
+	s.settleTicket = ticket
+	return w.Behind, start, nil
 }
 
-func priorityQueueContext(ctx context.Context, m *machine, p *Priority, lockPath string, behind string) (context.Context, context.CancelFunc, error) {
+// priorityQueueContext bounds a priority task's wait in the load queue by
+// the budget left. With the budget spent, atOnce: the task takes the lock at
+// once or is refused, and is refused before it joins when it waited for its
+// settle turn, or a holder or a priority ticket is ahead; the context then
+// bounds the queue guard's wait by guardWait.
+func priorityQueueContext(ctx context.Context, m *machine, p *Priority, lockPath string, behind string) (_ context.Context, _ context.CancelFunc, atOnce bool, _ error) {
 	if p == nil {
-		return ctx, func() {}, nil
+		return ctx, func() {}, false, nil
 	}
 	left, err := p.spend(time.Time{}, time.Time{})
 	if err != nil {
-		return ctx, func() {}, err
+		return ctx, func() {}, false, err
 	}
-	if left <= 0 {
-		holders, err := lock.Holders(lockPath)
+	if left > 0 {
+		queueCtx, cancel := context.WithTimeout(ctx, left)
+		return queueCtx, cancel, false, nil
+	}
+	onceCtx, cancel := context.WithTimeout(ctx, guardWait)
+	if behind == "" {
+		behind, err = priorityAhead(onceCtx, lockPath)
 		if err != nil {
-			return ctx, func() {}, err
+			cancel()
+			return ctx, func() {}, false, m.guardFailure(ctx, p, lockPath, err)
 		}
-		if len(holders) > 0 || behind != "" {
-			if behind != "" {
-				m.waitedBehind = behind
-				m.lastWaitText = "queued behind " + behind
-			} else if len(holders) > 0 {
-				m.waitedBehind = holders[0]
-				m.lastWaitText = "queued behind " + holders[0]
-			}
-			return ctx, func() {}, m.priorityFailure(ctx, p, time.Time{}, time.Time{})
-		}
-		return ctx, func() {}, nil
 	}
-	queueCtx, cancel := context.WithTimeout(ctx, left)
-	return queueCtx, cancel, nil
+	if behind != "" {
+		cancel()
+		m.waitedBehind = behind
+		m.lastWaitText = "queued behind " + behind
+		return ctx, func() {}, false, m.priorityFailure(ctx, p, time.Time{}, time.Time{})
+	}
+	return onceCtx, cancel, true, nil
 }
 
-func queuedFailure(m *machine, behind string, err error, settleLock, queueLock *lock.Lock) (Admission, func() error, error) {
-	if settleLock != nil {
-		err = errors.Join(err, settleLock.Release())
+// takeAtOnce takes the lock by ticket when the ticket heads its queue and
+// the lock is free, and leaves the queue with errWouldWait otherwise: a
+// holder or a ticket that joined ahead since the check before it joined.
+func takeAtOnce(ctx context.Context, ticket *lock.Ticket) (*lock.Lock, error) {
+	lk, ok, err := ticket.TryAcquire(ctx)
+	if err == nil && !ok {
+		err = errWouldWait
 	}
-	if queueLock != nil {
-		err = errors.Join(err, queueLock.Release())
+	if err != nil {
+		return nil, errors.Join(err, ticket.Leave())
 	}
-	return m.behind(behind), released, err
+	return lk, nil
 }
 
-func reserveQueued(ctx context.Context, m *machine, p *Priority, kind string, l userconfig.MachineLoad, lockPath string, cores float64, behind string, log io.Writer) (Admission, func() error, error) {
+// priorityAhead names what a priority task that joins the queue of the lock
+// at path now would wait for: a holder of the lock, or a priority ticket
+// queued ahead, whose holder may have given the lock up for its own wait.
+// Empty means it would take the lock at once.
+func priorityAhead(ctx context.Context, path string) (string, error) {
+	holders, err := lock.Holders(path)
+	if err != nil {
+		return "", err
+	}
+	if len(holders) > 0 {
+		return holders[0], nil
+	}
+	ahead, err := lock.Ahead(ctx, path, true)
+	if err != nil || len(ahead) == 0 {
+		return "", err
+	}
+	return ahead[0], nil
+}
+
+func queuedFailure(m *machine, behind string, err error, s *seat) (Admission, func() error, error) {
+	return m.behind(behind), released, errors.Join(err, s.close())
+}
+
+func reserveQueued(ctx context.Context, m *machine, p *Priority, kind string, l userconfig.MachineLoad, s *seat, cores float64, behind string, log io.Writer) (Admission, func() error, error) {
 	cores, err := expectedReserveCores(kind, cores)
 	if err != nil {
 		return Admission{}, nil, err
 	}
 	m.candidate = cores
 	m.candidateKnown = true
-	if err := m.admitWithReserves(ctx, p, lockPath); err != nil {
+	m.seat = s
+	err = m.admitWithReserves(ctx, p, s.loadPath)
+	m.seat = nil
+	if err != nil {
 		return Admission{}, nil, err
 	}
-	release, since, end, stoppedAt, err := startAdmission(lockPath, m.name, cores, l.Settle, log)
+	release, since, end, stoppedAt, err := startAdmission(s.loadPath, m.name, cores, l.Settle, log)
 	if err != nil {
 		return Admission{}, nil, err
 	}
@@ -730,91 +847,137 @@ func reserveQueued(ctx context.Context, m *machine, p *Priority, kind string, l 
 	return adm, release, nil
 }
 
-func acquireLoadQueue(ctx context.Context, m *machine, p *Priority, lockPath string, start time.Time, behind string, log io.Writer) (*lock.Lock, string, bool, error) {
+// acquireLoadQueue queues for the load lock and takes it; the seat keeps the
+// ticket until the admission.
+func acquireLoadQueue(ctx context.Context, m *machine, p *Priority, s *seat, start time.Time, behind string, log io.Writer) (*lock.Lock, string, bool, error) {
+	lockPath := s.loadPath
 	quiet, err := quietMode()
 	if err != nil {
 		return nil, behind, false, err
 	}
-	queueCtx, cancel, err := priorityQueueContext(ctx, m, p, lockPath, behind)
+	s.quiet = quiet
+	queueCtx, cancel, atOnce, err := priorityQueueContext(ctx, m, p, lockPath, behind)
 	if err != nil {
 		return nil, behind, false, err
 	}
 	defer cancel()
-	holder := "graft " + m.name + " (starting a heavy task)"
-	var lk *lock.Lock
-	queueStart := time.Now()
-	if p != nil {
-		lk, err = lock.AcquireFIFOPriorityObserved(queueCtx, lockPath, queueTimeout, holder, log, quiet)
-	} else {
-		lk, err = lock.AcquireFIFOObserved(queueCtx, lockPath, queueTimeout, holder, log, quiet)
+	if atOnce {
+		return m.takeLoadAtOnce(ctx, queueCtx, p, s, behind)
 	}
-	behind, queueWaited := m.loadQueueResult(ctx, p, lockPath, queueStart, start, behind, quiet, lk, err)
+	queueStart := time.Now()
+	queueJoining(lockPath)
+	ticket, err := lock.JoinFIFO(queueCtx, lockPath, s.holder, p != nil)
+	var lk *lock.Lock
+	var w lock.FIFOWait
+	if err == nil {
+		s.loadTicket = ticket
+		lk, w, err = ticket.Acquire(queueCtx, queueTimeout, log, quiet)
+	}
+	behind, queueWaited := m.loadQueueResult(ctx, p, lockPath, queueStart, start, behind, quiet, w, err)
 	if lk != nil {
+		s.loadLock = lk
 		loadLockAcquired(lockPath)
+	}
+	if lk == nil {
+		queueWaited = false
 	}
 	return lk, behind, queueWaited, err
 }
 
-func (m *machine) loadQueueResult(ctx context.Context, p *Priority, lockPath string, queueStart, start time.Time, behind string, quiet func() (bool, error), lk *lock.Lock, err error) (string, bool) {
-	if lk == nil {
-		if p != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			m.noteQueueWait(lockPath, queueStart, time.Now())
-			quietNow, quietErr := quiet()
-			if quietErr == nil && quietNow {
-				m.lastWaitText = "quiet mode kept this task waiting"
-			}
-		}
-		return behind, false
+// takeLoadAtOnce joins the load queue and takes the lock for a priority task
+// whose budget is spent, within onceCtx, without a wait: a lock that would
+// wait, or a queue guard held past guardWait, refuses the task.
+func (m *machine) takeLoadAtOnce(ctx, onceCtx context.Context, p *Priority, s *seat, behind string) (*lock.Lock, string, bool, error) {
+	queueJoining(s.loadPath)
+	ticket, err := lock.JoinFIFO(onceCtx, s.loadPath, s.holder, true)
+	if err != nil {
+		return nil, behind, false, m.guardFailure(ctx, p, s.loadPath, err)
 	}
-	queueWaited := lk.WaitedBehind != "" || lk.WaitedQuiet > 0
+	lk, err := takeAtOnce(onceCtx, ticket)
+	if errors.Is(err, errWouldWait) {
+		behind, err = m.refuseWouldWait(ctx, onceCtx, p, s.loadPath)
+		return nil, behind, false, err
+	}
+	if err != nil {
+		return nil, behind, false, m.guardFailure(ctx, p, s.loadPath, err)
+	}
+	s.loadTicket, s.loadLock = ticket, lk
+	loadLockAcquired(s.loadPath)
+	return lk, behind, false, nil
+}
+
+// loadQueueResult counts the wait in the load queue, w, as the queue or quiet
+// mode: when the lock came, and when the wait ended without it too.
+func (m *machine) loadQueueResult(ctx context.Context, p *Priority, lockPath string, queueStart, start time.Time, behind string, quiet func() (bool, error), w lock.FIFOWait, err error) (string, bool) {
+	queueWaited := w.Behind != "" || w.Quiet > 0
 	if queueWaited {
 		now := time.Now()
 		waited := now.Sub(start)
-		quietWait := min(lk.WaitedQuiet, waited)
+		quietWait := min(w.Quiet, waited)
 		queueWait := max(0, waited-m.waits[WhyQuiet]-quietWait-m.waits[WhyQueue])
 		from := now.Add(-quietWait - queueWait)
 		m.addWait(WhyQueue, from, from.Add(queueWait))
 		m.addWait(WhyQuiet, from.Add(queueWait), now)
 	}
-	if lk.WaitedBehind != "" {
-		behind = lk.WaitedBehind
+	if w.Behind != "" {
+		behind = w.Behind
 	}
-	if lk.WaitedQuiet > 0 {
+	if w.Quiet > 0 {
 		m.lastWaitText = "quiet mode kept this task waiting"
-	} else if lk.WaitedBehind != "" {
-		m.waitedBehind = lk.WaitedBehind
-		m.lastWaitText = "queued behind " + lk.WaitedBehind
+	} else if w.Behind != "" {
+		m.waitedBehind = w.Behind
+		m.lastWaitText = "queued behind " + w.Behind
+	}
+	if err != nil && p != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		if queueWaited {
+			m.noteQueueHolder(lockPath)
+		} else {
+			m.noteQueueWait(lockPath, queueStart, time.Now())
+		}
+		quietNow, quietErr := quiet()
+		if quietErr == nil && quietNow {
+			m.lastWaitText = "quiet mode kept this task waiting"
+		}
 	}
 	return behind, queueWaited
 }
 
-func waitQueued(ctx context.Context, m *machine, p *Priority, kind string, l userconfig.MachineLoad, lockPath string, cores float64, settleLock *lock.Lock, settleDuration time.Duration, start time.Time, behind string, log io.Writer) (Admission, func() error, error) {
-	lk, behind, queueWaited, err := acquireLoadQueue(ctx, m, p, lockPath, start, behind, log)
+func waitQueued(ctx context.Context, m *machine, p *Priority, kind string, l userconfig.MachineLoad, s *seat, cores float64, settleDuration time.Duration, start time.Time, behind string, log io.Writer) (Admission, func() error, error) {
+	lk, behind, queueWaited, err := acquireLoadQueue(ctx, m, p, s, start, behind, log)
 	if err != nil {
 		if p != nil && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			err = m.priorityFailure(ctx, p, start, time.Now())
 		}
-		return queuedFailure(m, behind, err, settleLock, nil)
+		return queuedFailure(m, behind, err, s)
 	}
 	if p != nil && queueWaited {
 		left, spendErr := p.spend(start, time.Now())
 		if spendErr != nil {
-			return queuedFailure(m, behind, spendErr, settleLock, lk)
+			return queuedFailure(m, behind, spendErr, s)
 		}
 		if left <= 0 && (behind != "" || lk.WaitedBehind != "" || lk.WaitedQuiet > 0) {
 			err := m.priorityFailure(ctx, p, time.Time{}, time.Time{})
-			return queuedFailure(m, behind, err, settleLock, lk)
+			return queuedFailure(m, behind, err, s)
 		}
 	}
-	adm, releaseFn, err := reserveQueued(ctx, m, p, kind, l, lockPath, cores, behind, log)
+	adm, releaseFn, err := reserveQueued(ctx, m, p, kind, l, s, cores, behind, log)
 	if err != nil {
-		return queuedFailure(m, behind, err, settleLock, lk)
+		return queuedFailure(m, behind, err, s)
 	}
 	if m.pastLoad != "" {
 		fmt.Fprintf(log, "graft: %s: passed CPU load limit by --past-load (%s)\n", m.name, m.pastLoad)
 	}
+	// The admission left both queues and holds both locks: the load lock is
+	// handed over now, the settle lock after the settling period.
+	lk, s.loadLock = s.loadLock, nil
+	settleLock := s.settleLock
+	s.settleLock = nil
 	if err := loadLockRelease(lk); err != nil {
-		return queuedFailure(m, behind, errors.Join(err, releaseFn()), settleLock, nil)
+		var settleErr error
+		if settleLock != nil {
+			settleErr = settleLock.Release()
+		}
+		return queuedFailure(m, behind, errors.Join(err, releaseFn(), settleErr), s)
 	}
 	if settleLock != nil {
 		settleRelease := settle(settleLock, settleDuration)
@@ -827,13 +990,20 @@ func waitQueued(ctx context.Context, m *machine, p *Priority, kind string, l use
 // the reserves at lockPath and the admitted tasks the load average does not
 // show yet; a priority task waits no longer than its budget allows, spending
 // it as it waits. The time between two readings goes to what the first of
-// them found busy, the first reading's own to what it found.
+// them found busy, the first reading's own to what it found. With a seat,
+// the task gives its queue locks up for each pause and takes them back before
+// the next reading, and is admitted only while its tickets head their queues:
+// a priority ticket that joined ahead of it goes first.
 func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath string) error {
 	start, mark := m.now(), m.now()
 	spent := start
 	var said time.Time
 	waited := false
 	var why string
+	// A seat comes with the load lock only: the settle lock is taken beside it.
+	if err := m.resumeSeat(ctx, p, &mark, ""); err != nil {
+		return err
+	}
 	for {
 		b, err := m.measureOrReserve(ctx, !waited, lockPath)
 		now := m.now()
@@ -858,6 +1028,14 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 			}
 		}
 		if b.why == "" {
+			yielded, err := m.yieldToPriority(ctx, p, &mark)
+			if err != nil {
+				return err
+			}
+			if yielded {
+				waited = true
+				continue
+			}
 			if waited {
 				fmt.Fprintf(m.log, "graft: %s: runnable %.0f, starting after %s\n", m.name, m.runnable, m.now().Sub(start).Round(time.Second))
 			}
@@ -883,17 +1061,59 @@ func (m *machine) admitWithReserves(ctx context.Context, p *Priority, lockPath s
 			fmt.Fprintf(m.log, "graft: %s: %s, waiting\n", m.name, b.text)
 			said = m.now()
 		}
-		pause, err := m.reserveWaitPause(ctx, b, p)
-		if err != nil {
-			return err
-		}
-		if err := m.pause(ctx, pause); err != nil {
-			if why != "" {
-				m.addWait(why, mark, m.now())
-			}
+		if err := m.pauseInQueue(ctx, b, p, &mark, why); err != nil {
 			return err
 		}
 	}
+}
+
+// pauseInQueue waits a poll after the busy reading b, with the seat's locks
+// given up for the pause and taken back after it.
+func (m *machine) pauseInQueue(ctx context.Context, b busyness, p *Priority, mark *time.Time, why string) error {
+	pause, err := m.reserveWaitPause(ctx, b, p)
+	if err != nil {
+		return err
+	}
+	if m.seat != nil {
+		if err := m.seat.yield(); err != nil {
+			return err
+		}
+	}
+	if err := m.pause(ctx, pause); err != nil {
+		if why != "" {
+			m.addWait(why, *mark, m.now())
+		}
+		return err
+	}
+	return m.resumeSeat(ctx, p, mark, why)
+}
+
+// yieldToPriority is the admission boundary of a task with a seat on a calm
+// reading: true when a ticket joined ahead of it, a priority one or one
+// that came back to its place, which then took the locks and went first, and
+// this task took them back to read again.
+func (m *machine) yieldToPriority(ctx context.Context, p *Priority, mark *time.Time) (bool, error) {
+	if m.seat == nil {
+		return false, nil
+	}
+	admitCtx, cancel := ctx, context.CancelFunc(func() {})
+	if p != nil && m.priorityBudget <= 0 {
+		// With the budget spent, the guards' wait is bounded too.
+		admitCtx, cancel = context.WithTimeout(ctx, guardWait)
+	}
+	admitted, err := m.seat.admitHere(admitCtx)
+	cancel()
+	if err != nil && p != nil && m.priorityBudget <= 0 {
+		return false, m.guardFailure(ctx, p, "", err)
+	}
+	if err != nil || admitted {
+		return false, err
+	}
+	fmt.Fprintf(m.log, "graft: %s: a task queued ahead of this one, letting it start first\n", m.name)
+	if err := m.seat.yield(); err != nil {
+		return false, err
+	}
+	return true, m.resumeSeat(ctx, p, mark, "")
 }
 
 func (m *machine) measureOrReserve(ctx context.Context, fresh bool, lockPath string) (busyness, error) {
@@ -958,13 +1178,21 @@ func (m *machine) priorityFailure(ctx context.Context, p *Priority, from, to tim
 
 func (m *machine) noteQueueWait(path string, from, to time.Time) {
 	m.addWait(WhyQueue, from, to)
-	holders, err := lock.Holders(path)
-	if err == nil && len(holders) > 0 {
-		m.waitedBehind = holders[0]
-		m.lastWaitText = "queued behind " + holders[0]
-	} else {
+	if !m.noteQueueHolder(path) {
 		m.lastWaitText = "queued in the FIFO lock"
 	}
+}
+
+// noteQueueHolder names the holder of the lock at path, when there is one,
+// as what the task waited behind.
+func (m *machine) noteQueueHolder(path string) bool {
+	holders, err := lock.Holders(path)
+	if err != nil || len(holders) == 0 {
+		return false
+	}
+	m.waitedBehind = holders[0]
+	m.lastWaitText = "queued behind " + holders[0]
+	return true
 }
 
 func (m *machine) refreshPriorityNow(ctx context.Context) error {
@@ -1730,6 +1958,9 @@ type machine struct {
 	priorityBudget time.Duration
 	priorityNow    string
 	waitedBehind   string
+	// seat is the task's place in the queues while it waits for the
+	// machine; nil reads the machine alone.
+	seat *seat
 }
 
 func newMachine(l userconfig.MachineLoad, log io.Writer, name, kind string) *machine {
@@ -1790,11 +2021,27 @@ func BusyNow(ctx context.Context, name, kind string, l userconfig.MachineLoad, l
 
 // BusyNowWithReserves checks the machine, its live reservations and the
 // admitted tasks its load average does not show yet without queueing. queue
-// controls whether a current queue holder also counts.
+// controls whether a current queue holder also counts, and a queued ticket:
+// a head that waits for the machine gives the lock up between its readings.
 func BusyNowWithReserves(ctx context.Context, name, kind string, l userconfig.MachineLoad, lockPath string, queue bool, log io.Writer) (bool, error) {
+	return busyNow(ctx, name, kind, l, lockPath, queue, false, log)
+}
+
+// BusyNowForPriority is BusyNowWithReserves with the queue for a priority
+// task: a holder of the load lock counts, and a priority ticket queued, which
+// it would queue behind, not an ordinary ticket, which it would go ahead of.
+func BusyNowForPriority(ctx context.Context, name, kind string, l userconfig.MachineLoad, lockPath string, log io.Writer) (bool, error) {
+	return busyNow(ctx, name, kind, l, lockPath, lockPath != "", true, log)
+}
+
+func busyNow(ctx context.Context, name, kind string, l userconfig.MachineLoad, lockPath string, queue, priority bool, log io.Writer) (bool, error) {
 	if queue {
 		holders, err := lock.Holders(lockPath)
 		if err != nil || len(holders) > 0 {
+			return err == nil, err
+		}
+		queued, err := lock.Ahead(ctx, lockPath, priority)
+		if err != nil || len(queued) > 0 {
 			return err == nil, err
 		}
 	}

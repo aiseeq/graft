@@ -196,7 +196,7 @@ const (
 const checkWaitThreshold = time.Second
 
 var checkMachineBusy = loadgate.BusyNow
-var checkMachineBusyWithReserves = loadgate.BusyNowWithReserves
+var checkPriorityBusy = loadgate.BusyNowForPriority
 
 func (r *Runner) recordCheckWait(why string, started time.Time) {
 	if waited := time.Since(started); waited >= checkWaitThreshold {
@@ -206,8 +206,9 @@ func (r *Runner) recordCheckWait(why string, started time.Time) {
 
 // wouldWait tells whether this machine's queue would make the heavy task wait
 // now, as admit and enterHeavy decide for a task outside an admitted one
-// (placeHeavy keeps those here). Priority and ordinary tasks both include
-// the FIFO load queue in this check.
+// (placeHeavy keeps those here). Both include the FIFO load queue in this
+// check: a priority task the holder and the priority tickets only, as it
+// queues ahead of the ordinary ones.
 func (r *Runner) wouldWait(ctx context.Context, name string) (bool, error) {
 	l, err := r.Load()
 	if err != nil {
@@ -224,7 +225,7 @@ func (r *Runner) wouldWait(ctx context.Context, name string) (bool, error) {
 	started := time.Now()
 	defer r.recordCheckWait("load-check", started)
 	if priority {
-		return checkMachineBusyWithReserves(ctx, name, r.kind(name), l, lockPath, true, r.Stderr)
+		return checkPriorityBusy(ctx, name, r.kind(name), l, lockPath, r.Stderr)
 	}
 	return checkMachineBusy(ctx, name, r.kind(name), l, lockPath, r.Stderr)
 }

@@ -97,3 +97,48 @@ func TestLocksReportsLoadMeasureErrorAndContinues(t *testing.T) {
 		}
 	}
 }
+
+// TestLocksShowsAQueueHeadThatGaveTheLockUp: the load queue's head that waits
+// for the machine gives load.lock up between its readings; graft locks still
+// shows it and why the queue waits.
+func TestLocksShowsAQueueHeadThatGaveTheLockUp(t *testing.T) {
+	cache := t.TempDir()
+	state := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("XDG_STATE_HOME", state)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	quietDir := filepath.Join(state, "akit")
+	if err := os.MkdirAll(quietDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(quietDir, "quiet-until"), []byte(time.Now().Add(time.Hour).Format(time.RFC3339)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if out, err := exec.Command("git", "init", root).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	ticket, err := lock.JoinFIFO(context.Background(), filepath.Join(cache, "graft", "load.lock"), "graft exec (starting a heavy task)", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ticket.Leave()
+
+	var output bytes.Buffer
+	a := &App{Dir: root, Stdout: &output}
+	if err := a.Locks(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"lock load free, queue head graft exec (starting a heavy task), pid ",
+		"(1 queued)",
+		"waits: quiet mode until",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("graft locks output = %q, want %q", output.String(), want)
+		}
+	}
+	if strings.Contains(output.String(), "no locks held") {
+		t.Errorf("graft locks output = %q, says no locks held with a queued head", output.String())
+	}
+}
