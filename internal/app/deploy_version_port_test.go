@@ -1985,3 +1985,32 @@ func TestReplayOfUnchainedSourcesReadsTheIntermediateTree(t *testing.T) {
 		t.Fatal("replay of unchained sources whose changes are the port's was not linked")
 	}
 }
+
+// The second source merges onto the intermediate tree without a conflict:
+// the clean path reads that tree with the replay's environment too.
+func TestReplayOfUnchainedSourcesMergesCleanlyOntoTheIntermediateTree(t *testing.T) {
+	r := newEmptyWithheldRepo(t)
+	r.writePath("a.txt", new("before\n"))
+	r.writePath("b.txt", new("before\n"))
+	r.writePath("VERSION", new("1\n"))
+	base := r.commitAll("base")
+	r.git("checkout", "-q", "-b", "first", base)
+	r.writePath("a.txt", new("fixed\n"))
+	r.writePath("VERSION", new("2\n"))
+	first := r.commitAll("fix: PROJ-1 first")
+	r.git("checkout", "-q", "-b", "second", base)
+	r.writePath("b.txt", new("fixed\n"))
+	second := r.commitAll("fix: PROJ-2 second")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("a.txt", new("fixed\n"))
+	r.writePath("b.txt", new("fixed\n"))
+	port := r.commitAll("port " + first + " " + second)
+	group := []deliveredCommit{{sha: first}, {sha: second}}
+	replayed, err := replayVersionPortGroup(r.repo, port, group, versionPortTargets("VERSION"))
+	if err != nil {
+		t.Fatalf("replay of unchained sources failed: %v", err)
+	}
+	if !replayed {
+		t.Fatal("replay of unchained sources whose changes are the port's was not linked")
+	}
+}
