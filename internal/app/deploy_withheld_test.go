@@ -1,6 +1,10 @@
 package app
 
 import (
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/aiseeq/graft/v2/internal/config"
+	"github.com/aiseeq/graft/v2/internal/envs"
 	"github.com/aiseeq/graft/v2/internal/gitx"
 )
 
@@ -16,6 +21,22 @@ type withheldRepo struct {
 	t    *testing.T
 	dir  string
 	repo *gitx.Repo
+}
+
+func setJiraTestEnv(t *testing.T, baseURL string) {
+	t.Helper()
+	configRoot := t.TempDir()
+	envFile := filepath.Join(t.TempDir(), "jira.env")
+	if err := os.WriteFile(envFile, []byte("JIRA_BASE_URL="+baseURL+"\nJIRA_EMAIL=synthetic@example.invalid\nJIRA_API_TOKEN="+"synthetic"+"-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(configRoot, "graft"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configRoot, "graft", "config.yaml"), []byte("jira:\n  env_file: "+envFile+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
 }
 
 func newWithheldRepo(t *testing.T, initial string) *withheldRepo {
@@ -479,4 +500,106 @@ func pathsForVersionDeploy(t *testing.T, r *withheldRepo, prev, head string, v c
 		t.Fatal(err)
 	}
 	return paths
+}
+
+func TestDeployCheckPrintsWithheldVersionHintsForRelatedCommits(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		withheldCount int
+		ordinary      bool
+	}{
+		{name: "one withheld", withheldCount: 1},
+		{name: "two withheld", withheldCount: 2},
+		{name: "ordinary failure", ordinary: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setFreezeGitConfig(t)
+			issues := map[string]string{}
+			var withheldKeys []string
+			for i := 0; i < tc.withheldCount; i++ {
+				key := fmt.Sprintf("PROJ-%d", 201+i)
+				withheldKeys = append(withheldKeys, key)
+				issues[key] = `"fixVersions":[{"id":"old","name":"Product 0.9"}]`
+			}
+			if tc.ordinary {
+				issues["PROJ-203"] = `"fixVersions":[{"id":"old","name":"Product 0.9"}]`
+			}
+			issues["PROJ-299"] = `"fixVersions":[{"id":"target","name":"Product 1.0"}]`
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch {
+				case strings.HasPrefix(req.URL.Path, "/rest/api/3/issue/"):
+					key := strings.TrimPrefix(req.URL.Path, "/rest/api/3/issue/")
+					fields, ok := issues[key]
+					if !ok {
+						http.NotFound(w, req)
+						return
+					}
+					fmt.Fprintf(w, `{"key":%q,"fields":{"summary":"synthetic","issuetype":{"name":"Task"},"status":{"name":"Ready","statusCategory":{"key":"indeterminate"}},%s,"subtasks":[]}}`, key, fields)
+				case strings.HasPrefix(req.URL.Path, "/rest/api/3/search/jql"):
+					fmt.Fprint(w, `{"issues":[{"key":"PROJ-299"}],"isLast":true}`)
+				case req.URL.Path == "/rest/api/3/version/target":
+					fmt.Fprint(w, `{"id":"target","name":"Product 1.0","approvers":[{"accountId":"approver","status":"APPROVED"}]}`)
+				case req.URL.Path == "/rest/api/3/user":
+					fmt.Fprint(w, `{"accountId":"approver","displayName":"Approver"}`)
+				default:
+					t.Errorf("unexpected Jira request %s %s", req.Method, req.URL.String())
+					http.NotFound(w, req)
+				}
+			}))
+			t.Cleanup(server.Close)
+			setJiraTestEnv(t, server.URL)
+
+			repo := newWithheldRepo(t, "base\n")
+			prev := repo.head()
+			repo.git("checkout", "-qb", "withheld", prev)
+			var withheldSHAs []string
+			for i, key := range withheldKeys {
+				withheldSHAs = append(withheldSHAs, repo.commitText(fmt.Sprintf("withheld-%d.txt", i), "held\n", "feat: "+key+" withheld work"))
+			}
+			repo.git("checkout", "-qb", "deploy", prev)
+			repo.commitText("candidate.txt", "candidate\n", "feat: PROJ-299 release work")
+			if tc.ordinary {
+				repo.commitText("ordinary.txt", "ordinary\n", "feat: PROJ-203 ordinary work")
+			}
+			head := repo.head()
+			marker := filepath.Join(t.TempDir(), "deployed_sha")
+			if err := os.WriteFile(marker, []byte(prev+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(marker+withheldSuffix, []byte(strings.Join(withheldSHAs, "\n")), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{
+				Version:      config.Version{Mode: config.ModeNone},
+				Envs:         map[string]*config.Env{"local": {}},
+				ReleaseNotes: &config.ReleaseNotes{Jira: &config.JiraNotes{ProjectKeys: []string{"PROJ"}}},
+				Deploy:       &config.Deploy{Targets: map[string]*config.DeployTarget{}},
+			}
+			target := &config.DeployTarget{
+				Env: "local", DeployedSHA: &config.DeployedSHA{Path: marker},
+				ApprovedRelease: &config.ApprovedRelease{Statuses: []string{"Ready"}, Version: &config.ApprovedReleaseVersion{Match: "^Product 1\\."}},
+			}
+			cfg.Deploy.Targets["prod"] = target
+			env, err := envs.Get(cfg, repo.dir, "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := &deployRun{name: "prod", cfg: cfg, repo: repo.repo, target: target, env: env, prev: prev, head: head, dryRun: true}
+			err = (&App{Stdout: io.Discard, Stderr: io.Discard}).checkApproved(t.Context(), run, false)
+			if err == nil || !strings.Contains(err.Error(), "version-top") {
+				t.Fatalf("deploy check error = %v; want version-top refusal", err)
+			}
+			for _, sha := range withheldSHAs {
+				want := gitx.Short(sha) + " was withheld from an earlier release: if its change is already on the target, remove its line from " + marker + withheldSuffix + "."
+				if got := strings.Count(err.Error(), want); got != 1 {
+					t.Fatalf("deploy check has %d hints for withheld %s; want one:\n%v", got, gitx.Short(sha), err)
+				}
+			}
+			if tc.ordinary {
+				if strings.Contains(err.Error(), "ordinary.txt") || strings.Contains(err.Error(), "withheld from an earlier release") {
+					t.Fatalf("ordinary commit refusal unexpectedly names a withheld marker: %v", err)
+				}
+			}
+		})
+	}
 }

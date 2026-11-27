@@ -577,6 +577,7 @@ and runnable count as ordinary heavy tasks; equality with the limit blocks.
 | Command | What it does |
 |---|---|
 | `graft commit [--no-deps --reason TEXT] -m "fix: ..."` | lock, stage work, gate, stage paths changed when it started, bump patch (version mode `file`), stage bump, checks, commit, run `merge.deps` on trunk when configured, push to every remote |
+| `graft commit --allow-empty -m "chore: link PROJ-123 …"` | gate and push an empty hash-link commit without a version bump |
 | `graft commit --minor` / `--major` | same with a minor / major bump (version mode `file` only) |
 | `graft commit -F msg.txt` / `-F -` | message from a file / from stdin, byte for byte |
 | `graft amend [--reset-author]` | lock, stage work before the gate, gate, stage paths changed since the amended commit's parent (including the amended commit's files), `ticket.required` on the whole amended commit, checks, `git commit --amend --no-edit`, no push; `--reset-author` sets the author to the current Git identity and permits an author-only amend on a clean tree; without it, a clean tree is refused; restores the original index if the gate or a later step fails or the gate leaves the amended commit as its parent has it, and refuses a commit that is already on a remote unless only on branches in `push.force_with_lease` |
@@ -2715,14 +2716,25 @@ listed. A commit the target runs is in the trunk by content the same way.
 
 The version checks (the item in the current version, `version-top`) leave
 out a trunk commit whose work a hotfix already took to the target: a
-commit P the target runs is linked to it by hash (P names it, it carries
-`(cherry picked from commit P)`, or a commit of the deploy names both), its
+commit P the target runs is linked to it by hash (P names it, including an
+unambiguous hash prefix of at least seven characters; it carries
+`(cherry picked from commit P)`; or a commit of the deploy names both), its
 linked commits put onto P change nothing outside the version line, and no
 line of what the deploy changes on the target comes from them, from a
 merge or from a revert of the deploy (`git blame`), nor do they remove a
 line the target has, change a binary file or a mode. A pick with no hash
 link is named in the refusal with the way to link it: an empty trunk
-commit naming both hashes.
+commit naming both hashes. Hash links accept a prefix of at least seven
+characters only when it resolves to one commit in the repository and matches
+one commit in the release range.
+
+When replay compares the hotfix port with the linked trunk work, differences
+in `go.mod` are ignored only when they consist solely of version increases
+for requirements already present on both sides and not covered by a replace
+directive. The changed require lines must otherwise be identical, including
+comments and other tokens. Differences in `go.sum` are ignored only when
+they affect those same modules and the old or raised versions. A new require,
+a downgrade, or any other module-file change makes replay fail.
 
 For version checks, a line rewritten by another commit still counts as the
 linked commit's work when the rewritten line came from it. A later version
@@ -2857,13 +2869,17 @@ deploy:
   it names: they pass now, the trunk keeps them, and graft records them
   beside `deployed_sha` (`.withheld`). Every later release checks them with
   its own commits until they pass or a revert takes them out of the trunk.
-  In any deploy, a previously withheld commit that remains reverted in the
-  deployed history and is absent from its tree stays in `.withheld` and is not
+  In any deploy, a previously withheld commit that remains reverted in
+  the deployed history and is absent from its tree stays in `.withheld` and is not
   checked again. Once its change is present in the deployed tree, it is checked
   again. graft matches neither content nor file renames: when a commit of
   another item brings that code back, or it returns under another file name,
   the withheld commit may go unchecked, and the restoring commit passes the
-  usual release rules, exceptions included.
+  usual release rules, exceptions included. When a withheld commit itself is
+  refused, graft names its short hash and the target's `.withheld` file; remove
+  that commit's line there if its change is already on the target. A version
+  refusal names withheld commits only when its failed item is linked to those
+  commits; unrelated or unlinked version refusals have no marker hint.
   Release notes leave out withheld commits and the reverts that withheld
   them; a withheld commit that a later release lets out gets its notes
   there, though it is outside that release's range.

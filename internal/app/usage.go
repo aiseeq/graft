@@ -42,7 +42,7 @@ func bumps(cfg *config.Config) bool {
 // CommitSyntax is the graft commit command line the project allows.
 func CommitSyntax(cfg *config.Config) string {
 	if bumps(cfg) {
-		return "graft commit [--minor|--major] (-m <msg>... | -F <file> | -F -) [--no-deps --reason TEXT] [--no-cache] [--past-load REASON]"
+		return "graft commit [--minor|--major] [--allow-empty] (-m <msg>... | -F <file> | -F -) [--no-deps --reason TEXT] [--no-cache] [--past-load REASON]"
 	}
 	return "graft commit (-m <msg>... | -F <file> | -F -) [--no-deps --reason TEXT] [--no-cache] [--past-load REASON]"
 }
@@ -82,8 +82,10 @@ func commitHowTo(cfg *config.Config) string {
 		line(`graft commit -m "fix: ..."`, "patch version")
 		line(`graft commit --minor -m "feat: ..."`, "minor version")
 		line(`graft commit --major -m "feat!: ..."`, "major version")
+		line(`graft commit --allow-empty -m "chore: link ..."`, "empty link commit without a version bump")
 	} else {
 		line(`graft commit -m "fix: ..."`, "commit")
+		line(`graft commit --allow-empty -m "chore: link ..."`, "empty link commit")
 	}
 	line("graft amend", "fold the work tree into the last, unpushed commit")
 	b.WriteString("graft commit: " + CommitSummary(cfg))

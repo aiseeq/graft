@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/aiseeq/graft/v2/internal/gittest"
+	"github.com/aiseeq/graft/v2/internal/message"
 )
 
 const modulesHoldPath = "example.com/own/lib"
@@ -121,6 +122,28 @@ func useNewerModuleTags(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestAllowEmptyCommitDoesNotRaiseModules(t *testing.T) {
+	root, _ := modulesHoldProject(t)
+	useNewerModuleTags(t)
+	before, _ := moduleFiles(t, root)
+	app := &App{Dir: root, Stdout: io.Discard, Stderr: io.Discard}
+	err := app.Commit(context.Background(), CommitOptions{
+		Message:    message.Source{Parts: []string{"chore: link PROJ-123 source"}},
+		AllowEmpty: true,
+	})
+	if err != nil {
+		t.Fatalf("Commit --allow-empty: %v", err)
+	}
+	after, _ := moduleFiles(t, root)
+	if !bytes.Equal(after, before) {
+		t.Fatalf("allow-empty changed go.mod:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	git := func(args ...string) string { return gittest.Run(t, root, args...) }
+	if tree := git("rev-parse", "HEAD^{tree}"); tree != git("rev-parse", "HEAD^1^{tree}") {
+		t.Fatalf("allow-empty module link changed tree: current %s, parent %s", tree, git("rev-parse", "HEAD^1^{tree}"))
+	}
 }
 
 func moduleFiles(t *testing.T, root string) (goMod, goSum []byte) {

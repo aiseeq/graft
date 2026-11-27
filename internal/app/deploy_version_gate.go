@@ -91,9 +91,6 @@ func (v *releaseVersionCheck) fail(id, message string) bool {
 // including subtasks whose parent is named by the version check.
 func (v *releaseVersionCheck) failItems(id, message string, keys ...string) bool {
 	stop := v.fail(id, message)
-	if !v.collect {
-		return stop
-	}
 	if v.gate.versionItemFailures == nil {
 		v.gate.versionItemFailures = map[string][]string{}
 	}
@@ -426,7 +423,7 @@ func (v *releaseVersionCheck) notInVersion(ctx context.Context, issue jira.Issue
 			msg.WriteString("; " + declareHint(v.gate.gate.declareKeys(issue, remaining, v.selected.Name)))
 		}
 		for _, hint := range contentOnly {
-			fmt.Fprintf(&msg, "; %s has matching content on %s but no hash link; add an empty commit in this range whose message names both hashes (%s and %s)", gitx.Short(hint.commit), gitx.Short(hint.port), gitx.Short(hint.commit), gitx.Short(hint.port))
+			fmt.Fprintf(&msg, "; %s has matching content on %s but no hash link; run graft commit --allow-empty -m %q in this range to link both hashes (%s and %s)", gitx.Short(hint.commit), gitx.Short(hint.port), "chore: link "+issue.Key+" "+gitx.Short(hint.commit)+" "+gitx.Short(hint.port), gitx.Short(hint.commit), gitx.Short(hint.port))
 		}
 	}
 	return msg.String()

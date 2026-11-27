@@ -45,6 +45,8 @@ type App struct {
 	Nested bool
 
 	stats *stats.Recorder
+	// runCommitGate overrides the task runner in focused commit tests.
+	runCommitGate func(context.Context, *gitx.Repo, *config.Config, string, string) error
 }
 
 // lockFile is the lock's name inside the common git directory, shared by all
@@ -199,6 +201,8 @@ func (a *App) gateForMessage(ctx context.Context, repo *gitx.Repo, cfg *config.C
 				failed = append(failed, task)
 			})
 		})
+	} else if a.runCommitGate != nil {
+		gateErr = a.runCommitGate(ctx, repo, cfg, branch, message)
 	} else {
 		gateErr = r.Gate(ctx)
 	}

@@ -88,7 +88,7 @@ func TestPrepareCommitRefusesSmartCommitAfterBranchKey(t *testing.T) {
 					cfg.ReleaseNotes = &config.ReleaseNotes{Jira: &config.JiraNotes{ProjectKeys: test.projects}}
 				}
 			}
-			plan, err := prepareCommit(repo, cfg, test.message, version.Patch)
+			plan, err := prepareCommit(repo, cfg, test.message, version.Patch, false)
 			if test.wantErr == "" {
 				if err != nil {
 					t.Fatalf("prepareCommit: %v", err)
@@ -100,6 +100,76 @@ func TestPrepareCommitRefusesSmartCommitAfterBranchKey(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), test.wantErr) || !strings.Contains(err.Error(), "ticket itself") || !strings.Contains(err.Error(), "without #") {
 				t.Fatalf("prepareCommit error = %v; want Smart Commit refusal with rewrite hint", err)
+			}
+		})
+	}
+}
+
+func TestPrepareCommitAllowEmptyOnlySkipsBumpForCleanTree(t *testing.T) {
+	root := t.TempDir()
+	git := func(args ...string) string { return gittest.Run(t, root, args...) }
+	git("init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "VERSION"), []byte("1.2.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "tracked.txt")
+	git("add", "VERSION")
+	git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "-m", "base")
+	repo, err := gitx.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Version: config.Version{Mode: config.ModeFile, File: "VERSION"}}
+	t.Run("clean empty commit skips version bump", func(t *testing.T) {
+		plan, err := prepareCommit(repo, cfg, "chore: link PROJ-123 source", version.Patch, true)
+		if err != nil {
+			t.Fatalf("prepareCommit: %v", err)
+		}
+		if !plan.allowEmpty || plan.bump.next != nil {
+			t.Fatalf("plan = %+v, want empty commit without version bump", plan)
+		}
+	})
+	for _, tc := range []struct {
+		name  string
+		level version.Level
+		want  string
+	}{{"minor", version.Minor, "1.3.0"}, {"major", version.Major, "2.0.0"}} {
+		t.Run(tc.name+" with work keeps ordinary bump", func(t *testing.T) {
+			if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("changed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			plan, err := prepareCommit(repo, cfg, "feat: PROJ-123 work", tc.level, true)
+			if err != nil {
+				t.Fatalf("prepareCommit: %v", err)
+			}
+			if plan.allowEmpty || plan.bump.next == nil || plan.bump.next.String() != tc.want {
+				t.Fatalf("plan = %+v, want ordinary %s bump", plan, tc.want)
+			}
+			if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("base\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestCommitGateAllowsEmptyResultOnlyWhenRequested(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		empty     bool
+		allow     bool
+		wantAllow bool
+	}{
+		{name: "gate removed all changes", empty: true, allow: false, wantAllow: false},
+		{name: "explicit empty commit", empty: true, allow: true, wantAllow: true},
+		{name: "ordinary non-empty commit", empty: false, allow: false, wantAllow: true},
+		{name: "flag on non-empty commit", empty: false, allow: true, wantAllow: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := commitGateAllowsEmptyResult(tc.empty, tc.allow); got != tc.wantAllow {
+				t.Fatalf("commitGateAllowsEmptyResult(%t, %t) = %t, want %t", tc.empty, tc.allow, got, tc.wantAllow)
 			}
 		})
 	}

@@ -1797,6 +1797,53 @@ func (f *fixVersionRun) failed(key string, err error) {
 	f.unset = append(f.unset, key)
 }
 
+// gateFailureLine formats an approved-release refusal and any withheld marker hint.
+func gateFailureLine(r *deployRun, failure gateFailure, withheld []string) string {
+	line := failure.line()
+	if hint := withheldFailureHint(r, failure.commit.sha, withheld); hint != "" {
+		line += "\n  " + hint
+	}
+	return line
+}
+
+func withheldFailureHint(r *deployRun, sha string, withheld []string) string {
+	if !slices.Contains(withheld, sha) || r == nil || r.target == nil || r.target.DeployedSHA == nil {
+		return ""
+	}
+	path := r.target.DeployedSHA.Path + withheldSuffix
+	if r.env != nil && r.env.Config.SSH != nil && r.env.Config.SSH.Host != "" {
+		path = r.env.Config.SSH.Host + ":" + path
+	}
+	return gitx.Short(sha) + " was withheld from an earlier release: if its change is already on the target, remove its line from " + path + "."
+}
+
+func versionWithheldHints(r *deployRun, g *gateRun, failures []error) []string {
+	if g == nil || len(g.versionItemFailures) == 0 || len(g.withheldByItem) == 0 {
+		return nil
+	}
+	var hints []string
+	seen := map[string]bool{}
+	for _, failure := range failures {
+		message := failure.Error()
+		for _, key := range slices.Sorted(maps.Keys(g.versionItemFailures)) {
+			reasons := g.versionItemFailures[key]
+			if !slices.Contains(reasons, message) {
+				continue
+			}
+			for _, sha := range g.withheldByItem[key] {
+				if seen[sha] {
+					continue
+				}
+				if hint := withheldFailureHint(r, sha, g.markerWithheld); hint != "" {
+					hints = append(hints, hint)
+					seen[sha] = true
+				}
+			}
+		}
+	}
+	return hints
+}
+
 // checkApproved lets out only the commits of checked items: every commit going
 // out names an item in one of the statuses, with an approved version of the
 // prefix, or both, as the target asks. A revert takes nothing new out and
@@ -1831,7 +1878,7 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 	if len(out.failures) > 0 {
 		lines := make([]string, len(out.failures))
 		for i, f := range out.failures {
-			lines[i] = f.line()
+			lines[i] = gateFailureLine(r, f, g.markerWithheld)
 		}
 		id := ""
 		if conf.Version != nil {
@@ -1852,7 +1899,11 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 		}
 	}
 	if conf.Version != nil {
-		failures = append(failures, g.checkReleaseVersion(ctx, r.dryRun)...)
+		versionFailures := g.checkReleaseVersion(ctx, r.dryRun)
+		failures = append(failures, versionFailures...)
+		for _, hint := range versionWithheldHints(r, g, versionFailures) {
+			failures = append(failures, errors.New(hint))
+		}
 	}
 	r.dormantItems = config.UniqueDormant(r.dormantItems, g.dormant)
 	if len(failures) > 0 {
@@ -1917,6 +1968,7 @@ func (a *App) approvalRun(ctx context.Context, r *deployRun) (gateOutcome, *gate
 	if err != nil {
 		return gateOutcome{}, nil, err
 	}
+	g.markerWithheld = slices.Clone(withheld)
 	var deployedPaths map[string]bool
 	if len(withheld) > 0 {
 		if deployedPaths, err = repoPaths(r.repo, r.prev, r.head); err != nil {
@@ -2360,6 +2412,8 @@ type gateRun struct {
 	dormant             []config.DormantReleaseItem
 	collectionErr       error
 	versionItemFailures map[string][]string
+	markerWithheld      []string
+	withheldByItem      map[string][]string
 	// liveVersions are the approved versions of the items without a dormant
 	// entry that go out (prefix without version); outsidePending, the items
 	// let out by an outside_version entry until the run tells whether live
@@ -2498,13 +2552,16 @@ func (g *gateRun) run(ctx context.Context, prev, head string, withheld []string,
 	if err != nil {
 		return out, err
 	}
+	g.withheldByItem = withheldItemsByKey(all, g.markerWithheld, g.keyRe, g.conf)
 	covered := map[string]string{}
 	if g.conf.Version != nil {
 		prior, err := logCommits(g.repo, prev)
 		if err != nil {
 			return out, err
 		}
-		portCommits := notRevertedVersionPortCommits(commits, reverted)
+		// Earlier withheld commits go through the same release version gate as
+		// this range. Include them when resolving links to ports already in prev.
+		portCommits := notRevertedVersionPortCommits(all, reverted)
 		targets := versionTargetsByPath(g.cfg.Version)
 		covered, err = coveredVersionPortsWithPrior(g.repo, prev, head, prior, portCommits, targets)
 		if err != nil {
@@ -2555,6 +2612,19 @@ func (g *gateRun) run(ctx context.Context, prev, head string, withheld []string,
 	}
 	out.dormant = config.UniqueDormant(out.dormant, g.dormant)
 	return out, nil
+}
+
+func withheldItemsByKey(commits []deliveredCommit, markerWithheld []string, keyRe *regexp.Regexp, conf *config.ApprovedRelease) map[string][]string {
+	byItem := map[string][]string{}
+	for _, c := range commits {
+		if !slices.Contains(markerWithheld, c.sha) {
+			continue
+		}
+		for _, key := range itemKeys(keyRe, conf, c) {
+			byItem[key] = append(byItem[key], c.sha)
+		}
+	}
+	return byItem
 }
 
 // linkOutside settles the items let out by an outside_version entry alone,

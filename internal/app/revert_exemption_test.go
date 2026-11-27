@@ -45,7 +45,7 @@ func TestUnknownRevertTargetKeepsMainExemptions(t *testing.T) {
 		Version: config.Version{Mode: config.ModeNone},
 		Ticket:  &config.Ticket{Required: true, Pattern: `PROJ-[0-9]+`, Regexp: regexp.MustCompile(`PROJ-[0-9]+`)},
 	}
-	if _, err := prepareCommit(r.repo, cfg, commit.subject+"\n\n"+commit.body, 0); err != nil {
+	if _, err := prepareCommit(r.repo, cfg, commit.subject+"\n\n"+commit.body, 0, false); err != nil {
 		t.Fatalf("prepareCommit with unknown revert target = %v, want main's exemption", err)
 	}
 	if err := requireTicket(r.repo, cfg, commit.subject+"\n\n"+commit.body, ""); err != nil {
@@ -193,7 +193,7 @@ func TestPrepareCommitChecksSmartCommitOnRevertReturningWork(t *testing.T) {
 	r.writePath("extra.txt", &change)
 	r.git("add", "extra.txt")
 	cfg := &config.Config{Version: config.Version{Mode: config.ModeNone}, Ticket: &config.Ticket{Pattern: `PROJ-[0-9]+`, Regexp: regexp.MustCompile(`PROJ-[0-9]+`)}}
-	_, err := prepareCommit(r.repo, cfg, "revert: restore PROJ-1 #done\n\nThis reverts commit "+commits[1].sha+".", 0)
+	_, err := prepareCommit(r.repo, cfg, "revert: restore PROJ-1 #done\n\nThis reverts commit "+commits[1].sha+".", 0, false)
 	if err == nil || !strings.Contains(err.Error(), "Smart Commit token") {
 		t.Fatalf("prepareCommit error = %v, want Smart Commit refusal", err)
 	}

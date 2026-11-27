@@ -24,6 +24,7 @@ import (
 type CommitOptions struct {
 	Message      message.Source
 	Level        version.Level
+	AllowEmpty   bool
 	NoDeps       bool
 	NoDepsReason string
 }
@@ -66,15 +67,17 @@ func (a *App) Commit(ctx context.Context, opts CommitOptions) error {
 	}
 	a.warnUnversioned(repo, cfg)
 	err = a.withLock(ctx, commitLock(repo, cfg), cfg, "graft commit", func() error {
-		plan, err := prepareCommit(repo, cfg, msg, opts.Level)
+		plan, err := prepareCommit(repo, cfg, msg, opts.Level, opts.AllowEmpty)
 		if err != nil {
 			return err
 		}
 		if err := configureCommitDeps(cfg, &plan, opts); err != nil {
 			return err
 		}
-		if err := a.raiseCommitModules(ctx, repo, cfg, plan.branch); err != nil {
-			return err
+		if !plan.allowEmpty {
+			if err := a.raiseCommitModules(ctx, repo, cfg, plan.branch); err != nil {
+				return err
+			}
 		}
 		if err := a.commit(ctx, repo, cfg, plan); err != nil {
 			return err
@@ -157,9 +160,10 @@ type commitPlan struct {
 	checkDepsRemotes bool
 	noDeps           bool
 	noDepsReason     string
+	allowEmpty       bool
 }
 
-func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level version.Level) (commitPlan, error) {
+func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level version.Level, allowEmpty bool) (commitPlan, error) {
 	var plan commitPlan
 	merge, err := mergeOrNormalContext(repo)
 	if err != nil {
@@ -177,12 +181,18 @@ func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level versio
 	if err != nil {
 		return plan, err
 	}
-	if clean && !merge {
+	// --allow-empty only changes the clean-tree case. If there is work to
+	// commit, prepare the ordinary version bump and gate plan.
+	emptyOK := allowEmpty && clean
+	if clean && !merge && !emptyOK {
 		return plan, errNothingToCommit
 	}
-	bump, err := planBump(repo, cfg, level, branch)
-	if err != nil {
-		return plan, err
+	bump := bumpPlan{cfg: cfg.Version}
+	if !emptyOK {
+		bump, err = planBump(repo, cfg, level, branch)
+		if err != nil {
+			return plan, err
+		}
 	}
 	if cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, branch) {
 		msg = message.WithKey(msg, message.BranchKey(branch, cfg.Ticket.Regexp))
@@ -199,7 +209,7 @@ func prepareCommit(repo *gitx.Repo, cfg *config.Config, msg string, level versio
 			}
 		}
 	}
-	return commitPlan{branch: branch, remotes: remotes, message: msg, bump: bump}, nil
+	return commitPlan{branch: branch, remotes: remotes, message: msg, bump: bump, allowEmpty: emptyOK}, nil
 }
 
 var smartCommitTokenPattern = regexp.MustCompile(`(^|[\s\p{Z}])(#\p{L}[\p{L}\p{N}_-]*)`)
@@ -345,7 +355,11 @@ func (a *App) commit(ctx context.Context, repo *gitx.Repo, cfg *config.Config, p
 			return stagedVersionBumps(repo, cfg, plan.head.sha, paths)
 		})
 	}
-	if _, err := repo.GitInput(strings.NewReader(msg), markerEnv, "commit", "--cleanup=verbatim", "-F", "-"); err != nil {
+	args := []string{"commit", "--cleanup=verbatim", "-F", "-"}
+	if plan.allowEmpty {
+		args = append(args, "--allow-empty")
+	}
+	if _, err := repo.GitInput(strings.NewReader(msg), markerEnv, args...); err != nil {
 		if rollbackJournal != nil {
 			err = errors.Join(err, rollbackJournal())
 		}
@@ -393,7 +407,7 @@ func (a *App) prepareCommitGate(ctx context.Context, repo *gitx.Repo, cfg *confi
 	if err != nil {
 		return nil, nil, nil, restoreBeforeGate(err)
 	}
-	if empty {
+	if !commitGateAllowsEmptyResult(empty, plan.allowEmpty) {
 		return nil, nil, nil, restoreBeforeGate(errGateLeftHead)
 	}
 	if cfg.Ticket != nil && !config.BranchMatches(cfg.Ticket.Skip, plan.branch) {
@@ -690,6 +704,10 @@ func gateLeftHead(repo *gitx.Repo, head headState) (bool, error) {
 		return false, nil
 	}
 	return stagedIs(repo, head.tree)
+}
+
+func commitGateAllowsEmptyResult(empty, allowEmpty bool) bool {
+	return !empty || allowEmpty
 }
 
 // stagedIs says whether the staged tree is tree.

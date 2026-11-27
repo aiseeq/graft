@@ -1253,6 +1253,7 @@ func commitCmd(ctx context.Context, a *app.App, args []string) error {
 	fs.Var(&parts, "m", "commit message paragraph (repeatable)")
 	file := fs.String("F", "", "read the commit message from a file, - for stdin")
 	noDeps := fs.Bool("no-deps", false, "skip merge.deps on trunk (requires --reason)")
+	allowEmpty := fs.Bool("allow-empty", false, "make an empty commit without a version bump")
 	noDepsReason := fs.String("reason", "", "reason for skipping merge.deps")
 	pastLoad := fs.String("past-load", "", "pass CPU load limits with a reference to the user's authorization")
 	level := levelFlags(fs)
@@ -1276,7 +1277,7 @@ func commitCmd(ctx context.Context, a *app.App, args []string) error {
 	}
 	return a.Commit(ctx, app.CommitOptions{
 		Message: message.Source{Parts: parts, File: *file, Stdin: a.Stdin},
-		Level:   lvl, NoDeps: *noDeps, NoDepsReason: *noDepsReason,
+		Level:   lvl, AllowEmpty: *allowEmpty, NoDeps: *noDeps, NoDepsReason: *noDepsReason,
 	})
 }
 

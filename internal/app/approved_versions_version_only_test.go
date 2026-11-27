@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,18 +34,7 @@ func TestVersionOnlyGateLeavesApprovedVersionsAsBefore(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	configRoot := t.TempDir()
-	envFile := filepath.Join(t.TempDir(), "jira.env")
-	if err := os.WriteFile(envFile, []byte("JIRA_BASE_URL="+server.URL+"\nJIRA_EMAIL=synthetic@example.invalid\nJIRA_API_TOKEN="+"synthetic"+"-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(configRoot, "graft"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(configRoot, "graft", "config.yaml"), []byte("jira:\n  env_file: "+envFile+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	setJiraTestEnv(t, server.URL)
 
 	repo, cfg, _ := freezeTrunkFixture(t)
 	prev := strings.TrimSpace(freezeGit(t, repo.Root, "rev-parse", "HEAD"))

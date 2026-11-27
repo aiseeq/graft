@@ -16,6 +16,8 @@ import (
 	"github.com/aiseeq/graft/v2/internal/userconfig"
 	"github.com/aiseeq/graft/v2/internal/version"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
+	"golang.org/x/mod/semver"
 )
 
 type versionPortHint struct {
@@ -70,6 +72,11 @@ func coveredVersionPortsWithPrior(repo *gitx.Repo, prev, head string, prior, com
 	for i, c := range ordered {
 		commitOrder[c.sha] = i
 	}
+	for i, c := range commits {
+		if _, ok := commitOrder[c.sha]; !ok {
+			commitOrder[c.sha] = len(ordered) + i
+		}
+	}
 	for _, port := range slices.Sorted(maps.Keys(groups)) {
 		group := make([]deliveredCommit, 0, len(groups[port]))
 		for _, c := range groups[port] {
@@ -120,10 +127,10 @@ func linkedVersionPortGroups(repo *gitx.Repo, prev string, prior, commits []deli
 		}
 		groups[port][c.sha] = c
 	}
-	if err := addSourcesNamedByPorts(prior, commits, add); err != nil {
+	if err := addSourcesNamedByPorts(repo, prior, commits, add); err != nil {
 		return nil, err
 	}
-	if err := addSourcesNamingPort(prior, commits, add); err != nil {
+	if err := addSourcesNamingPort(repo, prior, commits, add); err != nil {
 		return nil, err
 	}
 	if err := addExplicitVersionPortLinks(repo, prev, commits, add); err != nil {
@@ -132,8 +139,7 @@ func linkedVersionPortGroups(repo *gitx.Repo, prev string, prior, commits []deli
 	return groups, nil
 }
 
-func addSourcesNamingPort(prior, commits []deliveredCommit, add func(string, deliveredCommit)) error {
-	trailer := regexp.MustCompile(`(?m)^\(cherry picked from commit ([0-9a-fA-F]{7,40})\)$`)
+func addSourcesNamingPort(repo *gitx.Repo, prior, commits []deliveredCommit, add func(string, deliveredCommit)) error {
 	byPrefix := map[string][]deliveredCommit{}
 	for _, p := range prior {
 		for n := 7; n <= len(p.sha); n++ {
@@ -141,9 +147,17 @@ func addSourcesNamingPort(prior, commits []deliveredCommit, add func(string, del
 		}
 	}
 	for _, c := range commits {
-		for _, m := range trailer.FindAllStringSubmatch(c.body, -1) {
-			for _, p := range byPrefix[m[1]] {
-				add(p.sha, c)
+		for _, hash := range gitx.CommitHashes(c.subject + "\n" + c.body) {
+			matches := byPrefix[hash]
+			if len(matches) != 1 {
+				continue
+			}
+			resolved, ok, err := uniqueCommitPrefix(repo, hash)
+			if err != nil {
+				return err
+			}
+			if ok && resolved == matches[0].sha {
+				add(matches[0].sha, c)
 			}
 		}
 	}
@@ -272,12 +286,21 @@ func versionPortStillPresent(repo *gitx.Repo, port, prev string, targets map[str
 	return changed > 0, nil
 }
 
-func addSourcesNamedByPorts(prior, commits []deliveredCommit, add func(string, deliveredCommit)) error {
+func addSourcesNamedByPorts(repo *gitx.Repo, prior, commits []deliveredCommit, add func(string, deliveredCommit)) error {
+	sourcesByPrefix := versionPortSourcesByPrefix(commits)
 	for _, port := range prior {
 		message := port.subject + "\n" + port.body
-		for _, c := range commits {
-			if gitx.NamesCommit(message, c.sha) {
-				add(port.sha, c)
+		for _, hash := range gitx.CommitHashes(message) {
+			matches := sourcesByPrefix[hash]
+			if len(matches) != 1 {
+				continue
+			}
+			resolved, ok, err := uniqueCommitPrefix(repo, hash)
+			if err != nil {
+				return err
+			}
+			if ok && resolved == matches[0].sha {
+				add(port.sha, matches[0])
 			}
 		}
 	}
@@ -293,25 +316,23 @@ func addExplicitVersionPortLinks(repo *gitx.Repo, prev string, commits []deliver
 		var ports []string
 		var sources []deliveredCommit
 		for _, hash := range gitx.CommitHashes(message) {
-			sources = append(sources, sourcesByPrefix[hash]...)
-			ok, err := repo.RevExists(hash)
+			matches := sourcesByPrefix[hash]
+			resolved, ok, err := uniqueCommitPrefix(repo, hash)
 			if err != nil {
 				return err
 			}
 			if !ok {
 				continue
 			}
-			resolved, err := repo.Git("rev-parse", "--verify", "--quiet", hash+"^{commit}")
-			if err != nil {
-				return fmt.Errorf("resolving explicit port link %s: %w", hash, err)
+			if len(matches) == 1 && resolved == matches[0].sha {
+				sources = append(sources, matches[0])
 			}
-			port := strings.TrimSpace(resolved)
-			ancestor, err := repo.IsAncestor(port, prev)
+			ancestor, err := repo.IsAncestor(resolved, prev)
 			if err != nil {
 				return err
 			}
 			if ancestor {
-				ports = append(ports, port)
+				ports = append(ports, resolved)
 			}
 		}
 		if len(ports) == 0 {
@@ -322,8 +343,41 @@ func addExplicitVersionPortLinks(repo *gitx.Repo, prev string, commits []deliver
 				add(port, source)
 			}
 		}
+		if len(sources) > 0 {
+			// The hash-bearing note is part of the link: it may be a
+			// version-only commit and must not be reconsidered as unlinked
+			// content for the same task.
+			for _, port := range slices.Compact(ports) {
+				add(port, link)
+			}
+		}
 	}
 	return nil
+}
+
+// uniqueCommitPrefix resolves a hash-like message token only when it names
+// exactly one commit object in the repository. rev-parse's usual abbreviation
+// resolution can prefer refs, so disambiguate scans the object database.
+func uniqueCommitPrefix(repo *gitx.Repo, prefix string) (string, bool, error) {
+	out, err := repo.Git("rev-parse", "--disambiguate="+prefix)
+	if err != nil {
+		return "", false, fmt.Errorf("disambiguating commit prefix %s: %w", prefix, err)
+	}
+	var match string
+	for object := range strings.FieldsSeq(out) {
+		typeName, err := repo.Git("cat-file", "-t", object)
+		if err != nil {
+			return "", false, fmt.Errorf("reading object type for commit prefix %s: %w", prefix, err)
+		}
+		if strings.TrimSpace(typeName) != "commit" {
+			continue
+		}
+		if match != "" {
+			return "", false, nil
+		}
+		match = object
+	}
+	return match, match != "", nil
 }
 
 func versionPortSourcesByPrefix(commits []deliveredCommit) map[string][]deliveredCommit {
@@ -1101,7 +1155,7 @@ func mergePortCommit(repo *gitx.Repo, env []string, ontoTree, commit, mergeBase 
 
 func mergeVersionPortConflict(repo *gitx.Repo, env []string, ontoTree, commit, mergeBase string, lines []string, targets map[string][]version.Target) (string, bool, error) {
 	for _, file := range lines[1:] {
-		if file != "" && len(targets[file]) == 0 {
+		if file != "" && len(targets[file]) == 0 && file != "go.mod" && file != "go.sum" {
 			return lines[0], false, nil
 		}
 	}
@@ -1129,7 +1183,11 @@ func mergeVersionPortConflict(repo *gitx.Repo, env []string, ontoTree, commit, m
 	if err != nil {
 		return "", false, err
 	}
-	if !allVersionTargetsExist(onto, targets) || !allVersionTargetsExist(source, targets) || !onBase || !sourceOnBase || !treesEqualOutsideVersionFiles(onto, merged, targets) {
+	equal, equalErr := treesEqualOutsideVersionFiles(repo, env, onto, merged, targets)
+	if equalErr != nil {
+		return "", false, equalErr
+	}
+	if !allVersionTargetsExist(onto, targets) || !allVersionTargetsExist(source, targets) || !onBase || !sourceOnBase || !equal {
 		return lines[0], false, nil
 	}
 	return ontoTree, true, nil
@@ -1168,16 +1226,20 @@ func mergeVersionPortClean(repo *gitx.Repo, env []string, commit, mergeBase, mer
 	return mergedID, false, nil
 }
 
-func treesEqualOutsideVersionFiles(a, b map[string]versionTreeEntry, targets map[string][]version.Target) bool {
+func treesEqualOutsideVersionFiles(repo *gitx.Repo, env []string, a, b map[string]versionTreeEntry, targets map[string][]version.Target) (bool, error) {
+	moduleFiles, err := versionPortModuleFilesCanDiffer(repo, env, a, b)
+	if err != nil || !moduleFiles {
+		return false, err
+	}
 	for file := range unionTreePaths(a, b) {
-		if len(targets[file]) > 0 {
+		if len(targets[file]) > 0 || moduleFiles && (file == "go.mod" || file == "go.sum") {
 			continue
 		}
 		if !treeEntriesEqual(a[file], a[file] != (versionTreeEntry{}), b[file], b[file] != (versionTreeEntry{})) {
-			return false
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
 func allVersionTargetsExist(tree map[string]versionTreeEntry, targets map[string][]version.Target) bool {
@@ -1247,36 +1309,216 @@ func treesEqualExceptVersionEnv(repo *gitx.Repo, a, b map[string]versionTreeEntr
 	if len(env) > 0 {
 		git = func(args ...string) (string, error) { return repo.GitEnv(env, args...) }
 	}
+	moduleFiles, err := versionPortModuleFilesCanDifferWithGit(git, a, b)
+	if err != nil || !moduleFiles {
+		return false, err
+	}
 	for file := range unionTreePaths(a, b) {
 		aa, aok := a[file]
 		bb, bok := b[file]
 		if treeEntriesEqual(aa, aok, bb, bok) {
 			continue
 		}
-		if !aok || !bok || aa.kind != "blob" || bb.kind != "blob" || aa.mode != bb.mode || len(targets[file]) == 0 {
+		if !aok || !bok || aa.kind != "blob" || bb.kind != "blob" || aa.mode != bb.mode || (len(targets[file]) == 0 && !(moduleFiles && (file == "go.mod" || file == "go.sum"))) {
 			return false, nil
 		}
-		ac, e := git("cat-file", "blob", aa.oid)
-		if e != nil {
-			return false, fmt.Errorf("reading version-target blob %q: %w", file, e)
+		if len(targets[file]) == 0 {
+			continue
 		}
-		bc, e := git("cat-file", "blob", bb.oid)
-		if e != nil {
-			return false, fmt.Errorf("reading version-target blob %q: %w", file, e)
+		equal, err := versionTargetBlobsEqual(git, file, aa, bb, targets[file])
+		if err != nil {
+			return false, err
 		}
-		for _, target := range targets[file] {
-			acb, e := target.Replace([]byte(ac), "__GRAFT_VERSION_VALUE__")
-			if e != nil {
-				return false, e
-			}
-			bcb, e := target.Replace([]byte(bc), "__GRAFT_VERSION_VALUE__")
-			if e != nil {
-				return false, e
-			}
-			ac = string(acb)
-			bc = string(bcb)
+		if !equal {
+			return false, nil
 		}
-		if ac != bc {
+	}
+	return true, nil
+}
+
+func versionTargetBlobsEqual(git func(...string) (string, error), file string, a, b versionTreeEntry, targets []version.Target) (bool, error) {
+	ac, err := git("cat-file", "blob", a.oid)
+	if err != nil {
+		return false, fmt.Errorf("reading version-target blob %q: %w", file, err)
+	}
+	bc, err := git("cat-file", "blob", b.oid)
+	if err != nil {
+		return false, fmt.Errorf("reading version-target blob %q: %w", file, err)
+	}
+	for _, target := range targets {
+		acb, err := target.Replace([]byte(ac), "__GRAFT_VERSION_VALUE__")
+		if err != nil {
+			return false, err
+		}
+		bcb, err := target.Replace([]byte(bc), "__GRAFT_VERSION_VALUE__")
+		if err != nil {
+			return false, err
+		}
+		ac = string(acb)
+		bc = string(bcb)
+	}
+	return ac == bc, nil
+}
+
+type versionPortModuleUpgrade struct{ before, after string }
+
+func versionPortModuleFilesCanDiffer(repo *gitx.Repo, env []string, a, b map[string]versionTreeEntry) (bool, error) {
+	git := repo.Git
+	if len(env) > 0 {
+		git = func(args ...string) (string, error) { return repo.GitEnv(env, args...) }
+	}
+	return versionPortModuleFilesCanDifferWithGit(git, a, b)
+}
+
+func versionPortModuleFilesCanDifferWithGit(git func(...string) (string, error), a, b map[string]versionTreeEntry) (bool, error) {
+	upgrades, ok, err := versionPortGoModUpgrades(git, a, b)
+	if err != nil || !ok {
+		return false, err
+	}
+	return versionPortGoSumMatches(git, a, b, upgrades)
+}
+
+func versionPortGoModUpgrades(git func(...string) (string, error), a, b map[string]versionTreeEntry) (map[string]versionPortModuleUpgrade, bool, error) {
+	modA, modAOK := a["go.mod"]
+	modB, modBOK := b["go.mod"]
+	if treeEntriesEqual(modA, modAOK, modB, modBOK) {
+		return map[string]versionPortModuleUpgrade{}, true, nil
+	}
+	if !modAOK || !modBOK || modA.kind != "blob" || modB.kind != "blob" || modA.mode != modB.mode {
+		return nil, false, nil
+	}
+	before, err := git("cat-file", "blob", modA.oid)
+	if err != nil {
+		return nil, false, fmt.Errorf("reading replay go.mod: %w", err)
+	}
+	after, err := git("cat-file", "blob", modB.oid)
+	if err != nil {
+		return nil, false, fmt.Errorf("reading replay go.mod: %w", err)
+	}
+	upgrades, ok, err := versionPortModuleRaisesOnly(before, after)
+	if err != nil {
+		return nil, false, fmt.Errorf("parsing replay go.mod: %w", err)
+	}
+	return upgrades, ok && len(upgrades) > 0, nil
+}
+
+func versionPortGoSumMatches(git func(...string) (string, error), a, b map[string]versionTreeEntry, upgrades map[string]versionPortModuleUpgrade) (bool, error) {
+	sumA, sumAOK := a["go.sum"]
+	sumB, sumBOK := b["go.sum"]
+	if !treeEntriesEqual(sumA, sumAOK, sumB, sumBOK) {
+		if !sumAOK || !sumBOK || sumA.kind != "blob" || sumB.kind != "blob" || sumA.mode != sumB.mode || len(upgrades) == 0 {
+			return false, nil
+		}
+		before, err := git("cat-file", "blob", sumA.oid)
+		if err != nil {
+			return false, fmt.Errorf("reading replay go.sum: %w", err)
+		}
+		after, err := git("cat-file", "blob", sumB.oid)
+		if err != nil {
+			return false, fmt.Errorf("reading replay go.sum: %w", err)
+		}
+		matches, err := versionPortGoSumChangesOnlyForUpgrades(before, after, upgrades)
+		if err != nil {
+			return false, fmt.Errorf("checking replay go.sum: %w", err)
+		}
+		if !matches {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func versionPortModuleRaisesOnly(before, after string) (map[string]versionPortModuleUpgrade, bool, error) {
+	base, err := modfile.Parse("go.mod", []byte(before), nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("parsing previous go.mod: %w", err)
+	}
+	next, err := modfile.Parse("go.mod", []byte(after), nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("parsing replayed go.mod: %w", err)
+	}
+	baseLines, nextLines := strings.Split(before, "\n"), strings.Split(after, "\n")
+	if len(baseLines) != len(nextLines) {
+		return nil, false, nil
+	}
+	replaced := map[string]bool{}
+	for _, rep := range append(slices.Clone(base.Replace), next.Replace...) {
+		replaced[rep.Old.Path] = true
+	}
+	oldReqs, newReqs := map[string]modfile.Require{}, map[string]modfile.Require{}
+	for _, req := range base.Require {
+		oldReqs[req.Mod.Path] = *req
+	}
+	for _, req := range next.Require {
+		newReqs[req.Mod.Path] = *req
+	}
+	upgrades := map[string]versionPortModuleUpgrade{}
+	for i := range baseLines {
+		if baseLines[i] == nextLines[i] {
+			continue
+		}
+		line := i + 1
+		path, oldReq, newReq, found := versionPortRequirementAtLine(oldReqs, newReqs, line)
+		if !found || replaced[path] || !versionPortValidRaise(oldReq, newReq) || !versionPortOnlyRaises(baseLines[i], nextLines[i], oldReq, newReq) {
+			return nil, false, nil
+		}
+		upgrades[path] = versionPortModuleUpgrade{before: oldReq, after: newReq}
+	}
+	if len(upgrades) == 0 {
+		return nil, false, nil
+	}
+	return upgrades, true, nil
+}
+
+func versionPortRequirementAtLine(oldReqs, newReqs map[string]modfile.Require, line int) (string, string, string, bool) {
+	for _, path := range slices.Sorted(maps.Keys(oldReqs)) {
+		req := oldReqs[path]
+		if req.Syntax.Start.Line != line {
+			continue
+		}
+		new, ok := newReqs[path]
+		if !ok || new.Syntax.Start.Line != line {
+			return "", "", "", false
+		}
+		return path, req.Mod.Version, new.Mod.Version, true
+	}
+	return "", "", "", false
+}
+
+func versionPortValidRaise(oldVersion, newVersion string) bool {
+	return semver.IsValid(oldVersion) && semver.IsValid(newVersion) && semver.Compare(newVersion, oldVersion) > 0
+}
+
+func versionPortGoSumChangesOnlyForUpgrades(before, after string, upgrades map[string]versionPortModuleUpgrade) (bool, error) {
+	counts := map[string]int{}
+	for line := range strings.SplitSeq(before, "\n") {
+		if line != "" {
+			counts[line]++
+		}
+	}
+	for line := range strings.SplitSeq(after, "\n") {
+		if line != "" {
+			counts[line]--
+		}
+	}
+	for line, count := range counts {
+		if count == 0 {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			return false, nil
+		}
+		path, err := module.UnescapePath(fields[0])
+		if err != nil {
+			return false, fmt.Errorf("unescaping go.sum module path: %w", err)
+		}
+		change, ok := upgrades[path]
+		if !ok {
+			return false, nil
+		}
+		version := strings.TrimSuffix(fields[1], "/go.mod")
+		if version != change.before && version != change.after {
 			return false, nil
 		}
 	}

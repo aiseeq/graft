@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha1"
 	"fmt"
 	"os"
 	"os/exec"
@@ -232,6 +233,353 @@ func TestCoveredVersionPortsAcceptsSingleTransferWithVersionConflict(t *testing.
 	}
 }
 
+func TestLinkedVersionPortGroupsAcceptsShortHashMention(t *testing.T) {
+	r, base := versionPortRepo(t)
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll("port source")
+	r.git("checkout", "-q", "-b", "source", base)
+	r.writePath("work.txt", new("fixed\n"))
+	source := r.commitAll("fix: PROJ-1 source references port " + port[:7])
+	r.git("checkout", "-q", "release")
+	r.git("merge", "-q", "--no-ff", "-m", "merge source", "source")
+	head := r.head()
+	commits, err := deliveredCommits(r.repo, port, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior, err := logCommits(r.repo, port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := linkedVersionPortGroups(r.repo, port, prior, commits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := groups[port][source]; !ok {
+		t.Fatalf("short hash mention did not link source to port: %#v", groups)
+	}
+}
+
+func TestLinkedVersionPortGroupsRejectsAmbiguousShortHashMention(t *testing.T) {
+	const prefix = "abcdef0"
+	r, _ := versionPortRepo(t)
+	prior := []deliveredCommit{
+		{sha: prefix + strings.Repeat("1", 33)},
+		{sha: prefix + strings.Repeat("2", 33)},
+	}
+	commits := []deliveredCommit{{sha: strings.Repeat("3", 40), subject: "port mentions " + prefix}}
+	linked := false
+	err := addSourcesNamingPort(r.repo, prior, commits, func(string, deliveredCommit) { linked = true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linked {
+		t.Fatal("ambiguous seven-character hash mention linked a source")
+	}
+}
+
+func TestExplicitVersionPortLinkRejectsPrefixAmbiguousInReleaseRange(t *testing.T) {
+	r, base := versionPortRepo(t)
+	source := versionPortCommit(r, "fixed\n", "2\n", "fix: PROJ-123 source")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll("port source")
+	r.git("checkout", "-q", source)
+	r.git("commit", "--allow-empty", "-qm", "link "+source[:7]+" to "+port)
+	link := r.head()
+	fake := deliveredCommit{sha: source[:7] + strings.Repeat("f", len(source)-7)}
+	commits := []deliveredCommit{{sha: source}, fake, {sha: link, subject: "link " + source[:7] + " to " + port}}
+	groups := map[string]map[string]deliveredCommit{}
+	add := func(port string, c deliveredCommit) {
+		if groups[port] == nil {
+			groups[port] = map[string]deliveredCommit{}
+		}
+		groups[port][c.sha] = c
+	}
+	if err := addExplicitVersionPortLinks(r.repo, port, commits, add); err != nil {
+		t.Fatal(err)
+	}
+	if len(groups[port]) != 0 {
+		t.Fatalf("ambiguous sample prefix linked commits: %#v", groups[port])
+	}
+}
+
+func TestUniqueCommitPrefixRejectsAmbiguousRepositoryObjects(t *testing.T) {
+	r, _ := versionPortRepo(t)
+	tree, err := r.repo.Git("rev-parse", "HEAD^{tree}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree = strings.TrimSpace(tree)
+	seen := map[string]string{}
+	var first, second, prefix string
+	for i := range 100_000 {
+		content := fmt.Sprintf("tree %s\nauthor Test <test@example.invalid> 0 +0000\ncommitter Test <test@example.invalid> 0 +0000\n\nsynthetic %06d\n", tree, i)
+		header := fmt.Sprintf("commit %d\x00%s", len(content), content)
+		sum := sha1.Sum([]byte(header))
+		objectID := fmt.Sprintf("%x", sum)
+		if prior, ok := seen[objectID[:7]]; ok {
+			first, second, prefix = prior, content, objectID[:7]
+			break
+		}
+		seen[objectID[:7]] = content
+	}
+	if prefix == "" {
+		t.Fatal("did not find a synthetic seven-character object prefix collision")
+	}
+	var objectIDs []string
+	for _, content := range []string{first, second} {
+		out, err := r.repo.GitInput(strings.NewReader(content), nil, "hash-object", "-t", "commit", "-w", "--stdin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(strings.TrimSpace(out), prefix) {
+			t.Fatalf("stored object %s does not match synthetic prefix %s", strings.TrimSpace(out), prefix)
+		}
+		objectIDs = append(objectIDs, strings.TrimSpace(out))
+	}
+	if resolved, ok, err := uniqueCommitPrefix(r.repo, prefix); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatalf("ambiguous repository prefix resolved to %s", resolved)
+	}
+	link := deliveredCommit{sha: strings.Repeat("e", 40), subject: "link " + prefix + " to " + strings.TrimSpace(strings.TrimSpace(r.head()))}
+	groups := map[string]map[string]deliveredCommit{}
+	add := func(port string, c deliveredCommit) {
+		if groups[port] == nil {
+			groups[port] = map[string]deliveredCommit{}
+		}
+		groups[port][c.sha] = c
+	}
+	if err := addExplicitVersionPortLinks(r.repo, r.head(), []deliveredCommit{{sha: objectIDs[0]}, link}, add); err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 0 {
+		t.Fatalf("repository-ambiguous source prefix created a link: %#v", groups)
+	}
+}
+
+func TestExplicitVersionPortLinkAddsVersionOnlyLinkCommitToGroup(t *testing.T) {
+	r, base := versionPortRepo(t)
+	source := versionPortCommit(r, "fixed\n", "2\n", "fix: PROJ-123 source")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll("port source")
+	r.git("checkout", "-q", source)
+	r.git("commit", "--allow-empty", "-qm", "link "+source[:12]+" to "+port[:12])
+	link := r.head()
+	groups := map[string]map[string]deliveredCommit{}
+	add := func(port string, c deliveredCommit) {
+		if groups[port] == nil {
+			groups[port] = map[string]deliveredCommit{}
+		}
+		groups[port][c.sha] = c
+	}
+	linkCommit := deliveredCommit{sha: link, subject: "link " + source[:12] + " to " + port[:12]}
+	if err := addExplicitVersionPortLinks(r.repo, port, []deliveredCommit{{sha: source}, linkCommit}, add); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := groups[port][link]; !ok {
+		t.Fatalf("version-only link commit was not added to its port group: %#v", groups[port])
+	}
+}
+
+func TestCoveredVersionPortIgnoresModuleFilesDuringReplay(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "graft"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	settings := "modules:\n  latest: [example.com/own/]\n"
+	if err := os.WriteFile(filepath.Join(configHome, "graft", "config.yaml"), []byte(settings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := newEmptyWithheldRepo(t)
+	mod := func(v string) string {
+		return "module example.com/test\n\ngo 1.23\n\nrequire example.com/own/mod " + v + "\n"
+	}
+	r.writePath("work.txt", new("before\n"))
+	r.writePath("go.mod", new(mod("v1.0.0")))
+	r.writePath("go.sum", new("example.com/own/mod v1.0.0 h1:old\n"))
+	r.writePath("VERSION", new("1\n"))
+	base := r.commitAll("base")
+	r.git("checkout", "-q", "-b", "source", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("go.mod", new(mod("v1.1.0")))
+	r.writePath("go.sum", new("example.com/own/mod v1.1.0 h1:new\n"))
+	r.writePath("VERSION", new("2\n"))
+	source := r.commitAll("fix: PROJ-1 source")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll("port source " + source)
+	r.git("checkout", "-q", "-b", "deploy", port)
+	r.writePath("go.mod", new(mod("v1.1.0")))
+	r.writePath("go.sum", new("example.com/own/mod v1.1.0 h1:new\n"))
+	prev := r.commitAll("chore: module upgrade")
+	portCommits, err := deliveredCommits(r.repo, port, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior, err := logCommits(r.repo, prev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := linkedVersionPortGroups(r.repo, prev, prior, portCommits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := []deliveredCommit{groups[port][source]}
+	replayed, err := replayVersionPortGroup(r.repo, port, group, versionPortTargets("VERSION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replayed {
+		t.Fatal("module-only replay differences rejected")
+	}
+	covered := versionPortCovered(t, r, prev, source)
+	if covered[source] != port {
+		t.Fatalf("module-only replay differences prevented coverage: %#v", covered)
+	}
+}
+
+func TestReplayRejectsNewOrLoweredGoModuleRequirement(t *testing.T) {
+	for _, tc := range []struct {
+		name, before, after, beforeSum, afterSum string
+	}{
+		{
+			name:      "new require",
+			before:    "module example.com/test\n\ngo 1.23\n\nrequire example.com/own/mod v1.0.0\n",
+			after:     "module example.com/test\n\ngo 1.23\n\nrequire example.com/own/mod v1.0.0\nrequire example.com/new/mod v1.0.0\n",
+			beforeSum: "example.com/own/mod v1.0.0 h1:old\n",
+			afterSum:  "example.com/own/mod v1.0.0 h1:old\n",
+		},
+		{
+			name:      "downgrade",
+			before:    "module example.com/test\n\ngo 1.23\n\nrequire example.com/own/mod v1.2.0\n",
+			after:     "module example.com/test\n\ngo 1.23\n\nrequire example.com/own/mod v1.1.0\n",
+			beforeSum: "example.com/own/mod v1.2.0 h1:old\n",
+			afterSum:  "example.com/own/mod v1.2.0 h1:old\n",
+		},
+		{
+			name:      "require directive comment changed",
+			before:    "module example.com/test\n\ngo 1.23\n\nrequire example.com/own/mod v1.0.0 // indirect\n",
+			after:     "module example.com/test\n\ngo 1.23\n\nrequire example.com/own/mod v1.1.0 // direct\n",
+			beforeSum: "example.com/own/mod v1.0.0 h1:old\n",
+			afterSum:  "example.com/own/mod v1.1.0 h1:new\n",
+		},
+		{
+			name:      "replaced require",
+			before:    "module example.com/test\n\ngo 1.23\n\nrequire example.com/own/mod v1.0.0\n\nreplace example.com/own/mod => example.com/fork/mod v1.0.0\n",
+			after:     "module example.com/test\n\ngo 1.23\n\nrequire example.com/own/mod v1.1.0\n\nreplace example.com/own/mod => example.com/fork/mod v1.0.0\n",
+			beforeSum: "example.com/own/mod v1.0.0 h1:old\n",
+			afterSum:  "example.com/own/mod v1.1.0 h1:new\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newEmptyWithheldRepo(t)
+			r.writePath("go.mod", new(tc.before))
+			r.writePath("go.sum", new(tc.beforeSum))
+			r.writePath("work.txt", new("before\n"))
+			r.writePath("VERSION", new("1\n"))
+			base := r.commitAll("base")
+			r.git("checkout", "-q", "-b", "source", base)
+			r.writePath("go.mod", new(tc.after))
+			r.writePath("go.sum", new(tc.afterSum))
+			r.writePath("work.txt", new("fixed\n"))
+			r.writePath("VERSION", new("2\n"))
+			source := r.commitAll("fix: PROJ-123 change modules")
+			beforeTree, err := versionBlobTree(r.repo, base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterTree, err := versionBlobTree(r.repo, source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			moduleFilesDiffer, err := versionPortModuleFilesCanDiffer(r.repo, nil, beforeTree, afterTree)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if moduleFilesDiffer {
+				t.Fatal("non-mechanical module change was accepted as a version raise")
+			}
+			r.git("checkout", "-q", "-b", "release", base)
+			r.writePath("work.txt", new("fixed\n"))
+			r.writePath("VERSION", new("9\n"))
+			port := r.commitAll("port source " + source)
+			replayed, err := replayVersionPortGroup(r.repo, port, []deliveredCommit{{sha: source}}, versionPortTargets("VERSION"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if replayed {
+				t.Fatal("non-mechanical module change was ignored during replay")
+			}
+		})
+	}
+}
+
+func TestReplayVersionConflictReadsAutoMergedModulesFromReplayEnvironment(t *testing.T) {
+	r := newEmptyWithheldRepo(t)
+	mod := func(a, b string) string {
+		return "module example.com/test\n\ngo 1.23\n\nrequire example.com/a " + a + "\n\n// independent requirement\nrequire example.com/b " + b + "\n"
+	}
+	r.writePath("go.mod", new(mod("v1.0.0", "v1.0.0")))
+	r.writePath("go.sum", new("example.com/a v1.0.0 h1:old-a\n\nexample.com/b v1.0.0 h1:old-b\n"))
+	r.writePath("VERSION", new("1\n"))
+	base := r.commitAll("base")
+	r.git("checkout", "-q", "-b", "source", base)
+	r.writePath("go.mod", new(mod("v1.1.0", "v1.0.0")))
+	r.writePath("go.sum", new("example.com/a v1.1.0 h1:new-a\n\nexample.com/b v1.0.0 h1:old-b\n"))
+	r.writePath("VERSION", new("2\n"))
+	source := r.commitAll("fix: PROJ-123 module a")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("go.mod", new(mod("v1.0.0", "v1.1.0")))
+	r.writePath("go.sum", new("example.com/a v1.0.0 h1:old-a\n\nexample.com/b v1.1.0 h1:new-b\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll("port module b")
+	unchanged, err := replayVersionPortGroup(r.repo, port, []deliveredCommit{{sha: source}}, versionPortTargets("VERSION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !unchanged {
+		t.Fatal("VERSION-only conflict with an auto-merged module upgrade should replay cleanly")
+	}
+}
+
+func TestCoveredVersionPortAcceptsTwelveCharacterExplicitLink(t *testing.T) {
+	r, base := versionPortRepo(t)
+	r.git("checkout", "-q", "-b", "source", base)
+	r.writePath("work.txt", new("fixed\n"))
+	source := r.commitAll("fix: PROJ-1 source")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll("port")
+	r.git("merge", "-q", "--no-ff", "-m", "merge source", "source")
+	r.writePath("VERSION", new("10\n"))
+	r.git("commit", "-qam", "chore: link source "+source[:12]+" port "+port[:12])
+	head := r.head()
+	commits, err := deliveredCommits(r.repo, port, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	covered, err := coveredVersionPorts(r.repo, port, head, commits, versionPortTargets("VERSION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if covered[source] != port {
+		t.Fatalf("explicit twelve-character link did not cover source: %#v", covered)
+	}
+	if covered[head] != port {
+		t.Fatalf("version-only link note was not treated as covered metadata: %#v", covered)
+	}
+}
+
 func TestCoveredVersionPortsRejectsConflictWithNonVersionSyncChange(t *testing.T) {
 	r := newEmptyWithheldRepo(t)
 	r.writePath("work.txt", new("before\n"))
@@ -268,7 +616,7 @@ func TestCoveredVersionPortsLeavesContentOnlyMatchActiveAndAdvisesLink(t *testin
 	r.writePath("VERSION", new("9\n"))
 	port := r.commitAll("port PROJ-1 from prior release")
 	r.git("checkout", "-q", base)
-	c := versionPortCommit(r, "restored\n", "2\n", fmt.Sprintf("fix: PROJ-1 source port %s", port))
+	c := versionPortCommit(r, "restored\n", "2\n", "fix: PROJ-1 source")
 	commits, err := deliveredCommits(r.repo, port, c)
 	if err != nil {
 		t.Fatal(err)
@@ -715,7 +1063,7 @@ func TestNotInVersionUsesAssociationForContentOnlyPort(t *testing.T) {
 	g := &gateRun{conf: conf, contentOnlyPorts: map[string][]versionPortHint{"PROJ-2": {{commit: "c0ffee0000000000000000000000000000000000", port: "1234567890123456789012345678901234567890"}}}, gate: &approvalGate{conf: conf}}
 	v := &releaseVersionCheck{gate: g, sources: map[string][]string{"PROJ-1": {"PROJ-2"}}, selected: jira.Version{Name: "v2"}}
 	msg := v.notInVersion(context.Background(), jira.Issue{Key: "PROJ-1", Status: "Done"})
-	if !strings.Contains(msg, "add an empty commit in this range") || strings.Contains(msg, "approved_release.dormant") {
+	if !strings.Contains(msg, "graft commit --allow-empty -m") || strings.Contains(msg, "approved_release.dormant") {
 		t.Fatalf("content-only advice=%q", msg)
 	}
 }
@@ -726,7 +1074,7 @@ func TestNotInVersionCombinesAssociationAndNewWorkAdvice(t *testing.T) {
 	g := &gateRun{conf: conf, contentOnlyPorts: map[string][]versionPortHint{"PROJ-2": {{commit: content, port: "1234567890123456789012345678901234567890"}}}, gate: &approvalGate{conf: conf}}
 	v := &releaseVersionCheck{gate: g, sources: map[string][]string{"PROJ-1": {"PROJ-2", "PROJ-3"}}, selected: jira.Version{Name: "v2"}}
 	msg := v.notInVersion(context.Background(), jira.Issue{Key: "PROJ-1", Status: "Done"})
-	if !strings.Contains(msg, "add an empty commit in this range") || !strings.Contains(msg, "approved_release.dormant: [{key: PROJ-3") || strings.Contains(msg, "key: PROJ-2") {
+	if !strings.Contains(msg, "graft commit --allow-empty -m") || !strings.Contains(msg, "approved_release.dormant: [{key: PROJ-3") || strings.Contains(msg, "key: PROJ-2") {
 		t.Fatalf("mixed advice=%q", msg)
 	}
 }
@@ -737,7 +1085,7 @@ func TestNotInVersionCombinesSubtaskContentPortAndNewWorkAdvice(t *testing.T) {
 	g := &gateRun{conf: conf, contentOnlyPorts: map[string][]versionPortHint{"PROJ-2": {{commit: content, port: "1234567890123456789012345678901234567890"}}}, gate: &approvalGate{conf: conf}}
 	v := &releaseVersionCheck{gate: g, sources: map[string][]string{"PROJ-1": {"PROJ-2", "PROJ-3"}}, selected: jira.Version{Name: "v2"}}
 	msg := v.notInVersion(context.Background(), jira.Issue{Key: "PROJ-1", Status: "Done"})
-	if !strings.Contains(msg, "add an empty commit in this range") || !strings.Contains(msg, "approved_release.dormant: [{key: PROJ-3") || strings.Contains(msg, "key: PROJ-2") {
+	if !strings.Contains(msg, "graft commit --allow-empty -m") || !strings.Contains(msg, "approved_release.dormant: [{key: PROJ-3") || strings.Contains(msg, "key: PROJ-2") {
 		t.Fatalf("mixed subtask advice=%q", msg)
 	}
 }
@@ -1242,6 +1590,28 @@ func TestGateRunPortCoverageSkipsVersionActivityOnlyWhilePortContentRemains(t *t
 			t.Fatalf("reverted port hid task from version gate: keys=%v commits=%d; output=%s", g.activeKeys, g.activeCommits, out.String())
 		}
 	})
+}
+
+func TestGateRunCoversEarlierWithheldSourceByPortAlreadyInTarget(t *testing.T) {
+	r := newEmptyWithheldRepo(t)
+	r.writePath("work.txt", new("before\n"))
+	r.writePath("VERSION", new("1.0.0\n"))
+	base := r.commitAll("base")
+	r.git("checkout", "-q", "-b", "source", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("1.0.1\n"))
+	source := r.commitAll("fix: PROJ-1 source")
+	r.git("checkout", "-q", "-b", "target", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("VERSION", new("9.0.0\n"))
+	prev := r.commitAll(fmt.Sprintf("port %s", source))
+	g, output := versionPortGateRun(r)
+	if _, err := g.run(context.Background(), prev, prev, []string{source}, false); err != nil {
+		t.Fatal(err)
+	}
+	if g.activeKeys["PROJ-1"] || g.activeCommits != 0 {
+		t.Fatalf("earlier covered source remained active: keys=%v commits=%d; output=%s", g.activeKeys, g.activeCommits, output.String())
+	}
 }
 
 func versionPortGateRun(r *withheldRepo) (*gateRun, *strings.Builder) {
