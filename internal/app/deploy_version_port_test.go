@@ -447,6 +447,50 @@ func TestCoveredVersionPortIgnoresModuleFilesDuringReplay(t *testing.T) {
 	}
 }
 
+// A replay whose go.mod conflicts leaves conflict markers in the merged
+// go.mod. That go.mod shows no module raise: the port is not linked, and the
+// check goes on instead of failing on the markers.
+func TestReplayWithConflictedGoModIsNotLinked(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "graft"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	settings := "modules:\n  latest: [example.com/own/]\n"
+	if err := os.WriteFile(filepath.Join(configHome, "graft", "config.yaml"), []byte(settings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := newEmptyWithheldRepo(t)
+	mod := func(v string) string {
+		return "module example.com/test\n\ngo 1.23\n\nrequire example.com/own/mod " + v + "\n"
+	}
+	r.writePath("work.txt", new("before\n"))
+	r.writePath("go.mod", new(mod("v1.0.0")))
+	r.writePath("go.sum", new("example.com/own/mod v1.0.0 h1:old\n"))
+	r.writePath("VERSION", new("1\n"))
+	base := r.commitAll("base")
+	r.git("checkout", "-q", "-b", "source", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("go.mod", new(mod("v1.1.0")))
+	r.writePath("go.sum", new("example.com/own/mod v1.1.0 h1:new\n"))
+	r.writePath("VERSION", new("2\n"))
+	source := r.commitAll("fix: PROJ-1 source")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("work.txt", new("fixed\n"))
+	r.writePath("go.mod", new(mod("v1.0.5")))
+	r.writePath("go.sum", new("example.com/own/mod v1.0.5 h1:mid\n"))
+	r.writePath("VERSION", new("9\n"))
+	port := r.commitAll("port source " + source)
+	group := []deliveredCommit{{sha: source}}
+	replayed, err := replayVersionPortGroup(r.repo, port, group, versionPortTargets("VERSION"))
+	if err != nil {
+		t.Fatalf("replay with a conflicted go.mod failed the check: %v", err)
+	}
+	if replayed {
+		t.Fatal("replay with a conflicted go.mod linked the port")
+	}
+}
+
 func TestReplayRejectsNewOrLoweredGoModuleRequirement(t *testing.T) {
 	for _, tc := range []struct {
 		name, before, after, beforeSum, afterSum string
@@ -1908,5 +1952,36 @@ func TestVersionPortRequiredModulesExcludesReplaced(t *testing.T) {
 	}
 	if modules["example.com/own/mod"] {
 		t.Fatal("replaced module was treated as present")
+	}
+}
+
+// Source commits that are not a chain replay one by one, each onto the tree
+// the one before left. That tree lives only in the replay's private object
+// directory, so reading it must use the replay's environment.
+func TestReplayOfUnchainedSourcesReadsTheIntermediateTree(t *testing.T) {
+	r := newEmptyWithheldRepo(t)
+	r.writePath("a.txt", new("before\n"))
+	r.writePath("b.txt", new("before\n"))
+	r.writePath("VERSION", new("1\n"))
+	base := r.commitAll("base")
+	r.git("checkout", "-q", "-b", "first", base)
+	r.writePath("a.txt", new("fixed\n"))
+	r.writePath("VERSION", new("2\n"))
+	first := r.commitAll("fix: PROJ-1 first")
+	r.git("checkout", "-q", "-b", "second", base)
+	r.writePath("b.txt", new("fixed\n"))
+	r.writePath("VERSION", new("3\n"))
+	second := r.commitAll("fix: PROJ-2 second")
+	r.git("checkout", "-q", "-b", "release", base)
+	r.writePath("a.txt", new("fixed\n"))
+	r.writePath("b.txt", new("fixed\n"))
+	port := r.commitAll("port " + first + " " + second)
+	group := []deliveredCommit{{sha: first}, {sha: second}}
+	replayed, err := replayVersionPortGroup(r.repo, port, group, versionPortTargets("VERSION"))
+	if err != nil {
+		t.Fatalf("replay of unchained sources failed: %v", err)
+	}
+	if !replayed {
+		t.Fatal("replay of unchained sources whose changes are the port's was not linked")
 	}
 }

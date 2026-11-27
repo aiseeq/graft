@@ -1146,7 +1146,7 @@ func mergePortCommit(repo *gitx.Repo, env []string, ontoTree, commit, mergeBase 
 	if err != nil {
 		return "", false, err
 	}
-	onto, err := versionBlobTree(repo, ontoTree)
+	onto, err := versionBlobTreeWithEnv(repo, env, ontoTree)
 	if err != nil {
 		return "", false, err
 	}
@@ -1154,8 +1154,11 @@ func mergePortCommit(repo *gitx.Repo, env []string, ontoTree, commit, mergeBase 
 }
 
 func mergeVersionPortConflict(repo *gitx.Repo, env []string, ontoTree, commit, mergeBase string, lines []string, targets map[string][]version.Target) (string, bool, error) {
+	// A conflicted file other than a version file leaves the port unlinked.
+	// So does a conflicted go.mod or go.sum: merge-tree wrote conflict
+	// markers into it, and such a file is never a module raise.
 	for _, file := range lines[1:] {
-		if file != "" && len(targets[file]) == 0 && file != "go.mod" && file != "go.sum" {
+		if file != "" && len(targets[file]) == 0 {
 			return lines[0], false, nil
 		}
 	}
@@ -1163,7 +1166,7 @@ func mergeVersionPortConflict(repo *gitx.Repo, env []string, ontoTree, commit, m
 	if err != nil {
 		return "", false, err
 	}
-	onto, err := versionBlobTree(repo, ontoTree)
+	onto, err := versionBlobTreeWithEnv(repo, env, ontoTree)
 	if err != nil {
 		return "", false, err
 	}
