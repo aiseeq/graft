@@ -101,6 +101,8 @@ type ReleasePage struct {
 	Title string `yaml:"title"`
 	// FixTypes are the issue types listed as fixes; the rest are changes.
 	FixTypes []string `yaml:"fix_types"`
+	// TechnicalLabels identify parents whose subtasks share one technical row.
+	TechnicalLabels []string `yaml:"technical_labels"`
 	// Subtasks controls whether subtasks are listed individually or grouped
 	// under their parent.
 	Subtasks string `yaml:"subtasks"`

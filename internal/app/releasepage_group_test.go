@@ -40,6 +40,63 @@ func TestGroupSubtasksKeepsAnUnreadableParent(t *testing.T) {
 	}
 }
 
+func TestReleasePageGroupsSubtasksByConfiguredParentLabels(t *testing.T) {
+	issues := map[string]string{
+		"PROJ-11": `{"key":"PROJ-11","fields":{"summary":"technical child one","status":{"statusCategory":{"key":"indeterminate"}},"issuetype":{"name":"Sub-task","subtask":true},"parent":{"key":"PROJ-10"},"labels":[]}}`,
+		"PROJ-12": `{"key":"PROJ-12","fields":{"summary":"technical child two","status":{"statusCategory":{"key":"indeterminate"}},"issuetype":{"name":"Sub-task","subtask":true},"parent":{"key":"PROJ-10"},"labels":[]}}`,
+		"PROJ-10": `{"key":"PROJ-10","fields":{"summary":"technical parent","status":{"statusCategory":{"key":"indeterminate"}},"issuetype":{"name":"Task"},"labels":["release-technical"]}}`,
+		"PROJ-21": `{"key":"PROJ-21","fields":{"summary":"bug child one","status":{"statusCategory":{"key":"indeterminate"}},"issuetype":{"name":"Sub-task","subtask":true},"parent":{"key":"PROJ-20"},"labels":[]}}`,
+		"PROJ-22": `{"key":"PROJ-22","fields":{"summary":"bug child two","status":{"statusCategory":{"key":"indeterminate"}},"issuetype":{"name":"Sub-task","subtask":true},"parent":{"key":"PROJ-20"},"labels":[]}}`,
+		"PROJ-20": `{"key":"PROJ-20","fields":{"summary":"synthetic bug summary","status":{"statusCategory":{"key":"indeterminate"}},"issuetype":{"name":"Bug"},"labels":[]}}`,
+		"PROJ-30": `{"key":"PROJ-30","fields":{"summary":"listed parent summary","status":{"statusCategory":{"key":"indeterminate"}},"issuetype":{"name":"Story"},"labels":[]}}`,
+		"PROJ-31": `{"key":"PROJ-31","fields":{"summary":"listed parent child","status":{"statusCategory":{"key":"indeterminate"}},"issuetype":{"name":"Sub-task","subtask":true},"parent":{"key":"PROJ-30"},"labels":[]}}`,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.URL.Path, "/rest/api/3/issue/")
+		if r.Method != http.MethodGet || issues[key] == "" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		fmt.Fprint(w, issues[key])
+	}))
+	t.Cleanup(server.Close)
+	client := jira.New(jira.Credentials{BaseURL: server.URL})
+	p := &config.ReleasePage{Subtasks: "parent", FixTypes: []string{"Bug"}, TechnicalLabels: []string{"release-technical"}}
+	r := &deployRun{version: "1.2.3", name: "prod", target: &config.DeployTarget{}}
+	section, err := buildSection(t.Context(), client, p, r, []string{"PROJ-11", "PROJ-12", "PROJ-21", "PROJ-22", "PROJ-30", "PROJ-31"}, nil, func(string, ...any) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := strings.SplitN(strings.SplitN(section, "<h3>Changes</h3>", 2)[1], "<h3>Fixes</h3>", 2)[0]
+	fixes := strings.SplitN(section, "<h3>Fixes</h3>", 2)[1]
+	for _, want := range []string{"PROJ-10", "Technical changes", "Task", "PROJ-30", "listed parent summary", "Story"} {
+		if !strings.Contains(changes, want) {
+			t.Errorf("changes section missing %q:\n%s", want, changes)
+		}
+	}
+	if strings.Count(changes, ">PROJ-10</a>") != 1 || strings.Count(changes, ">PROJ-30</a>") != 1 {
+		t.Errorf("parent duplicated in changes:\n%s", changes)
+	}
+	if !strings.Contains(fixes, "PROJ-20") || !strings.Contains(fixes, "synthetic bug summary") || !strings.Contains(fixes, "Bug") {
+		t.Errorf("ordinary parent missing from fixes:\n%s", fixes)
+	}
+	if strings.Count(fixes, ">PROJ-20</a>") != 1 || strings.Contains(section, "technical child") || strings.Contains(section, "bug child") {
+		t.Errorf("subtasks were not hidden or parent was duplicated:\n%s", section)
+	}
+}
+
+func TestReleasePageParentSubtasksWithoutTechnicalLabelsUseParentRows(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"key":"PROJ-123","fields":{"summary":"synthetic parent summary","status":{"statusCategory":{"key":"indeterminate"}},"issuetype":{"name":"Task"},"labels":["release-technical"]}}`)
+	}))
+	t.Cleanup(server.Close)
+	issues := []jira.Issue{{Key: "PROJ-124", Type: "Sub-task", Subtask: true, Parent: "PROJ-123"}}
+	grouped, technical := groupSubtasks(t.Context(), jira.New(jira.Credentials{BaseURL: server.URL}), &config.ReleasePage{Subtasks: "parent"}, issues, func(string, ...any) {})
+	if len(grouped) != 1 || grouped[0].Key != "PROJ-123" || grouped[0].Summary != "synthetic parent summary" || grouped[0].Type != "Task" || len(technical) != 0 {
+		t.Fatalf("grouped = %+v, technical = %+v", grouped, technical)
+	}
+}
+
 func TestReleasePageListsDormantWork(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/rest/api/3/issue/") {

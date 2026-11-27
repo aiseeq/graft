@@ -3003,6 +3003,7 @@ deploy:
         title: "{release}: release notes" # the default; {release} is required
         fix_types: [Bug]                  # the default: these are fixes, the rest changes
         subtasks: parent                  # list (default) or group under one parent row
+        technical_labels: [release-technical] # only parents with these labels use the technical row
         labels: {changes: Changes, fixes: Fixes, moved: Moved to the next release, technical: Technical changes}
 ```
 
@@ -3017,8 +3018,15 @@ deploy:
   the items the release took out (the ones `approved_release` passed, or a
   hotfix's labelled items) by issue type, with links, summaries and types,
   and the items of withheld commits, which wait for the next release.
-- `subtasks: parent` groups technical subtasks under one parent row; the
-  `labels.technical` text (default `Technical changes`) is its summary.
+- `subtasks: parent` hides subtasks and adds their parent once. Parents with a
+  label from `technical_labels` use one technical row; its summary is
+  `labels.technical` (default `Technical changes`). Other parents appear with
+  their Jira summary and type in the changes or fixes section, or under
+  `labels.moved` when their subtasks wait for the next release. With no
+  `technical_labels`, every parent appears with its Jira summary and type. A
+  parent Jira does not give gets the technical row without a type, and a
+  warning says why.
+  `subtasks: list` continues to list subtasks individually.
 - With `--unapproved`, the page lists failing commits and their reasons under
   `labels.exceptions` (default `Shipped by exception (--unapproved)`). If
   a release version check fails, its affected shipped items and their reasons
