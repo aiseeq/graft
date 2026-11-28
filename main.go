@@ -1441,7 +1441,7 @@ func deployCmd(ctx context.Context, a *app.App, args []string) error {
 	reason := fs.String("reason", "", "thaw: why the freeze ended")
 	apply := fs.Bool("apply", false, "sweep: move the items, not only list them")
 	glintTicket := fs.String("glint-ticket", "", "deploy, handover: the item that takes the glint findings of the deployed commit, at a release acceptance")
-	reviewerAgreed := fs.String("reviewer-agreed", "", "deploy: reviewers who agreed, as KEY@accountId[,KEY@accountId]")
+	reviewerAgreed := fs.String("reviewer-agreed", "", "deploy, check: reviewers who agreed, as KEY@accountId[,KEY@accountId]")
 	fs.BoolVar(&a.NoCache, "no-cache", false, "run the deps again, without the cache, even if they passed on this tree")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -1490,7 +1490,7 @@ func runDeployCommand(ctx context.Context, a *app.App, args deployCommandArgs) e
 	if run := trackerDeployCmd(ctx, a, args); run != nil {
 		return run()
 	}
-	if run := readOnlyDeployCmd(ctx, a, pos, scriptArgs); run != nil {
+	if run := readOnlyDeployCmd(ctx, a, pos, scriptArgs, args.reviewerAgreed); run != nil {
 		return run()
 	}
 	if pos[0] == "freeze" && len(pos) >= 2 && len(pos) <= 3 && args.scriptArgs == nil {
@@ -1504,7 +1504,10 @@ func runDeployCommand(ctx context.Context, a *app.App, args deployCommandArgs) e
 
 func deployCommandFlagsInvalid(sub string, args deployCommandArgs) bool {
 	logFlags := args.lines != 200 || args.grep != ""
-	return deployFlagsMisplaced(sub, args.scriptArgs != nil, logFlags, args.redeploy || args.unapproved || args.pastFreeze != "" || args.pastLoad != "" || args.reviewerAgreed != "" || args.takeBack) || args.apply && sub != "sweep" ||
+	// deploy check takes --reviewer-agreed as the deploy does: the guard
+	// it checks passes with it.
+	reviewerAgreed := args.reviewerAgreed != "" && sub != "check"
+	return deployFlagsMisplaced(sub, args.scriptArgs != nil, logFlags, args.redeploy || args.unapproved || args.pastFreeze != "" || args.pastLoad != "" || reviewerAgreed || args.takeBack) || args.apply && sub != "sweep" ||
 		args.glintTicket != "" && isDeploySubcommand(sub) && sub != "handover"
 }
 
@@ -1549,7 +1552,7 @@ func trackerDeployCmd(ctx context.Context, a *app.App, args deployCommandArgs) f
 
 // readOnlyDeployCmd is the read-only graft deploy subcommand of pos, nil
 // for any other.
-func readOnlyDeployCmd(ctx context.Context, a *app.App, pos, scriptArgs []string) func() error {
+func readOnlyDeployCmd(ctx context.Context, a *app.App, pos, scriptArgs []string, reviewerAgreed string) func() error {
 	switch {
 	case pos[0] == "check-head" && len(pos) == 1:
 		return a.DeployCheckHead
@@ -1560,7 +1563,7 @@ func readOnlyDeployCmd(ctx context.Context, a *app.App, pos, scriptArgs []string
 	case pos[0] == "cutoff" && len(pos) == 2:
 		return func() error { return a.DeployCutoff(ctx, pos[1]) }
 	case pos[0] == "check" && len(pos) == 2:
-		return func() error { return a.DeployCheck(ctx, pos[1]) }
+		return func() error { return a.DeployCheck(ctx, pos[1], reviewerAgreed) }
 	case pos[0] == "versions" && len(pos) == 1:
 		return func() error { return a.DeployVersions(ctx) }
 	}

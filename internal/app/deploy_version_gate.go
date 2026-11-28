@@ -42,6 +42,9 @@ type releaseVersionCheck struct {
 	// liveInSelected: live work of the selected version goes out, which links
 	// the outside entries naming it.
 	liveInSelected bool
+	// unread counts the commit keys and parents readTops could not read: the
+	// tops, and so the version they select, are incomplete.
+	unread int
 }
 
 func newReleaseVersionCheck(g *gateRun, collect bool) *releaseVersionCheck {
@@ -104,24 +107,57 @@ func (v *releaseVersionCheck) failItems(id, message string, keys ...string) bool
 	return stop
 }
 
-// checkReleaseVersion checks the complete version and the parents of shipped subtasks.
+// checkReleaseVersion checks the complete version and the parents of shipped
+// subtasks. In collect mode a refusal stops only the checks that need what it
+// failed to give, and each of those is named in gate.notChecked:
+//
+//	readTops (a Jira read failed) -> version-select, then as below;
+//	version-select -> the outside_version entries, the version membership of
+//	  version-top, version-items, version-status, version-subtasks,
+//	  version-human-check, version-approval (the statuses of version-top and
+//	  version-umbrella still run on the tops read);
+//	version-items (the version's list unread) -> version-status,
+//	  version-subtasks, version-human-check.
+//
+// Every other check runs whatever the others found.
 func (g *gateRun) checkReleaseVersion(ctx context.Context, collect bool) []error {
 	if g.activeCommits == 0 {
 		g.app.printf("approved release: no active commits; release version checks skipped")
 		return nil
 	}
 	v := newReleaseVersionCheck(g, collect)
-	if v.readTops(ctx) || v.selectVersion() || v.linkOutside(ctx) {
+	if v.readTops(ctx) {
 		return v.failures
 	}
-	if v.checkTops(ctx) || (v.selected.ID != "" && (v.checkItems(ctx) || v.adviseSelected(ctx))) {
+	if v.unread > 0 {
+		return v.withoutVersion(ctx, "version-select, ", "version-items (a task was not read from Jira)")
+	}
+	before := len(v.failures)
+	if v.selectVersion() {
 		return v.failures
 	}
-	if v.checkUmbrellas(ctx) {
+	if len(v.failures) > before {
+		return v.withoutVersion(ctx, "", "version-select")
+	}
+	if v.linkOutside(ctx) || v.checkTops(ctx) || v.checkItems(ctx) || v.adviseSelected(ctx) || v.checkUmbrellas(ctx) {
 		return v.failures
 	}
-	if v.selected.ID != "" {
-		v.checkApproval(ctx)
+	v.checkApproval(ctx)
+	return v.failures
+}
+
+// withoutVersion runs what needs no selected version, the statuses of the
+// tops read and their umbrellas, and names the rest as not checked: without
+// one version every check against it would judge a guess.
+func (v *releaseVersionCheck) withoutVersion(ctx context.Context, skipped, closedBy string) []error {
+	v.selected = jira.Version{}
+	what := skipped + "the version membership of version-top, version-items, version-status, version-subtasks, version-human-check, version-approval"
+	if waiting := slices.Sorted(maps.Keys(v.outside)); len(waiting) > 0 {
+		what = "the outside_version entries of " + strings.Join(waiting, ", ") + ", " + what
+	}
+	v.gate.notChecked = append(v.gate.notChecked, [2]string{what, closedBy})
+	if !v.checkTops(ctx) {
+		v.checkUmbrellas(ctx)
 	}
 	return v.failures
 }
@@ -135,6 +171,7 @@ func (v *releaseVersionCheck) readTops(ctx context.Context) bool {
 	for _, key := range slices.Sorted(maps.Keys(v.gate.activeKeys)) {
 		issue, err := v.gate.gate.issue(ctx, key)
 		if err != nil {
+			v.unread++
 			v.gate.collectionErr = errors.Join(v.gate.collectionErr, err)
 			if v.fail("version-items", fmt.Sprintf("%s: read Jira issue: %v; retry", key, err)) {
 				return true
@@ -183,6 +220,7 @@ func (v *releaseVersionCheck) addTop(ctx context.Context, issue jira.Issue, sour
 		v.umbrellas[issue.Parent] = true
 		parent, err := v.gate.gate.issue(ctx, issue.Parent)
 		if err != nil {
+			v.unread++
 			v.gate.collectionErr = errors.Join(v.gate.collectionErr, err)
 			return v.fail("version-items", fmt.Sprintf("%s: read parent: %v; retry", source, err))
 		}
@@ -257,13 +295,25 @@ func (v *releaseVersionCheck) linkOutside(ctx context.Context) bool {
 		if issue.Parent != "" {
 			parent, err := v.gate.gate.issue(ctx, issue.Parent)
 			if err != nil {
-				return v.fail("version-items", fmt.Sprintf("%s: read parent: %v; retry", key, err))
+				if v.collect {
+					v.gate.collectionErr = errors.Join(v.gate.collectionErr, fmt.Errorf("%s: read parent: %w", key, err))
+				}
+				if v.fail("version-items", fmt.Sprintf("%s: read parent: %v; retry", key, err)) {
+					return true
+				}
+				continue
 			}
 			in = in || v.inSelected(parent)
 		}
 		linked, err := v.gate.gate.outsideLinked(ctx, item, v.selected, v.liveInSelected)
 		if err != nil {
-			return v.fail("version-items", fmt.Sprintf("%s: read approvers of %s: %v; retry", key, v.selected.Name, err))
+			if v.collect {
+				v.gate.collectionErr = errors.Join(v.gate.collectionErr, fmt.Errorf("%s: read approvers of %s: %w", key, v.selected.Name, err))
+			}
+			if v.fail("version-items", fmt.Sprintf("%s: read approvers of %s: %v; retry", key, v.selected.Name, err)) {
+				return true
+			}
+			continue
 		}
 		if linked && !in {
 			v.linkedKeys[key] = true
@@ -336,9 +386,16 @@ func (v *releaseVersionCheck) adviseReturned(top string) {
 	}
 }
 
+// checkTops refuses a top outside the selected version or out of its
+// approved statuses. Without a selected version (version-select refused) it
+// checks the statuses alone, and not those of a top whose own
+// outside_version entry waits for the version.
 func (v *releaseVersionCheck) checkTops(ctx context.Context) bool {
 	for _, key := range slices.Sorted(maps.Keys(v.tops)) {
 		issue := v.tops[key]
+		if _, waiting := v.outside[key]; waiting && v.selected.ID == "" {
+			continue
+		}
 		inVersion := v.selected.ID == "" || v.inSelected(issue) || v.excused(key)
 		statuses := v.gate.conf.StatusesFor(issue.Labels)
 		dormant := v.dormantTop(issue)
@@ -481,6 +538,7 @@ func (v *releaseVersionCheck) checkItems(ctx context.Context) bool {
 	keys, err := v.gate.gate.client.VersionItems(ctx, v.selected.ID)
 	if err != nil {
 		v.gate.collectionErr = errors.Join(v.gate.collectionErr, err)
+		v.gate.notChecked = append(v.gate.notChecked, [2]string{"version-status, version-subtasks, version-human-check of " + v.selected.Name, "version-items (the version's list was not read)"})
 		return v.fail("version-items", fmt.Sprintf("%s: read version items: %v; retry", v.selected.Name, err))
 	}
 	var bad, badKeys, subtasks, subtaskKeys, missing []string

@@ -17,7 +17,8 @@ import (
 // work: it names a trunk commit by hash and picking onto that commit changes
 // nothing outside version files. Anything else, a fix made on the branch,
 // the merge would drop from the trunk without a word. The release is live by
-// then, so a failure is returned for the exit status.
+// then: the deploy warns that it succeeded and the merge did not, and exits
+// ExitDeployTrunkMerge, which tells it from a failed deployment.
 func (a *App) mergeIntoTrunk(r *deployRun) error {
 	if !r.target.MergeIntoTrunk || r.dryRun {
 		return nil

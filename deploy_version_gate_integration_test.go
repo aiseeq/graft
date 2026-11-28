@@ -122,7 +122,8 @@ func TestDeployReleaseVersion(t *testing.T) {
 	d.jira.mu.Lock()
 	d.jira.fixVersions["PROJ-10"] = []string{"1", "2"}
 	d.jira.mu.Unlock()
-	if out := check(false, "version-select", "Product 05.11.26", "Product.12.11.26"); strings.Contains(out, "version-top") {
+	// The not-checked line names version-top; a refusal of it reads "version-top:".
+	if out := check(false, "version-select", "Product 05.11.26", "Product.12.11.26"); strings.Contains(out, "version-top:") {
 		t.Errorf("a ready top task is refused when no version is chosen:\n%s", out)
 	}
 	// A status refusal is listed though no version could be chosen.

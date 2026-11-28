@@ -54,7 +54,7 @@ var commands = []command{
 		"graft deploy thaw <target> --reason REASON [--no-cache]",
 		"graft deploy status <target> [--no-cache] [-- args]",
 		"graft deploy logs <target> [--lines N] [--grep RE] [--no-cache] [-- args]",
-		"graft deploy check <target> [--no-cache]",
+		"graft deploy check <target> [--reviewer-agreed KEY@ACCOUNT,...] [--no-cache]",
 		"graft deploy versions [--no-cache]",
 		"graft deploy cutoff <target> [--no-cache]",
 		"graft deploy sweep <target> [--apply] [--no-cache]",

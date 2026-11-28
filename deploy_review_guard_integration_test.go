@@ -89,14 +89,16 @@ func TestDeployReviewGuardStillIncludesBodyMentions(t *testing.T) {
 	}
 }
 
-func TestDeployReviewGuardCheckReportsWithoutRefusing(t *testing.T) {
+// deploy check is that of the deploy without flags: an active review guard
+// refuses it, as it refuses that deploy, and names the agreement tokens.
+func TestDeployReviewGuardCheckRefusesAsTheDeploy(t *testing.T) {
 	d := reviewGuardFixture(t, []string{"In QA"})
 	setupGuardVersion(d, map[string][]string{"PROJ-1": {"10010"}})
 	d.jira.mu.Lock()
 	d.jira.statuses["PROJ-1"] = "In QA"
 	d.jira.mu.Unlock()
 	out, code := d.graft("", "deploy", "check", "uat")
-	if code != 0 || !strings.Contains(out, "PROJ-1") || !strings.Contains(out, "anna") || !strings.Contains(out, "PROJ-1@anna") || !strings.Contains(out, "would stop at the review guard") || strings.Contains(out, "passes its checks now") {
+	if code == 0 || !strings.Contains(out, "graft deploy uat would refuse") || !lineWith(out, "review guard: uat Jira version") || !strings.Contains(out, "--reviewer-agreed PROJ-1@anna") || strings.Contains(out, "passes its checks now") {
 		t.Fatalf("deploy check report: exit %d\n%s", code, out)
 	}
 	if d.stateExists("uat-run") {
@@ -574,9 +576,10 @@ func TestDeployReviewGuardUsesAtMostSixHTTPRequestsForFiftyVersionItems(t *testi
 	d.jira.statuses["PROJ-999"] = "Done"
 	d.jira.assignees["PROJ-999"] = "me"
 	d.jira.mu.Unlock()
-	_, code := d.graft("", "deploy", "check", "uat")
-	if code != 0 {
-		t.Fatalf("deploy check failed: %d", code)
+	// The guard is active: the check refuses, as the deploy would.
+	out, code := d.graft("", "deploy", "check", "uat")
+	if code == 0 || !lineWith(out, "review guard: uat Jira version") {
+		t.Fatalf("deploy check does not refuse at the guard: exit %d\n%s", code, out)
 	}
 	d.jira.mu.Lock()
 	searches, requests := d.jira.reviewSearchRequests, d.jira.requests
@@ -671,9 +674,10 @@ func TestDeployReviewGuardEscapesStatusInJQL(t *testing.T) {
 	d.jira.statuses["PROJ-1"] = `Testing "review" \ lane`
 	d.jira.assignees["PROJ-1"] = "anna"
 	d.jira.mu.Unlock()
-	_, code := d.graft("", "deploy", "check", "uat")
-	if code != 0 {
-		t.Fatal("deploy check rejected escaped JQL status")
+	// PROJ-1 is in the escaped status: the guard finds it and refuses.
+	out, code := d.graft("", "deploy", "check", "uat")
+	if code == 0 || !lineWith(out, "PROJ-1: Testing \"review\" \\ lane; reviewer") {
+		t.Fatalf("deploy check does not find the item in the escaped status: exit %d\n%s", code, out)
 	}
 	want := `fixVersion = 10010 AND status in ("Testing \"review\" \\ lane")`
 	d.jira.mu.Lock()

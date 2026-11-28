@@ -652,7 +652,7 @@ and runnable count as ordinary heavy tasks; equality with the limit blocks.
 | `graft deploy [--redeploy] [--take-back --reason TEXT] [--unapproved] [--past-freeze REASON] [--glint-ticket KEY] [--reviewer-agreed KEY@ACCOUNT,...] <target> [-- args]` | run the project's deploy script between graft's checks; `--redeploy` deploys the commit the target already runs, `--take-back --reason` permits taking back deployed commits on targets without `approved_release` and records the reason, `--unapproved` collects approval results without refusing the deploy, `--past-freeze` records a reason for deploying through an active freeze, `--glint-ticket` names the item that takes the glint findings of the deployed commit (`release_notes.glint`), `--reviewer-agreed` records reviewer account IDs that answered yes |
 | `graft deploy freeze <target> [Jira version]` | cut and push the configured freeze branch and annotated freeze tag; without a version, show the active freeze |
 | `graft deploy thaw <target> --reason REASON` | end the active freeze and remove its freeze and journal tags from every remote |
-| `graft deploy check <target>` | what `graft deploy <target>` would refuse now, read only: unpublished work, the window, `requires`, the hold, `approved_release` with the items of the commits outside it (summary, status, fix versions); exit 1 when it would refuse |
+| `graft deploy check [--reviewer-agreed KEY@ACCOUNT,...] <target>` | what `graft deploy [--reviewer-agreed ...] <target>` would refuse now, read only: missing `.env` keys and deps, unpublished work, the window, `requires`, the hold, `approved_release` with the items of the commits outside it (summary, status, fix versions), the review guard, the integrations; exit 1 when it would refuse |
 | `graft deploy versions` | the version and the commit each target runs, with the remote branches at it, required targets first |
 | `graft deploy cutoff <target>` | the release candidate of the target's window: its unchecked commits and the commands that revert them on a release branch; with `test_db.migrations`, it compares migration numbers and file contents in the candidate and the tree after planned reverts |
 | `graft deploy status <target>` / `logs <target> [--lines N] [--grep RE]` | the target's status and logs commands |
@@ -2266,7 +2266,9 @@ version, up to 100 commit keys, and one page per search, one pass uses at most
 six Jira GET requests.
 When blocked, `graft deploy <target> --reviewer-agreed KEY@accountId,...` must
 cover every current key and reviewer pair, and the set is checked again after
-deps immediately before the deploy script. The guard cannot identify an
+deps immediately before the deploy script; `graft deploy check` refuses with
+the same message, as the deploy without the flag does, and takes the flag as
+well: with the pairs that cover the guard it passes it. The guard cannot identify an
 unassigned reviewer or a reviewer hidden by the graft account; environments
 sharing one Jira version stop together. A same-pair agreement can outlive a SHA
 change, and a new check can begin between the final Jira read and the script.
@@ -2568,8 +2570,13 @@ remove the dormant entry once the feature is enabled and checked.
    reported the same way: `graft: PROJ-123: assignee NOT SET: <why>`.
 
 graft exits with the deploy script's exit status, or 1 when the script
-succeeded but a fix version or an assignee is not set. Two deploys to the same
-target from one repository wait for each other.
+succeeded but a fix version or an assignee is not set, or 3 when the script
+succeeded and the deployment is recorded but `merge_into_trunk` failed (see
+below); with both, 3, and the lines name the fix version and the assignee. A failing script's status, 3 included, is passed through unchanged
+with `the deploy script failed with exit status N; nothing recorded`; exit 3
+after `deployed <sha> to <target>` and `deployment succeeded, trunk merge
+failed` is the trunk merge. Two deploys to the same target from one
+repository wait for each other.
 
 `graft deploy status <target> [-- args]` and `graft deploy logs <target>
 [--lines N] [--grep RE] [-- args]` run the target's `status` and `logs` in
@@ -2727,8 +2734,70 @@ items' approved versions independently.
 
 Refusals carry check IDs; `refs` optionally maps them to project rule numbers.
 `graft deploy check` lists the refusals and prints the `manual` reminders even
-when checks fail. Its final block describes dependencies, confirmation, release
-note rules and configured release effects, and ends with the deploy command.
+when checks fail. It checks `graft deploy <target>` without flags but `--reviewer-agreed`, which it takes too: what it
+names is what that deploy from the same branch to the same target refuses
+before the deps; only the deps, the confirmation and, for an `integrations`
+command with `{staged}`, the comparison the deploy script makes run during
+the deploy alone. The check names, in one pass, the missing `.env` keys and
+deps, a dirty tree, unpublished commits, sudo refused here, the window,
+`requires`, the same-commit refusal (`--redeploy` passes it), the take-back,
+the hotfix, every holding window and a `.candidate` record the hold could
+not write, `commit-items`, the release version checks, the window version
+contents, the review guard (`--reviewer-agreed` passes it), the freeze and
+the integrations (for `{staged}`, the exceptions file); a Jira read that
+fails refuses its commit or task alone. The deploy stops at the first of the
+missing `.env` keys and deps, sudo refused here, a dirty tree, unpublished
+commits and the window, the check that comes first; past them it runs the
+rest whatever the others found and returns every refusal at once. Once one
+refused (a failed read of the deployed commit and a freeze's branch refusal
+too), the deploy reads no record under sudo with a password prompt: it
+reads them as the check does, with `sudo -n`, and when that fails names
+what it did not check; should no refusal stand beside such a read, the read
+refuses as it is. The hold records its candidate only when nothing
+refused; before the write the deploy runs the same writability check as
+deploy check, which only runs it, so both refuse alike. The path, if it is
+there, must be a regular file, with sudo or without: graft writes the
+candidate through no symbolic link, a dangling one or one to a writable file
+too, nor into a directory or a device (an earlier graft deploy followed such a link). Without sudo the file, or its
+directory, must be writable to the deploy user; under sudo the check asks
+`sudo -n -l` about the write's own command, `tee <path>`, and wants the
+directory to exist and not to be on a file system mounted read-only
+(`findmnt -T`; when findmnt cannot tell, `not checked: writing <path> —
+findmnt cannot tell the mount of its directory`). The check writes nothing,
+so what only a write shows (an immutable file, a full disk, a security
+policy such as SELinux) it does not catch. When `sudo -n` wants the
+password for that, it names it `not checked: writing <path> — needs the
+sudo password`, and when the deploy user cannot look into the directory,
+`not checked: writing <path> — its directory is not visible to the deploy
+user`; in these not-checked cases the deploy leaves it to the write. The check runs the `integrations` command as the deploy
+does: a command with `sudo` in it may ask for the password there too. A check that needs what a refusal failed to give is skipped and
+named on a line `not checked: <checks> — closed by the refusal <refusal>`:
+
+- the deployed commit not read: the hold, `approved_release` and the version
+  checks;
+- the approved release not run at all (no deployed commit recorded, the
+  `.withheld` record unread): the release version checks and the window
+  version contents;
+- a task of the release not read from Jira: `version-select`, then as below;
+- `version-select` refused: the outside_version entries and everything
+  checked against the version (the membership in `version-top`,
+  `version-items`, `version-status`, `version-subtasks`,
+  `version-human-check`, `version-approval`); the statuses of `version-top`
+  and `version-umbrella` are still checked;
+- the version's item list unread: `version-status`, `version-subtasks`,
+  `version-human-check`.
+
+The same-commit refusal does not stop the rest: the check runs what
+`--redeploy` would. The window version contents count the items of every
+commit going out, refused by `approved_release` or not, so a refused task is
+not refused again as missing from the release. A redeploy takes nothing
+out, and which items the target already runs is what earlier releases took
+out, which graft does not record: neither the check nor the deploy checks the
+contents then, and both print `not checked: version contents — the target
+already runs this commit`. With `--unapproved` the version contents are not
+checked, as before. The check's final block
+describes dependencies, confirmation, release note rules and configured
+release effects, and ends with the deploy command.
 It reads Jira to preview the delivered items when possible; if it cannot read
 them, it says why. It does not write to Jira or deploy anything.
 `--unapproved` bypasses refusals from `approved_release` while collecting its results; hotfixes
@@ -2877,7 +2946,7 @@ deploy:
   runs the candidate or work on top of it, the target named in `requires`
   holds the release candidate: the commit it ran at the cutoff, recorded
   beside its `deployed_sha` (`.candidate`) on the first deploy there after
-  the cutoff, or when the hold is over. Every deploy there after the release
+  the cutoff that no check refuses, or when the hold is over. Every deploy there after the release
   in the window passes the hold, not only the first.
   Meanwhile it takes only commits on top of the candidate that revert, that
   change only the windowed target's `ignore_paths`, or that the windowed
@@ -2959,7 +3028,15 @@ deploy:
   does not count as a port. A fix made on
   the branch and not in the trunk would be dropped by such a merge: the
   deploy, live by then, names those commits, says to cherry-pick them onto
-  the trunk and retry the merge, and exits 1. It needs `deployed_sha`.
+  the trunk and retry the merge. The release is live by then: the deploy
+  prints `deployment succeeded, trunk merge failed` and exits 3; the ticket
+  journal notes `live, the merge into the trunk failed`, and the daily flags
+  run as after a complete deploy. The script's own statuses are passed
+  through as before, so a script that exits 3 exits 3 too, reported as `the
+  deploy script failed with exit status 3; nothing recorded`: automation
+  that must tell the two apart reads that line or the
+  `deployment succeeded, trunk merge failed` one, not the status alone. It
+  needs `deployed_sha`.
 - `release_version: {enabled: true, name: "Product {dd}.{mm}.{yy}", hotfix:
   "Product {dd}.{mm}.{yy} hotfix"}` on the windowed target keeps one Jira
   version per window (`enabled` is required; false leaves the Jira versions
@@ -3108,7 +3185,8 @@ deploy:
 - `command` runs in the environment of the target and of the one from
   `requires`, and prints the integrations each configuration turns on, one a
   line. An integration `requires` runs that this target lacks stops the
-  deploy before deps and sudo, unless `exceptions` excuses it.
+  deploy before deps and sudo, unless `exceptions` excuses it; `graft deploy
+  check` compares them too, and refuses alike.
 - `exceptions` is a file of `integration|reason` lines, `#` comments and
   blank lines skipped. A line without its reason, a name twice or a missing
   file is an error; an exception the comparison does not need any more (the
@@ -3120,7 +3198,8 @@ deploy:
   deploy then leaves the comparison to the deploy script, which calls
   `graft deploy check-integrations <uploaded build>` once the build is on the
   target and before it switches to it; graft records the deploy only after
-  that call passed for the commit being deployed.
+  that call passed for the commit being deployed. Then `graft deploy check`
+  and the deploy before deps read the exceptions file only.
 
 ### Version modes
 

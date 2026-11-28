@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path"
 	"strings"
 	"time"
 
@@ -583,13 +584,113 @@ func readDeployedSHA(ctx context.Context, env *envs.Env, rec *config.DeployedSHA
 	return strings.TrimSpace(string(out)), nil
 }
 
+// writeCommand is the command WriteDeployedSHA runs, under sudo when rec
+// says so; CheckWritable asks sudo about the same command.
+func writeCommand(rec *config.DeployedSHA) string {
+	return "tee " + envs.Quote(rec.Path)
+}
+
 // WriteDeployedSHA records sha in the environment.
 func WriteDeployedSHA(ctx context.Context, env *envs.Env, rec *config.DeployedSHA, sha string) error {
-	cmd := env.Shell(ctx, sudo(rec)+"tee "+envs.Quote(rec.Path)+" >/dev/null")
+	cmd := env.Shell(ctx, sudo(rec)+writeCommand(rec)+" >/dev/null")
 	cmd.Stdin = strings.NewReader(sha + "\n")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("writing %s on %s: %w: %s", rec.Path, env.Name, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// ErrSudoPassword is a check under sudo -n that sudo refused for want of a
+// password: what it would have told is not known.
+var ErrSudoPassword = errors.New("sudo needs the password")
+
+// ErrDirUnseen is a directory the deploy user cannot look into, so whether it
+// exists is not known without sudo.
+var ErrDirUnseen = errors.New("its directory is not visible to the deploy user")
+
+// CheckWritable tells, writing nothing and without asking for a sudo
+// password, whether WriteDeployedSHA could write rec; graft deploy and graft
+// deploy check both ask it before the write, so both refuse alike. The path,
+// if it exists, must be a regular file: graft writes through no link, a
+// dangling one or one to a writable file alike. Without sudo the file, or the
+// directory it would be made in, must be writable to the deploy user. Under
+// sudo, sudo -n -l is asked about the very command of the write (sudo rules
+// may allow one command and not another); the directory must exist and must
+// not be on a file system mounted read-only. When sudo -n
+// wants the password, it returns ErrSudoPassword: the write, under sudo with
+// the password, may still pass; when the deploy user cannot see whether the
+// directory exists, ErrDirUnseen; when findmnt cannot tell the mount,
+// ErrMountUnknown. What only a write shows (an immutable file, a full disk,
+// a security policy) the check does not see.
+func CheckWritable(ctx context.Context, env *envs.Env, rec *config.DeployedSHA) error {
+	file, dir := envs.Quote(rec.Path), envs.Quote(path.Dir(rec.Path))
+	if !rec.Sudo {
+		if err := checkRegularFile(ctx, env, rec); err != nil {
+			return err
+		}
+		out, err := env.Shell(ctx, "if [ -e "+file+" ]; then [ -w "+file+" ]; else [ -d "+dir+" ] && [ -w "+dir+" ]; fi").CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%s on %s cannot be written (the deploy writes it before the deps): %w %s", rec.Path, env.Name, err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+	out, err := env.Shell(ctx, "LC_ALL=C sudo -n -l "+writeCommand(rec)).CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "a password is required") {
+			return fmt.Errorf("%s on %s: %w", rec.Path, env.Name, ErrSudoPassword)
+		}
+		return fmt.Errorf("%s on %s cannot be written (the deploy writes it before the deps): sudo does not allow %s: %w %s", rec.Path, env.Name, writeCommand(rec), err, strings.TrimSpace(string(out)))
+	}
+	// [ -d ] cannot tell a missing directory from one the deploy user may
+	// not look into; ls names which.
+	out, err = env.Shell(ctx, "[ -d "+dir+" ] || LC_ALL=C ls -d -- "+dir).CombinedOutput()
+	switch {
+	case err == nil:
+	case strings.Contains(string(out), "Permission denied"):
+		return fmt.Errorf("%s on %s: %w", rec.Path, env.Name, ErrDirUnseen)
+	default:
+		return fmt.Errorf("%s on %s cannot be written (the deploy writes it before the deps): its directory does not exist: %w %s", rec.Path, env.Name, err, strings.TrimSpace(string(out)))
+	}
+	if err := checkRegularFile(ctx, env, rec); err != nil {
+		return err
+	}
+	return checkMountWritable(ctx, env, rec)
+}
+
+// checkRegularFile refuses a path that exists and is no regular file. A link
+// is told first, as [ -e ] follows it: graft writes through no link, dangling
+// or not, nor into a directory, a device or /proc.
+func checkRegularFile(ctx context.Context, env *envs.Env, rec *config.DeployedSHA) error {
+	file := envs.Quote(rec.Path)
+	out, err := env.Shell(ctx, "if [ -L "+file+" ]; then echo 'a symbolic link'; elif [ -e "+file+" ] && [ ! -f "+file+" ]; then echo 'not a regular file'; fi").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s on %s: telling what it is: %w %s", rec.Path, env.Name, err, strings.TrimSpace(string(out)))
+	}
+	if kind := strings.TrimSpace(string(out)); kind != "" {
+		return fmt.Errorf("%s on %s cannot be written (the deploy writes it before the deps): it is %s", rec.Path, env.Name, kind)
+	}
+	return nil
+}
+
+// ErrMountUnknown is a directory whose mount findmnt could not tell.
+var ErrMountUnknown = errors.New("the mount of its directory is unknown")
+
+// checkMountWritable refuses a record whose directory lies on a file system
+// mounted read-only, which root cannot write either. findmnt -T names the
+// mount a path is on, bind mounts included, and runs as the deploy user on
+// the record's environment, as the record's commands do.
+func checkMountWritable(ctx context.Context, env *envs.Env, rec *config.DeployedSHA) error {
+	dir := path.Dir(rec.Path)
+	out, err := env.Shell(ctx, "LC_ALL=C findmnt -n -o OPTIONS -T "+envs.Quote(dir)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s on %s: %w: findmnt: %w %s", rec.Path, env.Name, ErrMountUnknown, err, strings.TrimSpace(string(out)))
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	for opt := range strings.SplitSeq(first, ",") {
+		if opt == "ro" {
+			return fmt.Errorf("%s on %s cannot be written (the deploy writes it before the deps): %s is on a file system mounted read-only", rec.Path, env.Name, dir)
+		}
 	}
 	return nil
 }

@@ -92,14 +92,14 @@ func (a *App) checkHotfix(ctx context.Context, r *deployRun) error {
 	}
 	commits, err := deliveredCommits(r.repo, baseSHA, r.head)
 	if err != nil {
-		return refuse("%v", err)
+		return refuse("%w", err)
 	}
 	if len(commits) == 0 {
 		return refuse("no commits on top of %s, which %s runs", gitx.Short(baseSHA), h.Base)
 	}
 	outside, items, err := unlabelled(ctx, r, commits)
 	if err != nil {
-		return refuse("%v", err)
+		return refuse("%w", err)
 	}
 	r.hotfixItems = items
 	if len(outside) > 0 {
@@ -218,14 +218,16 @@ func labelledItems(ctx context.Context, client *jira.Client, keys []string, labe
 // checkHold keeps a release candidate on a target from a window's cutoff
 // until the window ends or the windowed target runs it. Meanwhile only
 // reverts of the candidate's work, changes to ignore_paths and merges of
-// fixes already out may go there; a hotfix branch goes as well.
+// fixes already out may go there; a hotfix branch goes as well. Every window
+// holding the target is checked and each refusal is returned.
 func (a *App) checkHold(ctx context.Context, r *deployRun) error {
+	var errs []error
 	for _, wname := range r.cfg.Deploy.HoldingWindows(r.name) {
-		if err := a.checkHeldFor(ctx, r, wname); err != nil {
-			return err
-		}
+		// A refusal of one window marks the run refused before the next
+		// window reads its records.
+		errs = append(errs, r.refused(a.checkHeldFor(ctx, r, wname)))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (a *App) checkHeldFor(ctx context.Context, r *deployRun, wname string) error {
@@ -239,7 +241,7 @@ func (a *App) checkHeldFor(ctx context.Context, r *deployRun, wname string) erro
 	}
 	wenv, err := envs.Get(r.cfg, r.repo.Root, wt.Env)
 	if err != nil {
-		return refuse("%v", err)
+		return refuse("%w", err)
 	}
 	released, err := r.readSHA(ctx, wenv, wt.DeployedSHA)
 	if err != nil {
@@ -247,20 +249,18 @@ func (a *App) checkHeldFor(ctx context.Context, r *deployRun, wname string) erro
 	}
 	candidate, err := r.heldCandidate(ctx, r.env, r.target.DeployedSHA, r.prev, occ)
 	if err != nil {
-		return refuse("%v", err)
+		return refuse("%w", err)
 	}
 	// The hold is over once the windowed target runs the candidate, or work
 	// on top of it. The candidate is recorded then: the next deploy here
 	// runs on top of it, and is past the hold too.
 	over, err := runsCandidate(r.repo, wname, released, candidate)
 	if err != nil {
-		return refuse("%v", err)
+		return refuse("%w", err)
 	}
 	if over {
-		if !r.dryRun {
-			if err := recordCandidate(ctx, r, occ, candidate); err != nil {
-				return refuse("%v", err)
-			}
+		if err := r.planCandidate(ctx, occ, candidate); err != nil {
+			return refuse("%w", err)
 		}
 		a.printf("%s already runs %s, the candidate of the %s window: the hold is over", wname, gitx.Short(candidate), occ.Name())
 		return nil
@@ -268,10 +268,8 @@ func (a *App) checkHeldFor(ctx context.Context, r *deployRun, wname string) erro
 	if candidate == "" {
 		return refuse("%s holds the release candidate of %s from %s, but runs no recorded commit to hold", r.name, wname, occ.Cutoff.Format("Mon 02.01 15:04"))
 	}
-	if !r.dryRun {
-		if err := recordCandidate(ctx, r, occ, candidate); err != nil {
-			return refuse("%v", err)
-		}
+	if err := r.planCandidate(ctx, occ, candidate); err != nil {
+		return refuse("%w", err)
 	}
 	if r.hotfix {
 		a.printf("%s holds the candidate %s of the %s window; a hotfix passes the hold", r.name, gitx.Short(candidate), occ.Name())
@@ -279,7 +277,7 @@ func (a *App) checkHeldFor(ctx context.Context, r *deployRun, wname string) erro
 	}
 	bad, err := a.outsideHold(r, wt, candidate, released)
 	if err != nil {
-		return refuse("%v", err)
+		return refuse("%w", err)
 	}
 	if len(bad) > 0 {
 		return refuse("%s holds the release candidate %s of the %s %s window (%s) from the cutoff %s until %s or until %s runs it.\nOnly commits on top of the candidate that revert its work, change only ignore_paths or merge a hotfix already on %s may go there; these do not:\n  %s\nsee graft deploy cutoff %s; a hotfix branch goes any time",
@@ -287,7 +285,7 @@ func (a *App) checkHeldFor(ctx context.Context, r *deployRun, wname string) erro
 	}
 	a.printf("%s holds the candidate %s of the %s window: %s takes only its reverts and hotfixes", r.name, gitx.Short(candidate), occ.Name(), gitx.Short(r.head))
 	if err := planVersionMove(r, wname, occ, candidate); err != nil {
-		return refuse("%v", err)
+		return refuse("%w", err)
 	}
 	return nil
 }
@@ -324,8 +322,44 @@ func (r *deployRun) heldCandidate(ctx context.Context, env *envs.Env, rec *confi
 	return runs, nil
 }
 
-func recordCandidate(ctx context.Context, r *deployRun, occ deploy.Occurrence, candidate string) error {
-	return deploy.WriteDeployedSHA(ctx, r.env, sibling(r.target.DeployedSHA, candidateSuffix), occ.Date+" "+candidate)
+// heldCandidateRecord is a candidate the hold records for a window.
+type heldCandidateRecord struct {
+	occ       deploy.Occurrence
+	candidate string
+}
+
+// planCandidate keeps the candidate for recordCandidates, which writes it
+// once every check before the deps passed. graft deploy and graft deploy
+// check both ask deploy.CheckWritable here, so check refuses exactly where
+// the deploy does; check writes nothing. What CheckWritable cannot
+// tell is a not-checked line, and the deploy leaves it to the write.
+func (r *deployRun) planCandidate(ctx context.Context, occ deploy.Occurrence, candidate string) error {
+	rec := sibling(r.target.DeployedSHA, candidateSuffix)
+	err := deploy.CheckWritable(ctx, r.env, rec)
+	switch {
+	case errors.Is(err, deploy.ErrSudoPassword):
+		r.noteNotCheckedWhy("writing "+rec.Path, "needs the sudo password")
+	case errors.Is(err, deploy.ErrDirUnseen):
+		r.noteNotCheckedWhy("writing "+rec.Path, "its directory is not visible to the deploy user")
+	case errors.Is(err, deploy.ErrMountUnknown):
+		r.noteNotCheckedWhy("writing "+rec.Path, "findmnt cannot tell the mount of its directory")
+	case err != nil:
+		return err
+	}
+	// graft deploy check never runs recordCandidates.
+	r.candidates = append(r.candidates, heldCandidateRecord{occ, candidate})
+	return nil
+}
+
+// recordCandidates writes the candidates the hold kept, in the order the
+// windows were checked; a failed write refuses the deploy before the deps.
+func (a *App) recordCandidates(ctx context.Context, r *deployRun) error {
+	for _, c := range r.candidates {
+		if err := deploy.WriteDeployedSHA(ctx, r.env, sibling(r.target.DeployedSHA, candidateSuffix), c.occ.Date+" "+c.candidate); err != nil {
+			return fmt.Errorf("deploy %s: nothing was deployed: %w", r.name, err)
+		}
+	}
+	return nil
 }
 
 // outsideHold lists the commits on top of the candidate a held target does

@@ -77,6 +77,40 @@ func TestOutsideOnlyWithoutFixVersionCannotSelectRelease(t *testing.T) {
 	}
 }
 
+func TestCollectOutsideContinuesAfterParentAndApproverReadErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "synthetic Jira read failure", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+	client := jira.New(jira.Credentials{BaseURL: server.URL})
+	conf := &config.ApprovedRelease{
+		Version: &config.ApprovedReleaseVersion{Match: "^Product"},
+		Dormant: []config.DormantReleaseItem{
+			outsideEntry("PROJ-110", "Product 9"),
+			outsideEntry("PROJ-111", "Product 10"),
+			outsideEntry("PROJ-112", "Product old"),
+		},
+	}
+	gate := &gateRun{conf: conf, gate: &approvalGate{conf: conf, client: client, issues: map[string]jira.Issue{}}}
+	v := newReleaseVersionCheck(gate, true)
+	v.selected = jira.Version{Name: "Product 10", ID: "window"}
+	v.liveInSelected = true
+	v.outside = map[string]jira.Issue{
+		"PROJ-110": {Key: "PROJ-110", Parent: "PROJ-210"},
+		"PROJ-111": {Key: "PROJ-111"},
+		"PROJ-112": {Key: "PROJ-112", Status: "Ready for release"},
+	}
+	if v.linkOutside(t.Context()) {
+		t.Fatal("collect mode stopped after a read failure")
+	}
+	if gate.collectionErr == nil || len(v.failures) != 2 {
+		t.Fatalf("collection error=%v, failures=%v; want both read failures", gate.collectionErr, v.failures)
+	}
+	if v.topOf["PROJ-112"] != "PROJ-112" || len(v.outside) != 0 {
+		t.Fatalf("later outside item was not processed: topOf=%v outside=%v", v.topOf, v.outside)
+	}
+}
+
 // Adversary 3: a stale outside subtask remains visible to the umbrella check.
 func TestUnlinkedOutsideSubtaskDoesNotHideOpenUmbrellaWork(t *testing.T) {
 	conf := &config.ApprovedRelease{Version: &config.ApprovedReleaseVersion{Match: "^Product"}, Dormant: []config.DormantReleaseItem{outsideEntry("PROJ-121", "Product X")}}
@@ -279,5 +313,47 @@ func TestReview2FreezeBothParentAndSubtaskMembers(t *testing.T) {
 	matched = nil
 	if err := checkFreezeIssue(t.Context(), gate, freeze, "PROJ-131", &matched); err != nil || len(matched) != 1 {
 		t.Fatalf("freeze result = %v, matched=%v; want the subtask let in", err, matched)
+	}
+}
+
+// A refused version-select leaves the outside_version entries unsettled:
+// without a version they are neither linked nor shipped as the old dormant
+// form, and the check names them as not checked. The statuses of the tops
+// read are still checked.
+func TestVersionSelectRefusalLeavesOutsideEntriesUnsettled(t *testing.T) {
+	conf := &config.ApprovedRelease{
+		Statuses: []string{"Ready for release"},
+		Version:  &config.ApprovedReleaseVersion{Match: "^Product"},
+		Dormant:  []config.DormantReleaseItem{outsideEntry("PROJ-3", "Product 1"), outsideEntry("PROJ-4", "Product 1")},
+	}
+	issues := map[string]jira.Issue{
+		"PROJ-1": {Key: "PROJ-1", Status: "Testing", FixVersions: []jira.Version{{ID: "1", Name: "Product 1"}}},
+		"PROJ-2": {Key: "PROJ-2", Status: "Ready for release", FixVersions: []jira.Version{{ID: "2", Name: "Product 2"}}},
+		"PROJ-3": {Key: "PROJ-3", Status: "Testing"},
+		// PROJ-4 waits by its own entry and is a top as PROJ-5's parent: with
+		// a version its entry would settle it, so its status is not judged.
+		"PROJ-4": {Key: "PROJ-4", Status: "Testing", Subtasks: []string{"PROJ-5"}},
+		"PROJ-5": {Key: "PROJ-5", Status: "Done", Done: true, Subtask: true, Parent: "PROJ-4"},
+	}
+	var out bytes.Buffer
+	g := &gateRun{
+		app: &App{Stdout: &out, Stderr: &out}, conf: conf, activeCommits: 5,
+		activeKeys: map[string]bool{"PROJ-1": true, "PROJ-2": true, "PROJ-3": true, "PROJ-4": true, "PROJ-5": true},
+		gate:       &approvalGate{conf: conf, issues: issues},
+	}
+	failures := g.checkReleaseVersion(t.Context(), true)
+	var text []string
+	for _, f := range failures {
+		text = append(text, f.Error())
+	}
+	joined := strings.Join(text, "\n")
+	if !strings.Contains(joined, "version-select: multiple release versions") || !strings.Contains(joined, "version-top: PROJ-1 is Testing") {
+		t.Fatalf("failures = %q, want version-select and the status of PROJ-1", joined)
+	}
+	if strings.Contains(joined, "PROJ-3") || strings.Contains(joined, "PROJ-4 is Testing") || len(g.dormant) != 0 {
+		t.Fatalf("outside entries settled without a selected version: failures %q, dormant %v", joined, g.dormant)
+	}
+	if len(g.notChecked) != 1 || !strings.Contains(g.notChecked[0][0], "outside_version entries of PROJ-3, PROJ-4") || g.notChecked[0][1] != "version-select" {
+		t.Fatalf("not checked = %q", g.notChecked)
 	}
 }

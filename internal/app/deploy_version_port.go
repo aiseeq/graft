@@ -122,6 +122,11 @@ func revertedInRange(repo *gitx.Repo, commits []deliveredCommit) (map[string]boo
 func linkedVersionPortGroups(repo *gitx.Repo, prev string, prior, commits []deliveredCommit) (map[string]map[string]deliveredCommit, error) {
 	groups := map[string]map[string]deliveredCommit{}
 	add := func(port string, c deliveredCommit) {
+		// A commit cannot be a port of itself, even when its message contains
+		// its own hash or its tree happens to replay unchanged.
+		if port == c.sha {
+			return
+		}
 		if groups[port] == nil {
 			groups[port] = map[string]deliveredCommit{}
 		}
@@ -234,8 +239,10 @@ func findContentOnlyHintsForPort(repo *gitx.Repo, prev string, port deliveredCom
 		}
 		unlinked := make([]deliveredCommit, 0, len(candidates))
 		for _, c := range candidates {
-			if _, hasLink := linked[c.sha]; !hasLink && !hinted[key][c.sha] {
-				unlinked = append(unlinked, c)
+			if c.sha != port.sha {
+				if _, hasLink := linked[c.sha]; !hasLink && !hinted[key][c.sha] {
+					unlinked = append(unlinked, c)
+				}
 			}
 		}
 		if len(unlinked) == 0 {
@@ -340,6 +347,9 @@ func addExplicitVersionPortLinks(repo *gitx.Repo, prev string, commits []deliver
 		}
 		for _, source := range uniqueCommits(sources) {
 			for _, port := range ports {
+				if source.sha == port {
+					continue
+				}
 				add(port, source)
 			}
 		}
@@ -348,7 +358,9 @@ func addExplicitVersionPortLinks(repo *gitx.Repo, prev string, commits []deliver
 			// version-only commit and must not be reconsidered as unlinked
 			// content for the same task.
 			for _, port := range slices.Compact(ports) {
-				add(port, link)
+				if link.sha != port {
+					add(port, link)
+				}
 			}
 		}
 	}

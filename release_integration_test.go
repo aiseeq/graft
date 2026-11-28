@@ -1035,7 +1035,7 @@ func TestReleaseVersions(t *testing.T) {
 	d.jira.mu.Lock()
 	d.jira.fixVersions["PROJ-5"] = []string{"20022"}
 	d.jira.mu.Unlock()
-	if out, code := d.graft("", "deploy", "prod"); code == 0 || !strings.Contains(out, "version Product 22.10.26 lists PROJ-5, which this release does not take out") {
+	if out, code := d.graft("", "deploy", "prod"); code == 0 || !strings.Contains(out, "version Product 22.10.26 in project PROJ lists PROJ-5, which this release does not take out") {
 		t.Errorf("a version with more than the release: exit %d\n%s", code, out)
 	}
 	d.jira.mu.Lock()
@@ -1346,7 +1346,7 @@ deploy:
 	d.git("push", "-q", "-u", "origin", "release/1")
 	fix := d.commitFile("fix.txt", "fix: found in the release")
 	out, code := d.graft("", "deploy", "prod")
-	if code == 0 || !strings.Contains(out, "deployed "+fix[:12]+" to prod") ||
+	if code != 3 || !strings.Contains(out, "deployment succeeded, trunk merge failed:") ||
 		!strings.Contains(out, "release/1 is not merged into "+trunk+": a merge keeping "+trunk+"'s tree would drop these commits") ||
 		!strings.Contains(out, fix[:12]+" fix: found in the release") {
 		t.Errorf("a fix the trunk lacks: exit %d\n%s", code, out)
@@ -1387,6 +1387,30 @@ deploy:
 	out = d.mustGraft("deploy", "prod")
 	if !strings.Contains(out, "merged release/2 into "+trunk) {
 		t.Errorf("a hash-linked port of trunk work:\n%s (commit %s)", out, port)
+	}
+}
+
+// A deploy script's own status 3 passes through as before; only its message
+// tells it from the trunk merge failure of a deploy that went live.
+func TestDeployScriptStatusThreeDoesNotCollideWithTrunkMerge(t *testing.T) {
+	d := newDeployFixture(t, func(state string, q func(string) string) string {
+		return `schema: 1
+version: {mode: file, build_branches: ['release/*']}
+envs: {local: {}}
+deploy:
+  remote: origin
+  targets:
+    prod:
+      env: local
+      run: [sh, deploy-fail.sh]
+`
+	})
+	d.write("deploy-fail.sh", "exit 3\n")
+	d.mustPlainCommit("chore: add synthetic failing deploy script")
+	d.git("push", "-q", "origin", "HEAD")
+	out, code := d.graft("", "deploy", "prod")
+	if code != 3 || !strings.Contains(out, "the deploy script failed with exit status 3; nothing recorded") || strings.Contains(out, "deployment succeeded") {
+		t.Fatalf("script exit 3 is not passed through as a script failure: exit %d\n%s", code, out)
 	}
 }
 
@@ -1493,8 +1517,8 @@ func TestDeployMergeIntoTrunkHashLinkedPorts(t *testing.T) {
 				if code != 0 || !strings.Contains(out, "merged release/1 into "+trunk) {
 					t.Fatalf("expected merge, commit %s: exit %d\n%s", y, code, out)
 				}
-			} else if code == 0 || !strings.Contains(out, y[:12]) {
-				t.Fatalf("expected refusal naming %s: exit %d\n%s", y, code, out)
+			} else if code != 3 || !strings.Contains(out, "warning: deployment succeeded, trunk merge failed") || !strings.Contains(out, y[:12]) {
+				t.Fatalf("expected successful deploy with merge warning naming %s: exit %d\n%s", y, code, out)
 			} else if !strings.Contains(out, "cherry-pick") || !strings.Contains(out, "merging by hand") {
 				t.Fatalf("refusal omits the two ways out (cherry-pick, merge by hand): %s", out)
 			} else if strings.Contains(tt.name, "unknown hash") && strings.Contains(strings.ToLower(out), "resolve") {
@@ -1540,8 +1564,8 @@ func TestDeployMergeIntoTrunkForkBoundary(t *testing.T) {
 		d.git("push", "-q", "-u", "origin", "release/1")
 		y := writeReleaseCommit(d, "state.txt", "a=good", "back to the behaviour of C "+c[:12])
 		out, code := d.graft("", "deploy", "prod")
-		if code == 0 || !strings.Contains(out, y[:12]) {
-			t.Fatalf("restoring the old state must be refused and name Y %s: exit %d\n%s", y, code, out)
+		if code != 3 || !strings.Contains(out, "warning: deployment succeeded, trunk merge failed") || !strings.Contains(out, y[:12]) {
+			t.Fatalf("restoring the old state must warn and name Y %s after deploy succeeds: exit %d\n%s", y, code, out)
 		}
 	})
 }

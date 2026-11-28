@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func withheldHintFixture(t *testing.T, prefixGate bool) (*deployFixture, string, string, string) {
@@ -105,5 +106,100 @@ func TestDeployCheckWithheldHintMixedSelectionDoesNotNameOtherCommit(t *testing.
 	}
 	if got := readFile(t, marker); got != w+"\n" {
 		t.Fatalf("withheld marker changed: got %q, want %q", got, w+"\n")
+	}
+}
+
+func TestDeployAndCheckReportAllVersionTopBlockers(t *testing.T) {
+	d, withheld, _, _ := withheldHintFixture(t, false)
+	d.jira.setVersions([]map[string]any{
+		{"id": "current", "name": "Product 1.0"},
+	}, map[string][]string{
+		"PROJ-1": {"current"},
+		"PROJ-2": {"current"},
+	})
+	d.jira.setApprovers(map[string][]string{"current": {"APPROVED"}})
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-1"] = "Testing"
+	d.jira.statuses["PROJ-2"] = "Testing"
+	d.jira.mu.Unlock()
+	d.write("candidate.txt", "synthetic candidate work\n")
+	d.mustPlainCommit("feat: PROJ-2 candidate work")
+	d.git("push", "-q", "-u", "origin", "HEAD")
+
+	for _, args := range [][]string{{"deploy", "check", "prod"}, {"deploy", "prod"}} {
+		out, code := d.graft("", args...)
+		if code == 0 {
+			t.Fatalf("%v unexpectedly passed:\n%s", args, out)
+		}
+		for _, want := range []string{
+			"version-top: PROJ-2 is Testing",
+			"version-top: PROJ-1 is Testing",
+			withheld[:12] + " was withheld from an earlier release",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%v missing %q:\n%s", args, want, out)
+			}
+		}
+	}
+}
+
+func TestDeployAndCheckReportCommitStatusHumanAndWindowBlockersTogether(t *testing.T) {
+	cfg := func(state string, q func(string) string) string {
+		out := versionConfig(state, q)
+		return strings.Replace(out,
+			"approved_release: {statuses: [Ready for release, Done], ignore_paths: [\"docs/**\"]}",
+			`approved_release: {prefix: "Product", statuses: [Ready for release, Done], ignore_paths: ["docs/**"], version: {match: '^Product', human_check: {from: [Testing], labels: [noqa]}}}`, 1)
+	}
+	d := newDeployFixture(t, cfg)
+	d.at("2026-10-22 15:30")
+	prev := d.git("rev-parse", "HEAD")
+	writeFile(t, filepath.Join(d.state, "prod-sha"), prev+"\n")
+	writeFile(t, filepath.Join(d.state, "prod-version"), "1.0.1\n")
+	writeFile(t, filepath.Join(d.state, "test-sha"), prev+"\n")
+	writeFile(t, filepath.Join(d.state, "test-version"), "1.0.1\n")
+	d.jira.setVersions([]map[string]any{{"id": "window", "name": "Product 22.10.26"}}, map[string][]string{
+		"PROJ-1": {"window"}, "PROJ-2": {"window"}, "PROJ-3": {"window"},
+	})
+	d.jira.setApprovers(map[string][]string{"window": {"APPROVED"}})
+	d.jira.mu.Lock()
+	d.jira.statuses["PROJ-1"] = "Testing"
+	d.jira.statuses["PROJ-2"] = "Ready for release"
+	d.jira.statuses["PROJ-3"] = "Ready for release"
+	d.jira.statuses["PROJ-4"] = "In Progress"
+	d.jira.statusMoves = map[string][]fakeStatusMove{"PROJ-2": {{
+		at: time.Date(2026, 10, 21, 10, 0, 0, 0, time.UTC), from: "Testing", to: "Ready for release", authorID: "me", authorName: "Synthetic bot",
+	}}}
+	d.jira.mu.Unlock()
+	d.write("one.txt", "synthetic task one\n")
+	d.mustPlainCommit("feat: PROJ-1 synthetic work")
+	d.write("two.txt", "synthetic task two\n")
+	d.mustPlainCommit("feat: PROJ-2 synthetic work")
+	d.write("four.txt", "synthetic task four\n")
+	d.mustPlainCommit("feat: PROJ-4 synthetic work")
+	d.git("push", "-q", "-u", "origin", "HEAD")
+
+	for _, args := range [][]string{{"deploy", "check", "prod"}, {"deploy", "prod"}} {
+		out, code := d.graft("", args...)
+		if code == 0 {
+			t.Errorf("%v unexpectedly passed:\n%s", args, out)
+		}
+		// Each refusal is matched with the task it names on its own line.
+		for _, want := range [][]string{
+			{"commit-items:"},
+			{"feat: PROJ-4 synthetic work: PROJ-4 not in an approved \"Product\" version"},
+			{"version-top: PROJ-1 is Testing"},
+			{"version-status: Product 22.10.26: PROJ-1 (Testing)"},
+			{"version-human-check:", "PROJ-2:"},
+			{"version Product 22.10.26 in project PROJ lists PROJ-3, which this release does not take out"},
+		} {
+			if !lineWith(out, want...) {
+				t.Errorf("%v missing a line with %q:\n%s", args, want, out)
+			}
+		}
+		// PROJ-1 and PROJ-2 go out with this release: refused by the
+		// approved release, they are not missing from it as well.
+		if lineWith(out, "does not take out", "PROJ-1") || lineWith(out, "does not take out", "PROJ-2") {
+			t.Errorf("%v refuses the release's own items as not taken out:\n%s", args, out)
+		}
 	}
 }

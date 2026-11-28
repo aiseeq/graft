@@ -308,6 +308,26 @@ func TestExplicitVersionPortLinkRejectsPrefixAmbiguousInReleaseRange(t *testing.
 	}
 }
 
+func TestExplicitVersionPortLinkRejectsSelfReference(t *testing.T) {
+	r, _ := versionPortRepo(t)
+	self := versionPortCommit(r, "synthetic work\n", "2\n", "fix: PROJ-1 synthetic source")
+	prev := versionPortCommit(r, "synthetic work\n", "3\n", "chore: later synthetic commit")
+	commits := []deliveredCommit{{sha: self, subject: "chore: link " + self}}
+	groups := map[string]map[string]deliveredCommit{}
+	add := func(port string, c deliveredCommit) {
+		if groups[port] == nil {
+			groups[port] = map[string]deliveredCommit{}
+		}
+		groups[port][c.sha] = c
+	}
+	if err := addExplicitVersionPortLinks(r.repo, prev, commits, add); err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 0 {
+		t.Fatalf("explicit self-reference created a port group: %#v", groups)
+	}
+}
+
 func TestUniqueCommitPrefixRejectsAmbiguousRepositoryObjects(t *testing.T) {
 	r, _ := versionPortRepo(t)
 	tree, err := r.repo.Git("rev-parse", "HEAD^{tree}")
@@ -704,6 +724,26 @@ func TestUnlinkedContentVersionPortsDoesNotAdviseForALinkedCommit(t *testing.T) 
 	}
 	if len(hints["PROJ-1"]) != 0 {
 		t.Fatalf("hash-linked source received content-only advice: %#v", hints)
+	}
+}
+
+func TestUnlinkedContentVersionPortsDoesNotTreatCommitAsItsOwnPort(t *testing.T) {
+	r, base := versionPortRepo(t)
+	self := versionPortCommit(r, "restored\n", "2\n", "fix: PROJ-1 source")
+	prior, err := logCommits(r.repo, self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commits, err := deliveredCommits(r.repo, base, self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hints, err := unlinkedContentVersionPortsWithPrior(r.repo, self, self, prior, commits, versionPortTargets("VERSION"), regexp.MustCompile(`PROJ-[0-9]+`), &config.ApprovedRelease{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hints) != 0 {
+		t.Fatalf("self-port hints = %#v, want none", hints)
 	}
 }
 

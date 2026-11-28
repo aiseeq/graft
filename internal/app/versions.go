@@ -202,7 +202,9 @@ func (a *App) moveItem(ctx context.Context, client *jira.Client, key string, cur
 }
 
 // checkVersionContents refuses a release whose window version holds items
-// the release does not take out: QA approved what the version lists.
+// the release does not take out: QA approved what the version lists. The
+// items taken out are those of every active commit, refused by the approved
+// release or not, so a refusal there does not come back here as well.
 func (a *App) checkVersionContents(ctx context.Context, r *deployRun) error {
 	conf := r.target.ReleaseVersion
 	if !conf.On() || r.hotfix {
@@ -213,10 +215,12 @@ func (a *App) checkVersionContents(ctx context.Context, r *deployRun) error {
 		return err
 	}
 	name := conf.Template.Format(deploy.Next(r.target.Window, r.now).Start)
+	var failures []error
 	for _, project := range r.cfg.ReleaseNotes.Jira.ProjectKeys {
 		vs, err := w.versions(ctx, project, false)
 		if err != nil {
-			return fmt.Errorf("deploy %s: nothing was deployed: %w", r.name, err)
+			failures = append(failures, fmt.Errorf("project %s: %w", project, err))
+			continue
 		}
 		v, ok := jira.Unreleased(vs, name)
 		if !ok {
@@ -224,18 +228,23 @@ func (a *App) checkVersionContents(ctx context.Context, r *deployRun) error {
 		}
 		items, err := w.client.VersionItems(ctx, v.ID)
 		if err != nil {
-			return fmt.Errorf("deploy %s: nothing was deployed: %w", r.name, err)
+			failures = append(failures, fmt.Errorf("project %s: %w", project, err))
+			continue
 		}
 		var extra []string
 		for _, k := range items {
-			if !slices.Contains(r.passed, k) {
+			if !slices.Contains(r.takenOut, k) {
 				extra = append(extra, k)
 			}
 		}
 		if len(extra) > 0 {
-			return fmt.Errorf("deploy %s: nothing was deployed: version %s lists %s, which this release does not take out; take them out of the version (they wait for the next window) or release their work", r.name, name, strings.Join(extra, ", "))
+			failures = append(failures, fmt.Errorf("version %s in project %s lists %s, which this release does not take out; take them out of the version (they wait for the next window) or release their work", name, project, strings.Join(extra, ", ")))
+			continue
 		}
 		a.printf("version %s lists only items this release takes out", name)
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("deploy %s: nothing was deployed: version contents:\n  %w", r.name, errors.Join(failures...))
 	}
 	return nil
 }

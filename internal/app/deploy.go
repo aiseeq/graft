@@ -58,6 +58,12 @@ type ExitCodeError struct {
 	Err  error
 }
 
+// ExitDeployTrunkMerge is graft deploy's status when the deploy script
+// succeeded and the release is recorded, but merge_into_trunk failed. It is
+// returned only after the script exited 0; a failing script's own status is
+// passed through as it is, with its own message.
+const ExitDeployTrunkMerge = 3
+
 func (e *ExitCodeError) Error() string { return e.Err.Error() }
 
 func (e *ExitCodeError) Unwrap() error { return e.Err }
@@ -113,7 +119,16 @@ type deployRun struct {
 	// passed are the items the approved release lets out; hotfixItems the
 	// labelled items of a hotfix.
 	passed, hotfixItems []string
-	dormantItems        []config.DormantReleaseItem
+	// takenOut are the items of every active commit going out, refused or
+	// not: what the release takes out once its refusals are fixed in Jira.
+	// takenOutReady tells that the approved release produced them.
+	takenOut      []string
+	takenOutReady bool
+
+	// notChecked are the checks a refusal left without their input, with
+	// that refusal; check and deploy print them after the refusals.
+	notChecked   []string
+	dormantItems []config.DormantReleaseItem
 	// approvedVersions are the approved versions the release took items
 	// from, with approved_release.prefix.
 	approvedVersions       []string
@@ -130,9 +145,16 @@ type deployRun struct {
 	// dryRun is graft deploy check: the checks record nothing and never
 	// wait for a sudo password.
 	dryRun bool
-	// reviewGuardActive lets deploy check describe a known guard stop while
-	// remaining a successful read-only report.
-	reviewGuardActive bool
+	// trunkMergeFailed tells a deploy that went live and recorded while
+	// merge_into_trunk failed, from one whose script exited 3 itself.
+	trunkMergeFailed bool
+	// noPrompt is set once a live deploy has a refusal: the records it
+	// still reads are read as deploy check reads them, without asking for a
+	// sudo password, since the deploy will not go on.
+	noPrompt bool
+	// candidates are the release candidates the hold records once every
+	// check before the deps passed: a refused deploy records none.
+	candidates []heldCandidateRecord
 	// freeze is the active freeze related to this target, read once per run.
 	freeze                         *activeFreeze
 	freezeLogKind, freezeLogReason string
@@ -162,7 +184,58 @@ func (r *deployRun) readSHA(ctx context.Context, env *envs.Env, rec *config.Depl
 	if r.dryRun {
 		return deploy.PeekDeployedSHA(ctx, env, rec)
 	}
+	if r.noPrompt && rec.Sudo {
+		sha, err := deploy.PeekDeployedSHA(ctx, env, rec)
+		if err != nil {
+			return "", &promptSkippedError{path: rec.Path, env: env.Name, err: err}
+		}
+		return sha, nil
+	}
 	return deploy.ReadDeployedSHA(ctx, env, rec)
+}
+
+// promptSkippedError is a record a live deploy with a refusal did not read:
+// reading it without a password failed, and the deploy does not go on, so
+// it does not ask for one. The check that needed it is named not checked.
+type promptSkippedError struct {
+	path, env string
+	err       error
+}
+
+func (e *promptSkippedError) Error() string {
+	return fmt.Sprintf("reading %s on %s without the sudo password: %v", e.path, e.env, e.err)
+}
+
+func (e *promptSkippedError) Unwrap() error { return e.err }
+
+// refused marks the run refused once err is a refusal: reads after it no
+// longer ask for a sudo password. It returns err.
+func (r *deployRun) refused(err error) error {
+	r.noPrompt = r.noPrompt || err != nil
+	return err
+}
+
+// settlePromptSkipped takes out of the refusals of a live deploy the reads
+// it skipped rather than ask for a sudo password after a refusal, and names
+// each on a not checked line instead.
+func (r *deployRun) settlePromptSkipped(err error) error {
+	if err == nil {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var kept []error
+		for _, child := range joined.Unwrap() {
+			if child = r.settlePromptSkipped(child); child != nil {
+				kept = append(kept, child)
+			}
+		}
+		return errors.Join(kept...)
+	}
+	if skipped := (*promptSkippedError)(nil); errors.As(err, &skipped) {
+		r.noteNotCheckedWhy("what needs "+skipped.path+" on "+skipped.env, "a refusal came first, and reading it without the sudo password failed: "+strings.Join(strings.Fields(skipped.err.Error()), " "))
+		return nil
+	}
+	return err
 }
 
 // Deploy runs the project's deploy script for a target between graft's
@@ -234,11 +307,14 @@ func (a *App) Deploy(ctx context.Context, o DeployOptions) error {
 		err = errors.Join(err, fmt.Errorf("releasing the deploy lock: %w", releaseErr))
 	}
 	a.noteDeployJournal(ctx, r, err)
-	if err != nil {
+	// A deploy whose release went live while the trunk merge failed is a
+	// deploy all the same: the daily flags run. A script's own exit status
+	// 3 is not that.
+	if err != nil && !r.trunkMergeFailed {
 		return err
 	}
 	a.dailyFlags(ctx, r.repo, r.cfg, r.env.Name)
-	return nil
+	return err
 }
 
 func (a *App) noteDeployJournal(ctx context.Context, r *deployRun, deployErr error) {
@@ -255,6 +331,10 @@ func (a *App) noteDeployJournal(ctx context.Context, r *deployRun, deployErr err
 		identity = gitx.Short(r.head)
 	}
 	result := map[bool]string{true: "ok", false: "failed"}[deployErr == nil]
+	// Only a failed deploy has a failed trunk merge: the release is live.
+	if r.trunkMergeFailed {
+		result = "live, the merge into the trunk failed"
+	}
 	a.ticketJournalForMessage(ctx, r.repo, message, fmt.Sprintf("deploy %s %s: %s", r.name, identity, result))
 }
 
@@ -372,17 +452,31 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) (retErr
 			return err
 		}
 	}
+	// The checks before the deps are independent of each other: all run and
+	// every refusal is returned at once, as graft deploy check lists them.
 	// requires is a quick read-only check: it fails before a long deps run.
-	if err := a.requireDeployed(ctx, r); err != nil {
+	// After a refusal no read asks for a sudo password, and the hold
+	// records its candidate only once none refused.
+	requiresErr := r.refused(a.requireDeployed(ctx, r))
+	targetErr := a.checkTargetWithReview(ctx, r, o)
+	blockers := errors.Join(
+		requiresErr,
+		targetErr,
+		a.checkFreeze(ctx, r, o),
+		a.checkFreezeAdvisoryPreflight(r),
+		a.checkIntegrations(ctx, r),
+	)
+	if err := r.settlePromptSkipped(blockers); err != nil {
+		a.printNotChecked(r)
 		return err
 	}
-	if err := a.checkTargetWithReview(ctx, r, o); err != nil {
-		return err
+	if blockers != nil {
+		// Only reads skipped for want of the sudo password are left: the
+		// refusal that skipped them did not stand, so they refuse as they
+		// are rather than let the deploy pass unchecked.
+		return blockers
 	}
-	if err := a.checkFreeze(ctx, r, o); err != nil {
-		return err
-	}
-	if err := a.checkFreezeAdvisoryPreflight(r); err != nil {
+	if err := a.recordCandidates(ctx, r); err != nil {
 		return err
 	}
 	closeTakeBackJournal, err := a.prepareDeployTarget(ctx, r)
@@ -402,7 +496,7 @@ func (a *App) deploy(ctx context.Context, r *deployRun, o DeployOptions) (retErr
 				return err
 			}
 		}
-		if err := a.enforceReviewGuard(ctx, r, o.ReviewerAgreed, false); err != nil {
+		if err := a.enforceReviewGuard(ctx, r, o.ReviewerAgreed); err != nil {
 			return err
 		}
 		return a.runDeployScript(ctx, r, o.Args)
@@ -436,7 +530,7 @@ func (a *App) reportReviewerReminder(ctx context.Context, r *deployRun) {
 }
 
 func (a *App) prepareDeployTarget(ctx context.Context, r *deployRun) (func() error, error) {
-	if err := a.checkIntegrations(ctx, r); err != nil {
+	if err := a.leaveIntegrationsToScript(r); err != nil {
 		return nil, err
 	}
 	if !r.takeBackActive {
@@ -451,10 +545,8 @@ func (a *App) prepareDeployTarget(ctx context.Context, r *deployRun) (func() err
 }
 
 func (a *App) checkTargetWithReview(ctx context.Context, r *deployRun, o DeployOptions) error {
-	if err := a.checkTargetRuns(ctx, r, o); err != nil {
-		return err
-	}
-	return a.enforceReviewGuard(ctx, r, o.ReviewerAgreed, false)
+	// Each marks its own refusal at once, before the next read.
+	return errors.Join(a.checkTargetRuns(ctx, r, o), r.refused(a.enforceReviewGuard(ctx, r, o.ReviewerAgreed)))
 }
 
 func (a *App) runDeployDeps(ctx context.Context, r *deployRun) error {
@@ -495,27 +587,66 @@ func (a *App) startRelease(r *deployRun) error {
 // checkReleaseFlow runs the checks between the deployed commit and the new
 // one: a hotfix branch, the hold on a release candidate, and for an approved
 // release that nothing deployed is taken back and every commit is checked.
-// A deploy stops at the first refusal; a dry run goes on and returns them
-// all.
+// Checks continue after refusals when their inputs remain available, so a
+// deploy and its check report the same independent blockers.
 func (a *App) checkReleaseFlow(ctx context.Context, r *deployRun, unapproved bool) error {
 	var errs []error
-	stop := func(err error) bool {
-		if err != nil {
+	// Each refusal marks the run refused at once: the reads after it ask
+	// for no sudo password.
+	add := func(err error) {
+		if r.refused(err) != nil {
 			errs = append(errs, err)
 		}
-		return err != nil && !r.dryRun
 	}
-	if r.hotfix && stop(a.checkHotfix(ctx, r)) {
+	if r.hotfix {
+		add(a.checkHotfix(ctx, r))
+	}
+	add(a.checkHold(ctx, r))
+	if r.hotfix || r.target.ApprovedRelease == nil {
 		return errors.Join(errs...)
 	}
-	if stop(a.checkHold(ctx, r)) || r.hotfix || r.target.ApprovedRelease == nil {
-		return errors.Join(errs...)
+	add(a.checkContainsDeployed(r))
+	add(a.checkApproved(ctx, r, unapproved))
+	switch contents := r.target.ReleaseVersion.On(); {
+	case !contents:
+	case unapproved:
+		// As before: a release shipped by exception is not held to the
+		// window version's list.
+		a.printf("version contents not checked: --unapproved ships by exception")
+	case r.prev != "" && r.prev == r.head:
+		// A redeploy takes nothing out: which of the version's items the
+		// target already runs is what earlier releases took out, which
+		// graft does not record. Rebuilding it from the history would be a
+		// second rule beside the approved release's, so neither deploy
+		// check nor the deploy checks the contents then.
+		a.printf("not checked: version contents — the target already runs this commit")
+	case !r.takenOutReady:
+		r.noteNotChecked("version contents (release_version)", "approved release (commit-items)")
+	default:
+		add(a.checkVersionContents(ctx, r))
 	}
-	if stop(a.checkContainsDeployed(r)) || stop(a.checkApproved(ctx, r, unapproved)) || !r.gated {
-		return errors.Join(errs...)
-	}
-	stop(a.checkVersionContents(ctx, r))
 	return errors.Join(errs...)
+}
+
+// noteNotChecked records a check left without its input by a refusal, to be
+// printed with the refusals: what was not checked and what closed it.
+func (r *deployRun) noteNotChecked(check, closedBy string) {
+	r.noteNotCheckedWhy(check, "closed by the refusal "+closedBy)
+}
+
+// noteNotCheckedWhy records a check left unchecked with why.
+func (r *deployRun) noteNotCheckedWhy(check, why string) {
+	line := "not checked: " + check + " — " + why
+	if !slices.Contains(r.notChecked, line) {
+		r.notChecked = append(r.notChecked, line)
+	}
+}
+
+// printNotChecked prints the checks refusals left without their input.
+func (a *App) printNotChecked(r *deployRun) {
+	for _, line := range r.notChecked {
+		a.printf("%s", line)
+	}
 }
 
 func (a *App) checkFreeze(ctx context.Context, r *deployRun, o DeployOptions) error {
@@ -536,10 +667,19 @@ func (a *App) checkFreeze(ctx context.Context, r *deployRun, o DeployOptions) er
 	var refusals []error
 	if r.branch != frozen.branch {
 		refusals = append(refusals, freezeRefusalError{fmt.Errorf("%s is frozen at %s; deploy from %s (or pass --past-freeze with a reason)", frozen.target, frozen.name, frozen.branch)})
+		// Without --past-freeze the branch refusal stands, and the record
+		// the freeze issue check reads next goes under sudo -n; a bypassed
+		// refusal is none.
+		r.noPrompt = r.noPrompt || o.PastFreeze == ""
 	}
 	if err := a.freezeIssueCheck(ctx, r, frozen); err != nil {
 		var refusal freezeRefusalError
 		if !errors.As(err, &refusal) {
+			// The branch refusal stays beside the failed check: a read
+			// skipped for want of the sudo password names no refusal.
+			if o.PastFreeze == "" {
+				return errors.Join(append(refusals, err)...)
+			}
 			return err
 		}
 		refusals = append(refusals, refusal)
@@ -563,26 +703,32 @@ func (a *App) checkTargetRuns(ctx context.Context, r *deployRun, o DeployOptions
 	if r.target.DeployedSHA != nil {
 		var err error
 		if r.prev, err = r.readSHA(ctx, r.env, r.target.DeployedSHA); err != nil {
-			return err
+			if skipped := (*promptSkippedError)(nil); errors.As(err, &skipped) {
+				r.noteNotCheckedWhy("the deployed commit and the checks that need it (the same commit, the hold, approved_release, the version checks)", "a refusal came first, and reading "+skipped.path+" without the sudo password failed")
+				return nil
+			}
+			r.noteNotChecked("the checks that need the deployed commit (the hold, approved_release, the version checks)", "reading "+r.target.DeployedSHA.Path)
+			// Marked here, before the review guard beside it reads the
+			// record again: that read goes under sudo -n.
+			return r.refused(err)
 		}
 	}
 	if err := a.showDeployed(ctx, r); err != nil {
-		return err
+		return r.refused(err)
 	}
 	if r.target.DeployedSHA == nil {
 		return nil
 	}
-	if err := a.refuseSameCommit(r, o.Redeploy); err != nil {
-		return err
-	}
+	// The same commit refused, the checks --redeploy would run still run,
+	// so that the refusal names all that the repeated deploy needs.
+	sameErr := r.refused(a.refuseSameCommit(r, o.Redeploy))
+	var takeBackErr error
 	if r.target.ApprovedRelease == nil {
-		if err := a.checkTakeBack(r, o.TakeBack); err != nil {
-			return err
-		}
+		takeBackErr = r.refused(a.checkTakeBack(r, o.TakeBack))
 	} else if o.TakeBack {
 		a.printf("nothing is taken back; --take-back has no effect")
 	}
-	return a.checkReleaseFlow(ctx, r, o.Unapproved)
+	return errors.Join(sameErr, takeBackErr, a.checkReleaseFlow(ctx, r, o.Unapproved))
 }
 
 func (a *App) checkTakeBack(r *deployRun, allow bool) error {
@@ -864,13 +1010,25 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 			journalErr = errors.Join(journalErr, err)
 		}
 	}
-	withheldErr := errors.Join(a.recordWithheld(ctx, r), a.mergeIntoTrunk(r))
+	withheldErr := a.recordWithheld(ctx, r)
+	var mergeErr error
+	if err := a.mergeIntoTrunk(r); err != nil {
+		mergeErr = fmt.Errorf("deployment succeeded, trunk merge failed: %w", err)
+		r.trunkMergeFailed = true
+		a.warn("deployment succeeded, trunk merge failed: %v", err)
+	}
 	a.hotfixDone(r)
 	versionsErr := a.recordVersions(ctx, r)
 	pageErr := a.publishReleasePage(ctx, r)
 	withheldErr = errors.Join(withheldErr, versionsErr, a.finishFreeze(r, shaRecorded, pageErr, journalErr))
+	finish := func(err error) error {
+		if mergeErr != nil {
+			return &ExitCodeError{Code: ExitDeployTrunkMerge, Err: errors.Join(mergeErr, err)}
+		}
+		return err
+	}
 	if r.target.ReleaseNotes == nil {
-		return withheldErr
+		return finish(withheldErr)
 	}
 	// The release notes and the sweep move under the target's lock of its
 	// moves, taken last.
@@ -880,7 +1038,7 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 		a.deploySweep(ctx, r)
 		return nil
 	}); err != nil {
-		return errors.Join(withheldErr, fmt.Errorf("release notes skipped: %w", err))
+		return finish(errors.Join(withheldErr, fmt.Errorf("release notes skipped: %w", err)))
 	}
 	var missing []string
 	if len(unset.fixVersion) > 0 {
@@ -890,9 +1048,9 @@ func (a *App) recordDeployment(ctx context.Context, r *deployRun) error {
 		missing = append(missing, "the assignee is not set on "+strings.Join(unset.assignee, ", "))
 	}
 	if len(missing) > 0 {
-		return errors.Join(withheldErr, fmt.Errorf("deployed %s to %s, but %s (see above)", gitx.Short(r.head), r.name, strings.Join(missing, "; ")))
+		return finish(errors.Join(withheldErr, fmt.Errorf("deployed %s to %s, but %s (see above)", gitx.Short(r.head), r.name, strings.Join(missing, "; "))))
 	}
-	return withheldErr
+	return finish(withheldErr)
 }
 
 func (a *App) finishFreeze(r *deployRun, shaRecorded bool, pageErr, journalErr error) error {
@@ -1865,16 +2023,21 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 	out, g, err := a.approvalRun(ctx, r)
 	if err != nil {
 		if conf.Version != nil {
+			r.noteNotChecked("the release version checks (version-select, version-top, version-items, version-status, version-subtasks, version-human-check, version-umbrella, version-approval)", "approved release (commit-items)")
 			id := "commit-items"
 			if ref := conf.Version.Refs[id]; ref != "" {
 				id += " (rule " + ref + ")"
 			}
-			return refuse("%s: %v; fix the issue or retry", id, err)
+			return refuse("%s: %w; fix the issue or retry", id, err)
 		}
-		return refuse("%v", err)
+		return refuse("%w", err)
 	}
+	r.takenOut, r.takenOutReady = uniqueSorted(append(slices.Clone(out.passed), out.refusedItems...)), true
 	r.dormantItems = config.UniqueDormant(out.dormant)
 	var failures []error
+	for _, err := range out.readErrs {
+		failures = append(failures, refuse("%v; retry", err))
+	}
 	if len(out.failures) > 0 {
 		lines := make([]string, len(out.failures))
 		for i, f := range out.failures {
@@ -1894,15 +2057,17 @@ func (a *App) checkApproved(ctx context.Context, r *deployRun, skip bool) error 
 		}
 		failures = append(failures, refuse("%scommits outside an approved release:\n  %s\nTheir items:\n  %s\n%s, revert them, or pass --unapproved", id,
 			strings.Join(lines, "\n  "), strings.Join(items, "\n  "), g.gate.remedy()))
-		if !r.dryRun {
-			return failures[0]
-		}
 	}
 	if conf.Version != nil {
-		versionFailures := g.checkReleaseVersion(ctx, r.dryRun)
+		// Collect the complete version gate even during a live deploy so its
+		// refusal matches deploy check and reports independent blockers together.
+		versionFailures := g.checkReleaseVersion(ctx, true)
 		failures = append(failures, versionFailures...)
 		for _, hint := range versionWithheldHints(r, g, versionFailures) {
 			failures = append(failures, errors.New(hint))
+		}
+		for _, line := range g.notChecked {
+			r.noteNotChecked(line[0], line[1])
 		}
 	}
 	r.dormantItems = config.UniqueDormant(r.dormantItems, g.dormant)
@@ -1924,7 +2089,9 @@ func (a *App) collectApproved(ctx context.Context, r *deployRun) {
 		return
 	}
 	r.passed = uniqueSorted(out.passed)
+	r.takenOut, r.takenOutReady = uniqueSorted(append(slices.Clone(out.passed), out.refusedItems...)), true
 	r.pageWithheld = out.withheld
+	r.approvalCollectionErr = g.collectionErr
 	if r.target.ApprovedRelease.Prefix != "" {
 		r.approvedVersions = slices.Sorted(maps.Keys(out.approved))
 	}
@@ -1941,9 +2108,12 @@ func (a *App) collectApproved(ctx context.Context, r *deployRun) {
 		r.approvalItemExceptions = g.versionItemFailures
 		r.dormantItems = config.UniqueDormant(r.dormantItems, g.dormant)
 		r.approvalCollectionErr = g.collectionErr
-		if g.collectionErr != nil {
-			a.warn("approved release collection failed (--unapproved): %v", g.collectionErr)
+		for _, line := range g.notChecked {
+			r.noteNotChecked(line[0], line[1])
 		}
+	}
+	if r.approvalCollectionErr != nil {
+		a.warn("approved release collection failed (--unapproved): %v", r.approvalCollectionErr)
 	}
 }
 
@@ -1964,6 +2134,7 @@ func (a *App) approvalRun(ctx context.Context, r *deployRun) (gateOutcome, *gate
 	if err != nil {
 		return gateOutcome{}, nil, err
 	}
+
 	g, err := newGateRun(a, r.repo, r.cfg, r.target)
 	if err != nil {
 		return gateOutcome{}, nil, err
@@ -2400,17 +2571,20 @@ func (a *App) passApproved(r *deployRun, out gateOutcome) {
 
 // gateRun is one pass of approved_release over the commits going out.
 type gateRun struct {
-	app                 *App
-	repo                *gitx.Repo
-	cfg                 *config.Config
-	conf                *config.ApprovedRelease
-	gate                *approvalGate
-	keyRe               *regexp.Regexp
-	activeKeys          map[string]bool
-	activeCommits       int
-	contentOnlyPorts    map[string][]versionPortHint
-	dormant             []config.DormantReleaseItem
-	collectionErr       error
+	app              *App
+	repo             *gitx.Repo
+	cfg              *config.Config
+	conf             *config.ApprovedRelease
+	gate             *approvalGate
+	keyRe            *regexp.Regexp
+	activeKeys       map[string]bool
+	activeCommits    int
+	contentOnlyPorts map[string][]versionPortHint
+	dormant          []config.DormantReleaseItem
+	collectionErr    error
+	// notChecked are the release version checks a refusal left without their
+	// input: the checks, and the refusal that closed them.
+	notChecked          [][2]string
 	versionItemFailures map[string][]string
 	markerWithheld      []string
 	withheldByItem      map[string][]string
@@ -2470,9 +2644,15 @@ type gateOutcome struct {
 	// withheld are the commits reverted on a build branch: the trunk still
 	// has them, and the next release checks them.
 	withheld []string
-	// passed are the items named by the commits let out.
-	passed  []string
-	dormant []config.DormantReleaseItem
+	// passed are the items named by the commits let out; refusedItems, those
+	// named by the commits refused, which go out too once their refusals are
+	// fixed in Jira.
+	passed       []string
+	refusedItems []string
+	// readErrs are the Jira reads that failed outside a commit's own check;
+	// the rest of the run went on without them.
+	readErrs []error
+	dormant  []config.DormantReleaseItem
 	// released are the commits withheld from an earlier release that go out
 	// now: outside prev..head, they are delivered all the same.
 	released []string
@@ -2598,17 +2778,16 @@ func (g *gateRun) run(ctx context.Context, prev, head string, withheld []string,
 		switch {
 		case fail != nil:
 			out.failures = append(out.failures, *fail)
+			out.refusedItems = append(out.refusedItems, itemKeys(g.keyRe, g.conf, c)...)
 		case earlier[c.sha]:
 			out.released = append(out.released, c.sha)
 		}
 	}
-	linkFailures, err := g.linkOutside(ctx)
-	if err != nil {
-		return out, err
-	}
-	out.failures = append(out.failures, linkFailures...)
+	out.failures = append(out.failures, g.linkOutside(ctx)...)
 	if err := g.adviseApproved(ctx, out.approved); err != nil {
-		return out, err
+		err = fmt.Errorf("outside_version advice: read Jira: %w", err)
+		g.collectionErr = errors.Join(g.collectionErr, err)
+		out.readErrs = append(out.readErrs, err)
 	}
 	out.dormant = config.UniqueDormant(out.dormant, g.dormant)
 	return out, nil
@@ -2631,7 +2810,8 @@ func withheldItemsByKey(commits []deliveredCommit, markerWithheld []string, keyR
 // without version (with it, the release version check does): the entry is
 // linked when live work of its version goes out in this run; otherwise it is
 // the old dormant form, which needs an approved version of the item's own.
-func (g *gateRun) linkOutside(ctx context.Context) ([]gateFailure, error) {
+// A Jira read that fails refuses its item and leaves the others to go on.
+func (g *gateRun) linkOutside(ctx context.Context) []gateFailure {
 	var failures []gateFailure
 	var whys [][]string
 	byCommit := map[string]int{}
@@ -2640,18 +2820,21 @@ func (g *gateRun) linkOutside(ctx context.Context) ([]gateFailure, error) {
 		key, version := p.item.Key, p.item.OutsideVersion
 		anchor, live := g.liveVersions[version]
 		linked, err := g.gate.outsideLinked(ctx, p.item, anchor, live)
-		if err != nil {
-			return nil, err
-		}
-		if linked {
+		var why string
+		switch {
+		case err != nil:
+			g.collectionErr = errors.Join(g.collectionErr, fmt.Errorf("%s: read approvers of %s: %w", key, version, err))
+			why = fmt.Sprintf("%s: read approvers of %s: %v; retry", key, version, err)
+		case linked:
 			g.dormant = config.UniqueDormant(g.dormant, []config.DormantReleaseItem{p.item})
 			if !told[key] {
 				told[key] = true
 				g.app.printf("approved release: %s ships dormant outside %s, not checked against the version", key, version)
 			}
 			continue
+		default:
+			why = g.gate.notInApprovedVersion(g.gate.issues[key]) + " (dormant: still needs an approved version; its outside_version entry is for " + version + ", and no live work of " + version + ", unreleased and approved, goes out in this release)"
 		}
-		why := g.gate.notInApprovedVersion(g.gate.issues[key]) + " (dormant: still needs an approved version; its outside_version entry is for " + version + ", and no live work of " + version + ", unreleased and approved, goes out in this release)"
 		if i, ok := byCommit[p.commit.sha]; ok {
 			failures[i].keys = append(failures[i].keys, key)
 			whys[i] = append(whys[i], why)
@@ -2664,7 +2847,7 @@ func (g *gateRun) linkOutside(ctx context.Context) ([]gateFailure, error) {
 	for i := range failures {
 		failures[i].why = strings.Join(whys[i], "; ")
 	}
-	return failures, nil
+	return failures
 }
 
 func notRevertedVersionPortCommits(commits []deliveredCommit, reverted map[string]string) []deliveredCommit {
@@ -2753,11 +2936,14 @@ func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out
 	}
 	if fail.keys = itemKeys(g.keyRe, g.conf, c); len(fail.keys) > 0 {
 		pass, err := g.gate.commit(ctx, fail.keys)
-		if err != nil {
-			return nil, err
-		}
-		g.rememberDormant(fail.keys, out)
-		if pass.ok {
+		switch {
+		case err != nil:
+			// A failed Jira read refuses this commit alone: the other
+			// commits and the release version checks still run.
+			g.collectionErr = errors.Join(g.collectionErr, fmt.Errorf("%s: %w", line, err))
+			fail.why = fmt.Sprintf("%s: read Jira: %v; retry", strings.Join(fail.keys, ", "), err)
+		case pass.ok:
+			g.rememberDormant(fail.keys, out)
 			if err := g.notePass(c, pass); err != nil {
 				return nil, err
 			}
@@ -2770,8 +2956,10 @@ func (g *gateRun) check(ctx context.Context, c deliveredCommit, line string, out
 				g.app.printf("approved release: %s: %s is %s, passes", line, done, g.gate.issues[done].Status)
 			}
 			return nil, nil
+		default:
+			g.rememberDormant(fail.keys, out)
+			fail.why, fail.keys = pass.why, pass.failed
 		}
-		fail.why, fail.keys = pass.why, pass.failed
 	}
 	ignored, why, err := shipsNothing(g.repo, g.cfg, g.conf, c.sha)
 	if err != nil {

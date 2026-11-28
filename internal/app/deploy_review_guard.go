@@ -459,7 +459,7 @@ func deployEnv(r *deployRun, name string) (*envs.Env, error) {
 	return envs.Get(r.cfg, r.repo.Root, name)
 }
 
-func (a *App) enforceReviewGuard(ctx context.Context, r *deployRun, agreement string, reportOnly bool) error {
+func (a *App) enforceReviewGuard(ctx context.Context, r *deployRun, agreement string) error {
 	if r.target.ReviewGuard == nil {
 		return nil
 	}
@@ -470,11 +470,7 @@ func (a *App) enforceReviewGuard(ctx context.Context, r *deployRun, agreement st
 	if len(active) == 0 {
 		return nil
 	}
-	if reportOnly {
-		r.reviewGuardActive = true
-		a.printReviewGuard(r.name, active)
-		return nil
-	}
+
 	accepted := reviewerAgreement(agreement)
 	var missing []string
 	var required []string
@@ -493,11 +489,4 @@ func (a *App) enforceReviewGuard(ctx context.Context, r *deployRun, agreement st
 		details = append(details, fmt.Sprintf("  %s: %s; reviewer %s (%s)", item.key, item.status, item.name, item.account))
 	}
 	return fmt.Errorf("review guard: %s Jira version %s has work under review:\n%s\na response from each reviewer is needed; after the response run graft deploy %s --reviewer-agreed %s", r.name, active[0].version, strings.Join(details, "\n"), r.name, strings.Join(required, ","))
-}
-
-func (a *App) printReviewGuard(target string, active []reviewUnderWay) {
-	a.printf("%s Jira version %s has work under review:", target, active[0].version)
-	for _, item := range active {
-		a.printf("- %s: %s; reviewer %s (%s); agreement token %s@%s", item.key, item.status, item.name, item.account, item.key, item.account)
-	}
 }

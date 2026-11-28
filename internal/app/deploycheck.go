@@ -20,7 +20,7 @@ import (
 // DeployCheck is graft deploy check: the checks graft deploy runs before the
 // deps and the script, read only, every refusal listed. Nothing is deployed
 // or recorded, and no sudo password is asked for.
-func (a *App) DeployCheck(ctx context.Context, target string) error {
+func (a *App) DeployCheck(ctx context.Context, target, reviewerAgreed string) error {
 	r, err := a.deployTarget(target)
 	if err != nil {
 		return err
@@ -41,6 +41,7 @@ func (a *App) DeployCheck(ctx context.Context, target string) error {
 		}
 		refusals = append(refusals, err)
 	}
+	refuse(deployPreflight(r))
 	refuse(deploy.CheckTree(r.repo, r.cfg.Deploy))
 	sudoRefusal := refusedSudo(r.target, r.env)
 	refuse(sudoRefusal)
@@ -78,23 +79,26 @@ func (a *App) DeployCheck(ctx context.Context, target string) error {
 	if err := a.checkDeployed(ctx, r, sudoRefusal, refuse); err != nil {
 		return err
 	}
-	if err := a.enforceReviewGuard(ctx, r, "", true); err != nil {
-		refuse(err)
-	}
+	// The check is that of graft deploy without flags but --reviewer-agreed:
+	// an active review guard refuses it as it refuses that deploy.
+	refuse(a.enforceReviewGuard(ctx, r, reviewerAgreed))
 	// Freeze refusals are useful even when an earlier check already failed.
 	refuse(a.checkFreeze(ctx, r, DeployOptions{}))
+	refuse(a.checkFreezeAdvisoryPreflight(r))
+	refuse(a.checkIntegrations(ctx, r))
+	if in := r.target.Integrations; in != nil && in.Staged() {
+		a.printf("the deploy script compares the integrations with %s during the deploy: graft deploy check-integrations <build>", r.target.Requires)
+	}
 	if len(refusals) == 0 {
-		if r.reviewGuardActive {
-			a.printf("graft deploy %s would stop at the review guard; wait for each reviewer and pass the printed --reviewer-agreed tokens", r.name)
-			return nil
-		}
-		a.printf("graft deploy %s passes its checks now; deps, integration checks and confirmation run during the deploy", r.name)
+		a.printNotChecked(r)
+		a.printf("graft deploy %s passes its checks now; deps and confirmation run during the deploy", r.name)
 		return nil
 	}
 	fmt.Fprintf(a.Stdout, "\ngraft deploy %s would refuse:\n", r.name)
 	for _, err := range refusals {
 		fmt.Fprintf(a.Stdout, "- %s\n", strings.ReplaceAll(err.Error(), "\n", "\n  "))
 	}
+	a.printNotChecked(r)
 	return fmt.Errorf("graft deploy %s would refuse, see above", r.name)
 }
 
@@ -117,11 +121,13 @@ func (a *App) checkDeployed(ctx context.Context, r *deployRun, sudoRefusal error
 		return a.showDeployed(ctx, r)
 	}
 	if sudoRefusal != nil && recordUsesSudo(r.target.DeployedSHA, r.env) {
+		r.noteNotChecked("the deployed commit and the checks that need it (the hold, approved_release, the version checks)", "of sudo")
 		return nil
 	}
 	prev, err := r.readSHA(ctx, r.env, r.target.DeployedSHA)
 	if err != nil {
 		refuse(err)
+		r.noteNotChecked("the checks that need the deployed commit (the hold, approved_release, the version checks)", "reading "+r.target.DeployedSHA.Path)
 		return nil
 	}
 	r.prev = prev
@@ -129,10 +135,9 @@ func (a *App) checkDeployed(ctx context.Context, r *deployRun, sudoRefusal error
 		return err
 	}
 	if refusesSameCommit(r) {
+		// The checks after it are those graft deploy --redeploy runs.
 		refuse(fmt.Errorf("%s already runs %s; graft deploy --redeploy %s deploys it again", r.name, gitx.Short(r.head), r.name))
-		return nil
-	}
-	if r.prev == r.head {
+	} else if r.prev == r.head {
 		a.printf("%s already runs %s, deploying it again", r.name, gitx.Short(r.head))
 	}
 	if r.target.ApprovedRelease == nil {

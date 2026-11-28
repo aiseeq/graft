@@ -15,9 +15,10 @@ import (
 	"github.com/aiseeq/graft/v2/internal/gitx"
 )
 
-// checkIntegrations compares the integrations before deps and the sudo
-// prompt, or, when the command asks the uploaded build, leaves it to the
-// deploy script and reads the exceptions now so a bad file fails early.
+// checkIntegrations compares the integrations with the checks before deps
+// and the sudo prompt, read only, in graft deploy check too; when the
+// command asks the uploaded build, the deploy script compares them, and
+// only the exceptions are read now so a bad file fails early.
 func (a *App) checkIntegrations(ctx context.Context, r *deployRun) error {
 	in := r.target.Integrations
 	if in == nil {
@@ -31,6 +32,17 @@ func (a *App) checkIntegrations(ctx context.Context, r *deployRun) error {
 	}
 	if _, err := deploy.ReadIntegrationExceptions(exceptionsPath(r.repo, in)); err != nil {
 		return fmt.Errorf("deploy %s: nothing was deployed: %w", r.name, err)
+	}
+	return nil
+}
+
+// leaveIntegrationsToScript drops the marker of an earlier comparison when
+// the deploy script compares the integrations itself: the deploy is
+// recorded only once the script compared them again.
+func (a *App) leaveIntegrationsToScript(r *deployRun) error {
+	in := r.target.Integrations
+	if in == nil || !in.Staged() {
+		return nil
 	}
 	if err := fsx.Remove(integrationsMarker(r.repo, r.name)); err != nil {
 		return err

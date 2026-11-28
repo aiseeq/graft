@@ -124,7 +124,7 @@ var registrySpecs = []registrySpec{
 	{path: "deploy thaw", rest: "args", source: "deploy", selectFlags: "reason no-cache"},
 	{path: "deploy status", rest: "after-dashdash", source: "deploy", selectFlags: "no-cache"},
 	{path: "deploy logs", rest: "after-dashdash", source: "deploy", selectFlags: "lines grep no-cache"},
-	{path: "deploy check", rest: "args", source: "deploy", selectFlags: "no-cache"},
+	{path: "deploy check", rest: "args", source: "deploy", selectFlags: "reviewer-agreed no-cache"},
 	{path: "deploy versions", rest: "none", source: "deploy", selectFlags: "no-cache"},
 	{path: "deploy cutoff", rest: "args", source: "deploy", selectFlags: "no-cache"},
 	{path: "deploy sweep", rest: "args", source: "deploy", selectFlags: "apply no-cache"},
